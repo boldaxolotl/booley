@@ -114,11 +114,11 @@ _AUDITED_FLOWS = ("sim", "lint", "synth")
 # owns that Flow's enablement/migration validation (principle 9). Elaborate
 # follows [flows.sim]'s selection and validates uniformly.
 _EXECUTION_VALIDATING_FLOWS = {
-    "sim": ("booley.flows.simulate", "SimulateFlow"),
-    "lint": ("booley.flows.lint", "LintFlow"),
-    "synth": ("booley.flows.asic_synthesize", "AsicSynthesizeFlow"),
-    "elab": ("booley.flows.elaborate", "ElaborateFlow"),
-    "fpga": ("booley.flows.fpga_impl", "FpgaImplFlow"),
+    "sim": ("booley.flows.sim.flow", "SimulateFlow"),
+    "lint": ("booley.flows.lint.flow", "LintFlow"),
+    "synth": ("booley.flows.synth.flow", "AsicSynthesizeFlow"),
+    "elab": ("booley.flows.elab.flow", "ElaborateFlow"),
+    "fpga": ("booley.flows.fpga.flow", "FpgaImplFlow"),
 }
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
@@ -7330,7 +7330,7 @@ def _synth_deep_report_error(
     """Return why a successful deep synth lacks terminal PPA/timing evidence."""
     if flow_name != "synth" or dry_run:
         return ""
-    from booley.flows.asic_synthesize import synth_target_report_slug
+    from booley.flows.synth.flow import synth_target_report_slug
 
     target = _probe_target(project, flow_name)
     path = report_dir / f"synth_{synth_target_report_slug(target)}.json"
@@ -7401,7 +7401,7 @@ def _run_flow_check(
     report_dir = project.project_dir / _DOCTOR_TMP / "flow-reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name == "synth" and not dry_run:
-        from booley.flows.asic_synthesize import synth_target_report_slug
+        from booley.flows.synth.flow import synth_target_report_slug
 
         safe_target = synth_target_report_slug(target)
         # A killed calibration may never reach the Flow's eager per-target
@@ -7463,7 +7463,7 @@ def _record_synth_memory_calibration(
     _warn: Check,
 ) -> None:
     """Record boundary-process peak RSS from a completed heaviest synthesis."""
-    from booley.flows.asic_synthesize import synth_target_report_slug
+    from booley.flows.synth.flow import synth_target_report_slug
 
     safe_target = synth_target_report_slug(target)
     path = report_dir / f"synth_{safe_target}.json"

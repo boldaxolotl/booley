@@ -17,8 +17,6 @@ import pytest
 # Ensure src/ is importable (fallback when not installed via pip install -e .)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from tests.conftest import symlink_or_skip
-
 from booley.flows.edam import (
     EdamSecurityError,
     build_edam,
@@ -28,6 +26,7 @@ from booley.flows.edam import (
     relpath_for_make,
     work_root_for,
 )
+from tests.conftest import symlink_or_skip
 
 # ---------------------------------------------------------------------------
 # file_type_for

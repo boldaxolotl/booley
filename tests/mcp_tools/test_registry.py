@@ -12,10 +12,12 @@ from pathlib import Path
 import pytest
 
 from booley.mcp_tools.registry import (
+    BUILTIN_FLOW_PACKAGES,
     SKIP_MODULES,
     McpToolInfo,
     _get_base_names,
     _get_constant_value,
+    _scan_builtin_flows,
     _scan_directory,
     discover_mcp_tools,
     extract_mcp_tool_info,
@@ -344,6 +346,28 @@ class TestScanDirectory:
 
 
 class TestDiscoverMcpTools:
+    def test_builtin_flow_packages_use_explicit_manifest(self, tmp_path):
+        flows_dir = tmp_path / "flows"
+        for package_name in BUILTIN_FLOW_PACKAGES:
+            package_dir = flows_dir / package_name
+            package_dir.mkdir(parents=True)
+            source = FLOW_SRC.replace('name = "lint_check"', f'name = "{package_name}"')
+            _write_endpoint_file(package_dir, "flow.py", source)
+
+        results = _scan_builtin_flows(flows_dir, {})
+
+        assert [result.name for result in results] == list(BUILTIN_FLOW_PACKAGES)
+        assert [result.path for result in results] == [
+            f"flows/{package_name}/flow.py" for package_name in BUILTIN_FLOW_PACKAGES
+        ]
+
+    def test_builtin_flow_manifest_ignores_unregistered_package(self, tmp_path):
+        package_dir = tmp_path / "flows" / "surprise"
+        package_dir.mkdir(parents=True)
+        _write_endpoint_file(package_dir, "flow.py", FLOW_SRC)
+
+        assert _scan_builtin_flows(tmp_path / "flows", {}) == []
+
     def test_builtin_only(self, tmp_path):
         """Discover from a single builtin endpoints directory."""
         endpoint_dir = tmp_path / "mcp_tools"

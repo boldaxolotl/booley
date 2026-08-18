@@ -307,7 +307,7 @@ class TestInitCriteriaState:
         from unittest.mock import PropertyMock, patch
 
         from booley import fusesoc_registry
-        from booley.flows.synthesis_recipe import RECIPE_FINGERPRINT_PARAM
+        from booley.flows.synth.recipe import RECIPE_FINGERPRINT_PARAM
         from booley.harness.models import TicketContext
         from booley.harness.setup.intake import _init_criteria_state
 
@@ -349,7 +349,7 @@ class TestInitCriteriaState:
         """A ticket can require a Target that the developer must author."""
         from unittest.mock import PropertyMock, patch
 
-        from booley.flows.synthesis_recipe import RECIPE_FINGERPRINT_PARAM
+        from booley.flows.synth.recipe import RECIPE_FINGERPRINT_PARAM
         from booley.harness.models import TicketContext
         from booley.harness.setup.intake import _init_criteria_state
 

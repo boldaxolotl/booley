@@ -42,7 +42,7 @@ from booley.heartbeat import fmt_elapsed as fmt_time
 from booley.shared_infra import (
     check_paths as _check_paths,
 )
-from booley.synthesis_profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
+from booley.synthesis.profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.yosys import ppa as ppa_options
 from booley.yosys import syn_make
 from booley.yosys.syn_core import (  # Core synthesis functions

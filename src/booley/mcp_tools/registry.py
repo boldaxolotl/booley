@@ -54,6 +54,8 @@ SKIP_MODULES = frozenset(
     }
 )
 
+BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "elab", "fpga")
+
 
 def discover_mcp_tools(
     *,
@@ -81,15 +83,7 @@ def discover_mcp_tools(
     flow_config = flow_config or {}
 
     discovered: list[McpToolInfo] = []
-    discovered.extend(
-        _scan_directory(
-            booley_src / "flows",
-            mcp_tool_config,
-            flow_config,
-            builtin=True,
-            package="flows",
-        )
-    )
+    discovered.extend(_scan_builtin_flows(booley_src / "flows", flow_config))
     discovered.extend(
         _scan_directory(
             booley_src / "mcp_tools",
@@ -112,6 +106,33 @@ def discover_mcp_tools(
         )
 
     return discovered
+
+
+def _scan_builtin_flows(
+    flows_dir: Path,
+    flow_config: dict[str, Any],
+) -> list[McpToolInfo]:
+    """Discover only the explicitly registered built-in Flow packages."""
+    results: list[McpToolInfo] = []
+    for package_name in BUILTIN_FLOW_PACKAGES:
+        flow_file = flows_dir / package_name / "flow.py"
+        if not flow_file.is_file():
+            logger.warning("Built-in Flow implementation missing: %s", flow_file)
+            continue
+        info = extract_mcp_tool_info(
+            flow_file,
+            builtin=True,
+            package=f"flows/{package_name}",
+        )
+        if info is None:
+            logger.warning("Built-in Flow metadata missing: %s", flow_file)
+            continue
+        endpoint_entry = flow_config.get(info.name)
+        if isinstance(endpoint_entry, dict) and endpoint_entry.get("enabled") is False:
+            logger.debug("MCP endpoint %s disabled via config", info.name)
+            continue
+        results.append(info)
+    return results
 
 
 def _scan_directory(

@@ -2923,7 +2923,7 @@ async def _dispatch_booley_mcp_tool(
 def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:
     """Whole-campaign sim watchdog derived from its sequential work units."""
     from booley.flows.flow_config import resolve_flow_default_target
-    from booley.flows.simulate import (
+    from booley.flows.sim.flow import (
         _TRACE_CLEANUP_MARGIN_S,
         _resolve_sim_campaign_work_units,
         _resolve_sim_timeout_ms,
@@ -2981,8 +2981,8 @@ def _mcp_tool_timeout_seconds(
         # whole sequential matrix.  A fixed 7200s cap discarded completed
         # targets from nine-target runs.  Budget every selected target (and
         # both baseline/current passes) plus configure/finalize headroom.
-        from booley.flows.asic_synthesize import _resolve_synth_timeout_ms
         from booley.flows.flow_config import resolve_flow_default_target
+        from booley.flows.synth.flow import _resolve_synth_timeout_ms
 
         work_dir_raw = arguments.get("work_dir")
         work_dir = Path(work_dir_raw) if work_dir_raw else None

@@ -31,7 +31,7 @@ import pytest
 
 from booley import fusesoc_registry
 from booley.dev_support.development_state import DevelopmentState
-from booley.flows.asic_synthesize import AsicSynthesizeFlow
+from booley.flows.synth.flow import AsicSynthesizeFlow
 from tests.golden.conftest import assert_matches_golden
 
 # ---------------------------------------------------------------------------

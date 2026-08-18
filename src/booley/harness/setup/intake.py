@@ -440,7 +440,7 @@ def _freeze_synthesis_recipe_fingerprints(
 
     from booley import fusesoc_registry
     from booley.core.boundary import BoundaryError
-    from booley.flows.synthesis_recipe import (
+    from booley.flows.synth.recipe import (
         RECIPE_FINGERPRINT_PARAM,
         default_recipe_args,
         synthesis_recipe_fingerprint,

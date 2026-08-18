@@ -20,7 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.dev_support.development_state import DevelopmentState, DutInfo
-from booley.flows.simulate import SimulateFlow
+from booley.flows.sim.flow import SimulateFlow
 from booley.mcp_tools.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.mcp_tools.coverage_analyst import CoverageAnalystSpecialist
 from booley.mcp_tools.mutation_tester import MutationTesterSpecialist

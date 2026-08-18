@@ -481,7 +481,7 @@ class TestCmdFlow:
         from booley.mcp_tools.registry import McpToolInfo
 
         info = McpToolInfo(
-            name="sim", path="flows/simulate.py", description=_FakeFlow.description, kind="flow"
+            name="sim", path="flows/sim/flow.py", description=_FakeFlow.description, kind="flow"
         )
         monkeypatch.setattr(tlr, "_discover_project_mcp_tools", lambda _root: [info])
 
@@ -547,7 +547,7 @@ class TestEndpointResolution:
     def test_builtin_lint_resolves_to_its_class(self, tmp_path):
         infos = tlr._discover_project_mcp_tools(tmp_path)
         lint_info = next(i for i in infos if i.name == "lint")
-        from booley.flows.lint import LintFlow
+        from booley.flows.lint.flow import LintFlow
 
         assert tlr._load_mcp_tool_class(lint_info) is LintFlow
 

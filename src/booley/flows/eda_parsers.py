@@ -2,8 +2,8 @@
 
 The pure text-extraction blocks of the built-in Flows: sim sentinel verdicts
 (re-exported from ``booley.sim.sim_result``), Verilator and Verible
-warning/error parsing (single source of truth — ``booley.flows.lint`` imports
-these regexes), compiler-error gists (shared with ``booley.flows.elaborate``),
+warning/error parsing (single source of truth — ``booley.flows.lint.flow`` imports
+these regexes), compiler-error gists (shared with ``booley.flows.elab.flow``),
 and Yosys area extraction (re-exported from ``booley.yosys.syn_parse``).
 
 Formerly the public ``booley.adapterlib.parsers`` — the one module the

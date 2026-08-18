@@ -154,7 +154,7 @@ def _run_flow(docker: str, container: str, report_dir: str) -> None:
         container,
         "python3",
         "-m",
-        "booley.flows.fpga_impl",
+        "booley.flows.fpga",
         "--target",
         "fpga",
         "--work-dir",

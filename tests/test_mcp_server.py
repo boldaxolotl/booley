@@ -456,7 +456,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
-            "booley.flows.simulate._resolve_sim_timeout_ms",
+            "booley.flows.sim.flow._resolve_sim_timeout_ms",
             return_value=600_000,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -468,7 +468,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.simulate._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -480,7 +480,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.simulate._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(

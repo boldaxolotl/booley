@@ -241,9 +241,9 @@ class TestGhostReaping:
         assert b.refresh(tok).position == 0
 
     def test_recycled_pid_argv_mismatch_is_reaped(self, root, world):
-        spawn(world, 100, argv=["python", "-m", "booley.flows.simulate"])
+        spawn(world, 100, argv=["python", "-m", "booley.flows.sim"])
         a = make_store(root, world)
-        tok = a.submit(CLASS_HEAVY, pid=100, argv=["python", "-m", "booley.flows.simulate"])
+        tok = a.submit(CLASS_HEAVY, pid=100, argv=["python", "-m", "booley.flows.sim"])
         assert a.refresh(tok).state == HOLDING
         # PID 100 is recycled by an unrelated process.
         world.alive[100] = ["sshd"]

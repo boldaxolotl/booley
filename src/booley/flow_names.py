@@ -38,9 +38,8 @@ def legacy(name: str) -> str | None:
 
 
 def implementation_module(name: str) -> str:
-    """Return the Python module implementing a built-in Flow."""
-    canonical_name = canonical(name)
-    return CANONICAL_TO_LEGACY.get(canonical_name, canonical_name)
+    """Return the executable package implementing a built-in Flow."""
+    return canonical(name)
 
 
 def canonicalize_config(data: Mapping[str, Any]) -> dict[str, Any]:
