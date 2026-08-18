@@ -123,9 +123,9 @@ I recorded all four videos myself, then replaced my narration with text-to-speec
 
 You clone the **official upstream repo, untouched**, and drop the pre-configured Booley project ([booley-prj-picorv32](https://github.com/boldaxolotl/booley-prj-picorv32)) inside it as `.booley_project/`. Everything Booley-related (design description, tests, config, a queued ticket) ships in that one directory, and no `/booley-setup` is needed.
 
-Follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
+First, follow [INSTALL.md](https://github.com/boldaxolotl/Booley/blob/main/docs/INSTALL.md) to install Booley and satisfy its platform, software, and agent-account requirements.
 
-For platform, software, and agent-account requirements, see [Installation prerequisites](https://github.com/boldaxolotl/Booley/blob/main/docs/INSTALL.md#prerequisites).
+Then follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
 
 ### Level 3: Use it on your own project
 
