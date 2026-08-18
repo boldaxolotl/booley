@@ -164,6 +164,27 @@ class TestSingleProcess:
         assert store.refresh(tok).state == HOLDING
         assert attempts == 3
 
+    def test_promotion_gate_prevents_a_second_process_from_promoting(
+        self, root, world, monkeypatch
+    ):
+        spawn(world, 100)
+        spawn(world, 200)
+        first = make_store(root, world)
+        second = make_store(root, world)
+        first_token = first.submit(CLASS_HEAVY, pid=100)
+        second_token = second.submit(CLASS_HEAVY, pid=200)
+
+        # Model the stale-rank interleaving directly: the second claimant had
+        # already observed rank zero when the first claimant entered the gate.
+        with monkeypatch.context() as patch:
+            patch.setattr(second, "_rank", lambda _token: 0)
+            with first._promotion_gate(first_token) as acquired:
+                assert acquired is True
+                assert second.refresh(second_token).state == QUEUED
+
+        assert first.refresh(first_token).state == HOLDING
+        assert second.refresh(second_token).state == QUEUED
+
     def test_queue_positions_are_zero_based_and_ordered(self, root, world):
         spawn(world, 100)
         store = make_store(root, world)  # max_heavy=1

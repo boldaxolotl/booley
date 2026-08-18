@@ -4,7 +4,7 @@ Container-only Booley runs *everything* — the interactive session, every
 concurrent ticket's Developer Agent, and each Flow/MCP-tool subprocess — inside the one
 Session Runtime, so admission ("may this Job run now, or must it wait?") can
 no longer live in any single process the way ADR 0027's in-process
-single-flight did.  This module is the replacement: a lock-free store of
+single-flight did.  This module is the replacement: a filesystem-coordinated store of
 claim files under ``<runtime>/jobs/slots/`` that every process shares.
 Container-only guarantees one PID namespace, so PID liveness and ``/proc``
 argv identity are trustworthy here — the exact rationale that made a shared
@@ -21,9 +21,9 @@ except to reap a provably-stale one:
   ticket work, but *never* a holder: promotion renames only one's **own**
   ``w-`` entry to ``h-``, and only when its rank is within the class cap, so
   running work cannot be preempted (ADR 0028 Decision 6).
-* Because the ordering is total and each process promotes only itself,
-  at most one waiter can ever observe itself at the head — two processes
-  cannot both promote into the last free slot.
+* Because the ordering is total and each process promotes only itself under a
+  short per-class promotion gate, two processes cannot both promote into the
+  last free slot.
 * Entries appear atomically (content written to a tmp, then hard-linked
   into place), so a reader never sees a partial claim.
 * Stale entries — dead PID, recycled PID (``/proc`` argv mismatch), or a
@@ -47,7 +47,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,10 +89,16 @@ _UNREADABLE_REAP_AGE_SECONDS = 60.0
 NARRATE_INTERVAL_SECONDS = 30.0
 
 # Windows may briefly deny rename/unlink while another claimant is reading the
-# same entry. Retrying keeps the lock-free store from producing false losses or
+# same entry. Retrying keeps the shared store from producing false losses or
 # permanent phantom-holder deadlocks.
 _ENTRY_IO_ATTEMPTS = 20
 _ENTRY_IO_RETRY_SECONDS = 0.01
+
+# Ranking and waiter->holder promotion must be one serialized decision. Without
+# a gate, two processes can each observe themselves in the last free rank before
+# either rename becomes visible, then both promote. O_EXCL creation is atomic on
+# the local filesystems supported by the Session Runtime and Windows CI.
+_PROMOTION_GATE_NAME = ".promotion.lock"
 
 
 class QueueFullError(RuntimeError):
@@ -488,20 +494,88 @@ class SlotStore:
             return TokenState(LOST)
         if token.is_holder:
             return TokenState(HOLDING)
+        return self._refresh_waiter(token)
 
+    def _refresh_waiter(self, token: SlotToken) -> TokenState:
+        """Recheck and promote one waiter without an observation race."""
+        cap = self.caps.cap_for(token.job_class)
         rank = self._rank(token)
-        if rank < self.caps.cap_for(token.job_class):
-            holder_path = token.path.with_name(
-                _entry_name(_HOLDER, token.priority, token.seq, token.pid, token.n)
-            )
-            if not self._rename_entry(token.path, holder_path):
-                # A Windows sharing violation is not cancellation. If the
-                # waiter still exists, leave it queued and retry next poll.
-                return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
-            token.path = holder_path
-            self._stamp_promoted(token)
-            return TokenState(HOLDING)
-        return TokenState(QUEUED, position=rank - self.caps.cap_for(token.job_class))
+        if rank >= cap:
+            return TokenState(QUEUED, position=rank - cap)
+
+        with self._promotion_gate(token) as acquired:
+            if not acquired:
+                return TokenState(QUEUED, position=0)
+
+            # Submissions do not take the gate, so repeat both cleanup and
+            # ranking inside it. A newly-created earlier waiter must be
+            # visible before this process commits its promotion.
+            self.reap(token.job_class)
+            if not token.path.exists():
+                return TokenState(LOST)
+            rank = self._rank(token)
+            if rank >= cap:
+                return TokenState(QUEUED, position=rank - cap)
+
+            return self._promote(token)
+
+    def _promote(self, token: SlotToken) -> TokenState:
+        """Rename one eligible waiter while its class promotion gate is held."""
+        holder_path = token.path.with_name(
+            _entry_name(_HOLDER, token.priority, token.seq, token.pid, token.n)
+        )
+        if not self._rename_entry(token.path, holder_path):
+            # A Windows sharing violation is not cancellation. If the
+            # waiter still exists, leave it queued and retry next poll.
+            return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
+        token.path = holder_path
+        self._stamp_promoted(token)
+        return TokenState(HOLDING)
+
+    @contextlib.contextmanager
+    def _promotion_gate(self, token: SlotToken) -> Iterator[bool]:
+        """Best-effort cross-process gate around the promotion decision."""
+        gate = token.path.parent / _PROMOTION_GATE_NAME
+        fd: int | None = None
+        for attempt in range(_ENTRY_IO_ATTEMPTS):
+            try:
+                fd = os.open(gate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                if self._promotion_gate_is_stale(gate):
+                    self._unlink_entry(gate)
+                elif attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
+            except OSError:
+                break
+            else:
+                try:
+                    os.write(fd, f"{token.pid}\n".encode())
+                except OSError:
+                    os.close(fd)
+                    fd = None
+                    self._unlink_entry(gate)
+                break
+
+        acquired = fd is not None
+        try:
+            yield acquired
+        finally:
+            if fd is not None:
+                os.close(fd)
+                self._unlink_entry(gate)
+
+    def _promotion_gate_is_stale(self, gate: Path) -> bool:
+        """Return True only for an old gate whose owner is provably dead."""
+        try:
+            if self._now() - gate.stat().st_mtime <= _UNREADABLE_REAP_AGE_SECONDS:
+                return False
+        except OSError:
+            return False
+        try:
+            pid = int(gate.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return True
+        return not self._is_pid_alive(pid)
 
     def _rename_entry(self, source: Path, target: Path) -> bool:
         """Promote an entry through transient Windows sharing violations."""
