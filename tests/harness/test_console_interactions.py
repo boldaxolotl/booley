@@ -301,6 +301,7 @@ async def test_criteria_toggle_and_live_shrink_preserve_activity_scroll() -> Non
         scenario.start_running()
         scenario.add_history(30)
         await pilot.pause()
+        await _settle_strips(app, pilot)
         main = app.query_one(MainPane)
         main.scroll_to(y=main.max_scroll_y // 2, animate=False)
         await pilot.pause()
