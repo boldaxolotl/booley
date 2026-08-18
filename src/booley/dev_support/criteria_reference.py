@@ -17,7 +17,7 @@ Two generated blocks live here:
   the docs can never drift from the validator.
 
 The "Set by" column is derived from the MCP-tool registry's ``satisfies`` metadata via
-:func:`booley.mcp_tools.registry.build_criterion_endpoint_map` — never hardcoded.
+:func:`booley.mcp.registry.build_criterion_endpoint_map` — never hardcoded.
 
 Regenerate the committed doc blocks with::
 
@@ -88,7 +88,7 @@ def render_criteria_reference(*, project_criteria_path: Path | None = None) -> s
         load_project_criteria,
         merge_criteria_defs,
     )
-    from booley.mcp_tools.registry import build_criterion_endpoint_map, discover_mcp_tools
+    from booley.mcp.registry import build_criterion_endpoint_map, discover_mcp_tools
 
     base = load_base_criteria()
     project = (

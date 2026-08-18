@@ -116,7 +116,7 @@ MCP tools are discovered from either the installed Booley package or the project
 enabled = false                 # remove one discovered Specialist MCP tool
 ```
 
-- Built-in Flows are scanned from `booley.flows`; Specialists and other MCP tools are scanned from `booley.mcp_tools`.
+- Built-in Flows are scanned from `booley.flows`; Specialists and other MCP tools are scanned from `booley.specialists`.
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[mcp_tools.<name>].enabled = false` disables a Specialist or other non-Flow MCP tool.
 - Visibility can still differ by runtime mode. Interactive Mode hides autonomous-only MCP tools such as `submit_run_report`; `tb_coder` is currently de-registered in all modes. Environment-level MCP filters also narrow nested or explicitly scoped servers, but they are not project registration.
@@ -147,7 +147,7 @@ must load and validate them explicitly.
 | MCP tool kind | Source | How enabled | Agent-visible? |
 |-----------|--------|-------------|:---:|
 | Built-in Flow | Installed `booley.flows` package | Enabled unless `[flows.<name>].enabled = false` | Yes, subject to mode-specific hiding |
-| Built-in Specialist or endpoint | Installed `booley.mcp_tools` package | Enabled unless `[mcp_tools.<name>].enabled = false` | Yes, subject to mode-specific hiding |
+| Built-in Specialist or endpoint | Installed `booley.specialists` package | Enabled unless `[mcp_tools.<name>].enabled = false` | Yes, subject to mode-specific hiding |
 | Custom MCP tool | `.booley_project/mcp_tools/*.py` | Namespace depends on whether it is a Flow, Specialist, or direct endpoint | Yes, subject to mode-specific hiding |
 Use unique MCP tool names. Preflight warns when a custom name collides with a discovered built-in MCP tool, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
 
@@ -181,8 +181,8 @@ Criteria themselves are defined and expanded.
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits | `submit_run_report` |
 
-Import `McpTool` / `McpToolResult` from `booley.mcp_tools.base`, `Specialist`
-from `booley.mcp_tools.specialist`, and `BooleyFlow` from
+Import `McpTool` / `McpToolResult` from `booley.mcp.base`, `Specialist`
+from `booley.specialists.specialist`, and `BooleyFlow` from
 `booley.flows.base`. The package `__init__` modules do not re-export them.
 
 Every concrete implementation declares `name` and `description`. Criterion-aware implementations also declare `satisfies`; code-changing implementations declare `code_modifying = True` so successful edits invalidate stale evidence.
@@ -397,7 +397,7 @@ Target, and keeps infrastructure failures distinct from design failures:
 import sys
 
 from booley.flows.base import BooleyFlow, SubprocessResult
-from booley.mcp_tools.base import EXIT_ERROR, McpToolResult
+from booley.mcp.base import EXIT_ERROR, McpToolResult
 
 
 class DrcCheckFlow(BooleyFlow):
@@ -446,8 +446,8 @@ if __name__ == "__main__":
 
 ```python
 # .booley_project/mcp_tools/protocol_reviewer.py
-from booley.mcp_tools.specialist import Specialist
-from booley.mcp_tools.base import EXIT_ERROR, McpToolResult
+from booley.specialists.specialist import Specialist
+from booley.mcp.base import EXIT_ERROR, McpToolResult
 
 
 class ProtocolReviewerSpecialist(Specialist):

@@ -7,7 +7,7 @@ from typing import ClassVar
 
 import pytest
 
-from booley.mcp_tools import job_records as jobrec
+from booley.runtime import job_records as jobrec
 
 
 @pytest.fixture()

@@ -143,8 +143,8 @@ class TestScopeJsonExclude:
 class TestWorktreeCreateScript:
     def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
         """Worktree slug must not escape the worktrees directory."""
-        from booley.paths import dev_support_dir
-        from booley.platform_paths import bash_bin
+        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.platform_paths import bash_bin
 
         result = subprocess.run(
             [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
@@ -167,8 +167,8 @@ class TestWorktreeCreateScript:
 
     def test_rejects_cwd_outside_git_root_before_writing(self, tmp_path: Path):
         """Hook JSON must not redirect state creation into an arbitrary directory."""
-        from booley.paths import dev_support_dir
-        from booley.platform_paths import bash_bin
+        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.platform_paths import bash_bin
 
         result = subprocess.run(
             [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
@@ -189,8 +189,8 @@ class TestWorktreeCreateScript:
 
     def test_rejects_traversing_configured_submodule(self, tmp_path: Path):
         """Project config must not steer host-side rm/tar outside the worktree."""
-        from booley.paths import dev_support_dir
-        from booley.platform_paths import bash_bin
+        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.platform_paths import bash_bin
 
         project_root = tmp_path / "repo"
         project_root.mkdir()
@@ -229,8 +229,8 @@ class TestWorktreeCreateScript:
 
     def test_rejects_configured_directory_that_is_not_gitlink(self, tmp_path: Path):
         """A safe-looking path must still be an exact mode-160000 Git entry."""
-        from booley.paths import dev_support_dir
-        from booley.platform_paths import bash_bin
+        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.platform_paths import bash_bin
 
         project_root = tmp_path / "repo"
         project_root.mkdir()
@@ -266,8 +266,8 @@ class TestWorktreeCreateScript:
 
     def test_accepts_exact_gitlink_with_space_in_path(self, tmp_path: Path):
         """Confinement must preserve legitimate nested submodule paths."""
-        from booley.paths import dev_support_dir
-        from booley.platform_paths import bash_bin
+        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.platform_paths import bash_bin
 
         dependency = tmp_path / "dependency"
         dependency.mkdir()
@@ -319,8 +319,8 @@ class TestWorktreeCreateScript:
 
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
         """Host setup must survive a parent config polluted with /work."""
-        from booley.paths import dev_support_dir
-        from booley.platform_paths import bash_bin
+        from booley.runtime.paths import dev_support_dir
+        from booley.runtime.platform_paths import bash_bin
 
         project_root = tmp_path / "repo"
         project_root.mkdir()
@@ -749,7 +749,7 @@ class TestWorkspaceRun:
 
     @pytest.mark.asyncio
     @patch(
-        "booley.shared_infra._load_rtl_config",
+        "booley.runtime.shared_infra._load_rtl_config",
         return_value={
             "flows": {
                 "sim": {"default_target": "sim"},

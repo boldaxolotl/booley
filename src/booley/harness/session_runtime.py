@@ -27,10 +27,10 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from booley.harness import auth_token
 from booley.harness import devcontainer as dc
 from booley.harness import interactive_docker as idk
-from booley.platform_paths import docker_mount_path
+from booley.runtime import auth_token
+from booley.runtime.platform_paths import docker_mount_path
 
 logger = logging.getLogger(__name__)
 

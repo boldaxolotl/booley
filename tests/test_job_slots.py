@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from booley import job_slots
-from booley.job_slots import (
+from booley.runtime import job_slots
+from booley.runtime.job_slots import (
     CLASS_HEAVY,
     CLASS_LIGHT,
     CLASS_TICKET,
@@ -405,7 +405,7 @@ def _race_worker(root_str: str, worker_id: int, rounds: int) -> None:
     import time as _time
     from pathlib import Path as _Path
 
-    from booley.job_slots import CLASS_HEAVY, SlotStore
+    from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
 
     root = _Path(root_str)
     store = SlotStore(root / "slots")
@@ -477,13 +477,13 @@ class TestSlotCaps:
 
 class TestJobsConfigParsing:
     def test_defaults_when_section_absent(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config({})
         assert caps == SlotCaps()
 
     def test_explicit_values(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config(
             {
@@ -498,7 +498,7 @@ class TestJobsConfigParsing:
         assert caps == SlotCaps(max_heavy=2, max_light=5, max_tickets=4, queue_max=16)
 
     def test_invalid_values_keep_defaults(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config(
             {
@@ -513,13 +513,13 @@ class TestJobsConfigParsing:
 
     def test_queue_max_zero_is_allowed(self):
         # queue_max=0 means "never queue, refuse at cap" — a legal posture.
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config({"jobs": {"queue_max": 0}})
         assert caps.queue_max == 0
 
     def test_non_table_section_uses_defaults(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         assert _parse_jobs_config({"jobs": "nope"}) == SlotCaps()
 
@@ -629,7 +629,7 @@ class TestSlotsDir:
     this path, so "deduping" the two would have gone green."""
 
     def test_is_project_scoped_and_dotless(self, tmp_path, monkeypatch):
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))

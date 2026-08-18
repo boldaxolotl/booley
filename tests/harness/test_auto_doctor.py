@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import auto_doctor, doctor, doctor_stamp
-from booley.project_dir import reset_cache
+from booley.runtime.project_dir import reset_cache
 
 
 @pytest.fixture(autouse=True)

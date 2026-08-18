@@ -306,8 +306,8 @@ class TestInitCriteriaState:
     def test_synthesis_recipe_frozen_into_criterion_params(self, tmp_path: Path):
         from unittest.mock import PropertyMock, patch
 
-        from booley import fusesoc_registry
         from booley.flows.synthesis_recipe import RECIPE_FINGERPRINT_PARAM
+        from booley.fusesoc import fusesoc_registry
         from booley.harness.models import TicketContext
         from booley.harness.setup.intake import _init_criteria_state
 
@@ -404,7 +404,7 @@ class TestInitCriteriaState:
 
 class TestCriteriaAcceptance:
     def test_all_mandatory_met_returns_review(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         state_path = tmp_path / "booley_state.json"
         state = DevelopmentState.load(state_path)
@@ -431,7 +431,7 @@ class TestCriteriaAcceptance:
         assert verdict.unmet_mandatory == []
 
     def test_unmet_mandatory_returns_failed(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         state_path = tmp_path / "booley_state.json"
         state = DevelopmentState.load(state_path)
@@ -452,14 +452,14 @@ class TestCriteriaAcceptance:
         assert "sim_pass_lite" in verdict.unmet_mandatory
 
     def test_missing_state_file_returns_failed(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         verdict = check_criteria_acceptance(tmp_path / "nonexistent.json")
         assert verdict.disposition == "failed"
         assert "not found" in verdict.blocked_reason
 
     def test_empty_criteria_returns_failed(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         state_path = tmp_path / "booley_state.json"
         state = DevelopmentState.load(state_path)
@@ -471,7 +471,7 @@ class TestCriteriaAcceptance:
         assert "no criteria" in verdict.blocked_reason
 
     def test_optional_unmet_still_passes(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         state_path = tmp_path / "booley_state.json"
         state = DevelopmentState.load(state_path)
@@ -498,7 +498,7 @@ class TestCriteriaAcceptance:
 
     def test_blocked_reason_returns_blocked(self, tmp_path: Path):
         """_blocked_reason criterion → disposition=blocked when mandatory criteria unmet."""
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         state_path = tmp_path / "booley_state.json"
         state = DevelopmentState.load(state_path)
@@ -526,7 +526,7 @@ class TestCriteriaAcceptance:
 
     def test_blocked_reason_excludes_from_mandatory_count(self, tmp_path: Path):
         """_blocked_reason should NOT inflate mandatory counts."""
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         state_path = tmp_path / "booley_state.json"
         state = DevelopmentState.load(state_path)
@@ -551,7 +551,7 @@ class TestCriteriaAcceptance:
         assert verdict.mandatory == 1
 
     def test_format_verdict_pass(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import (
+        from booley.ticket_board.criteria_acceptance import (
             CriteriaVerdict,
             format_criteria_verdict,
         )
@@ -568,7 +568,7 @@ class TestCriteriaAcceptance:
         assert "5/5" in text
 
     def test_format_verdict_fail(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import (
+        from booley.ticket_board.criteria_acceptance import (
             CriteriaVerdict,
             format_criteria_verdict,
         )
@@ -595,7 +595,7 @@ class TestCriteriaExpansionRoundTrip:
     """Verify the full YAML → expand → state-init → acceptance path."""
 
     def test_full_round_trip(self, tmp_path: Path):
-        from booley.harness.criteria_acceptance import check_criteria_acceptance
+        from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
         criteria_yaml = {
             "mandatory": {

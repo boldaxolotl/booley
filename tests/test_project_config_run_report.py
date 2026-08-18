@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from booley import project_config
+from booley.config import project_config
 from booley.harness.developer_prompt import _build_rules_section
 
 

@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from booley.harness._editor_config import VSCODE_EDITOR, ResolvedEditor
+from booley.config.editor import VSCODE_EDITOR, ResolvedEditor
 
 
 class TestVSCodeEditor:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from booley.harness.config import (
+from booley.config.settings import (
     _PROVIDER_TIER_MODELS,
     API_RETRY_BACKOFF_MULTIPLIER,
     API_RETRY_INITIAL_BACKOFF_S,
@@ -195,7 +195,7 @@ class TestParseSandboxConfig:
 # [interactive] config (ADR 0018)
 # ===========================================================================
 
-from booley.harness.config import (
+from booley.config.settings import (
     DEFAULT_DEVELOPER_ACTIVE_TIMEOUT_S,
     DEFAULT_DEVELOPER_WALL_TIMEOUT_S,
     DEFAULT_INTERACTIVE_IDLE_TIMEOUT_S,

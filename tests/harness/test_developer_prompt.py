@@ -14,7 +14,7 @@ from booley.harness.developer_prompt import (
     build_type_guidance_section,
     build_workflow_section,
 )
-from booley.mcp_tools.registry import McpToolInfo
+from booley.mcp.registry import McpToolInfo
 
 # ---------------------------------------------------------------------------
 # Fixtures

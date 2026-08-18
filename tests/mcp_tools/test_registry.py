@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.mcp_tools.registry import (
+from booley.mcp.registry import (
     SKIP_MODULES,
     McpToolInfo,
     _get_base_names,
@@ -34,7 +34,7 @@ def _write_endpoint_file(directory: Path, filename: str, content: str) -> Path:
 
 
 VALID_MCP_TOOL_SRC = """\
-    from booley.mcp_tools.base import McpTool
+    from booley.mcp.base import McpTool
 
     class RunSim(McpTool):
         name = "run_sim"
@@ -46,7 +46,7 @@ VALID_MCP_TOOL_SRC = """\
 """
 
 VALID_MCP_TOOL_CODE_MODIFYING = """\
-    from booley.mcp_tools.base import McpTool
+    from booley.mcp.base import McpTool
 
     class ApplyPatch(McpTool):
         name = "apply_patch"
@@ -66,7 +66,7 @@ FLOW_SRC = """\
 """
 
 SPECIALIST_SRC = """\
-    from booley.mcp_tools.specialist import Specialist
+    from booley.specialists.specialist import Specialist
 
     class DebugAgent(Specialist):
         name = "debug_agent"
@@ -79,14 +79,14 @@ NO_ENDPOINT_CLASS_SRC = """\
 """
 
 MISSING_NAME_SRC = """\
-    from booley.mcp_tools.base import McpTool
+    from booley.mcp.base import McpTool
 
     class Broken(McpTool):
         description = "I have no name"
 """
 
 MISSING_DESCRIPTION_SRC = """\
-    from booley.mcp_tools.base import McpTool
+    from booley.mcp.base import McpTool
 
     class Broken(McpTool):
         name = "orphan"
@@ -98,15 +98,15 @@ SYNTAX_ERROR_SRC = """\
 """
 
 ATTRIBUTE_BASE_SRC = """\
-    import booley.mcp_tools.base
+    import booley.mcp.base
 
-    class Fancy(booley.mcp_tools.base.McpTool):
+    class Fancy(booley.mcp.base.McpTool):
         name = "fancy"
         description = "Uses attribute-style base"
 """
 
 MULTIPLE_CLASSES_SRC = """\
-    from booley.mcp_tools.base import McpTool
+    from booley.mcp.base import McpTool
 
     class First(McpTool):
         name = "first_endpoint"
@@ -203,12 +203,12 @@ class TestGetBaseNames:
 class TestExtractMcpToolInfo:
     def test_valid_endpoint(self, tmp_path):
         p = _write_endpoint_file(tmp_path, "run_sim.py", VALID_MCP_TOOL_SRC)
-        info = extract_mcp_tool_info(p, builtin=True, package="mcp_tools")
+        info = extract_mcp_tool_info(p, builtin=True, package="mcp")
         assert info is not None
         assert info.name == "run_sim"
         assert info.description == "Run an RTL simulation"
         assert info.code_modifying is False
-        assert info.path == "mcp_tools/run_sim.py"
+        assert info.path == "mcp/run_sim.py"
 
     def test_code_modifying_endpoint(self, tmp_path):
         p = _write_endpoint_file(tmp_path, "apply_patch.py", VALID_MCP_TOOL_CODE_MODIFYING)
@@ -283,7 +283,7 @@ class TestScanDirectory:
     def test_discovers_valid_endpoints(self, tmp_path):
         _write_endpoint_file(tmp_path, "run_sim.py", VALID_MCP_TOOL_SRC)
         _write_endpoint_file(tmp_path, "lint.py", FLOW_SRC)
-        results = _scan_directory(tmp_path, {}, builtin=True, package="mcp_tools")
+        results = _scan_directory(tmp_path, {}, builtin=True, package="mcp")
         names = {t.name for t in results}
         assert names == {"lint_check", "run_sim"}
 
@@ -321,10 +321,10 @@ class TestScanDirectory:
         # Need a distinct endpoint name for the second file
         alt_src = VALID_MCP_TOOL_SRC.replace("run_sim", "alpha_sim")
         _write_endpoint_file(tmp_path, "a_endpoint.py", alt_src)
-        results = _scan_directory(tmp_path, {}, builtin=True, package="mcp_tools")
+        results = _scan_directory(tmp_path, {}, builtin=True, package="mcp")
         # a_endpoint.py comes before z_endpoint.py alphabetically
-        assert results[0].path == "mcp_tools/a_endpoint.py"
-        assert results[1].path == "mcp_tools/z_endpoint.py"
+        assert results[0].path == "mcp/a_endpoint.py"
+        assert results[1].path == "mcp/z_endpoint.py"
 
     def test_skips_non_endpoint_files(self, tmp_path):
         _write_endpoint_file(tmp_path, "helper.py", NO_ENDPOINT_CLASS_SRC)
@@ -346,7 +346,7 @@ class TestScanDirectory:
 class TestDiscoverMcpTools:
     def test_builtin_only(self, tmp_path):
         """Discover from a single builtin endpoints directory."""
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
         results = discover_mcp_tools(booley_src=tmp_path)
@@ -355,7 +355,7 @@ class TestDiscoverMcpTools:
 
     def test_builtin_plus_custom(self, tmp_path):
         """Both builtin and project-level endpoints are discovered."""
-        builtin_dir = tmp_path / "builtin" / "mcp_tools"
+        builtin_dir = tmp_path / "builtin" / "mcp"
         builtin_dir.mkdir(parents=True)
         custom_dir = tmp_path / "custom"
         custom_dir.mkdir()
@@ -370,7 +370,7 @@ class TestDiscoverMcpTools:
 
     def test_custom_dir_nonexistent_is_fine(self, tmp_path):
         """Non-existent project_mcp_tools_dir is silently ignored."""
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
         results = discover_mcp_tools(
@@ -380,20 +380,20 @@ class TestDiscoverMcpTools:
         assert len(results) == 1
 
     def test_custom_dir_none_is_fine(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
         results = discover_mcp_tools(booley_src=tmp_path, project_mcp_tools_dir=None)
         assert len(results) == 1
 
     def test_empty_builtin_dir(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         results = discover_mcp_tools(booley_src=tmp_path)
         assert results == []
 
     def test_endpoint_config_filtering(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
         _write_endpoint_file(endpoint_dir, "lint.py", FLOW_SRC)
@@ -405,21 +405,21 @@ class TestDiscoverMcpTools:
         assert results[0].name == "lint_check"
 
     def test_endpoint_config_none_defaults_empty(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
         results = discover_mcp_tools(booley_src=tmp_path, mcp_tool_config=None)
         assert len(results) == 1
 
     def test_builtin_mcp_tools_use_package_path(self, tmp_path):
-        endpoint_dir = tmp_path / "mcp_tools"
+        endpoint_dir = tmp_path / "mcp"
         endpoint_dir.mkdir()
         _write_endpoint_file(endpoint_dir, "sim.py", VALID_MCP_TOOL_SRC)
         results = discover_mcp_tools(booley_src=tmp_path)
-        assert results[0].path == "mcp_tools/sim.py"
+        assert results[0].path == "mcp/sim.py"
 
     def test_custom_mcp_tools_use_full_path(self, tmp_path):
-        builtin_dir = tmp_path / "builtin" / "mcp_tools"
+        builtin_dir = tmp_path / "builtin" / "mcp"
         builtin_dir.mkdir(parents=True)
         custom_dir = tmp_path / "custom"
         custom_dir.mkdir()
@@ -466,7 +466,7 @@ class TestSkipModules:
         Every non-infrastructure entry must exist AND actually parse as a endpoint
         module (i.e. it is a deliberately *hidden* endpoint, the set's one job).
         """
-        endpoint_dir = Path(__file__).resolve().parents[2] / "src" / "booley" / "mcp_tools"
+        endpoint_dir = Path(__file__).resolve().parents[2] / "src" / "booley" / "specialists"
         for mod in SKIP_MODULES - self._INFRA_ENTRIES:
             py_file = endpoint_dir / f"{mod}.py"
             assert py_file.is_file(), f"stale SKIP_MODULES entry: {mod} (no such module)"

@@ -1,7 +1,7 @@
 """Project-context path constants for the Yosys synthesis flow.
 
 Resolves the repository root and the RTL / synthesis-output directories from
-``booley.toml`` (via :mod:`booley.shared_infra`).  Extracted into its own leaf
+``booley.toml`` (via :mod:`booley.runtime.shared_infra`).  Extracted into its own leaf
 module so the discovery, subprocess, parsing, and coordinator layers share a
 single source of truth for these paths without importing back into
 ``syn_core`` (which would create a circular import).
@@ -18,7 +18,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR.parent))
 
-from booley.shared_infra import (
+from booley.runtime.shared_infra import (
     get_rtl_dir,
     get_syn_output_dir,
     resolve_project_root,

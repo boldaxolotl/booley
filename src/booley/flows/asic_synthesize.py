@@ -27,12 +27,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley import fusesoc_registry, job_slots
 from booley.core.boundary import BoundaryError, as_int, require_bool
-from booley.flow_names import config_section
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.platform_paths import posix_relpath
-from booley.timefmt import utc_now_rfc3339
+from booley.fusesoc import fusesoc_registry
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime import job_slots
+from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.flow_names import config_section
 from booley.yosys.syn_core import (
     FRONTEND_CHOICES,
     NAND2_AREA_UM2,
@@ -81,7 +82,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 def _load_flow_config(work_dir: Path) -> dict[str, Any]:
     """Read the ``[flows.synth]`` runtime-policy section."""
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir) or {}
     except Exception:  # noqa: BLE001 — best-effort config read; any failure degrades to empty knobs
@@ -781,7 +782,7 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     Returns ``None`` when there is nothing to warn about (or the fingerprint
     can't be computed — never let the guard itself break a run).
     """
-    from booley.fusesoc_registry import state_cores_dir
+    from booley.fusesoc.fusesoc_registry import state_cores_dir
 
     if not state_cores_dir(project_root).is_dir():
         return None
@@ -1532,7 +1533,7 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _run(self) -> McpToolResult:
         """Execute synthesis for all targets, optionally comparing to baseline."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         # Populated by _run_baseline_configs when a stealth-cores self-compare is
         # detected; read by _aggregate_results. Reset per run so a stale value

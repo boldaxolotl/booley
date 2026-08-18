@@ -19,7 +19,7 @@ def _load_notifications_config() -> dict:
     import sys as _sys
 
     _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from booley.project_dir import resolve_project_dir
+    from booley.runtime.project_dir import resolve_project_dir
 
     _proj = resolve_project_dir()
     _new = _proj / "booley.toml"

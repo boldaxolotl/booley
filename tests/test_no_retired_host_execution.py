@@ -1,10 +1,11 @@
-"""Negative architecture guards for ADR 0049 host-execution removal."""
+"""Negative architecture guards for retired compatibility surfaces."""
 
+import ast
 from pathlib import Path
 
 from booley.dev_support.criteria import eligible_eda_tool_criterion_families
-from booley.fusesoc_registry import TargetRef
-from booley.target_surface import flow_can_drive
+from booley.fusesoc.fusesoc_registry import TargetRef
+from booley.targets.target_surface import flow_can_drive
 
 
 def test_retired_host_execution_surfaces_are_absent() -> None:
@@ -17,10 +18,7 @@ def test_retired_host_execution_surfaces_are_absent() -> None:
     assert "host_mcp/templates" not in pyproject
 
     production = root / "src/booley"
-    forbidden_imports = (
-        "booley.host_mcp",
-        "from booley import venue",
-    )
+    forbidden_modules = ("booley.host_mcp", "booley.mcp_tools", "booley.tools")
     forbidden_symbols = (
         "CLASS_HOST",
         "max_host",
@@ -34,10 +32,37 @@ def test_retired_host_execution_surfaces_are_absent() -> None:
     )
     for path in production.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        for forbidden in forbidden_imports:
-            assert forbidden not in text, f"{forbidden!r} remains in {path}"
+        tree = ast.parse(text, filename=str(path))
+        imports = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        imports.update(
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level == 0
+        )
+        for forbidden in forbidden_modules:
+            assert not any(
+                module == forbidden or module.startswith(f"{forbidden}.") for module in imports
+            ), f"retired import {forbidden!r} remains in {path}"
         for forbidden in forbidden_symbols:
             assert forbidden not in text, f"{forbidden!r} remains in {path}"
+
+
+def test_retired_packages_and_flat_root_modules_are_absent() -> None:
+    root = Path(__file__).resolve().parents[1]
+    package = root / "src/booley"
+    retired_packages = ("host_mcp", "mcp_tools", "tools")
+    for name in retired_packages:
+        assert not list((package / name).glob("*.py")), f"retired package remains: booley.{name}"
+
+    root_modules = sorted(path.name for path in package.glob("*.py"))
+    assert root_modules == ["__init__.py"], (
+        f"booley package-root modules must live in a named subsystem package: {root_modules}"
+    )
 
 
 def test_unsupported_commercial_simulators_have_no_public_eligibility() -> None:

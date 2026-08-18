@@ -7,7 +7,7 @@
 //! moved to embedded docs (`bwave docs`) in Phase 3.
 
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Seek, Write};
+use std::io::{self, BufReader};
 use std::path::Path;
 use std::process;
 
@@ -18,13 +18,8 @@ use bwave::cache::{
     list_signals_from_cache, sample_at_from_cache, snapshot_from_cache, stats_from_cache,
     trace_from_cache, virtual_def_error_seen, wave_from_cache, ColumnCache,
 };
-use bwave::extract::Extractor;
-use bwave::format::{
-    is_edge_keyword, parse_radix_suffix, parse_verilog_literal, print_scope_tree, print_signal_tree,
-};
-use bwave::index::CycleIndex;
-use bwave::parser::{parse_header, parse_streaming_with_offsets};
-use bwave::signal::{common_scope_prefix, compile_patterns, match_signal};
+use bwave::format::{is_edge_keyword, parse_radix_suffix, parse_verilog_literal};
+use bwave::parser::parse_header;
 use bwave::ExtractConfig;
 
 // ===================================================================
@@ -195,7 +190,7 @@ struct BuildArgs {
 
 #[derive(Args, Debug)]
 struct ListArgs {
-    /// Path to .fst store (raw .vcd accepted only via --allow-vcd)
+    /// Path to an FST waveform store
     #[arg(value_name = "STORE_FILE")]
     bwave: String,
 
@@ -210,10 +205,6 @@ struct ListArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    /// Allow raw VCD input (legacy — for internal tests only)
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -235,10 +226,6 @@ struct SignalArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    /// Allow raw VCD input (legacy — for internal tests only)
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -290,9 +277,6 @@ struct ValueArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -338,9 +322,6 @@ struct FindArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -380,9 +361,6 @@ struct SampleArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -408,11 +386,6 @@ struct DiffArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    /// Accepted-but-ignored (diff strictly requires a built store). Hidden flag
-    /// kept for test-helper symmetry across query subcommands.
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -448,11 +421,6 @@ struct DistanceArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    /// Accepted-but-ignored (distance strictly requires a built store). Hidden flag
-    /// kept for test-helper symmetry across query subcommands.
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -469,9 +437,6 @@ struct StatsArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 #[derive(Args, Debug)]
@@ -489,9 +454,6 @@ struct StuckArgs {
 
     #[command(flatten)]
     global: GlobalOpts,
-
-    #[arg(long = "allow-vcd", hide = true)]
-    allow_vcd: bool,
 }
 
 // ===================================================================
@@ -571,9 +533,9 @@ fn reject_legacy_bwave(path: &str) {
     }
 }
 
-fn require_bwave(path: &str, allow_vcd: bool, cmd: &str) {
+fn require_bwave(path: &str, cmd: &str) {
     reject_legacy_bwave(path);
-    if !is_store_path(path) && !allow_vcd {
+    if !is_store_path(path) {
         eprintln!(
             "ERROR: `{}` requires a built waveform store (got: {})",
             cmd, path
@@ -581,70 +543,6 @@ fn require_bwave(path: &str, allow_vcd: bool, cmd: &str) {
         eprintln!("  Build one first:  bwave build {} -o trace.fst", path);
         process::exit(2);
     }
-}
-
-// ===================================================================
-//   list-signals (special: also accepts raw VCD via legacy --allow-vcd)
-// ===================================================================
-
-fn list_signals_from_vcd(vcd_path: &str, patterns: &[String], tree_only: bool) -> io::Result<()> {
-    let file = File::open(vcd_path).inspect_err(|e| {
-        eprintln!("ERROR: cannot open '{}': {}", vcd_path, e);
-    })?;
-    let mut reader = BufReader::with_capacity(256 * 1024, file);
-    let header = parse_header(&mut reader);
-
-    let matchers = match compile_patterns(patterns) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("ERROR: {}", e);
-            process::exit(2);
-        }
-    };
-
-    let matched: Vec<(String, u32, String)> = header
-        .signals
-        .iter()
-        .filter(|sig| match_signal(&sig.name, &matchers))
-        .map(|sig| (sig.name.clone(), sig.width, sig.var_type.clone()))
-        .collect();
-
-    let prefix = common_scope_prefix(
-        &matched
-            .iter()
-            .map(|(n, _, _)| n.clone())
-            .collect::<Vec<_>>(),
-    );
-
-    let mut stderr = BufWriter::new(io::stderr().lock());
-    if !prefix.is_empty() {
-        writeln!(stderr, "# scope: {}", &prefix[..prefix.len() - 1])?;
-    }
-
-    let stripped: Vec<(String, u32, String)> = if !prefix.is_empty() {
-        matched
-            .iter()
-            .map(|(n, w, vt)| (n[prefix.len()..].to_string(), *w, vt.clone()))
-            .collect()
-    } else {
-        matched.clone()
-    };
-
-    let mut stdout = BufWriter::new(io::stdout().lock());
-    if tree_only {
-        print_scope_tree(&stripped, &mut stdout)?;
-    } else {
-        print_signal_tree(&stripped, &mut stdout)?;
-    }
-    stdout.flush()?;
-
-    writeln!(
-        stderr,
-        "# {} signals — narrow with -s PATTERN or use --tree",
-        matched.len()
-    )?;
-    stderr.flush()?;
-    Ok(())
 }
 
 // ===================================================================
@@ -778,82 +676,6 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     }
 }
 
-/// VCD-input fallback (when --allow-vcd is set on signal/wave/etc.). Runs the
-/// streaming extractor instead of cache lookup.
-fn query_vcd(vcd_path: &str, mut cfg: ExtractConfig) {
-    const INDEX_INTERVAL: u64 = 10_000;
-    let vcd_file_path = Path::new(vcd_path);
-
-    let file = File::open(vcd_path).unwrap_or_else(|e| {
-        eprintln!("ERROR: cannot open '{}': {}", vcd_path, e);
-        process::exit(1);
-    });
-    let mut reader = BufReader::with_capacity(256 * 1024, file);
-    let header = parse_header(&mut reader);
-    let post_header_offset = reader.stream_position().unwrap_or(0);
-
-    // Streaming VCD path: we know the timescale at this point but not the
-    // clock period (detected during streaming). `c`/`t` tokens resolve
-    // trivially; physical-time tokens convert via the header timescale.
-    resolve_time_tokens_or_exit(&mut cfg, header.ticks_to_ns, 0);
-
-    let mut extractor = Extractor::new(cfg);
-    if let Err(e) = extractor.init_from_header(&header, &header.signals) {
-        eprintln!("ERROR: {}", e);
-        // Every init error is a query-vs-trace mismatch (pattern or trigger
-        // matched nothing, clock not found) — caller-input class, exit 2 to
-        // match the store path's total-miss contract. Real I/O failures
-        // (cannot open the VCD) exited 1 above, before init ran.
-        process::exit(2);
-    }
-
-    let mut base_offset = post_header_offset;
-    let mut used_index = false;
-    if let Some(target) = extractor.compute_seek_target() {
-        if let Some(index) = CycleIndex::read_from_file(vcd_file_path) {
-            if let Some(seek_info) = index.seek_for_cycle(target) {
-                if reader
-                    .seek(io::SeekFrom::Start(seek_info.byte_offset))
-                    .is_ok()
-                {
-                    extractor.resume_from_seek(
-                        seek_info.start_cycle,
-                        seek_info.clock_period_ticks,
-                        seek_info.first_rise_tick,
-                    );
-                    base_offset = seek_info.byte_offset;
-                    used_index = true;
-                    eprintln!(
-                        "# index: seeked to cycle {} (byte {})",
-                        seek_info.start_cycle, seek_info.byte_offset
-                    );
-                }
-            }
-        }
-    }
-    if !used_index {
-        extractor.enable_index_building(INDEX_INTERVAL);
-    }
-    let watched = extractor.watched_ids();
-    parse_streaming_with_offsets(&mut reader, &watched, &mut extractor, base_offset);
-
-    if !used_index {
-        extractor.write_index_if_ready(vcd_file_path);
-    }
-    extractor.finalize();
-}
-
-/// Single dispatch point used by every query subcommand. Picks the built
-/// store (.fst) vs raw VCD based on path suffix (with `--allow-vcd` opt-in
-/// for raw).
-fn dispatch_query(path: &str, cfg: ExtractConfig) {
-    if is_store_path(path) {
-        query_bwave(path, cfg);
-    } else {
-        query_vcd(path, cfg);
-    }
-}
-
 // ===================================================================
 //   Subcommand handlers
 // ===================================================================
@@ -862,27 +684,20 @@ fn run_list(args: ListArgs) {
     let g = args.global;
     let json_format = g.format == "json";
     let (patterns, _radixes) = split_patterns_and_radixes(&args.signals);
-    require_bwave(&args.bwave, args.allow_vcd, "bwave list");
-
-    if is_store_path(&args.bwave) {
-        let cache = match ColumnCache::load_from_file(Path::new(&args.bwave)) {
-            Some(c) => c,
-            None => {
-                eprintln!("ERROR: cannot load waveform store '{}'", args.bwave);
-                process::exit(1);
-            }
-        };
-        list_signals_from_cache(&cache, &patterns, args.tree, json_format, g.limit);
-    } else if let Err(e) = list_signals_from_vcd(&args.bwave, &patterns, args.tree) {
-        // JSON not yet wired through the VCD path; text-mode fallback only.
-        eprintln!("ERROR: {}", e);
-        process::exit(1);
-    }
+    require_bwave(&args.bwave, "bwave list");
+    let cache = match ColumnCache::load_from_file(Path::new(&args.bwave)) {
+        Some(c) => c,
+        None => {
+            eprintln!("ERROR: cannot load waveform store '{}'", args.bwave);
+            process::exit(1);
+        }
+    };
+    list_signals_from_cache(&cache, &patterns, args.tree, json_format, g.limit);
 }
 
 fn run_signal(args: SignalArgs) {
     let g = args.global;
-    require_bwave(&args.bwave, args.allow_vcd, "bwave signal");
+    require_bwave(&args.bwave, "bwave signal");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let cfg = ExtractConfig {
@@ -899,14 +714,13 @@ fn run_signal(args: SignalArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_wave(args: WaveArgs) {
     let g = args.global;
-    // wave strictly requires a built store (grid rendering is cache-only,
-    // like diff/distance) — no --allow-vcd escape hatch.
-    require_bwave(&args.bwave, false, "bwave wave");
+    // Grid rendering operates on the built store.
+    require_bwave(&args.bwave, "bwave wave");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let cfg = ExtractConfig {
@@ -925,12 +739,12 @@ fn run_wave(args: WaveArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_value(args: ValueArgs) {
     let g = args.global;
-    require_bwave(&args.bwave, args.allow_vcd, "bwave value");
+    require_bwave(&args.bwave, "bwave value");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let cfg = ExtractConfig {
@@ -950,12 +764,12 @@ fn run_value(args: ValueArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_find(args: FindArgs) {
     let g = args.global;
-    require_bwave(&args.bwave, args.allow_vcd, "bwave find");
+    require_bwave(&args.bwave, "bwave find");
 
     if args.first && args.last {
         eprintln!("ERROR: --first and --last are mutually exclusive");
@@ -1022,12 +836,12 @@ fn run_find(args: FindArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_sample(args: SampleArgs) {
     let g = args.global;
-    require_bwave(&args.bwave, args.allow_vcd, "bwave sample");
+    require_bwave(&args.bwave, "bwave sample");
 
     if args.first && args.last {
         eprintln!("ERROR: --first and --last are mutually exclusive");
@@ -1091,13 +905,13 @@ fn run_sample(args: SampleArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_diff(args: DiffArgs) {
     let g = args.global;
-    // diff strictly requires a built store (cache.rs assumption); allow_vcd ignored
-    require_bwave(&args.bwave, false, "bwave diff");
+    // Diff operates on the built store.
+    require_bwave(&args.bwave, "bwave diff");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let cfg = ExtractConfig {
@@ -1114,13 +928,13 @@ fn run_diff(args: DiffArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_distance(args: DistanceArgs) {
     let g = args.global;
-    // distance strictly requires a built store; allow_vcd ignored
-    require_bwave(&args.bwave, false, "bwave distance");
+    // Distance operates on the built store.
+    require_bwave(&args.bwave, "bwave distance");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let value = normalize_value(&args.value);
@@ -1148,12 +962,12 @@ fn run_distance(args: DistanceArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_stats(args: StatsArgs) {
     let g = args.global;
-    require_bwave(&args.bwave, args.allow_vcd, "bwave stats");
+    require_bwave(&args.bwave, "bwave stats");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
     let cfg = ExtractConfig {
@@ -1169,12 +983,12 @@ fn run_stats(args: StatsArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 fn run_stuck(args: StuckArgs) {
     let g = args.global;
-    require_bwave(&args.bwave, args.allow_vcd, "bwave stuck");
+    require_bwave(&args.bwave, "bwave stuck");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
     // `value` is an opaque filter — preserved verbatim like the old behavior
     // (cache.rs interprets empty string as "any value").
@@ -1192,7 +1006,7 @@ fn run_stuck(args: StuckArgs) {
         json_format: g.format == "json",
         ..Default::default()
     };
-    dispatch_query(&args.bwave, cfg);
+    query_bwave(&args.bwave, cfg);
 }
 
 // ===================================================================

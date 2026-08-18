@@ -1,10 +1,10 @@
-"""Tests for booley.pricing — the one model price / context-window table."""
+"""Tests for booley.config.pricing — the one model price / context-window table."""
 
 from __future__ import annotations
 
 import pytest
 
-from booley.pricing import (
+from booley.config.pricing import (
     MODEL_PRICING,
     context_limit,
     estimate_cost,

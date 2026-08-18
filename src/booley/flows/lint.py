@@ -22,13 +22,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley import fusesoc_registry
-from booley.flow_names import config_section
 from booley.flows import eda_parsers
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.platform_paths import posix_relpath
+from booley.fusesoc import fusesoc_registry
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.timefmt import utc_now_rfc3339
 from booley.sim.sim_result import write_run_log
-from booley.timefmt import utc_now_rfc3339
+from booley.targets.flow_names import config_section
 
 from . import artifacts
 from . import edam as edam_layer
@@ -295,7 +295,7 @@ def _lint_warnings_as_errors(work_dir: Path) -> bool:
     exits 0. Best-effort read; any config failure keeps the strict default.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
     except Exception:  # noqa: BLE001 — best-effort config read; strict default

@@ -228,7 +228,7 @@ class TestTimingArgs:
         from booley.yosys import run_yosys_syn as mod
 
         monkeypatch.setattr(
-            "booley.shared_infra._load_rtl_config",
+            "booley.runtime.shared_infra._load_rtl_config",
             lambda project_root=None: {
                 "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
             },
@@ -245,7 +245,7 @@ class TestTimingArgs:
         from booley.yosys import run_yosys_syn as mod
 
         monkeypatch.setattr(
-            "booley.shared_infra._load_rtl_config",
+            "booley.runtime.shared_infra._load_rtl_config",
             lambda project_root=None: {
                 "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
             },
@@ -519,7 +519,7 @@ class TestSourceProvenance:
 
 class TestDoRunLocked:
     @patch("booley.yosys.run_yosys_syn.do_run")
-    @patch("booley.eda_tool_lock.eda_tool_lock")
+    @patch("booley.runtime.eda_tool_lock.eda_tool_lock")
     def test_runs_do_run_once_under_lock(self, mock_lock, mock_do_run):
         from booley.yosys import run_yosys_syn as mod
 

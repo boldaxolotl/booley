@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.mcp_tools.base import EXIT_ERROR, McpTool, McpToolResult
+from booley.mcp.base import EXIT_ERROR, McpTool, McpToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ class BooleyFlow(McpTool):
         import sys as _sys
         import time
 
-        from booley.platform_paths import kill_process_tree, popen_new_group_kwargs
+        from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
 
         # python3 is not on PATH on Windows; use the running interpreter.
         if cmd and cmd[0] == "python3" and _sys.platform == "win32":

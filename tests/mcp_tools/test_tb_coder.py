@@ -15,9 +15,9 @@ import pytest
 from booley.dev_support.development_state import (
     DevelopmentState,
 )
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.mcp_tools.specialist import _git_head_sha, _read_commit_info
-from booley.mcp_tools.tb_coder import (
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.specialists.specialist import _git_head_sha, _read_commit_info
+from booley.specialists.tb_coder import (
     TbCoderSpecialist,
     _resolve_scope_files,
 )
@@ -255,7 +255,7 @@ class TestInstructionFile:
         endpoint = _make_endpoint(state_file, instruction_file, work_dir)
         endpoint.read_state()
         # Mock the agent call to avoid real invocation
-        with patch("booley.mcp_tools.tb_coder.Specialist._run") as mock_super:
+        with patch("booley.specialists.tb_coder.Specialist._run") as mock_super:
             mock_super.return_value = McpToolResult(exit_code=EXIT_SUCCESS)
             result = endpoint._run()
         assert result.exit_code != EXIT_ERROR
@@ -552,7 +552,7 @@ class TestBuildPrompt:
         endpoint = _make_endpoint(state_file, instruction_file, work_dir)
 
         with patch(
-            "booley.mcp_tools.tb_coder._category_guides", return_value={"tb": [str(missing)]}
+            "booley.specialists.tb_coder._category_guides", return_value={"tb": [str(missing)]}
         ):
             prompt = endpoint._build_prompt()
 
@@ -766,7 +766,7 @@ class TestModifiesCategory:
             scope="tb/*.sv",
         )
         endpoint.read_state()
-        with patch("booley.mcp_tools.tb_coder.Specialist._run") as mock_super:
+        with patch("booley.specialists.tb_coder.Specialist._run") as mock_super:
             mock_super.return_value = McpToolResult(exit_code=EXIT_SUCCESS)
             endpoint._run()
         assert endpoint.modifies_category == "tb"
@@ -804,7 +804,7 @@ class TestCriteriaInvalidation:
 
 
 class TestGitHelpers:
-    @patch("booley.mcp_tools.specialist.subprocess.run")
+    @patch("booley.specialists.specialist.subprocess.run")
     def test_read_commit_info_parses(self, mock_run):
         """Verify _read_commit_info extracts sha, subject, stats, and per-file stats."""
         mock_run.side_effect = [
@@ -824,7 +824,7 @@ class TestGitHelpers:
             "tb/mod_b_tb.sv": (12, 8),
         }
 
-    @patch("booley.mcp_tools.specialist.subprocess.run")
+    @patch("booley.specialists.specialist.subprocess.run")
     def test_git_head_sha(self, mock_run):
         mock_run.return_value = MagicMock(
             stdout="deadbeef1234567890\n",
@@ -864,7 +864,7 @@ class TestResolveScopeFiles:
 
 
 class TestRunIntegration:
-    @patch("booley.mcp_tools.tb_coder.Specialist._run")
+    @patch("booley.specialists.tb_coder.Specialist._run")
     def test_full_success_flow(
         self,
         mock_super_run,

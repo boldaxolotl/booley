@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.harness import doctor_stamp
-from booley.project_dir import resolve_project_dir
-from booley.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp, utc_now_rfc3339
+from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT, parse_timestamp, utc_now_rfc3339
 
 if TYPE_CHECKING:
     from booley.harness.doctor import DoctorRunResult
@@ -257,7 +257,7 @@ def _persist_report(
     transcript: str,
 ) -> dict[str, Any]:
     """Atomically persist one already-completed structured Doctor result."""
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     payload = {
         "schema": 1,

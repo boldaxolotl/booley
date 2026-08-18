@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.harness.models import AgentCallParams
-from booley.mcp_tools.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.mcp_tools.specialist import _DEFAULT_TIER_MODELS, TIER_RANK, VALID_TIERS, Specialist
+from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.specialists.specialist import _DEFAULT_TIER_MODELS, TIER_RANK, VALID_TIERS, Specialist
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -80,7 +80,7 @@ class TestDefaultTierModels:
     """
 
     def test_mirrors_the_claude_provider_tiers(self):
-        from booley.harness._backend_config import _PROVIDER_TIER_MODELS
+        from booley.config.agent import _PROVIDER_TIER_MODELS
 
         assert _PROVIDER_TIER_MODELS["claude"] == _DEFAULT_TIER_MODELS
 
@@ -167,7 +167,7 @@ class TestModelResolution:
         endpoint = HeavySpecialist()
         with patch.dict(os.environ, env):
             endpoint.parse_args([])
-        with patch.dict("sys.modules", {"booley.harness.config": None}):
+        with patch.dict("sys.modules", {"booley.config.settings": None}):
             model = endpoint._resolve_model()
         assert model == _DEFAULT_TIER_MODELS["heavy"]
 
@@ -177,7 +177,7 @@ class TestModelResolution:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             endpoint.parse_args([])
-        with patch.dict("sys.modules", {"booley.harness.config": None}):
+        with patch.dict("sys.modules", {"booley.config.settings": None}):
             model = endpoint._resolve_model()
         assert model == _DEFAULT_TIER_MODELS["standard"]
 
@@ -187,7 +187,7 @@ class TestModelResolution:
         endpoint = ReviewSpecialist()
         with patch.dict(os.environ, env):
             endpoint.parse_args(["--model", "heavy"])
-        with patch.dict("sys.modules", {"booley.harness.config": None}):
+        with patch.dict("sys.modules", {"booley.config.settings": None}):
             model = endpoint._resolve_model()
         assert model == _DEFAULT_TIER_MODELS["heavy"]
 
@@ -300,7 +300,7 @@ class TestSessionPersistence:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """No ticket AND no project on disk — nowhere to persist, so None."""
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)

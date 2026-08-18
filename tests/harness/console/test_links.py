@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.harness._editor_config import VSCODE_EDITOR, ResolvedEditor
+from booley.config.editor import VSCODE_EDITOR, ResolvedEditor
 from booley.harness.console.links import (
     LinkContext,
     LinkTarget,

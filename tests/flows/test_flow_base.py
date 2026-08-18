@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.flows.base import BooleyFlow, SubprocessResult
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:

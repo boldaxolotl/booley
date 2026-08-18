@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import nangate_pdk
-from booley.paths import docker_data_dir
+from booley.runtime.paths import docker_data_dir
 
 
 def _item(source: str, destination: str, payload: bytes) -> nangate_pdk.PinnedFile:

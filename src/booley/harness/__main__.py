@@ -73,7 +73,7 @@ def _parse_args() -> argparse.Namespace:
 def _stamp_developer_pid() -> None:
     """Publish developer PID for orphan detection by child processes."""
     try:
-        from booley.project_config import ENV_PREFIX as _proj_env
+        from booley.config.project_config import ENV_PREFIX as _proj_env
 
         _orch_env = f"{_proj_env}_DEVELOPER_PID"
     except Exception:  # noqa: BLE001 — optional import may fail; fall back to the default env-var name

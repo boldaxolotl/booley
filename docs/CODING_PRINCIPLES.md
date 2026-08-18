@@ -108,5 +108,5 @@ and fractional seconds, but new persisted values use the canonical form.
 
 Human-visible dates use uppercase English three-letter months regardless of
 process locale: `10 AUG 2026`. Combined timestamps use the user's local time
-as `HH:MM[:SS] · DD MMM YYYY`. Use `booley.timefmt`; do not hand-roll another
+as `HH:MM[:SS] · DD MMM YYYY`. Use `booley.runtime.timefmt`; do not hand-roll another
 format string.

@@ -12,8 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import auth_token, session_runtime
 from booley.harness import booley as tlr
+from booley.harness import session_runtime
+from booley.runtime import auth_token
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
 _API_KEY = "sk-proj-codex-abcdef123456"  # codex: API key (no setup-token exists)

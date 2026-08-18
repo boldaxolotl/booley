@@ -23,8 +23,8 @@ from typing import ClassVar
 import pytest
 
 import booley
-from booley import fusesoc_registry
-from booley.harness import config as harness_config
+from booley.config import settings as harness_config
+from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
 
 
@@ -90,7 +90,7 @@ def _mk_audit(root: Path, booley_toml: dict | None = None) -> doctor.ProjectAudi
 
 class TestAgentBackendHealth:
     def _patch_backend(self, monkeypatch, backend) -> None:
-        # doctor imports these lazily via `from booley.harness.config import
+        # doctor imports these lazily via `from booley.config.settings import
         # ...` at call time, so patching the config module attrs intercepts it.
         monkeypatch.setattr(harness_config, "load_models_config", lambda _root: None)
         monkeypatch.setattr(

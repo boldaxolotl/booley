@@ -19,7 +19,7 @@ from importlib import resources
 from pathlib import Path
 from typing import BinaryIO
 
-from booley.harness.auth_token import config_dir
+from booley.runtime.auth_token import config_dir
 
 REVISION = "a008522d88b669ac4c985609533cf5a3d2649222"
 CONTAINER_ROOT = "/opt/pdk"

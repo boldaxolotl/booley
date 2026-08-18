@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from booley.heartbeat import Heartbeat
+from booley.runtime.heartbeat import Heartbeat
 from booley.yosys.syn_config import SYN_DIR
 from booley.yosys.synthesis_watchdog import SynthesisWatchdog
 

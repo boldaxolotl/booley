@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from booley.harness.prompt_artifacts import write_prompt_artifacts
+from booley.runtime.prompt_artifacts import write_prompt_artifacts
 
 
 def test_write_prompt_artifacts_json_and_markdown(tmp_path):

@@ -450,7 +450,7 @@ class TestAppExtension:
         for app in dc.SUPPORTED_APPS:
             spec = dc.build_devcontainer_spec(app)
             assert spec["postAttachCommand"] == dc.post_attach_command()
-            assert "booley.incontainer_vaporview" in spec["postAttachCommand"]
+            assert "booley.runtime.incontainer_vaporview" in spec["postAttachCommand"]
 
     def test_extension_kind_pin_stays_agent_only(self):
         # VaporView's own manifest declares extensionKind ["workspace"] — it
@@ -486,7 +486,7 @@ class TestAuthMount:
         spec = dc.build_devcontainer_spec(
             dc.APP_CLAUDE,
             auth_token_source="/home/u/.claude/.credentials.json",
-            mcp_start_command="python -m booley.incontainer_register",
+            mcp_start_command="python -m booley.runtime.incontainer_register",
         )
         pc = spec["postCreateCommand"]
         assert f"cp {dc.AGENT_HOME}/.claude-creds-seed.json" in pc
@@ -745,7 +745,7 @@ class TestSpecStateIsPersisted:
 
 class TestConfigSeed:
     _SRC = "/home/u/.claude.json"
-    _MCP = "python -m booley.incontainer_register"
+    _MCP = "python -m booley.runtime.incontainer_register"
 
     def test_seed_mounted_readonly_at_sidecar(self):
         spec = dc.build_devcontainer_spec(dc.APP_CLAUDE, config_seed_source=self._SRC)
@@ -832,10 +832,10 @@ class TestMcpStartCommand:
         # postStartCommand repeats it on resume/rebuild.
         spec = dc.build_devcontainer_spec(
             dc.APP_NONE,
-            mcp_start_command="python -m booley.incontainer_register",
+            mcp_start_command="python -m booley.runtime.incontainer_register",
         )
-        assert spec["postCreateCommand"] == "python -m booley.incontainer_register"
-        assert spec["postStartCommand"] == "python -m booley.incontainer_register"
+        assert spec["postCreateCommand"] == "python -m booley.runtime.incontainer_register"
+        assert spec["postStartCommand"] == "python -m booley.runtime.incontainer_register"
 
     def test_registration_hooks_omitted_by_default(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
@@ -845,7 +845,7 @@ class TestMcpStartCommand:
     def test_post_start_command_runs_registrar(self):
         # ADR 0023: the registrar starts the loopback HTTP server and writes
         # the URL registration — re-run on every container start incl. resume.
-        assert dc.mcp_post_start_command() == "python -m booley.incontainer_register"
+        assert dc.mcp_post_start_command() == "python -m booley.runtime.incontainer_register"
 
 
 # ===========================================================================

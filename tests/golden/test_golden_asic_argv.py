@@ -29,9 +29,9 @@ from unittest.mock import patch
 
 import pytest
 
-from booley import fusesoc_registry
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.asic_synthesize import AsicSynthesizeFlow
+from booley.fusesoc import fusesoc_registry
 from tests.golden.conftest import assert_matches_golden
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Tests for booley.paths — package data resolution."""
+"""Tests for booley.runtime.paths — package data resolution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from booley import paths
+from booley.runtime import paths
 
 
 class TestPackageDataDir:
@@ -22,7 +22,7 @@ class TestPackageDataDir:
         shadow.mkdir(parents=True)
         real = Path(paths.__file__).resolve().parent / "data"
         if (real / "refs").is_dir():
-            with patch("booley.paths.files") as mock_files:
+            with patch("booley.runtime.paths.files") as mock_files:
                 mock_files.return_value.joinpath.return_value = shadow
                 result = paths.package_data_dir()
                 assert (result / "refs").is_dir() or result == shadow

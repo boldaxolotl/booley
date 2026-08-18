@@ -34,9 +34,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.harness import auth_token
-from booley.harness.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
 from booley.harness.init_common import banner, err, info, ok, warn
+from booley.runtime import auth_token
+from booley.runtime.auth_token import APP_CLAUDE, APP_CODEX, AppCredential
 
 # Where each app's rotation-free credential comes from, in words.
 _ACQUIRE_HINT = {

@@ -7,7 +7,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from booley.timefmt import format_human_datetime, utc_now_rfc3339
+from booley.runtime.timefmt import format_human_datetime, utc_now_rfc3339
 
 from .colors import bold_red, yellow
 

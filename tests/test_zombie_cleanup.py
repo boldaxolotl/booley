@@ -14,13 +14,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 class TestIsInsideDocker:
     def test_returns_bool(self):
-        from booley.zombie_cleanup import _is_inside_docker
+        from booley.runtime.zombie_cleanup import _is_inside_docker
 
         assert isinstance(_is_inside_docker(), bool)
 
     def test_false_on_host(self):
         """On a normal dev machine, should return False."""
-        from booley.zombie_cleanup import _is_inside_docker
+        from booley.runtime.zombie_cleanup import _is_inside_docker
 
         # This test runs on the host, not in Docker
         assert not _is_inside_docker()
@@ -29,12 +29,12 @@ class TestIsInsideDocker:
 class TestKillZombieFlowProcessesDockerGuard:
     def test_skips_in_docker(self):
         """Zombie cleanup must be a no-op inside Docker."""
-        from booley.zombie_cleanup import kill_zombie_flow_processes
+        from booley.runtime.zombie_cleanup import kill_zombie_flow_processes
 
         with (
-            patch("booley.zombie_cleanup._is_inside_docker", return_value=True),
-            patch("booley.zombie_cleanup._kill_zombies_unix") as mock_unix,
-            patch("booley.zombie_cleanup._kill_zombies_windows") as mock_win,
+            patch("booley.runtime.zombie_cleanup._is_inside_docker", return_value=True),
+            patch("booley.runtime.zombie_cleanup._kill_zombies_unix") as mock_unix,
+            patch("booley.runtime.zombie_cleanup._kill_zombies_windows") as mock_win,
         ):
             kill_zombie_flow_processes("sim")
             mock_unix.assert_not_called()
@@ -44,19 +44,19 @@ class TestKillZombieFlowProcessesDockerGuard:
 @pytest.mark.skipif(sys.platform == "win32", reason="Unix-only")
 class TestAncestorPids:
     def test_includes_own_pid(self):
-        from booley.zombie_cleanup import _ancestor_pids
+        from booley.runtime.zombie_cleanup import _ancestor_pids
 
         ancestors = _ancestor_pids()
         assert os.getpid() in ancestors
 
     def test_includes_pid_1(self):
-        from booley.zombie_cleanup import _ancestor_pids
+        from booley.runtime.zombie_cleanup import _ancestor_pids
 
         ancestors = _ancestor_pids()
         assert 1 in ancestors
 
     def test_includes_parent(self):
-        from booley.zombie_cleanup import _ancestor_pids
+        from booley.runtime.zombie_cleanup import _ancestor_pids
 
         ancestors = _ancestor_pids()
         assert os.getppid() in ancestors
@@ -68,7 +68,7 @@ class TestZombieCleanupSafety:
         """pgrep -f can match parent processes whose command line contains
         script names (e.g., Claude CLI's -p prompt). The zombie killer
         must skip all ancestor PIDs."""
-        from booley.zombie_cleanup import _kill_zombies_unix
+        from booley.runtime.zombie_cleanup import _kill_zombies_unix
 
         my_pid = os.getpid()
         parent_pid = os.getppid()
@@ -77,17 +77,20 @@ class TestZombieCleanupSafety:
         fake_zombie_pid = 99999
         pgrep_output = f"{parent_pid}\n{my_pid}\n{fake_zombie_pid}\n"
 
-        # _kill_zombies_unix lives in booley.zombie_cleanup and resolves these
+        # _kill_zombies_unix lives in booley.runtime.zombie_cleanup and resolves these
         # names in that module's namespace; project_config only re-exports the
         # function, so patches must target zombie_cleanup.* to take effect.
         with (
-            patch("booley.zombie_cleanup.subprocess.run") as mock_run,
-            patch("booley.zombie_cleanup.os.kill") as mock_kill,
-            patch("booley.zombie_cleanup._ancestor_pids", return_value={1, parent_pid, my_pid}),
+            patch("booley.runtime.zombie_cleanup.subprocess.run") as mock_run,
+            patch("booley.runtime.zombie_cleanup.os.kill") as mock_kill,
+            patch(
+                "booley.runtime.zombie_cleanup._ancestor_pids",
+                return_value={1, parent_pid, my_pid},
+            ),
             # Scoping is covered separately; here every match is "ours" so the
             # ancestor guard is the only thing under test.
-            patch("booley.zombie_cleanup._pid_in_scope", return_value=True),
-            patch("booley.zombie_cleanup._descendant_pids", return_value=[]),
+            patch("booley.runtime.zombie_cleanup._pid_in_scope", return_value=True),
+            patch("booley.runtime.zombie_cleanup._descendant_pids", return_value=[]),
         ):
             # pkill calls return ok, pgrep returns our fake PIDs
             mock_run.return_value = MagicMock(
@@ -108,7 +111,7 @@ class TestProcStatParsing:
     """A ') ' inside comm must not derail the ppid parse."""
 
     def test_plain_comm(self):
-        from booley.zombie_cleanup import _parse_ppid
+        from booley.runtime.zombie_cleanup import _parse_ppid
 
         assert _parse_ppid("42 (bash) S 7 42 42 0 -1 4194304 100") == 7
 
@@ -119,12 +122,12 @@ class TestProcStatParsing:
         truncated ancestor chain — the set that keeps the reaper from killing
         its own caller.
         """
-        from booley.zombie_cleanup import _parse_ppid
+        from booley.runtime.zombie_cleanup import _parse_ppid
 
         assert _parse_ppid("42 (weird) name) S 7 42 42 0 -1 4194304 100") == 7
 
     def test_garbage_is_none_not_an_exception(self):
-        from booley.zombie_cleanup import _parse_ppid
+        from booley.runtime.zombie_cleanup import _parse_ppid
 
         assert _parse_ppid("not a stat line") is None
         assert _parse_ppid("") is None
@@ -141,7 +144,7 @@ class TestKillScoping:
     """
 
     def test_own_process_is_in_scope(self):
-        from booley.zombie_cleanup import _pid_in_scope, _scope_roots
+        from booley.runtime.zombie_cleanup import _pid_in_scope, _scope_roots
 
         # pytest runs from the repo root, so our own cwd is inside the scope.
         assert _pid_in_scope(os.getpid(), _scope_roots()) is True
@@ -149,7 +152,7 @@ class TestKillScoping:
     def test_process_outside_the_project_is_not_in_scope(self, tmp_path: Path):
         import subprocess
 
-        from booley.zombie_cleanup import _pid_in_scope
+        from booley.runtime.zombie_cleanup import _pid_in_scope
 
         proc = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(30)"],
@@ -162,7 +165,7 @@ class TestKillScoping:
             proc.wait(timeout=10)
 
     def test_unprovable_scope_means_not_ours(self):
-        from booley.zombie_cleanup import _pid_in_scope
+        from booley.runtime.zombie_cleanup import _pid_in_scope
 
         # A pid that does not exist can never be shown to be ours.
         assert _pid_in_scope(999_999, [Path("/")]) is False
@@ -171,15 +174,15 @@ class TestKillScoping:
 
     def test_out_of_scope_match_is_never_killed(self):
         """The cross-project scenario: matched, alive, and NOT ours."""
-        from booley.zombie_cleanup import _kill_zombies_unix
+        from booley.runtime.zombie_cleanup import _kill_zombies_unix
 
         other_project_pid = 99999
         with (
-            patch("booley.zombie_cleanup.subprocess.run") as mock_run,
-            patch("booley.zombie_cleanup.os.kill") as mock_kill,
-            patch("booley.zombie_cleanup._ancestor_pids", return_value={1}),
-            patch("booley.zombie_cleanup._pid_in_scope", return_value=False),
-            patch("booley.zombie_cleanup._descendant_pids") as mock_desc,
+            patch("booley.runtime.zombie_cleanup.subprocess.run") as mock_run,
+            patch("booley.runtime.zombie_cleanup.os.kill") as mock_kill,
+            patch("booley.runtime.zombie_cleanup._ancestor_pids", return_value={1}),
+            patch("booley.runtime.zombie_cleanup._pid_in_scope", return_value=False),
+            patch("booley.runtime.zombie_cleanup._descendant_pids") as mock_desc,
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout=f"{other_project_pid}\n")
             _kill_zombies_unix("sim")
@@ -193,7 +196,7 @@ class TestSimMarkers:
     """F-13: the run-halves ship as `python3 -m booley.sim.<name>`."""
 
     def test_module_form_is_matched(self):
-        from booley.zombie_cleanup import _SIM_SCRIPT_MARKERS
+        from booley.runtime.zombie_cleanup import _SIM_SCRIPT_MARKERS
 
         # The cmdline of a live run-half is
         #   python3 -m booley.sim.verilator_run --bin-dir ...
@@ -203,7 +206,7 @@ class TestSimMarkers:
         assert any(m in cmdline for m in _SIM_SCRIPT_MARKERS)
 
     def test_script_form_still_matched(self):
-        from booley.zombie_cleanup import _SIM_SCRIPT_MARKERS
+        from booley.runtime.zombie_cleanup import _SIM_SCRIPT_MARKERS
 
         assert any(m in "python3 /x/verilator_run.py --top tb" for m in _SIM_SCRIPT_MARKERS)
 
@@ -220,7 +223,7 @@ class TestDescendantPids:
         import textwrap
         import time
 
-        from booley.zombie_cleanup import _descendant_pids
+        from booley.runtime.zombie_cleanup import _descendant_pids
 
         src = textwrap.dedent(
             """
@@ -247,6 +250,6 @@ class TestDescendantPids:
             proc.wait(timeout=10)
 
     def test_no_descendants_is_empty(self):
-        from booley.zombie_cleanup import _descendant_pids
+        from booley.runtime.zombie_cleanup import _descendant_pids
 
         assert _descendant_pids(999_999) == []

@@ -28,8 +28,8 @@ from booley.harness.build_stamp import (
     resolve_source_updated_at,
 )
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
-from booley.paths import docker_data_dir
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.paths import docker_data_dir
+from booley.runtime.timefmt import utc_now_rfc3339
 
 DOCKER_IMAGE = "booley-sandbox"
 GHCR_IMAGE = "ghcr.io/boldaxolotl/booley-sandbox"

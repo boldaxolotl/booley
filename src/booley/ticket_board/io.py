@@ -106,7 +106,7 @@ class TicketIO:
     def _resolve_developer_pid():
         """Resolve the PID to stamp in ticket.lock (developer or self)."""
         try:
-            from booley.project_config import ENV_PREFIX as _proj_env
+            from booley.config.project_config import ENV_PREFIX as _proj_env
 
             _orch_env = f"{_proj_env}_DEVELOPER_PID"
         except (ImportError, AttributeError):

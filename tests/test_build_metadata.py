@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from booley import __version__, build_metadata
+from booley import __version__
+from booley.runtime import build_metadata
 
 
 def test_status_line_uses_baked_image_metadata(monkeypatch):

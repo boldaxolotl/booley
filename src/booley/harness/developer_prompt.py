@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from booley.dev_support.criteria import CriterionDef
-    from booley.mcp_tools.registry import McpToolInfo
+    from booley.mcp.registry import McpToolInfo
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +311,7 @@ def _get_criterion_endpoint_map(
             load_project_criteria,
             merge_criteria_defs,
         )
-        from booley.mcp_tools.registry import build_criterion_endpoint_map, discover_mcp_tools
+        from booley.mcp.registry import build_criterion_endpoint_map, discover_mcp_tools
 
         base_defs = load_base_criteria()
         project_defs: list[CriterionDef] = []
@@ -698,7 +698,7 @@ def build_developer_prompt(
     """
     mcp_tools = ctx.mcp_tools
     if mcp_tools is None:
-        from booley.mcp_tools.registry import discover_mcp_tools
+        from booley.mcp.registry import discover_mcp_tools
 
         mcp_tools = discover_mcp_tools(
             booley_src=ctx.booley_src,

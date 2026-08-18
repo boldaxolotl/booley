@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.dev_support.validate_commit_msg import validate_message
-from booley.filesystem_utils import copy_booley_tree, safe_rmtree
-from booley.paths import dev_support_dir
-from booley.platform_paths import bash_bin
+from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
+from booley.runtime.git import add_git_excludes, git_run
+from booley.runtime.paths import dev_support_dir
+from booley.runtime.platform_paths import bash_bin
 
-from ..git_utils import add_git_excludes, git_run
 from ..models import StepResult, TicketContext
 from ..worktree_health import check_worktree_health
 from .worktree_lock_gc import _prune_stale_worktree_locks
@@ -642,7 +642,7 @@ def _verify_project_paths(
     """Run path checks required by the Booley Flows this Ticket uses."""
     if needs_synth and synth_flow_enabled:
         try:
-            from booley.shared_infra import get_syn_output_dir
+            from booley.runtime.shared_infra import get_syn_output_dir
 
             syn_dir = get_syn_output_dir(worktree_path)
         except Exception:  # noqa: BLE001 — fall back to the conventional syn output dir when lookup fails

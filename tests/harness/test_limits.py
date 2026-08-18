@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from booley.harness._limits import (
+from booley.config.limits import (
     HARD_MAX_COMPILE_RETRIES,
     HARD_MAX_DEBUG_ROUNDS,
     HARD_MAX_MUTATION_ITERATIONS,

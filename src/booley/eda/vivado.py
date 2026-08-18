@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.paths import package_data_dir
+from booley.runtime.paths import package_data_dir
 
 KIND = "vivado"
 POLICY_REVISION = 1

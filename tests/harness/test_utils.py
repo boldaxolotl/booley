@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.harness.git_utils import (
+from booley.runtime.git import (
     commit_scope,
     expand_scope_globs,
     is_scope_unknown,
@@ -22,7 +22,7 @@ from booley.harness.git_utils import (
 
 
 class TestCommitScope:
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_with_explicit_scope(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         commit_scope(Path("/wt"), ["rtl/foo.sv", "tb/bar.sv"], "fix: stuff")
@@ -32,14 +32,14 @@ class TestCommitScope:
         assert "rtl/foo.sv" in add_args
         assert "tb/bar.sv" in add_args
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_empty_scope_skips_commit(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         commit_scope(Path("/wt"), [], "wip commit")
         # No subprocess calls -- empty scope detected before git operations
         assert mock_run.call_count == 0
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_commit_scope_add_and_commit(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         commit_scope(
@@ -50,7 +50,7 @@ class TestCommitScope:
         # add + diff --cached (scope check) + commit == 3 subprocess calls
         assert mock_run.call_count == 3
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_out_of_scope_staged_files_raises(self, mock_run):
         """Agent used raw 'git add' on files outside ticket scope → BlockingError."""
         from booley.harness.blocking import BlockingError
@@ -73,7 +73,7 @@ class TestCommitScope:
         with pytest.raises(BlockingError, match="Out-of-scope"):
             commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_out_of_scope_staged_deletion_raises(self, mock_run):
         """Out-of-scope staged deletions are also scope violations."""
         from booley.harness.blocking import BlockingError
@@ -94,7 +94,7 @@ class TestCommitScope:
         with pytest.raises(BlockingError, match="Out-of-scope"):
             commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_in_scope_staged_files_pass(self, mock_run):
         """All staged files within scope → commit proceeds normally."""
 
@@ -113,7 +113,7 @@ class TestCommitScope:
         # Should not raise
         commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_unknown_scope_skips_staged_check(self, mock_run):
         """Wildcard scope skips the out-of-scope check."""
         mock_run.return_value = subprocess.CompletedProcess(

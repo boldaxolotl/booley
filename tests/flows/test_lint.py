@@ -19,7 +19,7 @@ from booley.flows.lint import (
     parse_verible_warnings,
     parse_warnings,
 )
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     def _lenient(target_arg, project_root):
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
@@ -84,7 +84,7 @@ def _stub_resolved(eda_tool: str | None = "verilator") -> object:
     pair the command with this stub. Empty toplevel/files skip the coverage
     checks.
     """
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     return fusesoc_registry.ResolvedTarget(
         name="stub",
@@ -145,7 +145,7 @@ class TestLintResolution:
         state_file: Path,
     ):
         """Booley resolves the Target through FuseSoC, then `make -C <relpath>`."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = self._flow(tmp_path, state_file)
         # FuseSoC lays the build dir at <build_root>/<name>/<target>/; parse_edam
@@ -205,7 +205,7 @@ class TestLintResolution:
 
     def test_setup_failure_propagates(self, tmp_path: Path, state_file: Path):
         """A FuseSoC resolution failure surfaces (caller records a Flow error)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = self._flow(tmp_path, state_file)
         with (
@@ -230,7 +230,7 @@ class TestLintResolution:
         import shutil
         import sys
 
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         work_dir = tmp_path / "proj"
         (work_dir / "rtl").mkdir(parents=True)
@@ -438,7 +438,7 @@ class TestDryRun:
         The preview is sourced from a cheap ``.core`` YAML read; patching
         ``resolve_target`` to fail proves dry-run never invokes fusesoc.
         """
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         (tmp_path / "lint.core").write_text(
             "CAPI=2:\nname: ::lint_demo:0\ntargets:\n  lite:\n    flow: lint\n"
@@ -1446,7 +1446,7 @@ class TestVeribleTargets:
     ):
         """A3: a Verible Target's --dry-run shows the same
         ``fusesoc run --setup && make`` preview shape, never resolving."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         (tmp_path / "style_demo.core").write_text(_VERIBLE_CORE_TEXT, encoding="utf-8")
         flow = LintFlow()
@@ -1624,8 +1624,8 @@ class TestLintObservability:
         design was reached — and the lint make never runs. Upgraded from the
         earlier loud-WARN, matching the ADR 0026 doctor hard-fail spirit.
         """
-        from booley import fusesoc_registry
-        from booley.fusesoc_registry import ResolvedFile
+        from booley.fusesoc import fusesoc_registry
+        from booley.fusesoc.fusesoc_registry import ResolvedFile
 
         (tmp_path / "other.sv").write_text("module other; endmodule\n", encoding="utf-8")
         resolved = fusesoc_registry.ResolvedTarget(
@@ -1666,8 +1666,8 @@ class TestLintObservability:
         tmp_path: Path,
         capsys,
     ):
-        from booley import fusesoc_registry
-        from booley.fusesoc_registry import ResolvedFile
+        from booley.fusesoc import fusesoc_registry
+        from booley.fusesoc.fusesoc_registry import ResolvedFile
 
         (tmp_path / "top.sv").write_text("module design_top; endmodule\n", encoding="utf-8")
         resolved = fusesoc_registry.ResolvedTarget(

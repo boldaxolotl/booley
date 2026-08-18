@@ -116,7 +116,7 @@ class TestAllowedTypesConsistency:
         assert _auto_format_commit_message(msg) == msg
 
     def test_specialist_guidance_lists_every_allowed_type(self):
-        from booley.mcp_tools.specialist import Specialist
+        from booley.specialists.specialist import Specialist
 
         for t in ALLOWED_TYPES:
             assert t in Specialist.COMMIT_MSG_GUIDANCE, (
@@ -501,7 +501,7 @@ class TestVendoredStandaloneImport:
     def _vendor(dst, *, include_runner: bool) -> None:
         import shutil
 
-        from booley.paths import dev_support_dir
+        from booley.runtime.paths import dev_support_dir
 
         src = dev_support_dir()
         core = src.parent / "core"

@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.harness.blocking import BlockingError
-from booley.harness.git_utils import (
+from booley.runtime.git import (
     BOOLEY_EXCLUDE_HEADER,
     _git_common_dir,
     _has_glob_chars,
@@ -256,7 +256,7 @@ class TestCommitScopeIntegration:
         lock_path.write_text("", encoding="utf-8")
 
         with (
-            patch("booley.harness.git_utils._git_process_owns_worktree", return_value=True),
+            patch("booley.runtime.git._git_process_owns_worktree", return_value=True),
             pytest.raises(BlockingError, match="git add failed"),
         ):
             commit_scope(wt, ["new.sv"], "feat: keep busy lock")

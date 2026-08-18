@@ -38,7 +38,7 @@ from pathlib import Path
 
 from booley.bwave.contract import SCOPE_LINE_PREFIX
 from booley.bwave.contract import exit_usage as _exit_usage
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 
 def _bwave_cache_root() -> Path:

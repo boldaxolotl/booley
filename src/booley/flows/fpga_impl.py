@@ -26,18 +26,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley import fusesoc_registry, job_slots
 from booley.core.boundary import (
     as_float,
     as_int,
     as_str,
     require_bool,
 )
-from booley.flow_names import config_section
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.parameter_integrity import validate_top_parameter_intent, vlogparam_values
-from booley.platform_paths import posix_relpath
-from booley.timefmt import utc_now_rfc3339
+from booley.fusesoc import fusesoc_registry
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime import job_slots
+from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.flow_names import config_section
+from booley.targets.parameter_integrity import validate_top_parameter_intent, vlogparam_values
 
 from . import artifacts, fpga_cache, fpga_edam
 from . import edam as edam_layer
@@ -94,7 +95,7 @@ _FPGA_METRIC_MAP: dict[str, str] = {
 
 def _load_rtl_config(work_dir: Path) -> dict[str, Any]:
     try:
-        from booley.shared_infra import _load_rtl_config as load_config
+        from booley.runtime.shared_infra import _load_rtl_config as load_config
 
         return load_config(work_dir) or {}
     except Exception:  # noqa: BLE001 — best-effort config read; any failure degrades to empty config

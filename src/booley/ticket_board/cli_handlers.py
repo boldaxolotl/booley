@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from booley.timefmt import parse_timestamp
+from booley.runtime.timefmt import parse_timestamp
 
 from .analytics import (
     attribute_tokens_to_steps,

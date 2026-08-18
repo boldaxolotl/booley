@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.fusesoc_registry import (
+from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
     TRACE_OVERLAY_MARKER,
@@ -340,7 +340,7 @@ class TestStealthCores:
         assert set(refs) == {"sim"}
 
     def test_setup_command_adds_second_cores_root(self, tmp_path: Path):
-        from booley.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import setup_command
 
         stealth = _CORE_TEXT.replace("::demo_core:0", "::stealth:0")
         _write_core(state_cores_dir(tmp_path), stealth)
@@ -351,14 +351,14 @@ class TestStealthCores:
         assert max(i for i, a in enumerate(cmd) if a == "--cores-root") < cmd.index("run")
 
     def test_setup_command_omits_stealth_root_when_absent(self, tmp_path: Path):
-        from booley.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import setup_command
 
         _write_core(tmp_path / "ip")
         cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
         assert cmd.count("--cores-root") == 1
 
     def test_explicit_stealth_projects_core_into_repo_root(self, tmp_path: Path):
-        from booley.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import setup_command
 
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
@@ -384,8 +384,8 @@ class TestStealthCores:
         assert missing_target_sources(tmp_path, "sim") == []
 
     def test_native_core_ignore_uses_only_private_stealth_registry(self, tmp_path: Path):
-        from booley.core_projection import isolated_registry_root
-        from booley.fusesoc_registry import setup_command
+        from booley.fusesoc.core_projection import isolated_registry_root
+        from booley.fusesoc.fusesoc_registry import setup_command
 
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
@@ -1626,7 +1626,7 @@ class TestWriteTraceOverlay:
         _write_core(project_dir / "cores", core, create_sources=False)
         overlay = write_trace_overlay("sim", project_root=tmp_path)
         try:
-            from booley.fusesoc_registry import setup_command
+            from booley.fusesoc.fusesoc_registry import setup_command
 
             setup_command(
                 "sim",
@@ -1803,7 +1803,10 @@ class TestTargetSchemaFieldRegistry:
     """
 
     def test_target_fileset_names_keys_are_schema_audited(self):
-        from booley.fusesoc_registry import _CAPI2_TARGET_ARRAY_FIELDS, target_fileset_names
+        from booley.fusesoc.fusesoc_registry import (
+            _CAPI2_TARGET_ARRAY_FIELDS,
+            target_fileset_names,
+        )
 
         consumed: set[str] = set()
 
@@ -2043,7 +2046,7 @@ class TestSetupCommandEdaToolFlag:
     the flag for the declared EDA tool."""
 
     def test_flow_api_target_gets_upstream_tool_flag(self, tmp_path: Path):
-        from booley.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import setup_command
 
         _write_core(tmp_path / "ip")  # 'sim': flow: sim, flow_options.eda_tool: verilator
         cmd = setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
@@ -2054,7 +2057,7 @@ class TestSetupCommandEdaToolFlag:
         assert cmd.index("--flag") < cmd.index("::demo_core:0")
 
     def test_legacy_fusesoc_api_target_gets_no_flag(self, tmp_path: Path):
-        from booley.fusesoc_registry import setup_command
+        from booley.fusesoc.fusesoc_registry import setup_command
 
         legacy = _CORE_TEXT.replace("    flow: sim\n", "").replace(
             "    flow_options:\n      tool: verilator\n", ""
@@ -2099,7 +2102,7 @@ class TestFilesetsAppend:
     falsely failed it."""
 
     def test_target_source_files_walks_filesets_append(self, tmp_path: Path):
-        from booley.fusesoc_registry import target_source_files
+        from booley.fusesoc.fusesoc_registry import target_source_files
 
         text = textwrap.dedent(
             """\
@@ -2135,7 +2138,7 @@ class TestFilesetsAppend:
         so returned paths must be re-based project-relative — consumers join
         them onto the root (doctor's sentinel scan, mutation_tester's DUT list)
         and used to silently read the wrong file, or none at all."""
-        from booley.fusesoc_registry import target_source_files
+        from booley.fusesoc.fusesoc_registry import target_source_files
 
         state_cores = tmp_path / ".booley_project" / "cores"
         state_cores.mkdir(parents=True)
@@ -2203,7 +2206,7 @@ class TestFilesetsAppend:
         """Same re-basing for the every-fileset sweep doctor's tracked-file
         check drives — a stealth core's `fw/boot.hex` is at
         `.booley_project/cores/fw/boot.hex`, not `<root>/fw/boot.hex`."""
-        from booley.fusesoc_registry import all_referenced_files
+        from booley.fusesoc.fusesoc_registry import all_referenced_files
 
         state_cores = tmp_path / ".booley_project" / "cores"
         state_cores.mkdir(parents=True)
@@ -2254,7 +2257,7 @@ class TestFilesetsAppend:
         """The trace-overlay readiness check shares the blind spot: a
         booley_vcd_dump.sv fileset added via append would false-warn 'no dump
         module' and provoke a duplicate overlay injection."""
-        from booley.fusesoc_trace_overlay import target_includes_dump_module
+        from booley.fusesoc.fusesoc_trace_overlay import target_includes_dump_module
 
         text = textwrap.dedent(
             """\

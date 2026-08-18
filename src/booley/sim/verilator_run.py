@@ -248,7 +248,7 @@ def _kill_with_reason(
     so each names its own cause but they all tear the process tree down and
     surface the reason on stdout/in the captured output the same way.
     """
-    from booley.platform_paths import kill_process_tree
+    from booley.runtime.platform_paths import kill_process_tree
 
     incident: Path | None = None
     if trace:
@@ -365,7 +365,7 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
     every :data:`RUN_LOG_PROGRESS_INTERVAL_S` seconds so the run is observable
     while it is still going (fpu F-18).
     """
-    from booley.platform_paths import kill_process_tree, popen_new_group_kwargs
+    from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
     from booley.sim.run_guard import (
         DiskBudgetGuard,
         child_death_kwargs,
@@ -666,7 +666,7 @@ def run_verilated_binary(
     discovers), defaulting to *bin_dir*. Tracing wraps the run in a
     ``TraceSession`` FIFO/bwave stream exactly as the legacy runner did.
     """
-    from booley.heartbeat import Heartbeat
+    from booley.runtime.heartbeat import Heartbeat
 
     # Resolve every path to absolute up front, while cwd is still the project
     # root: --bin-dir/--work-dir/--run-cwd arrive relative (so they cross the

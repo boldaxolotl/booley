@@ -1,10 +1,10 @@
-"""Tests for booley.nested_mcp_capabilities — single allowlist matrix."""
+"""Tests for booley.runtime.nested_mcp_capabilities — single allowlist matrix."""
 
 from __future__ import annotations
 
 import pytest
 
-from booley.nested_mcp_capabilities import (
+from booley.runtime.nested_mcp_capabilities import (
     NESTED_MCP_CAPABILITIES,
     nested_mcp_tools_for,
 )

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from booley import runtime_context
+from booley.runtime import runtime_context
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ def _check_in_progress_ops(git_cwd: str, project_root: Path) -> list[str]:
 def _check_agent_backend() -> None:
     """Probe the active agent backend. Log warning if degraded."""
     try:
-        from .config import get_backend_config
+        from booley.config.settings import get_backend_config
 
         cfg = get_backend_config()
         warning = cfg.active_backend.health_check()
@@ -207,9 +207,9 @@ def _check_ticket_board(project_root: Path) -> list[str]:
 
 def _configured_core_files(project_root: Path) -> set[Path]:
     """Core files in configured ``[flows.*].default_target`` dependency closures."""
-    from booley import fusesoc_registry
-    from booley.flow_names import DEFAULT_TARGET_KEY
-    from booley.harness.config import _load_booley_toml
+    from booley.config.settings import _load_booley_toml
+    from booley.fusesoc import fusesoc_registry
+    from booley.targets.flow_names import DEFAULT_TARGET_KEY
 
     flows = _load_booley_toml(project_root).get("flows", {})
     if not isinstance(flows, dict):
@@ -231,7 +231,7 @@ def _configured_core_files(project_root: Path) -> set[Path]:
 
 def _check_core_setup_hazards(project_root: Path) -> list[str]:
     """Reject recursive links and provider-backed cores selected by the project."""
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     selected = _configured_core_files(project_root)
     state_cores = fusesoc_registry.state_cores_dir(project_root)
@@ -280,7 +280,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
             load_project_criteria,
             merge_criteria_defs,
         )
-        from booley.mcp_tools.registry import (  # noqa: F401
+        from booley.mcp.registry import (  # noqa: F401
             discover_mcp_tools,
             extract_mcp_tool_info,
         )
@@ -378,7 +378,7 @@ def _validate_single_endpoint(
     all_criteria_names: set[str],
 ) -> None:
     """Validate one custom MCP endpoint file; warn and skip on local errors."""
-    from booley.mcp_tools.registry import extract_mcp_tool_info
+    from booley.mcp.registry import extract_mcp_tool_info
 
     # Check 1: Parse errors
     try:

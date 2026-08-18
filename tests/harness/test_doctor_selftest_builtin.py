@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import subprocess
 
-from booley import runtime_context, selftest_overlay
+from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
+from booley.runtime import runtime_context
 
 
 class _Rec:

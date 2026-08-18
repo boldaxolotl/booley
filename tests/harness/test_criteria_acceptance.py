@@ -12,7 +12,7 @@ from booley.dev_support.development_state import (
     DevelopmentState,
     compute_source_fingerprint,
 )
-from booley.harness.criteria_acceptance import (
+from booley.ticket_board.criteria_acceptance import (
     CriteriaVerdict,
     build_criteria_summary_lines,
     check_criteria_acceptance,
@@ -211,7 +211,7 @@ class TestCheckCriteriaAcceptance:
         With the report disabled, intake never seeds `_report_submitted`, so
         the acceptance gate must go straight to review on green criteria.
         """
-        from booley import project_config
+        from booley.config import project_config
 
         # NOTE: do NOT monkeypatch the module attribute (project_config,
         # "RUN_REPORT") — saving the "old value" triggers the PEP 562 lazy
@@ -228,7 +228,7 @@ class TestCheckCriteriaAcceptance:
         assert verdict.disposition == "review"
 
     def test_disabled_report_still_required_for_unmet_optional(self, tmp_path: Path, monkeypatch):
-        from booley import project_config
+        from booley.config import project_config
 
         monkeypatch.setattr(project_config, "_CONFIG_CACHE", {"RUN_REPORT": False})
         state = _FakeState(
@@ -244,7 +244,7 @@ class TestCheckCriteriaAcceptance:
         assert verdict.unmet_mandatory == ["_report_submitted"]
 
     def test_disabled_report_accepts_justified_unmet_optional(self, tmp_path: Path, monkeypatch):
-        from booley import project_config
+        from booley.config import project_config
 
         monkeypatch.setattr(project_config, "_CONFIG_CACHE", {"RUN_REPORT": False})
         state = _FakeState(

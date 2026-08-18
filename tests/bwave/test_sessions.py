@@ -15,7 +15,6 @@ import pytest
 from booley.bwave.cli import SESSION_FILE
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
-BWAVE_CLI = str(BOOLEY_ROOT / "src" / "booley" / "bwave" / "cli.py")
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
 BWAVE = FIXTURE_DIR / "test_distance.test.fst"
 
@@ -93,9 +92,13 @@ def _make_entry(trace: str, **overrides) -> dict:
 def _query(*extra_args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     # bwave is container-only (ADR 0028); mark the venue so the subprocess
     # exercises the query surface rather than dying on the host guard.
-    env = {**os.environ, "BOOLEY_CONTAINER": "1"}
+    env = {
+        **os.environ,
+        "BOOLEY_CONTAINER": "1",
+        "PYTHONPATH": str(BOOLEY_ROOT / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
     return subprocess.run(
-        [sys.executable, BWAVE_CLI, "query", *extra_args],
+        [sys.executable, "-m", "booley.bwave.cli", "query", *extra_args],
         capture_output=True,
         text=True,
         timeout=timeout,

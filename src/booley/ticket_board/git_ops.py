@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.filesystem_utils import safe_rmtree
+from booley.runtime.filesystem_utils import safe_rmtree
 
 # ---------------------------------------------------------------------------
 # Low-level git wrapper

@@ -15,10 +15,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.harness.auth_token import config_dir
 from booley.harness.devcontainer import EGRESS_NETWORK
-from booley.platform_paths import docker_mount_path
-from booley.timefmt import LOCAL_TIMEZONE_ENV
+from booley.runtime.auth_token import config_dir
+from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 from . import authority
 from .config import PROVISIONING_HOST, EdaConfig, load_eda_config
@@ -47,10 +47,8 @@ _ALLOWED_TOP_LEVEL_KEYS = frozenset(
     }
 )
 _ESCAPE_KEYS = frozenset({"dockerComposeFile", "service", "runServices", "workspaceFolder"})
-_FIXED_REGISTRAR = "python -m booley.incontainer_register"
-_FIXED_ATTACH = (
-    "python -m booley.incontainer_live_preview && python -m booley.incontainer_vaporview"
-)
+_FIXED_REGISTRAR = "python -m booley.runtime.incontainer_register"
+_FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
 _FIXED_SEED_FRAGMENTS = frozenset(
     {
         "cp -n /home/agent/.claude-config-seed.json /home/agent/.claude.json 2>/dev/null || true",

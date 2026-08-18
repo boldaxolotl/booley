@@ -9,7 +9,7 @@ from unittest.mock import patch
 from booley.flows import fpga_cache
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga_impl import FpgaImplFlow, _PreparedFpgaCommand
-from booley.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 
 def _artifacts(root: Path, *, bitstream: bool = True) -> None:

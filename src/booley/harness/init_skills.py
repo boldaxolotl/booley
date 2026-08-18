@@ -17,7 +17,7 @@ from pathlib import Path
 
 from booley.harness.colors import bold_chrome
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
-from booley.platform_paths import IS_WINDOWS
+from booley.runtime.platform_paths import IS_WINDOWS
 
 
 def _make_junction_or_symlink(link: Path, target: Path) -> bool:
@@ -114,7 +114,7 @@ def _prune_stale_skill_links(skills_target: Path, src: Path, current: set[str]) 
 
 def _deploy_skills(ctx: InitContext) -> None:
     """Deploy package skills into system-level skills dir via junction (Win) or symlink (Unix)."""
-    from booley.paths import skills_dir
+    from booley.runtime.paths import skills_dir
 
     ctx.step_banner("skill deployment")
 

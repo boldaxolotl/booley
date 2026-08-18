@@ -11,9 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley import fusesoc_registry, target_surface
-from booley.fusesoc_registry import TargetRef, minimal_selector
-from booley.target_surface import (
+from booley.fusesoc import fusesoc_registry
+from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
+from booley.targets import target_surface
+from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
     detail_payload,

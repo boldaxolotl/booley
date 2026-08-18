@@ -25,6 +25,7 @@ Run on a host with Verilator (the Booley sandbox container qualifies):
     python3 native_fst_verilator_test.py
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -52,6 +53,9 @@ def collapse_var_types(text: str) -> str:
 
 
 def find_bwave() -> str | None:
+    configured = os.environ.get("BOOLEY_BWAVE_BIN")
+    if configured and Path(configured).is_file():
+        return configured
     for profile in ("release", "debug"):
         cand = (
             HERE.parent
@@ -61,6 +65,9 @@ def find_bwave() -> str | None:
         )
         if cand.exists():
             return str(cand)
+    installed = Path("/usr/local/libexec/booley/bwave")
+    if installed.is_file():
+        return str(installed)
     return None
 
 

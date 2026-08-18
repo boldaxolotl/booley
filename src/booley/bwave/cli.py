@@ -25,7 +25,7 @@ superset: it owns gui/register/markers and forwards every query subcommand to
 the native Rust binary, which the image installs off PATH so it cannot shadow
 the wrapper. The platform-neutral Python wheel does not bundle that binary.
 Internal callers that need the binary resolve it with
-`booley.paths.native_bwave_binary()`, never by bare name — going through this
+`booley.runtime.paths.native_bwave_binary()`, never by bare name — going through this
 wrapper would apply its query defaults (`--limit`, marker flags) to them.
 """
 
@@ -44,17 +44,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple, NoReturn
 
-from booley import runtime_context
 from booley.bwave import wcp as bwave_wcp
 from booley.bwave.contract import NO_MATCH_MARKER
 from booley.bwave.contract import exit_usage as _exit_usage
+from booley.runtime import runtime_context
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-from booley.paths import native_bwave_binary
-from booley.platform_paths import cargo_bin
-from booley.timefmt import parse_timestamp
+from booley.runtime.paths import native_bwave_binary
+from booley.runtime.platform_paths import cargo_bin
+from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ BWAVE_CARGO_TOML = _REPO_ROOT / "crates" / "bwave" / "Cargo.toml"
 def _bwave_cmd() -> list[str]:
     """Return the command prefix for the native bwave binary.
 
-    Resolution lives in booley.paths so this wrapper, the FIFO streamer and
+    Resolution lives in booley.runtime.paths so this wrapper, the FIFO streamer and
     coverage_analyst all find the same binary. Never resolve it by bare name:
     on PATH, `bwave` is *this* wrapper.
     """

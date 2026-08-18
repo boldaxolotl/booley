@@ -136,6 +136,15 @@ jobs:
           python -m pytest /work/tests/sim/test_bwave_fifo_pipeline.py
           -v -k 'not slow'"
 
+      - name: Cross-validate B-Wave against simulator traces
+        run: >
+          docker run --rm -v "${{ github.workspace }}:/work" booley-test
+          bash -c "pip install --break-system-packages pytest &&
+          python /work/crates/bwave/tests/native_fst_verilator_test.py &&
+          python -m pytest
+          /work/crates/bwave/tests/simulator_ground_truth_test.py
+          -q --tb=short"
+
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 30

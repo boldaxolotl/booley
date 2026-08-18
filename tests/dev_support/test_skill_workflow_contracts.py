@@ -1,6 +1,6 @@
 """Regression contracts for shipped ticket workflow skills."""
 
-from booley.paths import skills_dir
+from booley.runtime.paths import skills_dir
 
 
 def _skill_text(name: str, relative: str = "SKILL.md") -> str:
@@ -160,7 +160,7 @@ def test_heal_has_bounded_doctor_repair_and_verification_loop():
         "zero `FAIL` findings",
         "zero active `WARN` findings",
         "Doctor's `fix:` hint",
-        "from booley.paths import troubleshooting_path",
+        "from booley.runtime.paths import troubleshooting_path",
         "booley doctor --deep",
         "after 12 remediation passes",
         "final plain `booley doctor`",

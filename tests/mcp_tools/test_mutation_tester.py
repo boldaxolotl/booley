@@ -20,8 +20,8 @@ import pytest
 
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.development_state import DevelopmentState
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.mcp_tools.mutation_tester import (
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.specialists.mutation_tester import (
     MutationResult,
     MutationSpec,
     MutationSummary,
@@ -546,7 +546,7 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
         return r
 
     monkeypatch.setattr(
-        "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+        "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
         _fake,
     )
 
@@ -568,7 +568,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = None):
         )
 
     monkeypatch.setattr(
-        "booley.fusesoc_registry.resolve_target",
+        "booley.fusesoc.fusesoc_registry.resolve_target",
         _fake_resolve,
     )
 
@@ -597,7 +597,7 @@ def _patch_sim_runner(monkeypatch, sim_returncode: int = 0):
         return original(cmd, *args, **kwargs)
 
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.subprocess.run",
+        "booley.specialists.mutation_tester.subprocess.run",
         _fake,
     )
 
@@ -613,7 +613,7 @@ def test_elab_builds_once_and_sim_runs_verilator_binary(tmp_path: Path, monkeypa
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.subprocess.run",
+        "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
 
@@ -646,15 +646,15 @@ def test_sim_uses_first_configured_test_selector(tmp_path: Path, monkeypatch):
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.subprocess.run",
+        "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.project_config.TEST_NAMES",
+        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
         {"default": ["coremark.elf", "smoke.elf"]},
     )
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.project_config.render_test_selector",
+        "booley.specialists.mutation_tester.project_config.render_test_selector",
         lambda target, index, name: f"--meminit=ram,{name}",
     )
 
@@ -684,15 +684,15 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.subprocess.run",
+        "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.project_config.TEST_NAMES",
+        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
         {"default": ["coremark.elf", "smoke.elf"]},
     )
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.project_config.render_test_selector",
+        "booley.specialists.mutation_tester.project_config.render_test_selector",
         lambda target, index, name: f"--meminit=ram,{name}",
     )
 
@@ -709,7 +709,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 def test_selected_test_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
     """--test validation must see the qualified Target's declared tests."""
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.project_config.TEST_NAMES",
+        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
         {"default": ["test_a", "test_b"]},
     )
     endpoint = _make_endpoint(tmp_path, monkeypatch, extra_args=["--test", "test_b"])
@@ -725,11 +725,11 @@ def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
 
     _patch_resolve_target(monkeypatch)
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester.subprocess.run",
+        "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
     monkeypatch.setattr(
-        "booley.mcp_tools.mutation_tester._resolve_sim_sentinels",
+        "booley.specialists.mutation_tester._resolve_sim_sentinels",
         lambda work_dir: (["Correct operation validated."], ["ERROR!"]),
     )
 
@@ -900,7 +900,7 @@ class TestColdStart:
         )
         # Avoid hide_opposite_sources side effects in tests.
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -956,7 +956,7 @@ class TestColdStart:
             return FakeAgentResult(output=_sample_creator_json(specs))
 
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             _fake_agent,
         )
         _patch_sim_runner(monkeypatch, sim_returncode=0)
@@ -971,7 +971,7 @@ class TestColdStart:
             dut_files=(scope,),
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1002,7 +1002,7 @@ class TestColdStart:
             return result
 
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             _fake_agent,
         )
 
@@ -1028,7 +1028,7 @@ class TestColdStart:
             return original(cmd, *args, **kwargs)
 
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             _fake_run,
         )
 
@@ -1042,7 +1042,7 @@ class TestColdStart:
             dut_files=("rtl/design_top.sv",),
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1064,7 +1064,7 @@ class TestColdStart:
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1096,7 +1096,7 @@ class TestColdStart:
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=1)
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1141,7 +1141,7 @@ class TestCoverageGapDiagnosis:
             return FakeAgentResult(output=_sample_creator_json(specs))
 
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             _fake_agent,
         )
         _patch_resolve_target(monkeypatch)
@@ -1160,7 +1160,7 @@ class TestCoverageGapDiagnosis:
                 return _fake_proc(rc=0)
             return original(cmd, *args, **kwargs)
 
-        monkeypatch.setattr("booley.mcp_tools.mutation_tester.subprocess.run", _fake_run)
+        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
 
         endpoint = _make_endpoint(
             tmp_path,
@@ -1172,7 +1172,7 @@ class TestCoverageGapDiagnosis:
             dut_files=("rtl/design_top.sv",),
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             return endpoint._run(), prompts
@@ -1269,7 +1269,7 @@ class TestCoverageGapDiagnosis:
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1554,7 +1554,7 @@ class TestColdScopeEnforcement:
             return FakeAgentResult(output=_sample_creator_json(specs))
 
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             _fake_agent,
         )
 
@@ -1571,7 +1571,7 @@ class TestColdScopeEnforcement:
             return original(cmd, *args, **kwargs)
 
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             _fake_run,
         )
 
@@ -1585,7 +1585,7 @@ class TestColdScopeEnforcement:
             dut_files=("rtl/design_top.sv",),
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             endpoint._run()
@@ -1671,7 +1671,7 @@ class TestWarmReuse:
             return FakeAgentResult()
 
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             _fake_agent,
         )
 
@@ -1683,7 +1683,7 @@ class TestWarmReuse:
             min_detected=0,
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1733,11 +1733,11 @@ class TestWarmReuse:
             return original(cmd, *args, **kwargs)
 
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             _fake,
         )
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             lambda *a, **k: FakeAgentResult(),
         )
 
@@ -1749,7 +1749,7 @@ class TestWarmReuse:
             min_detected=0,
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1792,7 +1792,7 @@ class TestWarmReuse:
             regen_lock=True,
         )
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()
@@ -1876,11 +1876,11 @@ class TestValidateScopeAgainstTarget:
 def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str = "verilator"):
     """Make the .core reads report a Cocotb (or classic) Target."""
     monkeypatch.setattr(
-        "booley.fusesoc_registry.target_cocotb_modules",
+        "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
         lambda work_dir: {"default": module},
     )
     monkeypatch.setattr(
-        "booley.fusesoc_registry.target_eda_tools",
+        "booley.fusesoc.fusesoc_registry.target_eda_tools",
         lambda work_dir: {"default": eda_tool},
     )
 
@@ -1891,7 +1891,7 @@ class TestCocotbSimDispatch:
         MODULE/filter environment nothing runs, so MUT_ID=0 is not a baseline."""
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
@@ -1917,13 +1917,13 @@ class TestCocotbSimDispatch:
         than the classic path's 'first declared test' plusarg."""
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
         _patch_cocotb_target(monkeypatch, module="tb.test_noc")
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.project_config.TEST_NAMES",
+            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
             {"default": ["test_a", "test_b"]},
         )
 
@@ -1938,13 +1938,13 @@ class TestCocotbSimDispatch:
     def test_explicit_test_is_forwarded_to_cocotb(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
         _patch_cocotb_target(monkeypatch, module="tb.test_noc")
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.project_config.TEST_NAMES",
+            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
             {"default": ["test_a", "test_b"]},
         )
 
@@ -1960,7 +1960,7 @@ class TestCocotbSimDispatch:
     def test_classic_target_still_uses_verilator_run(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.subprocess.run",
+            "booley.specialists.mutation_tester.subprocess.run",
             lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
         )
         _patch_resolve_target(monkeypatch)
@@ -2022,7 +2022,7 @@ class TestCocotbSimDispatch:
         _patch_cocotb_target(monkeypatch, module="tb.test_noc", eda_tool="vcs")
         calls: list[int] = []
         monkeypatch.setattr(
-            "booley.mcp_tools.specialist.Specialist._invoke_agent_with_resume",
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
             lambda self, params, on_event=None: calls.append(1),
         )
 
@@ -2069,7 +2069,7 @@ class TestInfraFailureHandling:
                 return _fake_proc(rc=rc, stdout=sim_stdout)
             return _fake_proc(rc=0, stdout="[make] ok")
 
-        monkeypatch.setattr("booley.mcp_tools.mutation_tester.subprocess.run", _fake)
+        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake)
         return _make_endpoint(tmp_path, monkeypatch)
 
     def test_missing_binary_is_not_blamed_on_the_creator(self, tmp_path: Path, monkeypatch):
@@ -2147,7 +2147,7 @@ class TestInfraFailureHandling:
         """A chatty TB times the mutant count times up to 3 rounds — the cap
         is what keeps that off the 20 GB-trace path. Tail kept: the verdict
         and the last thing the design did live there."""
-        from booley.mcp_tools.mutation_tester import _MUTANT_LOG_MAX_BYTES
+        from booley.specialists.mutation_tester import _MUTANT_LOG_MAX_BYTES
 
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
         chatty = "noise line\n" * 40_000 + "[SIM_RESULT] PASSED\n"
@@ -2191,7 +2191,7 @@ class TestInfraFailureHandling:
             rc=1,
         )
         monkeypatch.setattr(
-            "booley.mcp_tools.mutation_tester.lock_mod.mutant_logs_dir",
+            "booley.specialists.mutation_tester.lock_mod.mutant_logs_dir",
             lambda *a, **k: (_ for _ in ()).throw(OSError("read-only fs")),
         )
         specs = _sample_specs(2)
@@ -2235,11 +2235,11 @@ class TestInfraFailureHandling:
                 return _fake_proc(rc=1, stdout=_INFRA_OUT)
             return _fake_proc(rc=0, stdout="[make] ok")
 
-        monkeypatch.setattr("booley.mcp_tools.mutation_tester.subprocess.run", _fake)
+        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake)
 
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2, min_detected=0)
         with patch(
-            "booley.mcp_tools.mutation_tester.hide_opposite_sources",
+            "booley.specialists.mutation_tester.hide_opposite_sources",
             side_effect=lambda *a, **k: _NoopCtx(),
         ):
             result = endpoint._run()

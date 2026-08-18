@@ -29,7 +29,7 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
-from booley.parameter_integrity import enabled_define_names
+from booley.targets.parameter_integrity import enabled_define_names
 
 # --- re-exported for backward compatibility (moved to sibling leaf modules) ---
 from booley.yosys.syn_config import (
@@ -1172,7 +1172,7 @@ def _toml_bool(cfg: dict, key: str, default: bool) -> bool:
 def _in_container() -> bool:
     """True when running inside the Booley Docker/Podman sandbox.
 
-    Same marker-file probe as ``booley.runtime_context``; kept local and tiny so the
+    Same marker-file probe as ``booley.runtime.runtime_context``; kept local and tiny so the
     timing-config gating has no cross-package import and stays trivially
     monkeypatchable in tests.
     """
@@ -1225,10 +1225,10 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
     in-process asic_synthesize configure half, ADR 0037 §8); ``None`` keeps the
     legacy CWD-resolution path for the standalone run_yosys_syn CLI.
     """
-    from booley.shared_infra import _load_rtl_config
+    from booley.runtime.shared_infra import _load_rtl_config
 
     cfg = _load_rtl_config(project_root) or {}
-    from booley.flow_names import config_section
+    from booley.targets.flow_names import config_section
 
     timing = config_section(cfg.get("flows", {}), "synth").get("timing", {})
     if not isinstance(timing, dict):

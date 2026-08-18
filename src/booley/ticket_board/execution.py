@@ -64,7 +64,7 @@ def tb_source_prefixes(project_root: Path) -> list[str]:
     follow-through — the ``.core`` ``tags:[tb]`` partition, not ``[sources.*]``).
     """
     try:
-        from booley.fusesoc_registry import source_dirs_from_core
+        from booley.fusesoc.fusesoc_registry import source_dirs_from_core
 
         _rtl, tb_dirs, _incl = source_dirs_from_core(project_root)
     except Exception:  # noqa: BLE001 — registry unavailable; default boundary

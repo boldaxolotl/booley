@@ -43,7 +43,7 @@ Rather than hand-build commands per EDA tool, Booley builds command generation o
 
 The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool to use (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). The `--target` argument to `sim`, `lint`, `elab`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
 
-Resolution happens in two phases (`src/booley/fusesoc_registry.py`): a cheap,
+Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
 side-effect-free parse of the `.core` YAML (to validate `--target` names and
 expand per-target Criteria), and a subprocess pass that runs FuseSoC beside the
 Flow's Python orchestration—inside the Session Runtime for agent-facing calls—to

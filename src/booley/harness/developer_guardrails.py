@@ -11,7 +11,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .git_utils import git_run
+from booley.runtime.git import git_run
 
 logger = logging.getLogger(__name__)
 

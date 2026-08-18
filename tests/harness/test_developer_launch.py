@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from booley.harness import config as harness_config
+from booley.config import settings as harness_config
 from booley.harness import developer
 from booley.harness.models import AgentCallParams
 
@@ -180,7 +180,7 @@ def test_launch_passes_developer_budget_to_backend(tmp_path, monkeypatch):
 
 def test_developer_codex_home_config(tmp_path, monkeypatch):
     """Codex developer HOME bakes BOOLEY_* env + allowlist, no nested markers."""
-    from booley.harness import _codex_backend as cb
+    from booley.runtime import _codex_backend as cb
 
     fake_home = tmp_path / "home"
     (fake_home / ".codex").mkdir(parents=True)
@@ -218,7 +218,7 @@ def test_developer_codex_home_config(tmp_path, monkeypatch):
 
 def test_codex_homes_are_isolated_by_ticket(tmp_path, monkeypatch):
     """Concurrent ticket runners must never share mutable Codex config."""
-    from booley.harness import _codex_backend as cb
+    from booley.runtime import _codex_backend as cb
 
     fake_home = tmp_path / "home"
     (fake_home / ".codex").mkdir(parents=True)
@@ -246,7 +246,7 @@ def test_codex_homes_are_isolated_by_ticket(tmp_path, monkeypatch):
 
 def test_codex_spawn_routes_developer_home(tmp_path, monkeypatch):
     """developer_mcp_tools selects the developer HOME, not the nested one."""
-    from booley.harness import _codex_backend as cb
+    from booley.runtime import _codex_backend as cb
 
     calls: dict = {}
 

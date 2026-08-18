@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from booley import incontainer_register as reg
+from booley.runtime import incontainer_register as reg
 from tests.conftest import require_symlinks
 
 
@@ -51,7 +51,7 @@ class TestClaude:
                     "mcpServers": {
                         "booley": {
                             "command": "python",
-                            "args": ["-m", "booley.mcp_server"],
+                            "args": ["-m", "booley.mcp.server"],
                         }
                     }
                 }
@@ -105,7 +105,7 @@ class TestCodex:
             '[user]\nname = "a"\n\n'
             "[mcp_servers.booley]\n"
             'command = "python"\n'
-            'args = ["-m", "booley.mcp_server"]\n'
+            'args = ["-m", "booley.mcp.server"]\n'
             "tool_timeout_sec = 7200\n\n"
             "[other]\nkey = 1\n",
             encoding="utf-8",
@@ -286,7 +286,7 @@ class TestSkills:
 
     @staticmethod
     def _patch_src(monkeypatch, src):
-        from booley import paths
+        from booley.runtime import paths
 
         monkeypatch.setattr(paths, "skills_dir", lambda: src)
 
@@ -455,7 +455,7 @@ class TestApplyStoredCredential:
 
     @staticmethod
     def _seed(tmp_path, app, value):
-        from booley.harness.auth_token import TOKEN_SEED_BASENAME
+        from booley.runtime.auth_token import TOKEN_SEED_BASENAME
 
         (tmp_path / TOKEN_SEED_BASENAME[app]).write_text(value + "\n", encoding="utf-8")
 

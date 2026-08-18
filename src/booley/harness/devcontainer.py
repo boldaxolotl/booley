@@ -19,10 +19,9 @@ import os
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
-from booley.timefmt import LOCAL_TIMEZONE_ENV
-
-from . import auth_token
-from ._backend_config import SANDBOX_IMAGE
+from booley.config.agent import SANDBOX_IMAGE
+from booley.runtime import auth_token
+from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
 APP_CLAUDE = "claude"
@@ -207,7 +206,7 @@ _APP_CREDS_SEED_TARGET = {
 # Code's "Reopen in Container": VS Code resolves localEnv against its own
 # process env, where the stored file is invisible. ``incontainer_register``
 # reads this sidecar on every container start and applies it container-side
-# (see :func:`booley.incontainer_register.apply_stored_credential`), so every
+# (see :func:`booley.runtime.incontainer_register.apply_stored_credential`), so every
 # entry point — VS Code, ``booley session``, headless drivers — sees the same
 # credential with no manual export. Same home-sidecar placement rationale as
 # ``_APP_CREDS_SEED_TARGET`` above.
@@ -238,7 +237,7 @@ def mcp_post_start_command() -> str:
     it reconnects instead of being stranded with a dead stdio child. The app
     to register comes from ``BOOLEY_AGENT_APP``.
     """
-    return "python -m booley.incontainer_register"
+    return "python -m booley.runtime.incontainer_register"
 
 
 def vaporview_patch_command() -> str:
@@ -253,14 +252,14 @@ def vaporview_patch_command() -> str:
     eagerly so its own auto-start runs without an open waveform tab; without
     both, ``wcp.enabled: true`` is inert and the server never binds until a human
     runs the palette command. Idempotent and never fails the hook. See
-    :mod:`booley.incontainer_vaporview` for the full rationale.
+    :mod:`booley.runtime.incontainer_vaporview` for the full rationale.
     """
-    return "python -m booley.incontainer_vaporview"
+    return "python -m booley.runtime.incontainer_vaporview"
 
 
 def live_preview_port_command() -> str:
     """Shell command that assigns Live Preview fresh remote ports on attach."""
-    return "python -m booley.incontainer_live_preview"
+    return "python -m booley.runtime.incontainer_live_preview"
 
 
 def post_attach_command() -> str:

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.dev_support.development_state import DevelopmentState
-from booley.mcp_tools.reviewer import (
+from booley.specialists.reviewer import (
     RTL_FOCUS_CATEGORIES,
     SEVERITY_CRITICAL,
     SEVERITY_MAJOR,
@@ -45,7 +45,7 @@ def _skip_workspace_snapshot_for_mocked_agents(monkeypatch: pytest.MonkeyPatch) 
         yield params, None
 
     monkeypatch.setattr(
-        "booley.mcp_tools.specialist.isolated_agent_workspace",
+        "booley.specialists.specialist.isolated_agent_workspace",
         passthrough,
     )
 
@@ -505,7 +505,7 @@ class TestReportFindingsMapper:
 class TestReportFindingsCapture:
     """End-to-end: review agent reports via the native ReportFindings endpoint."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_confirmed_finding_fails_gate(self, mock_agent, state_file: Path):
         """A CONFIRMED ReportFindings entry blocks the gate (exit 1, recorded)."""
         mock_agent.return_value = _make_report_findings_result(
@@ -538,7 +538,7 @@ class TestReportFindingsCapture:
         # Criterion recorded as performed (not a Specialist error).
         assert st.has_criterion("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_report_is_clean_pass(self, mock_agent, state_file: Path):
         """Zero findings in BOTH channels => clean pass, NOT exit 2.
 
@@ -566,7 +566,7 @@ class TestReportFindingsCapture:
         st = DevelopmentState.load(state_file)
         assert st.is_met("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_plausible_only_passes_gate(self, mock_agent, state_file: Path):
         mock_agent.return_value = _make_report_findings_result(
             [
@@ -619,7 +619,7 @@ def _review_args() -> list[str]:
 class TestChannelDisagreement:
     """SETUP-F-33: an empty ReportFindings call must never mask a text CRITICAL."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_endpoint_call_does_not_mask_text_critical(self, mock_agent, state_file: Path):
         """The exact F-33 bait: ReportFindings([]) + a CRITICAL issue JSON in text."""
         mock_agent.return_value = _make_report_findings_result(
@@ -640,7 +640,7 @@ class TestChannelDisagreement:
         st = DevelopmentState.load(state_file)
         assert st.is_met("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_endpoint_call_and_prose_only_is_endpoint_error(
         self, mock_agent, state_file: Path
     ):
@@ -658,7 +658,7 @@ class TestChannelDisagreement:
         st = DevelopmentState.load(state_file)
         assert not st.is_met("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_endpoint_findings_win_when_text_is_silent(self, mock_agent, state_file: Path):
         """Non-empty agent-capability channel is still usable with no text JSON at all."""
         mock_agent.return_value = _make_report_findings_result(
@@ -673,7 +673,7 @@ class TestChannelDisagreement:
         assert result.exit_code == 1
         assert result.detail["issues"] == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_more_severe_text_channel_wins_over_advisory_endpoint_channel(
         self,
         mock_agent,
@@ -694,7 +694,7 @@ class TestChannelDisagreement:
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_endpoint_channel_wins_when_text_is_clean(self, mock_agent, state_file: Path):
         """Blocking endpoint finding + '{"issues": []}' text: the agent-capability channel still blocks."""
         mock_agent.return_value = _make_report_findings_result(
@@ -710,7 +710,7 @@ class TestChannelDisagreement:
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_MAJOR] == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_all_issues_rejected_is_not_a_clean_pass(self, mock_agent, state_file: Path):
         """Every reported issue failing the schema is a Specialist error, not '0 issues'."""
         mock_agent.return_value = MagicMock(
@@ -739,7 +739,7 @@ class TestChannelDisagreement:
         st = DevelopmentState.load(state_file)
         assert not st.is_met("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_advisory_endpoint_call_cannot_outvote_a_rejected_text_channel(
         self,
         mock_agent,
@@ -783,7 +783,7 @@ class TestChannelDisagreement:
         # And the output must not contradict itself.
         assert "gate_passed: true" not in capsys.readouterr().out.lower()
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_rejected_text_channel_with_blocking_endpoint_findings_still_fails(
         self,
         mock_agent,
@@ -821,7 +821,7 @@ class TestChannelDisagreement:
         assert result.detail[SEVERITY_MAJOR] == 1
         assert result.detail["gate_passed"] is False
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_rejected_text_channel_with_empty_endpoint_call_is_a_endpoint_error(
         self,
         mock_agent,
@@ -842,7 +842,7 @@ class TestChannelDisagreement:
         st = DevelopmentState.load(state_file)
         assert not st.is_met("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_partial_rejection_still_reviews_normally(self, mock_agent, state_file: Path):
         """One survivor means the text channel is usable — only a WARN, no error."""
         mock_agent.return_value = _make_report_findings_result(
@@ -882,7 +882,7 @@ class TestChannelDisagreement:
 class TestReadOnlyEnforcement:
     """SETUP-F-35: allowed_agent_capabilities is advisory under bypassPermissions."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_review_denies_mutating_tools(self, mock_agent, state_file: Path):
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
@@ -907,7 +907,7 @@ class TestNoReportDirNotice:
     per run, which is the noise F-28 was about. These tests pin the removal.
     """
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verdict_text_does_not_carry_its_own_notice(self, mock_agent, state_file: Path):
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
@@ -917,7 +917,7 @@ class TestNoReportDirNotice:
 
         assert "no --report-dir" not in result.report_text
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_silent_with_report_dir(self, mock_agent, state_file: Path, tmp_path: Path):
         mock_agent.return_value = _make_report_findings_result([], output='{"issues": []}')
         endpoint = ReviewerSpecialist()
@@ -931,7 +931,7 @@ class TestNoReportDirNotice:
 class TestUpstreamReviewRejection:
     """Single review must not treat free-form prose as a clean pass."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_no_json_wrapper_returns_endpoint_error(
         self,
         mock_agent,
@@ -965,7 +965,7 @@ class TestUpstreamReviewRejection:
         st = DevelopmentState.load(state_file)
         assert not st.is_met("review_rtl_bugs_done")
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_malformed_entries_dropped_but_review_still_completes(
         self,
         mock_agent,
@@ -1089,22 +1089,22 @@ class TestScopeValidation:
         assert len(errors) == 1
         assert "doesn't match RTL" in errors[0]
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
     def test_tb_scope_valid(self, _mock):
         errors = validate_scope_category(["tb/mod_a_tb.sv"], "tb")
         assert errors == []
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
     def test_tb_scope_invalid_rtl_path(self, _mock):
         errors = validate_scope_category(["rtl/mod_a.sv"], "tb")
         assert len(errors) == 1
         assert "doesn't match TB" in errors[0]
 
     @patch(
-        "booley.mcp_tools.reviewer._get_rtl_prefixes",
+        "booley.specialists.reviewer._get_rtl_prefixes",
         return_value=("rtl/", "rtl\\", "fw/", "fw\\"),
     )
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
     def test_mixed_scope_rtl_partial_invalid(self, _mock_tb, _mock_rtl):
         errors = validate_scope_category(
             ["rtl/mod_a.sv", "tb/mod_a_tb.sv"],
@@ -1651,7 +1651,7 @@ class TestSummaryFormatting:
 
 
 class TestFullRtlReview:
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_review(self, mock_agent, state_file: Path, capsys):
         """No issues => PASS, exit 0, _done met."""
         mock_agent.return_value = _make_agent_result([])
@@ -1676,7 +1676,7 @@ class TestFullRtlReview:
         captured = capsys.readouterr()
         assert "RESULT: PASS" in captured.out
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_critical_issues_done_met(self, mock_agent, state_file: Path, capsys):
         """Critical issues fail the verdict but satisfy completed-review _done."""
         mock_agent.return_value = _make_agent_result(
@@ -1708,7 +1708,7 @@ class TestFullRtlReview:
         assert "RESULT: FAIL" in captured.out
         assert "critical" in captured.out
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_findings_complete_done_review_and_replay(self, mock_agent, state_file: Path):
         """A finding-bearing _done review completes and only replays afterward."""
         common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
@@ -1731,7 +1731,7 @@ class TestFullRtlReview:
         assert "RESULT: FAIL" in replay.report_text
         assert mock_agent.call_count == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_steering_does_not_reopen_completed_done_review(
         self,
         mock_agent,
@@ -1754,7 +1754,7 @@ class TestFullRtlReview:
         assert "_clean" in replay.report_text
         assert mock_agent.call_count == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_minor_only_passes(self, mock_agent, state_file: Path, capsys):
         """Minor-only issues => PASS, criterion_met=True."""
         mock_agent.return_value = _make_agent_result(
@@ -1779,7 +1779,7 @@ class TestFullRtlReview:
         assert result.exit_code == 0
         assert result.criterion_met is True
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
         """Single focus runs one agent call, criterion key reflects focus."""
         mock_agent.return_value = _make_agent_result([])
@@ -1800,7 +1800,7 @@ class TestFullRtlReview:
         assert result.criterion_key == "review_rtl_security_done"
         assert mock_agent.call_count == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_criterion_set_rtl_spec(self, mock_agent, state_file: Path):
         """_done criterion is set on completion."""
         mock_agent.return_value = _make_agent_result([])
@@ -1827,8 +1827,8 @@ class TestFullRtlReview:
 
 
 class TestFullTbReview:
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_tb_clean_review(self, mock_agent, _mock_tb, state_file: Path, capsys):
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
@@ -1848,8 +1848,8 @@ class TestFullTbReview:
         captured = capsys.readouterr()
         assert "RESULT: PASS" in captured.out
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_tb_criterion_set(self, mock_agent, _mock_tb, state_file: Path):
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
@@ -1875,7 +1875,7 @@ class TestFullTbReview:
 
 
 class TestDiffRefInRun:
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_diff_ref_passed_to_prompt(self, mock_agent, state_file: Path):
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
@@ -1904,7 +1904,7 @@ class TestDiffRefInRun:
 
 
 class TestAgentFailure:
-    @patch("booley.mcp_tools.specialist._call_agent_sync", side_effect=RuntimeError("boom"))
+    @patch("booley.specialists.specialist._call_agent_sync", side_effect=RuntimeError("boom"))
     def test_agent_error_returns_exit_2(self, mock_agent, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2094,7 +2094,7 @@ class TestRtlSpecFocus:
         assert result.exit_code == 2
         assert "spec" in result.report_text.lower()
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_spec_review_sets_criterion(
         self,
         mock_agent,
@@ -2109,8 +2109,8 @@ class TestRtlSpecFocus:
 
 
 class TestTbQualityPrompt:
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_tb_quality_system_prompt_has_methodology(
         self,
         mock_agent,
@@ -2170,7 +2170,7 @@ class TestTbQualityPrompt:
 
 
 class TestOneShotGuard:
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_one_shot_guard(self, mock_agent, state_file: Path):
         """Pre-set review_rtl_bugs_done => no re-run, benign exit 0 (F-49)."""
         # Pre-set the criterion as met
@@ -2199,7 +2199,7 @@ class TestOneShotGuard:
         assert "did NOT re-run" in result.report_text
         assert result.criterion_met is True
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_one_shot_replays_prior_verdict_verbatim(self, mock_agent, state_file: Path):
         """The replayed report repeats the recorded findings, not just a refusal (F-49)."""
         st = DevelopmentState.load(state_file)
@@ -2254,7 +2254,7 @@ class TestTbOrderingGuard:
 class TestCleanModeInitial:
     """Tests for _clean mode: initial review pass."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_initial_gate_passes_met_immediately(
         self,
         mock_agent,
@@ -2289,7 +2289,7 @@ class TestCleanModeInitial:
         captured = capsys.readouterr()
         assert "RESULT: PASS" in captured.out
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_initial_gate_fails_stores_issues(
         self,
         mock_agent,
@@ -2331,7 +2331,7 @@ class TestCleanModeInitial:
         st = DevelopmentState.load(state_file)
         assert st.is_met("review_rtl_bugs_clean") is False
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_already_met_returns_early(
         self,
         mock_agent,
@@ -2364,7 +2364,7 @@ class TestCleanModeInitial:
 class TestCleanModeVerify:
     """Tests for _clean mode: verify review pass."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_all_fixed_becomes_met(
         self,
         mock_agent,
@@ -2436,7 +2436,7 @@ class TestCleanModeVerify:
         st = DevelopmentState.load(state_file)
         assert st.is_met("review_rtl_bugs_clean") is True
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_some_still_present(
         self,
         mock_agent,
@@ -2505,8 +2505,8 @@ class TestCleanModeVerify:
         assert len(result.detail["resolved"]) == 1
         assert result.detail["resolved"][0]["status"] == "fixed"
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_stale_dump_call_finding_checks_current_source(
         self,
         mock_agent,
@@ -2583,7 +2583,7 @@ class TestCleanModeVerify:
         assert result.detail["pending"] == []
         assert result.detail["resolved"][0]["status"] == "fixed"
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_attempts_exhausted(
         self,
         mock_agent,
@@ -2625,7 +2625,7 @@ class TestCleanModeVerify:
         assert mock_agent.call_count == 0
         assert "2 verify attempts exhausted" in result.report_text
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_malformed_json_conservative(
         self,
         mock_agent,
@@ -2675,7 +2675,7 @@ class TestCleanModeVerify:
         assert result.detail["issues"] == 2
         assert result.detail["verify_attempts"] == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_fixed_without_evidence_is_demoted(
         self,
         mock_agent,
@@ -2743,7 +2743,7 @@ class TestCleanModeVerify:
         assert result.detail["resolved"] == []
         assert all(p["status"] == "still_present" for p in result.detail["pending"])
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_fixed_with_evidence_is_accepted(
         self,
         mock_agent,
@@ -2898,7 +2898,7 @@ class TestAutoDowngradeStale:
 class TestImpaseDowngradeIntegration:
     """Integration: total_verify_cycles >= 3 triggers auto-downgrade, gate passes."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_impasse_downgrades_then_gate_passes(
         self,
         mock_agent,
@@ -2959,7 +2959,7 @@ class TestImpaseDowngradeIntegration:
         assert result.criterion_met is True
         assert result.exit_code == 0
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_impasse_does_not_downgrade_critical(
         self,
         mock_agent,
@@ -3017,7 +3017,7 @@ class TestImpaseDowngradeIntegration:
         assert result.exit_code == 1
         assert result.detail["CRITICAL"] == 1
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_impasse_downgrade_persisted_before_verify(
         self,
         mock_agent,
@@ -3086,7 +3086,7 @@ class TestImpaseDowngradeIntegration:
 class TestFindingIdentityByIndex:
     """Verify that status annotation uses issue_list index, not (file, line, summary) tuple."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_line_shift_does_not_lose_fix_status(
         self,
         mock_agent,
@@ -3157,7 +3157,7 @@ class TestFindingIdentityByIndex:
         assert result.detail["pending"][0]["summary"] == "Missing reset"
         assert result.detail["pending"][0]["status"] == "still_present"
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_summary_rephrase_does_not_affect_matching(
         self,
         mock_agent,
@@ -3225,7 +3225,7 @@ class TestFindingIdentityByIndex:
 class TestVerifyFixedPersistence:
     """Test that previously-fixed findings keep their status across verify passes."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_previously_fixed_stays_fixed_when_unmentioned(
         self,
         mock_agent,
@@ -3291,7 +3291,7 @@ class TestVerifyFixedPersistence:
         assert result.detail["pending"][0]["summary"] == "Bug B"
         assert result.detail["pending"][0]["status"] == "still_present"
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_previously_fixed_can_regress(
         self,
         mock_agent,
@@ -3497,7 +3497,7 @@ class TestDeadEndMessagesNameARealAction:
     workflow the agent cannot invoke, and which does not exist at all in an
     unattended run."""
 
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_completed_done_message_names_clean_mode(self, mock_agent, state_file: Path):
         common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
         mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
@@ -3518,7 +3518,7 @@ class TestDeadEndMessagesNameARealAction:
         assert mock_agent.call_count == 1
 
     def test_replay_message(self):
-        from booley.mcp_tools import reviewer as reviewer_mod
+        from booley.specialists import reviewer as reviewer_mod
 
         source = Path(reviewer_mod.__file__).read_text(encoding="utf-8")
         assert "raise it in triage instead" not in source
@@ -3581,8 +3581,8 @@ def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
 
 
 class TestDiffBoundary:
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_unchanged_baseline_findings_cannot_fail_gate(
         self,
         mock_agent,
@@ -3639,8 +3639,8 @@ class TestDiffBoundary:
         assert "ALL TESTS PASSED." in prompt
         assert "dump.vcd" in prompt
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_configured_tb_owned_trace_is_not_a_finding_on_changed_line(
         self,
         mock_agent,
@@ -3685,8 +3685,8 @@ class TestDiffBoundary:
         assert result.detail["issues"] == 0
         assert "project's configured sentinel/trace contract" in result.report_text
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_retry_resolves_legacy_baseline_findings_without_agent(
         self,
         mock_agent,
@@ -3738,8 +3738,8 @@ class TestDiffBoundary:
         assert len(result.detail["resolved"]) == 4
         mock_agent.assert_not_called()
 
-    @patch("booley.mcp_tools.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
-    @patch("booley.mcp_tools.specialist._call_agent_sync")
+    @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("verif/", "verif\\"))
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_invalid_diff_ref_is_endpoint_error(
         self, mock_agent, _mock_tb_prefixes, state_file: Path, tmp_path: Path
     ):

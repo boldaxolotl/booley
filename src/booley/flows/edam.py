@@ -41,7 +41,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from booley.platform_paths import posix_relpath
+from booley.runtime.platform_paths import posix_relpath
 
 logger = logging.getLogger(__name__)
 

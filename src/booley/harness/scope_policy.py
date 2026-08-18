@@ -31,7 +31,7 @@ import json
 import logging
 from pathlib import Path
 
-from .git_utils import (
+from booley.runtime.git import (
     git_run,
     is_new_scope_entry,
     is_scope_unknown,
