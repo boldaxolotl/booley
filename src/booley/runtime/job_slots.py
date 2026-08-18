@@ -88,11 +88,11 @@ _UNREADABLE_REAP_AGE_SECONDS = 60.0
 # reads as a hang; a reminder every half minute is cheap and un-spammy (F-27).
 NARRATE_INTERVAL_SECONDS = 30.0
 
-# Windows may briefly deny unlink while another claimant is reading the same
-# entry. Retrying keeps release idempotent without turning the lock-free store
-# into a permanent phantom-holder deadlock.
-_ENTRY_UNLINK_ATTEMPTS = 20
-_ENTRY_UNLINK_RETRY_SECONDS = 0.01
+# Windows may briefly deny rename/unlink while another claimant is reading the
+# same entry. Retrying keeps the lock-free store from producing false losses or
+# permanent phantom-holder deadlocks.
+_ENTRY_IO_ATTEMPTS = 20
+_ENTRY_IO_RETRY_SECONDS = 0.01
 
 
 class QueueFullError(RuntimeError):
@@ -273,16 +273,26 @@ def _windows_pid_alive(pid: int) -> bool:
     # CTRL_C_EVENT, which GenerateConsoleCtrlEvent sprays across the
     # whole console — interrupting the very session that spawned us.
     import ctypes
+    from ctypes import wintypes
 
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    ERROR_INVALID_PARAMETER = 87
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
-        return False
+        # Access denial and transient API failures are not proof of death. A
+        # false negative here lets another claimant reap a live process.
+        return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
     try:
         # OpenProcess can succeed for recently-exited processes;
         # verify the process hasn't terminated via its exit code.
-        exit_code = ctypes.c_ulong()
+        exit_code = wintypes.DWORD()
         STILL_ACTIVE = 259
         if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
             return exit_code.value == STILL_ACTIVE
@@ -484,14 +494,27 @@ class SlotStore:
             holder_path = token.path.with_name(
                 _entry_name(_HOLDER, token.priority, token.seq, token.pid, token.n)
             )
-            try:
-                token.path.rename(holder_path)
-            except OSError:
-                return TokenState(LOST)  # reaped from under us mid-promotion
+            if not self._rename_entry(token.path, holder_path):
+                # A Windows sharing violation is not cancellation. If the
+                # waiter still exists, leave it queued and retry next poll.
+                return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
             token.path = holder_path
             self._stamp_promoted(token)
             return TokenState(HOLDING)
         return TokenState(QUEUED, position=rank - self.caps.cap_for(token.job_class))
+
+    def _rename_entry(self, source: Path, target: Path) -> bool:
+        """Promote an entry through transient Windows sharing violations."""
+        for attempt in range(_ENTRY_IO_ATTEMPTS):
+            try:
+                source.rename(target)
+                return True
+            except PermissionError:
+                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
+            except OSError:
+                return False
+        return False
 
     def _stamp_promoted(self, token: SlotToken) -> None:
         """Rewrite the freshly-promoted entry with a ``promoted_at`` stamp.
@@ -588,13 +611,13 @@ class SlotStore:
 
     def _unlink_entry(self, path: Path) -> bool:
         """Remove an entry, retrying transient Windows sharing violations."""
-        for attempt in range(_ENTRY_UNLINK_ATTEMPTS):
+        for attempt in range(_ENTRY_IO_ATTEMPTS):
             try:
                 path.unlink(missing_ok=True)
                 return True
             except PermissionError:
-                if attempt + 1 < _ENTRY_UNLINK_ATTEMPTS:
-                    self._sleep(_ENTRY_UNLINK_RETRY_SECONDS)
+                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
             except OSError:
                 return False
         logger.warning("Could not remove slot entry after retries: %s", path.name)

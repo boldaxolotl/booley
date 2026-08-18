@@ -70,6 +70,28 @@ def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
 
 
+@pytest.mark.parametrize(("last_error", "expected"), [(5, True), (87, False)])
+def test_windows_pid_liveness_only_treats_invalid_pid_as_dead(monkeypatch, last_error, expected):
+    import ctypes
+
+    class FakeCall:
+        def __init__(self, result):
+            self.result = result
+
+        def __call__(self, *_args):
+            return self.result
+
+    class FakeKernel32:
+        OpenProcess = FakeCall(0)
+        GetExitCodeProcess = FakeCall(0)
+        CloseHandle = FakeCall(1)
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32(), raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
+
+    assert job_slots._windows_pid_alive(1234) is expected
+
+
 class TestSingleProcess:
     def test_first_claim_holds_immediately(self, root, world):
         spawn(world, 100)
@@ -122,6 +144,25 @@ class TestSingleProcess:
         toks = [store.submit(CLASS_LIGHT, pid=100) for _ in range(4)]
         states = [store.refresh(t).state for t in toks]
         assert states == [HOLDING, HOLDING, HOLDING, QUEUED]
+
+    def test_promotion_retries_transient_permission_error(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        tok = store.submit(CLASS_HEAVY, pid=100)
+        original_rename = Path.rename
+        attempts = 0
+
+        def flaky_rename(path, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("file is temporarily in use")
+            return original_rename(path, target)
+
+        monkeypatch.setattr(Path, "rename", flaky_rename)
+
+        assert store.refresh(tok).state == HOLDING
+        assert attempts == 3
 
     def test_queue_positions_are_zero_based_and_ordered(self, root, world):
         spawn(world, 100)
