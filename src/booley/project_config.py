@@ -329,8 +329,8 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
     Each Target section may declare an ordered ``tests = [...]`` list (or
     reference a shared ``[test_lists]`` entry via ``test_list = "name"``, the
-    same mechanism configs.toml used) plus an optional ``select`` plusarg
-    template, an optional ``skip = [...]`` known-hang exclusion list, and an
+    same mechanism configs.toml used) plus an optional single-token ``select``
+    option template, an optional ``skip = [...]`` known-hang exclusion list, and an
     optional ``env = { NAME = "value" }`` table injected into the simulator
     process. ``[test_lists]`` is a reserved top-level table.
     """

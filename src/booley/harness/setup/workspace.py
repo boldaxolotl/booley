@@ -107,6 +107,18 @@ def _install_scope_hook(
         _set_worktree_hooks_path(worktree_path, hooks_dir.as_posix())
 
 
+def refresh_scope_guards(
+    worktree_path: Path,
+    scope: list[str],
+    *,
+    project_root: Path,
+) -> None:
+    """Refresh persisted scope and hooks before a resumed developer run."""
+    if not worktree_path.is_dir():
+        raise FileNotFoundError(f"ticket worktree is missing: {worktree_path}")
+    _install_scope_hook(worktree_path, scope, project_root=project_root)
+
+
 def _resolve_worktree_git_dir(worktree_path: Path) -> Path | None:
     """Resolve the .git directory for a worktree (file or dir)."""
     git_pointer = worktree_path / ".git"

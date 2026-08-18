@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from booley.harness import project_image as pi
 
 # ===========================================================================
@@ -194,6 +196,20 @@ class TestManagedFileGuard:
 
 
 class TestDockerfile:
+    @pytest.mark.parametrize(
+        ("from_line", "expected"),
+        [
+            ("FROM booley-sandbox-riscv", "booley-sandbox-riscv"),
+            ("FROM --platform=linux/amd64 booley-sandbox:latest AS runtime", "booley-sandbox"),
+            ("FROM ${BASE_IMAGE}", None),
+        ],
+    )
+    def test_parent_image_resolution(self, tmp_path, from_line, expected):
+        dockerfile = tmp_path / "Dockerfile"
+        dockerfile.write_text(from_line + "\n", encoding="utf-8")
+
+        assert pi.dockerfile_parent_image(dockerfile) == expected
+
     def test_installs_as_root_into_system(self, tmp_path):
         docker_dir = tmp_path / "docker"
         pi.consolidated_requirements(tmp_path, [])

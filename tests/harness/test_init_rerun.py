@@ -384,6 +384,39 @@ class TestHandAuthoredImageBuild:
         assert not builds
         assert ctx2.results[-1].status == "skip"
 
+    def test_stale_existing_image_rebuilds_from_unchanged_user_files(self, hand_repo, monkeypatch):
+        repo, builds = hand_repo
+        docker_dir = repo / ".booley_project" / "docker"
+        dockerfile = docker_dir / "Dockerfile"
+        dockerfile.write_text(self.HAND_DOCKERFILE, encoding="utf-8")
+        monkeypatch.setattr(init_cmd.idk, "image_exists", lambda _name: True)
+        monkeypatch.setattr(init_cmd, "source_fingerprint_mismatch", lambda _name: True)
+
+        init_cmd._step_project_image(InitContext(project_root=repo))
+
+        assert builds
+        assert dockerfile.read_text(encoding="utf-8") == self.HAND_DOCKERFILE
+
+    def test_project_image_refreshes_shipped_flavor_parent(self, hand_repo, monkeypatch):
+        repo, builds = hand_repo
+        docker_dir = repo / ".booley_project" / "docker"
+        dockerfile = docker_dir / "Dockerfile"
+        dockerfile.write_text("FROM booley-sandbox-riscv\nRUN echo custom\n", encoding="utf-8")
+        monkeypatch.setattr(init_cmd.idk, "image_exists", lambda _name: True)
+        refreshed: list[str] = []
+        monkeypatch.setattr(
+            init_cmd,
+            "ensure_flavor_image",
+            lambda _ctx, image: refreshed.append(image) or True,
+        )
+        monkeypatch.setattr(init_cmd, "_warn_on_live_session_on_old_image", lambda *_args: None)
+
+        init_cmd._step_project_image(InitContext(project_root=repo))
+
+        assert refreshed == ["booley-sandbox-riscv"]
+        assert builds
+        assert dockerfile.read_text(encoding="utf-8").startswith("FROM booley-sandbox-riscv")
+
 
 class TestCuratedOverrideAdvisory:
     """F-13: a project pin that re-versions a package the base image curated

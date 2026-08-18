@@ -192,6 +192,14 @@ Row 16 decides the git footprint. If it places authored cores under
 `.booley_project/cores/`, row 20 must enable stealth so Booley projects those
 cores into the repository root. An open footprint uses tracked native cores.
 
+**Hybrid port/integration footprint.** When row 16 explicitly selected the
+hybrid, follow the hidden procedure for `.booley_project/`, but commit only the
+row's named repository-native integration artifacts. Keep the selected native
+`.core` authoritative, and keep a real tracked root `AGENTS.md` whose content
+matches `<project_dir>/AGENTS.md`; current init/Doctor preserves that durable
+file and generates only the optional `CLAUDE.md` link. Verify the tracked
+allowlist exactly—hybrid does not authorize committing operational state.
+
 **Hidden (default) — exclude it in the *parent repo's* `.git/info/exclude`.**
 
 - The exclusion belongs in the RTL repo's `.git/info/exclude`, **not** its

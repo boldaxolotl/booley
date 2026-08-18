@@ -334,6 +334,34 @@ class TestAddGitExcludes:
         body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
         assert body.count("/.devcontainer") == 1
 
+    def test_later_entries_reuse_one_generated_block(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+
+        add_git_excludes(repo, [".devcontainer", ".booley_project", ".claude"])
+        add_git_excludes(repo, [".booley-projected-*.core"])
+
+        body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        assert body.count(BOOLEY_EXCLUDE_HEADER) == 1
+        block = body.split(BOOLEY_EXCLUDE_HEADER, 1)[1].strip().splitlines()
+        assert block == [
+            "/.devcontainer",
+            "/.booley_project",
+            "/.claude",
+            "/.booley-projected-*.core",
+        ]
+
+    def test_repairs_duplicate_generated_headers(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        exclude = repo / ".git" / "info" / "exclude"
+        exclude.write_text(
+            f"{BOOLEY_EXCLUDE_HEADER}\n/.devcontainer\n\n"
+            f"{BOOLEY_EXCLUDE_HEADER}\n/.booley-projected-*.core\n",
+            encoding="utf-8",
+        )
+
+        assert add_git_excludes(repo, [".devcontainer"]) is True
+        assert exclude.read_text(encoding="utf-8").count(BOOLEY_EXCLUDE_HEADER) == 1
+
     def test_linked_worktree_writes_to_common_dir_and_is_honored(self, tmp_path):
         """The crux: a linked worktree honors the COMMON-dir info/exclude only.
 

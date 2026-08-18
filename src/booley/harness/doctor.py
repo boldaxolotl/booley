@@ -5058,7 +5058,7 @@ def _run_core_audit(
     elif refs:
         _pass(".core security validation passed (no fpga hooks / expr-params / in-scope scripts)")
 
-    # 4. tests.toml plusarg select templates (decision 16).
+    # 4. tests.toml single-token select templates (decision 16).
     _audit_tests_toml(project, _pass, _skip, _fail)
 
     # 5. Native build dependencies of C/C++ simulation sources (advisory).
@@ -6329,7 +6329,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
 
 
 def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
-    """Validate the project's ``tests.toml`` (plusarg templates, decision 16)."""
+    """Validate the project's ``tests.toml`` selector templates."""
     tests_path = project.project_dir / "tests.toml"
     if not tests_path.exists():
         _skip("tests.toml not present (test selection falls back to configs.toml)")
@@ -6341,7 +6341,7 @@ def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: 
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         _fail(f"tests.toml invalid: {exc}", "fix the tests.toml select/test list")
         return
-    _pass("tests.toml valid (plusarg select templates well-formed)")
+    _pass("tests.toml valid (single-token select templates well-formed)")
     _audit_tests_toml_targets(project, sections, _fail)
 
 

@@ -58,7 +58,12 @@ def _stub_flavor_env(
     built: list[str] = []
     monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: exists)
     monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: fingerprint)
-    monkeypatch.setattr(idi, "_image_is_stale", lambda fp, image=idi.DOCKER_IMAGE: stale)
+    monkeypatch.setattr(
+        idi,
+        "_image_is_stale",
+        lambda fp, image=idi.DOCKER_IMAGE, expected_version=None: stale,
+    )
+    monkeypatch.setattr(idi, "_expected_version", lambda _root: "0.2.0")
     monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
 
     def _fake_build(ctx, dockerfile, context, exists_, fp=None, image=idi.DOCKER_IMAGE, **kw):
@@ -272,7 +277,11 @@ class TestBaseImageNote:
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
         monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: None)
-        monkeypatch.setattr(idi, "_image_is_stale", lambda fp, image=idi.DOCKER_IMAGE: False)
+        monkeypatch.setattr(
+            idi,
+            "_image_is_stale",
+            lambda fp, image=idi.DOCKER_IMAGE, expected_version=None: False,
+        )
 
         idi._step_docker_image(InitContext(project_root=Path("/tmp/x")), selected_image=FLAVOR)
 
@@ -283,7 +292,11 @@ class TestBaseImageNote:
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
         monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: None)
-        monkeypatch.setattr(idi, "_image_is_stale", lambda fp, image=idi.DOCKER_IMAGE: False)
+        monkeypatch.setattr(
+            idi,
+            "_image_is_stale",
+            lambda fp, image=idi.DOCKER_IMAGE, expected_version=None: False,
+        )
 
         idi._step_docker_image(
             InitContext(project_root=Path("/tmp/x")), selected_image=idi.DOCKER_IMAGE

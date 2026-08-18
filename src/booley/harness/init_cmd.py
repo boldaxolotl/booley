@@ -99,6 +99,7 @@ from booley.harness.init_docker_image import (
     _step_docker_image,
     _try_pull_image,
     ensure_flavor_image,
+    source_fingerprint_mismatch,
 )
 from booley.harness.init_git_hooks import (
     _PROJECT_HOOK_SCRIPTS,
@@ -367,7 +368,8 @@ def _step_project_dir(ctx: InitContext) -> None:
     reset_cache()
     ok(f"project directory created at {target}")
     info(
-        "  config skeletons created; run the booley-setup skill (Step 2, project config) to fill them"
+        "  config skeletons created; run the booley-setup skill starting at "
+        "Step 0 (planning). Its Step 2 fills these files."
     )
     ctx.record("project_dir", "ok", "created with config skeletons")
 
@@ -718,7 +720,7 @@ def _selected_image_handled(ctx: InitContext, sandbox: dict, generated: str) -> 
     return False
 
 
-def _project_image_setup_gate(
+def _project_image_setup_gate(  # noqa: PLR0911 — each early return is a distinct image-ownership/build gate
     ctx: InitContext,
 ) -> tuple[Path, Path, dict, str, str | None, bool] | None:
     """Run the early docker/project-dir/user-managed-image skip checks.
@@ -758,6 +760,18 @@ def _project_image_setup_gate(
     # dead-ended the natural "drop a requirements.txt, re-run init" path (F-5):
     # the user had to `docker build` and set [sandbox].image by hand.
     docker_dir = project_dir / "docker"
+    dockerfile = docker_dir / "Dockerfile"
+    parent = pi.dockerfile_parent_image(dockerfile)
+    parent_refreshed = False
+    if parent in FLAVOR_IMAGES:
+        result_count = len(ctx.results)
+        parent_refreshed = ensure_flavor_image(ctx, parent)
+        if parent_refreshed:
+            _warn_on_live_session_on_old_image(ctx, parent)
+        parent_result = ctx.results[-1] if len(ctx.results) > result_count else None
+        if parent_result is not None and parent_result.status in {"warn", "err"}:
+            return None
+
     user_owned = [
         p.name
         for p in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
@@ -766,14 +780,26 @@ def _project_image_setup_gate(
     if user_owned:
         owned = f"docker/{{{', '.join(user_owned)}}}"
         if idk.image_exists(generated):
-            warn(
-                f"manual edits detected in {owned} — leaving "
-                "them and the existing image untouched. Delete them (or set "
-                "[sandbox].image to your own image) to resume managed regeneration; "
-                "run `docker build` yourself to rebuild from your edits."
+            image_stale = source_fingerprint_mismatch(generated) is True
+            if not parent_refreshed and not image_stale:
+                warn(
+                    f"manual edits detected in {owned} — leaving "
+                    "them and the existing image untouched. Delete them (or set "
+                    "[sandbox].image to your own image) to resume managed regeneration; "
+                    "run `docker build` yourself to rebuild from your edits."
+                )
+                ctx.record("project_image", "skip", "manual edits preserved")
+                return None
+            reason = (
+                f"its Booley-managed parent '{parent}' was refreshed"
+                if parent_refreshed
+                else "its inherited Booley provenance is stale"
             )
-            ctx.record("project_image", "skip", "manual edits preserved")
-            return None
+            info(
+                f"manual edits detected in {owned}; rebuilding '{generated}' "
+                f"from those files because {reason}"
+            )
+            return project_dir, toml_path, sandbox, generated, configured, True
         info(
             f"manual edits detected in {owned} and image '{generated}' is not "
             "built — using your files as the build input (leaving them untouched)"
