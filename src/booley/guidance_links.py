@@ -2,11 +2,11 @@
 
 The canonical project guidance file (``AGENTS.md``) lives in the project data
 directory (``.booley_project/``), so it is versioned alongside the rest of the
-project config. The RTL repo root only carries generated links — ``AGENTS.md``
-(for Codex / Booley) and ``CLAUDE.md`` (for Claude Code) — that point at the
-canonical file. Those links are recreated per checkout and kept out of the RTL
-repo's history via ``.git/info/exclude`` (not the tracked ``.gitignore``), so
-they never appear in a commit or a diff.
+project config. The RTL repo root normally carries generated links —
+``AGENTS.md`` (for Codex / Booley) and ``CLAUDE.md`` (for Claude Code) — that
+point at the canonical file. An open-source repo may instead track a regular
+root guidance file so fresh clones receive it before Booley is initialized;
+Booley preserves that file when its content matches the canonical copy.
 
 This module creates and repairs those root links cross-platform.
 """
@@ -38,8 +38,10 @@ def ensure_guidance_links(project_root: Path, project_dir: Path) -> list[Path]:
     """Point ``<project_root>/{AGENTS,CLAUDE}.md`` at ``<project_dir>/AGENTS.md``.
 
     Idempotent: a link already resolving to the canonical file is left
-    untouched. The canonical file must exist. Link names are added to the RTL
-    repo's ``.git/info/exclude`` so they stay out of its history.
+    untouched. A git-tracked regular file with identical content is also left
+    untouched; a tracked stale file raises instead of destroying repository
+    content. The canonical file must exist. Link names are added to the RTL
+    repo's ``.git/info/exclude`` so generated entries stay out of its history.
 
     Returns the link paths that now exist. Raises ``FileNotFoundError`` when
     the canonical guidance file is missing.
@@ -52,10 +54,47 @@ def ensure_guidance_links(project_root: Path, project_dir: Path) -> list[Path]:
     links: list[Path] = []
     for name in LINK_NAMES:
         link = project_root / name
-        _link_file(link, canon, target)
+        if not guidance_entry_current(project_root, link, canon):
+            if _is_git_tracked(project_root, link):
+                raise OSError(
+                    f"tracked root guidance file differs from canonical copy: {link}"
+                )
+            _link_file(link, canon, target)
         links.append(link)
     add_git_excludes(project_root, LINK_NAMES, header=_EXCLUDE_HEADER)
     return links
+
+
+def guidance_entry_current(project_root: Path, entry: Path, canon: Path) -> bool:
+    """Whether a root guidance entry is a live link or matching tracked file."""
+    if _points_to(entry, canon):
+        return True
+    if not _is_git_tracked(project_root, entry) or not entry.is_file():
+        return False
+    try:
+        return entry.read_bytes() == canon.read_bytes()
+    except OSError:
+        return False
+
+
+def _is_git_tracked(project_root: Path, entry: Path) -> bool:
+    """Return whether *entry* is tracked by the repository at *project_root*."""
+    try:
+        rel = entry.relative_to(project_root).as_posix()
+    except ValueError:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", rel],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def _portable_target(project_root: Path, canon: Path) -> Path:

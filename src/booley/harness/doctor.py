@@ -43,7 +43,12 @@ from booley.flow_names import (
     config_section,
 )
 from booley.flows import execution
-from booley.guidance_links import CANON_NAME, LINK_NAMES, ensure_guidance_links
+from booley.guidance_links import (
+    CANON_NAME,
+    LINK_NAMES,
+    ensure_guidance_links,
+    guidance_entry_current,
+)
 from booley.harness import auth_token, doctor_stamp, nangate_pdk, session_runtime
 from booley.harness import devcontainer as dc
 from booley.harness import interactive_docker as idk
@@ -1609,7 +1614,7 @@ def _check_agents_md(
 
 
 def _guidance_links_current(project_root: Path, canon: Path) -> bool:
-    """True when every generated root link refers to the canonical guidance."""
+    """True when every root entry is a live link or matching tracked file."""
     try:
         resolved_canon = canon.resolve(strict=True)
     except OSError:
@@ -1617,7 +1622,7 @@ def _guidance_links_current(project_root: Path, canon: Path) -> bool:
     for name in LINK_NAMES:
         link = project_root / name
         try:
-            if link.resolve(strict=True) != resolved_canon and not link.samefile(resolved_canon):
+            if not guidance_entry_current(project_root, link, resolved_canon):
                 return False
         except OSError:
             return False

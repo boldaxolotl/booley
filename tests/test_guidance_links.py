@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,6 +77,35 @@ def test_replaces_legacy_real_file(tmp_path: Path):
 
     assert legacy.is_symlink()
     assert legacy.resolve() == canon.resolve()
+
+
+def test_preserves_matching_tracked_root_file(tmp_path: Path):
+    project_root, project_dir, canon = _make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project_root, check=True)
+    root_agents = project_root / "AGENTS.md"
+    root_agents.write_bytes(canon.read_bytes())
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=project_root, check=True)
+
+    ensure_guidance_links(project_root, project_dir)
+
+    assert root_agents.is_file()
+    assert not root_agents.is_symlink()
+    assert root_agents.read_bytes() == canon.read_bytes()
+    assert (project_root / "CLAUDE.md").is_symlink()
+
+
+def test_refuses_to_overwrite_stale_tracked_root_file(tmp_path: Path):
+    project_root, project_dir, _canon = _make_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=project_root, check=True)
+    root_agents = project_root / "AGENTS.md"
+    root_agents.write_text("# TRACKED PROJECT GUIDANCE\n", encoding="utf-8")
+    subprocess.run(["git", "add", "AGENTS.md"], cwd=project_root, check=True)
+
+    with pytest.raises(OSError, match="tracked root guidance file differs"):
+        ensure_guidance_links(project_root, project_dir)
+
+    assert root_agents.read_text(encoding="utf-8") == "# TRACKED PROJECT GUIDANCE\n"
+    assert not root_agents.is_symlink()
 
 
 def test_updates_git_info_exclude(tmp_path: Path):
