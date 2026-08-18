@@ -95,6 +95,27 @@ class TestSingleProcess:
         store.release(tok)
         store.release(tok)  # must not raise
 
+    def test_release_retries_transient_permission_error(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        tok = store.submit(CLASS_HEAVY, pid=100)
+        original_unlink = Path.unlink
+        attempts = 0
+
+        def flaky_unlink(path, *args, **kwargs):
+            nonlocal attempts
+            if path == tok.path and attempts < 2:
+                attempts += 1
+                raise PermissionError("file is temporarily in use")
+            attempts += 1
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+        store.release(tok)
+
+        assert attempts == 3
+        assert not tok.path.exists()
+
     def test_cap_bounds_holders(self, root, world):
         spawn(world, 100)
         store = make_store(root, world, SlotCaps(max_light=3))
@@ -437,10 +458,17 @@ class TestRealProcessRace:
         workers = [ctx.Process(target=_race_worker, args=(str(tmp_path), w, 3)) for w in range(4)]
         for p in workers:
             p.start()
-        for p in workers:
-            p.join(timeout=60)
-            assert not p.is_alive(), "race worker wedged — admission deadlock?"
-            assert p.exitcode == 0
+        try:
+            for p in workers:
+                p.join(timeout=60)
+                assert not p.is_alive(), "race worker wedged — admission deadlock?"
+                assert p.exitcode == 0
+        finally:
+            for p in workers:
+                if p.is_alive():
+                    p.terminate()
+            for p in workers:
+                p.join(timeout=5)
         violations = list(tmp_path.glob("violation-*"))
         assert violations == [], [v.read_text() for v in violations]
 

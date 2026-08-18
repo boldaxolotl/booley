@@ -88,6 +88,12 @@ _UNREADABLE_REAP_AGE_SECONDS = 60.0
 # reads as a hang; a reminder every half minute is cheap and un-spammy (F-27).
 NARRATE_INTERVAL_SECONDS = 30.0
 
+# Windows may briefly deny unlink while another claimant is reading the same
+# entry. Retrying keeps release idempotent without turning the lock-free store
+# into a permanent phantom-holder deadlock.
+_ENTRY_UNLINK_ATTEMPTS = 20
+_ENTRY_UNLINK_RETRY_SECONDS = 0.01
+
 
 class QueueFullError(RuntimeError):
     """The class queue is at ``queue_max`` — the submit must be refused.
@@ -578,8 +584,21 @@ class SlotStore:
 
     def release(self, token: SlotToken) -> None:
         """Release a slot or withdraw a queued entry. Idempotent, never raises."""
-        with contextlib.suppress(OSError):
-            token.path.unlink(missing_ok=True)
+        self._unlink_entry(token.path)
+
+    def _unlink_entry(self, path: Path) -> bool:
+        """Remove an entry, retrying transient Windows sharing violations."""
+        for attempt in range(_ENTRY_UNLINK_ATTEMPTS):
+            try:
+                path.unlink(missing_ok=True)
+                return True
+            except PermissionError:
+                if attempt + 1 < _ENTRY_UNLINK_ATTEMPTS:
+                    self._sleep(_ENTRY_UNLINK_RETRY_SECONDS)
+            except OSError:
+                return False
+        logger.warning("Could not remove slot entry after retries: %s", path.name)
+        return False
 
     def _rank(self, token: SlotToken) -> int:
         """Position of *token* in the total scheduling order of live entries."""
@@ -706,11 +725,9 @@ class SlotStore:
             return []
         reaped: list[str] = []
         for path in list(cls_dir.glob("*.json")):
-            if self._is_stale(path):
-                with contextlib.suppress(OSError):
-                    path.unlink(missing_ok=True)
-                    reaped.append(path.name)
-                    logger.info("Reaped stale slot entry %s", path.name)
+            if self._is_stale(path) and self._unlink_entry(path):
+                reaped.append(path.name)
+                logger.info("Reaped stale slot entry %s", path.name)
         return reaped
 
     def _is_stale(self, path: Path) -> bool:

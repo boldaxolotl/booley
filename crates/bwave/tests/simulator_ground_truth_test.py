@@ -1743,8 +1743,12 @@ class TestVirtualSignalGroundTruth(unittest.TestCase):
         cls.vcd_path = str(fixture)
         cls.oracle = VcdOracle(cls.vcd_path)
         _build_bwave_if_missing()
-        # Build an .fst store so virtual signal queries use the cache path
-        bwave_path = str(fixture.with_suffix(".test_virtual.fst"))
+        # The source fixture may live on a read-only bind mount (as it does in
+        # the Docker smoke test), so keep generated stores in writable temp
+        # space instead of beside the fixture.
+        temp_dir = tempfile.TemporaryDirectory(prefix="bwave-virtual-")
+        cls.addClassCleanup(temp_dir.cleanup)
+        bwave_path = str(Path(temp_dir.name) / "large_multiwidth.test_virtual.fst")
         result = subprocess.run(
             [BWAVE_BIN, "build", cls.vcd_path, "-o", bwave_path],
             capture_output=True,
