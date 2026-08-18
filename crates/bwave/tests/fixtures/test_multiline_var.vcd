@@ -1,0 +1,42 @@
+$comment
+  This VCD tests multi-line tokens:
+  - $timescale spanning two lines
+  - $var spanning two lines
+  - $comment with multiple lines
+  - $date and $version sections
+$end
+$date
+  Tue Dec 31
+  23:59:59 2024
+$end
+$version
+  Test Generator
+  v1.0
+$end
+$timescale
+  1ns
+$end
+$scope module tb $end
+$var wire 1
+  ! clk
+$end
+$var wire 8
+  " data [7:0]
+$end
+$var reg 1
+  # enable
+$end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b00000000 "
+0#
+#5
+1!
+#10
+0!
+1#
+b00001111 "
+#15
+1!

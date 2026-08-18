@@ -1,0 +1,171 @@
+# Booley RISC-V sandbox image — the base sandbox plus a full RISC-V software
+# toolchain, a reference ISS, and the ratified RISC-V International spec set
+# baked in for offline use. Purpose-built for RISC-V CPU-core projects
+# (ibex, picorv32, biriscv, …) whose flows compile firmware/tests with a
+# RISC-V cross-compiler before simulating the RTL.
+#
+# It extends `booley-sandbox`, so that image must exist first. Build both with:
+#   ./src/booley/data/docker/build-riscv.sh      (auto-builds the base + wheel)
+# or manually:
+#   ./src/booley/data/docker/build.sh                        # base
+#   docker build -t booley-sandbox-riscv \
+#       -f src/booley/data/docker/Dockerfile.riscv .         # this image
+#
+# Point a project at it in .booley_project/booley.toml:
+#   [sandbox]
+#   image = "booley-sandbox-riscv"
+# `booley init` recognises the name (init_docker_image.FLAVOR_IMAGES) and builds
+# or refreshes this image itself — it is Booley's, not a user-managed one.
+#
+# When the project ALSO has Python deps to bake (e.g. ibex), hand-author
+# .booley_project/docker/Dockerfile as `FROM booley-sandbox-riscv` + your pip
+# install, mark it `# booley:keep`, and point [sandbox].image at that image
+# instead (see docs/CONFIG.md).
+#
+# IMPORTANT: keep this file COPY-free. `booley init` builds it with data/docker/
+# as the context so a pip-installed Booley (no repo root) can build it too.
+
+ARG BOOLEY_BASE_IMAGE=booley-sandbox
+FROM ${BOOLEY_BASE_IMAGE}
+
+# Everything below installs system-wide; drop back to the agent user at the end
+# to match the base image's runtime posture.
+USER root
+
+# ---------------------------------------------------------------------------
+# RISC-V GNU toolchain (prebuilt, pinned) — the xPack Newlib bare-metal build.
+# Chosen because it ships a *rich multilib set* — rv32i / rv32im / rv32imc
+# (ilp32), the rv32e/f/d variants, and the rv64 ABIs — which the target cores
+# require (ibex builds rv32imc/ilp32, picorv32 rv32i/im/imc). The riscv-collab
+# nightly prebuilts are single-arch (rv64gc- or rv32gc-only) and cannot link
+# rv32im/ilp32 firmware, so they are deliberately NOT used here. Prebuilt over a
+# 30–60 min from-source build, mirroring how the base pins OpenROAD/sv2v.
+# --strip-components=1 flattens the tarball's version-stamped top dir.
+#
+# The xPack driver is prefixed `riscv-none-elf-`, but ibex's common.mk and
+# picorv32's makefiles invoke `riscv32-unknown-elf-` / `riscv64-unknown-elf-`.
+# Alias BOTH triples to every helper executable: gcc derives its assembler/linker lookup from
+# argv[0]'s prefix, so the whole binutils set is aliased, not just gcc. The
+# actual ISA/ABI is selected by the projects' explicit -march/-mabi flags, which
+# the multilib set resolves regardless of the driver's name.
+# ---------------------------------------------------------------------------
+ARG XPACK_GCC_VERSION=15.2.0-1
+ARG XPACK_GCC_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758
+RUN echo ">>> Installing xPack RISC-V GNU toolchain ${XPACK_GCC_VERSION} (multilib newlib)..." \
+    && mkdir -p /opt/riscv \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_GCC_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_GCC_VERSION}-linux-x64.tar.gz" \
+        -o /tmp/riscv-toolchain.tar.gz \
+    && echo "${XPACK_GCC_SHA256}  /tmp/riscv-toolchain.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/riscv-toolchain.tar.gz -C /opt/riscv --strip-components=1 \
+    && rm -f /tmp/riscv-toolchain.tar.gz \
+    && for f in /opt/riscv/bin/riscv-none-elf-*; do \
+           helper_executable="$(basename "$f" | sed 's/^riscv-none-elf-//')"; \
+           ln -sf "$f" "/opt/riscv/bin/riscv32-unknown-elf-${helper_executable}"; \
+           ln -sf "$f" "/opt/riscv/bin/riscv64-unknown-elf-${helper_executable}"; \
+       done \
+    && /opt/riscv/bin/riscv-none-elf-gcc --version
+ENV PATH="/opt/riscv/bin:${PATH}"
+
+# Post-PATH executable test. The in-layer check above runs before the ENV, so it
+# can only prove the absolute path works; this proves the driver actually
+# resolves the way every downstream Makefile will invoke it. Both aliased
+# triples are covered because gcc derives its binutils lookup from argv[0].
+RUN riscv-none-elf-gcc --version >/dev/null \
+    && riscv32-unknown-elf-gcc --version >/dev/null \
+    && riscv64-unknown-elf-gcc --version >/dev/null \
+    && echo ">>> RISC-V toolchain on PATH: $(riscv-none-elf-gcc -dumpversion)"
+
+# ---------------------------------------------------------------------------
+# RISC-V build/sim helper programs from apt:
+#   srecord              — srec_cat; ibex hard-depends on it for .vmem memory
+#                          image generation (examples/.../common.mk).
+#   device-tree-compiler — dtc; Spike compiles its device tree at runtime, and
+#                          many RISC-V SoC flows need it.
+#   poppler-utils        — pdftotext; makes the baked reference PDFs searchable
+#                          from an agent or shell without network access.
+# ---------------------------------------------------------------------------
+RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        srecord device-tree-compiler poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Spike (riscv-isa-sim) — the canonical RISC-V reference ISS, used as the
+# golden model for differential testing / co-simulation (picorv32 torture &
+# csmith flows, ibex's UVM riscv-dv DV flow). Bundles libfesvr. Installed into
+# /opt/riscv so it shares the toolchain's already-on-PATH bin dir.
+#
+# Pinned to a master commit rather than the v1.1.0 tag: v1.1.0 predates the
+# <cstdint> header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's
+# default) with "uint64_t not declared". Fetch-by-SHA mirrors the OpenSTA layer.
+# Terminated with an explicit `test -x` so a broken build fails the image loudly
+# — NOT `|| true`, which would silently ship an image with no spike.
+# ---------------------------------------------------------------------------
+ARG SPIKE_REF=55b4658dbf574ba0b714083ec436ce2cb5be1998
+RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
+    && git init /tmp/spike \
+    && cd /tmp/spike \
+    && git remote add origin https://github.com/riscv-software-src/riscv-isa-sim.git \
+    && git fetch --depth 1 origin "${SPIKE_REF}" \
+    && git checkout --detach FETCH_HEAD \
+    && test "$(git rev-parse HEAD)" = "${SPIKE_REF}" \
+    && mkdir -p /tmp/spike/build && cd /tmp/spike/build \
+    && ../configure --prefix=/opt/riscv \
+    && make -j"$(nproc)" \
+    && make install \
+    && test -x /opt/riscv/bin/spike \
+    && rm -rf /tmp/spike
+
+# ---------------------------------------------------------------------------
+# RISC-V International ratified specifications — baked in so the in-container
+# agent (whose egress is locked to LLM endpoints) can read them offline. This
+# is the authoritative core set from the github.com/riscv org, pinned to the
+# ratified releases; it is NOT every document RVI has ever published (that set
+# is unbounded and lives across dozens of extension repos), but it is the
+# canonical reference for ISA/privileged/debug/ABI questions.
+#   riscv-spec.{pdf,html}          — unprivileged + privileged ISA manual
+#   riscv-debug-specification.pdf  — external debug support
+#   riscv-abi.pdf                  — ELF psABI / calling convention
+# ---------------------------------------------------------------------------
+ARG ISA_MANUAL_RELEASE=riscv-isa-release-60d323c-2026-07-06
+ARG DEBUG_SPEC_RELEASE=1.0
+ARG PSABI_RELEASE=v1.0
+ARG ISA_MANUAL_PDF_SHA256=5aae3568f952a4e2f10dab7a204ec7a43b13a1c068be2d9aa7995f418e941d03
+ARG ISA_MANUAL_HTML_SHA256=41c79800bd7b97fcdeaf564d4a6f8689e895dcd932eecc4207dc582d3e1503ad
+ARG DEBUG_SPEC_SHA256=ce2787b25233a6109c9bc767b2bc497798148b721390f72fb9b48ff0ed986fc8
+ARG PSABI_SHA256=a8d06bdcaa82a6a4567a1904dc27ef1ca1043ebaa1f523558c927a9d72bc23d9
+RUN echo ">>> Downloading ratified RISC-V International specifications..." \
+    && mkdir -p /opt/riscv-docs \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-spec.pdf" \
+        -o /opt/riscv-docs/riscv-isa-manual.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-spec.html" \
+        -o /opt/riscv-docs/riscv-isa-manual.html \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-debug-spec/releases/download/${DEBUG_SPEC_RELEASE}/riscv-debug-specification.pdf" \
+        -o /opt/riscv-docs/riscv-debug-specification.pdf \
+    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases/download/${PSABI_RELEASE}/riscv-abi.pdf" \
+        -o /opt/riscv-docs/riscv-abi.pdf \
+    && echo "${ISA_MANUAL_PDF_SHA256}  /opt/riscv-docs/riscv-isa-manual.pdf" | sha256sum -c - \
+    && echo "${ISA_MANUAL_HTML_SHA256}  /opt/riscv-docs/riscv-isa-manual.html" | sha256sum -c - \
+    && echo "${DEBUG_SPEC_SHA256}  /opt/riscv-docs/riscv-debug-specification.pdf" | sha256sum -c - \
+    && echo "${PSABI_SHA256}  /opt/riscv-docs/riscv-abi.pdf" | sha256sum -c - \
+    && printf '%s\n' \
+        '# RISC-V International specifications (offline copy)' \
+        '' \
+        'Ratified reference set baked into the booley-sandbox-riscv image.' \
+        '' \
+        "- riscv-isa-manual.pdf / .html — unprivileged + privileged ISA manual (${ISA_MANUAL_RELEASE})" \
+        "- riscv-debug-specification.pdf — external debug support (${DEBUG_SPEC_RELEASE})" \
+        "- riscv-abi.pdf — ELF psABI / calling convention (${PSABI_RELEASE})" \
+        '' \
+        'Search HTML directly, or extract PDF text with: pdftotext <file.pdf> -' \
+        '' \
+        'Source: https://github.com/riscv  •  path exported as $BOOLEY_RISCV_DOCS' \
+        > /opt/riscv-docs/INDEX.md
+ENV BOOLEY_RISCV_DOCS=/opt/riscv-docs
+
+# Marks the image variant so utility scripts and Doctor can detect the RISC-V flavour.
+ENV BOOLEY_SANDBOX_FLAVOR=riscv
+
+# Restore the base image's runtime user/workdir.
+USER agent
+WORKDIR /work

@@ -1,0 +1,8 @@
+[project]
+name = "vivado-mount-poc"
+
+[flows.fpga]
+default_target = "fpga"
+
+[eda.vivado]
+provisioning = "host"

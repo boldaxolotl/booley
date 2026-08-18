@@ -1,0 +1,34 @@
+# TESTS_TEMPLATE — annotated `.booley_project/tests.toml` (verification-intent).
+# Per-Target test lists plus an optional run-time selector (decisions 15–16).
+
+[test_lists]                 # optional shared, reusable lists
+smoke = ["reset", "basic"]
+
+# Sections are keyed by .core Target name. Use the SAME form you put in
+# `[flows.<flow>].default_target` in booley.toml. In a multi-core repo where a bare
+# name is ambiguous, that means the VLNV-qualified selector, quoted because
+# of the colons:
+#
+#   ["mylib:myip:port#sim"]
+#   tests = ["reset", "basic"]
+#
+# Booley matches the bare and qualified forms against each other, and doctor
+# fails a section whose key names no declared Target — but keeping the two
+# files in the same form is what makes the config readable.
+
+[sim]                        # keyed by .core Target name
+tests = ["reset", "basic", "stress"]
+select = "+test_id={index}"  # exactly one plusarg; {index} (0-based) or {name}
+
+[sim_fast]
+test_list = "smoke"          # reference a shared list instead of inlining
+
+# --- Cocotb Target (ADR 0034) ---------------------------------------------
+# For a Target whose .core flow options declare a `cocotb_module`, `tests`
+# lists the @cocotb.test() FUNCTION NAMES in that module. Do NOT declare
+# `select` — cocotb selection is an env-var filter Booley builds from this
+# list (a plusarg template here is a setup-time error). `skip` works as usual.
+#
+# [sim_cocotb]
+# tests = ["test_reset", "test_count", "test_overflow"]
+# skip = ["test_known_hang"]

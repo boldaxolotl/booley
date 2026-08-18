@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley Ticket Triage"
+  short_description: "Triage blocked, failed, and review tickets"
+  default_prompt: "Use $booley-ticket-triage to work through the current blocked, failed, and review tickets."
+
+policy:
+  allow_implicit_invocation: false

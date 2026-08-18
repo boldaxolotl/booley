@@ -1,0 +1,116 @@
+name: Publish Docker image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: boldaxolotl/booley-sandbox
+  RISCV_IMAGE_NAME: boldaxolotl/booley-sandbox-riscv
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    # Cold-cache build compiles the EDA stack from source (~57 min measured)
+    # plus a multi-GB push to GHCR; 90 minutes was too tight.
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Read version
+        id: version
+        run: |
+          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "source_updated_at=$(git log -1 --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Build wheel
+        run: |
+          pip install build==1.5.0
+          python -m build --wheel --outdir dist/
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            BOOLEY_VERSION=${{ steps.version.outputs.version }}
+            BOOLEY_SOURCE_REVISION=${{ steps.version.outputs.revision }}
+            BOOLEY_SOURCE_UPDATED_AT=${{ steps.version.outputs.source_updated_at }}
+            BOOLEY_IMAGE_BUILT_AT=${{ steps.version.outputs.image_built_at }}
+          cache-from: type=gha,scope=sandbox
+          # Same scope as bwave-smoke in test.yml, so tag builds reuse the
+          # per-PR cache. ignore-error: a failed cache upload must not fail
+          # a release build.
+          cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+
+  # RISC-V variant: base sandbox + RISC-V toolchain/Spike/specs (Dockerfile.riscv).
+  # It is `FROM booley-sandbox`; the build-context mapping below resolves that
+  # bare name to the exact digest produced above, so a mutable tag cannot race
+  # or redirect the derived-image build.
+  build-and-push-riscv:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push RISC-V image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.riscv
+          push: true
+          build-contexts: |
+            booley-sandbox=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:latest
+          # No GHA cache here: the riscv image is ~10 GB, larger than the
+          # repo's entire 10 GB Actions cache budget — writing it would evict
+          # the per-PR sandbox cache that bwave-smoke depends on, for a build
+          # that only runs on release tags anyway.

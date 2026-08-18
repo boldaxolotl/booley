@@ -1,0 +1,2225 @@
+"""AsicSynthesizeFlow — run ASIC synthesis per config with optional baseline comparison.
+
+Wraps the Yosys synthesis flow (sv2v + Yosys + ABC) with structured reporting,
+critical-condition detection, and optional delta computation against a baseline
+git ref. The baseline is synthesized in a throwaway ``git worktree`` (see
+:mod:`._baseline_worktree`) rather than by checking the ref out in place, so
+``--baseline`` never touches the caller's working tree and works in both Ticket
+and Interactive Mode.
+
+The configure half renders scripts and a Makefile into the per-target build dir
+in-process (:mod:`booley.yosys.syn_make`), execution runs ``make -C <rel>`` in
+the Session Runtime, and the interpret half reconstructs the report from files
+the make run left in the build directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+import shutil
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, ClassVar
+
+from booley import fusesoc_registry, job_slots
+from booley.core.boundary import BoundaryError, as_int, require_bool
+from booley.flow_names import config_section
+from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.platform_paths import posix_relpath
+from booley.timefmt import utc_now_rfc3339
+from booley.yosys.syn_core import (
+    FRONTEND_CHOICES,
+    NAND2_AREA_UM2,
+    parse_perclock,
+)
+
+from . import artifacts
+from .base import BooleyFlow, SubprocessResult
+from .baseline_worktree import BaselineWorktreeError, baseline_worktree, git_short_sha
+from .clock_timing import (
+    ClockTiming,
+    make_clock_timing,
+    per_clock_to_json,
+    worst_clock,
+)
+from .execution import ExecutionSelection
+from .flow_config import resolve_flow_default_target
+from .source_fingerprint import compute_source_fingerprint
+from .synth_ppa_config import add_ppa_arguments
+from .synthesis_recipe import (
+    RECIPE_FINGERPRINT_DETAIL,
+    synthesis_recipe_args,
+    synthesis_recipe_fingerprint,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def synth_target_report_slug(target: str) -> str:
+    """Filesystem-safe, collision-resistant name for one Target selector."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", target)
+    if safe == target:
+        return safe
+    digest = hashlib.sha256(target.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}-{digest}"
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Replace *path* atomically so live pollers never observe torn JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_flow_config(work_dir: Path) -> dict[str, Any]:
+    """Read the ``[flows.synth]`` runtime-policy section."""
+    try:
+        from booley.shared_infra import _load_rtl_config
+
+        cfg = _load_rtl_config(work_dir) or {}
+    except Exception:  # noqa: BLE001 — best-effort config read; any failure degrades to empty knobs
+        cfg = {}
+    flows = cfg.get("flows", {})
+    return config_section(flows, "synth") if isinstance(flows, dict) else {}
+
+
+def _resolve_synth_timeout_ms(
+    work_dir: Path | None,
+    requested: Any = None,
+) -> int:
+    """Resolve the per-target synthesis budget for MCP and Flow callers."""
+    if requested is not None:
+        try:
+            return max(1, int(requested))
+        except (TypeError, ValueError):
+            return 1800000
+    if work_dir is None:
+        return 1800000
+    return max(1, as_int(_load_flow_config(work_dir).get("timeout_ms"), 1800000))
+
+
+def _expected_latches(work_dir: Path) -> int:
+    """``[flows.synth].expected_latches`` — declared intentional latches.
+
+    A standard-cell integrated clock gater is built from a deliberate
+    ``always_latch``; lowRISC's generic ``prim_clock_gating`` contains exactly
+    one. Failing on any latch at all makes such a design unsynthesizable
+    through Booley even though the RTL is correct (F-19). Declaring the count
+    keeps the check meaningful — one more latch than declared still fails, and
+    the raw count is always reported — while letting a correct design pass.
+
+    A negative or non-integer value is ignored (treated as 0) rather than
+    silently widening the gate.
+    """
+    raw = _load_flow_config(work_dir).get("expected_latches", 0)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return max(0, raw)
+
+
+def _fail_on_timing_violation(work_dir: Path) -> bool:
+    """``[flows.synth].fail_on_timing_violation`` — timing gates the exit code.
+
+    Default **false**, preserving the historical policy: negative slack prints
+    ``RESULT: WARN -- timing VIOLATED`` and exits 0, because synthesis (a
+    structural pass over the RTL) succeeded and the constraints are frequently
+    a placeholder the project has not tuned yet. But an rc-only consumer — a
+    ticket gate, a CI step, a review agent reading exit codes — then reads a
+    -2.633 ns design as success (ravenoc F-37). A project that has real
+    constraints flips this to ``true`` and a violated path becomes exit 1.
+
+    Raises ``BoundaryError`` on a non-bool value: silently ignoring a
+    ``fail_on_timing_violation = "yes"`` would leave the gate the author asked
+    for quietly disarmed.
+    """
+    return require_bool(
+        _load_flow_config(work_dir),
+        "fail_on_timing_violation",
+        default=False,
+        field="[flows.synth] 'fail_on_timing_violation'",
+    )
+
+
+# Standard-cell NAND2_X1 equivalent conversion for Nangate.
+# 1 GE is one NAND2_X1 cell; 1 kGE is 1000 NAND2_X1 cells.
+KGE_DIVISOR = NAND2_AREA_UM2 * 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SynthMetrics:
+    """Parsed synthesis metrics for a single config run."""
+
+    area_um2: float | None = None
+    area_kge: float | None = None
+    cells: int | None = None
+    wire_count: int = 0
+    process_count: int = 0
+    # Worst setup slack in ns from OpenSTA (negative == timing VIOLATED). The
+    # honest whole-design aggregate worst — kept as a scalar (unlike Fmax/critical
+    # path, which are per-clock below) so the report can flag violations without
+    # re-deriving them from the period. Named ``wns_ns`` to match fpga_impl's
+    # aggregate-setup-slack field (the two Flows' output schemas are kept
+    # consistent); the per-clock breakdown carries its own ``wns_ns`` too.
+    wns_ns: float | None = None
+    # Per-clock timing keyed by clock name. Fmax and critical-path delay are
+    # inherently per-clock, so the old single ``critical_path_ps``/``fmax_mhz``
+    # scalars were removed in favour of this map (one entry per ``create_clock``;
+    # a single-clock design has exactly one). Empty when STA reported no clock.
+    per_clock: dict[str, ClockTiming] = field(default_factory=dict)
+    # Resolved STA engine for this run. Empty only for synthetic/unit-test
+    # metrics that did not pass through the configured boundary. ``none`` is
+    # materially different from a configured engine that failed to report
+    # timing: the former is an intentional area-only run, not an SDC failure.
+    timing_engine: str = ""
+    # Worst register-to-register (internal) setup slack + Fmax from STA. Reported
+    # alongside the overall worst path because a non-zero set_input/output_delay
+    # budget lets an I/O path dominate the overall worst path and hide the true
+    # reg->reg critical path. None when STA emitted no reg->reg marker (e.g. a
+    # purely combinational design).
+    reg2reg_slack_ns: float | None = None
+    reg2reg_fmax_mhz: float | None = None
+    # Post-repair placed area from the OpenROAD engine (informational only —
+    # the contractual area metric stays Yosys ``stat``'s ``area_um2``).
+    post_opt_area_um2: float | None = None
+    # ADR 0029 D2: True when the OpenROAD ``repair_timing`` stage did not
+    # complete and the reported timing is the salvaged *pre-repair* placed STA
+    # (STA_REPAIR_INCOMPLETE marker). The run still passes — but the numbers are
+    # pre-repair, so the report/summary flags it.
+    repair_incomplete: bool = False
+    elapsed_s: float = 0.0
+    latches: int = 0
+    expected_latches: int = 0
+    """Latches the design is declared to contain on purpose
+    (``[flows.synth].expected_latches``). Not every latch is an
+    accident: a standard-cell library's integrated clock gater is built from
+    a deliberate ``always_latch``, and lowRISC's generic
+    ``prim_clock_gating`` ships exactly one. Treating every latch as an
+    unwaivable error made a correct design unsynthesizable (F-19). Latches
+    are always reported; only the count above this is a critical condition."""
+    comb_loops: int = 0
+    multi_driven: int = 0
+    returncode: int = 0
+    timed_out: bool = False
+    # Terminal classification is deliberately separate from returncode: make
+    # commonly collapses a child rc137 into rc2, and a timeout may leave valid
+    # intermediate area/stat artifacts behind.
+    termination: str = "completed"
+    yosys_complete: bool = True
+    timing_complete: bool = True
+    structural_checks_complete: bool = True
+    ppa_complete: bool = True
+    peak_rss_mb: float | None = None
+    infra_error: str = ""
+    # Error tail of the reconstructed synth output when a builtin run fails
+    # without metrics. Surfaced so the real diagnostic (missing EDA tool,
+    # unresolved liberty, a yosys/sv2v error out of the stage logs, ...)
+    # reaches the report instead of being swallowed behind a generic
+    # "no metrics" line.
+    failure_output: str = ""
+    # Project-relative path of the persisted full synth output (run.log in the
+    # per-target Edalize work dir), written on pass AND fail. Empty when the
+    # run never produced output to persist (e.g. resolution failure).
+    log_path: str = ""
+    #: Work-dir-relative directories holding this run's artifacts (``build``,
+    #: ``timing``). The report names directories, not a file inventory — see
+    #: :mod:`booley.flows.artifacts`.
+    dirs: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def unexpected_latches(self) -> int:
+        """Latches beyond the declared intentional count (never negative)."""
+        return max(0, self.latches - self.expected_latches)
+
+    @property
+    def has_critical(self) -> bool:
+        return self.structural_checks_complete and (
+            self.unexpected_latches > 0
+            or self.comb_loops > 0
+            or self.multi_driven > 0
+            or self.process_count > 0
+        )
+
+    @property
+    def has_metrics(self) -> bool:
+        """True when synthesis produced enough data to be actionable."""
+        return self.cells is not None or self.area_um2 is not None
+
+    @property
+    def passed(self) -> bool:
+        """True only when the EDA tool exited cleanly and produced usable metrics."""
+        return (
+            self.returncode == 0
+            and not self.timed_out
+            and self.ppa_complete
+            and not self.has_critical
+        )
+
+
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_area(output: str) -> tuple[float | None, int | None]:
+    """Extract area_um2 and cell_count from synthesis output.
+
+    Looks for the Yosys ``stat -liberty`` patterns:
+      - "Chip area for top module '...': <number>"
+      - "Number of cells: <number>" (Yosys <= 0.5x)
+      - "<count> <area> cells" stat-table row (Yosys 0.67+ dropped the
+        "Number of cells:" line for a count/area column table)
+    Falls back to any "Chip area for" line.
+    """
+    area: float | None = None
+    cells: int | None = None
+
+    # Area — prefer "top module" line (hierarchical total)
+    m = re.search(r"Chip area for top module\b.*?:\s*([\d.]+)", output)
+    if m:
+        area = float(m.group(1))
+    else:
+        matches = re.findall(r"Chip area for\b.*?:\s*([\d.]+)", output)
+        if matches:
+            area = float(matches[-1])
+
+    # Cell count — legacy summary line first, then the 0.67+ table's total
+    # "cells" row (bare word: per-type rows carry a cell name after it).
+    m = re.search(r"Number of cells:\s*(\d+)", output)
+    if m:
+        cells = int(m.group(1))
+    else:
+        table = re.findall(r"^\s*(\d+)\s+[0-9.eE+-]+\s+cells\s*$", output, flags=re.MULTILINE)
+        if table:
+            # Multiple stat blocks (per module): the totals accumulate per
+            # module; take the last block's row — it follows the final
+            # (post-mapping, flattened-top) stat, matching the area pick.
+            cells = int(table[-1])
+
+    return area, cells
+
+
+def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
+    """Build the per-clock timing map from ``STA_PERCLOCK`` markers.
+
+    Each clock's ``critical_path_ps``/``fmax_mhz`` is derived from its period and
+    worst setup slack by the shared :mod:`booley.flows.clock_timing` helper, so
+    the STA and Vivado flows share one ns→ps→MHz derivation. ``critical_path_ps``
+    intentionally means STA timing — ABC ``delay =`` mapper estimates are never
+    a source here.
+    """
+    return {
+        name: make_clock_timing(name, row["period_ns"], row["wns_ns"], row["whs_ns"])
+        for name, row in parse_perclock(output).items()
+    }
+
+
+def _parse_worst_slack(output: str) -> float | None:
+    """Extract OpenSTA worst setup slack in ns (negative == VIOLATED).
+
+    The synth engines emit ``STA_WORST_SLACK_NS:`` once per STA run; the most
+    pessimistic (minimum) value is the design's worst slack.
+    """
+    matches = re.findall(r"STA_WORST_SLACK_NS:\s*([-+]?\d+(?:\.\d+)?)", output)
+    return min(float(s) for s in matches) if matches else None
+
+
+def _parse_reg2reg_slack(output: str) -> float | None:
+    """Extract the worst register-to-register setup slack in ns, or None.
+
+    Both timing engines emit ``STA_REG2REG_SLACK_NS:`` once; the most
+    pessimistic (minimum) value is the internal worst slack.
+    """
+    matches = re.findall(r"STA_REG2REG_SLACK_NS:\s*([-+]?\d+(?:\.\d+)?)", output)
+    return min(float(s) for s in matches) if matches else None
+
+
+def _parse_reg2reg_fmax(output: str) -> float | None:
+    """Extract the reg->reg Fmax in MHz, or None when the marker is absent."""
+    matches = re.findall(r"STA_REG2REG_FMAX_MHZ:\s*([-+]?\d+(?:\.\d+)?)", output)
+    return min(float(f) for f in matches) if matches else None
+
+
+# Tolerance (ns) for the overall-vs-reg2reg slack comparison below. The two
+# numbers come from separate STA queries printed at 6-decimal precision; a gap
+# smaller than this is noise, not a distinct I/O path.
+_IO_BOUND_SLACK_EPS_NS = 1e-3
+
+
+def _is_io_bound_critical(metrics: SynthMetrics) -> bool:
+    """True when the design's binding (worst) timing path is I/O-bound.
+
+    The *overall* worst path is the single most-negative-slack path in the
+    design; the *reg2reg* group is the worst path constrained to register
+    endpoints on both ends. When the overall worst slack is strictly worse than
+    the reg2reg worst slack, the binding path is NOT a reg->reg path — it starts
+    at an input port or ends at an output port (in->reg, reg->out, or a pure
+    in->out feedthrough).
+
+    That matters because the generated SDC sets I/O delays as a *percentage of
+    the clock period*: ``set_input_delay`` and ``set_output_delay`` both scale
+    with ``period_ps``, so an I/O path's slack barely moves as the period is
+    tuned (a pure in->out feedthrough is exactly period-invariant, since the
+    scaled input and output delays cancel). An author chasing an I/O-bound
+    violation by shrinking ``period_ps`` chases a tail that never closes; the
+    real levers are declaring the actual external I/O delays or false-pathing
+    the port via the ``[flows.synth.timing].sdc`` knob. (SETUP-28)
+    """
+    worst = metrics.wns_ns
+    r2r = metrics.reg2reg_slack_ns
+    if worst is None or r2r is None:
+        return False
+    return worst < r2r - _IO_BOUND_SLACK_EPS_NS
+
+
+def _worst_critical_path_ps(metrics: SynthMetrics) -> float | None:
+    """Timing-worst clock's critical path (ps) for one-number display/deltas.
+
+    A representative scalar for the summary line and area/timing delta only —
+    never a stored metric (Fmax/critical-path are per-clock; that is the whole
+    point of :attr:`SynthMetrics.per_clock`). ``None`` when no clock has timing.
+    """
+    worst = worst_clock(metrics.per_clock)
+    return worst.critical_path_ps if worst else None
+
+
+def _worst_hold_slack_ns(metrics: SynthMetrics) -> float | None:
+    """Most pessimistic per-clock hold slack, or ``None`` when unavailable."""
+    slacks = [row.whs_ns for row in metrics.per_clock.values() if row.whs_ns is not None]
+    return min(slacks) if slacks else None
+
+
+def _parse_post_opt_area(output: str) -> float | None:
+    """Extract the OpenROAD post-repair placed design area in µm².
+
+    Informational only — surfaced alongside the Yosys ``stat`` area, never
+    substituted for it.  Returns ``None`` when the OpenSTA path ran (no marker).
+    """
+    matches = re.findall(r"OPENROAD_DESIGN_AREA_UM2:\s*([-+]?\d+(?:\.\d+)?)", output)
+    return float(matches[-1]) if matches else None
+
+
+def _parse_wire_count(output: str) -> int:
+    """Extract wire count from Yosys stat output."""
+    m = re.search(r"Number of wires:\s*(\d+)", output)
+    return int(m.group(1)) if m else 0
+
+
+def _parse_process_count(output: str) -> int:
+    """Extract process count from Yosys stat output (non-zero = unsynthesized)."""
+    m = re.search(r"Number of processes:\s*(\d+)", output)
+    return int(m.group(1)) if m else 0
+
+
+# A Yosys ``stat`` cell tally line: leading whitespace, the cell type, then
+# the instance count. Counting these is exact; counting bare ``$dlatch``
+# occurrences over the whole log also catches mentions in banners and
+# techmap/ABC traces, inflating the number that decides a FAIL.
+_DLATCH_STAT_RE = re.compile(r"^\s+\$_?DLATCH\S*\s+(\d+)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _count_latches(output: str) -> int:
+    """Number of latch cells Yosys inferred.
+
+    Prefers the ``stat`` cell tally, which is an exact instance count. A stat
+    section that ran but prints **no** ``$_DLATCH*`` row means zero latches —
+    ``stat`` omits cell types with no instances, so "no tally" must not be
+    conflated with "run died before ``stat``" (ravenoc F-29: yosys-slang emits
+    transient ``$driver$…($dlatch)`` helper cells that opt folds away; the
+    occurrence fallback counted 1680 log mentions on a netlist with zero
+    latches and failed a clean synthesis). Occurrence-matching remains only
+    for runs with no stat section at all, where over-counting is the safe
+    direction.
+    """
+    tallies = _DLATCH_STAT_RE.findall(output)
+    if tallies:
+        return sum(int(n) for n in tallies)
+    if "Printing statistics." in output:
+        return 0
+    return len(re.findall(r"\$dlatch", output))
+
+
+def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
+    """Count latches, combinational loops, and multi-driven nets in output.
+
+    Returns (latches, comb_loops, multi_driven).
+    """
+    latches = _count_latches(output)
+    comb_loops = len(re.findall(r"[Cc]ombinational loop", output))
+    multi_driven = len(re.findall(r"[Mm]ulti-driven", output))
+    return latches, comb_loops, multi_driven
+
+
+def _parse_synth_output(output: str, elapsed_s: float) -> SynthMetrics:
+    """Parse all metrics from combined synthesis stdout/stderr."""
+    area_um2, cells = _parse_area(output)
+    area_kge = area_um2 / KGE_DIVISOR if area_um2 is not None else None
+    wns_ns = _parse_worst_slack(output)
+    reg2reg_slack_ns = _parse_reg2reg_slack(output)
+    reg2reg_fmax_mhz = _parse_reg2reg_fmax(output)
+    post_opt_area_um2 = _parse_post_opt_area(output)
+    wire_count = _parse_wire_count(output)
+    process_count = _parse_process_count(output)
+    latches, comb_loops, multi_driven = _detect_critical_conditions(output)
+    peak_matches = re.findall(r"Peak RSS:\s*([\d.]+)\s*MB", output, re.IGNORECASE)
+    return SynthMetrics(
+        area_um2=area_um2,
+        area_kge=area_kge,
+        cells=cells,
+        wire_count=wire_count,
+        process_count=process_count,
+        wns_ns=wns_ns,
+        per_clock=_parse_per_clock_sta(output),
+        reg2reg_slack_ns=reg2reg_slack_ns,
+        reg2reg_fmax_mhz=reg2reg_fmax_mhz,
+        post_opt_area_um2=post_opt_area_um2,
+        repair_incomplete="STA_REPAIR_INCOMPLETE:" in output,
+        elapsed_s=elapsed_s,
+        latches=latches,
+        comb_loops=comb_loops,
+        multi_driven=multi_driven,
+        peak_rss_mb=float(peak_matches[-1]) if peak_matches else None,
+    )
+
+
+_RESOURCE_KILL_RE = re.compile(
+    r"(?:\b(?:exit|code|error)\s*137\b|\breturncode\s*[=:]\s*137\b|\bkilled\b)",
+    re.IGNORECASE,
+)
+
+
+def _termination_reason(result: SubprocessResult, output: str) -> str:
+    """Classify the boundary's terminal state without overclaiming OOM."""
+    if result.timed_out:
+        return "timeout"
+    if result.returncode == 0:
+        return "completed"
+    if result.oom_kill_delta > 0:
+        return "oom"
+    if result.returncode in {-9, 137} or _RESOURCE_KILL_RE.search(output):
+        return "resource_killed"
+    if result.returncode == -1:
+        return "infrastructure_error"
+    return "eda_tool_failure"
+
+
+def _infra_metrics(message: str) -> SynthMetrics:
+    """Build an explicitly incomplete result for pre-boundary failures."""
+    return SynthMetrics(
+        returncode=2,
+        infra_error=message,
+        termination="infrastructure_error",
+        yosys_complete=False,
+        timing_complete=False,
+        structural_checks_complete=False,
+        ppa_complete=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Report helpers
+# ---------------------------------------------------------------------------
+
+
+def _result_line(
+    failed: list[str],
+    selfcompare_msg: str | None,
+    violated: list[str],
+    notiming: list[str],
+) -> str:
+    """The single ``RESULT:`` headline, in strict severity order.
+
+    FAIL outranks every WARN; among the WARNs a meaningless baseline delta
+    outranks a timing violation, which outranks missing timing. Each WARN
+    still exits 0 — only *failed* (which already folds in an opted-in
+    ``fail_on_timing_violation``, F-37) moves the exit code.
+    """
+    if failed:
+        return f"RESULT: FAIL ({'; '.join(failed)})"
+    if selfcompare_msg:
+        # Structurally clean, but the baseline delta measured identical
+        # sources -- the one thing --baseline exists to catch.
+        return (
+            "RESULT: WARN -- baseline delta not meaningful "
+            "(baseline and current synthesized identical sources)"
+        )
+    if violated:
+        # Structurally clean but timing is VIOLATED. Exit stays 0 by default
+        # (timing does not gate synthesis), yet the user must clearly see it.
+        return f"RESULT: WARN -- timing VIOLATED ({'; '.join(violated)})"
+    if notiming:
+        # Structurally clean but no timing was reported (A-1): a constraint-less
+        # run must not read as an unqualified PASS.
+        return f"RESULT: WARN -- timing unavailable ({'; '.join(notiming)})"
+    return "RESULT: PASS"
+
+
+def _first_valid_display(
+    targets: list[str],
+    current_results: dict[str, SynthMetrics],
+) -> list[str]:
+    """Build concise display line from the first target with valid metrics."""
+    for tgt in targets:
+        cur = current_results[tgt]
+        critical_path_ps = _worst_critical_path_ps(cur)
+        if cur.cells is not None and critical_path_ps is not None:
+            return [f"{cur.cells:,} cells, {critical_path_ps:.0f}ps"]
+    return []
+
+
+def _target_summary(
+    metrics: SynthMetrics,
+    baseline: SynthMetrics | None = None,
+) -> dict[str, Any]:
+    """QoR + verdict for one target, as carried in the aggregate detail."""
+    summary: dict[str, Any] = {
+        "passed": metrics.passed,
+        "returncode": metrics.returncode,
+        "timed_out": metrics.timed_out,
+        "termination": metrics.termination,
+        "infra_error": metrics.infra_error,
+        "has_metrics": metrics.has_metrics,
+        "yosys_complete": metrics.yosys_complete,
+        "timing_complete": metrics.timing_complete,
+        "structural_checks_complete": metrics.structural_checks_complete,
+        "ppa_complete": metrics.ppa_complete,
+        "peak_rss_mb": metrics.peak_rss_mb,
+        "area_um2": metrics.area_um2,
+        "area_kge": metrics.area_kge,
+        "cells": metrics.cells,
+        "wire_count": metrics.wire_count,
+        "timing_engine": metrics.timing_engine,
+        "per_clock": per_clock_to_json(metrics.per_clock),
+        "wns_ns": metrics.wns_ns,
+        "whs_ns": _worst_hold_slack_ns(metrics),
+        "reg2reg_slack_ns": metrics.reg2reg_slack_ns,
+        "reg2reg_fmax_mhz": metrics.reg2reg_fmax_mhz,
+        "has_critical": metrics.has_critical,
+        "unexpected_latches": metrics.unexpected_latches,
+        "comb_loops": metrics.comb_loops,
+        "multi_driven": metrics.multi_driven,
+        # The aggregate detail is what reaches the agent as MCP
+        # structuredContent, so the pointers ride along with the numbers.
+        "artifacts": {
+            **({"log": metrics.log_path} if metrics.log_path else {}),
+            **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+        },
+    }
+    if baseline is not None:
+        summary["baseline_metrics"] = {
+            "passed": baseline.passed,
+            "returncode": baseline.returncode,
+            "infra_error": baseline.infra_error,
+            "ppa_complete": baseline.ppa_complete,
+            "area_um2": baseline.area_um2,
+            "area_kge": baseline.area_kge,
+            "cells": baseline.cells,
+            "wire_count": baseline.wire_count,
+            "per_clock": per_clock_to_json(baseline.per_clock),
+        }
+    return summary
+
+
+def _aggregate_detail(
+    targets: list[str],
+    current_results: dict[str, SynthMetrics],
+    baseline_results: dict[str, SynthMetrics] | None = None,
+    baseline_sha: str | None = None,
+) -> dict[str, Any]:
+    """Detail for the run-level ``asic_synthesize.json`` (SETUP-F-29b).
+
+    Every number used to live ONLY in the per-target ``synthesis_ok_<tgt>``
+    criteria, leaving the flat aggregate report with ``"detail": {}`` — so a
+    consumer that read the Flow's own report file (the MCP poll path, triage)
+    saw a verdict with no QoR behind it and had to go hunting through
+    ``state.json``. Mirror the per-target summaries here, keyed by target,
+    with an explicit ``targets`` list so the run's scope is readable even when
+    a target produced no metrics at all.
+    """
+    baseline_results = baseline_results or {}
+    current_passed = all(current_results[t].passed for t in targets) if targets else False
+    baseline_infra = any(metrics.infra_error for metrics in baseline_results.values())
+    detail: dict[str, Any] = {
+        "targets": list(targets),
+        "passed": current_passed and not baseline_infra,
+    }
+    for tgt in targets:
+        detail[tgt] = _target_summary(current_results[tgt], baseline_results.get(tgt))
+    if baseline_sha:
+        detail["baseline_ref"] = baseline_sha
+    return detail
+
+
+def _build_report_dict(
+    flow_name: str,
+    target: str,
+    metrics: SynthMetrics,
+    baseline_metrics: SynthMetrics | None,
+    baseline_ref: str | None,
+    compute_delta: Any,
+    eda_tool: str | None = None,
+) -> dict[str, Any]:
+    """Build the per-target report dict for JSON serialization.
+
+    *eda_tool* is the underlying EDA binary ("yosys" on the builtin flow).
+    """
+    report: dict[str, Any] = {
+        "flow": flow_name,
+        "target": target,
+        "eda_tool": eda_tool,
+        "timestamp": utc_now_rfc3339(),
+        "elapsed_s": round(metrics.elapsed_s, 1),
+        "passed": metrics.passed,
+        "returncode": metrics.returncode,
+        "timed_out": metrics.timed_out,
+        "termination": metrics.termination,
+        "infra_error": metrics.infra_error,
+        "has_metrics": metrics.has_metrics,
+        "yosys_complete": metrics.yosys_complete,
+        "timing_complete": metrics.timing_complete,
+        "structural_checks_complete": metrics.structural_checks_complete,
+        "ppa_complete": metrics.ppa_complete,
+        "peak_rss_mb": metrics.peak_rss_mb,
+        "area_kge": metrics.area_kge,
+        "area_um2": metrics.area_um2,
+        "cells": metrics.cells,
+        "timing_engine": metrics.timing_engine,
+        # Fmax/critical-path are per-clock (one entry per create_clock); the old
+        # top-level scalars were removed. Aggregate wns_ns/whs_ns stay below.
+        "per_clock": per_clock_to_json(metrics.per_clock),
+    }
+    # Informational OpenROAD post-repair area — present only on the openroad
+    # path; not part of the synthesis_ok criteria (Yosys stat area is contractual).
+    if metrics.post_opt_area_um2 is not None:
+        report["post_opt_area_um2"] = metrics.post_opt_area_um2
+    # ADR 0029 D2: flag salvaged pre-repair timing so a consumer knows the
+    # numbers are not the final repaired result.
+    if metrics.repair_incomplete:
+        report["repair_incomplete"] = True
+    # Aggregate worst setup/hold slack (ns); negative == timing VIOLATED.
+    # Informational only — timing does not gate synthesis, but the numbers
+    # belong in the report. Names mirror fpga_impl's ``wns_ns``/``whs_ns`` so a
+    # cross-Flow consumer reads the same field either way. Setup is a parsed
+    # scalar; hold is the most-pessimistic per-clock value (STA reports hold
+    # per-clock, so there is no separate aggregate to parse).
+    if metrics.wns_ns is not None:
+        report["wns_ns"] = metrics.wns_ns
+    worst_hold = _worst_hold_slack_ns(metrics)
+    if worst_hold is not None:
+        report["whs_ns"] = worst_hold
+    # Internal reg->reg critical path — the true logic Fmax, unmasked by the
+    # I/O-delay budget that can dominate the overall worst path above.
+    if metrics.reg2reg_slack_ns is not None:
+        report["reg2reg_slack_ns"] = metrics.reg2reg_slack_ns
+    if metrics.reg2reg_fmax_mhz is not None:
+        report["reg2reg_fmax_mhz"] = metrics.reg2reg_fmax_mhz
+    # Flag an I/O-bound worst path so triage/criteria consumers can tell an
+    # unclosable-by-period tail apart from a real reg->reg violation (SETUP-28).
+    if _is_io_bound_critical(metrics):
+        report["io_bound_critical"] = True
+    if baseline_metrics and baseline_ref:
+        report["baseline"] = {
+            "ref": baseline_ref,
+            "area_kge": baseline_metrics.area_kge,
+            "area_um2": baseline_metrics.area_um2,
+            "cells": baseline_metrics.cells,
+            "per_clock": per_clock_to_json(baseline_metrics.per_clock),
+        }
+        delta_pct = compute_delta(metrics.area_kge, baseline_metrics.area_kge)
+        # Timing delta compares the timing-worst clock of each run (a single
+        # representative number; the per-clock breakdown is in "per_clock").
+        timing_delta_pct = compute_delta(
+            _worst_critical_path_ps(metrics),
+            _worst_critical_path_ps(baseline_metrics),
+        )
+        if delta_pct is not None:
+            report["delta_pct"] = round(delta_pct, 1)
+        if timing_delta_pct is not None:
+            report["timing_delta_pct"] = round(timing_delta_pct, 1)
+    if metrics.failure_output:
+        report["failure_output"] = metrics.failure_output
+    report["conditions"] = {
+        "has_critical": metrics.has_critical,
+        "latches": metrics.latches,
+        "expected_latches": metrics.expected_latches,
+        "unexpected_latches": metrics.unexpected_latches,
+        "comb_loops": metrics.comb_loops,
+        "multi_driven": metrics.multi_driven,
+    }
+    return report
+
+
+def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
+    """Detect a no-op ``--baseline`` self-comparison and return an actionable warning.
+
+    ``_baseline_worktree._copy_stealth_cores`` mirrors the LIVE
+    ``.booley_project/cores/`` (ADR 0036) into the baseline worktree, and the
+    host-repo ``<ref>`` the worktree is checked out at never tracked those
+    stealth files to begin with. A project whose RTL lives *as real files* under
+    stealth cores therefore synthesizes byte-identical sources on BOTH sides of
+    the delta, and the reported area/Fmax change is a guaranteed ~+0.0% — a
+    reassuring pass that actually measured nothing. (Cores that reach the RTL
+    through core-relative resolution links are fine: the copy preserves the
+    links, so they resolve against the worktree's checkout.)
+
+    Compare the canonical source fingerprint (:func:`compute_source_fingerprint`,
+    the same ``_source_fingerprint`` the criteria records already stamp) of the
+    two trees. Only flag when the project HAS stealth cores *and* both sides hash
+    identical, so a plain project whose git-tracked RTL genuinely didn't change
+    between the ref and HEAD isn't nagged about a legitimately-zero delta.
+    Returns ``None`` when there is nothing to warn about (or the fingerprint
+    can't be computed — never let the guard itself break a run).
+    """
+    from booley.fusesoc_registry import state_cores_dir
+
+    if not state_cores_dir(project_root).is_dir():
+        return None
+    try:
+        cur = compute_source_fingerprint(project_root)["rtl"]["digest"]
+        base = compute_source_fingerprint(wt)["rtl"]["digest"]
+    except Exception:  # noqa: BLE001 — a guard must never be the thing that fails the run
+        logger.debug("baseline self-compare fingerprint check failed", exc_info=True)
+        return None
+    if cur != base:
+        return None
+    return (
+        "baseline and current synthesized byte-identical RTL -- the reported "
+        "delta is a no-op self-comparison, not a real regression check. This "
+        "project authors RTL under stealth cores (.booley_project/cores/, ADR "
+        "0036), whose real files are mirrored into the baseline worktree from "
+        "the LIVE tree, so --baseline cannot see the ref's version of them. "
+        "Compare against a ref whose git-tracked RTL differs, or reach the RTL "
+        "through core-relative resolution links (which DO follow the ref), "
+        "before trusting a +0.0% delta."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flow implementation
+# ---------------------------------------------------------------------------
+
+
+class AsicSynthesizeFlow(BooleyFlow):
+    """Run ASIC synthesis for one or more Targets with optional baseline comparison."""
+
+    def _resolve_job_class(self) -> str:
+        """Synthesis is a heavy Session Runtime workload."""
+        return job_slots.CLASS_HEAVY
+
+    name: str = "synth"
+    description: str = (
+        "Run ASIC synthesis for one or more Targets with optional baseline comparison. "
+        "This is a QUICK PPA (power/performance/area) ESTIMATE to optimize RTL "
+        "against — not tape-out sign-off (which is out of scope for Booley), "
+        "whatever engine backs it. "
+        "Design timing constraints (clock period, I/O delays, false/multicycle "
+        "paths) come from the Target's `file_type: SDC` fileset in the .core, "
+        "NOT booley.toml: add an SDC file with your create_clock / "
+        "set_input_delay / set_output_delay / set_false_path to the Target. A "
+        "Target with NO SDC is a hard error, not a silent default: "
+        "pass --default-clock <ps> to run against an explicitly-named canned "
+        "clock instead. "
+        "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
+        "timing_engine, and expert Yosys/OpenROAD recipe knobs belong in the "
+        "selected .core Target's flow_options; per-call flags can override "
+        "them. [flows.synth] in booley.toml is only for enablement and verdict "
+        "policy such as target, timeout_ms, and expected_latches."
+    )
+    code_modifying: bool = False
+    # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by
+    # per-target timeout, matrix width, and baseline/current pass count.
+    default_timeout: int = 7200
+    satisfies: ClassVar[list[str]] = ["synthesis_ok"]
+
+    # The built-in flow is make-driven: run_yosys_syn renders the build tree,
+    # then results are interpreted from files under that same directory.
+    def _add_args(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--baseline",
+            default=None,
+            help="Baseline git ref (SHA/branch/tag) for comparison",
+        )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            default=False,
+            help="Print commands without executing",
+        )
+        parser.add_argument(
+            "--timeout",
+            type=int,
+            default=None,
+            help="Per-config timeout in ms. Overrides "
+            "[flows.synth].timeout_ms; both default to 1800000. "
+            "OpenROAD placement + repair on large designs needs the "
+            "headroom; the outer MCP budget scales with the matrix.",
+        )
+        # ADR 0031: explicit opt-in for the canned clock. A Target with no
+        # file_type:SDC fileset is a hard error UNLESS this names a period, so
+        # the default is chosen per-run instead of fabricated silently.
+        parser.add_argument(
+            "--default-clock",
+            type=float,
+            default=None,
+            metavar="PS",
+            dest="default_clock",
+            help="Named canned clock period (ps) for a Target that carries no "
+            "SDC fileset. Without it, a constraint-less Target is a hard "
+            "error rather than a silent ~250 MHz default.",
+        )
+        # ADR 0029 decision 7: flatten is an A/B experiment toggle, so it lives
+        # on the Flow CLI. Tri-state: unset (None) means "use the selected
+        # Target's flow_options.flatten"; the explicit flag
+        # wins over it. --no-flatten shares the dest so the two are exclusive.
+        parser.add_argument(
+            "--flatten",
+            dest="flatten",
+            action="store_true",
+            default=None,
+            help="Flatten the hierarchy before tech-mapping (overrides the "
+            "selected Target's flow_options.flatten).",
+        )
+        parser.add_argument(
+            "--no-flatten",
+            dest="flatten",
+            action="store_false",
+            default=None,
+            help="Elaborate hierarchically (overrides the selected Target).",
+        )
+        # RTL frontend A/B toggle (like --flatten): sv2v transpile vs Yosys
+        # 0.67 native read_slang. Tri-state — unset (None) uses the selected
+        # Target's flow_options.frontend (else sv2v).
+        parser.add_argument(
+            "--frontend",
+            choices=list(FRONTEND_CHOICES),
+            default=None,
+            help="RTL frontend: 'sv2v' (transpile + read_verilog) or 'slang' "
+            "(native Yosys read_slang, requires the Yosys>=0.67 sandbox image). "
+            "Overrides the selected Target's flow_options.frontend (default sv2v).",
+        )
+        add_ppa_arguments(parser)
+
+    # -- BooleyFlow abstract methods (unused — we override _run) ----------
+
+    def _build_command(self) -> list[str]:
+        """Not used — _run handles multi-config orchestration directly."""
+        return []
+
+    def _interpret_result(self, result: SubprocessResult) -> McpToolResult:
+        """Not used — _run handles interpretation directly."""
+        return McpToolResult()
+
+    # -- Command builder for a single config ----------------------------------
+
+    def _append_rtl_source_args(
+        self,
+        cmd: list[str],
+        resolved: object,
+        work_dir: Path,
+    ) -> str:
+        """Append ``-t``/``--extra-rtl``/``--inc-dir`` flags; return the top module."""
+        # Top comes from the resolved Target (decision 12).
+        top = resolved.toplevel
+        if top:
+            cmd.extend(["-t", top])
+        for f in resolved.rtl_hdl_source_files:
+            rel = posix_relpath(f.absolute(resolved.build_root), work_dir)
+            cmd.extend(["--extra-rtl", rel])
+        for inc in resolved.rtl_include_dirs:
+            cmd.extend(["--inc-dir", posix_relpath(inc, work_dir)])
+        return top
+
+    def _append_sta_constraint_args(
+        self,
+        cmd: list[str],
+        resolved: object,
+        target: str,
+        work_dir: Path,
+    ) -> None:
+        """Append ``--sta-sdc``/``--default-clock`` flags (ADR 0029/0031)."""
+        # STA constraints from the Target's file_type:SDC fileset (ADR 0029):
+        # forward one --sta-sdc per file, in EDAM fileset order. Same boundary
+        # treatment as --extra-rtl — each is a path relative to the worktree,
+        # resolved against /work inside the sandbox.
+        for sdc_file in resolved.sdc_files:
+            rel = posix_relpath(sdc_file.absolute(resolved.build_root), work_dir)
+            cmd.extend(["--sta-sdc", rel])
+        # ADR 0031 (P1): design constraints are explicit and per-target. A Target
+        # with no file_type:SDC fileset must name its clock via --default-clock,
+        # or it is a hard error here — refuse to fabricate a 250 MHz clock and
+        # report a PPA number against a period the author never chose. Caught by
+        # _run_single_config (BoundaryError -> rc=2 infra) so the fix-hint reaches
+        # the report instead of crashing the whole run. Fail host-side (before the
+        # sandbox spins up) with the Target name run_yosys_syn's own guard can't
+        # know.
+        default_clock = getattr(self.args, "default_clock", None)
+        if not resolved.sdc_files and default_clock is None:
+            raise BoundaryError(
+                f"synth: Target {target!r} has no timing constraints. "
+                "Add a `file_type: SDC` fileset (create_clock / set_input_delay / "
+                "set_output_delay / set_false_path) to the Target, or pass "
+                "--default-clock <ps> to run against an explicitly-named clock."
+            )
+        if default_clock is not None:
+            cmd.extend(["--default-clock", str(default_clock)])
+
+    def _append_typed_param_args(
+        self,
+        cmd: list[str],
+        resolved: object,
+        target: str,
+        top: str,
+    ) -> None:
+        """Append ``-d``/``-p`` typed-param flags and warn on likely sim Targets."""
+        # FuseSoC owns build-time defines. ``vlogdefine`` parameters on this
+        # Target are the sole source, shared with FPGA and elaborate.
+        defines = _vlogdefine_args(resolved.parameters)
+        for define in defines:
+            cmd.extend(["-d", define])
+        for assignment in _vlogparam_args(resolved.parameters):
+            cmd.extend(["-p", assignment])
+        # Warn early when the target looks aimed at simulation (testbench top or
+        # SIMULATION define) — otherwise it fails deep inside Yosys.
+        for warning in _synth_target_warnings(top, defines):
+            logger.warning("Synth %s: %s", target, warning)
+
+    def _append_synth_recipe_args(self, cmd: list[str], resolved: Any, target: str) -> None:
+        """Append the shared normalized synthesis recipe for this invocation."""
+        cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
+
+    def _build_synth_cmd(self, target: str) -> list[str]:
+        """Resolve the synth Target through FuseSoC, then build the run_yosys_syn command.
+
+        ADR 0022 (decision 4): FuseSoC owns design-description. ``resolve_target``
+        runs ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing
+        the RTL sources, top module, and typed parameters. Synthesis is the
+        documented **command-gen exception**: Booley does *not* ``make``-drive
+        FuseSoC's flow — it reruns yosys its own way (sv2v + ABC recipes +
+        OpenSTA), feeding the resolved RTL filelist to ``run_yosys_syn`` in
+        standalone mode (``--extra-rtl`` + ``-t``, no ``-c``). That leaves the
+        legacy ``read_file_list`` / ``get_config_defines`` config-mode path
+        intact for non-FuseSoC callers (the Step-3 purge removes it later).
+
+        Sources are passed as paths relative to the worktree
+        (resolved against the Session Runtime project root), exactly
+        like ``make -C <relpath>`` for the make-driven EDA tools. A ``--baseline``
+        re-resolve runs against a throwaway worktree with ``self.args.work_dir``
+        pointed at it, so its build dir is physically separate from the current
+        run's and cannot clobber it. Raises ``TargetResolutionError`` on setup
+        failure (caller records it as an infra error).
+
+        ADR 0037 §8: this argv is no longer executed as a subprocess — it is
+        the validated, golden-snapshotted *spec* that ``_configure_synth``
+        parses back in-process (via run_yosys_syn's own parser, so flag-shape
+        drift still fails loudly) to render the make-driven build dir. It
+        remains a genuinely runnable legacy command for dry-run display.
+        """
+        from .edam import work_root_for
+
+        build_root = work_root_for(self.args.work_dir, self.name, target)
+        # Force a clean FuseSoC re-stage. Synthesis is the command-gen exception:
+        # it reruns yosys standalone over the resolved filelist rather than
+        # make-driving the build dir, so — unlike simulate/lint/elaborate — it
+        # gains nothing from a persisted build_root. Worse, a stale staged `src/`
+        # left by an earlier resolution silently feeds yosys OUTDATED RTL: a
+        # working-tree edit that never reached the staged copy yields wrong
+        # metrics or a phantom failure against code the author already changed
+        # (the same silently-wrong-RTL hazard as the worktree `.core` shadow bug).
+        # Removing build_root guarantees `fusesoc run --setup` copies the current
+        # sources. Best-effort: a removal failure is non-fatal — resolution still
+        # runs and will surface any real problem loudly.
+        shutil.rmtree(build_root, ignore_errors=True)
+        resolved = fusesoc_registry.resolve_target(
+            target,
+            project_root=self.args.work_dir,
+            build_root=build_root,
+        )
+
+        recipe_fingerprints = getattr(self, "_recipe_fingerprints", None)
+        if recipe_fingerprints is None:
+            recipe_fingerprints = self._recipe_fingerprints = {}
+        recipe_fingerprints[target] = synthesis_recipe_fingerprint(
+            resolved,
+            self.args,
+            target=target,
+        )
+
+        work_dir = Path(self.args.work_dir)
+        cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
+        top = self._append_rtl_source_args(cmd, resolved, work_dir)
+        self._append_sta_constraint_args(cmd, resolved, target, work_dir)
+        self._append_typed_param_args(cmd, resolved, target, top)
+        self._append_synth_recipe_args(cmd, resolved, target)
+        # Key run_yosys_syn's result dir on the *target name*, not the resolved
+        # toplevel module. Without ``-w`` the run falls back to run_yosys_syn's
+        # default ``syn_result/standalone.<toplevel>/`` — so two targets that
+        # share a toplevel (e.g. a scalar and a parallel config of the same DUT)
+        # silently overwrite each other's reports. ``-w`` gives each target its
+        # own ``syn_result/<target>/`` (a ``--baseline`` re-run is isolated by
+        # its separate worktree, so no per-run suffix is needed here).
+        cmd.extend(["-w", target])
+        return cmd
+
+    def _synth_build_dir(self, target: str) -> Path:
+        """The make-driven synth build dir for *target* (under its work root).
+
+        A ``synth/`` leaf inside the per-target Edalize work root keeps the
+        rendered scripts/Makefile/logs clear of the FuseSoC-staged tree that
+        shares the root. Wiped together with the root by ``_build_synth_cmd``'s
+        pre-resolution cleanup.
+        """
+        from .edam import work_root_for
+
+        return work_root_for(self.args.work_dir, self.name, target) / "synth"
+
+    def _configure_synth(self, target: str, cmd: list[str]) -> Any:
+        """Render *target*'s make-driven build dir from the spec argv (ADR 0037 §8).
+
+        The configure half: *cmd* (the run_yosys_syn spec argv built by
+        ``_build_synth_cmd``) is parsed back by run_yosys_syn's own parser —
+        guaranteeing the two stay shape-compatible — resolved against this
+        run's work_dir, and rendered into scripts + a Makefile. Returns the
+        :class:`booley.yosys.syn_make.SynthPlan` the interpret half consumes.
+
+        The liberty existence check is hard because configuration and execution
+        share the Session Runtime filesystem.
+
+        Raises ``SystemExit`` (run_yosys_syn's validation guards) or ``OSError``
+        (render failure); ``_run_single_config`` maps both to infra errors.
+        """
+        from booley.yosys import run_yosys_syn, syn_make
+
+        args = run_yosys_syn.parse_run_argv(cmd)
+        spec = run_yosys_syn.resolve_spec(
+            args,
+            project_root=Path(self.args.work_dir),
+            require_liberty=True,
+        )
+        return syn_make.configure_synthesis(spec, self._synth_build_dir(target))
+
+    def _synth_boundary_cmd(self, plan: Any) -> list[str]:
+        """Return the Session Runtime command for a configured synthesis plan."""
+        from . import edam
+
+        return ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
+
+    # -- Single-target run ----------------------------------------------------
+
+    def _run_single_config(
+        self,
+        target: str,
+    ) -> tuple[SynthMetrics, str]:
+        """Run synthesis for one target. Returns (metrics, raw_output).
+
+        Baseline runs are isolated by their separate worktree.
+        """
+        # Resolved once per run in _run (defaults to builtin/sandbox when a
+        # test drives this method directly without going through _run).
+        # The builtin flow is fixed: Yosys drives synthesis (plus the configured
+        # STA timing engine). Recorded for run/report observability.
+        self._eda_tool = "yosys"
+
+        # FuseSoC resolution happens in-process now (decision 4); a setup failure
+        # becomes an infra error for this target, not an unhandled crash of the
+        # whole _run.
+        try:
+            cmd = self._build_synth_cmd(target)
+        except fusesoc_registry.TargetResolutionError as exc:
+            logger.warning("Synth %s: FuseSoC resolution failed: %s", target, exc)
+            return _infra_metrics(str(exc)), str(exc)
+        except BoundaryError as exc:
+            # Wrong-typed [flows.synth] knob in booley.toml — a config
+            # error, not a synthesis failure. Surfaced like a resolution failure
+            # (returncode-2 infra error) so the fix-hint reaches the report
+            # instead of crashing the whole Flow run.
+            logger.warning("Synth %s: invalid Flow config: %s", target, exc)
+            return _infra_metrics(str(exc)), str(exc)
+
+        timeout_s = self._timeout_ms() / 1000.0
+        # DEBUG, not INFO: the joined argv sprays one ``--extra-rtl <file>``
+        # pair per source file into captured stderr, eating the MCP layer's
+        # 12KB stdout/stderr budget on every run. The full spec remains
+        # reachable via --log-level debug (and --dry-run prints it).
+        logger.debug("Synth %s: %s (timeout=%.0fs)", target, " ".join(cmd), timeout_s)
+
+        # ADR 0037 §8 configure half: parse the spec argv back in-process and
+        # render the sv2v/yosys/STA scripts + Makefile into the build dir. The
+        # run_yosys_syn resolution guards report via sys.exit("ERROR: ...");
+        # in-process that is a SystemExit to map onto the infra-error path.
+        try:
+            plan = self._configure_synth(target, cmd)
+        except SystemExit as exc:
+            msg = str(exc.code) if exc.code is not None else "synthesis configure failed"
+            logger.warning("Synth %s: configure failed: %s", target, msg)
+            return _infra_metrics(msg), msg
+        except OSError as exc:
+            msg = f"failed to render synthesis build dir: {exc}"
+            logger.warning("Synth %s: %s", target, msg)
+            return _infra_metrics(msg), msg
+
+        # A bare `make -C <rel>` runs the generated plan with EDA binaries from
+        # the Session Runtime PATH.
+        make_cmd = self._synth_boundary_cmd(plan)
+        logger.info("Synth %s: running %s (timeout=%.0fs)", target, " ".join(make_cmd), timeout_s)
+
+        # F-26: _persist_synth_log only lands at the END of a multi-minute
+        # synth, so claim the log now — a tail during the wait must not see
+        # the previous run's area/timing tail as this run's progress.
+        from .edam import work_root_for
+
+        self._open_run_log(target, work_root_for(self.args.work_dir, self.name, target))
+        start = time.monotonic()
+        proc_result = self._execute_boundary(make_cmd, timeout=self._get_timeout())
+        elapsed = time.monotonic() - start
+        return self._interpret_boundary_run(target, plan, proc_result, elapsed)
+
+    def _interpret_boundary_run(
+        self,
+        target: str,
+        plan: Any,
+        proc_result: SubprocessResult,
+        elapsed: float,
+    ) -> tuple[SynthMetrics, str]:
+        """Interpret half (ADR 0037 §8): metrics from the build dir's files.
+
+        Rebuilds the report text from the artifacts the make run left in the
+        build dir (stale-gated against dispatch time), with the boundary
+        command's own stdout/stderr as evidence up front — it carries the
+        BOOLEY_STAGE markers and any recipe failure tails.
+        """
+        from booley.yosys import syn_make
+
+        outcome = syn_make.boundary_output(
+            plan,
+            proc_result.returncode,
+            is_stale=lambda p: self._is_stale_artifact(p, proc_result.dispatched_unix or None),
+        )
+        output = "\n".join(
+            part for part in (proc_result.stdout, proc_result.stderr, outcome.text) if part
+        )
+        metrics = _parse_synth_output(output, elapsed)
+        metrics.timing_engine = plan.spec.timing.engine
+        metrics.expected_latches = _expected_latches(self.args.work_dir)
+        metrics.returncode = proc_result.returncode
+        metrics.timed_out = proc_result.timed_out
+        metrics.termination = _termination_reason(proc_result, output)
+        if proc_result.peak_rss_mb is not None:
+            metrics.peak_rss_mb = max(metrics.peak_rss_mb or 0.0, proc_result.peak_rss_mb)
+        # False-pass guard (legacy run_yosys_syn parity): an ERROR: line in the
+        # yosys/sv2v log despite make exiting 0 downgrades the run to a failure.
+        if outcome.forced_failure and metrics.returncode == 0:
+            metrics.returncode = 1
+            metrics.termination = "eda_tool_failure"
+        # A fresh final Yosys stat file is usable stage evidence even when the
+        # later STA stage times out.  It is still not a completed PPA verdict:
+        # only a clean terminal boundary may set ppa_complete.
+        metrics.yosys_complete = metrics.termination == "completed" or outcome.yosys_complete
+        metrics.timing_complete = metrics.termination == "completed"
+        metrics.structural_checks_complete = metrics.yosys_complete
+        metrics.ppa_complete = metrics.termination == "completed" and metrics.has_metrics
+        # Persist the full captured output on pass AND fail — the report only
+        # carries a bounded excerpt, and the MCP layer truncates stdout, so
+        # this file is the durable copy an agent can always read back.
+        metrics.log_path = self._persist_synth_log(target, output)
+        metrics.dirs = self._artifact_dirs(target)
+
+        if metrics.termination == "oom":
+            logger.warning("Synth %s was killed by the cgroup OOM killer", target)
+        elif metrics.termination == "resource_killed":
+            logger.warning("Synth %s was resource-killed", target)
+        elif proc_result.timed_out:
+            logger.warning("Synth %s timed out after %.1fs", target, elapsed)
+        elif proc_result.returncode != 0:
+            logger.warning("Synth %s failed with rc=%d", target, proc_result.returncode)
+
+        # When a run dies without producing metrics, keep the real failure (a
+        # yosys/sv2v/STA diagnostic out of the stage logs, or the make recipe's
+        # echoed log tail) instead of discarding it. Previously this path
+        # emitted a hardcoded "possible lock-path or permission issue" guess
+        # and dropped ``output`` on the floor, making the Flow unusable
+        # interactively.
+        if metrics.termination != "completed" or (
+            not metrics.has_metrics and proc_result.returncode != 0
+        ):
+            metrics.failure_output = _error_excerpt(output)
+            # Single line only: the multi-line excerpt already reaches the
+            # report via ``failure_output`` (and the full output is persisted
+            # above) — echoing it here too printed a third copy into captured
+            # stderr and ate the MCP layer's 12KB output budget.
+            reason_lines = metrics.failure_output.splitlines()
+            logger.error(
+                "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
+                target,
+                proc_result.returncode,
+                proc_result.timed_out,
+                reason_lines[0] if reason_lines else "(no output)",
+                metrics.log_path or "not persisted",
+            )
+
+        return metrics, output
+
+    def _artifact_dirs(self, target: str) -> dict[str, str]:
+        """The directories holding *target*'s synth artifacts, by role.
+
+        Two of them: the build dir (yosys/sta/openroad logs, the ``stat_*.txt``
+        area report, both netlists, the rendered ``synth.ys``, the SDC fed to
+        STA, the sv2v output) and the STA report dir under it.
+
+        Directories rather than a file inventory on purpose. An earlier version
+        enumerated all sixteen files: it was 80% of the report's bytes, and
+        every key hardcoded a filename that would silently vanish the day the
+        flow renamed its output — the "drop missing pointers" rule turns a
+        rename into an absent key nobody notices. A directory cannot go stale,
+        and the agent has ``ls``.
+        """
+        build_dir = self._synth_build_dir(target)
+        return artifacts.artifacts_block(
+            self.args.work_dir,
+            dirs={"build": build_dir, "timing": build_dir / "reports" / "timing"},
+        ).get("dirs", {})  # type: ignore[return-value]
+
+    def _persist_synth_log(self, target: str, output: str) -> str:
+        """Write *target*'s full synth output to its Edalize work dir.
+
+        Lands as ``run.log`` in ``.booley_project/.runtime/edalize/
+        asic_synthesize/<target>/`` — the per-target dir the FuseSoC resolution
+        already uses. Reuses the sim layer's :func:`write_run_log` for its
+        tail-cap + atomic-write semantics (flows/ already depends on sim/ — see
+        simulate.py).
+
+        Returns the project-relative path, or ``""`` when the write failed —
+        a log-write problem must never fail an otherwise-finished synth run.
+        """
+        from booley.sim.sim_result import write_run_log
+
+        from .edam import work_root_for
+
+        log_dir = work_root_for(self.args.work_dir, self.name, target)
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = write_run_log(log_dir, output)
+        except OSError:
+            logger.debug(
+                "Synth %s: failed to persist run.log in %s", target, log_dir, exc_info=True
+            )
+            return ""
+        return posix_relpath(log_path, self.args.work_dir)
+
+    def _persist_baseline_log(
+        self,
+        target: str,
+        output: str,
+        project_root: Path,
+    ) -> str:
+        """Persist a baseline run's output to the *real* project runtime.
+
+        The baseline run executes inside a throwaway worktree that is destroyed
+        on context exit, so its ``run.log`` (written under that worktree by
+        :meth:`_persist_synth_log`) would vanish. Re-write the captured output to
+        the real project's runtime under a ``-baseline`` variant dir — distinct
+        from the current run's ``run.log`` — and return that durable, project-
+        relative path. Best-effort: a write failure yields ``""``.
+        """
+        from booley.sim.sim_result import write_run_log
+
+        from .edam import work_root_for
+
+        log_dir = work_root_for(project_root, self.name, target, variant="baseline")
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = write_run_log(log_dir, output)
+        except OSError:
+            logger.debug(
+                "Synth %s: failed to persist baseline run.log in %s",
+                target,
+                log_dir,
+                exc_info=True,
+            )
+            return ""
+        # posix_relpath, not os.path.relpath: every other pointer Booley emits
+        # is POSIX-separated because it is read inside the Linux Session
+        # Runtime, where a Windows host's backslashes are meaningless.
+        return posix_relpath(log_path, project_root)
+
+    def _timeout_ms(self) -> int:
+        """Resolve the per-config timeout in ms.
+
+        Precedence: explicit ``--timeout`` CLI/MCP arg (trusted, argparse-typed)
+        > ``[flows.synth].timeout_ms`` in booley.toml (validated) >
+        1800000 default. Making it a project knob lets a design whose OpenROAD
+        repair_timing needs more than 30 min raise the inner cap without a code
+        change; the MCP layer derives the aggregate matrix budget from it.
+        """
+        return _resolve_synth_timeout_ms(self.args.work_dir, self.args.timeout)
+
+    def _get_timeout(self) -> int:
+        """Per-config timeout in whole seconds (see :meth:`_timeout_ms`)."""
+        return max(1, self._timeout_ms() // 1000)
+
+    # -- Formatting helpers ---------------------------------------------------
+
+    @staticmethod
+    def _fmt_area(kge: float | None) -> str:
+        return f"{kge:>6.1f} KGe" if kge is not None else "   -- KGe"
+
+    @staticmethod
+    def _fmt_timing(ps: float | None) -> str:
+        return f"{ps:,.0f} ps" if ps is not None else "-- ps"
+
+    @staticmethod
+    def _fmt_delta(pct: float | None) -> str:
+        if pct is None:
+            return ""
+        sign = "+" if pct >= 0 else ""
+        return f"(delta {sign}{pct:.1f}%)"
+
+    @staticmethod
+    def _compute_delta_pct(
+        current: float | None,
+        baseline: float | None,
+    ) -> float | None:
+        if current is None or baseline is None or baseline == 0.0:
+            return None
+        return ((current - baseline) / baseline) * 100.0
+
+    # -- Report writing -------------------------------------------------------
+
+    def _write_target_report(
+        self,
+        target: str,
+        metrics: SynthMetrics,
+        baseline_metrics: SynthMetrics | None,
+        baseline_ref: str | None,
+    ) -> None:
+        """Write per-target JSON report to report_dir."""
+        report_dir = self.args.report_dir
+        if report_dir is None:
+            return
+        report_dir.mkdir(parents=True, exist_ok=True)
+
+        report = _build_report_dict(
+            self.name,
+            target,
+            metrics,
+            baseline_metrics,
+            baseline_ref,
+            self._compute_delta_pct,
+            eda_tool=self._eda_tool,
+        )
+        run_id = os.environ.get("BOOLEY_RUN_ID", "")
+        if run_id:
+            report["run_id"] = run_id
+        safe_target = synth_target_report_slug(target)
+        report_path = report_dir / f"synth_{safe_target}.json"
+        invocation_dir = self.reserve_invocation_dir()
+        invocation_path = (
+            invocation_dir / "targets" / f"{safe_target}.json" if invocation_dir else None
+        )
+        # The run.log pointer lived only in the stdout ``log:`` line, which the
+        # MCP layer tail-truncates; ``reports`` was already here but not the log
+        # itself. Both now travel together in the shared ``artifacts`` shape,
+        # alongside this file's own path.
+        preserved = self._snapshot_report_artifacts(report_dir, safe_target, metrics)
+        report["artifacts"] = {
+            "report": posix_relpath(report_path, self.args.work_dir),
+            **preserved,
+        }
+        if invocation_path is not None:
+            _atomic_write_json(invocation_path, report)
+        _atomic_write_json(report_path, report)
+
+    def _snapshot_report_artifacts(
+        self, report_dir: Path, safe_target: str, metrics: SynthMetrics
+    ) -> dict[str, Any]:
+        """Copy mutable log/timing evidence beside this invocation's report."""
+        root = Path(self.args.work_dir)
+        destination = report_dir / "artifacts" / f"synth_{safe_target}"
+        result: dict[str, Any] = {
+            **({"log": metrics.log_path} if metrics.log_path else {}),
+            **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
+        }
+        if metrics.log_path:
+            source = root / metrics.log_path
+            if source.is_file():
+                destination.mkdir(parents=True, exist_ok=True)
+                copied = destination / "run.log"
+                shutil.copy2(source, copied)
+                result["log"] = posix_relpath(copied, root)
+        timing = metrics.dirs.get("timing") if metrics.dirs else None
+        if timing:
+            source_dir = root / timing
+            if source_dir.is_dir():
+                copied_dir = destination / "timing"
+                shutil.copytree(source_dir, copied_dir, dirs_exist_ok=True)
+                result.setdefault("dirs", {})["timing"] = posix_relpath(copied_dir, root)
+        return result
+
+    def _write_progress_report(
+        self,
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+        baseline_results: dict[str, SynthMetrics],
+        *,
+        phase: str,
+        baseline_ref: str | None = None,
+        complete: bool = False,
+    ) -> None:
+        """Checkpoint a long matrix after every target and phase transition."""
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is None:
+            return
+        completed = list(current_results)
+        payload: dict[str, Any] = {
+            "flow": self.name,
+            "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
+            "timestamp": utc_now_rfc3339(),
+            "phase": phase,
+            "complete": complete,
+            "targets": list(targets),
+            "completed_targets": completed,
+            "pending_targets": [target for target in targets if target not in current_results],
+            "baseline_completed_targets": list(baseline_results),
+            "detail": {
+                target: _target_summary(metrics, baseline_results.get(target))
+                for target, metrics in current_results.items()
+            },
+        }
+        if baseline_ref:
+            payload["baseline_ref"] = baseline_ref
+        _atomic_write_json(invocation_dir / "progress.json", payload)
+
+    def _persist_target_outcome(
+        self,
+        target: str,
+        metrics: SynthMetrics,
+        baseline_metrics: SynthMetrics | None,
+        baseline_ref: str | None,
+    ) -> None:
+        """Durably record one terminal target before the next one starts."""
+        self._write_target_report(target, metrics, baseline_metrics, baseline_ref)
+        if not metrics.infra_error:
+            self._set_config_criterion(target, metrics, baseline_metrics)
+            if self.state._file_path is not None:
+                self.state.save()
+
+    # -- Main run logic -------------------------------------------------------
+
+    def _resolve_run_policy(self, selection: ExecutionSelection) -> str | None:
+        """Latch the per-run policy state, or return the message that blocks the run.
+
+        The ``fail_on_timing_violation`` gate (F-37) must be settled before a
+        half-hour synthesis starts: a mistyped knob has to fail now, not while
+        formatting the report at the end.
+        """
+        if not selection.enabled:
+            return "synth is disabled ([flows.synth].enabled = false)."
+        try:
+            self._timing_violation_is_fatal = _fail_on_timing_violation(self.args.work_dir)
+        except BoundaryError as exc:
+            return f"synth: {exc}"
+        return None
+
+    def _run(self) -> McpToolResult:
+        """Execute synthesis for all targets, optionally comparing to baseline."""
+        from booley import fusesoc_registry
+
+        # Populated by _run_baseline_configs when a stealth-cores self-compare is
+        # detected; read by _aggregate_results. Reset per run so a stale value
+        # from a reused instance never leaks into a fresh invocation.
+        self._baseline_selfcompare_msg: str | None = None
+
+        if not self.args.target:  # ADR 0030: fall back to [flows.synth].default_target
+            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
+        targets = fusesoc_registry.resolve_target_selection(
+            self.args.target,
+            self.args.work_dir,
+        )
+        if not targets:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    "synth: no Target selected. Pass --target <name> or "
+                    "set [flows.synth].default_target (bare name if unambiguous, "
+                    "else vlnv#name)."
+                ),
+            )
+        # Resolve enablement and legacy-migration errors once per run, then
+        # reuse the result in each config and the dry-run report.
+        selection = self._resolve_execution()
+        config_error = self.validate_execution(selection) or self._resolve_run_policy(selection)
+        if config_error is not None:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=config_error)
+        if self.args.dry_run:
+            return self._dry_run(targets)
+
+        # Claim the final report directory before the first long target.  The
+        # progress checkpoint and final report then share one invocation even
+        # if an outer watchdog kills the process between targets.
+        self.reserve_invocation_dir()
+        self._write_progress_report(targets, {}, {}, phase="starting")
+
+        # Baseline mode: synthesize the baseline ref in a throwaway worktree
+        # (the current run below stays in the caller's tree, untouched).
+        baseline_results, short_sha = self._run_baseline_configs(targets)
+        if isinstance(baseline_results, McpToolResult):
+            return baseline_results  # early exit on error
+
+        # Current HEAD runs.  Persist every terminal target before starting the
+        # next one; a late timeout/OOM must not erase earlier completed work.
+        current_results: dict[str, SynthMetrics] = {}
+        for tgt in targets:
+            metrics, _output = self._run_single_config(tgt)
+            current_results[tgt] = metrics
+            self._persist_target_outcome(
+                tgt,
+                metrics,
+                baseline_results.get(tgt),
+                short_sha,
+            )
+            self._write_progress_report(
+                targets,
+                current_results,
+                baseline_results,
+                phase="current",
+                baseline_ref=short_sha,
+            )
+            if len(targets) > 1:
+                self.emit_completion(
+                    self._format_config_line(
+                        tgt,
+                        metrics,
+                        baseline_results.get(tgt),
+                    )
+                )
+
+        # Collect results and format output
+        result = self._aggregate_results(
+            targets,
+            current_results,
+            baseline_results,
+            short_sha,
+        )
+        self._write_progress_report(
+            targets,
+            current_results,
+            baseline_results,
+            phase="complete",
+            baseline_ref=short_sha,
+            complete=True,
+        )
+        return result
+
+    def _dry_run(self, targets: list[str]) -> McpToolResult:
+        """Print the boundary command + the spec it is rendered from.
+
+        The executed command is a bare ``make -C <rel>`` (ADR 0037 §8); the
+        recipe knobs live in the scripts the configure half renders into that
+        dir, so the preview also shows the resolved run_yosys_syn spec argv —
+        the validated carrier of every flag. Building it requires the resolved
+        RTL, so this resolves every target through FuseSoC (one ``fusesoc run
+        --setup`` each) — an honest preview, not a cheap ``.core`` read. The
+        per-target label keeps the target name visible.
+
+        When resolution itself is unavailable (no ``fusesoc`` outside the
+        sandbox), dry-run must still succeed — the contract says dry-run needs
+        no EDA tools — so it degrades to the cheap ``setup_command`` preview
+        the make-driven built-ins use.
+        """
+        from . import edam
+        from .edam import work_root_for
+
+        lines = []
+        for tgt in targets:
+            try:
+                cmd = self._build_synth_cmd(tgt)
+                rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
+                lines.append(
+                    f"[synth] dry-run ({tgt}): make -C {rel}"
+                    f"  # rendered at configure time from: {' '.join(cmd)}",
+                )
+            except BoundaryError as exc:
+                # A wrong-typed config knob fails the preview loudly — dry-run
+                # exists to vet the command, so hiding a config error here would
+                # defeat its purpose.
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"[synth] dry-run ({tgt}): config error: {exc}",
+                )
+            except fusesoc_registry.TargetResolutionError as exc:
+                setup_cmd = fusesoc_registry.setup_command(
+                    tgt,
+                    project_root=self.args.work_dir,
+                    build_root=work_root_for(self.args.work_dir, self.name, tgt),
+                )
+                lines.append(
+                    f"[synth] dry-run ({tgt}): {' '.join(setup_cmd)}"
+                    " && make -C <configured synth build dir>"
+                    f"  # full preview unavailable here: {exc}",
+                )
+        return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
+
+    def _run_baseline_configs(
+        self,
+        targets: list[str],
+    ) -> tuple[dict[str, SynthMetrics] | McpToolResult, str | None]:
+        """Synthesize *targets* at ``--baseline`` in a throwaway worktree.
+
+        Returns ``(results_dict, short_sha)``, or ``(McpToolResult, None)`` when the
+        worktree could not be created. The baseline ref is materialized in an
+        ephemeral ``git worktree`` (never the caller's tree — so this works in
+        Interactive Mode too, ADR 0012); ``self.args.work_dir`` is pointed at it
+        for the duration so every path the run derives (FuseSoC build dir,
+        sources, logs) resolves inside the baseline checkout. Each baseline log
+        is re-persisted to the real project runtime before the worktree — and
+        the log it wrote inside it — is destroyed.
+        """
+        baseline_ref = self.args.baseline
+        if not baseline_ref:
+            return {}, None
+
+        project_root = Path(self.args.work_dir)
+        short_sha = git_short_sha(baseline_ref, project_root)
+        baseline_results: dict[str, SynthMetrics] = {}
+        try:
+            with baseline_worktree(project_root, baseline_ref) as wt:
+                self.args.work_dir = wt
+                # Keep the real project root while work_dir points into the
+                # throwaway baseline worktree.
+                self._project_root = project_root
+                # Guard against the stealth-cores self-compare (ADR 0036): if
+                # both trees hash identical, --baseline measured nothing and the
+                # +0.0% delta must not read as a clean pass. Computed here while
+                # both the worktree and real root are in scope; surfaced by
+                # _aggregate_results.
+                self._baseline_selfcompare_msg = _baseline_self_compare_warning(
+                    project_root,
+                    wt,
+                )
+                try:
+                    for tgt in targets:
+                        metrics, output = self._run_single_config(tgt)
+                        metrics.log_path = self._persist_baseline_log(
+                            tgt,
+                            output,
+                            project_root,
+                        )
+                        baseline_results[tgt] = metrics
+                        self._write_progress_report(
+                            targets,
+                            {},
+                            baseline_results,
+                            phase="baseline",
+                            baseline_ref=short_sha,
+                        )
+                        if metrics.infra_error:
+                            return McpToolResult(
+                                exit_code=EXIT_ERROR,
+                                report_text=(
+                                    f"synth baseline {tgt}: infrastructure error: "
+                                    f"{metrics.infra_error}"
+                                ),
+                            ), None
+                finally:
+                    self.args.work_dir = project_root
+                    self._project_root = None
+        except BaselineWorktreeError as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"synth: {exc}",
+            ), None
+
+        return baseline_results, short_sha
+
+    def _emit_target_block(
+        self,
+        tgt: str,
+        cur: SynthMetrics,
+        base: SynthMetrics | None,
+    ) -> tuple[list[str], str | None, str | None]:
+        """Render one target's report lines and run its report/criterion side effects.
+
+        Returns ``(lines, violated_message, failure_summary)``: the two message
+        slots are ``None`` when that condition doesn't apply to *tgt* (worst-slack
+        VIOLATED / not-passed, respectively) — the caller folds them into the
+        run-wide ``violated``/``failed_targets`` accumulators.
+        """
+        lines = [self._format_config_line(tgt, cur, base)]
+        if cur.passed:
+            # Surface the QoR numbers (area/cells/timing) that otherwise
+            # live only in util/syn report files.
+            lines.append(self._format_qor_line(tgt, cur))
+        elif cur.has_metrics and not cur.ppa_complete:
+            lines.append(
+                f"[synth] {tgt}: PARTIAL -- Yosys emitted intermediate "
+                "area/cell data, but the synthesis/PPA run did not complete; "
+                "do not use these numbers as final QoR"
+            )
+        if not cur.structural_checks_complete and (
+            cur.latches or cur.comb_loops or cur.multi_driven or cur.process_count
+        ):
+            lines.append(
+                f"[synth] {tgt}: INCONCLUSIVE -- structural counts were emitted "
+                "before the final synthesis checks completed"
+            )
+        # I/O-bound worst path: period_ps won't move it — flag the real fix
+        # (declare I/O delays / false-path via the sdc knob) so the author
+        # doesn't chase a period tail that never closes (SETUP-28).
+        if _is_io_bound_critical(cur):
+            lines.append(self._format_io_bound_line(tgt, cur))
+        if cur.has_critical:
+            lines.append(self._format_critical_line(tgt, cur))
+        if cur.failure_output:
+            lines.append(self._format_failure_output(tgt, cur))
+        # Where the full (untruncated) synth output was persisted — the
+        # durable copy behind the bounded excerpt above.
+        if cur.log_path:
+            lines.append(f"[synth] {tgt}: log: {cur.log_path}")
+        # Negative worst slack == STA reported a VIOLATED timing path. Per
+        # syn_core this does NOT fail synthesis, but it must not be swallowed
+        # silently — collect it for a loud WARN line below.
+        timing_violations: list[str] = []
+        if cur.wns_ns is not None and cur.wns_ns < 0:
+            timing_violations.append(f"setup slack {cur.wns_ns:.3f} ns")
+        worst_hold = _worst_hold_slack_ns(cur)
+        if worst_hold is not None and worst_hold < 0:
+            timing_violations.append(f"hold slack {worst_hold:.3f} ns")
+        violated_msg = f"{tgt}: {', '.join(timing_violations)}" if timing_violations else None
+        failure_summary = None
+        if not cur.passed:
+            failure_summary = self._format_failure_summary(tgt, cur)
+        return lines, violated_msg, failure_summary
+
+    def _aggregate_results(
+        self,
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+        baseline_results: dict[str, SynthMetrics],
+        short_sha: str | None,
+    ) -> McpToolResult:
+        """Format output, set criteria, and return the final McpToolResult.
+
+        Report ordering is already truncation-safe (the MCP layer keeps the
+        TAIL of stdout): per-target blocks are compact (1-line config summary
+        + QoR/CRITICAL lines + a failure excerpt bounded to ``_error_excerpt``'s
+        12 lines), and the final RESULT line repeats every failed target's
+        one-line summary — so no separate end-of-report headline block is
+        needed here (unlike simulate's unbounded per-test detail).
+        """
+        stdout_lines: list[str] = []
+        failed_targets: list[str] = []
+        violated: list[str] = []  # targets whose worst STA slack is negative
+        notiming: list[str] = []  # passing targets that reported no timing at all
+        overall_pass = True
+
+        if self.args.baseline and short_sha:
+            stdout_lines.append(f"[synth] baseline: {short_sha}")
+
+        baseline_infra = {
+            tgt: metrics.infra_error
+            for tgt, metrics in baseline_results.items()
+            if metrics.infra_error
+        }
+        for tgt, message in baseline_infra.items():
+            stdout_lines.append(f"[synth] baseline {tgt}: ERROR -- {message}")
+            failed_targets.append(f"baseline {tgt}: infrastructure error")
+            overall_pass = False
+
+        # A stealth-cores self-compare makes every per-target delta a meaningless
+        # +0.0%; surface it loudly (whole-run signal, not per-target) so the run
+        # can't read as a clean regression pass.
+        selfcompare_msg = getattr(self, "_baseline_selfcompare_msg", None)
+        if selfcompare_msg:
+            stdout_lines.append(f"[synth] WARNING -- {selfcompare_msg}")
+
+        for tgt in targets:
+            cur = current_results[tgt]
+            base = baseline_results.get(tgt)
+            lines, violated_msg, failure_summary = self._emit_target_block(
+                tgt,
+                cur,
+                base,
+            )
+            stdout_lines.extend(lines)
+            if violated_msg is not None:
+                violated.append(violated_msg)
+            # Timing entirely absent on a timing-enabled passing run (A-1):
+            # usually a silently degraded constraint read (e.g. a non-portable
+            # SDC command aborts the parse, leaving only create_clock applied —
+            # or nothing at all). An explicit ``timing_engine = none`` is an
+            # intentional area-only run and is labelled as such instead.
+            if (
+                cur.passed
+                and not cur.infra_error
+                and cur.timing_engine != "none"
+                and _worst_critical_path_ps(cur) is None
+                and cur.wns_ns is None
+            ):
+                notiming.append(tgt)
+                stdout_lines.append(
+                    f"[synth] {tgt}: WARNING -- no timing was reported; "
+                    "the SDC may have failed to parse (non-portable commands "
+                    "abort the constraint read). Check the synth run.log."
+                )
+            if failure_summary is not None:
+                failed_targets.append(failure_summary)
+                overall_pass = False
+
+        # F-37: negative slack is advisory by default (see
+        # _fail_on_timing_violation). A project that opted in promotes it to a
+        # design failure here, so the exit code — not just the report text —
+        # tells an rc-only consumer the design does not meet timing.
+        if violated and getattr(self, "_timing_violation_is_fatal", False):
+            failed_targets.append(
+                f"timing VIOLATED ({'; '.join(violated)}) "
+                "-- [flows.synth] fail_on_timing_violation = true"
+            )
+            overall_pass = False
+
+        # Final RESULT line
+        stdout_lines.append("")
+        stdout_lines.append(
+            _result_line(
+                failed_targets if not overall_pass else [],
+                selfcompare_msg,
+                violated,
+                notiming,
+            )
+        )
+
+        report_text = "\n".join(stdout_lines)
+        # Surface the summary + QoR on stdout so a passing run is not silent:
+        # base.py only echoes report_text on failure (parity with elaborate/lint).
+        print(report_text)
+
+        display = _first_valid_display(targets, current_results)
+        exit_code = EXIT_SUCCESS if overall_pass else EXIT_FAILURE
+        if any(current_results[tgt].infra_error for tgt in targets) or baseline_infra:
+            exit_code = EXIT_ERROR
+        return McpToolResult(
+            exit_code=exit_code,
+            report_text=report_text,
+            display_lines=display,
+            detail=_aggregate_detail(targets, current_results, baseline_results, short_sha),
+        )
+
+    def _format_config_line(
+        self,
+        tgt: str,
+        cur: SynthMetrics,
+        base: SynthMetrics | None,
+    ) -> str:
+        """Format one target's area/timing/elapsed line."""
+        area_str = self._fmt_area(cur.area_kge)
+        timing_str = (
+            "timing off"
+            if cur.timing_engine == "none"
+            else self._fmt_timing(_worst_critical_path_ps(cur))
+        )
+        elapsed_str = f"{cur.elapsed_s:.1f}s"
+        if base:
+            area_delta = self._compute_delta_pct(cur.area_kge, base.area_kge)
+            timing_delta = self._compute_delta_pct(
+                _worst_critical_path_ps(cur),
+                _worst_critical_path_ps(base),
+            )
+            return (
+                f"[synth] {tgt:<10}"
+                f"{area_str} {self._fmt_delta(area_delta):>20}   "
+                f"{timing_str} {self._fmt_delta(timing_delta):>20}   "
+                f" {elapsed_str}{self._format_status_suffix(cur)}"
+            )
+        return (
+            f"[synth] {tgt:<10}"
+            f"{area_str}   {timing_str}    {elapsed_str}"
+            f"{self._format_status_suffix(cur)}"
+        )
+
+    @staticmethod
+    def _format_failure_output(tgt: str, cur: SynthMetrics) -> str:
+        """Render the captured subprocess error tail under the config line."""
+        indented = "\n".join(f"    {ln}" for ln in cur.failure_output.splitlines())
+        return f"[synth] {tgt}: subprocess output:\n{indented}"
+
+    @staticmethod
+    def _format_qor_line(tgt: str, cur: SynthMetrics) -> str:
+        """One-line QoR summary (cells / area / timing) for a passing config.
+
+        These numbers otherwise land only in ``util/syn/`` report files; a
+        concise summary here keeps the happy-path output actionable.
+        """
+        parts: list[str] = []
+        if cur.cells is not None:
+            parts.append(f"{cur.cells:,} cells")
+        if cur.area_kge is not None:
+            parts.append(f"{cur.area_kge:.1f} kGE")
+        # Fmax/critical path are per-clock; show the timing-worst clock here,
+        # tagged with its name only when the design has more than one clock (so
+        # single-clock output is unchanged). Full breakdown lives in the report.
+        worst = worst_clock(cur.per_clock)
+        tag = f" [{worst.clock}]" if worst and len(cur.per_clock) > 1 else ""
+        if worst is not None and worst.critical_path_ps is not None:
+            parts.append(f"crit path {worst.critical_path_ps:,.0f} ps{tag}")
+        if worst is not None and worst.fmax_mhz is not None:
+            parts.append(f"Fmax {worst.fmax_mhz:.0f} MHz{tag}")
+        if cur.wns_ns is not None:
+            parts.append(f"setup slack {cur.wns_ns:+.3f} ns")
+        worst_hold = _worst_hold_slack_ns(cur)
+        if worst_hold is not None:
+            parts.append(f"hold slack {worst_hold:+.3f} ns")
+        if cur.reg2reg_fmax_mhz is not None:
+            parts.append(f"reg2reg Fmax {cur.reg2reg_fmax_mhz:.0f} MHz")
+        elif cur.reg2reg_slack_ns is not None:
+            parts.append(f"reg2reg slack {cur.reg2reg_slack_ns:+.3f} ns")
+        # ADR 0029 D2: the run passed but the timing is salvaged pre-repair
+        # placed STA (repair_timing was killed/failed) — flag it inline.
+        if cur.repair_incomplete:
+            parts.append("repair_timing INCOMPLETE (pre-repair placed STA)")
+        return f"[synth] {tgt}: QoR -- {', '.join(parts) or 'no metrics'}"
+
+    @staticmethod
+    def _format_io_bound_line(tgt: str, cur: SynthMetrics) -> str:
+        """Advisory: the worst path is I/O-bound, so period_ps is the wrong lever."""
+        worst = cur.wns_ns
+        r2r = cur.reg2reg_slack_ns
+        return (
+            f"[synth] {tgt}: NOTE -- critical path is I/O-bound "
+            f"(worst slack {worst:+.3f} ns vs reg2reg {r2r:+.3f} ns); "
+            "period_ps won't move it — declare I/O delays / false-path the port "
+            "via the [flows.synth.timing].sdc knob"
+        )
+
+    @staticmethod
+    def _format_critical_line(tgt: str, cur: SynthMetrics) -> str:
+        """Format a CRITICAL conditions warning line."""
+        parts = []
+        if cur.unexpected_latches:
+            parts.append(f"{cur.unexpected_latches} latches")
+        if cur.comb_loops:
+            parts.append(f"{cur.comb_loops} comb loop")
+        if cur.multi_driven:
+            parts.append(f"{cur.multi_driven} multi-driven")
+        return f"[synth] {tgt}: CRITICAL -- {', '.join(parts)}"
+
+    @staticmethod
+    def _format_status_suffix(cur: SynthMetrics) -> str:
+        """Append a concise failure reason to the per-config summary line."""
+        if cur.passed:
+            return ""
+        reason = ""
+        if cur.timed_out:
+            reason = "timeout"
+        elif cur.termination == "oom":
+            reason = "OOM"
+        elif cur.termination == "resource_killed":
+            reason = "resource-killed"
+        elif cur.infra_error:
+            return "   ERROR"
+        elif cur.returncode != 0 and not cur.has_metrics:
+            reason = f"rc={cur.returncode}, no metrics"
+        elif cur.returncode != 0:
+            reason = f"rc={cur.returncode}"
+        elif not cur.has_metrics:
+            reason = "no metrics"
+        return f"   FAIL ({reason})" if reason else "   FAIL"
+
+    @staticmethod
+    def _format_failure_summary(tgt: str, cur: SynthMetrics) -> str:
+        """Format one target failure for the final RESULT line."""
+        reason = "failed"
+        if cur.timed_out:
+            reason = "timeout"
+        elif cur.termination == "oom":
+            reason = "OOM"
+        elif cur.termination == "resource_killed":
+            reason = "resource-killed"
+        elif cur.infra_error:
+            reason = "infrastructure error"
+        elif cur.returncode != 0 and not cur.has_metrics:
+            reason = f"rc={cur.returncode}, no metrics"
+        elif cur.returncode != 0:
+            reason = f"rc={cur.returncode}"
+        elif not cur.has_metrics:
+            reason = "no metrics"
+        elif cur.has_critical:
+            reason = "critical conditions"
+        return f"{tgt}: {reason}"
+
+    def _set_config_criterion(
+        self,
+        tgt: str,
+        cur: SynthMetrics,
+        base: SynthMetrics | None,
+    ) -> None:
+        """Set the synthesis_ok criterion for one target."""
+        detail: dict[str, Any] = {
+            "area_um2": cur.area_um2,
+            "area_kge": cur.area_kge,
+            "cells": cur.cells,
+            "wire_count": cur.wire_count,
+            "timing_engine": cur.timing_engine,
+            # Fmax/critical-path are per-clock; per-clock thresholds address them
+            # as "<clock>.fmax_mhz_min" / "<clock>.critical_path_ps_max" (the
+            # threshold engine resolves the dotted prefix into per_clock[clock]).
+            "per_clock": per_clock_to_json(cur.per_clock),
+            # Aggregate worst setup/hold slack — names match fpga_impl so a
+            # threshold like "wns_ns_min" resolves identically for both Flows.
+            "wns_ns": cur.wns_ns,
+            "whs_ns": _worst_hold_slack_ns(cur),
+            "reg2reg_slack_ns": cur.reg2reg_slack_ns,
+            "reg2reg_fmax_mhz": cur.reg2reg_fmax_mhz,
+            "has_critical": cur.has_critical,
+            "latches": cur.latches,
+            "expected_latches": cur.expected_latches,
+            "unexpected_latches": cur.unexpected_latches,
+            "comb_loops": cur.comb_loops,
+            "multi_driven": cur.multi_driven,
+            "process_count": cur.process_count,
+            "returncode": cur.returncode,
+            "timed_out": cur.timed_out,
+            "termination": cur.termination,
+            "has_metrics": cur.has_metrics,
+            "yosys_complete": cur.yosys_complete,
+            "timing_complete": cur.timing_complete,
+            "structural_checks_complete": cur.structural_checks_complete,
+            "ppa_complete": cur.ppa_complete,
+            "peak_rss_mb": cur.peak_rss_mb,
+            "passed": cur.passed,
+            RECIPE_FINGERPRINT_DETAIL: getattr(self, "_recipe_fingerprints", {}).get(tgt),
+            "_metric_map": {
+                "area": "area_um2",
+                "area_um2": "area_um2",
+                "area_kge": "area_kge",
+                "cell_count": "cells",
+                "wire_count": "wire_count",
+                # Per-clock sub-metrics (identity spelling; resolved inside
+                # per_clock[clock]) plus the aggregate/internal scalars.
+                "critical_path_ps": "critical_path_ps",
+                "fmax_mhz": "fmax_mhz",
+                "wns_ns": "wns_ns",
+                "whs_ns": "whs_ns",
+                "period_ns": "period_ns",
+                "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
+                "reg2reg_slack_ns": "reg2reg_slack_ns",
+            },
+            # wns_ns/whs_ns are min-threshold (more slack = better), matching
+            # fpga_impl's _min_allowed so a shared threshold behaves the same way.
+            "_min_allowed": ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"],
+        }
+        if base:
+            detail["baseline_metrics"] = {
+                "area_um2": base.area_um2,
+                "area_kge": base.area_kge,
+                "cells": base.cells,
+                "wire_count": base.wire_count,
+                "per_clock": per_clock_to_json(base.per_clock),
+            }
+        self.set_criterion(
+            f"synthesis_ok_{tgt}",
+            cur.passed,
+            detail=detail,
+            source_target=tgt,
+        )
+
+
+def _vlogdefine_args(parameters: Any) -> list[str]:
+    """Map ``vlogdefine`` params to run_yosys_syn ``-d`` arguments.
+
+    A bool-true define becomes a bare ``NAME``; any other value becomes
+    ``NAME=value``; a false/absent default is left undefined (matching Verilog
+    ``ifdef`` semantics — an undefined macro, not ``NAME=0``).
+    """
+    defines: list[str] = []
+    for name, spec in (parameters or {}).items():
+        if not isinstance(spec, dict) or spec.get("paramtype") != "vlogdefine":
+            continue
+        default = spec.get("default")
+        if default is True:
+            defines.append(str(name))
+        elif default not in (False, None, ""):
+            defines.append(f"{name}={default}")
+    return defines
+
+
+def _vlogparam_args(parameters: Any) -> list[str]:
+    """Map ``vlogparam`` params to run_yosys_syn ``-p NAME=VALUE`` arguments."""
+    assignments: list[str] = []
+    for name, spec in (parameters or {}).items():
+        if not isinstance(spec, dict) or spec.get("paramtype") != "vlogparam":
+            continue
+        default = spec.get("default")
+        if default is not None:
+            # EDAM preserves CAPI2 ``datatype: bool`` defaults as Python bools.
+            # Python's spelling (True/False) is not a SystemVerilog literal and
+            # read_slang interprets it as an undeclared identifier.
+            value = "1" if default is True else "0" if default is False else str(default)
+            assignments.append(f"{name}={value}")
+    return assignments
+
+
+def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:
+    """Flag a synth target that looks aimed at simulation rather than the DUT.
+
+    Two common misconfigurations make synthesis fail deep inside Yosys with
+    opaque errors instead of up front:
+
+    * the resolved toplevel is a testbench (``*_tb``) — testbenches instantiate
+      stimulus/clock generators that don't synthesize;
+    * a ``SIMULATION`` define is set — it gates simulation-only constructs such
+      as ``$fatal`` assertions that Yosys can't synthesize.
+
+    Both point at the same fix: synthesize a dedicated synth target whose
+    toplevel is the DUT and that leaves ``SIMULATION`` undefined (see the
+    ``booley-setup`` skill, Step 6, ASIC synthesis). Returns human-readable
+    warnings.
+    """
+    warnings: list[str] = []
+    if top and top.lower().endswith("_tb"):
+        warnings.append(
+            f"synth toplevel {top!r} looks like a testbench (ends in '_tb'); "
+            "synthesis expects the DUT as top. Point synth at a "
+            "dedicated synth target whose toplevel is the DUT."
+        )
+    sim = [d for d in defines if d == "SIMULATION" or d.startswith("SIMULATION=")]
+    if sim:
+        warnings.append(
+            "synth defines SIMULATION; it enables simulation-only constructs "
+            "(e.g. $fatal assertions) that Yosys cannot synthesize. Use a synth "
+            "target that leaves SIMULATION undefined."
+        )
+    return warnings
+
+
+_ERROR_LINE_RE = re.compile(
+    r"\b(error|fatal|not found|no such|permission denied)\b", re.IGNORECASE
+)
+
+
+def _error_excerpt(output: str, max_lines: int = 12) -> str:
+    """Pull the actionable error out of swallowed synth subprocess output.
+
+    Prefers lines that look like diagnostics (the ``run_yosys_syn`` /
+    ``syn_core`` ``sys.exit("ERROR: ...")`` guards, yosys/sv2v errors); falls
+    back to the last non-empty lines so even a bare crash surfaces *something*.
+    Bounded to ``max_lines`` so a giant log tail can't swamp the report.
+    """
+    lines = [ln.rstrip() for ln in output.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    err_lines = [ln for ln in lines if _ERROR_LINE_RE.search(ln)]
+    chosen = err_lines or lines[-max_lines:]
+    return "\n".join(chosen[-max_lines:])
+
+
+if __name__ == "__main__":
+    AsicSynthesizeFlow().cli()

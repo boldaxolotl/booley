@@ -1,0 +1,49 @@
+# Genuinely real (untrimmed-section) Vivado 2025.2 routed reports, captured
+# from a from-scratch synth+place+route of a generic top (DSP+BRAM+FF design)
+# on xc7a200tfbg484-1. Anchors parse_fpga_reports against authentic 2025.2
+# output: all four utilization metrics present (LUT/FF/BRAM/DSP), the
+# table-form Design Timing Summary with a NEGATIVE worst-slack row (timing
+# intentionally not met), and the route success marker.
+
+route_design completed successfully
+
+=== utilization (top_utilization_placed.rpt sections) ===
+
++-------------------------+------+-------+------------+-----------+-------+
+|        Site Type        | Used | Fixed | Prohibited | Available | Util% |
++-------------------------+------+-------+------------+-----------+-------+
+| Slice LUTs              |   18 |     0 |        800 |    133800 |  0.01 |
+|   LUT as Logic          |   18 |     0 |        800 |    133800 |  0.01 |
+|   LUT as Memory         |    0 |     0 |          0 |     46200 |  0.00 |
+| Slice Registers         |   36 |     0 |       1600 |    267600 |  0.01 |
+|   Register as Flip Flop |   36 |     0 |       1600 |    267600 |  0.01 |
+|   Register as Latch     |    0 |     0 |       1600 |    267600 |  0.00 |
+| F7 Muxes                |    0 |     0 |        400 |     66900 |  0.00 |
+
+
++-------------------+------+-------+------------+-----------+-------+
+|     Site Type     | Used | Fixed | Prohibited | Available | Util% |
++-------------------+------+-------+------------+-----------+-------+
+| Block RAM Tile    |    1 |     0 |          0 |       365 |  0.27 |
+|   RAMB36/FIFO*    |    1 |     0 |          0 |       365 |  0.27 |
+|     RAMB36E1 only |    1 |       |            |           |       |
+|   RAMB18          |    0 |     0 |          0 |       730 |  0.00 |
++-------------------+------+-------+------------+-----------+-------+
+* Note: Each Block RAM Tile only has one FIFO logic available and therefore can accommodate only one FIFO36E1 or one FIFO18E1. However, if a FIFO18E1 occupies a Block RAM Tile, that tile can still accommodate a RAMB18E1
+
++----------------+------+-------+------------+-----------+-------+
+|    Site Type   | Used | Fixed | Prohibited | Available | Util% |
++----------------+------+-------+------------+-----------+-------+
+| DSPs           |    1 |     0 |          0 |       740 |  0.14 |
+|   DSP48E1 only |    1 |       |            |           |       |
+
+=== timing (top_timing_summary_routed.rpt sections) ===
+ There are 0 combinational loops in the design.
+
+| Design Timing Summary
+| ---------------------
+------------------------------------------------------------------------------------------------
+
+    WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
+    -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
+     -8.949     -601.305                    105                  186        0.195        0.000                      0                  186        2.000        0.000                       0                    38  

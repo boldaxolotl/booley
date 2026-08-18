@@ -1,0 +1,27 @@
+# Vendored from crates.io fst-writer 0.3.1 (BSD-3-Clause, Kevin Laeufer).
+# Vendored for conversion-throughput work the upstream API cannot express:
+# parallel per-signal block packing at flush time and a cache-friendly
+# value-change buffer layout. Keep diffs against upstream minimal and
+# documented; see git history for the exact changes.
+[package]
+edition = "2024"
+rust-version = "1.85.0"
+name = "fst-writer"
+version = "0.3.1"
+authors = ["Kevin Laeufer <laeufer@cornell.edu>"]
+description = "A Rust library for writing waveform traces in the FST format."
+license = "BSD-3-Clause"
+repository = "https://github.com/ekiwi/fst-writer"
+
+[lib]
+name = "fst_writer"
+path = "src/lib.rs"
+
+[dependencies.lz4_flex]
+version = "0.11"
+
+[dependencies.miniz_oxide]
+version = "0.8.2"
+
+[dependencies.thiserror]
+version = "2.0"

@@ -1,0 +1,23 @@
+CAPI=2:
+name: booley:fixtures:vivado_mount_poc:0.1.0
+description: Minimal out-of-context design for the mounted-Vivado proof of concept
+
+filesets:
+  rtl:
+    files:
+      - rtl/top.sv: {file_type: systemVerilogSource}
+    file_type: systemVerilogSource
+  constraints:
+    files:
+      - constraints/top.xdc: {file_type: xdc}
+
+targets:
+  fpga:
+    default_tool: vivado
+    flow: generic
+    flow_options:
+      tool: vivado
+      part: xc7a35tcpg236-1
+      out_of_context: true
+    filesets: [rtl, constraints]
+    toplevel: top

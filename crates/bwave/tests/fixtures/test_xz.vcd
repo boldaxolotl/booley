@@ -1,0 +1,45 @@
+$timescale 1ns $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$var wire 1 " rstn $end
+$var wire 8 # data[7:0] $end
+$var wire 1 $ tristate $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0"
+bxxxxxxxx #
+x$
+#5
+1!
+#10
+0!
+bzzzzzzz0 #
+z$
+#15
+1!
+1"
+#20
+0!
+b00000001 #
+0$
+#25
+1!
+#30
+0!
+b0000001x #
+1$
+#35
+1!
+#40
+0!
+b00000011 #
+x$
+#45
+1!
+#50
+0!
+#55
+1!
+#60

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley Setup"
+  short_description: "Run Booley project setup, ending in a doctor health check"
+  default_prompt: "Use $booley-setup to set up the project and leave the final doctor audit with no failures or active warnings."
+
+policy:
+  allow_implicit_invocation: false

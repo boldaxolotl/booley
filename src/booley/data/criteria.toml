@@ -1,0 +1,163 @@
+# Base criteria definitions — source of truth for developer workflow.
+#
+# Fields:
+#   description  — human-readable purpose
+#   workflow_region — pre_sim | core_loop | post_sim (controls ordering)
+#   per_target   — true → expanded across project targets (e.g. lint_clean_variant_a)
+#   category     — rtl | tb | none (controls invalidation cascade)
+#   group        — functional family used only to group the docs/cheatsheet table
+#                  for readability (build | review | planning | simulation |
+#                  coverage | verification | implementation). See
+#                  booley.dev_support.criteria_reference for labels + ordering.
+
+# --- Pre-sim criteria ---
+
+[lint_clean]
+description = "The Target's linter passes with no unwaived findings"
+workflow_region = "pre_sim"
+per_target  = true
+category    = "rtl"
+group       = "build"
+
+[elab_pass]
+description = "RTL/TB compiles and elaborates cleanly (no simulation)"
+workflow_region = "pre_sim"
+per_target  = true
+category    = "rtl"
+group       = "build"
+
+[elaborate_standalone]
+description = "Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults)"
+workflow_region = "pre_sim"
+per_target  = false
+category    = "rtl"
+group       = "build"
+
+[review_rtl_spec]
+description = "RTL review: spec compliance (RTL matches the ticket/spec, no more, no less)"
+workflow_region = "pre_sim"
+per_target  = false
+category    = "none"
+group       = "review"
+
+[review_rtl_bugs]
+description = "RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec)"
+workflow_region = "pre_sim"
+per_target  = false
+category    = "none"
+group       = "review"
+
+[review_rtl_protocol]
+description = "RTL review: bus/protocol compliance and clock-domain crossings (CDC)"
+workflow_region = "pre_sim"
+per_target  = false
+category    = "none"
+group       = "review"
+
+[review_tb_quality]
+description = "TB review: false-pass detection, coverage gaps, and TB code quality"
+workflow_region = "pre_sim"
+per_target  = false
+category    = "none"
+group       = "review_tb"
+
+# --- Core loop criteria ---
+
+[sim_pass]
+description = "RTL simulation passes all tests"
+workflow_region = "core_loop"
+per_target  = true
+category    = "rtl"
+group       = "simulation"
+
+# --- Post-sim criteria ---
+
+[review_rtl_security]
+description = "RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim)"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "review"
+
+[review_rtl_optimization]
+description = "RTL review: missed power/performance/area wins, strict improvements only, no trade-offs (post-sim)"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "review"
+
+[review_rtl_code_style]
+description = "RTL review: comments, naming, readability, and assertion coverage (post-sim)"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "review"
+
+[mutation_score]
+description = "Mutation testing achieves minimum kill rate"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "verification"
+
+[coverage_toggle]
+description = "Signal toggle coverage: every bit transitions both 0→1 and 1→0"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "coverage"
+hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
+
+[coverage_fsm]
+description = "FSM state coverage: all identified states visited during simulation"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "coverage"
+hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
+
+[coverage_value]
+description = "Value coverage: sufficient value diversity observed per signal"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "coverage"
+hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
+
+[coverage_branch]
+description = "Branch coverage: RTL branch conditions exercised both true and false"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "coverage"
+hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
+
+[coverage_expression]
+description = "Expression coverage: sub-expression decomposition of branch conditions"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "coverage"
+hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
+
+[coverage_mean]
+description = "Mean coverage across the enabled coverage metrics meets threshold"
+workflow_region = "post_sim"
+per_target  = false
+category    = "none"
+group       = "coverage"
+hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
+
+[synthesis_ok]
+description = "ASIC synthesis completes within area/timing budgets"
+workflow_region = "post_sim"
+per_target  = true
+category    = "rtl"
+group       = "implementation"
+
+[fpga_impl_ok]
+description = "FPGA implementation completes within resource/timing budgets"
+workflow_region = "post_sim"
+per_target  = true
+category    = "rtl"
+group       = "implementation"

@@ -1,0 +1,25 @@
+$timescale 1ns $end
+$scope module tb $end
+$scope module dut $end
+$var wire 1 ! clk $end
+$var wire 13 # dmem_addr [12:0] $end
+$var wire 13 $ dmem_addr_next [12:0] $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000000000001 #
+b0000000000010 $
+#5
+1!
+#10
+0!
+b0000000000011 #
+b0000000000100 $
+#15
+1!
+#20
+0!
+b0110000011100 #
+b0000000000100 $

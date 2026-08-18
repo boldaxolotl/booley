@@ -1,0 +1,92 @@
+# CORE_TEMPLATE — annotated CAPI2 `.core` (design-description) starting shape.
+#
+# Author the real file with a `.core` extension at the repo root or beside the
+# RTL; Booley discovers any `*.core` under the project. This template ships as
+# `.yaml` ON PURPOSE: `.core` discovery is a bare `rglob("*.core")`, so a
+# `*.core` template vendored under `.booley/` would be picked up as a real
+# project core. Copy the shape below into a `.core`, do not rename this file.
+
+CAPI=2:
+name: ::<project>:0          # a VLNV; the leading :: is fine for a leaf project
+description: <project> design
+
+filesets:
+  rtl:
+    files:
+      - rtl/pkg.sv: {file_type: systemVerilogSource}
+      - rtl/dut.sv: {file_type: systemVerilogSource}
+      - rtl/defs.svh: {file_type: systemVerilogSource, is_include_file: true}
+  tb:
+    files:
+      - tb/tb_dut.sv: {file_type: systemVerilogSource}
+    tags: [tb]               # REQUIRED on the testbench fileset (decision 13).
+
+parameters:
+  WIDTH: {datatype: int, paramtype: vlogparam, default: 16}
+
+targets:
+  # Target names follow <axis>_<subject>: an axis token for the driving Booley Flow
+  # (sim | lint | synth | fpga) then a distinguishing subject, coarse to fine —
+  # `sim_soc`, `synth_matmul_b8`. A bare axis (below) is fine when only one
+  # Target needs that axis.
+  # `booley doctor` warns on names that do not. Do NOT declare a `default:`
+  # target unless another .core `depend:`s on this one.
+  sim:                       # one target per (EDA tool, intent); name == the --target
+    flow: sim
+    flow_options:
+      tool: verilator        # verilator | icarus
+      # REQUIRED for verilator: an event-driven TB (delays, @(...) waits — the
+      # normal case) fails Verilator 5 elaboration with %Error-NEEDTIMINGOPT
+      # without --timing; --main/--exe generate + build the C++ main wrapper.
+      # Drop this line for icarus.
+      verilator_options: [--timing, --main, --exe]
+    filesets: [rtl, tb]
+    toplevel: tb_dut         # a sim target's toplevel is its TB top
+    parameters: [WIDTH]
+
+  # --- Cocotb Target (ADR 0034) — a sim Target with a PYTHON testbench. -------
+  # Delete this block for an SV-testbench project; delete the `sim` block above
+  # for a cocotb one. The ONLY thing that marks a Target as cocotb is
+  # `cocotb_module` in its flow_options. Requires the Python TB in a `tags: [tb]`
+  # fileset with `file_type: user` + `copyto:` (staged into the build root), and
+  # `tests.toml` listing the @cocotb.test() FUNCTION names with NO `select`.
+  # sim_cocotb:
+  #   flow: sim
+  #   flow_options:
+  #     tool: icarus         # icarus | verilator
+  #     cocotb_module: test_dut   # the Python module — makes this a Cocotb Target
+  #     iverilog_options: [-g2012]  # SV sources need -g2012; drop for verilator
+  #     timescale: 1ns/1ps
+  #   filesets: [rtl, tb_py]
+  #   toplevel: dut          # what the PYTHON TB attaches to. Usually the DUT
+  #                          # itself (no HDL wrapper). BUT if the DUT's ports are
+  #                          # SystemVerilog INTERFACES, cocotb's BFMs must bind to
+  #                          # interface *instances* — so the project ships a thin
+  #                          # HDL wrapper that instantiates them, and the WRAPPER
+  #                          # is the toplevel here (e.g. toplevel: test_dut).
+
+  lint:
+    flow: lint
+    flow_options: {tool: verilator}
+                             # NB: with `tool: icarus` on ANY target (lint /
+                             # elaborate / sim), SystemVerilog sources need
+                             # iverilog_options: [-g2012] — iverilog defaults to
+                             # Verilog-2005 and rejects `logic`/`always_ff` with
+                             # a bare syntax error. `booley doctor` flags this.
+    filesets: [rtl]
+    toplevel: dut            # NB: if `dut`'s ports are SystemVerilog interfaces it
+                             # CANNOT be elaborated standalone (the ports take the
+                             # interface's DEFAULT parameters and the design's own
+                             # elaboration checks fire: "Interface DATA_W parameter
+                             # mismatch"). Point lint AND synth at a flat-port
+                             # wrapper that instantiates the interfaces with real
+                             # parameters. `booley doctor` flags this.
+  synth:                     # asic_synthesize (an fpga_impl target would be `fpga`)
+    flow: generic
+    flow_options: {tool: yosys, arch: xilinx}  # arch is REQUIRED: edalize's yosys
+                             # backend selects synth_<arch> and refuses to
+                             # configure without it (external error: "yosys requires tool option
+                             # 'arch'"). Booley's synth script overrides the pass,
+                             # but the field must still be present — do NOT drop it.
+    filesets: [rtl]
+    toplevel: dut            # same interface-port caveat as lint, above

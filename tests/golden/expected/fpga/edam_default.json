@@ -1,0 +1,49 @@
+{
+  "files": [
+    {
+      "file_type": "systemVerilogSource",
+      "name": "../../../../../rtl/pkg.sv"
+    },
+    {
+      "file_type": "systemVerilogSource",
+      "name": "../../../../../rtl/dut.sv"
+    },
+    {
+      "file_type": "verilogSource",
+      "name": "../../../../../rtl/legacy_blk.v"
+    },
+    {
+      "file_type": "xdc",
+      "name": "../../../../../constraints/board.xdc"
+    },
+    {
+      "file_type": "verilogSource",
+      "include_path": "../../../../../rtl/include",
+      "is_include_file": true,
+      "name": "../../../../../rtl/include"
+    }
+  ],
+  "flow_options": {
+    "part": "xc7a100tcsg324-1",
+    "tool": "vivado"
+  },
+  "name": "lite_fpga",
+  "parameters": {
+    "DEPTH": {
+      "datatype": "int",
+      "default": 16,
+      "paramtype": "vlogparam"
+    },
+    "SYNTHESIS": {
+      "datatype": "bool",
+      "default": true,
+      "paramtype": "vlogdefine"
+    },
+    "WIDTH": {
+      "datatype": "int",
+      "default": 8,
+      "paramtype": "vlogdefine"
+    }
+  },
+  "toplevel": "dut_top"
+}

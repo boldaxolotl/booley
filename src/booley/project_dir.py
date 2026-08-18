@@ -1,0 +1,134 @@
+"""Single resolution point for the project-specific data directory.
+
+All project-path lookups route through resolve_project_dir() with 4-step
+discovery:
+  1. $BOOLEY_PROJECT_DIR env var (CI, Docker, tests)
+  2. Walk up from start dir to find booley.toml [project] dir override
+  3. Walk up from start dir looking for .booley_project/
+  4. Raise with actionable error
+
+Stdlib-only (tomllib). Module-level cache with reset_cache() for tests.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import tomllib
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# The project data directory's name inside the RTL repo. On the host the project
+# dir IS <repo>/.booley_project; inside the Session Runtime it is bind-mounted at
+# /booley-project, but the same files stay reachable through the workspace mount
+# at <repo>/.booley_project. Code that must name a path valid on both sides of
+# (e.g. guidance_links) builds it from this.
+PROJECT_DIR_NAME = ".booley_project"
+
+_cache: Path | None = None
+
+
+def _resolve_from_toml(current: Path) -> Path | None:
+    """Walk up from *current* looking for booley.toml [project].dir override."""
+    for parent in [current, *current.parents]:
+        toml_path = parent / "booley.toml"
+        if toml_path.is_file():
+            try:
+                with toml_path.open("rb") as f:
+                    cfg = tomllib.load(f)
+                dir_val = cfg.get("project", {}).get("dir", "")
+                if dir_val:
+                    p = Path(dir_val)
+                    if not p.is_absolute():
+                        p = (parent / p).resolve()
+                    if p.is_dir():
+                        return p
+            except (OSError, tomllib.TOMLDecodeError) as e:
+                logger.warning("Failed to read %s: %s", toml_path, e)
+            # booley.toml found but no override — fall through
+            break
+    return None
+
+
+def resolve_project_dir(start: Path | None = None) -> Path:
+    """Resolve the project data directory via 4-step discovery.
+
+    Args:
+        start: Directory to start walking up from. Defaults to cwd.
+    """
+    global _cache
+    if _cache is not None:
+        return _cache
+
+    # 1. Env var override (trusted — CI/Docker/tests set this explicitly)
+    env = os.environ.get("BOOLEY_PROJECT_DIR")
+    if env:
+        p = Path(env).resolve()
+        if not p.is_dir():
+            import warnings
+
+            warnings.warn(
+                f"BOOLEY_PROJECT_DIR={env!r} does not exist; using anyway",
+                stacklevel=2,
+            )
+        _cache = p
+        return _cache
+
+    current = (start or Path.cwd()).resolve()
+
+    # 2. Walk up to find booley.toml [project] dir override
+    toml_result = _resolve_from_toml(current)
+    if toml_result is not None:
+        _cache = toml_result
+        return _cache
+
+    # 3. Walk up from start looking for .booley_project/
+    for parent in [current, *current.parents]:
+        candidate = parent / ".booley_project"
+        if candidate.is_dir():
+            _cache = candidate
+            return _cache
+
+    raise FileNotFoundError("No .booley_project/ found. Run 'booley init' to set up the project.")
+
+
+def resolve_checkout_project_dir(project_root: Path) -> Path:
+    """Resolve config for one explicitly selected checkout.
+
+    A Booley-created linked worktree carries a local ``.booley_project``
+    snapshot. Prefer that snapshot over the session-global environment and
+    cache so config and design sources come from the same checkout. Projects
+    without a local snapshot retain the normal resolution chain.
+    """
+    local = project_root.resolve() / PROJECT_DIR_NAME
+    if local.is_dir():
+        return local
+    return resolve_project_dir(project_root)
+
+
+def runtime_dir(start: Path | None = None) -> Path:
+    """Return the transient runtime tree ``<project_dir>/.runtime``.
+
+    Single source of truth for the git-ignored ``.runtime`` tree that holds
+    generated state, locks, and Flow/MCP-tool reports. Code that resolves this tree
+    against the *project data dir* should route through here instead of
+    hand-joining the bare ``.runtime`` literal, so the location lives in one
+    place. (Worktree-relative constructions that must cross into the sandbox at
+    ``/work`` — e.g. the edalize work dirs — deliberately stay off this helper;
+    they are keyed on an explicit worktree root, not cwd discovery.)
+
+    Creates the directory (``parents=True, exist_ok=True``) as a side effect.
+
+    Args:
+        start: Directory to start walking up from. Defaults to cwd.
+    """
+    d = resolve_project_dir(start) / ".runtime"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def reset_cache() -> None:
+    """Clear cached result — for tests only."""
+    global _cache
+    _cache = None

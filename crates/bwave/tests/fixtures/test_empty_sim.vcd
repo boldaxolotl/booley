@@ -1,0 +1,8 @@
+$date Mon Jan 01 00:00:00 2024 $end
+$version Simulator crashed $end
+$timescale 1ns $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$var wire 8 " data [7:0] $end
+$upscope $end
+$enddefinitions $end

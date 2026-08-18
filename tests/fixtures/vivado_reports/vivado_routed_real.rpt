@@ -1,0 +1,41 @@
+# Trimmed real Vivado 2025.2 routed reports (edalize project-mode flow).
+# Captured from a real fpga_impl run — exercises the real TABLE-form Design
+# Timing Summary + utilization table the post-processor must parse.
+
+route_design completed successfully
+
+=== utilization (top_utilization_placed.rpt excerpt) ===
+--------------
+
++-------------------------+-------+-------+------------+-----------+-------+
+|        Site Type        |  Used | Fixed | Prohibited | Available | Util% |
++-------------------------+-------+-------+------------+-----------+-------+
+| Slice LUTs              | 14284 |     0 |        800 |    133800 | 10.68 |
+|   LUT as Logic          | 14284 |     0 |        800 |    133800 | 10.68 |
+|   LUT as Memory         |     0 |     0 |          0 |     46200 |  0.00 |
+| Slice Registers         |  6475 |     0 |       1600 |    267600 |  2.42 |
+|   Register as Flip Flop |  6475 |     0 |       1600 |    267600 |  2.42 |
+|   Register as Latch     |     0 |     0 |       1600 |    267600 |  0.00 |
+| F7 Muxes                |  1128 |     0 |        400 |     66900 |  1.69 |
+| F8 Muxes                |   341 |     0 |        200 |     33450 |  1.02 |
+| Unique Control Sets     |   107 |       |        200 |     33450 |  0.32 |
++-------------------------+-------+-------+------------+-----------+-------+
+* Warning! LUT value is adjusted to account for LUT combining.
+
+| Block RAM Tile |    0 |     0 |          0 |       365 |  0.00 |
+* Note: Each Block RAM Tile only has one FIFO logic available and therefore can accommodate only one FIFO36E1 or one FIFO18E1. However, if a FIFO18E1 occupies a Block RAM Tile, that tile can still accommodate a RAMB18E1
+
+=== timing (top_timing_summary_routed.rpt excerpt) ===
+
+ There are 0 combinational loops in the design.
+
+
+------------------------------------------------------------------------------------------------
+| Design Timing Summary
+| ---------------------
+------------------------------------------------------------------------------------------------
+
+    WNS(ns)      TNS(ns)  TNS Failing Endpoints  TNS Total Endpoints      WHS(ns)      THS(ns)  THS Failing Endpoints  THS Total Endpoints     WPWS(ns)     TPWS(ns)  TPWS Failing Endpoints  TPWS Total Endpoints  
+    -------      -------  ---------------------  -------------------      -------      -------  ---------------------  -------------------     --------     --------  ----------------------  --------------------  
+    -10.431   -22501.996                   7847                15581        0.048        0.000                      0                15581        4.500        0.000                       0                  6478  
+

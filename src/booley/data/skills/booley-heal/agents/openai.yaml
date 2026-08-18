@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley Heal"
+  short_description: "Repair Doctor findings to a verified clean state"
+  default_prompt: "Use $booley-heal to diagnose and repair every actionable Booley Doctor finding."
+
+policy:
+  allow_implicit_invocation: false

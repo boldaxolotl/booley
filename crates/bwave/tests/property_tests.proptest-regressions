@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f7bdb1532904ed5d220715787c0e9a9f7a8a59890abc0e08b374553f2f9451fc # shrinks to case = VcdCase { signals: [SigSpec { width: 1 }], events: [] }
+cc 30c186345facf0f7e4d03e152253ad1390307754334727cbf626a2e56fc137d5 # shrinks to case = VcdCase { signals: [SigSpec { width: 27 }, SigSpec { width: 3 }], events: [(0, 0, "0"), (0, 1, "0")] }

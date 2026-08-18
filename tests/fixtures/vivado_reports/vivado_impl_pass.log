@@ -1,0 +1,89 @@
+
+Copyright 1986-2023 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2023 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------
+| Tool Version : Vivado v2023.2 (lin64)
+| Date         : Mon Jan 15 12:45:30 2024
+| Host         : buildhost01
+---------------------------------------------------------------------------
+
+open_checkpoint vivado_out/synth/demo_top/demo_top_synth.dcp
+INFO: [Common 17-1381] Reading checkpoint 'vivado_out/synth/demo_top/demo_top_synth.dcp'
+INFO: [Project 1-589] Checkpoint was created with Vivado v2023.2
+
+opt_design
+INFO: [Opt 31-138] Pushed 42 inverter(s) to 87 load pin(s).
+INFO: [Opt 31-1] Optimization Complete
+
+place_design
+INFO: [Place 30-611] Multithreading enabled for place_design using 8 CPUs
+Phase 1 Placer Initialization
+Phase 1 Placer Initialization (Completed)
+Phase 2 Global Placement
+Phase 2 Global Placement (Completed)
+Phase 3 Detail Placement
+Phase 3 Detail Placement (Completed)
+INFO: [Place 30-100] Placement Complete
+
+phys_opt_design
+INFO: [Physopt 32-65] No setup violation found. Skipping all setup-related optimization.
+INFO: [Physopt 32-36] phys_opt_design Completed Successfully
+
+route_design
+INFO: [Route 35-14] Route design started with 8 threads
+Phase 1 Build Placer Database (Completed)
+Phase 2 Router Initialization (Completed)
+Phase 3 Global Routing (Completed)
+Phase 4 Detail Routing (Completed)
+Routed Nets        : 6234
+INFO: [Route 35-16] Router Completed Successfully
+
+write_checkpoint -force vivado_out/impl/demo_top/demo_top_impl.dcp
+INFO: [Common 17-1381] The checkpoint was written to 'vivado_out/impl/demo_top/demo_top_impl.dcp'
+
+report_timing_summary
+---------------------------------------------------------------------------
+Timing Summary (Post-Route)
+---------------------------------------------------------------------------
+
+  WNS(ns)      : 0.892
+  TNS(ns)      : 0.000
+  TNS Failing Endpoints : 0
+  TNS Total Endpoints   : 4521
+  WHS(ns)      : 0.031
+  THS(ns)      : 0.000
+  THS Failing Endpoints : 0
+  THS Total Endpoints   : 4521
+
+All user specified timing constraints are met.
+
+report_utilization
+---------------------------------------------------------------------------
+Utilization Design Information (Post-Route)
+---------------------------------------------------------------------------
+
++----------------------------+------+-------+-----------+-------+
+|          Site Type         | Used | Fixed | Available | Util% |
++----------------------------+------+-------+-----------+-------+
+| Slice LUTs*               | 2853 |     0 |    203800 |  1.40 |
+|   LUT as Logic             | 2620 |     0 |    203800 |  1.29 |
+|   LUT as Memory            |  233 |     0 |     64000 |  0.36 |
+| Slice Registers            | 1523 |     0 |    407600 |  0.37 |
+|   Register as Flip Flop    | 1523 |     0 |    407600 |  0.37 |
+|   Register as Latch        |    0 |     0 |    407600 |  0.00 |
+| F7 Muxes                  |   84 |     0 |    101900 |  0.08 |
+| F8 Muxes                  |   12 |     0 |     50950 |  0.02 |
++----------------------------+------+-------+-----------+-------+
+
+report_route_status
+Design Route Status
+                                               :      # nets :
+   ------------------------------------------- : ----------- :
+   # of logical nets.......................... :        7891  :
+       # of nets not needing routing.......... :        1657  :
+       # of internally routed nets............ :         891  :
+       # of nets with routing................. :        5343  :
+   ------------------------------------------- : ----------- :
+
+Implementation completed successfully.
+INFO: [Common 17-206] Exiting Vivado

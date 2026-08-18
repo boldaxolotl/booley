@@ -1,0 +1,49 @@
+TicketHeader {
+    height: auto;
+    max-height: 4;
+    padding: 0 1;
+    border-bottom: solid $surface-lighten-2;
+}
+
+TicketHeader.expanded {
+    max-height: 40%;
+    overflow-y: auto;
+}
+
+TopStrip {
+    height: auto;
+    /* Up to 8 entries on large terminals (>=40 rows) + 1 overflow row. */
+    max-height: 9;
+    padding: 0 1;
+    border-bottom: solid $surface-lighten-2;
+}
+
+MainPane {
+    height: 1fr;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    padding: 0 1;
+}
+
+BottomStrip {
+    height: auto;
+    /* Up to 8 entries on large terminals (>=40 rows) + 1 overflow row. */
+    max-height: 9;
+    padding: 0 1;
+    border-top: solid $surface-lighten-2;
+}
+
+TopStrip Static,
+BottomStrip Static {
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+
+StatusBar {
+    height: 1;
+    dock: bottom;
+    background: $surface-lighten-1;
+    color: $text-muted;
+    padding: 0 1;
+}

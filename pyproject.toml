@@ -1,0 +1,260 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# PyPI distribution name ("booley" was taken); the import package stays `booley`.
+name = "booley-rtl"
+dynamic = ["version"]
+description = "RTL development harness with ticket-based workflow automation"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.11"
+authors = [
+    {name = "A.R.", email = "boldaxolotl@proton.me"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+
+dependencies = [
+    "claude-agent-sdk>=0.1.55",
+    "click>=8.0",
+    "colorama>=0.4",
+    # EDA invocation/registry layer (ADR 0019 + 0022). Pinned EXACTLY — the
+    # repo convention is >=, but FuseSoC/Edalize's tool-vs-flow API is
+    # mid-migration, so we pin to the flow-API-stable pair (edalize 0.6.x
+    # pairs with fusesoc 2.4.x). Tool *versions* stay the sandbox image's;
+    # Edalize only invokes them (ADR 0019 decision: it does not manage versions).
+    "edalize==0.6.8",
+    "fusesoc==2.4.6",
+    "httpx>=0.28",
+    "httpx-sse>=0.4",
+    "Jinja2>=3.1",
+    "jsonschema>=4.0",
+    "libcst>=1.0",
+    "markdown-it-py>=4.0",
+    "mcp>=1.8",  # streamable-HTTP session manager (Interactive Mode transport)
+    "mdit-py-plugins>=0.5",
+    "mutmut>=3.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "rich>=13.0",
+    "setproctitle>=1.3",
+    "textual>=8.0",
+    "pywin32>=300; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    # `booley init` shells out to `python -m build` for the sandbox-image wheel
+    # (init_docker_image._docker_build_wheel); without it a fresh dev venv fails
+    # Step 9 with "No module named build" (SETUP/F-4).
+    "build>=1.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    # Bounds every test's wall-clock so a wedged subprocess/stall test fails
+    # loudly instead of hanging the whole suite (default applied in tests/conftest.py).
+    "pytest-timeout>=2.3",
+    "coverage>=7.0",
+    # Exact pin, kept in lockstep with the `pip install ruff==...` step in
+    # .github/workflows/test.yml — a floor here let three different ruff versions
+    # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
+    # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
+    "ruff==0.15.18",
+]
+
+[project.scripts]
+booley = "booley.harness.booley:main"
+booley-mcp = "booley.mcp_server:main"
+bwave = "booley.bwave.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/boldaxolotl/Booley"
+Issues = "https://github.com/boldaxolotl/Booley/issues"
+
+[tool.setuptools.dynamic]
+version = {file = "VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["booley*"]
+
+[tool.setuptools.package-data]
+booley = [
+    "data/**/*",
+    "yosys/abc_scripts/*",
+    "yosys/sdc/*",
+    # Runtime resources resolved relative to the installed package (__file__),
+    # not just present in the dev tree — omitting these ships a wheel/image that
+    # blocks at runtime: worktree_create.sh (ticket setup), pre-commit-ruff.sh
+    # (git hook), console.tcss (Console TUI — the default, non --no-console run),
+    # timing.xdc (fpga_impl), abc_config.json (yosys synthesis).
+    "dev_support/*.sh",
+    "harness/console/*.tcss",
+    "vivado/xdc/*",
+    "yosys/*.json",
+]
+
+[tool.setuptools.exclude-package-data]
+booley = [
+    "data/__pycache__/*",
+    "data/*/__pycache__/*",
+    "data/**/*.pyc",
+    "data/**/*.pyo",
+    # Nangate is setup-fetched into a user cache, never package data. Keep this
+    # deny-list even though the source blobs are deleted: it prevents an old or
+    # accidentally restored PDK tree from becoming part of a release.
+    "data/docker/pdk/*",
+    "data/docker/pdk/**/*",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff — merged from former src/ruff.toml
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RET",  # flake8-return
+    "PTH",  # flake8-use-pathlib
+    "PL",   # pylint subset
+    "RUF",  # ruff-specific
+    "BLE",  # flake8-blind-except — broad `except` must be deliberate (use `# noqa: BLE001 — reason`)
+]
+ignore = [
+    "PLC0415",  # import not at top-level — deliberate lazy-import pattern
+    "E501",     # line too long — formatter handles new code
+    "E402",     # module-import-not-at-top — deliberate lazy/conditional imports
+    "E741",     # ambiguous variable name — common in math-heavy code
+    "N806",     # non-lowercase variable in function — class refs and constants
+    "N811",     # constant-imported-as-non-constant — naming convention choice
+    "PLR0913",  # too many arguments — legitimate deep-module APIs
+    "PLR2004",  # magic value in comparison — config/threshold code
+    "PLW0603",  # global-statement — architectural pattern in development
+    "SIM108",   # ternary instead of if/else — readability judgment call
+    "RET504",   # unnecessary assignment before return — aids debugging
+]
+
+[tool.ruff.lint.pylint]
+max-statements = 40
+
+[tool.ruff.lint.isort]
+known-first-party = ["booley"]
+
+[tool.ruff.lint.per-file-ignores]
+# Deliberate design choices, not style violations:
+#   PLR0915 — start_monitor + inner _monitor are a tightly-coupled state machine;
+#             splitting risks subtle threading bugs in a monitor thread.
+#   PLR0912 — merge_dut_info is fundamentally a multi-way merge with intrinsic branching.
+#   N818    — DutInfoConflict is a public API name; renaming is a breaking change.
+#   B027    — _pre_save_hook is an optional hook with a no-op default, not an abstract method.
+#   PLR0912 (reviewer) — _build_system_prompt is a linear "append section if X"
+#             prompt builder; splitting would introduce artificial seams.
+#   PLR0915 (developer) — _run_with_console is a tightly-coupled TUI
+#             launch+worker sequence; nested closures + nonlocal state mean
+#             splitting introduces brittle parameter passing.
+#   PLR0911 (coverage_analyst) — _ensure_trace is a series of distinct
+#             pre-flight gates (instance match, $dump scans, backend resolve,
+#             subprocess result classification); each early-return is a
+#             separate diagnostic surface.
+#   PLR0911 (console links) — _resolve_file is an ordered resolution ladder;
+#             early returns make each user-facing fallback explicit.
+#   PLR0911/PLR0912/PLR0915 (bwave) — _translate_to_subcommand maps legacy CLI
+#             modes to v0.2 subcommands; the branches are the documented modes.
+#   PLR0915 (elaborate) — _run is a linear per-config drive loop (resolve,
+#             execute, classify, write report, accumulate display); splitting
+#             would scatter the per-config result/criterion bookkeeping.
+#   PLR0912/PLR0915 (fusesoc_trace_overlay) — write_trace_overlay is a per-simulator
+#             dispatch (verilator/icarus/xcelium/vcs); the branches ARE the four
+#             documented tool injections, each with its own validation gate.
+#   PLR0915 (init_cmd) — _step_interactive is a linear Step-12 setup flow
+#             (tracked-guard, build spec, check-only branch, write, docker
+#             provisioning); the sequential guards are one cohesive step.
+#   F401 (init_cmd) — after the Single-Responsibility split, init_cmd is a
+#             facade that re-exports names moved into sibling init_* modules
+#             (init_common/init_docker_image/init_git_hooks/init_skills) so
+#             existing importers and tests keep resolving them by their old
+#             ``init_cmd`` names; some re-exports are intentionally unused here.
+#   PLR0911 (openroad_timing) — run_openroad_timing is an ordered ladder of
+#             degrade gates (missing binary/netlist/clock/PDK, nonzero rc,
+#             unparseable slack); each early return is a documented OpenSTA
+#             fallback surface.
+#   PLR0915 (gen_xcelium_dialect_vcd) — main() is a standalone fixture-generator
+#             script emitting a VCD header + value blocks; intrinsically a long
+#             linear emit sequence, not shared production logic.
+#   RUF012/PLR0912/RUF005 (data/edalize/verible.py) — vendored Edalize tool
+#             node written in upstream Edalize idiom (mutable TOOL_OPTIONS
+#             class attr, one linear setup(), list concatenation) so the
+#             upstream PR ships the file byte-identical (ADR 0033).
+"src/booley/sim/trace_session.py" = ["PLR0915"]
+"src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
+"src/booley/dev_support/development_state.py" = ["PLR0912", "N818"]
+"src/booley/mcp_tools/base.py" = ["B027"]
+"src/booley/flows/elaborate.py" = ["PLR0915"]
+"src/booley/mcp_tools/reviewer.py" = ["PLR0912"]
+"src/booley/harness/developer.py" = ["PLR0915"]
+"src/booley/harness/console/links.py" = ["PLR0911"]
+"src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
+"src/booley/fusesoc_trace_overlay.py" = ["PLR0912", "PLR0915"]
+"src/booley/harness/init_cmd.py" = ["PLR0915", "F401"]
+"src/booley/yosys/openroad_timing.py" = ["PLR0911"]
+"crates/bwave/tests/gen_xcelium_dialect_vcd.py" = ["PLR0915"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+markers = [
+    "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    # CPython 3.14's tomllib raises this from its own parser on malformed input;
+    # our code only *catches* TOMLDecodeError, it never constructs one. Not ours to fix.
+    "ignore:Free-form arguments for TOMLDecodeError are deprecated:DeprecationWarning",
+]
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["booley"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_empty = true
+
+# ---------------------------------------------------------------------------
+# Mutmut
+# ---------------------------------------------------------------------------
+[tool.mutmut]
+paths_to_mutate = "src/booley/harness/stages/"
+tests_dir = "tests/harness/"
+runner = "python -m pytest tests/harness/ --ignore=tests/integration -x -q --tb=no --no-header"

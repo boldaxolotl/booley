@@ -1,0 +1,5 @@
+{
+  "_comment": "Per-config ABC recipe overrides. Only needed to deviate from the default (fast).",
+  "_comment2": "Keys: 'config' or 'config.top'. Values: 'fast', 'balanced', 'default', or null.",
+  "_comment3": "Since fast is now the global default, this file is only needed for exceptions."
+}

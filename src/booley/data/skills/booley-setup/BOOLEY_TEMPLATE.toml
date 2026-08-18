@@ -1,0 +1,72 @@
+# BOOLEY_TEMPLATE — annotated slimmed `.booley_project/booley.toml`
+# (execution policy + project meta).
+
+[project]
+name = "<project>"
+
+[stealth]
+# Setup keeps commit messages verbatim unless the user explicitly opts in to
+# the banned-word scrub. Set true only when plan row 20 records that choice.
+enabled = false
+# ignore_native_cores = true # ask when the repository already ships .core files
+
+# Setup's Step 6 always writes you a local findings report. This knob is only
+# about whether it may *offer* to send the Booley-side findings to Booley's
+# public issue tracker (plan row 21). Omit for the default, "ask" — one offer,
+# with the exact redacted text shown first, and a decline is final.
+# [feedback]
+# mode = "file-only"          # never post; redacted file only via explicit export
+# mode = "off"                # local report only, no offer at all
+# redact_extra = ["codename"]  # extra terms to scrub from anything outgoing
+# redact_identifiers = false   # keep module/Target names (open-source projects)
+
+[flows]
+
+# Every enabled Flow ALSO needs a `default_target` — the .core Target it drives
+# (e.g. the `sim_core`/`lint_core`/`synth_core` names from CORE_TEMPLATE.yaml).
+# An enabled Flow with no default target can never run; `booley doctor` fails on it.
+# Leave `default_target` unset only while the Flow is still disabled.
+
+[flows.sim]
+enabled = false              # flip to true (or delete the line) when wired up
+# default_target = "sim_core"        # REQUIRED once enabled (.core Target name)
+# Per-test non-RTL build step (per-case firmware compile, vector staging)?
+# Declare it here — shell lines run inside the Session Runtime before each sim run,
+# under the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_RUN_CWD, ...):
+# pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
+
+# The only commercial provisioning policy currently available is an
+# administrator-registered Vivado 2025.2 installation on Linux x86-64:
+# [eda.vivado]
+# provisioning = "host"
+# A host Project Grant selects the opaque Installation Registration.
+# run_cwd = "tests/work"     # the dir the TB reads fixed-name inputs from
+
+[flows.lint]
+enabled = false
+# default_target = "lint_core"       # REQUIRED once enabled
+# warnings_as_errors = true  # false: warnings still print/report but exit 0
+# Lint waivers are NOT configured here: add a `.vlt` waiver file to the lint
+# Target's fileset in the .core (`file_type: vlt`) and Verilator picks it up.
+# Verible tuning likewise travels in the Target: a `file_type: veribleLintRules`
+# file becomes --rules_config; `veribleLintWaiver` files become --waiver_files.
+
+# Every installed Booley Flow is discovered automatically. Point elab at an
+# elaboration-capable Target (the lint Target usually works), or keep
+# enabled = false to opt out, in which case lint/sim cover elaboration.
+[flows.elab]
+enabled = false
+# default_target = "lint_core"       # REQUIRED once enabled
+
+[flows.synth]
+enabled = false              # synthesis recipe belongs in Target flow_options
+# default_target = "synth_core"      # REQUIRED once enabled
+# calibration_target = "synth_core" # reviewed heaviest target; required for a matrix
+
+[jobs]
+# heavy_memory = "4g"        # per-HEAVY-job reservation; calibrate in Step 4
+
+# NOTE: RTL-vs-TB source isolation is derived from the .core filesets — a file
+# tagged `tags: [tb]` is testbench, everything else is RTL (ADR 0026). There is
+# no [sources.*] table in booley.toml anymore; tag your testbench fileset in the
+# .core instead (see CORE_TEMPLATE.yaml).

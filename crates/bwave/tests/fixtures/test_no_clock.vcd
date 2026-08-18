@@ -1,0 +1,23 @@
+$timescale 1ns $end
+$scope module tb $end
+$var wire 1 ! enable $end
+$var wire 4 " count[3:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000 "
+#10
+1!
+#25
+b0001 "
+#50
+0!
+b0010 "
+#75
+1!
+b0011 "
+#100
+0!
+b0100 "
+#200

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Booley Ticket Create"
+  short_description: "Turn RTL requirements into a Booley ticket"
+  default_prompt: "Use $booley-ticket-create to turn these RTL requirements into a well-formed ticket."
+
+policy:
+  allow_implicit_invocation: false

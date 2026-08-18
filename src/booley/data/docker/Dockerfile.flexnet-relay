@@ -1,0 +1,18 @@
+# Minimal production image for the fixed-destination Xilinx FlexNet relay.
+# Build with src/booley/eda as the context so only the standalone relay enters.
+FROM python:3.13-alpine@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY flexnet_relay.py /app/flexnet_relay.py
+
+# Numeric unprivileged identity; host lifecycle adds read-only rootfs, tmpfs,
+# dropped capabilities, resource limits, and no-new-privileges.
+USER 65532:65532
+
+HEALTHCHECK --interval=2s --timeout=2s --start-period=2s --retries=15 \
+    CMD ["python3", "/app/flexnet_relay.py", "--healthcheck"]
+
+ENTRYPOINT ["python3", "/app/flexnet_relay.py"]

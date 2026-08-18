@@ -1,0 +1,742 @@
+"""Docker sandbox base-image build, pull, and staleness-fingerprint logic.
+
+Extracted from ``init_cmd.py`` (Single Responsibility): everything that builds,
+pulls, inspects, or fingerprints the project-agnostic ``booley-sandbox`` base
+image lives here. The build-fingerprint guard rebuilds an image whose baked-in
+source has since changed instead of silently skipping it (the failure that hid
+the container-side skill deployment behind a stale image).
+
+Depends only on ``init_common`` for console output and :class:`InitContext`;
+it never imports back from ``init_cmd``.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from booley.harness.build_stamp import (
+    STAMP_RELPATH,
+    build_stamp,
+    resolve_build_commit,
+    resolve_source_updated_at,
+)
+from booley.harness.init_common import InitContext, err, info, ok, skip, warn
+from booley.paths import docker_data_dir
+from booley.timefmt import utc_now_rfc3339
+
+DOCKER_IMAGE = "booley-sandbox"
+GHCR_IMAGE = "ghcr.io/boldaxolotl/booley-sandbox"
+
+# Booley-SHIPPED sandbox flavors: purpose-built images a project selects by name
+# via ``[sandbox].image``, each ``FROM booley-sandbox`` plus a domain toolchain.
+# They are Booley's images, not the user's, so init owns their lifecycle exactly
+# like the base's — mapping the tag to the Dockerfile shipped beside this module
+# in ``booley/data/docker/``. Without this registry a flavor fell through
+# ``_project_image_setup_gate``'s "not the generated name -> user-managed" branch
+# and was skipped, so init would rebuild the base for 20 minutes and leave the
+# image the project actually runs frozen on the base's *previous* layers.
+FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
+
+# Docker image label carrying a content hash of the sources baked into the
+# sandbox image. ``booley init`` stamps it at build time and compares it on a
+# re-run so an image built from now-stale source is rebuilt instead of skipped
+# (the failure that hid the container-side skill deployment from a stale image).
+LABEL_FINGERPRINT = "booley.build-fingerprint"
+LABEL_BASE_IMAGE_ID = "booley.base-image-id"
+
+
+def _image_build_metadata_args(booley_root: Path) -> list[str]:
+    """Docker build args that make image provenance visible in-container."""
+    built_at = utc_now_rfc3339()
+    is_checkout = (booley_root / ".git").exists()
+    values = {
+        "BOOLEY_IMAGE_BUILT_AT": built_at,
+        "BOOLEY_SOURCE_REVISION": (
+            resolve_build_commit(booley_root) if is_checkout else "unknown"
+        ),
+        "BOOLEY_SOURCE_UPDATED_AT": (
+            resolve_source_updated_at(booley_root) if is_checkout else "unknown"
+        ),
+        "BOOLEY_VERSION": _read_version(),
+    }
+    return [
+        item
+        for name, value in values.items()
+        for item in ("--build-arg", f"{name}={value or 'unknown'}")
+    ]
+
+
+def _docker_image_exists(image: str = DOCKER_IMAGE) -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def _docker_image_id(image: str) -> str | None:
+    """Return *image*'s immutable Docker ID, or ``None`` when unavailable."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+# --- Image staleness guard (build-fingerprint label) -----------------------
+#
+# The sandbox image bakes a wheel built from ``src/booley`` plus the bwave Rust
+# binary. When that source changes but the image is not rebuilt, the container
+# silently runs old code. ``booley init`` normally *skips* the build when the
+# image already exists, so drift went unnoticed. We fingerprint the baked-in
+# sources, stamp it as an image label at build time, and rebuild on mismatch.
+
+# Source trees (recursively) and individual files whose content ends up in the
+# image. Kept in sync with what the Dockerfile COPYs / builds; ``crates/bwave``
+# excludes the huge ``target/`` build dir by only hashing its ``src`` + manifests.
+_FINGERPRINT_TREES = (
+    "src/booley",  # the Python package -> the installed wheel
+    "crates/bwave/src",  # bwave Rust sources -> the in-image binary
+)
+_FINGERPRINT_FILES = (
+    "pyproject.toml",
+    "VERSION",
+    "crates/bwave/Cargo.toml",
+    "crates/bwave/Cargo.lock",
+)
+
+
+#: Generated build artifacts that live inside a fingerprinted tree but must not
+#: contribute to the digest. The commit stamp exists only while a wheel build is
+#: in flight, and the two builders remove it at different points — hashing it
+#: would make ``build.sh``'s label and ``booley init``'s recomputation disagree,
+#: so every init after a ``build.sh`` build would declare the image stale and
+#: rebuild it for 20 minutes. Its content is redundant anyway: a commit that
+#: changed the baked sources already moves the digest via those sources.
+_FINGERPRINT_EXCLUDED = frozenset({STAMP_RELPATH})
+
+
+def _iter_fingerprint_files(booley_root: Path):
+    """Yield every source file that contributes to the sandbox image build."""
+    for rel in _FINGERPRINT_TREES:
+        root = booley_root / rel
+        if root.is_dir():
+            for p in root.rglob("*"):
+                if not p.is_file() or "__pycache__" in p.parts or p.suffix == ".pyc":
+                    continue
+                if p.relative_to(booley_root).as_posix() in _FINGERPRINT_EXCLUDED:
+                    continue
+                yield p
+    for rel in _FINGERPRINT_FILES:
+        p = booley_root / rel
+        if p.is_file():
+            yield p
+
+
+def _image_build_fingerprint(booley_root: Path) -> str | None:
+    """SHA-256 over every source baked into the sandbox image.
+
+    Returns ``None`` when the source tree is absent (e.g. a pip-installed Booley
+    with no checkout); that disables the staleness check so the pull/pre-built
+    flow is left untouched. Path-then-content is hashed so a rename or deletion
+    changes the digest, not just an edit.
+    """
+    files = sorted(set(_iter_fingerprint_files(booley_root)))
+    if not files:
+        return None
+    h = hashlib.sha256()
+    for p in files:
+        h.update(p.relative_to(booley_root).as_posix().encode())
+        h.update(b"\0")
+        h.update(p.read_bytes())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _image_label(image: str, label: str) -> str | None:
+    """Return *image*'s *label* value, or ``None`` if absent/unavailable."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "image",
+                "inspect",
+                "-f",
+                f'{{{{ index .Config.Labels "{label}" }}}}',
+                image,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if result.returncode != 0:
+        return None
+    val = result.stdout.strip()
+    # Go's template prints "<no value>" when the label key is missing.
+    return val if val and val != "<no value>" else None
+
+
+def _image_is_stale(fingerprint: str | None, image: str = DOCKER_IMAGE) -> bool:
+    """Whether the present sandbox image no longer matches the local source.
+
+    - ``fingerprint is None`` (no source tree to compare): not stale — leave any
+      pulled/pre-built image alone.
+    - no fingerprint label: an image built before this guard existed (the exact
+      stale-image bug this fixes) -> stale.
+    - ``pulled:*`` label: a deliberately pulled pre-built image -> not stale.
+    - otherwise: stale iff the stamped hash differs from the current source.
+
+    Also asked of a :data:`FLAVOR_IMAGES` flavor, which carries the *base's*
+    fingerprint (``build-riscv.sh`` stamps the same label from the same sources).
+    That is what makes derived-image drift detectable: the source change that
+    restamps the base leaves the flavor's label behind, so it reads as stale.
+    """
+    if fingerprint is None:
+        return False
+    label = _image_label(image, LABEL_FINGERPRINT)
+    if label is None:
+        return True
+    if label.startswith("pulled:"):
+        return False
+    if label != fingerprint:
+        return True
+    if image not in FLAVOR_IMAGES:
+        return False
+    stamped_base = _image_label(image, LABEL_BASE_IMAGE_ID)
+    current_base = _docker_image_id(DOCKER_IMAGE)
+    return not stamped_base or not current_base or stamped_base != current_base
+
+
+def source_fingerprint_mismatch(image: str) -> bool | None:
+    """Exact staleness verdict for *image* from its build-fingerprint label.
+
+    Unlike :func:`_image_is_stale` (init's rebuild decision, where a missing
+    label means "predates the guard -> rebuild"), this is an *advisory* probe
+    for session start and doctor: it answers only when both sides of the
+    comparison exist, so a hand-authored image without the label is never
+    nagged about.
+
+    - ``None``: no verdict — pip-installed Booley (no checkout to hash), or the
+      image is unlabeled / deliberately ``pulled:*``.
+    - ``True``: the image bakes sources that no longer match this checkout.
+    - ``False``: up to date.
+
+    Derived project images (``FROM booley-sandbox``) inherit the base's label,
+    so a project image built from a since-rebuilt base reads as stale here —
+    exactly the drift that used to surface only as mysterious in-container
+    behavior.
+    """
+    booley_root = docker_data_dir().parent.parent.parent.parent
+    fingerprint = _image_build_fingerprint(booley_root)
+    if fingerprint is None:
+        return None
+    label = _image_label(image, LABEL_FINGERPRINT)
+    if label is None or label.startswith("pulled:"):
+        return None
+    return label != fingerprint
+
+
+def _stamp_image_fingerprint(image: str, value: str) -> None:
+    """Best-effort: set *image*'s build-fingerprint label to *value*.
+
+    Used to mark a freshly *pulled* image as ``pulled:<version>`` so a later run
+    recognises it as intentional and doesn't treat the missing label as stale.
+    Implemented as a metadata-only ``FROM <image>`` rebuild (near-instant, no
+    new layers). Failure is non-fatal — the image just gets re-checked later.
+    """
+    with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
+        subprocess.run(
+            ["docker", "build", "-q", "--label", f"{LABEL_FINGERPRINT}={value}", "-t", image, "-"],
+            input=f"FROM {image}\n",
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+
+def _read_version() -> str:
+    try:
+        from booley import __version__
+
+        return __version__
+    except Exception:  # noqa: BLE001 — version import is optional; fall back to a dev placeholder
+        return "0.0.0-dev"
+
+
+def remote_tag(image: str, version: str) -> str:
+    """The GHCR tag *image* is published under. Public: init prints it as a hint."""
+    registry = GHCR_IMAGE.rsplit("/", 1)[0]
+    return f"{registry}/{image}:{version}"
+
+
+def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
+    tag = remote_tag(image, version)
+    info(f"trying to pull pre-built image: {tag}")
+    try:
+        result = subprocess.run(
+            ["docker", "pull", tag],
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        subprocess.run(
+            ["docker", "tag", tag, image],
+            capture_output=True,
+            timeout=30,
+            check=True,
+        )
+        # Mark provenance so the staleness guard leaves this pre-built image
+        # alone (its content can't match a local source fingerprint).
+        _stamp_image_fingerprint(image, f"pulled:{version}")
+        return True
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def _base_image_note(selected_image: str) -> None:
+    """Say why the base is built when the project's own image is something else.
+
+    The Docker-image step always builds ``booley-sandbox``: it is Booley's own
+    base image and a
+    project that selects another one nearly always layers on top of it, so a
+    skip here would just move the staleness one image down. But the step used to
+    announce a 20-minute rebuild of an image the project never runs, with no
+    word of the relationship — which reads as init building the wrong thing.
+    """
+    if not selected_image or selected_image == DOCKER_IMAGE:
+        return
+    if selected_image in FLAVOR_IMAGES:
+        info(
+            f"{DOCKER_IMAGE} is the base this project's [sandbox].image "
+            f"'{selected_image}' layers on — it is built first, that flavor image next"
+        )
+        return
+    info(
+        f"this project runs [sandbox].image '{selected_image}'; {DOCKER_IMAGE} is "
+        "Booley's base image and is kept current regardless"
+    )
+
+
+def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
+    """Build/refresh the project-agnostic ``booley-sandbox`` base image.
+
+    *selected_image* is the project's resolved ``[sandbox].image`` and is used
+    only to explain this step's relationship to it; the base is built either way.
+    """
+    ctx.step_banner("Docker image")
+
+    if not shutil.which("docker"):
+        err("docker not found on PATH — cannot build image")
+        info(
+            "  Docker Desktop users: the CLI joins PATH only after the app has "
+            "started — launch Docker Desktop, then reopen this terminal"
+        )
+        ctx.record("docker_image", "err", "docker not on PATH")
+        return
+
+    _base_image_note(selected_image)
+    exists = _docker_image_exists()
+    docker_dir = docker_data_dir()
+    booley_root = docker_dir.parent.parent.parent.parent
+    fingerprint = _image_build_fingerprint(booley_root)
+
+    if exists and not ctx.force:
+        if not _image_is_stale(fingerprint):
+            skip(f"{DOCKER_IMAGE} image already present")
+            _report_build_cache()
+            ctx.record("docker_image", "skip", "already present")
+            return
+        # Present but built from now-stale source: rebuild locally rather than
+        # skip (or re-pull, which would loop — the pulled image can't match the
+        # local source fingerprint).
+        warn(f"{DOCKER_IMAGE} image is stale (source changed since build) — rebuilding")
+        warn("a dev-install source/fingerprint change forces a full image rebuild (~20 min)")
+        if ctx.check_only:
+            ctx.record("docker_image", "warn", "would rebuild (stale)")
+            return
+        _docker_local_build(ctx, docker_dir, exists, fingerprint)
+        return
+
+    if ctx.check_only:
+        _docker_check_only(ctx, exists)
+        return
+
+    # Pull-first strategy (skip if --force requests fresh local build)
+    if not ctx.force:
+        version = _read_version()
+        if _try_pull_image(version):
+            ok(f"{DOCKER_IMAGE} pulled from registry (v{version})")
+            ctx.record("docker_image", "ok", "pulled")
+            return
+        info("pre-built image unavailable, building locally (~20 min)")
+
+    _docker_local_build(ctx, docker_dir, exists, fingerprint)
+
+
+def _docker_check_only(ctx: InitContext, exists: bool) -> None:
+    """Handle --check-only mode for Docker image step."""
+    if exists:
+        skip(f"{DOCKER_IMAGE} image already present")
+        ctx.record("docker_image", "skip", "already present")
+    else:
+        warn(f"{DOCKER_IMAGE} image missing (would build)")
+        ctx.record("docker_image", "warn", "would build")
+
+
+def _docker_local_build(
+    ctx: InitContext,
+    docker_dir: Path,
+    exists: bool,
+    fingerprint: str | None = None,
+) -> None:
+    """Build Docker image locally: wheel + docker build.
+
+    *fingerprint* (from :func:`_image_build_fingerprint`) is stamped onto the
+    built image as the :data:`LABEL_FINGERPRINT` label so a later run can detect
+    source drift; computed here if not supplied by the caller.
+    """
+    dockerfile = docker_dir / "Dockerfile"
+    if not dockerfile.is_file():
+        err(f"Dockerfile not found at {dockerfile}")
+        ctx.record("docker_image", "err", "Dockerfile missing")
+        return
+
+    booley_root = docker_dir.parent.parent.parent.parent
+    if not (booley_root / "pyproject.toml").is_file():
+        err("cannot determine Booley repo root for docker build context")
+        info("  build manually: ./src/booley/data/docker/build.sh")
+        ctx.record("docker_image", "err", "repo root not found")
+        return
+
+    if fingerprint is None:
+        fingerprint = _image_build_fingerprint(booley_root)
+
+    if not _docker_build_wheel(ctx, booley_root):
+        return
+
+    returncode = _docker_build_image(ctx, dockerfile, booley_root, exists, fingerprint)
+    if returncode is None:
+        return  # error already recorded
+
+    if returncode != 0:
+        err("docker build failed — re-run with -v for full output")
+        ctx.record("docker_image", "err", "build failed")
+        return
+
+    ok(f"{DOCKER_IMAGE} image built successfully")
+    _report_build_cache()
+    ctx.record("docker_image", "ok", "built")
+
+
+def _size_to_gb(size: str) -> float:
+    """Parse a docker size string ("29.3GB", "512MB", "1.2kB") into GB (base-10)."""
+    m = re.match(r"\s*([0-9.]+)\s*([kKmMgGtT]?)i?B", size)
+    if not m:
+        return 0.0
+    to_gb = {"": 1e-9, "k": 1e-6, "m": 1e-3, "g": 1.0, "t": 1e3}
+    return float(m.group(1)) * to_gb.get(m.group(2).lower(), 0.0)
+
+
+def _report_build_cache(prune_hint_gb: float = 10.0) -> None:
+    """Report the docker build-cache size after a build so it can't balloon silently.
+
+    A first sandbox build leaves a large builder cache — Ibex onboarding saw
+    ~29 GB, which filled the disk and killed a running synth (SETUP-24). init
+    does not prune automatically (the cache may be shared with other projects/
+    images), but it surfaces the size and hints at ``docker builder prune`` once
+    it grows past a threshold so the growth is visible rather than a surprise.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return
+    if result.returncode != 0:
+        return
+    for line in result.stdout.splitlines():
+        parts = [p.strip() for p in line.split("\t")]
+        if len(parts) >= 2 and parts[0].lower() == "build cache":
+            reclaimable = f" ({parts[2]} reclaimable)" if len(parts) >= 3 and parts[2] else ""
+            info(f"docker build cache: {parts[1]}{reclaimable}")
+            if _size_to_gb(parts[1]) >= prune_hint_gb:
+                info("  large — reclaim with: docker builder prune")
+            return
+
+
+def _docker_build_wheel(ctx: InitContext, booley_root: Path) -> bool:
+    """Build the commit-stamped booley wheel into dist/. True on success.
+
+    The stamp is what lets ``booley --version`` in the built container name the
+    commit it came from; without it every init-driven image reported a bare
+    ``booley <version>`` and the dev-install freshness check was unanswerable
+    (F-3). ``build.sh`` stamps through the same helper.
+    """
+    dist_dir = booley_root / "dist"
+    build_dir = booley_root / "build"
+    info("building booley wheel...")
+    try:
+        with build_stamp(booley_root) as commit:
+            info(f"  build commit: {commit or '<unknown — not a git checkout>'}")
+            # setuptools incrementally reuses build/lib. Package moves otherwise
+            # leave deleted modules in the next wheel after a package move.
+            shutil.rmtree(build_dir, ignore_errors=True)
+            # -P keeps the repo-root ``build/`` setuptools artifact dir from
+            # shadowing the pypa ``build`` module (cwd is prepended to sys.path
+            # for ``-m`` otherwise, and the failure mode is a stale wheel being
+            # silently reused by the docker COPY layer on the next image build).
+            subprocess.run(
+                [sys.executable, "-P", "-m", "build", "--wheel", "--outdir", str(dist_dir)],
+                cwd=str(booley_root),
+                check=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=not ctx.verbose,
+                timeout=120,
+            )
+        return True
+    except (subprocess.SubprocessError, OSError) as e:
+        return _report_wheel_failure(ctx, e)
+
+
+def _report_wheel_failure(ctx: InitContext, exc: Exception) -> bool:
+    """Explain a failed wheel build, record it, and return False."""
+    err(f"wheel build failed: {exc}")
+    # A bare exit status is undebuggable (F-4) — surface the EDA tool's own
+    # words. BOTH streams: pypa ``build`` writes its progress log *and* the
+    # actual diagnosis to STDOUT and leaves stderr empty, so a stderr-only
+    # report showed one useless "Creating isolated environment" line and hid
+    # the real cause (fpu F-1). The common failures get their exact fix named.
+    stdout = (getattr(exc, "stdout", "") or "").strip()
+    stderr = (getattr(exc, "stderr", "") or "").strip()
+    combined = "\n".join(part for part in (stdout, stderr) if part)
+    for line in combined.splitlines()[-12:]:
+        info(f"  {line}")
+    if "No module named build" in combined or isinstance(exc, FileNotFoundError):
+        info("  fix: pip install build   (or: pip install -e '.[dev]')")
+    elif "ensurepip is not available" in combined:
+        # Debian/Ubuntu split venv out of the interpreter package; ``build``
+        # needs it to make its isolated environment. The version must match the
+        # interpreter running init, not the distro default (docs/TROUBLESHOOTING.md).
+        pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        info(f"  fix: sudo apt install python{pyver}-venv   (matches this interpreter)")
+        info("       or: pip install build && python -m build --wheel --no-isolation")
+    ctx.record("docker_image", "err", "wheel build failed")
+    return False
+
+
+def _docker_build_image(
+    ctx: InitContext,
+    dockerfile: Path,
+    context: Path,
+    exists: bool,
+    fingerprint: str | None = None,
+    image: str = DOCKER_IMAGE,
+    record_key: str = "docker_image",
+    build_note: str = "this can take 20-30 minutes on first build",
+) -> int | None:
+    """Run docker build of *dockerfile* against the *context* dir.
+
+    Returns the returncode, or None if an exception occurred. *image* /
+    *record_key* / *build_note* are parameterised so the flavor step
+    (:func:`ensure_flavor_image`) shares this plumbing — same fingerprint label,
+    same UTF-8-safe log streaming, same timeout — while recording its outcome
+    under its own summary key. The base's context is the Booley repo root (it
+    COPYs the wheel); a flavor's is data/docker/ (see :func:`_flavor_build`).
+    """
+    action = "Rebuilding" if exists else "Building"
+    info(f"{action} {image} image — {build_note}.")
+    # First builds compile Yosys/OpenSTA/Verilator from source; on slower hosts
+    # (Windows/WSL2 VMs especially) 40 minutes is not enough. Overridable so a
+    # constrained host can finish rather than repeatedly killing a healthy build
+    # (the layer cache makes retries resume, but a single slow layer never wins).
+    build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
+    build_cmd = ["docker", "build"]
+    # ``ctx.force`` means "run the local build even if the image fingerprint is
+    # current"; it must not mean "discard Docker's layer cache".  The current
+    # wheel COPY invalidates Booley's own layers, while changed Dockerfile inputs
+    # invalidate their normal descendants.  Keeping earlier EDA-tool layers is
+    # what makes an explicit session refresh practical instead of another cold
+    # 20-60 minute build.
+    if fingerprint:
+        build_cmd += ["--label", f"{LABEL_FINGERPRINT}={fingerprint}"]
+    if image in FLAVOR_IMAGES:
+        base_image_id = _docker_image_id(DOCKER_IMAGE)
+        if base_image_id:
+            build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
+    if image == DOCKER_IMAGE:
+        build_cmd += _image_build_metadata_args(context)
+    build_cmd += ["-t", image, "-f", str(dockerfile), str(context)]
+
+    try:
+        if ctx.verbose:
+            result = subprocess.run(build_cmd, text=True, timeout=build_timeout, check=False)
+            return result.returncode
+        # Decode the build log as UTF-8, not the console locale. `text=True`
+        # alone picks cp1252 on a Windows host, and BuildKit emits UTF-8 (box
+        # drawing, progress glyphs, and whatever the vendored toolchains print),
+        # so the first non-cp1252 byte raised UnicodeDecodeError and aborted a
+        # 20-minute image rebuild that was otherwise succeeding. Never let a log
+        # line kill the build: replace undecodable bytes.
+        proc = subprocess.Popen(
+            build_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        assert proc.stdout is not None
+        # The builder echoes each RUN instruction verbatim, so the ">>>"
+        # progress marker is captured twice: once from the Dockerfile source
+        # (trailing "  &&  \" continuation -> a dangling quote) and once as the
+        # real echo output. Trim at the echo string's closing quote so both
+        # render as the same clean line, then skip the consecutive duplicate.
+        last_msg = ""
+        for line in proc.stdout:
+            if ">>>" not in line:
+                continue
+            msg = line[line.index(">>>") :].strip()
+            msg = msg.split('"', 1)[0].rstrip(" \\")
+            if msg and msg != last_msg:
+                info(msg)
+                last_msg = msg
+        proc.wait(timeout=build_timeout)
+        return proc.returncode
+    except subprocess.TimeoutExpired:
+        err(
+            f"docker build timed out after {build_timeout // 60} minutes "
+            "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
+        )
+        ctx.record(record_key, "err", "build timed out")
+        return None
+    except (FileNotFoundError, OSError) as e:
+        err(f"docker build failed: {e}")
+        ctx.record(record_key, "err", str(e))
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Booley-shipped sandbox flavors (record key: flavor_image) — booley-sandbox-riscv, ...
+# ---------------------------------------------------------------------------
+
+
+def _flavor_build(
+    ctx: InitContext,
+    image: str,
+    dockerfile: Path,
+    exists: bool,
+    fingerprint: str | None,
+) -> bool:
+    """``docker build`` a flavor from its shipped Dockerfile; True once it exists."""
+    docker_dir = dockerfile.parent
+    returncode = _docker_build_image(
+        ctx,
+        dockerfile,
+        # Context is docker_dir, not the repo root build-riscv.sh passes: a
+        # flavor Dockerfile has no COPY (it only layers toolchains onto the
+        # base), so the context is unused — and a pip-installed Booley has no
+        # repo root to point at while data/docker/ always exists. This is why
+        # flavor Dockerfiles must stay COPY-free.
+        docker_dir,
+        exists,
+        fingerprint,
+        image=image,
+        record_key="project_image",
+        build_note="this can take 10-20 minutes",
+    )
+    if returncode is None:
+        return False  # error already recorded
+    if returncode != 0:
+        err(f"failed to build {image} — re-run with -v for full output")
+        ctx.record("project_image", "err", f"{image} build failed")
+        return False
+    ok(f"{image} image built successfully")
+    _report_build_cache()
+    ctx.record("project_image", "ok", f"flavor {image} built")
+    return True
+
+
+def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
+    """Build, pull, or refresh the Booley-shipped sandbox flavor the project selected.
+
+    Runs right after the base Docker-image step, and that ordering is
+    load-bearing: a flavor is
+    ``FROM booley-sandbox``, so rebuilding only the base leaves the flavor frozen
+    on the previous layers under an unchanged tag. The session then keeps serving
+    pre-rebuild code and nothing looks wrong — derived-image drift. Sharing the
+    base's build fingerprint closes that: the source change that restamps the
+    base marks the flavor stale here, and it is rebuilt in the same run.
+
+    Returns True when this run actually (re)built the image, so the caller can
+    warn about a live session still serving the previous one.
+    """
+    dockerfile_name = FLAVOR_IMAGES[image]
+    docker_dir = docker_data_dir()
+    dockerfile = docker_dir / dockerfile_name
+    exists = _docker_image_exists(image)
+    fingerprint = _image_build_fingerprint(docker_dir.parent.parent.parent.parent)
+
+    if exists and not ctx.force and not _image_is_stale(fingerprint, image):
+        skip(f"{image} is a Booley-shipped sandbox flavor and is up to date")
+        ctx.record("project_image", "skip", f"flavor {image} current")
+        return False
+
+    if ctx.check_only:
+        verb = "rebuild (stale)" if exists else "build"
+        warn(f"would {verb} the {image} sandbox flavor")
+        ctx.record("project_image", "warn", f"would {verb}")
+        return False
+
+    # No shipped Dockerfile to build from (a trimmed install): the registry is
+    # the only source, and a flavor already on disk is trusted as-is — there is
+    # nothing local to check it against.
+    if not dockerfile.is_file():
+        if exists:
+            skip(f"{image} present; no shipped {dockerfile_name} to rebuild from — trusting it")
+            ctx.record("project_image", "skip", f"flavor {image} unverifiable")
+            return False
+        if _try_pull_image(_read_version(), image):
+            ok(f"{image} pulled from registry")
+            ctx.record("project_image", "ok", f"flavor {image} pulled")
+            return True
+        err(f"{image} is missing and cannot be built — no shipped {dockerfile_name}")
+        info(f"  pull it: docker pull {remote_tag(image, _read_version())}")
+        ctx.record("project_image", "err", f"flavor {image} unavailable")
+        return False
+
+    if exists:
+        warn(f"{image} is stale (its {DOCKER_IMAGE} base or Booley's sources changed)")
+        warn("  rebuilding — a session left on the old image keeps serving pre-rebuild code")
+    return _flavor_build(ctx, image, dockerfile, exists, fingerprint)

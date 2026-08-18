@@ -1,0 +1,40 @@
+$date Sat Jan 01 00:00:00 2024 $end
+$version Verilator 5.024 2024-04-05 $end
+$timescale 1ns $end
+$scope module TOP $end
+$scope module tb $end
+$scope module dut $end
+$var wire 1 ! clk $end
+$var wire 1 " rstn $end
+$var wire 8 # data [7:0] $end
+$scope begin gen_block $end
+$var wire 4 $ gen_sig [3:0] $end
+$upscope $end
+$upscope $end
+$upscope $end
+$upscope $end
+$enddefinitions $end
+$dumpvars
+0!
+0"
+b00000000 #
+b0000 $
+$end
+#0
+#5
+1!
+#10
+0!
+1"
+b00001010	#
+b0101	$
+#15
+1!
+#20
+0!
+b11111111 #
+b1111 $
+#25
+1!
+#30
+0!

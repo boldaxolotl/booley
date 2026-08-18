@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+exec env LD_PRELOAD=/lib/x86_64-linux-gnu/libudev.so.1 \
+  /opt/booley-eda/vivado/Vivado/bin/vivado "$@"

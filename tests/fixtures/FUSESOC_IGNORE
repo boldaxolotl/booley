@@ -1,0 +1,2 @@
+# Keep test-fixture .core files out of repo-root FuseSoC/Booley discovery.
+# The fixtures are mounted individually as their own project roots in e2e.

@@ -1,0 +1,4 @@
+# Booley Session Runtimes are offline except for the LLM API proxy.
+# An empty allowlist means only web_search = "disabled" is permitted, even
+# when Codex runs with danger-full-access inside the outer Docker sandbox.
+allowed_web_search_modes = []

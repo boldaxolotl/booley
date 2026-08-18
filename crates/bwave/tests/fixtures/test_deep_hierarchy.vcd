@@ -1,0 +1,57 @@
+$date Mon Jan 01 00:00:00 2024 $end
+$version Test VCD Generator $end
+$timescale 1ns $end
+$scope module tb $end
+$scope module dut $end
+$scope module core $end
+$scope module ctrl $end
+$scope module fsm $end
+$scope module subunit $end
+$var wire 1 ! state_bit $end
+$var wire 8 " counter [7:0] $end
+$upscope $end
+$var wire 1 # fsm_active $end
+$upscope $end
+$var wire 1 $ ctrl_en $end
+$upscope $end
+$var wire 32 % data_bus [31:0] $end
+$upscope $end
+$var wire 1 & clk $end
+$var wire 1 ' rstn $end
+$upscope $end
+$var wire 1 ( tb_done $end
+$upscope $end
+$enddefinitions $end
+#0
+0&
+0'
+0!
+b00000000 "
+0#
+0$
+b00000000000000000000000000000000 %
+0(
+#5
+1&
+#10
+0&
+1'
+1$
+1#
+#15
+1&
+#20
+0&
+1!
+b00000101 "
+b00000000000000000000000011111111 %
+#25
+1&
+#30
+0&
+0!
+b00001010 "
+b00000000000000001111111111111111 %
+1(
+#35
+1&

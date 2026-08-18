@@ -1,0 +1,35 @@
+[[fixture]]
+name = "cache_controller_small"
+format = "vcd.gz"
+source_design = "external cache_controller.sv supplied to generate.py"
+top_module = "cache_controller_real_trace_tb"
+testbench = "created by generate.py"
+simulator = "Icarus Verilog"
+simulator_command = "iverilog -g2012 -DBWAVE_REAL_TRACE_FIXTURE -o sim.vvp cache_controller.sv cache_controller_real_trace_tb.sv && vvp sim.vvp"
+stimulus = "deterministic LFSR traffic, 8500 operations, periodic resets"
+raw_vcd = "cache_controller_small.vcd"
+compressed = "cache_controller_small.vcd.gz"
+raw_bytes = 5769448
+compressed_bytes = 756420
+raw_sha256 = "f2ba10acea6d0a2938328ca0a6a4fb61064e883f8462b7aca0d3bdd1482f1387"
+compressed_sha256 = "cc57370e464b50fd7fab9aa8e9a3c6cb8c8a14da5e65e60fa8ab25b5deb715cd"
+signal_count = 56
+transition_count = 493441
+
+[[fixture]]
+name = "cache_controller_verilator_small"
+format = "vcd.gz"
+source_design = "external cache_controller.sv supplied to generate.py"
+top_module = "cache_controller_real_trace_tb"
+testbench = "created by generate.py"
+simulator = "Verilator"
+simulator_command = "verilator_bin --cc --exe --trace --timing -Wno-fatal -Wno-INITIALDLY --top-module cache_controller_real_trace_tb --Mdir obj_vl cache_controller.sv cache_controller_real_trace_tb.sv sim_main.cpp && g++ link && ./Vcache_controller_real_trace_tb"
+stimulus = "deterministic LFSR traffic, 8500 operations, periodic resets"
+raw_vcd = "cache_controller_verilator_small.vcd"
+compressed = "cache_controller_verilator_small.vcd.gz"
+raw_bytes = 6580776
+compressed_bytes = 723106
+raw_sha256 = "7d996b426ae9b377dc3454edba75ff38f6c6dac2e255abc5711a76112fccc311"
+compressed_sha256 = "2f588fb89adce239b2dff10023023b331b8314d36a2e45658a5c2b0be9ec56fe"
+signal_count = 120
+transition_count = 341648

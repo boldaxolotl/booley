@@ -1,0 +1,1 @@
+tee -o /work/syn_result/dut/log_abc_dut.txt abc -liberty /opt/pdk/NangateOpenCellLibrary_typical.lib -script +strash;dch;map; opt

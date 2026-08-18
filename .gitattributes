@@ -1,0 +1,7 @@
+# Shell scripts execute under bash/sh in the Linux Session Runtime container,
+# and package-data (`tools/*.sh`, docker scripts) is copied into the wheel and
+# image verbatim from the working tree. A CRLF checkout on a Windows host
+# (core.autocrlf=true, the Git for Windows default) therefore ships CRLF
+# scripts that bash cannot parse — `$'\r': command not found` — blocking every
+# ticket run (F-12). Force LF regardless of host git config.
+*.sh text eol=lf

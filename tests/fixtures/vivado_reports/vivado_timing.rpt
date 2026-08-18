@@ -1,0 +1,53 @@
+Copyright 1986-2023 Xilinx, Inc. All Rights Reserved.
+Copyright 2022-2023 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------
+| Tool Version : Vivado v2023.2 (lin64)
+| Date         : Mon Jan 15 12:50:00 2024
+---------------------------------------------------------------------------
+
+Timing Summary Report
+
+---------------------------------------------------------------------------
+| Timer Settings
+| --------------
+|  Enable Multi Corner Analysis               :  Yes
+|  Enable Coverage Reporting                   :  Yes
+|  Enable Pessimistic Path Reporting           :  No
+---------------------------------------------------------------------------
+
+  Clock       Waveform(ns)       Period(ns)    Frequency(MHz)
+  -----       ------------       ----------    --------------
+  sys_clk     {0.000 5.000}      10.000        100.000
+
+---------------------------------------------------------------------------
+Setup
+---------------------------------------------------------------------------
+
+  WNS(ns)      : 0.892
+  TNS(ns)      : 0.000
+  TNS Failing Endpoints : 0
+  TNS Total Endpoints   : 4521
+
+Worst 5 Setup Slack Paths:
+
+Slack (MET) :             0.892ns  (requirement - (data path - clock path))
+  Source:                 core/alu/result_reg[31]/C
+                            (rising edge-triggered cell FDRE clocked by sys_clk)
+  Destination:            core/regfile/mem_reg[15][31]/D
+                            (rising edge-triggered cell FDRE clocked by sys_clk)
+  Path Group:             sys_clk
+  Path Type:              Setup (Max at Slow Process Corner)
+  Requirement:            10.000ns
+  Data Path Delay:        8.976ns  (logic 3.214ns  route 5.762ns)
+  Clock Path Skew:        -0.132ns (DCD + DPD - SCD - SPD)
+
+---------------------------------------------------------------------------
+Hold
+---------------------------------------------------------------------------
+
+  WHS(ns)      : 0.031
+  THS(ns)      : 0.000
+  THS Failing Endpoints : 0
+  THS Total Endpoints   : 4521
+
+All user specified timing constraints are met.

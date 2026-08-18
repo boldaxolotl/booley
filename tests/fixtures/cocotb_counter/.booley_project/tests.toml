@@ -1,0 +1,25 @@
+# Cocotb e2e fixture tests (plan-cocotb-support Part G).
+# Cocotb Targets: `tests` lists @cocotb.test() function names; no `select`.
+
+[sim_icarus]
+tests = ["test_reset", "test_count", "test_overflow"]
+
+[sim_verilator]
+tests = ["test_reset", "test_count", "test_overflow"]
+
+# G9: one deliberately failing test among passing siblings.
+[sim_fail]
+tests = ["test_reset", "test_count", "test_fail_assert"]
+
+# G11: Python-exception and RTL-$fatal crash shapes.
+[sim_crash]
+tests = ["test_py_exception", "test_rtl_fatal"]
+
+# G11: the timeout-kill shape (run with a small --timeout).
+[sim_hang]
+tests = ["test_hang"]
+
+# G10: a name with no matching @cocotb.test — must come back inconclusive
+# with the actionable message, never pass.
+[sim_bad]
+tests = ["test_reset", "test_bogus_name"]

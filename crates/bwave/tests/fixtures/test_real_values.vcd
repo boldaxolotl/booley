@@ -1,0 +1,29 @@
+$timescale 1ns $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$var real 64 " voltage $end
+$var real 64 # temperature $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+r0.0 "
+r25.0 #
+#5
+1!
+#10
+0!
+r1.5 "
+r37.5 #
+#15
+1!
+#20
+0!
+r3.3 "
+r100.0 #
+#25
+1!
+#30
+0!
+r-1.2 "
+r0.001 #

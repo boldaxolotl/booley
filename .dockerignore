@@ -1,0 +1,21 @@
+# Whitelist-style: exclude everything, then allow only what the image needs.
+# Build context is the Booley repo root (.booley/).
+*
+
+# Booley wheel (built by build.sh or `python -m build --wheel`)
+!dist/
+
+# PDK liberty file (static, cached in its own Docker layer)
+!src/booley/data/docker/pdk/
+
+# Agent-client managed policy: provider-hosted web tools bypass Docker egress,
+# so both files must reach the image even under this whitelist build context.
+!src/booley/data/docker/codex-requirements.toml
+!src/booley/data/docker/claude-managed-settings.json
+!src/booley/data/docker/agent-clis-package.json
+!src/booley/data/docker/agent-clis-package-lock.json
+!src/booley/data/docker/vivado-wrapper
+
+# bwave Rust source (built inside container for offline use)
+!crates/bwave/
+crates/bwave/target/

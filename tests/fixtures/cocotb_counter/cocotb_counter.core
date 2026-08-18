@@ -1,0 +1,41 @@
+CAPI=2:
+name: booley:fixtures:cocotb_counter:0.1.0
+description: Cocotb e2e fixture (plan-cocotb-support Part G)
+
+filesets:
+  rtl:
+    files:
+      - rtl/counter.sv
+    file_type: systemVerilogSource
+  tb:
+    files:
+      - tb/test_counter.py: { file_type: user, copyto: test_counter.py }
+      - tb/helpers/__init__.py: { file_type: user, copyto: helpers/__init__.py }
+      - tb/helpers/util.py: { file_type: user, copyto: helpers/util.py }
+    tags: [tb]
+
+targets:
+  # Happy-path suites (G8): the same module on both v1 simulators.
+  sim_icarus: &icarus_target
+    filesets: [rtl, tb]
+    toplevel: counter
+    flow: sim
+    flow_options:
+      tool: icarus
+      cocotb_module: test_counter
+      timescale: 1ns/1ps
+      iverilog_options: [-g2012]
+  sim_verilator:
+    filesets: [rtl, tb]
+    toplevel: counter
+    flow: sim
+    flow_options:
+      tool: verilator
+      cocotb_module: test_counter
+      verilator_options: [--timing, -Wno-fatal]
+  # Failure/crash/selection variants (G9-G11) — same build, different
+  # tests.toml selected sets (tests.toml is keyed by Target name).
+  sim_fail: *icarus_target
+  sim_crash: *icarus_target
+  sim_hang: *icarus_target
+  sim_bad: *icarus_target

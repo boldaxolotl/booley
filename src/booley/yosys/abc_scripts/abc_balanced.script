@@ -1,0 +1,15 @@
+# Balanced ABC recipe — moderate optimization, avoids deep passes.
+# Skips scorr/dc2/dretime that can cause hangs on large designs.
+# Good default for configs that choke on the full ABC recipe.
+topo
+strash
+ifraig
+balance
+rewrite
+rewrite -z
+balance
+refactor
+balance
+rewrite
+map
+stime -p

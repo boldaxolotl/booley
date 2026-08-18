@@ -1,0 +1,10 @@
+# Fast ABC recipe — minimal optimization, reliable completion.
+# Note: Yosys reads the netlist before this script runs.
+# The network arrives as AIG (strash'd) from Yosys, so we can
+# go straight to optimization passes.
+balance
+rewrite
+rewrite -z
+refactor
+map
+stime -p

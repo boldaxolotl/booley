@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/booley/bwave/v0.2.0/schema/bwave.json",
+  "title": "B-Wave --format json envelope",
+  "description": "Every `bwave <cmd> --format json` payload is wrapped in this envelope. Phase 2 of v0.2 implements `list`, `value`, `find`, and `stats`; other commands still emit text only.",
+  "type": "object",
+  "required": ["$schema", "command", "data", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL of the schema document this payload conforms to. Pinned to the v0.2.0 release tag."
+    },
+    "command": {
+      "type": "string",
+      "enum": ["list", "value", "find", "stats"],
+      "description": "Which subcommand produced this envelope."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Diagnostics that text mode would write to stderr as `# WARNING: ...` lines."
+    },
+    "data": {
+      "oneOf": [
+        { "$ref": "#/$defs/listData" },
+        { "$ref": "#/$defs/valueData" },
+        { "$ref": "#/$defs/findData" },
+        { "$ref": "#/$defs/statsData" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if":   { "properties": { "command": { "const": "list" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/listData" } } }
+    },
+    {
+      "if":   { "properties": { "command": { "const": "value" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/valueData" } } }
+    },
+    {
+      "if":   { "properties": { "command": { "const": "find" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/findData" } } }
+    },
+    {
+      "if":   { "properties": { "command": { "const": "stats" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/statsData" } } }
+    }
+  ],
+  "$defs": {
+    "listData": {
+      "type": "object",
+      "required": ["scope_prefix", "clock", "total_ticks", "signals"],
+      "additionalProperties": false,
+      "properties": {
+        "scope_prefix": {
+          "type": "string",
+          "description": "Common hierarchical prefix of all matched signals (without trailing dot). Empty when matches span multiple scopes or are top-level."
+        },
+        "clock": {
+          "anyOf": [
+            { "type": "string" },
+            { "type": "null" }
+          ],
+          "description": "Full hierarchical name of the detected (or --clock-overridden) clock; null on an async trace. Trace-level, not filtered by the pattern. `bwave gui` makes it row 1 of a new view."
+        },
+        "total_ticks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "End of the trace in file-timescale ticks — same value `stats` reports. Trace-level, not filtered by the pattern; here so an open-ended time range does not cost a full stats walk."
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "width", "var_type"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "description": "Signal name with `scope_prefix` stripped." },
+              "width": { "type": "integer", "minimum": 1 },
+              "var_type": { "type": "string", "description": "VCD var type — `wire`, `reg`, `integer`, etc." }
+            }
+          }
+        }
+      }
+    },
+    "valueData": {
+      "type": "object",
+      "required": ["scope_prefix", "mode", "at", "at_unit", "target_tick", "time_label", "signals"],
+      "additionalProperties": false,
+      "properties": {
+        "scope_prefix": { "type": "string" },
+        "mode": { "type": "string", "enum": ["sync", "async"] },
+        "at": {
+          "type": "integer",
+          "description": "User-supplied time argument verbatim."
+        },
+        "at_unit": {
+          "type": "string",
+          "enum": ["cycle", "tick", "ns"],
+          "description": "Unit of `at`. `cycle` in sync mode; `tick` when sync was requested but no clock was found; `ns` in async mode."
+        },
+        "target_tick": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Resolved simulation tick where the snapshot was taken."
+        },
+        "time_label": {
+          "type": "string",
+          "description": "Human label matching text mode's `# Snapshot at <label>` line."
+        },
+        "signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/signalValue" }
+        }
+      }
+    },
+    "findData": {
+      "type": "object",
+      "required": [
+        "scope_prefix", "pattern", "value", "mode", "unit",
+        "count", "matches", "truncated",
+        "first_only", "last_only", "count_only"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scope_prefix": { "type": "string" },
+        "pattern": { "type": "string", "description": "Find-target glob." },
+        "value": {
+          "type": "string",
+          "description": "Edge keyword (`rising`, `falling`, `change`) or literal value, as the user passed it."
+        },
+        "mode": { "type": "string", "enum": ["sync", "async"] },
+        "unit": {
+          "type": "string",
+          "enum": ["cycle", "tick"],
+          "description": "Unit of `time` in each match. `cycle` in sync mode with a clock; `tick` otherwise."
+        },
+        "count": { "type": "integer", "minimum": 0 },
+        "matches": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/findMatch" },
+          "description": "Empty when `count_only`. Contains the single match when `last_only`."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when output was capped by --limit."
+        },
+        "first_only": { "type": "boolean" },
+        "last_only": { "type": "boolean" },
+        "count_only": { "type": "boolean" }
+      }
+    },
+    "statsData": {
+      "type": "object",
+      "required": [
+        "simulation_ns",
+        "total_ticks",
+        "total_cycles",
+        "clock_period_ns",
+        "signals"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "simulation_ns": { "type": "integer" },
+        "total_ticks": { "type": "integer", "minimum": 0 },
+        "total_cycles": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ],
+          "description": "Null when no clock was found."
+        },
+        "clock_period_ns": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "null" }
+          ]
+        },
+        "signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/statsEntry" }
+        }
+      }
+    },
+    "signalValue": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "value": {
+          "type": "string",
+          "description": "Raw cache value — no Verilog-literal prefix, no radix formatting. Hex/binary mix per cache encoding."
+        }
+      }
+    },
+    "findMatch": {
+      "type": "object",
+      "required": ["time", "name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "time": { "type": "integer", "minimum": 0 },
+        "name": { "type": "string" },
+        "value": { "type": "string", "description": "Raw cache value (see signalValue.value)." }
+      }
+    },
+    "statsEntry": {
+      "type": "object",
+      "required": ["name", "width", "transitions", "toggle_pct", "value_pct", "value_hist", "time_in_state_ticks"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "width": { "type": "integer", "minimum": 1 },
+        "transitions": { "type": "integer", "minimum": 0 },
+        "toggle_pct": { "type": "number" },
+        "value_pct": { "type": "number" },
+        "value_hist": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "description": "Map of Verilog-literal value (e.g. \"'hFF\", \"'d255\", \"'b101\") -> occurrence count. Matches the text-mode display radix per signal."
+        },
+        "time_in_state_ticks": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "description": "Map of Verilog-literal value -> tick count held. Renamed from `time_in_state` in v0.2.1 so the unit is unambiguous; pair with `time_in_state_ns` if you want nanoseconds."
+        },
+        "time_in_state_ns": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "integer" },
+          "description": "Same keys as `time_in_state_ticks`, values converted to ns via the cache timescale. Null when no timescale is recorded in the VCD."
+        }
+      }
+    }
+  }
+}
