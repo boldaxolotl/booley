@@ -129,6 +129,16 @@ jobs:
           # image is already built and the smoke test can still run.
           cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
 
+      # Use the same checksum-pinned fetcher as `booley init`. The payload is
+      # deliberately not cached or baked into the image; it includes the
+      # upstream notice and is mounted read-only only for this job.
+      - name: Provision pinned Nangate45 PDK
+        id: nangate
+        shell: bash
+        run: |
+          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
+
       - name: Run FIFO pipeline smoke test
         run: >
           docker run --rm -v "${{ github.workspace }}:/work" booley-test
@@ -144,6 +154,16 @@ jobs:
           python -m pytest
           /work/crates/bwave/tests/simulator_ground_truth_test.py
           -q --tb=short"
+
+      - name: Run Ticket Mode production-image smoke
+        run: >
+          docker run --rm
+          --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+          --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
+          -e BOOLEY_TICKET_MODE_SMOKE=1
+          booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
+          python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
+          -v --tb=short -o cache_dir=/tmp/pytest-cache"
 
   coverage:
     runs-on: ubuntu-latest
