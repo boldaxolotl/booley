@@ -54,6 +54,7 @@ class TestCommitScope:
     @patch("booley.harness.git_utils.subprocess.run")
     def test_out_of_scope_staged_files_are_unstaged(self, mock_run):
         """A raw staged outsider is preserved but excluded from the commit."""
+
         def side_effect(args, **kwargs):
             cmd = args[1] if len(args) > 1 else ""
             if cmd == "add":
@@ -85,6 +86,7 @@ class TestCommitScope:
     @patch("booley.harness.git_utils.subprocess.run")
     def test_out_of_scope_staged_deletion_is_unstaged(self, mock_run):
         """An outside deletion is preserved in the worktree, not committed."""
+
         def side_effect(args, **kwargs):
             cmd = args[1] if len(args) > 1 else ""
             if cmd == "diff":

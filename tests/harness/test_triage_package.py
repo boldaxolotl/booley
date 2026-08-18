@@ -115,9 +115,7 @@ def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, 
     ctx = _context(tmp_path)
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["criteria"]["sim_pass"].update(
-        {"params": {"from_state": "fail"}, "ever_failed": False}
-    )
+    state["criteria"]["sim_pass"].update({"params": {"from_state": "fail"}, "ever_failed": False})
     state_path.write_text(json.dumps(state), encoding="utf-8")
     monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
 
