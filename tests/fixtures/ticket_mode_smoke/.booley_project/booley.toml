@@ -1,0 +1,33 @@
+[project]
+name = "ticket-mode-image-smoke"
+
+[agent]
+provider = "codex"
+
+[developer]
+human_in_the_loop = false
+run_report = true
+
+[developer.auto_retry]
+enabled = false
+
+[jobs]
+max_heavy = 1
+max_light = 1
+max_tickets = 1
+queue_max = 4
+
+[flows.lint]
+default_target = "lint_smoke"
+
+[flows.elab]
+default_target = "sim_smoke"
+
+[flows.sim]
+default_target = "sim_smoke"
+timeout_ms = 120000
+
+[flows.synth]
+default_target = "synth_smoke"
+timeout_ms = 300000
+expected_latches = 0

@@ -66,12 +66,17 @@ dist/
 # This committed fixture must override user-global `.booley_project/` ignores.
 !/tests/fixtures/cocotb_counter/.booley_project/
 !/tests/fixtures/cocotb_counter/.booley_project/**
+!/tests/fixtures/ticket_mode_smoke/.booley_project/
+!/tests/fixtures/ticket_mode_smoke/.booley_project/**
 
 # Native bwave binary — built by CI into the wheel's package data (and by the
 # sandbox image build into the installed package). Never committed.
 src/booley/data/bin/
 
-# Internal planning docs — not for distribution
-docs/adr/
-docs/plans/
+# Internal planning docs — not for distribution by default. These two records
+# are explicit project artifacts for the production-image Ticket Mode smoke.
+docs/adr/*
+!docs/adr/0050-ticket-mode-production-image-smoke.md
+docs/plans/*
+!docs/plans/ticket-mode-production-image-smoke.md
 docs/notes/
