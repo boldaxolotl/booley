@@ -839,7 +839,13 @@ def _start_display_watcher(
     console_app = terminal.get_console_app()
     if console_app:
         line_counter = (
-            WorktreeLineCounter(ctx.worktree_path, ctx.branch) if ctx.worktree_path else None
+            WorktreeLineCounter(
+                ctx.worktree_path,
+                ctx.branch,
+                reported_root=ctx.project_root,
+            )
+            if ctx.worktree_path
+            else None
         )
         watcher = DisplayWatcher(
             existing_ticket_runtime_file(ctx.logs_dir, "display.jsonl"),

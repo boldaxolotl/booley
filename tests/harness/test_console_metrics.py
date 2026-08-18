@@ -45,6 +45,17 @@ def test_normalize_agent_reported_paths(tmp_path):
     assert counter.normalize_path("/etc/outside.sv") is None
 
 
+def test_normalize_project_relative_path_into_worktree(tmp_path):
+    project = tmp_path / "project"
+    worktree = project / ".state" / "worktrees" / "ticket"
+    worktree.mkdir(parents=True)
+    _git(worktree, "init", "-q")
+    counter = WorktreeLineCounter(worktree, "HEAD", reported_root=project)
+
+    reported = ".state/worktrees/ticket/rtl/top.sv"
+    assert counter.normalize_path(reported) == "rtl/top.sv"
+
+
 def test_snapshot_remains_absolute_after_commit(tmp_path):
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "test@example.com")
