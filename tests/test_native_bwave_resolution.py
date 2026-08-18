@@ -60,13 +60,14 @@ def test_candidate_wins_over_path(monkeypatch, tmp_path):
 
 def test_wrapper_candidate_is_skipped(monkeypatch, tmp_path):
     """A wrapper sitting in a candidate slot must not be mistaken for the binary."""
-    wrapper = _wrapper(tmp_path / "wrapper" / _bwave_name())
+    wrapper = _wrapper(tmp_path / "wrapper" / "bwave")
     native = _native(tmp_path / "real" / _bwave_name())
     monkeypatch.setattr(paths, "_native_bwave_candidates", lambda: [wrapper, native])
 
     assert paths.native_bwave_binary() == native
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows .exe launchers are binary files")
 def test_path_wrapper_is_rejected(monkeypatch, tmp_path):
     """The only `bwave` on PATH is the wrapper — resolving to it would recurse."""
     path_dir = tmp_path / "bin"
@@ -188,6 +189,7 @@ def test_fifo_streaming_prefers_the_binary_over_a_stale_path_wrapper(monkeypatch
     assert bwave_fifo.can_stream_bwave_fifo() is (os.name == "posix")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="FIFO streaming is POSIX-only")
 def test_fifo_streaming_declines_when_only_the_wrapper_exists(monkeypatch, tmp_path):
     from booley.sim import bwave_fifo
 

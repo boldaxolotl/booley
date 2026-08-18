@@ -320,7 +320,7 @@ def test_existing_design_files_finds_rtl_and_cores(tmp_path: Path) -> None:
     stealth.mkdir(parents=True)
     (stealth / "stealth.core").write_text("CAPI=2:\n")
 
-    found = {str(p) for p in existing_design_files(tmp_path)}
+    found = {p.as_posix() for p in existing_design_files(tmp_path)}
     assert found == {"rtl/old.v", "chip.core", ".booley_project/cores/stealth.core"}
 
 

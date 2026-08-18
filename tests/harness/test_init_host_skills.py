@@ -34,6 +34,7 @@ def _setup(tmp_path, monkeypatch, *, enabled=True):
     builtin = tmp_path / "pkg" / "skills"
     builtin.mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(init_cmd, "skills_dir", lambda: builtin)
     project_root = tmp_path / "proj"
     project_root.mkdir()

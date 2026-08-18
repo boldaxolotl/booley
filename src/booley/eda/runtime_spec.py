@@ -1100,10 +1100,14 @@ def _write_stamp(path: Path, issuance: Issuance) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         temp_path.replace(path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        # Windows does not permit opening a directory as a regular file
+        # handle. The file itself was flushed above; the extra directory
+        # durability barrier is available only on POSIX hosts.
+        if os.name != "nt":
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     finally:
         temp_path.unlink(missing_ok=True)

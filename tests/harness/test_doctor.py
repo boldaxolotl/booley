@@ -6661,6 +6661,7 @@ class TestSubscriptionCredsHealth:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
         for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(var, raising=False)

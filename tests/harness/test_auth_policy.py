@@ -26,6 +26,7 @@ def clean_env(tmp_path, monkeypatch):
     """No auth-relevant env leaking in; HOME and config dir in a tmp tree."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userhome"))
     (tmp_path / "userhome").mkdir()
     for var in (
         "ANTHROPIC_API_KEY",

@@ -374,5 +374,10 @@ def stored_token_mode(app: str = APP_CLAUDE) -> int | None:
 
 def stored_token_is_private(app: str = APP_CLAUDE) -> bool:
     """Whether *app*'s stored credential is readable only by its owner."""
+    if os.name == "nt":
+        # Windows reports synthetic POSIX mode bits (commonly 0666) that do
+        # not describe the file's ACL. Treating those bits as an ACL made every
+        # freshly stored credential fail Doctor immediately on Windows.
+        return token_path(app).is_file()
     mode = stored_token_mode(app)
     return mode is not None and not mode & (stat.S_IRWXG | stat.S_IRWXO)

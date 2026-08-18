@@ -7174,7 +7174,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     repo-relative rendering that resolves on both host and runtime; any other project dir
     (host default, or an explicit ``[project].dir`` override) is printed as-is.
     """
-    if str(project.project_dir) != dc.PROJECT_DIR_TARGET:
+    if project.project_dir.as_posix() != dc.PROJECT_DIR_TARGET:
         return str(report_dir)
     try:
         rel = report_dir.relative_to(project.project_dir)

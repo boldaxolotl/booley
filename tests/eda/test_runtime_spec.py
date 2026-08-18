@@ -319,7 +319,8 @@ def test_project_data_mount_rejects_broad_and_mount_grammar_paths(
     (project / ".booley_project").mkdir()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", source)
     with pytest.raises(
-        runtime_spec.RuntimeSpecError, match=r"too broad|mount grammar|unavailable"
+        runtime_spec.RuntimeSpecError,
+        match=r"too broad|mount grammar|unavailable|must be an absolute host path",
     ):
         runtime_spec.authorized_project_data_source(project)
 
@@ -457,6 +458,7 @@ def test_trusted_validator_rejects_group_writable_parent_for_shared_group(
     assert not runtime_spec._trusted_validator(trusted, project)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX primary-group mode policy")
 def test_trusted_validator_allows_exclusive_primary_group_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
