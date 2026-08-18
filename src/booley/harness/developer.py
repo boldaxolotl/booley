@@ -279,14 +279,33 @@ async def _run_ticket_body(ctx: TicketContext, project_root: Path, exec_start: f
     _display_ticket_banner(ctx)
 
     # On resume, restore worktree_path + feature_branch from setup step metadata
+    setup_was_complete = "setup" in ctx.completed_steps
     _recover_setup_state(ctx, project_root)
     _invalidate_missing_worktree(ctx, project_root)
+    resume_uses_existing_setup = setup_was_complete and "setup" in ctx.completed_steps
 
     # ---- Setup (if not already completed) ----
     if "setup" not in ctx.completed_steps:
         setup_blocked = await _run_setup_step(ctx, project_root)
         if setup_blocked:
             await _prepare_blocked_triage(ctx, project_root)
+            return
+
+    # A blocked ticket may have received an expanded scope during triage while
+    # retaining its worktree and completed setup marker. Refresh the persisted
+    # guard before the developer runs so newly authorized paths are not rejected
+    # by the old .scope.json or hook installation.
+    if resume_uses_existing_setup and ctx.worktree_path:
+        from .setup.workspace import refresh_scope_guards
+
+        try:
+            refresh_scope_guards(
+                ctx.worktree_path,
+                ctx.scope,
+                project_root=project_root,
+            )
+        except OSError as exc:
+            fail_ticket(ctx, f"scope guard refresh failed: {exc}", "setup")
             return
 
     # Setup created the worktree -- refresh the click-link resolver so

@@ -184,14 +184,27 @@ def add_git_excludes(
     exclude = info_dir / "exclude"
     existing = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
     missing = [f"/{n}" for n in names if f"/{n}" not in existing]
-    if not missing:
+    duplicate_headers = existing.count(header) > 1
+    if not missing and not duplicate_headers:
         return False
     info_dir.mkdir(parents=True, exist_ok=True)
-    lines = list(existing)
-    if lines and lines[-1].strip() != "":
-        lines.append("")
-    lines.append(header)
-    lines.extend(missing)
+    lines: list[str] = []
+    header_kept = False
+    for line in existing:
+        if line == header:
+            if header_kept:
+                continue
+            header_kept = True
+        lines.append(line)
+    if header_kept:
+        insert_at = lines.index(header) + 1
+        while insert_at < len(lines) and lines[insert_at].startswith("/"):
+            insert_at += 1
+        lines[insert_at:insert_at] = missing
+    else:
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        lines.extend([header, *missing])
     exclude.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return True
 

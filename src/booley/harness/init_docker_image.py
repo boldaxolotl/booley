@@ -50,6 +50,22 @@ FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 # (the failure that hid the container-side skill deployment from a stale image).
 LABEL_FINGERPRINT = "booley.build-fingerprint"
 LABEL_BASE_IMAGE_ID = "booley.base-image-id"
+LABEL_VERSION = "org.opencontainers.image.version"
+
+
+def _source_version(booley_root: Path) -> str | None:
+    """Return the checkout's authoritative ``VERSION``, when available."""
+    version_file = booley_root / "VERSION"
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def _expected_version(booley_root: Path) -> str:
+    """Version the image built from *booley_root* must advertise."""
+    return _source_version(booley_root) or _read_version()
 
 
 def _image_build_metadata_args(booley_root: Path) -> list[str]:
@@ -64,7 +80,7 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
         "BOOLEY_SOURCE_UPDATED_AT": (
             resolve_source_updated_at(booley_root) if is_checkout else "unknown"
         ),
-        "BOOLEY_VERSION": _read_version(),
+        "BOOLEY_VERSION": _expected_version(booley_root),
     }
     return [
         item
@@ -199,14 +215,18 @@ def _image_label(image: str, label: str) -> str | None:
     return val if val and val != "<no value>" else None
 
 
-def _image_is_stale(fingerprint: str | None, image: str = DOCKER_IMAGE) -> bool:
+def _image_is_stale(
+    fingerprint: str | None,
+    image: str = DOCKER_IMAGE,
+    expected_version: str | None = None,
+) -> bool:
     """Whether the present sandbox image no longer matches the local source.
 
     - ``fingerprint is None`` (no source tree to compare): not stale — leave any
       pulled/pre-built image alone.
     - no fingerprint label: an image built before this guard existed (the exact
       stale-image bug this fixes) -> stale.
-    - ``pulled:*`` label: a deliberately pulled pre-built image -> not stale.
+    - ``pulled:*`` label: current only when it names *expected_version*.
     - otherwise: stale iff the stamped hash differs from the current source.
 
     Also asked of a :data:`FLAVOR_IMAGES` flavor, which carries the *base's*
@@ -220,8 +240,11 @@ def _image_is_stale(fingerprint: str | None, image: str = DOCKER_IMAGE) -> bool:
     if label is None:
         return True
     if label.startswith("pulled:"):
-        return False
-    if label != fingerprint:
+        return bool(expected_version and label != f"pulled:{expected_version}")
+    source_or_version_stale = label != fingerprint or bool(
+        expected_version and _image_label(image, LABEL_VERSION) != expected_version
+    )
+    if source_or_version_stale:
         return True
     if image not in FLAVOR_IMAGES:
         return False
@@ -256,7 +279,23 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
     label = _image_label(image, LABEL_FINGERPRINT)
     if label is None or label.startswith("pulled:"):
         return None
-    return label != fingerprint
+    if label != fingerprint:
+        return True
+    expected_version = _source_version(booley_root)
+    return bool(expected_version and _image_label(image, LABEL_VERSION) != expected_version)
+
+
+def _warn_on_distribution_version_drift(booley_root: Path) -> None:
+    """Surface stale editable-install metadata before image selection/build."""
+    source_version = _source_version(booley_root)
+    installed_version = _read_version()
+    if source_version and source_version != installed_version:
+        warn(
+            "installed Booley distribution metadata reports "
+            f"{installed_version}, but this checkout's VERSION is {source_version}; "
+            "using the checkout version for image provenance. Reinstall the "
+            "editable package to make `booley --version` agree."
+        )
 
 
 def _stamp_image_fingerprint(image: str, value: str) -> None:
@@ -365,9 +404,11 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
     docker_dir = docker_data_dir()
     booley_root = docker_dir.parent.parent.parent.parent
     fingerprint = _image_build_fingerprint(booley_root)
+    expected_version = _expected_version(booley_root)
+    _warn_on_distribution_version_drift(booley_root)
 
     if exists and not ctx.force:
-        if not _image_is_stale(fingerprint):
+        if not _image_is_stale(fingerprint, expected_version=expected_version):
             skip(f"{DOCKER_IMAGE} image already present")
             _report_build_cache()
             ctx.record("docker_image", "skip", "already present")
@@ -389,7 +430,7 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
 
     # Pull-first strategy (skip if --force requests fresh local build)
     if not ctx.force:
-        version = _read_version()
+        version = expected_version
         if _try_pull_image(version):
             ok(f"{DOCKER_IMAGE} pulled from registry (v{version})")
             ctx.record("docker_image", "ok", "pulled")
@@ -707,8 +748,9 @@ def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
     dockerfile = docker_dir / dockerfile_name
     exists = _docker_image_exists(image)
     fingerprint = _image_build_fingerprint(docker_dir.parent.parent.parent.parent)
+    expected_version = _expected_version(docker_dir.parent.parent.parent.parent)
 
-    if exists and not ctx.force and not _image_is_stale(fingerprint, image):
+    if exists and not ctx.force and not _image_is_stale(fingerprint, image, expected_version):
         skip(f"{image} is a Booley-shipped sandbox flavor and is up to date")
         ctx.record("project_image", "skip", f"flavor {image} current")
         return False
@@ -727,12 +769,12 @@ def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
             skip(f"{image} present; no shipped {dockerfile_name} to rebuild from — trusting it")
             ctx.record("project_image", "skip", f"flavor {image} unverifiable")
             return False
-        if _try_pull_image(_read_version(), image):
+        if _try_pull_image(expected_version, image):
             ok(f"{image} pulled from registry")
             ctx.record("project_image", "ok", f"flavor {image} pulled")
             return True
         err(f"{image} is missing and cannot be built — no shipped {dockerfile_name}")
-        info(f"  pull it: docker pull {remote_tag(image, _read_version())}")
+        info(f"  pull it: docker pull {remote_tag(image, expected_version)}")
         ctx.record("project_image", "err", f"flavor {image} unavailable")
         return False
 

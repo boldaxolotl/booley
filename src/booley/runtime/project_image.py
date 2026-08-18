@@ -51,6 +51,11 @@ _KEEP_DIRECTIVE = "# booley:keep"
 # closing the SETUP-6 hole where an edit that kept the header was clobbered.
 _CONTENT_HASH_PREFIX = "# booley:content-hash="
 
+_FROM_RE = re.compile(
+    r"^\s*FROM(?:\s+--platform=\S+)?\s+(?P<image>[^\s]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -84,6 +89,21 @@ def project_image_name(project_root: Path) -> str:
     """Deterministic tag for the generated project image (docker-name-safe)."""
     slug = re.sub(r"[^a-z0-9_.-]+", "-", project_root.name.lower()).strip("-._")
     return f"{slug or 'project'}-{BASE_IMAGE}"
+
+
+def dockerfile_parent_image(dockerfile: Path) -> str | None:
+    """Return the first concrete image named by a Dockerfile ``FROM`` line."""
+    try:
+        text = dockerfile.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _FROM_RE.search(text)
+    if match is None:
+        return None
+    image = match.group("image")
+    if image.startswith("$"):
+        return None
+    return image.split("@", 1)[0].split(":", 1)[0]
 
 
 # ---------------------------------------------------------------------------

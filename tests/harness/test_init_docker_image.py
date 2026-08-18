@@ -85,6 +85,7 @@ def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypa
         lambda _root: "2026-08-10T10:00:00Z",
     )
     monkeypatch.setattr(init_docker_image, "_read_version", lambda: "1.2.3")
+    (tmp_path / "VERSION").write_text("1.2.3\n", encoding="utf-8")
     (tmp_path / ".git").mkdir()
 
     args = init_docker_image._image_build_metadata_args(tmp_path)
@@ -116,6 +117,17 @@ class TestIsStale:
         monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "abc123")
         assert init_docker_image._image_is_stale("abc123") is False
 
+    def test_matching_source_with_wrong_version_is_stale(self, monkeypatch):
+        labels = {
+            init_docker_image.LABEL_FINGERPRINT: "abc123",
+            init_docker_image.LABEL_VERSION: "0.1.0",
+        }
+        monkeypatch.setattr(
+            init_docker_image, "_image_label", lambda _image, label: labels.get(label)
+        )
+
+        assert init_docker_image._image_is_stale("abc123", expected_version="0.2.0") is True
+
     def test_differing_label_is_stale(self, monkeypatch):
         monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "old999")
         assert init_docker_image._image_is_stale("abc123") is True
@@ -125,6 +137,10 @@ class TestIsStale:
         # its pulled:* provenance marks it as intentional, not stale.
         monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "pulled:0.1.0")
         assert init_docker_image._image_is_stale("abc123") is False
+
+    def test_pulled_image_from_old_release_is_stale(self, monkeypatch):
+        monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "pulled:0.1.0")
+        assert init_docker_image._image_is_stale("abc123", expected_version="0.2.0") is True
 
 
 # ---------------------------------------------------------------------------
@@ -156,11 +172,19 @@ class TestSourceFingerprintMismatch:
 
     def test_matching_label_is_current(self, monkeypatch):
         self._patch(monkeypatch, fingerprint="abc", label="abc")
+        monkeypatch.setattr(init_docker_image, "_source_version", lambda _root: None)
         assert init_docker_image.source_fingerprint_mismatch("img") is False
 
     def test_differing_label_is_stale(self, monkeypatch):
         self._patch(monkeypatch, fingerprint="abc", label="old")
         assert init_docker_image.source_fingerprint_mismatch("img") is True
+
+
+def test_checkout_version_overrides_stale_distribution_metadata(tmp_path, monkeypatch):
+    (tmp_path / "VERSION").write_text("0.2.0\n", encoding="utf-8")
+    monkeypatch.setattr(init_docker_image, "_read_version", lambda: "0.1.0")
+
+    assert init_docker_image._expected_version(tmp_path) == "0.2.0"
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +279,11 @@ class TestReportBuildCache:
         monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
         monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda: True)
         monkeypatch.setattr(init_docker_image, "_image_build_fingerprint", lambda _root: "same")
-        monkeypatch.setattr(init_docker_image, "_image_is_stale", lambda _fingerprint: False)
+        monkeypatch.setattr(
+            init_docker_image,
+            "_image_is_stale",
+            lambda _fingerprint, **_kwargs: False,
+        )
         reports: list[bool] = []
         monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: reports.append(True))
 

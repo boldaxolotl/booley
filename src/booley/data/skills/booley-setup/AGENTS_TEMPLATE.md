@@ -4,7 +4,9 @@ Use this structure for a concise Project-level `AGENTS.md`. Keep only facts that
 change RTL work; omit unknown or low-value details.
 
 This content is written to the canonical `<project_dir>/AGENTS.md`; the RTL repo
-root only gets generated links to it (see `steps/3-agents-md.md`, Step 3).
+root normally gets generated links to it. An explicitly selected hybrid
+port/integration footprint instead tracks a content-identical root `AGENTS.md`
+(see `steps/3-agents-md.md`, Step 3).
 
 ```markdown
 # AGENTS.md

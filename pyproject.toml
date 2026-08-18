@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -33,15 +33,15 @@ dependencies = [
     "fusesoc==2.4.6",
     "httpx>=0.28",
     "httpx-sse>=0.4",
-    "Jinja2>=3.1",
+    "Jinja2>=3.1.6",
     "jsonschema>=4.0",
-    "libcst>=1.0",
+    "libcst>=1.9.0",
     "markdown-it-py>=4.0",
     "mcp>=1.8",  # streamable-HTTP session manager (Interactive Mode transport)
     "mdit-py-plugins>=0.5",
     "mutmut>=3.0",
     "pydantic>=2.0",
-    "pydantic-settings>=2.0",
+    "pydantic-settings>=2.15.0",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
     "rich>=13.0",

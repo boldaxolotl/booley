@@ -13,7 +13,11 @@ file is high leverage: do not auto-write, pad, or invent facts.
 
 - The canonical file lives in the project data dir as `<project_dir>/AGENTS.md`
   (usually `.booley_project/AGENTS.md`), so it is versioned with the rest of
-  the project config. Never write a real file at the repo root.
+  the project config. Normally, do not write a real file at the repo root.
+- Exception: when plan row 16 selects the hybrid port/integration footprint,
+  write and track a content-identical regular root `AGENTS.md` so a fresh clone
+  remains self-describing while `.booley_project/` stays local. Init and Doctor
+  preserve this matching tracked copy and refuse to overwrite a stale one.
 - The RTL repo root carries only generated `AGENTS.md` and `CLAUDE.md` links to
   the canonical file. Plain `booley doctor` creates or repairs them after the
   canonical file is written.
@@ -91,12 +95,18 @@ approval question in either case beyond the plan-gap stop above.
 ### 4. Write and Report
 
 1. Write the canonical file to `<project_dir>/AGENTS.md` (resolve
-   `<project_dir>` from `.booley_project/`; do not hardcode).
+   `<project_dir>` from `.booley_project/`; do not hardcode). For the explicit
+   hybrid footprint, also write the same bytes to tracked root `AGENTS.md`.
 2. Run plain `booley doctor`; it creates or repairs the root `AGENTS.md` and
    `CLAUDE.md` links and adds them to `.git/info/exclude`. If Doctor cannot run,
    create the two root symlinks to the canonical file by hand and add
    `/AGENTS.md` and `/CLAUDE.md` to the RTL repo's `.git/info/exclude`.
+   If the delegated environment makes the repo root read-only, do not loop on
+   failed `ln` commands: preserve the canonical file, record the two links as
+   pending, and have the host run `booley init --seed` or plain Doctor after
+   the delegated step. A sandbox permission boundary is not evidence that the
+   canonical guidance is invalid.
 
 Report whether the canonical file was created, merged, overwritten, or left
-unchanged, which root links were ensured, and any unresolved facts
-intentionally omitted.
+unchanged; whether root `AGENTS.md` is a generated link or a durable tracked
+copy; which other root links were ensured; and any unresolved facts omitted.

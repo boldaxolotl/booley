@@ -109,6 +109,25 @@ class TestStealthHookGating:
         assert (hooks / "pre-commit").exists()
         assert not (hooks / "commit-msg").exists()
 
+    def test_resume_refreshes_scope_file_from_active_ticket(self, tmp_path: Path):
+        from booley.harness.setup.workspace import refresh_scope_guards
+
+        fake_tools, worktree = self._setup(tmp_path)
+        project_root = self._project(tmp_path, None)
+        (worktree / ".scope.json").write_text(
+            json.dumps({"scope": ["rtl/old.sv"]}), encoding="utf-8"
+        )
+
+        with patch("booley.harness.setup.workspace.dev_support_dir", return_value=fake_tools):
+            refresh_scope_guards(
+                worktree,
+                ["rtl/old.sv", "rtl/newly_authorized.sv"],
+                project_root=project_root,
+            )
+
+        persisted = json.loads((worktree / ".scope.json").read_text(encoding="utf-8"))
+        assert persisted["scope"] == ["rtl/old.sv", "rtl/newly_authorized.sv"]
+
 
 class TestScopeJsonExclude:
     """_install_scope_hook must exclude .scope.json via the honored info/exclude

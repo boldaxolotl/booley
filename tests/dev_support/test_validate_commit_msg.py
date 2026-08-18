@@ -470,6 +470,20 @@ class TestMainEntryPoint:
             message_check.assert_not_called()
             diff_check.assert_not_called()
 
+    def test_module_cli_honors_current_checkout_stealth_setting(self, tmp_path, monkeypatch):
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        with patch("sys.argv", ["validate_commit_msg.py", "mention Booley intentionally"]):
+            from booley.dev_support.validate_commit_msg import main
+
+            assert main() == 0
+
 
 def test_project_config_detection(tmp_path):
     assert not _has_project_config(tmp_path)
