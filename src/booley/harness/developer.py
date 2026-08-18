@@ -1097,11 +1097,7 @@ def _run_post_guardrails(
             for entry in dirty
             if entry.path not in artifacts
         ]
-        # Scope is advisory (ADR 0046), so out-of-scope edits are committed
-        # alongside the in-scope ones. Abandoning them was the worse failure:
-        # the branch shipped without work the agent had already validated in
-        # its worktree, and the criteria went green on code nobody would see.
-        committable = [path for path, tier in tiers if tier is not ScopeTier.FORBIDDEN]
+        committable = [path for path, tier in tiers if tier is ScopeTier.OWNED]
         advisory = [path for path, tier in tiers if tier is ScopeTier.ADVISORY]
         forbidden = [path for path, tier in tiers if tier is ScopeTier.FORBIDDEN]
         if forbidden:
@@ -1114,10 +1110,14 @@ def _run_post_guardrails(
                 ", ".join(forbidden[:5]),
             )
         if advisory:
-            logger.info(
-                "Committing %d out-of-scope file(s) as Scope deviations: %s",
+            logger.warning(
+                "Leaving %d out-of-scope file(s) uncommitted for triage: %s",
                 len(advisory),
                 ", ".join(advisory[:5]),
+            )
+            terminal.raw(
+                f"  {yellow('[WARN]')} leaving {len(advisory)} out-of-scope "
+                f"file(s) uncommitted for triage: {', '.join(advisory[:5])}"
             )
         if committable and _commit_leftover_edits(ctx, committable, state_path, run_index):
             _report_scope_deviations(ctx)
@@ -1126,10 +1126,9 @@ def _run_post_guardrails(
         _report_scope_deviations(ctx)
 
         # Malformed output is a property of the tree, not of the Scope, so the
-        # nested-`rtl/rtl/` check runs on every ticket. It used to be reachable
-        # for a TB-scoped ticket only via the out-of-scope dirty guard, which
-        # advisory Scope retired; gating it on `_scope_expects_rtl_output` would
-        # let a verification ticket commit `rtl/rtl/dut.sv` unremarked.
+        # nested-`rtl/rtl/` check runs on every ticket. Gating it on
+        # `_scope_expects_rtl_output` would let a verification ticket leave
+        # malformed `rtl/rtl/dut.sv` output unremarked.
         if _guard_malformed_rtl_output(ctx, run_index):
             return True
 
@@ -1145,9 +1144,9 @@ def _run_post_guardrails(
 def _report_scope_deviations(ctx: TicketContext) -> None:
     """Record which committed files the ticket's Scope did not name.
 
-    Purely informational (ADR 0046): triage reads the report, the run never
-    changes disposition because of it. Runs against the finished branch rather
-    than the dirty tree, because the branch is what review and merge see.
+    Purely informational: triage reads the report, the run never changes
+    disposition because of it. Runs against the finished branch rather than
+    the dirty tree, because the branch is what review and merge see.
     """
     from .colors import yellow
     from .scope_policy import DEVIATION_REPORT_NAME, committed_deviations, write_deviation_report
@@ -1272,8 +1271,8 @@ def _commit_leftover_edits(
 ) -> bool:
     """Commit leftover edits and verify none remain. True => block.
 
-    *committable* is every dirty path that is not harness-owned -- in-scope and
-    out-of-scope alike, since Scope is advisory (ADR 0046).
+    *committable* contains only paths authorized by the ticket Scope. Other
+    dirty paths remain in the worktree for explicit triage.
     """
     from .blocking import BlockingError
     from .colors import yellow
@@ -1282,7 +1281,7 @@ def _commit_leftover_edits(
         check_uncommitted_code_statuses,
     )
     from .git_utils import commit_scope
-    from .scope_policy import ScopeTier, classify_path, is_restore_artifact
+    from .scope_policy import ScopeTier, classify_path
 
     logger.warning(
         "Committing %d leftover edited file(s): %s", len(committable), ", ".join(committable[:5])
@@ -1320,13 +1319,12 @@ def _commit_leftover_edits(
         )
         terminal.raw(f"  {yellow('[BLOCK]')} cannot recheck leftover edits")
         return True
-    # Mirrors the committable set: anything deliberately left out of the commit
-    # (harness-owned paths, restore artifacts) must not then be blocked on.
+    # Only authorized paths were meant to be committed. Out-of-scope and
+    # harness-owned leftovers are intentionally preserved for triage.
     still_dirty = [
         entry.path
         for entry in remaining
-        if classify_path(ctx.scope_raw, entry.path, entry.status) is not ScopeTier.FORBIDDEN
-        and not is_restore_artifact(ctx.scope_raw, entry.path, entry.status)
+        if classify_path(ctx.scope_raw, entry.path, entry.status) is ScopeTier.OWNED
     ]
     if not still_dirty:
         return False
@@ -1336,9 +1334,8 @@ def _commit_leftover_edits(
         len(still_dirty),
         ", ".join(still_dirty[:5]),
     )
-    # A file the scorer reads that is still dirty after the commit means the
-    # branch does not carry the work the criteria were measured on. That is a
-    # real corruption of the result, not a Scope question, so it still blocks.
+    # An authorized scorer path still being dirty means the scoped commit did
+    # not take. Preserve the existing detailed dirty-output diagnosis.
     scorer_dirty = [path for path in still_dirty if _is_scorer_consumed_path(path)]
     if scorer_dirty:
         reason, all_done = _record_scorer_dirty_guardrail(

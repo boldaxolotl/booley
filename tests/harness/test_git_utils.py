@@ -154,6 +154,37 @@ class TestCommitScopeIntegration:
         )
         assert literal_path in result.stdout.splitlines()
 
+    def test_pre_staged_outsider_is_left_uncommitted(self, tmp_path: Path):
+        """Authorized work commits even when an unrelated path was staged."""
+        repo = _init_repo(tmp_path)
+        wt = _make_worktree(repo, tmp_path / "wt")
+        (wt / "authorized.sv").write_text("wire allowed;\n", encoding="utf-8")
+        (wt / "outside.sv").write_text("wire needs_triage;\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(wt), "add", "outside.sv"],
+            capture_output=True,
+            check=True,
+        )
+
+        commit_scope(wt, ["authorized.sv"], "fix: preserve scoped work")
+
+        committed = subprocess.run(
+            ["git", "-C", str(wt), "show", "--format=", "--name-only", "HEAD"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(wt), "status", "--short"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert committed.stdout.splitlines() == ["authorized.sv"]
+        assert status.stdout.splitlines() == ["?? outside.sv"]
+
     def test_unmatched_glob_scope_is_ignored(self, tmp_path: Path):
         """Missing glob matches do not make git add fail."""
         repo = _init_repo(tmp_path)
