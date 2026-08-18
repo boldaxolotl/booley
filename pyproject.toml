@@ -37,7 +37,8 @@ dependencies = [
     "jsonschema>=4.0",
     "libcst>=1.0",
     "markdown-it-py>=4.0",
-    "mcp>=1.8",  # streamable-HTTP session manager (Interactive Mode transport)
+    # MCP 2.x removes Server.list_tools(), which mcp_server._build_server() uses.
+    "mcp>=1.8,<2",  # streamable-HTTP session manager (Interactive Mode transport)
     "mdit-py-plugins>=0.5",
     "mutmut>=3.0",
     "pydantic>=2.0",
