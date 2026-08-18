@@ -11,38 +11,29 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from booley.timefmt import format_human_datetime
+from booley.runtime.agent_errors import (
+    AgentTimeoutError,
+    BlockingError,
+    ContextExhaustedError,
+    TransientAPIError,
+    UsageLimitError,
+    is_context_exhausted,
+    is_usage_limit,
+)
+from booley.runtime.timefmt import format_human_datetime
 
 from . import ticket_cli
 from .models import TicketContext
 
 logger = logging.getLogger(__name__)
 
-# Subscription/usage limit patterns -- shared between booley.py
-# (failure.md scanning) and the agent loop's early abort on Codex limits.
-# NOTE: "rate limit.*reset" removed -- overlaps with transient rate-limit
-# handling in _handle_rate_limit_event.  Only true usage/subscription caps here.
-LIMIT_PATTERNS = [
-    re.compile(r"you.?ve hit your limit", re.IGNORECASE),
-    re.compile(r"usage limit", re.IGNORECASE),
-    re.compile(r"subscription limit", re.IGNORECASE),
-    re.compile(r"SubscriptionLimitError", re.IGNORECASE),
-    re.compile(r"you.?ve reached your .* limit", re.IGNORECASE),
-    re.compile(r"quota exceeded", re.IGNORECASE),
+__all__ = [
+    "AgentTimeoutError",
+    "BlockingError",
+    "ContextExhaustedError",
+    "TransientAPIError",
+    "UsageLimitError",
 ]
-
-# Context window / token limit patterns — OpenAI and Anthropic variants.
-CONTEXT_EXHAUSTION_PATTERNS = [
-    re.compile(r"context.?length.?exceed", re.IGNORECASE),
-    re.compile(r"maximum.?context.?length", re.IGNORECASE),
-    re.compile(r"token.?limit.?exceed", re.IGNORECASE),
-    re.compile(r"too many tokens", re.IGNORECASE),
-    re.compile(r"prompt is too long", re.IGNORECASE),
-    re.compile(r"max_tokens.*exceeded", re.IGNORECASE),
-    re.compile(r"input.*too.*long", re.IGNORECASE),
-    re.compile(r"exceeds.*context.*window", re.IGNORECASE),
-]
-
 
 # Server-side failures that are safe to retry unattended, as
 # (incident_type, pattern) pairs.  Deliberately narrow: every signature here
@@ -58,16 +49,6 @@ TRANSIENT_CRASH_SIGNATURES: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def is_usage_limit(text: str) -> bool:
-    """Return True if *text* matches a known usage/subscription limit pattern."""
-    return any(p.search(text) for p in LIMIT_PATTERNS)
-
-
-def is_context_exhausted(text: str) -> bool:
-    """Return True if *text* indicates context window overflow."""
-    return any(p.search(text) for p in CONTEXT_EXHAUSTION_PATTERNS)
-
-
 def classify_transient_crash(text: str) -> str | None:
     """Return the incident type for a known retry-safe crash, else None.
 
@@ -81,43 +62,6 @@ def classify_transient_crash(text: str) -> str | None:
         if pattern.search(text):
             return incident_type
     return None
-
-
-class TransientAPIError(Exception):
-    """Transient API/network error -- safe to retry with backoff."""
-
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
-        self.retry_after = retry_after
-        super().__init__(message)
-
-
-class AgentTimeoutError(Exception):
-    """Local agent runtime deadline reached -- NOT transient or retryable."""
-
-
-class UsageLimitError(Exception):
-    """Daily/subscription usage cap hit -- NOT transient, no point retrying."""
-
-    def __init__(self, message: str, provider: str) -> None:
-        self.provider = provider
-        super().__init__(message)
-
-
-class ContextExhaustedError(Exception):
-    """Context window overflow -- NOT transient, retrying makes it worse."""
-
-    def __init__(self, message: str, provider: str) -> None:
-        self.provider = provider
-        super().__init__(message)
-
-
-class BlockingError(Exception):
-    """Raised when a step needs to block the ticket."""
-
-    def __init__(self, reason: str, questions: list[str] | None = None) -> None:
-        self.reason = reason
-        self.questions = questions
-        super().__init__(reason)
 
 
 class FatalError(Exception):

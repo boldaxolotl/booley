@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from booley.harness._codex_live_usage import CodexLiveUsage
+from booley.runtime._codex_live_usage import CodexLiveUsage
 
 
 def _token_record(

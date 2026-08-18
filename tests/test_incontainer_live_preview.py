@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from booley import incontainer_live_preview as ilp
+from booley.runtime import incontainer_live_preview as ilp
 
 
 def test_choose_port_retries_occupied_pair(monkeypatch):

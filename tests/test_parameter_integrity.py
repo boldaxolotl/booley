@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.fusesoc_registry import ResolvedFile, ResolvedTarget
-from booley.parameter_integrity import (
+from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     enabled_vlogdefine_names,
     validate_top_parameter_intent,

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from booley import selftest_overlay
+from booley.fusesoc import selftest_overlay
 
 
 def test_stage_bad_overlay_replaces_only_mirrored_build_files(tmp_path: Path) -> None:

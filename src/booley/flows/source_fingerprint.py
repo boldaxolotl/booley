@@ -49,7 +49,7 @@ def _core_source_files(
     dependency closure is returned.
     """
     try:
-        from booley.fusesoc_registry import (
+        from booley.fusesoc.fusesoc_registry import (
             classified_sources,
             discover_cores,
             target_source_files,
@@ -74,7 +74,7 @@ def _core_source_files(
 def _read_source_dirs(work_dir: Path) -> tuple[list[str], list[str]]:
     """RTL/TB source dirs from the ``.core`` filesets (legacy defaults if none)."""
     try:
-        from booley.fusesoc_registry import source_dirs_from_core
+        from booley.fusesoc.fusesoc_registry import source_dirs_from_core
 
         rtl_dirs, tb_dirs, _incl = source_dirs_from_core(work_dir)
         return rtl_dirs, tb_dirs

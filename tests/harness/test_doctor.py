@@ -17,10 +17,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley import runtime_context, selftest_overlay
-from booley.harness import auth_token, developer_probe, doctor, doctor_stamp, session_runtime
+from booley.fusesoc import selftest_overlay
 from booley.harness import devcontainer as dc
-from booley.project_dir import reset_cache, resolve_project_dir
+from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
+from booley.runtime import (
+    auth_token,
+    runtime_context,
+)
+from booley.runtime.project_dir import reset_cache, resolve_project_dir
 
 
 def _write_project(
@@ -603,7 +607,7 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
 
     Returns ``(project, calls)`` — *calls* records every argv *fake_run* saw.
     """
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     (tmp_path / ".booley_project").mkdir(exist_ok=True)
     project = doctor.ProjectAudit(
@@ -1015,7 +1019,7 @@ def test_flow_command_uses_first_config_and_first_test(tmp_path):
 
 
 def test_flow_command_passes_internal_selftest_kind_into_sandbox(tmp_path):
-    from booley import selftest_overlay
+    from booley.fusesoc import selftest_overlay
 
     project_dir = _write_project(tmp_path)
     project = doctor.ProjectAudit(
@@ -1142,7 +1146,7 @@ def test_flow_command_deep_smoke_all_skipped_falls_back_to_head(tmp_path):
 def test_probe_target_uses_configured_tool_target(tmp_path, monkeypatch):
     """ADR 0030: Doctor drives off [flows.<flow>].default_target, not a Flow scan — on a
     vendored repo a flow-match guess would pick an arbitrary upstream Target."""
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     project = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -1774,7 +1778,7 @@ class TestKnownTablesMatchLiveConfig:
 
 def test_probe_target_declines_without_configured_target(tmp_path, monkeypatch):
     """No .core Targets yet -> probe the configs.toml first_target."""
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     project = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -2884,8 +2888,8 @@ class TestWcpServerCheck:
         in_container: bool = False,
         probe=None,
     ) -> _Rec:
-        from booley import runtime_context
         from booley.harness import session_runtime
+        from booley.runtime import runtime_context
 
         monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_container)
         monkeypatch.setattr(session_runtime, "vscode_session_container", lambda root: container)
@@ -3193,8 +3197,8 @@ class TestDevcontainerSpecStaleness:
         # A credential stored AFTER the spec was seeded: VS Code sessions can't
         # see it (no sidecar mount), so they silently run on the refreshing
         # credential — surface the drift, don't fail.
-        from booley.harness import auth_token
         from booley.harness import devcontainer as dc
+        from booley.runtime import auth_token
 
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -3207,8 +3211,8 @@ class TestDevcontainerSpecStaleness:
         assert any(lvl == "warn" and "booley auth" in m and "--seed" in m for lvl, m in rec.events)
 
     def test_stored_token_with_seed_mount_passes(self, tmp_path, monkeypatch):
-        from booley.harness import auth_token
         from booley.harness import devcontainer as dc
+        from booley.runtime import auth_token
 
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         path = auth_token.store_token("sk-ant-oat01-stored")
@@ -3352,7 +3356,7 @@ def _write_core(root: Path, text: str, name: str = "design.core") -> Path:
 
 
 def _verilator_sim_ref(core, name="sim_x", vlnv="::demo:0"):
-    from booley import fusesoc_registry as fr
+    from booley.fusesoc import fusesoc_registry as fr
 
     return {
         name: fr.TargetRef(name=name, vlnv=vlnv, core_file=core, eda_tool="verilator", flow="sim")
@@ -3431,7 +3435,7 @@ targets:
 def test_sim_traceable_check_ignores_non_verilator_and_non_sim(tmp_path):
     # Icarus/xcelium/vcs self-heal (overlay supplies the dump module); lint
     # Targets have no TB. Neither should be flagged.
-    from booley import fusesoc_registry as fr
+    from booley.fusesoc import fusesoc_registry as fr
 
     core = _write_core(
         tmp_path,
@@ -3480,7 +3484,7 @@ targets:
 """
 
     def _refs(self, core, name, flow):
-        from booley import fusesoc_registry as fr
+        from booley.fusesoc import fusesoc_registry as fr
 
         return {
             name: fr.TargetRef(
@@ -3570,7 +3574,7 @@ targets:
         assert not c.failed and not c.warned
 
     def test_plain_verilog_and_non_icarus_targets_are_silent(self, tmp_path):
-        from booley import fusesoc_registry as fr
+        from booley.fusesoc import fusesoc_registry as fr
 
         core = _write_core(
             tmp_path,
@@ -3644,7 +3648,7 @@ targets:
 toplevel: {toplevel}}}
 """,
         )
-        from booley import fusesoc_registry as fr
+        from booley.fusesoc import fusesoc_registry as fr
 
         refs = {
             flow: fr.TargetRef(
@@ -3849,7 +3853,7 @@ def test_check_core_schema_passes_clean_core(tmp_path):
 
 
 def test_yosys_target_without_arch_warns(tmp_path):
-    from booley import fusesoc_registry as fr
+    from booley.fusesoc import fusesoc_registry as fr
 
     core = _write_core(
         tmp_path,
@@ -3873,7 +3877,7 @@ targets:
 
 
 def test_yosys_target_with_arch_passes(tmp_path):
-    from booley import fusesoc_registry as fr
+    from booley.fusesoc import fusesoc_registry as fr
 
     core = _write_core(
         tmp_path,
@@ -4213,7 +4217,7 @@ def test_repo_footprint_clean_passes(tmp_path):
 
 
 def test_no_target_match_detail_names_near_miss(tmp_path, monkeypatch):
-    from booley import fusesoc_registry as fr
+    from booley.fusesoc import fusesoc_registry as fr
 
     project = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -4874,13 +4878,13 @@ class TestBoardOrphanSelfHeal:
     (in-container only: ticket PIDs are container-scoped under ADR 0028)."""
 
     def test_host_side_skips(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: False)
+        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: False)
         rec = _Rec()
         doctor._check_board_orphans(tmp_path, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"skip"}
 
     def test_no_active_tickets_passes(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: True)
+        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
         tickets = _seed_board(tmp_path)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
         rec = _Rec()
@@ -4888,7 +4892,7 @@ class TestBoardOrphanSelfHeal:
         assert rec.kinds() == {"pass"}
 
     def test_dead_pid_recovered_with_warn(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: True)
+        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
         tickets = _seed_board(tmp_path)
         _seed_active_ticket(tickets)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
@@ -4913,7 +4917,7 @@ class TestBoardOrphanSelfHeal:
         assert any(args[0] == "block" and "stuck" in args for args in board_calls)
 
     def test_live_pid_passes(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: True)
+        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
         tickets = _seed_board(tmp_path)
         _seed_active_ticket(tickets)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
@@ -4927,7 +4931,7 @@ class TestBoardOrphanSelfHeal:
         assert any("live owner PIDs" in m for _lvl, m in rec.events)
 
     def test_read_only_reports_dead_pid_without_moving_ticket(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: True)
+        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
         tickets = _seed_board(tmp_path)
         _seed_active_ticket(tickets)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
@@ -5213,7 +5217,7 @@ class TestVenueCheck:
 class TestHostAgentSession:
     """An agent on the host gets no Booley Flows and no error — Doctor must say so.
 
-    MCP registration is container-side (booley.incontainer_register runs from
+    MCP registration is container-side (booley.runtime.incontainer_register runs from
     the devcontainer hooks), so a host-launched agent has no `booley` MCP
     server at all. Nothing else reports that absence.
     """
@@ -5285,7 +5289,7 @@ class TestGuidanceVenueNote:
 
     def test_shipped_template_satisfies_the_check(self, tmp_path):
         """The template doctor's fix hint points at must itself pass the check."""
-        from booley.paths import skills_dir
+        from booley.runtime.paths import skills_dir
 
         template = skills_dir() / "booley-setup" / "AGENTS_TEMPLATE.md"
         canon = self._canon(tmp_path, template.read_text(encoding="utf-8"))
@@ -5728,9 +5732,9 @@ class TestDeveloperProbe:
         assert "every ticket agent will fail" in rec.events[0][1]
 
     def test_measure_uses_child_rusage(self, tmp_path, monkeypatch):
-        from booley.harness import agent as agent_mod
-        from booley.harness import config as config_mod
+        from booley.config import settings as config_mod
         from booley.harness.models import AgentResult
+        from booley.runtime import agent as agent_mod
 
         monkeypatch.setattr(config_mod, "load_models_config", lambda root: None)
 
@@ -5764,9 +5768,9 @@ class TestDeveloperProbe:
         assert seen[0].allowed_agent_capabilities == []
 
     def test_measure_flags_upper_bound_without_delta(self, tmp_path, monkeypatch):
-        from booley.harness import agent as agent_mod
-        from booley.harness import config as config_mod
+        from booley.config import settings as config_mod
         from booley.harness.models import AgentResult
+        from booley.runtime import agent as agent_mod
 
         monkeypatch.setattr(config_mod, "load_models_config", lambda root: None)
 
@@ -5794,7 +5798,7 @@ class TestDeveloperProbe:
         assert exact is False
 
     def test_measure_wraps_agent_failure_in_probe_error(self, tmp_path, monkeypatch):
-        from booley.harness import config as config_mod
+        from booley.config import settings as config_mod
 
         def boom(_root):
             raise RuntimeError("no backend configured")

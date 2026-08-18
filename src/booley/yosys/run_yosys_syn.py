@@ -38,11 +38,11 @@ from booley.core.boundary import BoundaryError
 # Predefined configurations — imported from shared module (in parent dir)
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR.parent))
-from booley.heartbeat import fmt_elapsed as fmt_time
-from booley.shared_infra import (
+from booley.runtime.heartbeat import fmt_elapsed as fmt_time
+from booley.runtime.shared_infra import (
     check_paths as _check_paths,
 )
-from booley.synthesis_profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
+from booley.targets.synthesis_profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.yosys import ppa as ppa_options
 from booley.yosys import syn_make
 from booley.yosys.syn_core import (  # Core synthesis functions
@@ -895,7 +895,7 @@ def _do_run_locked(args: argparse.Namespace) -> None:
     timeout + tree-kill is enforced by whoever spawns this runner; the CLI
     itself runs the flow exactly once with no retries.
     """
-    from booley.eda_tool_lock import eda_tool_lock
+    from booley.runtime.eda_tool_lock import eda_tool_lock
 
     with eda_tool_lock("yosys"):
         do_run(args)

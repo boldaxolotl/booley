@@ -32,7 +32,7 @@ from booley.harness.init_common import (
     ok,
     warn,
 )
-from booley.project_dir import reset_cache
+from booley.runtime.project_dir import reset_cache
 
 # Wizard vocabulary. `sv` = a plain self-checking SystemVerilog TB scored by
 # stdout sentinels; `cocotb` = a Python TB per ADR 0034 (verdict from

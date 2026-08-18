@@ -12,7 +12,7 @@ import pytest
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.elaborate import ElaborateFlow, _extract_error_gist
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     def _lenient(target_arg, project_root):
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
@@ -175,7 +175,7 @@ class TestElabResolution:
 
     def test_prepare_drives_make_over_resolved_build_root(self, tmp_path):
         """Booley resolves the sim Target, then `make -C <relpath>` (build-only)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, target="sim")
         resolved_build = (
@@ -226,7 +226,7 @@ class TestElabResolution:
         ]
 
     def test_vivado_elaboration_stops_at_synthesis_target(self, tmp_path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, target="sim")
         build = tmp_path / "build" / "sim"
@@ -250,7 +250,7 @@ class TestElabResolution:
 
     def test_setup_failure_propagates(self, tmp_path):
         """A FuseSoC resolution failure surfaces (caller records it as FAIL)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, target="sim")
         import pytest
@@ -278,7 +278,7 @@ class TestWarningsNonFatal:
 
     @staticmethod
     def _resolved(build_root, eda_tool="verilator"):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         return fusesoc_registry.ResolvedTarget(
             name="sim",
@@ -320,7 +320,7 @@ class TestWarningsNonFatal:
 
     def test_prepare_elab_command_injects_wno_fatal(self, tmp_path):
         """End-to-end through `_prepare_elab_command`: the resolved .vc gains it."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, target="sim")
         build_dir = tmp_path / "resolved"
@@ -351,7 +351,7 @@ class TestWarningsNonFatal:
         import shutil
         import sys
 
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         work_dir = tmp_path / "proj"
         (work_dir / "rtl").mkdir(parents=True)
@@ -426,7 +426,7 @@ class TestRun:
         The preview is sourced from a cheap ``.core`` YAML read; patching
         ``resolve_target`` to fail proves dry-run never invokes fusesoc.
         """
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         (tmp_path / "elab.core").write_text(
             "CAPI=2:\nname: ::elab_demo:0\ntargets:\n  sim:\n    flow: sim\n"
@@ -569,7 +569,7 @@ class TestFollowedSelection:
         assert "venue" not in result.detail
 
     def test_job_class_is_heavy(self, tmp_path: Path):
-        from booley import job_slots
+        from booley.runtime import job_slots
 
         assert _make_flow(tmp_path)._resolve_job_class() == job_slots.CLASS_HEAVY
 
@@ -826,7 +826,7 @@ class TestStandalone:
     @staticmethod
     def _stub_sources(monkeypatch, rtl: list[str], tb: list[str] | None = None) -> None:
         """Fix the RTL/TB partition the sweep resolves (fake-registry stub)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         sources = fusesoc_registry.CoreSources(
             rtl_source_files=tuple(rtl),
@@ -1092,7 +1092,7 @@ class TestStandalone:
 
     def test_scope_resolution_failure_is_an_eda_tool_error(self, tmp_path, monkeypatch):
         """An unresolvable Target scope grades ERROR (no verdict), not a crash."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         def _boom(*a, **k):
             raise fusesoc_registry.FuseSocError("no .core")
@@ -1281,7 +1281,7 @@ class TestStandaloneFrontend:
     def test_bad_knob_grades_as_an_eda_tool_error_not_a_crash(self, tmp_path, monkeypatch):
         """A wrong value must surface as ERROR with the valid choices, not as
         an unhandled exception mid-sweep."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         monkeypatch.setattr(
             fusesoc_registry,
@@ -1369,7 +1369,7 @@ class TestParseGapCredibility:
     def test_same_frontend_syntax_error_is_a_real_finding(self, tmp_path, monkeypatch):
         """End to end: verilator built the Target and verilator rejects the
         module standalone -> a FAIL, not an excused capability gap."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl/alu.sv").write_text("module alu;\nendmodule\n", encoding="utf-8")
@@ -1417,7 +1417,7 @@ def _yosys_resolved(
     flow_options: dict | None = None,
 ):
     """A resolved ASIC Target: two SV sources, one header, one vlogdefine."""
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     files = (
         fusesoc_registry.ResolvedFile(name="rtl/pkg.sv", file_type="systemVerilogSource"),
@@ -1550,7 +1550,7 @@ class TestAsicFrontendParity:
         assert flow._asic_elab_command("asic_dut", resolved) is None
 
     def test_prepare_returns_the_asic_command_end_to_end(self, tmp_path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, target="asic_dut")
         resolved = _yosys_resolved(

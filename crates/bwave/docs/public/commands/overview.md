@@ -74,7 +74,3 @@ Available on `wave`, `find`, `sample`, `distance`, `value`:
 Every query/introspect subcommand requires a built `.fst`
 store as the first positional argument. Pass a `.vcd` and
 you'll get an error with a `bwave build` hint.
-
-(Query subcommands other than `wave`, `diff`, and
-`distance` keep a hidden `--allow-vcd` flag for legacy
-streaming use; do not rely on it.)

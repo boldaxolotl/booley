@@ -14,7 +14,7 @@ import pytest
 # Ensure scripts/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.eda_tool_lock import _find_locks_dir, eda_tool_lock, eda_tool_lock_env_var
+from booley.runtime.eda_tool_lock import _find_locks_dir, eda_tool_lock, eda_tool_lock_env_var
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ class TestEdaToolLock:
     def test_timeout_raises(self, isolated_root: Path):
         """When lock cannot be acquired, TimeoutError is raised."""
         with (
-            patch("booley.eda_tool_lock.lock_fd", side_effect=BlockingIOError("locked")),
+            patch("booley.runtime.eda_tool_lock.lock_fd", side_effect=BlockingIOError("locked")),
             pytest.raises(TimeoutError, match="vivado"),
             eda_tool_lock("vivado", timeout_s=1),
         ):

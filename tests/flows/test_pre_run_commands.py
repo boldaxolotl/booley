@@ -25,8 +25,8 @@ from tests.flows.test_simulate_cocotb import (
 from booley.flows.base import SubprocessResult
 from booley.flows.execution import ExecutionSelection
 from booley.flows.simulate import SimulateFlow
-from booley.mcp_tools.base import EXIT_FAILURE, EXIT_SUCCESS
-from booley.project_dir import reset_cache
+from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime.project_dir import reset_cache
 
 _BUILTIN_SANDBOX = ExecutionSelection()
 
@@ -209,9 +209,11 @@ class TestCocotbBatchFiring:
         out = _cocotb_output([("test_reset", "pass", ""), ("test_count", "pass", "")])
         run_mock = MagicMock(return_value=_completed())
         with (
-            patch("booley.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}),
             patch(
-                "booley.fusesoc_registry.resolve_target",
+                "booley.config.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(
@@ -236,9 +238,11 @@ class TestCocotbBatchFiring:
         out = _cocotb_output([("test_reset", "pass", "")])
         run_mock = MagicMock(return_value=_completed())
         with (
-            patch("booley.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}),
             patch(
-                "booley.fusesoc_registry.resolve_target",
+                "booley.config.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(
@@ -261,9 +265,11 @@ class TestCocotbBatchFiring:
         flow = _make_cocotb_flow(tmp_path)
         run_mock = MagicMock(return_value=_completed(rc=3, stderr="no cross gcc"))
         with (
-            patch("booley.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}),
             patch(
-                "booley.fusesoc_registry.resolve_target",
+                "booley.config.project_config.TEST_NAMES", {"ccfg": ["test_reset", "test_count"]}
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(

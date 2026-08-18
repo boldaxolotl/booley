@@ -1,4 +1,4 @@
-"""Resolution of the *native* (Rust) bwave binary — booley.paths.
+"""Resolution of the *native* (Rust) bwave binary — booley.runtime.paths.
 
 Two executables answer to the name `bwave`: the native binary and the Python
 wrapper (booley.bwave.cli). Only the wrapper is on PATH in the sandbox image,
@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from booley import paths
+from booley.runtime import paths
 
 
 def _bwave_name() -> str:

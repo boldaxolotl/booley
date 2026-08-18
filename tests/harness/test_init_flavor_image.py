@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
 from booley.harness import init_docker_image as idi
-from booley.harness import project_image as pi
 from booley.harness.init_common import InitContext
+from booley.runtime import project_image as pi
 
 FLAVOR = "booley-sandbox-riscv"
 
@@ -41,7 +41,7 @@ def flavor_repo(tmp_path: Path, monkeypatch) -> Path:
     # A live-session probe would shell out to docker; the F-9 warning is not
     # what these tests are about.
     monkeypatch.setattr(init_cmd, "_warn_on_live_session_on_old_image", lambda ctx, image: None)
-    from booley.project_dir import reset_cache
+    from booley.runtime.project_dir import reset_cache
 
     reset_cache()
     return root

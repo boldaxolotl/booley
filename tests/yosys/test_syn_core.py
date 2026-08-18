@@ -746,7 +746,7 @@ class TestSynthTimingConfigTomlBoundary:
         # Accepts the optional project_root the ADR 0037 in-process configure
         # half threads through (None on the legacy CLI path exercised here).
         monkeypatch.setattr(
-            "booley.shared_infra._load_rtl_config",
+            "booley.runtime.shared_infra._load_rtl_config",
             lambda project_root=None: cfg,
         )
 
@@ -869,7 +869,7 @@ class TestSynthTimingConfigOpenRoad:
         # Accepts the optional project_root the ADR 0037 in-process configure
         # half threads through (None on the legacy CLI path exercised here).
         monkeypatch.setattr(
-            "booley.shared_infra._load_rtl_config",
+            "booley.runtime.shared_infra._load_rtl_config",
             lambda project_root=None: cfg,
         )
 

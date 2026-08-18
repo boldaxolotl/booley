@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from booley.harness._retry import transcript_path_for_attempt, transcript_path_for_label
 from booley.harness.developer import _detect_crash_recovery
+from booley.runtime._retry import transcript_path_for_attempt, transcript_path_for_label
 
 # ---------------------------------------------------------------------------
 # transcript_path_for_label

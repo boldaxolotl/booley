@@ -12,7 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from booley.harness.blocking import LIMIT_PATTERNS
+from booley.runtime.agent_errors import LIMIT_PATTERNS
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 
 logger = logging.getLogger("booley")

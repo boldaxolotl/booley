@@ -76,9 +76,7 @@ JSON mode produces a `listData` envelope:
 ```
 
 See `bwave docs show reference/json-envelope` for the full
-schema. JSON output is text-only when `list` is fed a raw
-VCD (legacy `--allow-vcd` path); only `.fst` store input
-emits the canonical envelope.
+schema.
 
 ## Common errors
 

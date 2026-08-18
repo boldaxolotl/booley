@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 
-from booley.harness import project_image as pi
+from booley.runtime import project_image as pi
 
 # ===========================================================================
 # project_image_name

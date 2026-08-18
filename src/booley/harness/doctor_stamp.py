@@ -36,11 +36,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from booley import runtime_context
 from booley.harness.devcontainer import devcontainer_path
 from booley.harness.doctor_waivers import WAIVER_FILENAME
-from booley.project_dir import resolve_project_dir
-from booley.timefmt import format_human_date, parse_timestamp, utc_now_rfc3339
+from booley.runtime import runtime_context
+from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.timefmt import format_human_date, parse_timestamp, utc_now_rfc3339
 
 STAMP_FILENAME = "doctor_stamp.json"
 

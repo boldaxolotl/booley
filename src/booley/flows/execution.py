@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.flow_names import config_section
+from booley.targets.flow_names import config_section
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ def resolve_execution(flow_name: str, work_dir: Path | None) -> ExecutionSelecti
     """Read ``[flows.<name>].enabled`` and a surviving backend key."""
     cfg: dict = {}
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir) or {}
     except Exception:  # noqa: BLE001 — bare invocations keep working with defaults

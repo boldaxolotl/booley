@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import job_fence
-from booley.mcp_tools import job_records as jobrec
+from booley.runtime import job_records as jobrec
 
 
 def _record() -> jobrec.JobRecord:

@@ -30,7 +30,7 @@ A healthy server answers the slashed URL with `406` — it wants an SSE `Accept`
 header, which is exactly what a live MCP endpoint does; `200`/`405` are equally
 fine. Connection refused means it's not up. Your *client* URL stays `/mcp` (the
 redirect is transparent to it). The log is at `/tmp/booley_mcp_http.log`.
-Re-running `python -m booley.incontainer_register` by hand starts the server if
+Re-running `python -m booley.runtime.incontainer_register` by hand starts the server if
 it never came up.
 
 ## An MCP tool is missing from `/mcp`

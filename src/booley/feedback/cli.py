@@ -44,7 +44,7 @@ from booley.feedback.findings import (
     read_log,
     rewrite,
 )
-from booley.project_dir import PROJECT_DIR_NAME, resolve_project_dir
+from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 
 
 def _project_dir(project_root: Path) -> Path:

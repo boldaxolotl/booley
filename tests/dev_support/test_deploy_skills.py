@@ -13,7 +13,7 @@ from booley.dev_support.deploy_skills import (
     parse_frontmatter,
     print_summary,
 )
-from booley.paths import skills_dir
+from booley.runtime.paths import skills_dir
 
 # ---------------------------------------------------------------------------
 # parse_frontmatter

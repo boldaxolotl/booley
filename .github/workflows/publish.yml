@@ -115,7 +115,7 @@ jobs:
 
       - name: Verify native bwave is not bundled
         run: |
-          python -c "from booley.paths import bwave_binary; p = bwave_binary(); assert not p.exists(), f'unexpected bundled binary: {p}'"
+          python -c "from booley.runtime.paths import bwave_binary; p = bwave_binary(); assert not p.exists(), f'unexpected bundled binary: {p}'"
 
       - name: Verify bwave wrapper entry point
         run: >-

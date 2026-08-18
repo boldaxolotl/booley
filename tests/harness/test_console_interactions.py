@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from textual.widgets import Static
 
-from booley.harness._editor_config import ResolvedEditor
+from booley.config.editor import ResolvedEditor
 from booley.harness.console.app import ConsolePhase, _strip_region_for_mark
 from booley.harness.console.events import AgentThinking, CriteriaChanged
 from booley.harness.console.links import (

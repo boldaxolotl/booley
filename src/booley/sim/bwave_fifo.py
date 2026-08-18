@@ -19,10 +19,10 @@ def _find_bwave_bin() -> str | None:
 
     FIFO streaming needs the *native* binary: the Python wrapper (the only
     ``bwave`` on PATH) exits before reading the FIFO, which would leave the
-    simulator blocked on trace output.  booley.paths.native_bwave_binary()
+    simulator blocked on trace output.  booley.runtime.paths.native_bwave_binary()
     resolves the binary off PATH and rejects a wrapper hit for us.
     """
-    from booley.paths import native_bwave_binary
+    from booley.runtime.paths import native_bwave_binary
 
     found = native_bwave_binary()
     return str(found) if found else None

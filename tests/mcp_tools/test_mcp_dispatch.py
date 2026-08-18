@@ -13,8 +13,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 try:
-    from booley import mcp_server
-    from booley.mcp_server import (
+    from booley.mcp import server as mcp_server
+    from booley.mcp.server import (
         _available_report_endpoints,
         _dispatch_async_job,
         _dispatch_cancel,
@@ -35,8 +35,8 @@ try:
 except ImportError:
     pytest.skip("mcp package not installed", allow_module_level=True)
 
-from booley import job_slots
-from booley.mcp_tools import job_records as jobrec
+from booley.runtime import job_records as jobrec
+from booley.runtime import job_slots
 
 
 class TestValidateWorkDir:
@@ -1714,10 +1714,10 @@ class TestAttachStripsTranscriptDir:
                 timeout_s=1800,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-                argv=["python", "-m", "booley.mcp_tools.reviewer", "--transcript-dir", "/t/1"],
+                argv=["python", "-m", "booley.specialists.reviewer", "--transcript-dir", "/t/1"],
             )
         )
-        cmd = ["python", "-m", "booley.mcp_tools.reviewer", "--transcript-dir", "/t/2"]
+        cmd = ["python", "-m", "booley.specialists.reviewer", "--transcript-dir", "/t/2"]
         assert mcp_server._find_attachable_job("reviewer", cmd) == "reviewer-z-1"
 
     def test_different_real_args_still_do_not_attach(self, _report_env, monkeypatch):
@@ -1736,10 +1736,10 @@ class TestAttachStripsTranscriptDir:
                 timeout_s=1800,
                 pid=os.getpid(),
                 status=jobrec.STATUS_RUNNING,
-                argv=["python", "-m", "booley.mcp_tools.reviewer", "--slug", "a"],
+                argv=["python", "-m", "booley.specialists.reviewer", "--slug", "a"],
             )
         )
-        cmd = ["python", "-m", "booley.mcp_tools.reviewer", "--slug", "b"]
+        cmd = ["python", "-m", "booley.specialists.reviewer", "--slug", "b"]
         assert mcp_server._find_attachable_job("reviewer", cmd) is None
 
 

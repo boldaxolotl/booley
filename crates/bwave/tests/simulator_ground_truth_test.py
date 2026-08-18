@@ -44,8 +44,14 @@ _EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 _BWAVE_EXE = _VCD_PARSER_DIR / "target" / "debug" / f"bwave{_EXE_SUFFIX}"
 _BWAVE_RELEASE = _VCD_PARSER_DIR / "target" / "release" / f"bwave{_EXE_SUFFIX}"
 
-# Prefer release build if available, else debug
-BWAVE_BIN = str(_BWAVE_RELEASE if _BWAVE_RELEASE.exists() else _BWAVE_EXE)
+# Prefer the explicitly installed Session Runtime binary, then a release build,
+# then the local debug build.
+_BWAVE_CONFIGURED = os.environ.get("BOOLEY_BWAVE_BIN")
+BWAVE_BIN = str(
+    Path(_BWAVE_CONFIGURED)
+    if _BWAVE_CONFIGURED
+    else (_BWAVE_RELEASE if _BWAVE_RELEASE.exists() else _BWAVE_EXE)
+)
 
 # Simulator environment for Icarus (oss-cad-suite)
 # Platform-aware: read tool roots from env vars with OS-appropriate defaults.

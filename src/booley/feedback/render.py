@@ -33,7 +33,7 @@ from booley.feedback.findings import (
     FindingsLog,
     read_log,
 )
-from booley.timefmt import format_human_date, format_human_datetime_safe
+from booley.runtime.timefmt import format_human_date, format_human_datetime_safe
 
 USER_REPORT_NAME = "SETUP-REPORT.md"
 #: The user report's name when nothing in the log came from a setup run.

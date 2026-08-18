@@ -47,12 +47,6 @@ the `.fst` store to carry a VCD timescale. Every modern
 simulator emits one; if the parser couldn't recover it,
 you'll get a "no VCD timescale available" error.
 
-The streaming `--allow-vcd` path is more limited: it
-only knows the timescale, not the clock period, so
-sync-mode physical-unit tokens won't resolve there.
-Build an `.fst` store (`bwave build foo.vcd -o foo.fst`)
-first.
-
 ## --before / --after
 
 `--before N` and `--after N` are bounds, not tokens:

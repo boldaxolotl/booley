@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import pytest
 
-from booley import fusesoc_registry
 from booley.core.boundary import BoundaryError
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.asic_synthesize import (
@@ -46,8 +45,9 @@ from booley.flows.asic_synthesize import (
 )
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming, make_clock_timing
+from booley.fusesoc import fusesoc_registry
 from booley.harness import nangate_pdk
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.yosys import syn_make
 from booley.yosys.syn_core import StaTimingConfig
 
@@ -83,7 +83,7 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     def _lenient(target_arg, project_root):
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
@@ -3249,7 +3249,7 @@ _STEALTH_CORE_TEXT = (
 
 def _author_stealth_core(root: Path, rtl_body: str) -> None:
     """Author a stealth .core + its rtl source under ``root/.booley_project/cores/``."""
-    from booley.fusesoc_registry import state_cores_dir
+    from booley.fusesoc.fusesoc_registry import state_cores_dir
 
     cores = state_cores_dir(root)
     cores.mkdir(parents=True, exist_ok=True)

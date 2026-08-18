@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from .._editor_config import ResolvedEditor
+from booley.config.editor import ResolvedEditor
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def build_link_context(
     rtl_dirs: tuple[str, ...] = ()
     tb_dirs: tuple[str, ...] = ()
     try:
-        from booley.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
+        from booley.runtime.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
 
         rtl_dirs = tuple(get_rtl_source_dirs(project_root))
         tb_dirs = tuple(get_tb_source_dirs(project_root))

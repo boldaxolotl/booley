@@ -30,7 +30,8 @@ from .criteria_format import (  # noqa: F401 — re-exported for backward compat
 )
 
 if TYPE_CHECKING:
-    from .._editor_config import ResolvedEditor
+    from booley.config.editor import ResolvedEditor
+
     from .links import LinkContext
 
 logger = logging.getLogger(__name__)

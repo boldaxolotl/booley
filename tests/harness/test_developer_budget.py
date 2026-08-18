@@ -7,9 +7,9 @@ import json
 
 import pytest
 
+from booley.config.settings import DeveloperLimitsConfig
 from booley.harness.blocking import AgentTimeoutError
-from booley.harness.config import DeveloperLimitsConfig
-from booley.harness.developer_budget import DeveloperBudget, run_with_developer_budget
+from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_budget
 
 
 class _Clock:

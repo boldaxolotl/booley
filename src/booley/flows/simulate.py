@@ -24,12 +24,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
-from booley import fusesoc_registry, job_slots, selftest_overlay
-from booley.flow_names import config_section
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.parameter_integrity import validate_top_parameter_intent
-from booley.platform_paths import bash_bin, posix_relpath
-from booley.project_config import lookup_target_section, render_test_selector
+from booley.config.project_config import lookup_target_section, render_test_selector
+from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime import job_slots
+from booley.runtime.platform_paths import bash_bin, posix_relpath
+from booley.runtime.timefmt import utc_now_rfc3339
 from booley.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.sim.sim_result import (
     RUN_LOG_NAME,
@@ -37,7 +37,8 @@ from booley.sim.sim_result import (
     run_log_is_current,
     write_run_log,
 )
-from booley.timefmt import utc_now_rfc3339
+from booley.targets.flow_names import config_section
+from booley.targets.parameter_integrity import validate_top_parameter_intent
 
 from . import artifacts, output_budget, sim_edam
 from . import edam as edam_layer
@@ -391,7 +392,7 @@ def _resolve_run_cwd(work_dir: Path | None = None) -> str | None:
     cwd; the Icarus ``make run`` target stays anchored to the build dir.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -413,7 +414,7 @@ def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
     :meth:`SimulateFlow._pre_run_env` before each run. Empty when unset.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -438,7 +439,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -461,7 +462,7 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
     :data:`_DEFAULT_TIMEOUT_MS`. Non-positive / unparseable values fall back.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -485,7 +486,7 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
     Defaults to :data:`run_guard.DEFAULT_SIM_TIME_GRACE_S`.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -511,7 +512,7 @@ def _resolve_sim_sentinels(
     builtin Icarus/Verilator run-halves, which own the verdict inside the sandbox.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -536,7 +537,7 @@ def _resolve_trace_args(work_dir: Path | None = None) -> list[str]:
     testbench. Empty means "use the default convention".
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -561,7 +562,7 @@ def _resolve_trace_files(work_dir: Path | None = None) -> list[str]:
     count", the previous behaviour.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
         if cfg:
@@ -575,7 +576,7 @@ def _resolve_trace_files(work_dir: Path | None = None) -> list[str]:
 def _get_test_names() -> dict[str, list[str]]:
     """Load test names from project config. Empty dict on failure."""
     try:
-        from booley.project_config import TEST_NAMES
+        from booley.config.project_config import TEST_NAMES
 
         return TEST_NAMES
     except ImportError:
@@ -588,7 +589,7 @@ def _get_test_skips() -> dict[str, list[str]]:
     Empty dict on failure — a project that declares no skips runs every test.
     """
     try:
-        from booley.project_config import TEST_SKIP
+        from booley.config.project_config import TEST_SKIP
 
         return TEST_SKIP
     except ImportError:
@@ -602,7 +603,7 @@ def _get_test_envs() -> dict[str, dict[str, str]]:
     inherited environment, exactly as before the knob existed.
     """
     try:
-        from booley.project_config import TEST_ENV
+        from booley.config.project_config import TEST_ENV
 
         return TEST_ENV
     except ImportError:
@@ -618,7 +619,7 @@ def _get_test_selects() -> dict[str, str]:
     plusarg template is a config contradiction. Empty dict on failure.
     """
     try:
-        from booley.project_config import TEST_SELECT
+        from booley.config.project_config import TEST_SELECT
 
         return TEST_SELECT
     except ImportError:
@@ -1363,7 +1364,7 @@ class SimulateFlow(BooleyFlow):
         if eda_tool:
             env["BOOLEY_SIM_EDA_TOOL"] = eda_tool
         try:
-            from booley.project_dir import resolve_project_dir
+            from booley.runtime.project_dir import resolve_project_dir
 
             env["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(work_dir))
         except (FileNotFoundError, ImportError):
@@ -1548,7 +1549,7 @@ class SimulateFlow(BooleyFlow):
         """Apply the internal Doctor bad-fixture overlay after Target staging."""
         if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) != selftest_overlay.BAD_KIND:
             return
-        from booley.project_dir import resolve_project_dir
+        from booley.runtime.project_dir import resolve_project_dir
 
         project_dir = resolve_project_dir(self.args.work_dir)
         copied = selftest_overlay.stage_bad_overlay(project_dir, self.name, build_root)

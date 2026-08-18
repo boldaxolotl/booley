@@ -29,8 +29,8 @@ from booley.harness.init_common import (
     skip,
     warn,
 )
-from booley.paths import dev_support_dir
-from booley.project_dir import resolve_project_dir
+from booley.runtime.paths import dev_support_dir
+from booley.runtime.project_dir import resolve_project_dir
 
 
 def _step_git_hooks(ctx: InitContext) -> None:

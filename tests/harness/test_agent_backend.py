@@ -11,8 +11,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.harness._backend_config import _PROVIDER_TIER_MODELS
-from booley.harness.agent_backend import (
+from booley.config.agent import _PROVIDER_TIER_MODELS
+from booley.config.settings import (
+    _DEFAULT_TIER_MODELS,
+    MODEL_MAP,
+    STEP_TIERS,
+    BackendConfig,
+    BackendConfigError,
+    get_backend_config,
+    load_models_config,
+    set_backend_config,
+)
+from booley.runtime.agent_backend import (
     AgentBackend,
     ClaudeSDKBackend,
     CodexBackend,
@@ -22,16 +32,6 @@ from booley.harness.agent_backend import (
     _codex_write_transcript,
     _is_transient_error,
     _transcript_path_for_attempt,
-)
-from booley.harness.config import (
-    _DEFAULT_TIER_MODELS,
-    MODEL_MAP,
-    STEP_TIERS,
-    BackendConfig,
-    BackendConfigError,
-    get_backend_config,
-    load_models_config,
-    set_backend_config,
 )
 
 # ===========================================================================
@@ -61,7 +61,7 @@ class TestCliShimLogging:
     mangling. WARNing about it on every specialist run was pure noise."""
 
     def _resolve(self, monkeypatch, system: str, tmp_path: Path):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         shim = tmp_path / "claude"
         shim.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -77,13 +77,13 @@ class TestCliShimLogging:
         return backend
 
     def test_posix_direct_cli_does_not_warn(self, monkeypatch, tmp_path: Path, caplog):
-        with caplog.at_level("WARNING", logger="booley.harness._claude_backend"):
+        with caplog.at_level("WARNING", logger="booley.runtime._claude_backend"):
             backend = self._resolve(monkeypatch, "Linux", tmp_path)
         assert backend._cli_path is not None
         assert caplog.records == []
 
     def test_windows_still_warns_about_the_real_risk(self, monkeypatch, tmp_path: Path, caplog):
-        with caplog.at_level("WARNING", logger="booley.harness._claude_backend"):
+        with caplog.at_level("WARNING", logger="booley.runtime._claude_backend"):
             self._resolve(monkeypatch, "Windows", tmp_path)
         assert any("cmd.exe metachar" in r.getMessage() for r in caplog.records)
 
@@ -195,7 +195,7 @@ class TestLoadModelsConfig:
 
     def test_claude_provider_opt_in(self, tmp_path):
         """[agent] provider = 'claude' flips the active backend to Claude."""
-        from booley.harness.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_backend import ClaudeSDKBackend
 
         toml_dir = tmp_path / ".booley" / "project"
         toml_dir.mkdir(parents=True)
@@ -213,7 +213,7 @@ class TestLoadModelsConfig:
         assert cfg.tier_models == _PROVIDER_TIER_MODELS["claude"]
 
     def test_retired_primary_alias_is_ignored(self, tmp_path):
-        from booley.harness.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_backend import ClaudeSDKBackend
 
         toml_dir = tmp_path / ".booley" / "project"
         toml_dir.mkdir(parents=True)
@@ -297,7 +297,7 @@ class TestLoadModelsConfig:
 
     def test_lazy_default_honors_provider_env(self, monkeypatch):
         """get_backend_config() reads BOOLEY_PRIMARY_PROVIDER for nested agents."""
-        from booley.harness.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_backend import ClaudeSDKBackend
 
         monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
         set_backend_config(None)
@@ -317,10 +317,10 @@ class TestLoadModelsConfig:
         assert get_backend_config().auth == "subscription"
 
     def test_codex_resume_command_and_thread_id(self, tmp_path, monkeypatch):
-        from booley.harness._codex_backend import _codex_build_cmd, _codex_thread_id
+        from booley.runtime._codex_backend import _codex_build_cmd, _codex_thread_id
 
-        monkeypatch.setattr("booley.harness._codex_backend.shutil.which", lambda _name: "codex")
-        monkeypatch.setattr("booley.harness._codex_backend._inside_container", lambda: False)
+        monkeypatch.setattr("booley.runtime._codex_backend.shutil.which", lambda _name: "codex")
+        monkeypatch.setattr("booley.runtime._codex_backend._inside_container", lambda: False)
         cmd, schema = _codex_build_cmd("gpt-test", tmp_path, [], None, None, session_id="thread-7")
 
         assert schema is None
@@ -331,7 +331,7 @@ class TestLoadModelsConfig:
 
     def test_lazy_default_is_claude_without_env(self, monkeypatch):
         """On the host with no env/toml signal, default to claude — never codex."""
-        from booley.harness.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_backend import ClaudeSDKBackend
 
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
         monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
@@ -348,7 +348,7 @@ class TestLoadModelsConfig:
         propagation was dropped. The container mounts booley.toml flat under
         BOOLEY_PROJECT_DIR.
         """
-        from booley.harness.agent_backend import CodexBackend
+        from booley.runtime.agent_backend import CodexBackend
 
         (tmp_path / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -371,7 +371,7 @@ class TestLoadModelsConfig:
         monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))  # no booley.toml
         monkeypatch.setattr(
-            "booley.harness._backend_config._inside_container",
+            "booley.config.agent._inside_container",
             lambda: True,
         )
         set_backend_config(None)
@@ -384,7 +384,7 @@ class TestLoadModelsConfig:
         monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
         monkeypatch.setattr(
-            "booley.harness._backend_config._inside_container",
+            "booley.config.agent._inside_container",
             lambda: True,
         )
         set_backend_config(None)
@@ -402,13 +402,13 @@ class TestLoadModelsConfig:
         — with no developer to set BOOLEY_PRIMARY_PROVIDER and no
         [agent] provider in booley.toml — resolves instead of hard-failing.
         """
-        from booley.harness.agent_backend import CodexBackend
+        from booley.runtime.agent_backend import CodexBackend
 
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))  # no booley.toml
         monkeypatch.setenv("BOOLEY_AGENT_APP", "codex")
         monkeypatch.setattr(
-            "booley.harness._backend_config._inside_container",
+            "booley.config.agent._inside_container",
             lambda: True,
         )
         set_backend_config(None)
@@ -422,7 +422,7 @@ class TestLoadModelsConfig:
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
         monkeypatch.setenv("BOOLEY_AGENT_APP", "none")
         monkeypatch.setattr(
-            "booley.harness._backend_config._inside_container",
+            "booley.config.agent._inside_container",
             lambda: True,
         )
         set_backend_config(None)
@@ -431,7 +431,7 @@ class TestLoadModelsConfig:
 
     def test_explicit_provider_env_wins_over_agent_app(self, monkeypatch):
         """BOOLEY_PRIMARY_PROVIDER outranks the BOOLEY_AGENT_APP fallback."""
-        from booley.harness.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_backend import ClaudeSDKBackend
 
         monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
         monkeypatch.setenv("BOOLEY_AGENT_APP", "codex")
@@ -508,12 +508,12 @@ class TestTranscriptPath:
 class TestCodexHealthCheck:
     def test_healthy_when_on_path(self):
         backend = CodexBackend()
-        with patch("booley.harness._codex_backend.shutil.which", return_value="/usr/bin/codex"):
+        with patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"):
             assert backend.health_check() is None
 
     def test_unhealthy_when_missing(self):
         backend = CodexBackend()
-        with patch("booley.harness._codex_backend.shutil.which", return_value=None):
+        with patch("booley.runtime._codex_backend.shutil.which", return_value=None):
             result = backend.health_check()
             assert result is not None
             assert "not found" in result
@@ -554,7 +554,7 @@ class TestCodexEventParsing:
         assert err is None
 
     def test_live_file_change_keeps_paths(self):
-        from booley.harness import _codex_backend as cb
+        from booley.runtime import _codex_backend as cb
 
         events = []
         cb._dispatch_stdout_event(
@@ -575,7 +575,7 @@ class TestCodexEventParsing:
         assert events == [{"type": "file_change", "paths": ["rtl/top.sv", "tb/top_tb.sv"]}]
 
     def test_booley_mcp_events_pause_and_resume_developer_budget(self):
-        from booley.harness import _codex_backend as cb
+        from booley.runtime import _codex_backend as cb
 
         budget = MagicMock()
         item = {
@@ -591,7 +591,7 @@ class TestCodexEventParsing:
         budget.resume.assert_called_once_with("codex-mcp:call-1")
 
     def test_non_booley_mcp_does_not_pause_developer_budget(self):
-        from booley.harness import _codex_backend as cb
+        from booley.runtime import _codex_backend as cb
 
         budget = MagicMock()
         cb._dispatch_stdout_event(
@@ -764,8 +764,8 @@ class TestCodexMultiMessage:
 
 class TestBuildSdkOptionsResume:
     def test_resume_fields_mapped(self, tmp_path):
-        from booley.harness._claude_backend import _build_sdk_options
         from booley.harness.models import AgentCallParams
+        from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(
             prompt="p",
@@ -779,8 +779,8 @@ class TestBuildSdkOptionsResume:
         assert options.continue_conversation is True
 
     def test_defaults_produce_no_resume_fields(self, tmp_path):
-        from booley.harness._claude_backend import _build_sdk_options
         from booley.harness.models import AgentCallParams
+        from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(
             prompt="p",
@@ -799,8 +799,8 @@ class TestBuildSdkOptionsResume:
 
 class TestBuildSdkOptionsMcp:
     def _options(self, tmp_path, **kwargs):
-        from booley.harness._claude_backend import _build_sdk_options
         from booley.harness.models import AgentCallParams
+        from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(
             prompt="p",
@@ -815,7 +815,7 @@ class TestBuildSdkOptionsMcp:
         assert "booley" in options.mcp_servers
         server = options.mcp_servers["booley"]
         assert server["command"] == "python"
-        assert server["args"] == ["-m", "booley.mcp_server"]
+        assert server["args"] == ["-m", "booley.mcp.server"]
         assert options.strict_mcp_config is True
 
     def test_developer_call_has_no_nested_filter(self, tmp_path):
@@ -856,7 +856,7 @@ class TestIdleStreamTimeout:
     def _run_stream(backend, *, items, gap, initial_delay, timeout):
         import anyio
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         async def _fake_query(*, prompt, options):
             if initial_delay:
@@ -916,7 +916,7 @@ class TestClaudeDeveloperBudgetEvents:
     def test_booley_tool_use_pauses_until_matching_result(self):
         from claude_agent_sdk import AssistantMessage, UserMessage
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         budget = MagicMock()
         started = MagicMock(
@@ -934,7 +934,7 @@ class TestClaudeDeveloperBudgetEvents:
     def test_builtin_tool_does_not_pause(self):
         from claude_agent_sdk import AssistantMessage
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         budget = MagicMock()
         message = MagicMock(
@@ -957,7 +957,7 @@ class TestCallOnceTimeoutResultSalvage:
     def test_post_result_idle_timeout_is_swallowed(self):
         import anyio
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         backend = ClaudeSDKBackend()
         counters = cb._UsageCounters()
@@ -987,7 +987,7 @@ class TestCallOnceTimeoutResultSalvage:
     def test_pre_result_idle_timeout_propagates(self):
         import anyio
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         backend = ClaudeSDKBackend()
         counters = cb._UsageCounters()
@@ -1029,7 +1029,7 @@ class TestToolCallCapture:
         return SimpleNamespace(name=name, input=inp)
 
     def test_captures_only_named_tools(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters(frozenset({"ReportFindings"}))
         c.capture_mcp_tool_uses(
@@ -1045,7 +1045,7 @@ class TestToolCallCapture:
         }
 
     def test_multiple_calls_appended_in_order(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters(frozenset({"ReportFindings"}))
         c.capture_mcp_tool_uses(self._msg([self._tool_block("ReportFindings", {"n": 1})]))
@@ -1053,14 +1053,14 @@ class TestToolCallCapture:
         assert c.captured_agent_capability_calls["ReportFindings"] == [{"n": 1}, {"n": 2}]
 
     def test_no_capture_names_is_noop(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()  # default: capture nothing
         c.capture_mcp_tool_uses(self._msg([self._tool_block("ReportFindings", {"n": 1})]))
         assert c.captured_agent_capability_calls == {}
 
     def test_non_dict_input_skipped(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters(frozenset({"ReportFindings"}))
         c.capture_mcp_tool_uses(self._msg([self._tool_block("ReportFindings", None)]))
@@ -1077,7 +1077,7 @@ class TestClaudeFileChangeEvents:
     def test_successful_edit_emits_path_after_tool_result(self):
         from types import SimpleNamespace
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         state = cb._StreamState()
         assistant = SimpleNamespace(
@@ -1101,7 +1101,7 @@ class TestClaudeFileChangeEvents:
     def test_failed_edit_does_not_emit(self):
         from types import SimpleNamespace
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         state = cb._StreamState(pending_file_edits={"edit-1": "rtl/top.sv"})
         result = SimpleNamespace(content=[self._block(tool_use_id="edit-1", is_error=True)])
@@ -1129,7 +1129,7 @@ class TestLiveUsageDeltas:
         return SimpleNamespace(content=[], usage=usage)
 
     def test_first_delta_is_the_full_running_total(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(self._msg({"input_tokens": 1000, "output_tokens": 200}))
@@ -1138,7 +1138,7 @@ class TestLiveUsageDeltas:
         assert cost > 0
 
     def test_subsequent_deltas_exclude_what_was_already_emitted(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(self._msg({"input_tokens": 1000, "output_tokens": 200}))
@@ -1148,7 +1148,7 @@ class TestLiveUsageDeltas:
         assert out_tokens == 100
 
     def test_no_new_usage_yields_a_zero_delta(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(self._msg({"input_tokens": 10, "output_tokens": 5}))
@@ -1159,7 +1159,7 @@ class TestLiveUsageDeltas:
         """The billed figure replaces the price-table estimate, dip and all."""
         from types import SimpleNamespace
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(self._msg({"input_tokens": 100_000, "output_tokens": 5_000}))
@@ -1177,7 +1177,7 @@ class TestLiveUsageDeltas:
         assert estimated + correction == pytest.approx(0.01)
 
     def test_unknown_model_costs_nothing_and_does_not_raise(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(self._msg({"input_tokens": 100, "output_tokens": 10}))
@@ -1185,7 +1185,7 @@ class TestLiveUsageDeltas:
 
     def test_context_tokens_track_the_latest_prompt_not_the_sum(self):
         """context_tokens is the current window fill, so it must not accumulate."""
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(
@@ -1212,7 +1212,7 @@ class TestLiveUsageDeltas:
 
     def test_cache_writes_are_tracked_and_billed_at_their_own_rate(self):
         """A cache write costs 1.25x input, not 1x as the old estimate assumed."""
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(
@@ -1230,14 +1230,14 @@ class TestDispatchUsage:
     def _counters_with(tokens):
         from types import SimpleNamespace
 
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         c = cb._UsageCounters()
         c.update_from_assistant(SimpleNamespace(content=[], usage={"output_tokens": tokens}))
         return c
 
     def test_emits_usage_event(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         events = []
         cb._dispatch_usage(events.append, self._counters_with(42), "claude-opus-4-8")
@@ -1252,20 +1252,20 @@ class TestDispatchUsage:
         ]
 
     def test_silent_when_nothing_accrued(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         events = []
         cb._dispatch_usage(events.append, cb._UsageCounters(), "claude-opus-4-8")
         assert events == []
 
     def test_no_on_event_is_a_noop(self):
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         cb._dispatch_usage(None, self._counters_with(42), "claude-opus-4-8")
 
     def test_callback_failure_never_escapes(self):
         """A broken display must not abort a paid stream."""
-        from booley.harness import _claude_backend as cb
+        from booley.runtime import _claude_backend as cb
 
         def _boom(_event):
             raise RuntimeError("console died")

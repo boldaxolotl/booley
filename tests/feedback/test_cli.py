@@ -11,10 +11,10 @@ import argparse
 
 import pytest
 
-from booley import project_dir as project_dir_mod
 from booley.feedback import cli
 from booley.feedback import submit as submit_mod
 from booley.feedback.findings import read_log
+from booley.runtime import project_dir as project_dir_mod
 
 
 @pytest.fixture

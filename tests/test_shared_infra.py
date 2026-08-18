@@ -16,20 +16,20 @@ class TestSourceDirPrefixes:
     """ADR 0026: source_dirs entries may be files (exact prefix) or dirs."""
 
     def test_directory_entry_gets_trailing_separators(self, tmp_path: Path):
-        from booley.shared_infra import source_dir_prefixes
+        from booley.runtime.shared_infra import source_dir_prefixes
 
         (tmp_path / "rtl").mkdir()
         assert source_dir_prefixes(["rtl"], tmp_path) == ("rtl/", "rtl\\")
 
     def test_file_entry_gets_exact_path_prefix(self, tmp_path: Path):
-        from booley.shared_infra import source_dir_prefixes
+        from booley.runtime.shared_infra import source_dir_prefixes
 
         # A root-level file: '/' and '\\' forms are identical -> one prefix.
         (tmp_path / "picorv32.v").write_text("//\n", encoding="utf-8")
         assert source_dir_prefixes(["picorv32.v"], tmp_path) == ("picorv32.v",)
 
     def test_nested_file_entry_gets_both_separators(self, tmp_path: Path):
-        from booley.shared_infra import source_dir_prefixes
+        from booley.runtime.shared_infra import source_dir_prefixes
 
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "top.v").write_text("//\n", encoding="utf-8")
@@ -39,7 +39,7 @@ class TestSourceDirPrefixes:
         )
 
     def test_unstatable_base_treats_all_as_dirs(self):
-        from booley.shared_infra import source_dir_prefixes
+        from booley.runtime.shared_infra import source_dir_prefixes
 
         # base_dir None (legacy CWD path) -> every entry is a directory prefix.
         assert source_dir_prefixes(["picorv32.v"], None) == (
@@ -48,7 +48,7 @@ class TestSourceDirPrefixes:
         )
 
     def test_mixed_and_deduped(self, tmp_path: Path):
-        from booley.shared_infra import source_dir_prefixes
+        from booley.runtime.shared_infra import source_dir_prefixes
 
         (tmp_path / "rtl").mkdir()
         (tmp_path / "top.v").write_text("//\n", encoding="utf-8")
@@ -58,19 +58,19 @@ class TestSourceDirPrefixes:
 
 class TestSourcePathMatches:
     def test_directory_prefix_matches_descendants(self):
-        from booley.shared_infra import source_path_matches
+        from booley.runtime.shared_infra import source_path_matches
 
         assert source_path_matches("./rtl/top.sv", ("rtl/",))
         assert not source_path_matches("rtl_extra/top.sv", ("rtl/",))
 
     def test_file_prefix_is_exact(self):
-        from booley.shared_infra import source_path_matches
+        from booley.runtime.shared_infra import source_path_matches
 
         assert source_path_matches("./picorv32.v", ("picorv32.v",))
         assert not source_path_matches("picorv32.v.bak", ("picorv32.v",))
 
     def test_parent_segments_cannot_borrow_category(self):
-        from booley.shared_infra import source_path_matches
+        from booley.runtime.shared_infra import source_path_matches
 
         assert not source_path_matches("rtl/../tb/top.sv", ("rtl/",))
 
@@ -84,7 +84,7 @@ class TestResolveProjectRoot:
     def test_from_env_var(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path))
         # Import after setting env so module-level PROJECT_ROOT picks it up
-        from booley.shared_infra import resolve_project_root
+        from booley.runtime.shared_infra import resolve_project_root
 
         result = resolve_project_root()
         assert result == tmp_path.resolve()
@@ -92,7 +92,7 @@ class TestResolveProjectRoot:
     def test_cwd_walkup_beats_fallback(self, tmp_path: Path, monkeypatch):
         """CWD walk-up should take priority over fallback_dir."""
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-        from booley.shared_infra import resolve_project_root
+        from booley.runtime.shared_infra import resolve_project_root
 
         # Create a fake project root with .git
         project = tmp_path / "project"
@@ -107,7 +107,7 @@ class TestResolveProjectRoot:
     def test_fallback_used_when_no_git(self, tmp_path: Path, monkeypatch):
         """Fallback used when CWD has no .git ancestor."""
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-        from booley.shared_infra import resolve_project_root
+        from booley.runtime.shared_infra import resolve_project_root
 
         # tmp_path has no .git above it
         monkeypatch.chdir(tmp_path)
@@ -117,7 +117,7 @@ class TestResolveProjectRoot:
 
     def test_empty_git_sentinel_at_ancestor_is_ignored(self, tmp_path: Path, monkeypatch):
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-        from booley.shared_infra import resolve_project_root
+        from booley.runtime.shared_infra import resolve_project_root
 
         (tmp_path / ".git").mkdir()
         child = tmp_path / "child"
@@ -143,42 +143,42 @@ class TestResolveProjectRoot:
 
 
 class TestDeriveWorkDir:
-    @patch("booley.shared_infra.get_sim_output_dir")
+    @patch("booley.runtime.shared_infra.get_sim_output_dir")
     def test_sim_basic(self, mock_sim_dir, tmp_path: Path):
         mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.shared_infra import derive_work_dir
+        from booley.runtime.shared_infra import derive_work_dir
 
         result = derive_work_dir(tmp_path, "sim", "config_a")
         assert result == tmp_path / "util" / "sim" / "work" / "config_a"
 
-    @patch("booley.shared_infra.get_syn_output_dir")
+    @patch("booley.runtime.shared_infra.get_syn_output_dir")
     def test_syn_basic(self, mock_syn_dir, tmp_path: Path):
         mock_syn_dir.return_value = tmp_path / "util" / "syn"
-        from booley.shared_infra import derive_work_dir
+        from booley.runtime.shared_infra import derive_work_dir
 
         result = derive_work_dir(tmp_path, "syn", "config_b")
         assert result == tmp_path / "util" / "syn" / "syn_result" / "config_b"
 
-    @patch("booley.shared_infra.get_sim_output_dir")
+    @patch("booley.runtime.shared_infra.get_sim_output_dir")
     def test_with_top_module(self, mock_sim_dir, tmp_path: Path):
         mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.shared_infra import derive_work_dir
+        from booley.runtime.shared_infra import derive_work_dir
 
         result = derive_work_dir(tmp_path, "sim", "config_a", top_module="my_top")
         assert result.name == "config_a.my_top"
 
-    @patch("booley.shared_infra.get_sim_output_dir")
+    @patch("booley.runtime.shared_infra.get_sim_output_dir")
     def test_with_test_name(self, mock_sim_dir, tmp_path: Path):
         mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.shared_infra import derive_work_dir
+        from booley.runtime.shared_infra import derive_work_dir
 
         result = derive_work_dir(tmp_path, "sim", "config_a", test_name="test_foo")
         assert "test_foo" in result.name
 
-    @patch("booley.shared_infra.get_sim_output_dir")
+    @patch("booley.runtime.shared_infra.get_sim_output_dir")
     def test_with_test_id_legacy(self, mock_sim_dir, tmp_path: Path):
         mock_sim_dir.return_value = tmp_path / "util" / "sim"
-        from booley.shared_infra import derive_work_dir
+        from booley.runtime.shared_infra import derive_work_dir
 
         result = derive_work_dir(tmp_path, "sim", "config_a", test_id=3)
         assert "t3" in result.name
@@ -192,7 +192,7 @@ class TestDeriveWorkDir:
 class TestCheckPaths:
     def test_all_pass(self, tmp_path: Path, capsys, monkeypatch):
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-        from booley.shared_infra import check_paths
+        from booley.runtime.shared_infra import check_paths
 
         rtl = tmp_path / "rtl"
         rtl.mkdir()
@@ -203,7 +203,7 @@ class TestCheckPaths:
 
     def test_missing_dir_exits(self, tmp_path: Path, monkeypatch):
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-        from booley.shared_infra import check_paths
+        from booley.runtime.shared_infra import check_paths
 
         with pytest.raises(SystemExit) as exc:
             check_paths(tmp_path, {"missing": tmp_path / "nonexistent"})
@@ -211,7 +211,7 @@ class TestCheckPaths:
 
     def test_extra_checks_merged(self, tmp_path: Path, capsys, monkeypatch):
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-        from booley.shared_infra import check_paths
+        from booley.runtime.shared_infra import check_paths
 
         rtl = tmp_path / "rtl"
         rtl.mkdir()
@@ -274,7 +274,7 @@ class TestProjectRootScoping:
         monkeypatch,
     ):
         """A scoped call must not leak the CWD-cached config from another project."""
-        import booley.shared_infra as si
+        import booley.runtime.shared_infra as si
 
         proj_a = tmp_path / "proj_a"
         proj_b = tmp_path / "proj_b"
@@ -303,7 +303,7 @@ class TestProjectRootScoping:
         monkeypatch,
     ):
         """When project_root lacks a ``.core``, accessors must NOT fall back to the cache."""
-        import booley.shared_infra as si
+        import booley.runtime.shared_infra as si
 
         empty = tmp_path / "empty_project"
         empty.mkdir()
@@ -332,7 +332,7 @@ class TestProjectRootScoping:
         directly in the worktree — no walk-back needed, and a stale main-repo
         config can never shadow the worktree's own. We assert that guarantee.
         """
-        import booley.shared_infra as si
+        import booley.runtime.shared_infra as si
 
         main = tmp_path / "main"
         main.mkdir()
@@ -355,7 +355,7 @@ class TestProjectRootScoping:
 
     def test_explicit_call_does_not_pollute_cwd_cache(self, tmp_path: Path, monkeypatch):
         """Scoped reads must NOT write into the module-level CWD cache."""
-        import booley.shared_infra as si
+        import booley.runtime.shared_infra as si
 
         proj_b = tmp_path / "proj_b"
         self._make_project(proj_b, ["src"], ["verif"])

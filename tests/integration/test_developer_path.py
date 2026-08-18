@@ -147,7 +147,7 @@ def _stamp_verification_fingerprints(state_path: Path, work_dir: Path) -> None:
         SOURCE_FINGERPRINT_DETAIL_KEY,
         compute_source_fingerprint,
     )
-    from booley.harness.criteria_acceptance import (
+    from booley.ticket_board.criteria_acceptance import (
         _verification_fingerprint_categories,
     )
 
@@ -290,11 +290,11 @@ async def _run_developer_pipeline(
         ),
         check_uncommitted_patch,
         patch(
-            "booley.harness.git_utils.commit_scope",
+            "booley.runtime.git.commit_scope",
             side_effect=commit_scope_mock,
         ),
         # Bypass model config loading (no booley.toml in test env)
-        patch("booley.harness.config.load_models_config"),
+        patch("booley.config.settings.load_models_config"),
     ]
 
     # Worktree setup bypass (for tests that go through workspace setup)

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.config_paths import resolve_toml
-from booley.project_dir import resolve_project_dir
+from booley.runtime.project_dir import resolve_project_dir
 
 SUPPORTED_EDA_KINDS = frozenset({"vivado"})
 PROVISIONING_IMAGE = "image"

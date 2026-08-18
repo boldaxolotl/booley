@@ -11,15 +11,16 @@ from unittest.mock import patch
 
 import pytest
 
-from booley import fusesoc_registry, job_slots
 from booley.core.boundary import BoundaryError
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga_impl import FpgaImplFlow, _vlogdefine_args
 from booley.flows.fpga_metrics import FpgaMetrics, _metrics_detail
-from booley.fusesoc_registry import ResolvedFile, ResolvedTarget
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.fusesoc import fusesoc_registry
+from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime import job_slots
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +34,7 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley import fusesoc_registry
+    from booley.fusesoc import fusesoc_registry
 
     def _lenient(target_arg, project_root):
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]

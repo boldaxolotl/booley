@@ -33,8 +33,8 @@ from booley.flows.simulate import (
 from booley.flows.simulate import (
     TestResult as SimTestResult,  # aliased: a Test* name would be pytest-collected
 )
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.project_dir import reset_cache
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.runtime.project_dir import reset_cache
 from booley.sim.sim_result import write_run_log
 
 # Built-in Flow execution inside the Session Runtime.
@@ -632,7 +632,7 @@ class TestExecutionValidation:
         assert "Session Runtime" in result.report_text
 
     def test_job_class_is_heavy(self, tmp_path: Path):
-        from booley import job_slots
+        from booley.runtime import job_slots
 
         flow = _make_flow(tmp_path, config="lite")
         assert flow._resolve_job_class() == job_slots.CLASS_HEAVY
@@ -735,7 +735,7 @@ class TestDryRun:
     @patch("booley.flows.simulate._get_test_names", return_value={"lite": ["smoke", "stress"]})
     @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
     @patch(
-        "booley.fusesoc_registry.resolve_target",
+        "booley.fusesoc.fusesoc_registry.resolve_target",
         side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
     )
     def test_dry_run_edalize_shows_fusesoc_setup_without_resolving(
@@ -1435,7 +1435,7 @@ class TestEdalizeSimPath:
 
     def test_sim_plusargs_honors_tests_toml_select_template(self, tmp_path: Path, monkeypatch):
         """A Target's tests.toml `select` template overrides the default (dec. 16)."""
-        from booley import project_config
+        from booley.config import project_config
 
         flow = _make_flow(tmp_path)
         names = {"lite": ["smoke", "stress", "boot"]}
@@ -1474,7 +1474,7 @@ class TestEdalizeSimPath:
     @staticmethod
     def _fake_resolved(tmp_path: Path, *, toplevel: str = "tb_counter", parameters=None):
         """A ResolvedTarget under simulate's work root (FuseSoC's build dir)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         build_root = (
             tmp_path
@@ -1499,7 +1499,7 @@ class TestEdalizeSimPath:
 
     def test_prepare_sim_command_resolves_then_builds_and_runs(self, tmp_path: Path):
         """Resolve the sim Target, then `make` (build) + run `V<top>` in one step."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         captured = {}
@@ -1543,7 +1543,7 @@ class TestEdalizeSimPath:
 
     def test_prepare_sim_command_forwards_test_plusarg(self, tmp_path: Path):
         """The run half forwards the resolved `+test_id=N` selector (run kept)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         names = {"lite": ["smoke", "stress", "boot"]}
@@ -1561,7 +1561,7 @@ class TestEdalizeSimPath:
         assert "--plusarg=test_id=1" in cmd[2]
 
     def test_prepare_sim_command_forwards_target_plusarg_parameters(self, tmp_path: Path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         resolved = self._fake_resolved(
@@ -1579,7 +1579,7 @@ class TestEdalizeSimPath:
         assert "--plusarg=uart_baudrate=57600" in cmd[2]
 
     def test_prepare_sim_command_applies_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
-        from booley import fusesoc_registry, selftest_overlay
+        from booley.fusesoc import fusesoc_registry, selftest_overlay
 
         flow = _make_flow(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -1621,7 +1621,7 @@ class TestEdalizeSimPath:
         assert staged.read_text(encoding="utf-8") == "bad\n"
 
     def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
-        from booley import selftest_overlay
+        from booley.fusesoc import selftest_overlay
 
         flow = _make_flow(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -1655,7 +1655,7 @@ class TestEdalizeSimPath:
     ):
         """`--trace` generates a trace overlay Target, resolves *that* under its own
         trace-variant build root, and ships the run half through verilator_run."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, extra_args=["--trace"])
         overlay_file = tmp_path / "demo.booleytrace.core"
@@ -1725,7 +1725,7 @@ class TestEdalizeSimPath:
 
     def test_trace_missing_waveform_fails_the_test(self, tmp_path: Path):
         """--trace that produces no waveform fails loudly (no silent PASS)."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, extra_args=["--trace"])
         # Sim PASSED, but verilator_run printed no TRACE_OK → trace silently no-op'd.
@@ -1763,7 +1763,7 @@ class TestEdalizeSimPath:
         """QA_REPORT B5.1: a trace-infra failure on a PASSING sim is a Flow
         error (inconclusive), never a design FAIL, and the trace incident's
         ``ERROR:`` banner must not be miscounted as an SVA assertion."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, extra_args=["--trace"])
         no_trace = SubprocessResult(
@@ -1802,7 +1802,7 @@ class TestEdalizeSimPath:
 
     def test_trace_ok_marker_keeps_pass(self, tmp_path: Path):
         """A PASS with a real waveform (TRACE_OK) stays a PASS."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, extra_args=["--trace"])
         with_trace = SubprocessResult(
@@ -1838,7 +1838,7 @@ class TestEdalizeSimPath:
         """A FuseSoC resolution failure surfaces (caller records it as FAIL)."""
         import pytest
 
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         with (
@@ -1865,7 +1865,7 @@ class TestEdalizeSimPath:
         import shutil
         import sys
 
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         work_dir = tmp_path / "proj"
         (work_dir / "rtl").mkdir(parents=True)
@@ -1944,7 +1944,7 @@ class TestEdalizeSimPath:
         import shutil
         import sys
 
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         work_dir = tmp_path / "proj"
         (work_dir / "rtl").mkdir(parents=True)
@@ -2433,7 +2433,7 @@ class TestTruncationResilientReport:
     ):
         """_prepare_sim_command must record the RESOLVED build dir (where the
         run-half writes run.log), not a guessed path."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path, config="lite")
         build_root = (
@@ -2664,7 +2664,7 @@ def _fake_sim_resolved(
     cocotb: str | None = None,
     parameters=None,
 ):
-    from booley.fusesoc_registry import ResolvedTarget
+    from booley.fusesoc.fusesoc_registry import ResolvedTarget
 
     build_root = tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite"
     build_root.mkdir(parents=True, exist_ok=True)
@@ -2710,7 +2710,7 @@ class TestPerTargetSimEnv:
         assert _build_run_script(["make"], "m", "./Vtb").startswith("_booley_build_start=")
 
     def test_sandbox_command_carries_the_targets_env(self, tmp_path: Path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         with (
@@ -2728,7 +2728,7 @@ class TestPerTargetSimEnv:
         assert "export FLAVOR=vanilla" in cmd[2]
 
     def test_cocotb_command_carries_the_targets_env(self, tmp_path: Path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         with (
@@ -2750,7 +2750,7 @@ class TestPerTargetSimEnv:
         assert script.index("export FLAVOR") < script.index("booley.sim.cocotb_run")
 
     def test_cocotb_command_carries_target_plusargs(self, tmp_path: Path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         resolved = _fake_sim_resolved(
@@ -2765,7 +2765,7 @@ class TestPerTargetSimEnv:
 
     def test_env_is_matched_through_a_vlnv_qualified_section(self, tmp_path: Path):
         """A tests.toml section may be VLNV-qualified; lookup must normalize."""
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         with (
@@ -2793,7 +2793,7 @@ class TestPerTargetSimEnv:
         assert cmd[2].startswith("export FLAVOR=vanilla && ")
 
     def test_no_env_declared_leaves_the_script_alone(self, tmp_path: Path):
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         flow = _make_flow(tmp_path)
         with (

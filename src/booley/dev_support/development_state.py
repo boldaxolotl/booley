@@ -32,7 +32,7 @@ from booley.flows.threshold_eval import (
     _check_absolute_min,
     resolve_metric,
 )
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 # Concerns split into sibling leaf modules (principle 8 — Single Responsibility).
 # The names below are re-exported for backward compatibility: this module has

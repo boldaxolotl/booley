@@ -77,7 +77,7 @@ def supervise_child(proc: Any) -> None:
     """Register *proc* as a child the parent-death handler must reap.
 
     Idempotent; a finished process left registered is harmless, since
-    :func:`booley.platform_paths.kill_process_tree` no-ops on a dead one.
+    :func:`booley.runtime.platform_paths.kill_process_tree` no-ops on a dead one.
     """
     if proc not in _supervised_children:
         _supervised_children.append(proc)
@@ -87,7 +87,7 @@ def _bind_prctl() -> Any:
     """Bind ``libc.prctl`` ONCE, here in the parent; None when unavailable.
 
     ``preexec_fn`` runs between ``fork()`` and ``exec()`` of a process that
-    already has threads — every run-half starts a :class:`~booley.heartbeat.
+    already has threads — every run-half starts a :class:`~booley.runtime.heartbeat.
     Heartbeat` before spawning its simulator. Only async-signal-safe work is
     legal there, and ``import ctypes`` is the opposite of that: on the first
     call it is a *real* import taking the import lock, dlopen-ing ``_ctypes``
@@ -188,7 +188,7 @@ def install_parent_death_guard() -> None:
     import signal
 
     def _on_parent_death(signum: int, _frame: Any) -> None:
-        from booley.platform_paths import kill_process_tree
+        from booley.runtime.platform_paths import kill_process_tree
 
         for proc in list(_supervised_children):
             with contextlib.suppress(Exception):
@@ -409,7 +409,7 @@ class DiskBudgetGuard:
         self._thread.start()
 
     def _poll(self) -> None:
-        from booley.platform_paths import kill_process_tree
+        from booley.runtime.platform_paths import kill_process_tree
 
         # Event.wait doubles as the sleep and the stop-signal: it returns True
         # the moment stop() is called, so a finished run tears the thread down
@@ -574,7 +574,7 @@ class SimTimeStallGuard:
             return self._clock() - self._armed_at >= self.grace_s
 
     def _poll(self) -> None:
-        from booley.platform_paths import kill_process_tree
+        from booley.runtime.platform_paths import kill_process_tree
 
         while not self._stop.wait(self.interval):
             if self.proc.poll() is not None:

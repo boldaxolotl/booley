@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.models import AgentCallParams, AgentResult
-from booley.mcp_tools.reviewer import ReviewerSpecialist
-from booley.mcp_tools.specialist_workspace import (
+from booley.specialists.reviewer import ReviewerSpecialist
+from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
@@ -176,8 +176,8 @@ def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
     endpoint = ReviewerSpecialist()
     endpoint._args = argparse.Namespace(category="rtl")
     with (
-        patch("booley.mcp_tools.specialist._call_agent_sync", side_effect=fake_call),
-        patch("booley.mcp_tools.specialist.parent_death_watchdog", return_value=nullcontext()),
+        patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
+        patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
     ):
         result = endpoint._invoke_agent(params, on_event=lambda _event: None)
 

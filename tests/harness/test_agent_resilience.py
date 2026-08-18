@@ -59,15 +59,15 @@ if not hasattr(_sdk, "_enriched_by_resilience"):
     _sdk.ProcessError = _EnrichedProcessError
     _sdk._enriched_by_resilience = True
     # Also update agent.py's reference to ProcessError
-    import booley.harness.agent as _agent_mod
+    import booley.runtime.agent as _agent_mod
 
     _agent_mod.ProcessError = _EnrichedProcessError
 
-from booley.harness.agent import (
+from booley.harness.blocking import TransientAPIError
+from booley.runtime.agent import (
     _is_transient_error,
     _transcript_path_for_attempt,
 )
-from booley.harness.blocking import TransientAPIError
 
 # ---------------------------------------------------------------------------
 # _is_transient_error
@@ -198,7 +198,7 @@ class TestHandleRateLimitEvent:
     @pytest.mark.asyncio
     async def test_rejected_with_resets_at(self):
         """Rejected status with resets_at should sleep then raise TransientAPIError."""
-        from booley.harness.agent_backend import _handle_rate_limit_event
+        from booley.runtime.agent_backend import _handle_rate_limit_event
 
         future_ts = int(time.time()) + 5  # 5 seconds from now
         info = _MockRateLimitInfo(
@@ -209,8 +209,8 @@ class TestHandleRateLimitEvent:
         event = _sdk.RateLimitEvent(rate_limit_info=info)
 
         with (
-            patch("booley.harness._claude_backend.anyio") as mock_anyio,
-            patch("booley.harness._claude_backend._notify_rate_limit") as mock_notify,
+            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
+            patch("booley.runtime._claude_backend._notify_rate_limit") as mock_notify,
         ):
             mock_anyio.sleep = AsyncMock()
 
@@ -231,15 +231,15 @@ class TestHandleRateLimitEvent:
     @pytest.mark.asyncio
     async def test_rejected_without_resets_at(self):
         """Rejected without resets_at should use fallback backoff."""
-        from booley.harness.agent_backend import _handle_rate_limit_event
-        from booley.harness.config import RATE_LIMIT_FALLBACK_BACKOFF_S
+        from booley.config.settings import RATE_LIMIT_FALLBACK_BACKOFF_S
+        from booley.runtime.agent_backend import _handle_rate_limit_event
 
         info = _MockRateLimitInfo(status="rejected", resets_at=None, rate_limit_type="seven_day")
         event = _sdk.RateLimitEvent(rate_limit_info=info)
 
         with (
-            patch("booley.harness._claude_backend.anyio") as mock_anyio,
-            patch("booley.harness._claude_backend._notify_rate_limit"),
+            patch("booley.runtime._claude_backend.anyio") as mock_anyio,
+            patch("booley.runtime._claude_backend._notify_rate_limit"),
         ):
             mock_anyio.sleep = AsyncMock()
 
@@ -251,7 +251,7 @@ class TestHandleRateLimitEvent:
     @pytest.mark.asyncio
     async def test_allowed_warning_logs_only(self):
         """allowed_warning should just log, not sleep or raise."""
-        from booley.harness.agent_backend import _handle_rate_limit_event
+        from booley.runtime.agent_backend import _handle_rate_limit_event
 
         info = _MockRateLimitInfo(
             status="allowed_warning", rate_limit_type="five_hour", utilization=0.85
@@ -259,14 +259,14 @@ class TestHandleRateLimitEvent:
         event = _sdk.RateLimitEvent(rate_limit_info=info)
 
         # Should not raise
-        with patch("booley.harness._claude_backend.anyio") as mock_anyio:
+        with patch("booley.runtime._claude_backend.anyio") as mock_anyio:
             mock_anyio.sleep = AsyncMock()
             await _handle_rate_limit_event(event)
             mock_anyio.sleep.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_rejected_wait_pauses_developer_active_budget(self):
-        from booley.harness.agent_backend import _handle_rate_limit_event
+        from booley.runtime.agent_backend import _handle_rate_limit_event
 
         info = _MockRateLimitInfo(status="rejected", resets_at=None, rate_limit_type="seven_day")
         event = _sdk.RateLimitEvent(rate_limit_info=info)
@@ -276,12 +276,12 @@ class TestHandleRateLimitEvent:
             await awaitable
 
         with (
-            patch("booley.harness._claude_backend.anyio.sleep", new_callable=AsyncMock),
+            patch("booley.runtime._claude_backend.anyio.sleep", new_callable=AsyncMock),
             patch(
-                "booley.harness._claude_backend.run_with_developer_budget",
+                "booley.runtime._claude_backend.run_with_developer_budget",
                 side_effect=complete_wait,
             ),
-            patch("booley.harness._claude_backend._notify_rate_limit"),
+            patch("booley.runtime._claude_backend._notify_rate_limit"),
             pytest.raises(TransientAPIError),
         ):
             await _handle_rate_limit_event(event, budget)
@@ -322,7 +322,7 @@ class TestNotifyRateLimit:
 
     def test_no_crash_on_missing_ntfy(self):
         """Should silently return if ticket_board.notifications not importable."""
-        from booley.harness.agent_backend import _notify_rate_limit
+        from booley.runtime.agent_backend import _notify_rate_limit
 
         with patch.dict(
             sys.modules, {"booley.ticket_board": None, "booley.ticket_board.notifications": None}
@@ -332,7 +332,7 @@ class TestNotifyRateLimit:
 
     def test_calls_ntfy_send(self):
         """Should call ntfy_send with appropriate title/body."""
-        from booley.harness.agent_backend import _notify_rate_limit
+        from booley.runtime.agent_backend import _notify_rate_limit
 
         mock_ntfy = MagicMock()
         mock_ntfy.ntfy_send = MagicMock()

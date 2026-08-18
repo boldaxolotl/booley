@@ -351,7 +351,7 @@ class TestCmdShell:
         subclass); shell must warn-and-default, not traceback. Regression: the
         except set only caught (OSError, ValueError), so a fixable toml typo
         crashed `booley shell` with a raw traceback."""
-        import booley.harness.config as cfgmod
+        import booley.config.settings as cfgmod
         from booley.harness import sandbox as sandbox_mod
 
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
@@ -387,7 +387,7 @@ class TestCmdShell:
         had no way to widen it. The shell must not be tighter than the
         Session Runtime the same Flows normally run in.
         """
-        import booley.harness.config as cfgmod
+        import booley.config.settings as cfgmod
         from booley.harness import sandbox as sandbox_mod
 
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
@@ -448,7 +448,7 @@ class TestCmdFlow:
     @pytest.fixture(autouse=True)
     def _fake_registry(self, monkeypatch):
         """Point discovery + class loading at _FakeFlow, so no real Flow runs."""
-        from booley.mcp_tools.registry import McpToolInfo
+        from booley.mcp.registry import McpToolInfo
 
         _FakeFlow.calls = []
         _FakeFlow.rc = 0
@@ -478,7 +478,7 @@ class TestCmdFlow:
         assert _FakeFlow.calls == [["--target", "sim"]]
 
     def test_legacy_long_name_dispatches_to_canonical_flow(self, monkeypatch):
-        from booley.mcp_tools.registry import McpToolInfo
+        from booley.mcp.registry import McpToolInfo
 
         info = McpToolInfo(
             name="sim", path="flows/simulate.py", description=_FakeFlow.description, kind="flow"
@@ -555,7 +555,7 @@ class TestEndpointResolution:
         mcp_tools_dir = tmp_path / ".booley_project" / "mcp_tools"
         mcp_tools_dir.mkdir(parents=True)
         (mcp_tools_dir / "custom_probe.py").write_text(
-            "from booley.mcp_tools.base import McpTool\n"
+            "from booley.mcp.base import McpTool\n"
             "\n"
             "class CustomProbeMcpTool(McpTool):\n"
             '    name = "custom_probe"\n'
@@ -1472,12 +1472,12 @@ class TestRunWithHeartbeat:
         mock_popen.return_value = proc_mock
 
         with (
-            patch.dict("sys.modules", {"booley.heartbeat": None}),
+            patch.dict("sys.modules", {"booley.runtime.heartbeat": None}),
             patch(
                 "builtins.__import__",
                 side_effect=lambda name, *a, **kw: (
                     (_ for _ in ()).throw(ImportError())
-                    if name == "booley.heartbeat"
+                    if name == "booley.runtime.heartbeat"
                     else __import__(name, *a, **kw)
                 ),
             ),
@@ -1504,7 +1504,7 @@ class TestRunWithHeartbeat:
         mock_module = MagicMock()
         mock_module.Heartbeat = mock_hb_cls
 
-        with patch.dict("sys.modules", {"booley.heartbeat": mock_module}):
+        with patch.dict("sys.modules", {"booley.runtime.heartbeat": mock_module}):
             result = tlr._run_with_heartbeat(
                 ["python", "-c", "pass"],
                 str(project_root),
@@ -2112,7 +2112,7 @@ class TestClaimTicketSlotShutdown:
         # never raises, so without the hook the wait was uninterruptible).
         import os
 
-        from booley import job_slots
+        from booley.runtime import job_slots
 
         monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
         # Occupy every ticket slot so the claim queues.

@@ -32,7 +32,7 @@ from typing import TextIO
 
 # Reuse shared elapsed-time formatter from heartbeat module (parent dir)
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from booley.heartbeat import fmt_elapsed as _fmt_elapsed
+from booley.runtime.heartbeat import fmt_elapsed as _fmt_elapsed
 
 # ============================================================================
 # Stage detection patterns

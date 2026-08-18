@@ -13,8 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from booley import fusesoc_registry
-from booley.flow_names import DEFAULT_TARGET_KEY, config_section
+from booley.fusesoc import fusesoc_registry
+from booley.targets.flow_names import DEFAULT_TARGET_KEY, config_section
 
 _UNSET = object()
 
@@ -29,7 +29,7 @@ def resolve_flow_default_target(flow_name: str, work_dir: Path) -> str:
     empty rather than sweeping every core. Returns ``""`` when unset.
     """
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir)
     except Exception:  # noqa: BLE001 — best-effort config read; empty → caller refuses
@@ -90,7 +90,7 @@ def _maybe_resolve(target: str, work_dir: Path | None) -> Any:
 
 def _load_flow_config(flow_name: str, work_dir: Path) -> dict[str, Any]:
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         cfg = _load_rtl_config(work_dir) or {}
     except Exception:  # noqa: BLE001 — best-effort config read; degrades to empty Flow config

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from booley.harness.mcp_config import generate_codex_config
+from booley.runtime.mcp_config import generate_codex_config
 
 
 class TestGenerateCodexConfig:
@@ -10,7 +10,7 @@ class TestGenerateCodexConfig:
         config = generate_codex_config()
         assert "[mcp_servers.booley]" in config
         assert 'command = "python"' in config
-        assert 'args = ["-m", "booley.mcp_server"]' in config
+        assert 'args = ["-m", "booley.mcp.server"]' in config
         assert "enabled_mcp_tools" not in config
 
     def test_baseline_env_always_present(self):

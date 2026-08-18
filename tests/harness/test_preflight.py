@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.fusesoc_registry import CoreSetupHazard
+from booley.fusesoc.fusesoc_registry import CoreSetupHazard
 from booley.harness.preflight import (
     PreflightError,
     _check_core_setup_hazards,
@@ -137,7 +137,7 @@ class TestCoreSetupHazards:
     def test_recursive_symlink_is_fatal(self, tmp_path: Path, monkeypatch):
         link = tmp_path / "lib" / "repo"
         monkeypatch.setattr(
-            "booley.fusesoc_registry.core_setup_hazards",
+            "booley.fusesoc.fusesoc_registry.core_setup_hazards",
             lambda _root: [CoreSetupHazard("recursive-symlink", link, "points to ancestor")],
         )
         errors = _check_core_setup_hazards(tmp_path)
@@ -147,7 +147,7 @@ class TestCoreSetupHazards:
     def test_selected_provider_core_is_fatal(self, tmp_path: Path, monkeypatch):
         core = tmp_path / "design.core"
         monkeypatch.setattr(
-            "booley.fusesoc_registry.core_setup_hazards",
+            "booley.fusesoc.fusesoc_registry.core_setup_hazards",
             lambda _root: [CoreSetupHazard("provider", core, "remote fetch")],
         )
         monkeypatch.setattr(
@@ -161,7 +161,7 @@ class TestCoreSetupHazards:
     def test_unselected_provider_core_warns_only(self, tmp_path: Path, monkeypatch, caplog):
         core = tmp_path / "vendored" / "design.core"
         monkeypatch.setattr(
-            "booley.fusesoc_registry.core_setup_hazards",
+            "booley.fusesoc.fusesoc_registry.core_setup_hazards",
             lambda _root: [CoreSetupHazard("provider", core, "remote fetch")],
         )
         monkeypatch.setattr(

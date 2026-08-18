@@ -1,6 +1,6 @@
 """Canonical Booley Flow and Specialist references, rendered from the registry.
 
-Single source of truth: :func:`booley.mcp_tools.registry.discover_mcp_tools`. The
+Single source of truth: :func:`booley.mcp.registry.discover_mcp_tools`. The
 ``booley cheat`` CLI renders this block live, while ``docs/USAGE.md`` embeds a
 committed copy between the ``<!-- BEGIN GENERATED: flows -->`` /
 ``<!-- END GENERATED: flows -->`` markers that a pytest keeps byte-identical to
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.mcp_tools.registry import discover_mcp_tools
+from booley.mcp.registry import discover_mcp_tools
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED: flows -->"
 END_MARKER = "<!-- END GENERATED: flows -->"

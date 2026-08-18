@@ -13,7 +13,7 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
-from booley.synthesis_profiles import (
+from booley.targets.synthesis_profiles import (
     DEFAULT_PPA_PROFILE,
     PPA_PROFILE_CHOICES,
     validate_ppa_profile,

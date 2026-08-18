@@ -83,7 +83,7 @@ Use evidence in this order:
 2. **The packaged troubleshooting guide.** Resolve it with:
 
    ```console
-   python3 -c "from booley.paths import troubleshooting_path; print(troubleshooting_path())"
+   python3 -c "from booley.runtime.paths import troubleshooting_path; print(troubleshooting_path())"
    ```
 
    Search that `TROUBLESHOOTING.md` using exact error fragments and concrete nouns from the

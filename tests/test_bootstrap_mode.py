@@ -1,4 +1,4 @@
-"""Tests for booley.bootstrap_mode — TOP_LEVEL vs NESTED detection."""
+"""Tests for booley.runtime.bootstrap_mode — TOP_LEVEL vs NESTED detection."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from booley.bootstrap_mode import (
+from booley.runtime.bootstrap_mode import (
     BootstrapMode,
     should_run_outer_bookkeeping,
 )

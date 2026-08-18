@@ -16,9 +16,9 @@ from booley.dev_support.development_state import (
     DevelopmentState,
     compute_source_fingerprint,
 )
-from booley.mcp_tools import job_records as jobrec
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_SUCCESS
-from booley.mcp_tools.submit_run_report import SubmitRunReportMcpTool
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
+from booley.mcp.submit_run_report import SubmitRunReportMcpTool
+from booley.runtime import job_records as jobrec
 
 
 @pytest.fixture
