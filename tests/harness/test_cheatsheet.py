@@ -9,7 +9,7 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import cheatsheet
-from booley.paths import cheatsheet_path
+from booley.runtime.paths import cheatsheet_path
 
 SAMPLE = """## Booley: Quick Reference
 

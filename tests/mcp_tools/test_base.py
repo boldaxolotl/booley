@@ -10,7 +10,6 @@ from unittest import mock
 
 import pytest
 
-from booley import job_slots
 from booley.dev_support.development_state import (
     CATEGORY_RTL,
     CATEGORY_TB,
@@ -19,7 +18,7 @@ from booley.dev_support.development_state import (
     DutInfo,
     as_str_list,
 )
-from booley.mcp_tools.base import (
+from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
@@ -33,6 +32,7 @@ from booley.mcp_tools.base import (
     _write_display_event,
     read_source_dirs_from_toml,
 )
+from booley.runtime import job_slots
 
 
 class ConcreteMcpTool(McpTool):
@@ -82,38 +82,38 @@ class TestClassifyFiles:
     """Test diff classification with known prefixes (mocked to be project-agnostic)."""
 
     # Patch module-level _RTL_DIRS/_TB_DIRS loaded from config at import time
-    @mock.patch("booley.mcp_tools.base._TB_DIRS", ("tb/",))
-    @mock.patch("booley.mcp_tools.base._RTL_DIRS", ("rtl/", "fw/"))
+    @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
+    @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))
     def test_rtl_files(self):
         cats = _classify_files(["rtl/my_module.sv", "rtl/sub/other.v"])
         assert cats == {CATEGORY_RTL}
 
-    @mock.patch("booley.mcp_tools.base._TB_DIRS", ("tb/",))
-    @mock.patch("booley.mcp_tools.base._RTL_DIRS", ("rtl/", "fw/"))
+    @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
+    @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))
     def test_tb_files(self):
         cats = _classify_files(["tb/my_tb.sv"])
         assert cats == {CATEGORY_TB}
 
-    @mock.patch("booley.mcp_tools.base._TB_DIRS", ("tb/",))
-    @mock.patch("booley.mcp_tools.base._RTL_DIRS", ("rtl/", "fw/"))
+    @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
+    @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))
     def test_fw_files_are_rtl(self):
         cats = _classify_files(["fw/boot.s"])
         assert cats == {CATEGORY_RTL}
 
-    @mock.patch("booley.mcp_tools.base._TB_DIRS", ("tb/",))
-    @mock.patch("booley.mcp_tools.base._RTL_DIRS", ("rtl/", "fw/"))
+    @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
+    @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))
     def test_mixed(self):
         cats = _classify_files(["rtl/a.sv", "tb/b.sv"])
         assert cats == {CATEGORY_RTL, CATEGORY_TB}
 
-    @mock.patch("booley.mcp_tools.base._TB_DIRS", ("tb/",))
-    @mock.patch("booley.mcp_tools.base._RTL_DIRS", ("rtl/", "fw/"))
+    @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
+    @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))
     def test_unrelated_files(self):
         cats = _classify_files(["docs/readme.md", "util/script.py"])
         assert cats == set()
 
-    @mock.patch("booley.mcp_tools.base._TB_DIRS", ("tb/",))
-    @mock.patch("booley.mcp_tools.base._RTL_DIRS", ("rtl/", "fw/"))
+    @mock.patch("booley.mcp.base._TB_DIRS", ("tb/",))
+    @mock.patch("booley.mcp.base._RTL_DIRS", ("rtl/", "fw/"))
     def test_empty(self):
         cats = _classify_files([])
         assert cats == set()
@@ -1019,7 +1019,7 @@ class TestJobSlotAdmission:
         # No .booley_project above tmp_path, so project discovery fails and
         # slots_dir() returns None.
         monkeypatch.chdir(tmp_path)
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         reset_cache()
         endpoint = HeavyMcpTool()
@@ -1274,7 +1274,7 @@ class TestReportDirRejectsMangledHostPath:
         needs a concrete ``Path.cwd()``; only the parse is flavour-pinned.
         """
         endpoint = ConcreteMcpTool()
-        with mock.patch("booley.mcp_tools.base.Path", PurePosixPath):
+        with mock.patch("booley.mcp.base.Path", PurePosixPath):
             return endpoint.parse_args(argv)
 
     def test_drive_lettered_relative_path_is_rejected(self):
@@ -1345,7 +1345,7 @@ class TestSlotClaimBudget:
     def test_slot_timeout_from_env_with_headroom(self, tmp_path: Path, monkeypatch):
         # BOOLEY_SLOT_TIMEOUT_S (the MCP watchdog budget) becomes the holder
         # deadline with 2x headroom — a strict upper bound of any legit run.
-        from booley import job_slots
+        from booley.runtime import job_slots
 
         monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
         monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "600")
@@ -1359,7 +1359,7 @@ class TestSlotClaimBudget:
         store.release(token)
 
     def test_unparseable_budget_keeps_no_deadline(self, tmp_path: Path, monkeypatch):
-        from booley import job_slots
+        from booley.runtime import job_slots
 
         monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
         monkeypatch.setenv("BOOLEY_SLOT_TIMEOUT_S", "soon")
@@ -1418,7 +1418,7 @@ class TestNoReportDirWarning:
         sentence on stderr twice — the very doubling F-28 set out to remove."""
         import logging
 
-        with caplog.at_level(logging.WARNING, logger="booley.mcp_tools.base"):
+        with caplog.at_level(logging.WARNING, logger="booley.mcp.base"):
             assert self._run_endpoint([], tmp_path) == EXIT_SUCCESS
         err = capsys.readouterr().err
         assert err.count("no --report-dir") == 1

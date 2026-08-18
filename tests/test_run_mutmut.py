@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # The module has module-level code that resolves PYTHON and CACHE_FILE via
 # platform_paths.  We import the module itself so we can patch its globals.
-import booley.run_mutmut as rm
-from booley.run_mutmut import (
+import booley.dev_support.run_mutmut as rm
+from booley.dev_support.run_mutmut import (
     BINOP_SWAPS,
     BOOLOP_SWAPS,
     CMPOP_SWAPS,

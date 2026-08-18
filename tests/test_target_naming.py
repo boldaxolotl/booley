@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley import target_naming
-from booley.target_surface import TARGET_AWARE_FLOWS
+from booley.targets import target_naming
+from booley.targets.target_surface import TARGET_AWARE_FLOWS
 
 
 class TestAxisVocabulary:

@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley import platform_paths
-from booley.platform_paths import (
+from booley.runtime import platform_paths
+from booley.runtime.platform_paths import (
     cargo_bin,
     docker_mount_path,
     kill_process_tree,

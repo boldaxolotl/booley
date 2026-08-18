@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from booley import timefmt
+from booley.runtime import timefmt
 
 
 @pytest.mark.parametrize(

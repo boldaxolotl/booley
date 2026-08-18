@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.harness.blocking import BlockingError
-from booley.harness.git_utils import (
+from booley.runtime.git import (
     BOOLEY_EXCLUDE_HEADER,
     _git_common_dir,
     _has_glob_chars,
@@ -287,7 +287,7 @@ class TestCommitScopeIntegration:
         lock_path.write_text("", encoding="utf-8")
 
         with (
-            patch("booley.harness.git_utils._git_process_owns_worktree", return_value=True),
+            patch("booley.runtime.git._git_process_owns_worktree", return_value=True),
             pytest.raises(BlockingError, match="git add failed"),
         ):
             commit_scope(wt, ["new.sv"], "feat: keep busy lock")
@@ -333,6 +333,34 @@ class TestAddGitExcludes:
         assert add_git_excludes(repo, [".devcontainer"]) is False
         body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
         assert body.count("/.devcontainer") == 1
+
+    def test_later_entries_reuse_one_generated_block(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+
+        add_git_excludes(repo, [".devcontainer", ".booley_project", ".claude"])
+        add_git_excludes(repo, [".booley-projected-*.core"])
+
+        body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        assert body.count(BOOLEY_EXCLUDE_HEADER) == 1
+        block = body.split(BOOLEY_EXCLUDE_HEADER, 1)[1].strip().splitlines()
+        assert block == [
+            "/.devcontainer",
+            "/.booley_project",
+            "/.claude",
+            "/.booley-projected-*.core",
+        ]
+
+    def test_repairs_duplicate_generated_headers(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        exclude = repo / ".git" / "info" / "exclude"
+        exclude.write_text(
+            f"{BOOLEY_EXCLUDE_HEADER}\n/.devcontainer\n\n"
+            f"{BOOLEY_EXCLUDE_HEADER}\n/.booley-projected-*.core\n",
+            encoding="utf-8",
+        )
+
+        assert add_git_excludes(repo, [".devcontainer"]) is True
+        assert exclude.read_text(encoding="utf-8").count(BOOLEY_EXCLUDE_HEADER) == 1
 
     def test_linked_worktree_writes_to_common_dir_and_is_honored(self, tmp_path):
         """The crux: a linked worktree honors the COMMON-dir info/exclude only.

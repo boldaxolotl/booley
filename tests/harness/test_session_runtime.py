@@ -49,7 +49,7 @@ def _flag_values(argv: list[str], flag: str) -> list[str]:
 
 class TestSubstitute:
     def test_workspace_folder(self, workspace: Path):
-        from booley.platform_paths import docker_mount_path
+        from booley.runtime.platform_paths import docker_mount_path
 
         out = sr.substitute("source=${localWorkspaceFolder},target=/work", workspace)
         assert out == f"source={docker_mount_path(workspace)},target=/work"
@@ -91,7 +91,7 @@ class TestDockerRunArgv:
         assert argv[-3:] == ["booley-sandbox", "sleep", "infinity"]
 
     def test_workspace_and_project_dir_are_mounted(self, workspace: Path):
-        from booley.platform_paths import docker_mount_path
+        from booley.runtime.platform_paths import docker_mount_path
 
         mounts = _flag_values(_argv(_spec(), workspace), "--mount")
         assert f"source={docker_mount_path(workspace)},target=/work,type=bind" in mounts
@@ -731,7 +731,7 @@ class TestImageDriftWarning:
             sr.up(workspace)
 
     def test_spec_vs_toml_drift_warns_and_names_the_fix(self, wired, caplog, monkeypatch):
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         workspace, _run = wired
         # The spec on disk says the default 'booley-sandbox'; the toml has

@@ -17,10 +17,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from booley.harness.blocking import AgentTimeoutError
-from booley.harness.criteria_acceptance import CriteriaVerdict
 from booley.harness.developer import _resolve_ticket_disposition, _run_post_developer_hook
 from booley.harness.models import OnSuccess, TicketContext
 from booley.harness.review_prep import ReviewPrepOutcome
+from booley.ticket_board.criteria_acceptance import CriteriaVerdict
 
 
 def _make_ctx(tmp_path: Path) -> TicketContext:
@@ -48,11 +48,11 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
     """
     patches = {
         "verdict": patch(
-            "booley.harness.criteria_acceptance.check_criteria_acceptance",
+            "booley.ticket_board.criteria_acceptance.check_criteria_acceptance",
             return_value=verdict,
         ),
         "summary": patch(
-            "booley.harness.criteria_acceptance.build_criteria_summary_lines",
+            "booley.ticket_board.criteria_acceptance.build_criteria_summary_lines",
             return_value=([], ""),
         ),
         "block": patch("booley.harness.developer.block_ticket"),

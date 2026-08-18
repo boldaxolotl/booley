@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.harness import _backend_config as bc
-from booley.harness._backend_config import (
+from booley.config import agent as bc
+from booley.config.agent import (
     _KNOWN_ROLES,
     _MODEL_TIERS,
     BackendConfig,
@@ -146,7 +146,7 @@ class TestLoadModelsConfig:
         assert cfg.model_for_role("mutation_tester", "heavy") == cfg.model_for_tier("light")
 
     def test_developer_pin_reaches_model_map(self, tmp_path):
-        from booley.harness.config import MODEL_MAP
+        from booley.config.settings import MODEL_MAP
 
         saved = dict(MODEL_MAP)
         try:
@@ -209,7 +209,7 @@ class TestSpecialistSubprocessPath:
 
 class TestSpecialistResolvesRolePin:
     def test_resolve_model_consults_role_pin(self, monkeypatch):
-        from booley.mcp_tools.reviewer import ReviewerSpecialist
+        from booley.specialists.reviewer import ReviewerSpecialist
 
         cfg = BackendConfig(
             tier_models=dict(bc._DEFAULT_TIER_MODELS),
@@ -222,7 +222,7 @@ class TestSpecialistResolvesRolePin:
         assert specialist._resolve_model() == "claude-haiku-4-5"
 
     def test_unpinned_specialist_uses_floor_tier(self, monkeypatch):
-        from booley.mcp_tools.reviewer import ReviewerSpecialist
+        from booley.specialists.reviewer import ReviewerSpecialist
 
         cfg = BackendConfig(tier_models=dict(bc._DEFAULT_TIER_MODELS))
         monkeypatch.setattr(bc, "_backend_config", cfg)
@@ -243,13 +243,13 @@ def test_known_roles_matches_specialists_and_steps():
     This test is what keeps that literal honest — including for specialists
     currently hidden from discovery via registry.SKIP_MODULES.
     """
-    from booley.harness.config import STEP_TIERS
-    from booley.mcp_tools.registry import extract_mcp_tool_info
+    from booley.config.settings import STEP_TIERS
+    from booley.mcp.registry import extract_mcp_tool_info
 
-    mcp_tools_dir = Path(bc.__file__).resolve().parent.parent / "mcp_tools"
+    specialists_dir = Path(bc.__file__).resolve().parent.parent / "specialists"
     specialists = {
         info.name
-        for py_file in sorted(mcp_tools_dir.glob("*.py"))
+        for py_file in sorted(specialists_dir.glob("*.py"))
         if (info := extract_mcp_tool_info(py_file, builtin=True)) and info.kind == "specialist"
     }
     assert specialists, "no specialists discovered — the AST probe broke, not the vocabulary"

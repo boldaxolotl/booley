@@ -30,7 +30,7 @@ try:
 except ImportError:
     import sys as _sys
 
-    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     try:
         from booley.harness.colors import (
             COLORS_ENABLED,

@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
 from booley.harness import init_docker_image as idi
-from booley.harness import project_image as pi
 from booley.harness.init_common import InitContext
+from booley.runtime import project_image as pi
 
 FLAVOR = "booley-sandbox-riscv"
 
@@ -41,7 +41,7 @@ def flavor_repo(tmp_path: Path, monkeypatch) -> Path:
     # A live-session probe would shell out to docker; the F-9 warning is not
     # what these tests are about.
     monkeypatch.setattr(init_cmd, "_warn_on_live_session_on_old_image", lambda ctx, image: None)
-    from booley.project_dir import reset_cache
+    from booley.runtime.project_dir import reset_cache
 
     reset_cache()
     return root
@@ -58,7 +58,12 @@ def _stub_flavor_env(
     built: list[str] = []
     monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: exists)
     monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: fingerprint)
-    monkeypatch.setattr(idi, "_image_is_stale", lambda fp, image=idi.DOCKER_IMAGE: stale)
+    monkeypatch.setattr(
+        idi,
+        "_image_is_stale",
+        lambda fp, image=idi.DOCKER_IMAGE, expected_version=None: stale,
+    )
+    monkeypatch.setattr(idi, "_expected_version", lambda _root: "0.2.0")
     monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
 
     def _fake_build(ctx, dockerfile, context, exists_, fp=None, image=idi.DOCKER_IMAGE, **kw):
@@ -272,7 +277,11 @@ class TestBaseImageNote:
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
         monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: None)
-        monkeypatch.setattr(idi, "_image_is_stale", lambda fp, image=idi.DOCKER_IMAGE: False)
+        monkeypatch.setattr(
+            idi,
+            "_image_is_stale",
+            lambda fp, image=idi.DOCKER_IMAGE, expected_version=None: False,
+        )
 
         idi._step_docker_image(InitContext(project_root=Path("/tmp/x")), selected_image=FLAVOR)
 
@@ -283,7 +292,11 @@ class TestBaseImageNote:
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
         monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: None)
-        monkeypatch.setattr(idi, "_image_is_stale", lambda fp, image=idi.DOCKER_IMAGE: False)
+        monkeypatch.setattr(
+            idi,
+            "_image_is_stale",
+            lambda fp, image=idi.DOCKER_IMAGE, expected_version=None: False,
+        )
 
         idi._step_docker_image(
             InitContext(project_root=Path("/tmp/x")), selected_image=idi.DOCKER_IMAGE

@@ -37,7 +37,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from booley.flow_names import DEFAULT_TARGET_KEY
+from booley.targets.flow_names import DEFAULT_TARGET_KEY
 
 logger = logging.getLogger(__name__)
 

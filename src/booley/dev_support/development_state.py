@@ -26,13 +26,13 @@ from booley.flows.source_fingerprint import (  # noqa: F401  # compatibility re-
 
 # Threshold-evaluator helpers — re-exported for backward compatibility and also
 # used directly by DevelopmentState's delta-check methods below.
-from booley.flows.threshold_eval import (
+from booley.flows.synth.threshold_eval import (
     _SYNTH_METRIC_MAP,
     _check_absolute_cap,
     _check_absolute_min,
     resolve_metric,
 )
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 # Concerns split into sibling leaf modules (principle 8 — Single Responsibility).
 # The names below are re-exported for backward compatibility: this module has
@@ -551,7 +551,7 @@ class DevelopmentState:
         min_allowed = set(detail.get("_min_allowed", ["fmax_mhz"]))
         baseline = detail.get("baseline_metrics", {})
 
-        from booley.flows.synthesis_recipe import (
+        from booley.flows.synth.recipe import (
             RECIPE_FINGERPRINT_DETAIL,
             RECIPE_FINGERPRINT_PARAM,
         )

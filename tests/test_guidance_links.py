@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.guidance_links import (
+from booley.config.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     ensure_guidance_links,

@@ -25,34 +25,25 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from booley import (
-    core_projection,
-    core_security,
-    fusesoc_registry,
-    runtime_context,
-    selftest_overlay,
-    target_naming,
-)
-from booley.core.boundary import is_str_list
-from booley.dev_support.workspace_isolation import get_category_dirs
-from booley.flow_names import (
-    DEFAULT_TARGET_KEY,
-    LEGACY_TO_CANONICAL,
-    RETIRED_TARGET_KEY,
-    canonical,
-    config_section,
-)
-from booley.flows import execution
-from booley.guidance_links import (
+from booley.config.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     ensure_guidance_links,
     guidance_entry_current,
 )
-from booley.harness import auth_token, doctor_stamp, nangate_pdk, session_runtime
+from booley.config.project_config import normalize_configs_toml, normalize_tests_toml
+from booley.core.boundary import is_str_list
+from booley.dev_support.workspace_isolation import get_category_dirs
+from booley.flows import execution
+from booley.fusesoc import (
+    core_projection,
+    core_security,
+    fusesoc_registry,
+    selftest_overlay,
+)
 from booley.harness import devcontainer as dc
+from booley.harness import doctor_stamp, nangate_pdk, session_runtime
 from booley.harness import interactive_docker as idk
-from booley.harness import project_image as pi
 from booley.harness.colors import green, red, yellow
 from booley.harness.devcontainer import (
     devcontainer_path,
@@ -67,7 +58,6 @@ from booley.harness.doctor_waivers import (
     load_doctor_waivers,
     warning,
 )
-from booley.harness.git_utils import _git_common_dir
 from booley.harness.init_cmd import (
     DOCKER_IMAGE,
     MIN_PY,
@@ -84,14 +74,24 @@ from booley.harness.init_cmd import (
 )
 from booley.harness.init_common import note
 from booley.harness.init_docker_image import source_fingerprint_mismatch
-from booley.platform_paths import docker_mount_path
-from booley.project_config import normalize_configs_toml, normalize_tests_toml
-from booley.project_dir import (
+from booley.runtime import auth_token, runtime_context
+from booley.runtime import project_image as pi
+from booley.runtime.git import _git_common_dir
+from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     resolve_checkout_project_dir,
 )
+from booley.runtime.timefmt import format_human_datetime
+from booley.targets import target_naming
+from booley.targets.flow_names import (
+    DEFAULT_TARGET_KEY,
+    LEGACY_TO_CANONICAL,
+    RETIRED_TARGET_KEY,
+    canonical,
+    config_section,
+)
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
-from booley.timefmt import format_human_datetime
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -114,11 +114,11 @@ _AUDITED_FLOWS = ("sim", "lint", "synth")
 # owns that Flow's enablement/migration validation (principle 9). Elaborate
 # follows [flows.sim]'s selection and validates uniformly.
 _EXECUTION_VALIDATING_FLOWS = {
-    "sim": ("booley.flows.simulate", "SimulateFlow"),
-    "lint": ("booley.flows.lint", "LintFlow"),
-    "synth": ("booley.flows.asic_synthesize", "AsicSynthesizeFlow"),
-    "elab": ("booley.flows.elaborate", "ElaborateFlow"),
-    "fpga": ("booley.flows.fpga_impl", "FpgaImplFlow"),
+    "sim": ("booley.flows.sim.flow", "SimulateFlow"),
+    "lint": ("booley.flows.lint.flow", "LintFlow"),
+    "synth": ("booley.flows.synth.flow", "AsicSynthesizeFlow"),
+    "elab": ("booley.flows.elab.flow", "ElaborateFlow"),
+    "fpga": ("booley.flows.fpga.flow", "FpgaImplFlow"),
 }
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
@@ -221,7 +221,7 @@ _MCP_PROBE_TIMEOUT_S = 60
 _MCP_PROBE_PY = """
 import json
 import os
-from booley import mcp_server
+from booley.mcp import server as mcp_server
 
 mcp_server._maybe_configure_interactive_logs_dir()
 mcp_tools, errors = mcp_server._discover_booley_mcp_tools()
@@ -690,7 +690,7 @@ def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> s
     # _check_docker SKIPs itself inside the Session Runtime (QA-3, ADR 0028).
     docker_exe = _check_docker(_pass, _skip, _fail)
 
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     # The host-clock check is a host-only concern (sandbox image builds run on
     # the host); skip it in-container where there is nothing to build (F-5).
@@ -804,7 +804,7 @@ def _check_docker(_pass: Check, _skip: Check, _fail: Fail) -> str | None:
     so a missing runtime is expected, not a failure. SKIP the whole check there
     rather than emit a scary FAIL for a healthy in-container setup (QA-3).
     """
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     if runtime_context.inside_session_runtime():
         _skip("container runtime check skipped (inside Session Runtime; Booley Flows run here)")
@@ -871,7 +871,7 @@ def _sandbox_image(project: ProjectAudit | None) -> str:
     if isinstance(raw, str) and raw.strip():
         return raw
     if (project.project_dir / "docker" / "Dockerfile").is_file():
-        from booley.harness.project_image import project_image_name
+        from booley.runtime.project_image import project_image_name
 
         return project_image_name(project.project_root)
     return DOCKER_IMAGE
@@ -949,7 +949,7 @@ def _check_project_setup(
         return None
 
     valid = _validate_booley_toml(booley_toml, project_dir, _pass, _warn, _fail)
-    from booley.flow_names import canonicalize_config
+    from booley.targets.flow_names import canonicalize_config
 
     booley_toml = canonicalize_config(booley_toml)
 
@@ -972,7 +972,7 @@ def _check_project_setup(
     # fall back to a configs.toml config name only if no .core is authored.
     first_target = ""
     try:
-        from booley import fusesoc_registry
+        from booley.fusesoc import fusesoc_registry
 
         targets = fusesoc_registry.available_targets(project_root)
         first_target = targets[0] if targets else ""
@@ -1208,7 +1208,7 @@ def _validate_agent_table(data: dict[str, Any], _pass: Check, _fail: Fail) -> bo
     ``BOOLEY_PRIMARY_PROVIDER`` or the container's ``BOOLEY_AGENT_APP``, and the
     host falls back to a default. Only a *present and wrong* value fails.
     """
-    from booley.harness._backend_config import BackendConfigError, _parse_auth, _parse_provider
+    from booley.config.agent import BackendConfigError, _parse_auth, _parse_provider
 
     agent = data.get("agent")
     if agent is None:
@@ -1248,7 +1248,7 @@ def _validate_models_table(data: dict[str, Any], _pass: Check, _warn: Check, _fa
     so doctor surfaces it here rather than at the first ticket. Stray keys only
     warn — they are inert, not fatal.
     """
-    from booley.harness._backend_config import (
+    from booley.config.agent import (
         _KNOWN_ROLES,
         _MODEL_TIERS,
         BackendConfigError,
@@ -1852,12 +1852,12 @@ def _check_stealth_cores(
     registry when left undiagnosed:
 
     * an authored ``.core`` stranded in the state dir OUTSIDE
-      ``.booley_project/cores/`` — :func:`~booley.fusesoc_registry.discover_cores`
+      ``.booley_project/cores/`` — :func:`~booley.fusesoc.fusesoc_registry.discover_cores`
       skips the state tree structurally, so the core just vanishes from the
       selectable Targets (``"(none authored)"`` with no hint why);
     * the same logical VLNV authored in both the repo tree and
       ``.booley_project/cores/`` — enumeration hard-errors on this
-      (:class:`~booley.fusesoc_registry.CoreCollisionError`), and doctor turns
+      (:class:`~booley.fusesoc.fusesoc_registry.CoreCollisionError`), and doctor turns
       that into an actionable finding before an MCP tool call trips over it.
     """
     stealth_root = project_dir / fusesoc_registry.STATE_CORES_SUBDIR
@@ -1968,7 +1968,7 @@ def _check_board_orphans(
     """
     _warn = _warning_sink(_warn, "tickets.orphan-recovered")
 
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
         _skip("board orphan self-heal: runs in-container (ticket PIDs are container-scoped)")
@@ -2174,7 +2174,7 @@ def _check_memory_invariant(
     """
     _warn = _warning_sink(_warn, "sandbox.memory-overcommit")
 
-    from booley import job_slots
+    from booley.runtime import job_slots
 
     if project is None:
         _skip("memory invariant skipped - no valid project config")
@@ -2251,7 +2251,7 @@ def _check_runtime_location(
     """
     _warn = _warning_sink(_warn, "sandbox.runtime-marker")
 
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
         _check_host_agent_session(_pass, _warn)
@@ -2277,7 +2277,7 @@ def _check_runtime_location(
 def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
     """Name the one runtime-location mistake that is otherwise completely silent.
 
-    MCP registration happens container-side (``booley.incontainer_register``,
+    MCP registration happens container-side (``booley.runtime.incontainer_register``,
     run from the devcontainer's postCreate/postStart hooks). An agent started
     from a *host* shell therefore has no ``booley`` MCP server at all: no
     ``booley_status``, no Booley Flows, no error either — the MCP tools are not
@@ -2287,7 +2287,7 @@ def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
     """
     _warn = _warning_sink(_warn, "session.agent-on-host")
 
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     app = runtime_context.agent_session_app()
     if app is None:
@@ -2305,7 +2305,7 @@ def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
 
 def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     """The shared admission store (ADR 0028 Decision 4) must accept claims."""
-    from booley import job_slots
+    from booley.runtime import job_slots
 
     root = job_slots.slots_dir()
     if root is None:
@@ -2382,8 +2382,8 @@ def _run_developer_probe(
     (the 2026-07-23 expired-creds incident sailed through a green doctor
     exactly this way). Doctor must never crash on the probe.
     """
-    from booley import runtime_context
     from booley.harness import developer_probe
+    from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
         _skip(
@@ -2776,7 +2776,7 @@ def _no_docker_skip_reason() -> str:
     has no nested Docker, and these checks probe the *host's* images — so say
     that, instead of a message written for the host case.
     """
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     if runtime_context.inside_session_runtime():
         return (
@@ -2810,7 +2810,7 @@ def _check_container_runtime_payload(
         [
             "python3",
             "-c",
-            "from booley.paths import native_bwave_binary as n; raise SystemExit(0 if n() else 1)",
+            "from booley.runtime.paths import native_bwave_binary as n; raise SystemExit(0 if n() else 1)",
         ],
         "rebuild sandbox image",
     )
@@ -2842,7 +2842,7 @@ def _run_container_checks(
     """Run container EDA tool and runtime checks."""
     if not docker_exe:
         banner("Container checks")
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
@@ -3593,7 +3593,7 @@ def _declared_provider(project: ProjectAudit | None) -> str | None:
     Fail-soft (Decision 12): an invalid value degrades to ``None`` here;
     :func:`_validate_agent_table` already FAILed on it upstream.
     """
-    from booley.harness._backend_config import BackendConfigError, _parse_provider
+    from booley.config.agent import BackendConfigError, _parse_provider
 
     agent_section = project.booley_toml.get("agent") if project is not None else None
     if not isinstance(agent_section, dict):
@@ -3620,7 +3620,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
     degrades to the default here instead of raising --
     :func:`_validate_agent_table` already FAILed on it upstream.
     """
-    from booley.harness._backend_config import (
+    from booley.config.agent import (
         _DEFAULT_PROVIDER,
         _VALID_PROVIDERS,
         BackendConfigError,
@@ -3652,7 +3652,7 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
     degrades to ``auto`` here — :func:`_validate_agent_table` already FAILed
     on it upstream.
     """
-    from booley.harness._backend_config import (
+    from booley.config.agent import (
         _DEFAULT_AUTH,
         _VALID_AUTH_MODES,
         BackendConfigError,
@@ -3867,7 +3867,7 @@ def _check_subscription_creds_health(
     """
     _warn = _warning_sink(_warn, "agent.subscription-credential-expired", subject=provider)
 
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     if provider != auth_token.APP_CLAUDE or not _detect_claude_code():
         return
@@ -3918,7 +3918,7 @@ def _check_subscription_creds_health(
 
 
 # Reload-Window guidance, shared by the two probe paths below. The manifest
-# patch (booley.incontainer_vaporview) rewrites package.json from
+# patch (booley.runtime.incontainer_vaporview) rewrites package.json from
 # postAttachCommand, which VS Code runs *after* it has already launched the
 # extension host — so on the first window of a fresh container the patch lands a
 # beat too late and VaporView stays lazy, exactly as its module docstring warns.
@@ -4005,8 +4005,8 @@ def _check_wcp_server(
     # Deferred, as everywhere else in this module: runtime location for the in-container
     # branch, and bwave_wcp for the port — importing the MCP-tool stack eagerly
     # would tax every doctor run for one integer.
-    from booley import runtime_context
     from booley.bwave import wcp as bwave_wcp
+    from booley.runtime import runtime_context
 
     port = bwave_wcp.wcp_port()
     description = f"VaporView WCP server reachable on port {port} (`bwave gui`)"
@@ -4503,7 +4503,7 @@ def _check_agent_backend_health(
 ) -> None:
     _warn = _warning_sink(_warn, "agent.backend-health")
     try:
-        from booley.harness.config import get_backend_config, load_models_config
+        from booley.config.settings import get_backend_config, load_models_config
 
         load_models_config(project_root)
         cfg = get_backend_config()
@@ -4734,7 +4734,7 @@ def _check_sandbox_binary(
     _fail: Fail,
 ) -> None:
     """PASS/FAIL on *binary* being on the Session Runtime PATH."""
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     label = f"{flow_name}: '{binary}' on the Session Runtime PATH"
     if runtime_context.inside_session_runtime():
@@ -5058,7 +5058,7 @@ def _run_core_audit(
     elif refs:
         _pass(".core security validation passed (no fpga hooks / expr-params / in-scope scripts)")
 
-    # 4. tests.toml plusarg select templates (decision 16).
+    # 4. tests.toml single-token select templates (decision 16).
     _audit_tests_toml(project, _pass, _skip, _fail)
 
     # 5. Native build dependencies of C/C++ simulation sources (advisory).
@@ -5314,7 +5314,7 @@ def _check_target_naming(
     The Target name is the only place ``synth`` vs ``fpga`` is written down (CAPI2
     has no synth flow — both resolve as ``generic``), and it is what an agent
     reads in ``--target``, ``sim_pass_<target>``, and ``tests.toml`` keys. See
-    :mod:`booley.target_naming` for the rule.
+    :mod:`booley.targets.target_naming` for the rule.
 
     WARN, never FAIL, and only for owned cores (:func:`_owned_core_files`): a
     non-conforming name still runs, and renaming a vendored upstream Target is
@@ -5548,7 +5548,7 @@ def _check_sim_traceable(
 
     Booley traces a Verilator Target by injecting `--trace` through a generated
     overlay ``.core`` and passing ``+trace +tracefile=`` at run time
-    (:mod:`booley.fusesoc_trace_overlay`) — it never *synthesises* a tracer. A
+    (:mod:`booley.fusesoc.fusesoc_trace_overlay`) — it never *synthesises* a tracer. A
     Target built with Verilator's auto ``--main`` (or ``--binary``) has no C++
     main to construct a ``VerilatedVcdC``, so ``--trace`` hooks into nothing: the
     run PASSES but the store is a bare ~443-byte FST header with **0 signals** —
@@ -5559,7 +5559,7 @@ def _check_sim_traceable(
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
     *auto-supplies* the ``booley_vcd_dump`` module from Booley's ``refs/`` when
-    the design lacks it (:func:`booley.fusesoc_trace_overlay._inject_dump_module`),
+    the design lacks it (:func:`booley.fusesoc.fusesoc_trace_overlay._inject_dump_module`),
     so those EDA tools self-heal — a pre-flight check earns nothing there. The
     findings are aggregated into a single WARN: a project with many untraced unit
     TBs (each independently fixable) should not spray one WARN per Target and
@@ -6329,7 +6329,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
 
 
 def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
-    """Validate the project's ``tests.toml`` (plusarg templates, decision 16)."""
+    """Validate the project's ``tests.toml`` selector templates."""
     tests_path = project.project_dir / "tests.toml"
     if not tests_path.exists():
         _skip("tests.toml not present (test selection falls back to configs.toml)")
@@ -6341,7 +6341,7 @@ def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: 
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
         _fail(f"tests.toml invalid: {exc}", "fix the tests.toml select/test list")
         return
-    _pass("tests.toml valid (plusarg select templates well-formed)")
+    _pass("tests.toml valid (single-token select templates well-formed)")
     _audit_tests_toml_targets(project, sections, _fail)
 
 
@@ -6503,7 +6503,7 @@ def _run_core_resolve_checks(
 # Kept as a module constant so the quoting is auditable in one place.
 _CORE_RESOLVE_SNIPPET = (
     "import json\n"
-    "from booley import fusesoc_registry as fr\n"
+    "from booley.fusesoc import fusesoc_registry as fr\n"
     "root = '/work'\n"
     "refs = fr.enumerate_targets(root)\n"
     "out = []\n"
@@ -6850,7 +6850,7 @@ def _prepare_selftest_invocation(
     guaranteed SKIP in-container (F-17) — so run the self-test in-place
     instead, exactly how the Flow itself executes.
     """
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     # Mirror _flow_check_routing: a self-test is always a REAL Flow run (never
     # a dry-run), so a host-launched deep Flow needs the sandbox image regardless
@@ -7099,7 +7099,7 @@ def _flow_check_routing(
     ('booley init --force', install docker) — QA_REPORT A5. Run the deep check
     natively instead, mirroring how the Flows themselves execute.
     """
-    from booley import runtime_context
+    from booley.runtime import runtime_context
 
     in_container = runtime_context.inside_session_runtime()
     use_docker = not in_container and not dry_run
@@ -7330,7 +7330,7 @@ def _synth_deep_report_error(
     """Return why a successful deep synth lacks terminal PPA/timing evidence."""
     if flow_name != "synth" or dry_run:
         return ""
-    from booley.flows.asic_synthesize import synth_target_report_slug
+    from booley.flows.synth.flow import synth_target_report_slug
 
     target = _probe_target(project, flow_name)
     path = report_dir / f"synth_{synth_target_report_slug(target)}.json"
@@ -7401,7 +7401,7 @@ def _run_flow_check(
     report_dir = project.project_dir / _DOCTOR_TMP / "flow-reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name == "synth" and not dry_run:
-        from booley.flows.asic_synthesize import synth_target_report_slug
+        from booley.flows.synth.flow import synth_target_report_slug
 
         safe_target = synth_target_report_slug(target)
         # A killed calibration may never reach the Flow's eager per-target
@@ -7463,7 +7463,7 @@ def _record_synth_memory_calibration(
     _warn: Check,
 ) -> None:
     """Record boundary-process peak RSS from a completed heaviest synthesis."""
-    from booley.flows.asic_synthesize import synth_target_report_slug
+    from booley.flows.synth.flow import synth_target_report_slug
 
     safe_target = synth_target_report_slug(target)
     path = report_dir / f"synth_{safe_target}.json"
@@ -7789,7 +7789,7 @@ def _flow_command(
             if first:
                 argv.extend(["--test", first])
 
-    from booley.flow_names import implementation_module
+    from booley.targets.flow_names import implementation_module
 
     inner = [
         "python3" if use_docker else sys.executable,

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.harness.blocking import BlockingError
-from booley.harness.git_utils import (
+from booley.runtime.git import (
     commit_scope,
     expand_scope_globs,
     is_scope_unknown,
@@ -23,7 +23,7 @@ from booley.harness.git_utils import (
 
 
 class TestCommitScope:
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_with_explicit_scope(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         commit_scope(Path("/wt"), ["rtl/foo.sv", "tb/bar.sv"], "fix: stuff")
@@ -33,14 +33,14 @@ class TestCommitScope:
         assert "rtl/foo.sv" in add_args
         assert "tb/bar.sv" in add_args
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_empty_scope_skips_commit(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         commit_scope(Path("/wt"), [], "wip commit")
         # No subprocess calls -- empty scope detected before git operations
         assert mock_run.call_count == 0
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_commit_scope_add_and_commit(self, mock_run):
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         commit_scope(
@@ -51,7 +51,7 @@ class TestCommitScope:
         # add + diff --cached (scope check) + commit == 3 subprocess calls
         assert mock_run.call_count == 3
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_out_of_scope_staged_files_are_unstaged(self, mock_run):
         """A raw staged outsider is preserved but excluded from the commit."""
 
@@ -83,7 +83,7 @@ class TestCommitScope:
         ]
         assert mock_run.call_args_list[-1][0][0][1:] == ["commit", "-m", "fix: stuff"]
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_out_of_scope_staged_deletion_is_unstaged(self, mock_run):
         """An outside deletion is preserved in the worktree, not committed."""
 
@@ -105,7 +105,7 @@ class TestCommitScope:
         reset_args = mock_run.call_args_list[2][0][0]
         assert reset_args[-1] == "README.md"
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_out_of_scope_unstage_failure_blocks(self, mock_run):
         """Do not commit a mixed index if the outsider cannot be unstaged."""
 
@@ -131,7 +131,7 @@ class TestCommitScope:
         with pytest.raises(BlockingError, match="Could not unstage out-of-scope"):
             commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_in_scope_staged_files_pass(self, mock_run):
         """All staged files within scope → commit proceeds normally."""
 
@@ -150,7 +150,7 @@ class TestCommitScope:
         # Should not raise
         commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
-    @patch("booley.harness.git_utils.subprocess.run")
+    @patch("booley.runtime.git.subprocess.run")
     def test_unknown_scope_skips_staged_check(self, mock_run):
         """Wildcard scope skips the out-of-scope check."""
         mock_run.return_value = subprocess.CompletedProcess(

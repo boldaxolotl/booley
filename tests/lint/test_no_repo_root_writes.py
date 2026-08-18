@@ -11,7 +11,7 @@ argparse argument whose name implies an OUTPUT location (``--output-dir``,
 ``--out-dir``, ``--report-dir``) defaults to ``Path.cwd()`` /
 ``pathlib.Path.cwd()`` / ``os.getcwd()``. The fix is to leave the default
 ``None`` and resolve lazily under the worktree ``--work-dir`` or the project
-helper (``booley.project_dir.resolve_project_dir`` / ``runtime_dir``).
+helper (``booley.runtime.project_dir.resolve_project_dir`` / ``runtime_dir``).
 
 ``--work-dir`` itself is deliberately EXCLUDED: it is the worktree root and
 defaulting it to cwd is the conventional CLI behaviour for standalone/human
@@ -126,7 +126,7 @@ def _find_violations(py_file: Path) -> list[str]:
             f"{rel}: argparse arg {arg!r} defaults to cwd (Path.cwd()/os.getcwd()). "
             "This makes an omitted flag write output into the launch directory "
             "(often the repo root). Leave default=None and resolve lazily under "
-            "the worktree --work-dir or booley.project_dir.runtime_dir() instead."
+            "the worktree --work-dir or booley.runtime.project_dir.runtime_dir() instead."
         )
     return violations
 

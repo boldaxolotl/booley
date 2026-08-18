@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.harness import init_cmd
-from booley.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import docker_mount_path
 from tests.conftest import require_symlinks
 
 

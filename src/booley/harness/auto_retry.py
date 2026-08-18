@@ -107,7 +107,7 @@ def record_crash(logs_dir: Path, *, run_index: int, reason: str) -> None:
 
 def _config(project_root: Path) -> int:
     """Read the auto-retry budget; zero is the single spelling for disabled."""
-    from .config import _load_booley_toml
+    from booley.config.settings import _load_booley_toml
 
     try:
         developer = _load_booley_toml(project_root).get("developer", {})

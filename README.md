@@ -44,7 +44,7 @@ EDA tools differ in how they are configured, invoked, and interpreted. Booley gi
 
 Autonomous work only pays off when the agent can run without constant permission prompts. Booley confines that autonomy to a recoverable workspace:
 
-- **Sandboxed by default**: the agent and every command it launches run inside the project's Docker sandbox, not on the host. It cannot invoke host commands or read files outside explicit mounts, runs as a non-root user, and has network access only to required service endpoints. Restricted egress reduces exposure to web-based prompt injection, while the sandbox limits the authority and blast radius of malicious instructions. Container isolation reduces risk rather than eliminating it ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/FEATURES.md#docker-sandboxing), [security model](https://github.com/boldaxolotl/Booley/blob/main/docs/ARCHITECTURE.md#security--trust-model)).
+- **Sandboxed by default**: the agent and every command it launches run inside the project's Docker sandbox, not on the host. It cannot invoke host commands or read files outside explicit mounts, runs as a non-root user, and has network access only to required service endpoints. Restricted egress reduces exposure to web-based prompt injection, while the sandbox limits the authority and blast radius of malicious instructions. Container isolation reduces risk to a minimum ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/FEATURES.md#docker-sandboxing), [security model](https://github.com/boldaxolotl/Booley/blob/main/docs/ARCHITECTURE.md#security--trust-model)).
 - **Git isolation**: each ticket uses an isolated worktree with no access to remotes or real branches. Off-script edits and accidental damage remain behind a human review-and-merge gate.
 - **Controlled EDA access**: the open-source stack runs in the project's Docker container; approved host installations can be supplied read-only under built-in tool policies while every EDA process remains in that container ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/SUPPORTED-EDA-TOOLS.md)).
 
@@ -123,9 +123,9 @@ I recorded all four videos myself, then replaced my narration with text-to-speec
 
 You clone the **official upstream repo, untouched**, and drop the pre-configured Booley project ([booley-prj-picorv32](https://github.com/boldaxolotl/booley-prj-picorv32)) inside it as `.booley_project/`. Everything Booley-related (design description, tests, config, a queued ticket) ships in that one directory, and no `/booley-setup` is needed.
 
-Follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
+First, follow [INSTALL.md](https://github.com/boldaxolotl/Booley/blob/main/docs/INSTALL.md) to install Booley and satisfy its platform, software, and agent-account requirements.
 
-For platform, software, and agent-account requirements, see [Installation prerequisites](https://github.com/boldaxolotl/Booley/blob/main/docs/INSTALL.md#prerequisites).
+Then follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
 
 ### Level 3: Use it on your own project
 

@@ -124,10 +124,16 @@ def _has_project_config(repo_root: Path) -> bool:
 
 def _configured_project_repo() -> bool:
     """Whether the current Git repository carries project configuration."""
+    root = _current_repo_root()
+    return root is not None and _has_project_config(root)
+
+
+def _current_repo_root() -> Path | None:
+    """Return the current checkout root rather than this module's checkout."""
     run = run_command(["git", "rev-parse", "--show-toplevel"])
     if not run.ok or not run.stdout.strip():
-        return False
-    return _has_project_config(Path(run.stdout.strip()).resolve())
+        return None
+    return Path(run.stdout.strip()).resolve()
 
 
 def _body_content_lines(msg: str) -> list[str]:
@@ -146,7 +152,7 @@ def _body_content_lines(msg: str) -> list[str]:
     return [ln for ln in parts[1].split("\n") if ln.strip() and not ln.lstrip().startswith("#")]
 
 
-def validate_message(msg: str) -> list[str]:
+def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]:
     """Validate commit message. Return list of errors (empty = valid)."""
     errors = []
     subject = msg.split("\n", 1)[0]
@@ -158,7 +164,7 @@ def validate_message(msg: str) -> list[str]:
     # commits on code the team doesn't own, and forcing every one through this
     # format is noise; a team that wants it opts in. Banned-word and body-cap
     # checks below follow stealth mode — those are leak/hygiene, not convention.
-    if enforce_convention() and not is_merge:
+    if enforce_convention(project_root) and not is_merge:
         m = SUBJECT_RE.match(subject)
         if not m:
             errors.append(
@@ -191,7 +197,7 @@ def validate_message(msg: str) -> list[str]:
     # is exactly where the long messages that motivated the knob accumulate
     # (a merge carrying a hand-written port narrative), and git's own generated
     # merge messages have no body once its `#` comment lines are dropped.
-    cap = max_body_lines()
+    cap = max_body_lines(project_root)
     if cap is not None:
         body = _body_content_lines(msg)
         if len(body) > cap:
@@ -201,7 +207,7 @@ def validate_message(msg: str) -> list[str]:
             )
 
     # --- banned words (checked only while stealth mode is enabled) ---
-    if stealth_enabled():
+    if stealth_enabled(project_root):
         for phrase in _find_banned(msg):
             errors.append(f"Banned phrase in commit message: '{phrase}'")
 
@@ -262,9 +268,10 @@ def main() -> int:
         )
         return 0
 
-    check_diff = not parsed.no_diff and stealth_enabled()
+    project_root = _current_repo_root()
+    check_diff = not parsed.no_diff and stealth_enabled(project_root)
     msg = parsed.message
-    errors = validate_message(msg)
+    errors = validate_message(msg, project_root=project_root)
 
     if check_diff:
         errors.extend(validate_diff())

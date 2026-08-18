@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 # re-exported for backward compatibility — the SV source-editing engine was
 # extracted into ``mut_harness_inject`` (principle 8 / Single Responsibility),
@@ -152,7 +152,7 @@ def lock_dir(logs_dir: Path | str | None = None) -> Path:
             # Ticket Mode does. Fall back to the relative path only when no
             # project is discoverable (direct test callers).
             try:
-                from booley.project_dir import runtime_dir
+                from booley.runtime.project_dir import runtime_dir
 
                 logs_dir = str(runtime_dir())
             except (FileNotFoundError, ImportError):

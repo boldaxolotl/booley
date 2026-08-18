@@ -19,7 +19,7 @@ import re
 import time
 from pathlib import Path
 
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
 

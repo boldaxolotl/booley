@@ -247,7 +247,7 @@ def _stream_output(
     """
     import threading
 
-    from booley.platform_paths import kill_process_tree, popen_new_group_kwargs
+    from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
     from booley.sim.run_guard import (
         DiskBudgetGuard,
         SimTimeStallGuard,
@@ -555,7 +555,7 @@ def run_cocotb_sim(
     the ``.fst`` store), defaulting to *build_dir*. *sim_time_grace_s* is the
     frozen-clock watchdog's grace period (F-25; 0 disables it).
     """
-    from booley.heartbeat import Heartbeat
+    from booley.runtime.heartbeat import Heartbeat
 
     build_dir = Path(build_dir).resolve()
     run_cwd = Path(run_cwd).resolve() if run_cwd is not None else build_dir

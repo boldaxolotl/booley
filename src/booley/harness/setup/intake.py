@@ -178,7 +178,7 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
     # Read the Runner's PID from env so the ownership check in
     # op_activate() matches the PID stamped in ticket.lock.
     try:
-        from booley.project_config import ENV_PREFIX as _proj_env
+        from booley.config.project_config import ENV_PREFIX as _proj_env
 
         _orch_env = f"{_proj_env}_DEVELOPER_PID"
     except (ImportError, AttributeError):
@@ -403,7 +403,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     # that don't consume the reports opt out via [developer] run_report =
     # false; the criterion is then never seeded and the acceptance gate
     # (criteria_acceptance) skips its check.
-    from booley.project_config import is_run_report_enabled
+    from booley.config.project_config import is_run_report_enabled
 
     if is_run_report_enabled():
         expanded["_report_submitted"] = True
@@ -438,13 +438,13 @@ def _freeze_synthesis_recipe_fingerprints(
     if not synth_keys:
         return
 
-    from booley import fusesoc_registry
     from booley.core.boundary import BoundaryError
-    from booley.flows.synthesis_recipe import (
+    from booley.flows.synth.recipe import (
         RECIPE_FINGERPRINT_PARAM,
         default_recipe_args,
         synthesis_recipe_fingerprint,
     )
+    from booley.fusesoc import fusesoc_registry
 
     recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze"
     for key in synth_keys:
@@ -540,7 +540,7 @@ def _seed_project_criteria(
     # Filter per-target criteria by each Target's declared EDA tool (decision 11).
     # Empty (no .core authored yet) leaves the expansion unfiltered.
     try:
-        from booley.fusesoc_registry import target_eda_tools
+        from booley.fusesoc.fusesoc_registry import target_eda_tools
 
         target_eda_tool_map = target_eda_tools(project_root)
     except Exception:  # noqa: BLE001 — no .core / registry error leaves expansion unfiltered

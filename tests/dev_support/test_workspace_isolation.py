@@ -917,7 +917,7 @@ class TestCleanSimArtifacts:
         work.mkdir(parents=True)
         (work / "sim.vvp").write_text("compiled binary", encoding="utf-8")
         (work / "trace.vcd").write_text("vcd data", encoding="utf-8")
-        with patch("booley.shared_infra.get_sim_output_dir", return_value=wt / "sim"):
+        with patch("booley.runtime.shared_infra.get_sim_output_dir", return_value=wt / "sim"):
             clean_sim_artifacts(wt)
         assert not (wt / "sim" / "work").exists()
         assert (wt / "sim").is_dir()
@@ -927,14 +927,14 @@ class TestCleanSimArtifacts:
         obj = wt / "sim" / "obj_dir"
         obj.mkdir(parents=True)
         (obj / "Vtop.cpp").write_text("generated", encoding="utf-8")
-        with patch("booley.shared_infra.get_sim_output_dir", return_value=wt / "sim"):
+        with patch("booley.runtime.shared_infra.get_sim_output_dir", return_value=wt / "sim"):
             clean_sim_artifacts(wt)
         assert not obj.exists()
 
     def test_noop_when_no_sim_dir(self, tmp_path):
         wt = tmp_path / "worktree"
         wt.mkdir()
-        with patch("booley.shared_infra.get_sim_output_dir", return_value=wt / "sim"):
+        with patch("booley.runtime.shared_infra.get_sim_output_dir", return_value=wt / "sim"):
             clean_sim_artifacts(wt)
 
     def test_fallback_when_import_fails(self, tmp_path):
@@ -942,7 +942,7 @@ class TestCleanSimArtifacts:
         work = wt / "sim" / "work" / "default.tb_mod"
         work.mkdir(parents=True)
         (work / "sim.vvp").write_text("binary", encoding="utf-8")
-        with patch("booley.shared_infra.get_sim_output_dir", side_effect=ImportError):
+        with patch("booley.runtime.shared_infra.get_sim_output_dir", side_effect=ImportError):
             clean_sim_artifacts(wt)
         assert not (wt / "sim" / "work").exists()
 

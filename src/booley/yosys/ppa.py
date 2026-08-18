@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from booley.core.boundary import BoundaryError
-from booley.synthesis_profiles import validate_ppa_profile
+from booley.synthesis.profiles import validate_ppa_profile
 
 ABC_RECIPE_CHOICES = ("default", "balanced", "fast")
 

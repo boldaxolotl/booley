@@ -1,4 +1,4 @@
-"""Tests for booley.project_config.is_human_in_loop."""
+"""Tests for booley.config.project_config.is_human_in_loop."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.project_config import (
+from booley.config.project_config import (
     DEFAULT_TEST_SELECT,
     is_human_in_loop,
     normalize_configs_toml,
@@ -202,7 +202,7 @@ class TestRenderTestSelector:
         assert DEFAULT_TEST_SELECT == "+test_id={index}"
 
     def test_renders_declared_template(self, monkeypatch):
-        from booley import project_config
+        from booley.config import project_config
 
         monkeypatch.setitem(project_config.TEST_SELECT, "lite", "+test={name}")
         assert render_test_selector("lite", 1, "stress") == "+test=stress"

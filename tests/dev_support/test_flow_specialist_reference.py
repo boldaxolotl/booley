@@ -22,8 +22,8 @@ from booley.dev_support.flow_specialist_reference import (
     render_flow_specialist_reference,
     render_specialists_reference,
 )
-from booley.mcp_tools.registry import discover_mcp_tools
-from booley.paths import cheatsheet_path
+from booley.mcp.registry import discover_mcp_tools
+from booley.runtime.paths import cheatsheet_path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.config import agent as bc
 from booley.core.models import AgentCallParams
-from booley.harness import _backend_config as bc
-from booley.harness import auth_token
+from booley.runtime import auth_token
 
 _TOKEN = "sk-ant-oat01-abcdef123456"
 
@@ -91,7 +91,7 @@ class TestClaudeSubscriptionScrub:
 
     @staticmethod
     def _options(auth_mode):
-        from booley.harness._claude_backend import _build_sdk_options
+        from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(prompt="p", model="claude-sonnet-4-6", cwd=".")
         return _build_sdk_options(params, None, auth_mode=auth_mode)
@@ -115,7 +115,7 @@ class TestClaudeStoredTokenInjection:
 
     @staticmethod
     def _options(auth_mode):
-        from booley.harness._claude_backend import _build_sdk_options
+        from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(prompt="p", model="claude-sonnet-4-6", cwd=".")
         return _build_sdk_options(params, None, auth_mode=auth_mode)
@@ -152,21 +152,21 @@ class TestClaudeStoredTokenInjection:
 
 class TestClaudeHealthCheck:
     def test_api_key_mode_without_key_fails_loud(self, clean_env):
-        from booley.harness._claude_backend import ClaudeSDKBackend
+        from booley.runtime._claude_backend import ClaudeSDKBackend
 
         warning = ClaudeSDKBackend(auth_mode="api_key").health_check()
 
         assert warning is not None and "ANTHROPIC_API_KEY" in warning
 
     def test_subscription_mode_without_any_subscription_cred_fails_loud(self, clean_env):
-        from booley.harness._claude_backend import ClaudeSDKBackend
+        from booley.runtime._claude_backend import ClaudeSDKBackend
 
         warning = ClaudeSDKBackend(auth_mode="subscription").health_check()
 
         assert warning is not None and "subscription" in warning
 
     def test_api_key_mode_with_key_passes_the_auth_gate(self, clean_env, monkeypatch):
-        from booley.harness._claude_backend import ClaudeSDKBackend
+        from booley.runtime._claude_backend import ClaudeSDKBackend
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
         warning = ClaudeSDKBackend(auth_mode="api_key").health_check()
@@ -178,7 +178,7 @@ class TestClaudeHealthCheck:
 class TestCodexHealthCheck:
     @staticmethod
     def _backend(monkeypatch, auth_mode):
-        from booley.harness import _codex_backend
+        from booley.runtime import _codex_backend
 
         monkeypatch.setattr(_codex_backend.shutil, "which", lambda _: "/usr/bin/codex")
         return _codex_backend.CodexBackend(auth_mode=auth_mode)
@@ -202,7 +202,7 @@ class TestCodexSpawnScrub:
     async def test_subscription_pops_the_api_key(self, clean_env, monkeypatch):
         import asyncio
 
-        from booley.harness import _codex_backend
+        from booley.runtime import _codex_backend
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-x")
         captured: dict = {}

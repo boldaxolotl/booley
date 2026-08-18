@@ -130,7 +130,7 @@ class TestProjectCommitMsgHookVendoring:
             _PROJECT_HOOK_SCRIPTS,
             _step_project_git_hooks,
         )
-        from booley.project_dir import resolve_project_dir
+        from booley.runtime.project_dir import resolve_project_dir
 
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)

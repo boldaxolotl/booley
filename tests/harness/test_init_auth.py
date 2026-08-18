@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from booley.config.agent import _DEFAULT_PROVIDER
 from booley.harness import init_cmd
-from booley.harness._backend_config import _DEFAULT_PROVIDER
 from booley.harness.init_common import InitContext
 
 

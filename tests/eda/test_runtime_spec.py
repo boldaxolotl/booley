@@ -14,7 +14,7 @@ import pytest
 from booley.eda import authority, runtime_spec
 from booley.eda.vivado import wrapper_path
 from booley.harness import devcontainer as dc
-from booley.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import docker_mount_path
 
 
 def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

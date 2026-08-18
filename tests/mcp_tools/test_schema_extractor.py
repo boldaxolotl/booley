@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from booley.mcp_tools.schema_extractor import extract_schema
+from booley.mcp.schema_extractor import extract_schema
 
 # --- Helpers ---
 

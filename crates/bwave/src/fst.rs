@@ -1048,8 +1048,7 @@ impl FstBuildHandler {
             }
             b'$' => {
                 // Blackout sections are skipped without x-filling: the
-                // .bwave builder holds the last value through $dumpoff
-                // (unlike the raw-VCD streaming path, which x-fills), and
+                // The builder holds the last value through $dumpoff, and
                 // the store keeps that behavior.
                 if end >= 8 && &line[..8] == b"$dumpoff" {
                     *in_dumpoff = true;

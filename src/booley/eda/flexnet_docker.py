@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.paths import package_data_dir
+from booley.runtime.paths import package_data_dir
 
 from .flexnet_relay import (
     DEFAULT_CONNECT_TIMEOUT,

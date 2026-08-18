@@ -45,7 +45,7 @@ def project(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "proj"
     (root / ".booley_project").mkdir(parents=True)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    from booley.project_dir import reset_cache
+    from booley.runtime.project_dir import reset_cache
 
     reset_cache()
     return root

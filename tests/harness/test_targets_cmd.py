@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from booley import fusesoc_registry
+from booley.fusesoc import fusesoc_registry
 from booley.harness import booley as tlr
 
 _CORE = textwrap.dedent(

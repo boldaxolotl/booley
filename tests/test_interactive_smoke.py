@@ -21,8 +21,8 @@ from unittest.mock import patch
 import pytest
 
 from booley.flows.execution import ExecutionSelection
-from booley.flows.simulate import SimulateFlow
-from booley.mcp_tools.base import EXIT_ERROR, EXIT_SUCCESS
+from booley.flows.sim.flow import SimulateFlow
+from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 
 _BOOLEY_ENV_VARS = (
     "BOOLEY_SLUG",
@@ -118,7 +118,7 @@ class TestNoTicketDryRun:
     ``simulate --dry-run`` to a clean exit."""
 
     @patch(
-        "booley.flows.simulate._get_test_names",
+        "booley.flows.sim.flow._get_test_names",
         return_value={"lite": ["smoke", "stress"]},
     )
     @patch.object(
@@ -186,7 +186,7 @@ class TestInteractiveLogsDir:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley import mcp_server
+        from booley.mcp import server as mcp_server
 
         (tmp_path / ".booley_project").mkdir()
         monkeypatch.chdir(tmp_path)
@@ -207,7 +207,7 @@ class TestInteractiveLogsDir:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley import mcp_server
+        from booley.mcp import server as mcp_server
 
         (tmp_path / ".booley_project").mkdir()
         monkeypatch.chdir(tmp_path)
@@ -224,7 +224,7 @@ class TestInteractiveLogsDir:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from booley import mcp_server
+        from booley.mcp import server as mcp_server
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
@@ -251,8 +251,8 @@ class TestAsicSynthesizeBaselineInteractive:
     ) -> None:
         import subprocess
 
-        from booley.flows.asic_synthesize import AsicSynthesizeFlow, SynthMetrics
-        from booley.mcp_tools.base import McpToolResult
+        from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
+        from booley.mcp.base import McpToolResult
 
         monkeypatch.delenv("BOOLEY_SLUG", raising=False)
 

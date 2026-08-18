@@ -144,7 +144,7 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     """
     import threading
 
-    from booley.platform_paths import kill_process_tree, popen_new_group_kwargs
+    from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
     from booley.sim.run_guard import (
         DiskBudgetGuard,
         child_death_kwargs,
@@ -363,7 +363,7 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
     ``dump.vcd`` into *run_cwd*, which is then fed through the iverilog
     ``TraceSession`` VCD→bwave postprocess.
     """
-    from booley.heartbeat import Heartbeat
+    from booley.runtime.heartbeat import Heartbeat
 
     # Resolve every path to absolute up front, while cwd is still the project
     # root: --build-dir/--work-dir/--run-cwd arrive relative (so they cross the

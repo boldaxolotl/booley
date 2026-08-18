@@ -7,7 +7,7 @@ from typing import ClassVar
 
 import pytest
 
-from booley.mcp_tools import job_records as jobrec
+from booley.runtime import job_records as jobrec
 
 
 @pytest.fixture()
@@ -45,7 +45,7 @@ class TestRecordRoundTrip:
             endpoint="sim",
             started_at="2026-07-04T13:15:02Z",
             timeout_s=1290,
-            argv=["python", "-m", "booley.flows.simulate"],
+            argv=["python", "-m", "booley.flows.sim"],
             pid=4242,
         )
         jobrec.write_record(rec)
@@ -54,7 +54,7 @@ class TestRecordRoundTrip:
         assert got.endpoint == "sim"
         assert got.pid == 4242
         assert got.status == jobrec.STATUS_RUNNING  # default
-        assert got.argv == ["python", "-m", "booley.flows.simulate"]
+        assert got.argv == ["python", "-m", "booley.flows.sim"]
 
     def test_read_missing_returns_none(self, _jobs_env):
         assert jobrec.read_record("nope-1") is None
@@ -231,7 +231,7 @@ class TestDeriveStatus:
 
     # -- identity guard: the PID must still be OUR process ---------------------
 
-    _ARGV: ClassVar[list[str]] = ["python", "-m", "booley.flows.simulate", "--cfg", "top"]
+    _ARGV: ClassVar[list[str]] = ["python", "-m", "booley.flows.sim", "--cfg", "top"]
 
     def test_recycled_pid_is_failed(self):
         # Container PID namespaces are dense: after a restart the recorded PID

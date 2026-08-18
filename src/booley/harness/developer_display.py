@@ -314,7 +314,7 @@ def _console_activity(activity: str) -> None:
 
 def _display_ticket_banner(ctx: TicketContext) -> None:
     """Print the styled ticket info box to the terminal."""
-    from .config import get_backend_config
+    from booley.config.settings import get_backend_config
 
     terminal.raw()
     _DISPLAY = {"claude": ("Claude", chrome), "codex": ("ChatGPT", chrome)}
@@ -363,7 +363,8 @@ def _attach_click_links(app, ctx, project_root: Path) -> None:
     run resolve against project only.
     """
     try:
-        from .config import VSCODE_EDITOR
+        from booley.config.settings import VSCODE_EDITOR
+
         from .console.links import build_link_context
         from .console.widgets import MainPane
 

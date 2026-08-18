@@ -1,4 +1,4 @@
-"""Tests for booley.runtime_context -- the Session Runtime context guard (ADR 0028)."""
+"""Tests for booley.runtime.runtime_context -- the Session Runtime context guard (ADR 0028)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley import runtime_context
+from booley.runtime import runtime_context
 
 # ---------------------------------------------------------------------------
 # Runtime simulation helpers. Tests run on a host machine today, but the suite

@@ -1447,8 +1447,16 @@ then run plain `booley init`:
 
 ```dockerfile
 FROM booley-sandbox
-RUN apt-get update && apt-get install -y --no-install-recommends my-tool
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends my-tool \
+    && rm -rf /var/lib/apt/lists/*
+USER agent
 ```
+
+The shipped base and flavor images finish as the unprivileged `agent` user.
+Switch to `root` only for OS-package installation, then restore `agent` before
+the image is used as a Session Runtime.
 
 ```console
 $ booley init
@@ -1471,7 +1479,7 @@ What init decides, and how to steer it:
 |---|---|
 | No Dockerfile, `[sandbox].pip_requirements` set | Generates `Dockerfile` + `requirements.txt` and builds the derived image |
 | Hand-authored Dockerfile, image **not** built | Builds the derived image from your file untouched |
-| Hand-authored Dockerfile, image already built | Leaves everything alone; rebuild with `docker build` yourself |
+| Hand-authored Dockerfile, image already built | Leaves it alone while current; rebuilds it verbatim when inherited Booley provenance is stale |
 | `[sandbox].image` naming an image Booley doesn't recognise | Skips the step entirely — you manage that image |
 
 "Hand-authored" means: the file does not carry init's generated header, *or* it
@@ -1485,6 +1493,13 @@ that started life generated and that you now want to own — it is the explicit
 FROM booley-sandbox-riscv
 RUN pip install --no-cache-dir -r /tmp/reqs.txt
 ```
+
+For a hand-authored `FROM booley-sandbox-riscv` recipe, init refreshes the
+shipped RISC-V flavor after refreshing `booley-sandbox`, then rebuilds the
+project image from your unchanged Dockerfile. The same inherited-provenance
+check rebuilds a project image left behind by a base version/source update.
+Manual ownership prevents file rewriting; it does not freeze stale parent
+layers into the Session Runtime.
 
 Use the [post-setup hook](#post-setup-hook) (below) for per-worktree
 preparation. Use a custom image for EDA tools that must exist in every container

@@ -13,7 +13,7 @@ from booley.eda.config import (
     parse_eda_config,
     retired_config_error,
 )
-from booley.project_dir import reset_cache
+from booley.runtime.project_dir import reset_cache
 
 
 def test_absent_config_is_empty() -> None:

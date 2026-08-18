@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from booley import job_slots
-from booley.job_slots import (
+from booley.runtime import job_slots
+from booley.runtime.job_slots import (
     CLASS_HEAVY,
     CLASS_LIGHT,
     CLASS_TICKET,
@@ -70,6 +70,28 @@ def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
 
 
+@pytest.mark.parametrize(("last_error", "expected"), [(5, True), (87, False)])
+def test_windows_pid_liveness_only_treats_invalid_pid_as_dead(monkeypatch, last_error, expected):
+    import ctypes
+
+    class FakeCall:
+        def __init__(self, result):
+            self.result = result
+
+        def __call__(self, *_args):
+            return self.result
+
+    class FakeKernel32:
+        OpenProcess = FakeCall(0)
+        GetExitCodeProcess = FakeCall(0)
+        CloseHandle = FakeCall(1)
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32(), raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
+
+    assert job_slots._windows_pid_alive(1234) is expected
+
+
 class TestSingleProcess:
     def test_first_claim_holds_immediately(self, root, world):
         spawn(world, 100)
@@ -95,12 +117,73 @@ class TestSingleProcess:
         store.release(tok)
         store.release(tok)  # must not raise
 
+    def test_release_retries_transient_permission_error(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        tok = store.submit(CLASS_HEAVY, pid=100)
+        original_unlink = Path.unlink
+        attempts = 0
+
+        def flaky_unlink(path, *args, **kwargs):
+            nonlocal attempts
+            if path == tok.path and attempts < 2:
+                attempts += 1
+                raise PermissionError("file is temporarily in use")
+            attempts += 1
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", flaky_unlink)
+        store.release(tok)
+
+        assert attempts == 3
+        assert not tok.path.exists()
+
     def test_cap_bounds_holders(self, root, world):
         spawn(world, 100)
         store = make_store(root, world, SlotCaps(max_light=3))
         toks = [store.submit(CLASS_LIGHT, pid=100) for _ in range(4)]
         states = [store.refresh(t).state for t in toks]
         assert states == [HOLDING, HOLDING, HOLDING, QUEUED]
+
+    def test_promotion_retries_transient_permission_error(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        tok = store.submit(CLASS_HEAVY, pid=100)
+        original_rename = Path.rename
+        attempts = 0
+
+        def flaky_rename(path, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("file is temporarily in use")
+            return original_rename(path, target)
+
+        monkeypatch.setattr(Path, "rename", flaky_rename)
+
+        assert store.refresh(tok).state == HOLDING
+        assert attempts == 3
+
+    def test_promotion_gate_prevents_a_second_process_from_promoting(
+        self, root, world, monkeypatch
+    ):
+        spawn(world, 100)
+        spawn(world, 200)
+        first = make_store(root, world)
+        second = make_store(root, world)
+        first_token = first.submit(CLASS_HEAVY, pid=100)
+        second_token = second.submit(CLASS_HEAVY, pid=200)
+
+        # Model the stale-rank interleaving directly: the second claimant had
+        # already observed rank zero when the first claimant entered the gate.
+        with monkeypatch.context() as patch:
+            patch.setattr(second, "_rank", lambda _token: 0)
+            with first._promotion_gate(first_token) as acquired:
+                assert acquired is True
+                assert second.refresh(second_token).state == QUEUED
+
+        assert first.refresh(first_token).state == HOLDING
+        assert second.refresh(second_token).state == QUEUED
 
     def test_queue_positions_are_zero_based_and_ordered(self, root, world):
         spawn(world, 100)
@@ -241,9 +324,9 @@ class TestGhostReaping:
         assert b.refresh(tok).position == 0
 
     def test_recycled_pid_argv_mismatch_is_reaped(self, root, world):
-        spawn(world, 100, argv=["python", "-m", "booley.flows.simulate"])
+        spawn(world, 100, argv=["python", "-m", "booley.flows.sim"])
         a = make_store(root, world)
-        tok = a.submit(CLASS_HEAVY, pid=100, argv=["python", "-m", "booley.flows.simulate"])
+        tok = a.submit(CLASS_HEAVY, pid=100, argv=["python", "-m", "booley.flows.sim"])
         assert a.refresh(tok).state == HOLDING
         # PID 100 is recycled by an unrelated process.
         world.alive[100] = ["sshd"]
@@ -405,7 +488,7 @@ def _race_worker(root_str: str, worker_id: int, rounds: int) -> None:
     import time as _time
     from pathlib import Path as _Path
 
-    from booley.job_slots import CLASS_HEAVY, SlotStore
+    from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
 
     root = _Path(root_str)
     store = SlotStore(root / "slots")
@@ -437,10 +520,17 @@ class TestRealProcessRace:
         workers = [ctx.Process(target=_race_worker, args=(str(tmp_path), w, 3)) for w in range(4)]
         for p in workers:
             p.start()
-        for p in workers:
-            p.join(timeout=60)
-            assert not p.is_alive(), "race worker wedged — admission deadlock?"
-            assert p.exitcode == 0
+        try:
+            for p in workers:
+                p.join(timeout=60)
+                assert not p.is_alive(), "race worker wedged — admission deadlock?"
+                assert p.exitcode == 0
+        finally:
+            for p in workers:
+                if p.is_alive():
+                    p.terminate()
+            for p in workers:
+                p.join(timeout=5)
         violations = list(tmp_path.glob("violation-*"))
         assert violations == [], [v.read_text() for v in violations]
 
@@ -477,13 +567,13 @@ class TestSlotCaps:
 
 class TestJobsConfigParsing:
     def test_defaults_when_section_absent(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config({})
         assert caps == SlotCaps()
 
     def test_explicit_values(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config(
             {
@@ -498,7 +588,7 @@ class TestJobsConfigParsing:
         assert caps == SlotCaps(max_heavy=2, max_light=5, max_tickets=4, queue_max=16)
 
     def test_invalid_values_keep_defaults(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config(
             {
@@ -513,13 +603,13 @@ class TestJobsConfigParsing:
 
     def test_queue_max_zero_is_allowed(self):
         # queue_max=0 means "never queue, refuse at cap" — a legal posture.
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         caps = _parse_jobs_config({"jobs": {"queue_max": 0}})
         assert caps.queue_max == 0
 
     def test_non_table_section_uses_defaults(self):
-        from booley.harness._backend_config import _parse_jobs_config
+        from booley.config.agent import _parse_jobs_config
 
         assert _parse_jobs_config({"jobs": "nope"}) == SlotCaps()
 
@@ -629,7 +719,7 @@ class TestSlotsDir:
     this path, so "deduping" the two would have gone green."""
 
     def test_is_project_scoped_and_dotless(self, tmp_path, monkeypatch):
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))

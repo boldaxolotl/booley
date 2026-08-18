@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.synthesis_profiles import validate_ppa_profile
+from booley.synthesis.profiles import validate_ppa_profile
 from booley.yosys import ppa
 
 

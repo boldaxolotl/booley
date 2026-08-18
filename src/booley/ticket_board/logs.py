@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from booley.timefmt import format_human_datetime
+from booley.runtime.timefmt import format_human_datetime
 
 logger = logging.getLogger(__name__)
 

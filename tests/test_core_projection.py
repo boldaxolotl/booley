@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.core_projection import (
+from booley.fusesoc.core_projection import (
     CoreProjectionError,
     authoritative_cores,
     isolated_registry_root,

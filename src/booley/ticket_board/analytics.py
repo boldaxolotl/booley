@@ -7,9 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from booley.config.pricing import MODEL_PRICING as _MODEL_PRICING
+from booley.config.pricing import resolve as _resolve_pricing
 from booley.core.boundary import as_float, as_int
-from booley.pricing import MODEL_PRICING as _MODEL_PRICING
-from booley.pricing import resolve as _resolve_pricing
 
 from .helpers import parse_arrow, parse_iso
 from .paths import STEP_DIR_MAP
@@ -18,7 +18,7 @@ from .paths import STEP_DIR_MAP
 # Pricing
 # ---------------------------------------------------------------------------
 
-# Rates live in booley.pricing, shared with the live agent backends. The dict
+# Rates live in booley.config.pricing, shared with the live agent backends. The dict
 # shape below is kept because it is this module's published surface (re-exported
 # from booley.ticket_board), but it is now a view onto the one table.
 PRICING = {

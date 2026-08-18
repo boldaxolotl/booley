@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 # Make sure the src tree is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
-from booley.mcp_tools.coverage_analyst import (
+from booley.specialists.coverage_analyst import (
     BranchResult,
     CoverageAnalystSpecialist,
     CoverageReport,
@@ -613,7 +613,7 @@ class TestMechanicalMeasurementErrors:
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
             patch(
-                "booley.mcp_tools.coverage_analyst.subprocess.run",
+                "booley.specialists.coverage_analyst.subprocess.run",
                 side_effect=subprocess.TimeoutExpired("bwave", 120),
             ),
         ):
@@ -629,7 +629,7 @@ class TestMechanicalMeasurementErrors:
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
             patch(
-                "booley.mcp_tools.coverage_analyst.subprocess.run", side_effect=FileNotFoundError
+                "booley.specialists.coverage_analyst.subprocess.run", side_effect=FileNotFoundError
             ),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
@@ -647,7 +647,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
-            patch("booley.mcp_tools.coverage_analyst.subprocess.run", return_value=mock_proc),
+            patch("booley.specialists.coverage_analyst.subprocess.run", return_value=mock_proc),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
         assert stats == []
@@ -665,7 +665,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
-            patch("booley.mcp_tools.coverage_analyst.subprocess.run", return_value=mock_proc),
+            patch("booley.specialists.coverage_analyst.subprocess.run", return_value=mock_proc),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
         assert stats == []
@@ -682,7 +682,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
-            patch("booley.mcp_tools.coverage_analyst.subprocess.run", return_value=mock_proc),
+            patch("booley.specialists.coverage_analyst.subprocess.run", return_value=mock_proc),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
         assert len(stats) == 1
@@ -742,7 +742,7 @@ class TestFilterStructuralNoise:
             (tmp_path / scope_file).write_text(scope_content, encoding="utf-8")
         return endpoint
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_ivl_for_loop_zero_transitions(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=0)]
@@ -750,7 +750,7 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_ivl_for_loop_nonzero_transitions(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=50)]
@@ -758,7 +758,7 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_param_zero_transitions_in_scope(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -767,7 +767,7 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_param_nonzero_transitions_kept(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -776,7 +776,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_param_zero_transitions_not_in_scope(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -785,7 +785,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_normal_signal_zero_transitions_kept(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.data_out[7:0]", transitions=0)]
@@ -793,7 +793,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"})
+    @patch(
+        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+    )
     def test_unknown_backend_all_kept(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [
@@ -804,7 +806,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 2
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_mixed_bag(self, _mock_be, tmp_path):
         rtl = "module alu;\n  localparam WIDTH = 8;\n  parameter DEPTH = 4;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -826,7 +828,7 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.DEPTH", "dut.data_out[7:0]", "dut.clk"}
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_localparam_with_range(self, _mock_be, tmp_path):
         rtl = "localparam [7:0] INIT_VAL = 8'hFF;"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -834,7 +836,7 @@ class TestFilterStructuralNoise:
         _kept, excluded = endpoint._filter_structural_noise(stats, ["alu.sv"])
         assert len(excluded) == 1
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_genvar_zero_transitions_excluded(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar i;\n  generate for (i=0; i<4; i=i+1) begin : gen\n  end endgenerate\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -843,7 +845,7 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_genvar_nonzero_transitions_kept(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar i;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -852,7 +854,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_genvar_not_in_scope_generate_constant_excluded(self, _mock_be, tmp_path):
         """Signal under generate scope with ≤1 transition and ≤1 value is a
         generate-scope constant even if its leaf name isn't a declared genvar."""
@@ -863,7 +865,7 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_genvar_not_in_scope_active_signal_kept(self, _mock_be, tmp_path):
         """Signal under generate scope with many transitions is NOT noise."""
         rtl = "module top;\n  genvar i;\nendmodule"
@@ -873,7 +875,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_generate_scope_nested_constant_excluded(self, _mock_be, tmp_path):
         """Nested generate hierarchy (row[0].col[1].word_idx) with constant
         value is structural noise."""
@@ -883,7 +885,7 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_generate_scope_multi_value_kept(self, _mock_be, tmp_path):
         """Signal under generate scope with multiple observed values is real."""
         endpoint = self._make_endpoint(tmp_path)
@@ -892,7 +894,9 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"})
+    @patch(
+        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+    )
     def test_generate_scope_constant_not_filtered_on_verilator(self, _mock_be, tmp_path):
         """Generate-scope constant detection is Icarus-only."""
         endpoint = self._make_endpoint(tmp_path)
@@ -901,7 +905,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_param_one_transition_excluded(self, _mock_be, tmp_path):
         """Params with exactly 1 transition (X->constant) are now excluded."""
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
@@ -911,7 +915,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"})
+    @patch(
+        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+    )
     def test_param_filtered_on_verilator(self, _mock_be, tmp_path):
         rtl = "module alu;\n  parameter NUM_ROUNDS = 10;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -920,7 +926,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"})
+    @patch(
+        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+    )
     def test_genvar_filtered_on_verilator(self, _mock_be, tmp_path):
         rtl = "module top;\n  genvar j;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -929,7 +937,9 @@ class TestFilterStructuralNoise:
         assert len(excluded) == 1
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"})
+    @patch(
+        "booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "verilator"}
+    )
     def test_ivl_for_loop_not_filtered_on_verilator(self, _mock_be, tmp_path):
         endpoint = self._make_endpoint(tmp_path)
         stats = [_sig("dut.$ivl_for_loop0.i[31:0]", transitions=0)]
@@ -937,7 +947,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_mixed_bag_with_genvars(self, _mock_be, tmp_path):
         rtl = "module top;\n  parameter WIDTH = 8;\n  genvar i, j;\nendmodule"
         endpoint = self._make_endpoint(tmp_path, scope_content=rtl)
@@ -960,7 +970,7 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.data_out[7:0]", "dut.clk"}
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_lowercase_param_not_filtered(self, _mock_be, tmp_path):
         """Lowercase params bypass the uppercase gate — avoids false filtering
         of dynamic signals that share a name with a localparam in another file."""
@@ -971,7 +981,7 @@ class TestFilterStructuralNoise:
         assert len(kept) == 1
         assert excluded == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_submodule_param_in_sibling_file_filtered(self, _mock_be, tmp_path):
         """Params declared in sibling RTL files (same directory) are now
         picked up — fixes the AES submodule constant gap."""
@@ -998,7 +1008,7 @@ class TestFilterStructuralNoise:
         }
         assert kept_names == {"dut.sub_inst.data_out[7:0]"}
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_typed_parameter_filtered(self, _mock_be, tmp_path):
         """Typed parameters (parameter int/logic/string) are correctly captured
         by the regex — the type keyword is skipped, not mistaken for the name."""
@@ -1020,7 +1030,7 @@ class TestFilterStructuralNoise:
         assert excluded_names == {"dut.WIDTH", "dut.DEPTH[3:0]", "dut.MODE"}
         assert kept == []
 
-    @patch("booley.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
+    @patch("booley.fusesoc.fusesoc_registry.target_eda_tools", return_value={"default": "icarus"})
     def test_params_in_header_files_filtered(self, _mock_be, tmp_path):
         """Params declared in .svh/.vh header files are picked up."""
         endpoint = self._make_endpoint(tmp_path, scope_content="module top;\nendmodule")
@@ -1396,7 +1406,7 @@ class TestPhaseFailsClosedOnUnparseable:
     def test_vsc_unparseable_fails_branch_and_expression_closed(self, monkeypatch):
         import contextlib
 
-        import booley.mcp_tools.coverage_analyst as ca
+        import booley.specialists.coverage_analyst as ca
 
         endpoint = self._bare_endpoint()
         monkeypatch.setattr(endpoint, "_resolve_model", lambda: "m", raising=False)
@@ -1440,7 +1450,7 @@ class TestPhaseFailsClosedOnUnparseable:
         """Guard against over-eager fail-closed: real JSON must stay clean."""
         import contextlib
 
-        import booley.mcp_tools.coverage_analyst as ca
+        import booley.specialists.coverage_analyst as ca
 
         endpoint = self._bare_endpoint()
         monkeypatch.setattr(endpoint, "_resolve_model", lambda: "m", raising=False)
@@ -2050,7 +2060,7 @@ class TestReadRtlSources:
         assert ctx == ""
 
     def test_truncates_large_files(self, tmp_path):
-        from booley.mcp_tools.coverage_analyst import _RTL_MAX_CHARS
+        from booley.specialists.coverage_analyst import _RTL_MAX_CHARS
 
         content = "x" * (_RTL_MAX_CHARS + 1000)
         (tmp_path / "big.sv").write_text(content)
@@ -2434,7 +2444,7 @@ class TestScanTbForDumpCalls:
 
     def _patch_tb_dirs(self, tb_dir, monkeypatch):
         monkeypatch.setattr(
-            "booley.shared_infra.get_tb_dirs",
+            "booley.runtime.shared_infra.get_tb_dirs",
             lambda: ([tb_dir], []),
         )
 
@@ -2521,7 +2531,7 @@ class TestScanTbForDutInstances:
 
     def _patch_tb_dirs(self, tb_dir, monkeypatch):
         monkeypatch.setattr(
-            "booley.shared_infra.get_tb_dirs",
+            "booley.runtime.shared_infra.get_tb_dirs",
             lambda: ([tb_dir], []),
         )
 
@@ -2862,12 +2872,12 @@ class TestTraceTestPlusargs:
 
     def test_unknown_test_falls_back_to_default(self):
         # Substring that resolves to nothing → raw passthrough (binary default).
-        with patch("booley.project_config.TEST_NAMES", {"config_a": ["smoke"]}):
+        with patch("booley.config.project_config.TEST_NAMES", {"config_a": ["smoke"]}):
             assert _trace_test_plusargs("config_a", "nope") == []
 
     def test_resolves_substring_to_indexed_selector(self):
         with patch(
-            "booley.project_config.TEST_NAMES", {"config_a": ["smoke", "regress", "stress"]}
+            "booley.config.project_config.TEST_NAMES", {"config_a": ["smoke", "regress", "stress"]}
         ):
             # Default template is "+test_id={index}".
             assert _trace_test_plusargs("config_a", "regress") == ["+test_id=1"]
@@ -2886,7 +2896,8 @@ class TestBuildEdalizeTraceCmd:
             work_dir=str(work_dir), target="config_a", tb_top="tb_top", test=""
         )
         with patch(
-            "booley.fusesoc_registry.resolve_target", return_value=self._resolved(build_root)
+            "booley.fusesoc.fusesoc_registry.resolve_target",
+            return_value=self._resolved(build_root),
         ):
             cmd = endpoint._build_edalize_trace_cmd(
                 work_dir,
@@ -2915,9 +2926,10 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
-                "booley.fusesoc_registry.resolve_target", return_value=self._resolved(build_root)
+                "booley.fusesoc.fusesoc_registry.resolve_target",
+                return_value=self._resolved(build_root),
             ),
-            patch("booley.project_config.TEST_NAMES", {"config_a": ["smoke", "regress"]}),
+            patch("booley.config.project_config.TEST_NAMES", {"config_a": ["smoke", "regress"]}),
         ):
             cmd = endpoint._build_edalize_trace_cmd(work_dir, trace_dir, "", 600)
         script = cmd[2]
@@ -2943,7 +2955,7 @@ class TestBwaveStatsCmd:
     """
 
     def test_returns_resolved_native_path(self, tmp_path):
-        from booley.mcp_tools import coverage_analyst
+        from booley.specialists import coverage_analyst
 
         native = tmp_path / "bwave"
         native.write_bytes(b"\x7fELF")
@@ -2954,14 +2966,14 @@ class TestBwaveStatsCmd:
         assert cmd[0] != "bwave"
 
     def test_returns_none_when_binary_is_absent(self):
-        from booley.mcp_tools import coverage_analyst
+        from booley.specialists import coverage_analyst
 
         with patch.object(coverage_analyst, "native_bwave_binary", return_value=None):
             assert coverage_analyst._bwave_stats_cmd() is None
 
     def test_stats_call_sites_use_the_resolved_prefix(self, tmp_path):
         """Every subprocess `bwave stats` goes through _bwave_stats_cmd()."""
-        from booley.mcp_tools import coverage_analyst
+        from booley.specialists import coverage_analyst
 
         native = tmp_path / "bwave"
         native.write_bytes(b"\x7fELF")
@@ -2981,7 +2993,7 @@ class TestBwaveStatsCmd:
             assert cmd[1:3] == ["stats", "--format"]
 
     def test_prerequisites_fail_when_binary_is_absent(self, tmp_path):
-        from booley.mcp_tools import coverage_analyst
+        from booley.specialists import coverage_analyst
 
         endpoint = _make_endpoint_with_args(work_dir=str(tmp_path))
         with patch.object(coverage_analyst, "native_bwave_binary", return_value=None):
@@ -2993,7 +3005,7 @@ class TestBwaveStatsCmd:
 
     def test_source_has_no_bare_name_bwave_invocation(self):
         """Regression guard: a bare ["bwave", ...] list would hit the wrapper."""
-        from booley.mcp_tools import coverage_analyst
+        from booley.specialists import coverage_analyst
 
         source = Path(coverage_analyst.__file__).read_text(encoding="utf-8")
         offenders = [

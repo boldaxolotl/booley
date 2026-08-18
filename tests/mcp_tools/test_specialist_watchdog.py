@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from booley.mcp_tools import specialist
-from booley.mcp_tools.specialist import parent_death_watchdog
+from booley.specialists import specialist
+from booley.specialists.specialist import parent_death_watchdog
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="watchdog is POSIX-only")
 
@@ -34,7 +34,7 @@ class TestParentDeathWatchdog:
             "_abort_orphaned_run",
             lambda label, ppid: aborts.append((label, ppid)),
         )
-        real_ppid = os.getppid()
+        real_ppid = 42
         reported = {"ppid": real_ppid}
         monkeypatch.setattr(os, "getppid", lambda: reported["ppid"])
 
@@ -76,6 +76,7 @@ class TestParentDeathWatchdog:
         """No leaked poller: the thread must exit when the call returns."""
         import threading
 
+        monkeypatch.setattr(os, "getppid", lambda: 42)
         before = {t.name for t in threading.enumerate()}
         with parent_death_watchdog("reviewer", interval=0.01):
             assert any(t.name == "parent-watchdog-reviewer" for t in threading.enumerate())
@@ -178,6 +179,6 @@ class TestDescendantPids:
 
     def test_is_the_shared_reaper_walk_not_a_second_copy(self):
         """One /proc walk in the codebase, not two that can drift apart."""
-        from booley import zombie_cleanup
+        from booley.runtime import zombie_cleanup
 
         assert specialist._descendant_pids is zombie_cleanup._descendant_pids

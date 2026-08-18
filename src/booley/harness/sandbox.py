@@ -20,9 +20,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.harness import auth_token
-from booley.platform_paths import docker_mount_path as _docker_mount_path
-from booley.project_config import PROJECT_NAME
+from booley.config.project_config import PROJECT_NAME
+from booley.runtime import auth_token
+from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +357,7 @@ class DockerRunner:
 
     def _append_api_key_env_file(self, docker_cmd: list[str]) -> None:
         """Write API keys to a transient env-file and append --env-file flag."""
-        from booley.harness._backend_config import resolve_auth_policy
+        from booley.config.agent import resolve_auth_policy
 
         # [agent] auth = "subscription": the API keys are exactly what must NOT
         # reach the agents (an exported key outranks — and bills over — the

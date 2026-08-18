@@ -40,8 +40,8 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
-from booley.mcp_tools.base import read_source_dirs_from_toml
-from booley.timefmt import compact_utc_now
+from booley.mcp.base import read_source_dirs_from_toml
+from booley.runtime.timefmt import compact_utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
         # (legacy human-mode invocation). It is safe to consult the
         # CWD-resolved shared_infra cache here.
         try:
-            from booley.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
+            from booley.runtime.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
 
             parsed = get_rtl_source_dirs(), get_tb_source_dirs()
         except Exception:  # noqa: BLE001 — legacy CWD path unavailable; warn and fall back to default category dirs
@@ -191,7 +191,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
             )
             return CATEGORY_DIRS_DEFAULT
 
-    from booley.shared_infra import source_dir_prefixes
+    from booley.runtime.shared_infra import source_dir_prefixes
 
     rtl_dirs, tb_dirs = parsed
     rtl_extra = tuple(p for p in source_dir_prefixes(rtl_dirs, work_dir) if "\\" not in p)
@@ -210,7 +210,7 @@ def validate_scope_category(
     work_dir: Path | None = None,
 ) -> str | None:
     """Return error message if any scope file mismatches the category, else None."""
-    from booley.shared_infra import source_path_matches
+    from booley.runtime.shared_infra import source_path_matches
 
     allowed_prefixes = get_category_dirs(work_dir)[category]
     bad = [path for path in scope_files if not source_path_matches(path, allowed_prefixes)]
@@ -1210,7 +1210,7 @@ def clean_sim_artifacts(work_dir: Path) -> None:
     files and the output_dir itself are preserved.
     """
     try:
-        from booley.shared_infra import get_sim_output_dir
+        from booley.runtime.shared_infra import get_sim_output_dir
 
         sim_dir = get_sim_output_dir(work_dir)
     except Exception:  # noqa: BLE001 — best-effort sim-output-dir read; falls back to work_dir/"sim"

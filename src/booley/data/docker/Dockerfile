@@ -263,7 +263,7 @@ RUN python -m ensurepip --default-pip \
     && test -x "$CLAUDE_SDK_BUNDLED_CLI" \
     && rm -f "$CLAUDE_SDK_BUNDLED_CLI" \
     && test ! -e "$CLAUDE_SDK_BUNDLED_CLI" \
-    && python -c 'from booley.harness._claude_backend import ClaudeSDKBackend; backend = ClaudeSDKBackend(); backend._resolve_cli_shim_once(); assert backend._cli_path and "_bundled" not in backend._cli_path'
+    && python -c 'from booley.runtime._claude_backend import ClaudeSDKBackend; backend = ClaudeSDKBackend(); backend._resolve_cli_shim_once(); assert backend._cli_path and "_bundled" not in backend._cli_path'
 
 # EDA invocation/registry layer (ADR 0019 + 0022) — pinned EXACTLY to the
 # flow-API-stable pair. These also arrive transitively via the wheel's
@@ -347,7 +347,7 @@ COPY --from=bwave-builder /build/target/release/bwave /tmp/bwave-bin
 #      (Booley's own devcontainer) shadows the installed package, which drags
 #      package_data_dir() into the mounted tree, where bin/ is empty — the
 #      static path is what keeps the binary resolvable there. BOOLEY_BWAVE_BIN
-#      names it for booley.paths.native_bwave_binary().
+#      names it for booley.runtime.paths.native_bwave_binary().
 #
 # Off PATH is the point: the only `bwave` on PATH must be the wrapper below.
 # A native binary earlier on PATH shadows it, and a human typing `bwave gui`
@@ -356,7 +356,7 @@ COPY --from=bwave-builder /build/target/release/bwave /tmp/bwave-bin
 # ~/.cargo/bin/bwave sat ahead of /usr/local/bin. That toolchain is gone now,
 # but the placement rule is what keeps it gone.)
 USER root
-RUN BWAVE_BIN_DIR="$(python3 -c 'from booley.paths import package_data_dir; print(package_data_dir())')/bin" \
+RUN BWAVE_BIN_DIR="$(python3 -c 'from booley.runtime.paths import package_data_dir; print(package_data_dir())')/bin" \
     && mkdir -p "$BWAVE_BIN_DIR" /usr/local/libexec/booley \
     && install -m 755 /tmp/bwave-bin "$BWAVE_BIN_DIR/bwave" \
     && ln -f "$BWAVE_BIN_DIR/bwave" /usr/local/libexec/booley/bwave \

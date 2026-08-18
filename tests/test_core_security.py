@@ -15,7 +15,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.core_security import (
+from booley.fusesoc.core_security import (
     CoreViolation,
     fpga_impl_eda_tools,
     validate_core,

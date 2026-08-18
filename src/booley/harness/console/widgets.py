@@ -30,7 +30,8 @@ from .criteria_format import (  # noqa: F401 — re-exported for backward compat
 )
 
 if TYPE_CHECKING:
-    from .._editor_config import ResolvedEditor
+    from booley.config.editor import ResolvedEditor
+
     from .links import LinkContext
 
 logger = logging.getLogger(__name__)
@@ -404,6 +405,11 @@ class MainPane(VerticalScroll):
         elif new_val >= self.max_scroll_y - 5:
             self._auto_scroll = True
         self.post_message(ScrollPositionChanged())
+
+    def action_scroll_end(self) -> None:
+        """Jump to the tail and explicitly resume follow mode."""
+        self._auto_scroll = True
+        self.scroll_end(animate=False, x_axis=False)
 
     def get_completion_marks(self) -> list[McpToolCompletionMark]:
         return self._endpoint_completions

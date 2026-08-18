@@ -34,7 +34,7 @@ class TestParamsToArgv:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _params_to_argv
+            from booley.mcp.server import _params_to_argv
 
             self._params_to_argv = _params_to_argv
 
@@ -103,7 +103,7 @@ class TestMcpLifetime:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _env_timeout_seconds, _McpLifetime
+            from booley.mcp.server import _env_timeout_seconds, _McpLifetime
 
             self._McpLifetime = _McpLifetime
             self._env_timeout_seconds = _env_timeout_seconds
@@ -190,7 +190,7 @@ class TestMcpLifetime:
         # Runtime container, so their MCP tool activity must feed the reaper
         # heartbeat too — an active ticket never reads as idle. No self-exit:
         # the spawning client owns the process lifetime.
-        import booley.mcp_server as mod
+        import booley.mcp.server as mod
 
         hb = tmp_path / "hb"
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
@@ -210,7 +210,7 @@ class TestMcpLifetime:
         # stays so idle containers are still stopped at the container level.
         # Use the module's own class: the fixture's import can be a different,
         # orphaned module instance (patch.dict removes it from sys.modules).
-        import booley.mcp_server as mod
+        import booley.mcp.server as mod
 
         hb = tmp_path / "hb"
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(hb))
@@ -221,7 +221,7 @@ class TestMcpLifetime:
         assert hb.exists()  # heartbeat written at construction
 
     def test_from_env_stdio_keeps_self_exit(self, tmp_path, monkeypatch):
-        import booley.mcp_server as mod
+        import booley.mcp.server as mod
 
         monkeypatch.setattr(mod, "_MCP_HEARTBEAT_PATH", str(tmp_path / "hb"))
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
@@ -232,19 +232,19 @@ class TestMcpLifetime:
 
 class TestHttpPort:
     def test_default(self, monkeypatch):
-        from booley.mcp_server import DEFAULT_HTTP_PORT, http_port
+        from booley.mcp.server import DEFAULT_HTTP_PORT, http_port
 
         monkeypatch.delenv("BOOLEY_MCP_HTTP_PORT", raising=False)
         assert http_port() == DEFAULT_HTTP_PORT
 
     def test_env_override(self, monkeypatch):
-        from booley.mcp_server import http_port
+        from booley.mcp.server import http_port
 
         monkeypatch.setenv("BOOLEY_MCP_HTTP_PORT", "9123")
         assert http_port() == 9123
 
     def test_invalid_falls_back(self, monkeypatch):
-        from booley.mcp_server import DEFAULT_HTTP_PORT, http_port
+        from booley.mcp.server import DEFAULT_HTTP_PORT, http_port
 
         monkeypatch.setenv("BOOLEY_MCP_HTTP_PORT", "not-a-port")
         assert http_port() == DEFAULT_HTTP_PORT
@@ -268,7 +268,7 @@ class TestFormatMcpToolResult:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _format_mcp_tool_result
+            from booley.mcp.server import _format_mcp_tool_result
 
             self._format_mcp_tool_result = _format_mcp_tool_result
 
@@ -323,7 +323,7 @@ class TestRunSubprocess:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _run_subprocess
+            from booley.mcp.server import _run_subprocess
 
             self._run_subprocess = _run_subprocess
 
@@ -405,7 +405,7 @@ class TestRunSubprocess:
         """Output larger than cap is truncated to the tail."""
         import asyncio
 
-        from booley.mcp_server import _stdout_cap_bytes
+        from booley.mcp.server import _stdout_cap_bytes
 
         cap = _stdout_cap_bytes()
         # Print 2x the cap; verify we keep only the tail (ends with last marker).
@@ -434,7 +434,7 @@ class TestMcpToolTimeoutSeconds:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _mcp_tool_timeout_seconds
+            from booley.mcp.server import _mcp_tool_timeout_seconds
 
             self._mcp_tool_timeout_seconds = _mcp_tool_timeout_seconds
 
@@ -456,7 +456,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_configured_default_gets_small_margin(self, tmp_path):
         with patch(
-            "booley.flows.simulate._resolve_sim_timeout_ms",
+            "booley.flows.sim.flow._resolve_sim_timeout_ms",
             return_value=600_000,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -468,7 +468,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
-            "booley.flows.simulate._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
             return_value=4,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -480,7 +480,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_trace_margin_scales_by_work_units(self):
         with patch(
-            "booley.flows.simulate._resolve_sim_campaign_work_units",
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
             return_value=3,
         ):
             timeout = self._mcp_tool_timeout_seconds(
@@ -526,7 +526,7 @@ class TestMcpToolTimeoutSeconds:
 
         Otherwise a config-only raise would be silently killed by the outer cap.
         """
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         reset_cache()
         proj = tmp_path / ".booley_project"
@@ -545,7 +545,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
         """No --timeout and no config knob -> the wrapper default budget stands."""
-        from booley.project_dir import reset_cache
+        from booley.runtime.project_dir import reset_cache
 
         reset_cache()
         # The wrapper default and builtin sim budget are both 600s, then the
@@ -574,7 +574,7 @@ class TestTryReadReport:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _try_read_report
+            from booley.mcp.server import _try_read_report
 
             self._try_read_report = _try_read_report
 
@@ -623,7 +623,7 @@ class TestResolveTranscriptDir:
         with patch.dict(sys.modules, mcp_stubs):
             from collections import defaultdict
 
-            from booley.mcp_server import _resolve_transcript_dir
+            from booley.mcp.server import _resolve_transcript_dir
 
             self._resolve = _resolve_transcript_dir
             self._new_counts = lambda: defaultdict(int)
@@ -668,7 +668,7 @@ class TestMcpExposureFiltering:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import (
+            from booley.mcp.server import (
                 _bwave_mcp_tools_for_mode,
                 _mcp_tool_visible,
                 _status_mcp_tool_visible,
@@ -758,7 +758,7 @@ class TestBooleyStatus:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley import mcp_server
+            from booley.mcp import server as mcp_server
 
             self.mcp_server = mcp_server
 
@@ -904,7 +904,7 @@ class TestBooleySleep:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley import mcp_server
+            from booley.mcp import server as mcp_server
 
             self.mcp_server = mcp_server
 
@@ -998,7 +998,7 @@ class TestBooleyTargets:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley import mcp_server
+            from booley.mcp import server as mcp_server
 
             self.mcp_server = mcp_server
 
@@ -1095,7 +1095,7 @@ class TestBwaveDispatch:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley import mcp_server
+            from booley.mcp import server as mcp_server
 
             self.mcp_server = mcp_server
             self._dispatch_bwave = mcp_server._dispatch_bwave
@@ -1289,8 +1289,8 @@ class TestLoadBackendConfigFromToml:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.harness.config import get_backend_config, set_backend_config
-            from booley.mcp_server import _load_backend_config_from_toml
+            from booley.config.settings import get_backend_config, set_backend_config
+            from booley.mcp.server import _load_backend_config_from_toml
 
             self._load = _load_backend_config_from_toml
             self._get = get_backend_config
@@ -1359,7 +1359,7 @@ class TestBuiltinDiscoveryGate:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import _discover_builtin_mcp_tools
+            from booley.mcp.server import _discover_builtin_mcp_tools
 
             self._discover = _discover_builtin_mcp_tools
         # MCP visibility filters must not leak in from the invoking shell.
@@ -1379,7 +1379,7 @@ class TestBuiltinDiscoveryGate:
         assert errors == []
 
     def test_mcp_endpoint_reaches_import_stage(self):
-        from booley.mcp_tools.registry import McpToolInfo
+        from booley.mcp.registry import McpToolInfo
 
         info = McpToolInfo(
             name="shiny_mcp_tool",
@@ -1396,7 +1396,7 @@ class TestBuiltinDiscoveryGate:
         # Golden: over the real Flow/MCP packages the import scan must agree
         # with the AST scan and produce zero errors — no current or future
         # helper module may surface as NO MCP ENDPOINT CLASS FOUND.
-        from booley.mcp_tools.registry import discover_mcp_tools
+        from booley.mcp.registry import discover_mcp_tools
 
         discovered = discover_mcp_tools()
 
@@ -1427,7 +1427,7 @@ class TestMainProxySelfHeal:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley import mcp_server
+            from booley.mcp import server as mcp_server
 
             self.mcp_server = mcp_server
         # Sandbox venue with a clean (Codex-replaced) env: marker present,
@@ -1440,7 +1440,7 @@ class TestMainProxySelfHeal:
     def test_main_defaults_proxy_env_in_sandbox(self, monkeypatch):
         import os
 
-        from booley import runtime_context
+        from booley.runtime import runtime_context
 
         # Neuter the server itself — only the entry path is under test.
         monkeypatch.setattr(self.mcp_server, "_main", MagicMock())
@@ -1486,7 +1486,7 @@ class TestInteractiveHiddenNote:
             "mcp.types": MagicMock(),
         }
         with patch.dict(sys.modules, mcp_stubs):
-            from booley.mcp_server import (
+            from booley.mcp.server import (
                 _INTERACTIVE_HIDDEN_REASONS,
                 _INTERACTIVE_MCP_EXCLUDED,
                 _interactive_hidden_note,

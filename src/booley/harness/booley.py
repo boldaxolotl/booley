@@ -27,7 +27,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley import runtime_context
 from booley.feedback import cli as feedback_cli
 from booley.harness import cheatsheet, doctor_stamp
 from booley.harness.auth_cmd import run_auth
@@ -55,16 +54,17 @@ from booley.harness.orphan_handler import handle_post_run_orphans, handle_startu
 from booley.harness.render_md import render
 from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
-from booley.paths import cheatsheet_path
-from booley.project_dir import PROJECT_DIR_NAME
+from booley.runtime import runtime_context
+from booley.runtime.paths import cheatsheet_path
+from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.timefmt import format_human_datetime
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketFileSpec, TicketIO
-from booley.timefmt import format_human_datetime
 
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
-    from booley.mcp_tools.registry import McpToolInfo
+    from booley.mcp.registry import McpToolInfo
 
 # --- Constants ---
 LOOP_LOG_REL = Path("logs") / "booley.log"
@@ -837,7 +837,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
             render_specialists_reference,
             splice_generated,
         )
-        from booley.mcp_server import get_project_mcp_tools_dir
+        from booley.mcp.server import get_project_mcp_tools_dir
 
         # No Execution column: keep the terminal table within a terminal width
         # — a 4th column overflowed and truncated the Sets column (QA_REPORT
@@ -1204,7 +1204,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
         )
         return 2
 
-    from booley.harness.config import get_backend_config, load_models_config
+    from booley.config.settings import get_backend_config, load_models_config
     from booley.harness.sandbox import DockerRunner, DockerSandboxConfig
 
     # Load the project's booley.toml ([sandbox].image, memory, ...) — without
@@ -1267,7 +1267,7 @@ def _discover_project_mcp_tools(project_root: Path) -> list[McpToolInfo]:
     Discovery is deliberately unfiltered so the diagnostic commands work while
     a project is being configured.
     """
-    from booley.mcp_tools.registry import discover_mcp_tools
+    from booley.mcp.registry import discover_mcp_tools
 
     return discover_mcp_tools(project_mcp_tools_dir=project_root / PROJECT_DIR_NAME / "mcp_tools")
 
@@ -1281,7 +1281,7 @@ def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     import importlib
     import importlib.util
 
-    from booley.mcp_tools.base import McpTool
+    from booley.mcp.base import McpTool
 
     path = Path(info.path)
     if path.is_absolute():
@@ -1337,7 +1337,7 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     The endpoint's own entry point performs admission and returns its exit code.
     """
     mcp_tools = _discover_project_mcp_tools(project_root)
-    from booley.flow_names import canonical
+    from booley.targets.flow_names import canonical
 
     raw_name = getattr(args, "endpoint_name", None)
     name = canonical(raw_name) if raw_name else None
@@ -1385,12 +1385,13 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     """
     import json as _json
 
-    from booley import fusesoc_registry, target_surface
+    from booley.fusesoc import fusesoc_registry
+    from booley.targets import target_surface
 
     selector: str | None = getattr(args, "selector", None)
     for_flow: str | None = getattr(args, "for_flow", None)
     if for_flow:
-        from booley.flow_names import canonical
+        from booley.targets.flow_names import canonical
 
         for_flow = canonical(for_flow)
     as_json: bool = getattr(args, "json", False)
@@ -1470,7 +1471,7 @@ def _setup_runtime(args: argparse.Namespace, project_root: Path) -> str:
     # by _run_board activate/claim point to this long-lived process,
     # enabling orphan detection if we get killed.
     try:
-        from booley.project_config import ENV_PREFIX as _proj_env
+        from booley.config.project_config import ENV_PREFIX as _proj_env
 
         _orch_env = f"{_proj_env}_DEVELOPER_PID"
     except Exception:  # noqa: BLE001 — optional import may fail; fall back to the default env-var name
@@ -1623,19 +1624,19 @@ def _claim_ticket_slot(
     (bare/test invocations). Raises QueueFullError when even the queue is
     full — the caller surfaces that and backs off.
     """
-    from booley import job_slots
+    from booley.runtime import job_slots
 
     root = job_slots.slots_dir()
     if root is None:
         return (None, None)
     try:
-        from booley.shared_infra import _load_rtl_config
+        from booley.runtime.shared_infra import _load_rtl_config
 
         caps = job_slots.parse_caps(_load_rtl_config(project_root) or {})
     except Exception:  # noqa: BLE001 — defaults are safe
         caps = job_slots.SlotCaps()
     store = job_slots.SlotStore(root, caps)
-    from booley.mcp_tools.job_records import _proc_cmdline
+    from booley.runtime.job_records import _proc_cmdline
 
     pid = os.getpid()
 
@@ -1666,7 +1667,7 @@ def _run_harness(
     venv_py: str,
 ) -> tuple[int, float]:
     """Build command, optionally pre-activate slug, run harness; returns (exit_code, elapsed)."""
-    from booley import job_slots
+    from booley.runtime import job_slots
 
     cmd = [venv_py, "-m", "booley.harness", "--project-root", str(project_root)]
 

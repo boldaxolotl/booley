@@ -1,6 +1,6 @@
 """Public Booley Flow names and migration aliases."""
 
-from booley.flow_names import canonical, canonicalize_config, config_section
+from booley.targets.flow_names import canonical, canonicalize_config, config_section
 
 
 def test_long_names_map_to_short_public_names():

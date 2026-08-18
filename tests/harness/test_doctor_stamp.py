@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from booley.harness import doctor_stamp
-from booley.project_dir import reset_cache
+from booley.runtime.project_dir import reset_cache
 
 
 def _write_project(root: Path) -> Path:

@@ -6,9 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from textual.pilot import Pilot
 from textual.widgets import Static
 
-from booley.harness._editor_config import ResolvedEditor
+from booley.config.editor import ResolvedEditor
 from booley.harness.console.app import ConsolePhase, _strip_region_for_mark
 from booley.harness.console.events import AgentThinking, CriteriaChanged
 from booley.harness.console.links import (
@@ -33,6 +34,36 @@ def _strip_counts(app: ConsoleTestApp) -> tuple[int, int]:
         len(top._entries) + top._overflow_count,
         len(bottom._entries) + bottom._overflow_count,
     )
+
+
+def _expected_strip_counts(app: ConsoleTestApp) -> tuple[int, int]:
+    main = app.query_one(MainPane)
+    viewport_bottom = main.scroll_y + main.scrollable_content_region.height
+    regions = [
+        _strip_region_for_mark(
+            open_start,
+            open_end,
+            close_start,
+            close_end,
+            main.scroll_y,
+            viewport_bottom,
+        )
+        for _mark, open_start, open_end, close_start, close_end in (
+            main.resolve_mark_divider_visual_rows()
+        )
+    ]
+    return (regions.count("above"), regions.count("below"))
+
+
+async def _settle_strips(app: ConsoleTestApp, pilot: Pilot[None]) -> tuple[int, int]:
+    """Wait for strip visibility and the resulting viewport layout to agree."""
+    for _attempt in range(10):
+        app._update_strips()
+        await pilot.pause(0.05)
+        expected = _expected_strip_counts(app)
+        if _strip_counts(app) == expected:
+            return expected
+    raise AssertionError("completion strips did not settle after 10 layout passes")
 
 
 def _click_event(target: LinkTarget | None = None) -> SimpleNamespace:
@@ -143,21 +174,7 @@ async def test_middle_viewport_shows_both_strips_with_exact_accounting() -> None
         main = app.query_one(MainPane)
         main.scroll_to(y=main.max_scroll_y // 2, animate=False)
         await pilot.pause()
-        app._update_strips()
-        await pilot.pause()
-        app._update_strips()
-        await pilot.pause()
-
-        resolved = main.resolve_mark_divider_visual_rows()
-        viewport_bottom = main.scroll_y + main.scrollable_content_region.height
-        regions = [
-            _strip_region_for_mark(
-                open_s, open_e, close_s, close_e, main.scroll_y, viewport_bottom
-            )
-            for _mark, open_s, open_e, close_s, close_e in resolved
-        ]
-        expected_above = regions.count("above")
-        expected_below = regions.count("below")
+        expected_above, expected_below = await _settle_strips(app, pilot)
         assert expected_above > 0
         assert expected_below > 0
         assert app.query_one(TopStrip).display is True
@@ -284,6 +301,7 @@ async def test_criteria_toggle_and_live_shrink_preserve_activity_scroll() -> Non
         scenario.start_running()
         scenario.add_history(30)
         await pilot.pause()
+        await _settle_strips(app, pilot)
         main = app.query_one(MainPane)
         main.scroll_to(y=main.max_scroll_y // 2, animate=False)
         await pilot.pause()

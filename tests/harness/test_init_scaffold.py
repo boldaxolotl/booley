@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.fusesoc_registry import enumerate_targets, read_core
+from booley.fusesoc.fusesoc_registry import enumerate_targets, read_core
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
 from booley.harness.init_common import InitContext
 from booley.harness.init_scaffold import (
@@ -24,7 +24,7 @@ from booley.harness.init_scaffold import (
     scaffold_files,
     step_scaffold,
 )
-from booley.project_dir import reset_cache
+from booley.runtime.project_dir import reset_cache
 
 
 def _choices(**overrides) -> ScaffoldChoices:

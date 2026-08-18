@@ -481,9 +481,10 @@ Per-Target test lists plus an optional run-time selector.
 
 **Template:** `../TESTS_TEMPLATE.toml`.
 
-- `select` must be **exactly one well-formed plusarg** (leading `+`, no
-  whitespace); only `{index}` and `{name}` substitute. The default is
-  `+test_id={index}`.
+- `select` must be **exactly one well-formed option token** with no whitespace:
+  either a plusarg (leading `+`) or a getopt argument (leading `-` / `--`).
+  Only `{index}` and `{name}` substitute. The default is `+test_id={index}`;
+  CPU harnesses may instead use forms such as `--meminit=ram,{name}`.
 - A section sets `tests` **or** `test_list`, never both.
 
 ### 2c. The slimmed `booley.toml` (execution policy)
@@ -615,7 +616,7 @@ Before writing:
 - Confirm every sim target has a `tags: [tb]` fileset, target names are
   project-unique, parameters use literal datatypes, and no `fpga` hooks
   / in-Scope imperative scripts are present (the security rules in 2a).
-- Confirm `tests.toml` `select` templates are single well-formed plusargs.
+- Confirm `tests.toml` `select` templates are single well-formed option tokens.
 - Run `booley doctor` (its "FuseSoC .core checks" phase runs exactly these
   audits); when the sandbox is available, `booley doctor --deep` additionally
   resolves each Target through `fusesoc run --setup`.

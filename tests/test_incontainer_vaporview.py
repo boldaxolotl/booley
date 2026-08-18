@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from booley import incontainer_vaporview as iv
+from booley.runtime import incontainer_vaporview as iv
 
 
 def _vanilla_manifest() -> dict:
@@ -264,14 +264,14 @@ class TestArgumentHandling:
         assert json.loads(manifest.read_text(encoding="utf-8"))["activationEvents"] == []
 
     def test_main_module_entry_point_reports_zero(self, tmp_path, monkeypatch):
-        """`python -m booley.incontainer_vaporview --oops` must still exit 0."""
+        """`python -m booley.runtime.incontainer_vaporview --oops` must still exit 0."""
         env = dict(os.environ, HOME=str(tmp_path))
         env[iv._WAIT_ENV] = "0"
         # HOME is redirected at a tmpdir, which hides a user-site install of
         # booley — hand the child our own import path instead.
         env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
         result = subprocess.run(
-            [sys.executable, "-m", "booley.incontainer_vaporview", "--oops"],
+            [sys.executable, "-m", "booley.runtime.incontainer_vaporview", "--oops"],
             capture_output=True,
             text=True,
             check=False,

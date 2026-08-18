@@ -44,8 +44,14 @@ _EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 _BWAVE_EXE = _VCD_PARSER_DIR / "target" / "debug" / f"bwave{_EXE_SUFFIX}"
 _BWAVE_RELEASE = _VCD_PARSER_DIR / "target" / "release" / f"bwave{_EXE_SUFFIX}"
 
-# Prefer release build if available, else debug
-BWAVE_BIN = str(_BWAVE_RELEASE if _BWAVE_RELEASE.exists() else _BWAVE_EXE)
+# Prefer the explicitly installed Session Runtime binary, then a release build,
+# then the local debug build.
+_BWAVE_CONFIGURED = os.environ.get("BOOLEY_BWAVE_BIN")
+BWAVE_BIN = str(
+    Path(_BWAVE_CONFIGURED)
+    if _BWAVE_CONFIGURED
+    else (_BWAVE_RELEASE if _BWAVE_RELEASE.exists() else _BWAVE_EXE)
+)
 
 # Simulator environment for Icarus (oss-cad-suite)
 # Platform-aware: read tool roots from env vars with OS-appropriate defaults.
@@ -1737,8 +1743,12 @@ class TestVirtualSignalGroundTruth(unittest.TestCase):
         cls.vcd_path = str(fixture)
         cls.oracle = VcdOracle(cls.vcd_path)
         _build_bwave_if_missing()
-        # Build an .fst store so virtual signal queries use the cache path
-        bwave_path = str(fixture.with_suffix(".test_virtual.fst"))
+        # The source fixture may live on a read-only bind mount (as it does in
+        # the Docker smoke test), so keep generated stores in writable temp
+        # space instead of beside the fixture.
+        temp_dir = tempfile.TemporaryDirectory(prefix="bwave-virtual-")
+        cls.addClassCleanup(temp_dir.cleanup)
+        bwave_path = str(Path(temp_dir.name) / "large_multiwidth.test_virtual.fst")
         result = subprocess.run(
             [BWAVE_BIN, "build", cls.vcd_path, "-o", bwave_path],
             capture_output=True,

@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
-from booley.timefmt import format_human_datetime, parse_timestamp, utc_now_rfc3339
+from booley.runtime.timefmt import format_human_datetime, parse_timestamp, utc_now_rfc3339
 
 # ---------------------------------------------------------------------------
 # Platform-specific file locking
@@ -143,8 +143,8 @@ def detect_tickets_dir() -> Path:
     """
     if "TICKETS_DIR" in os.environ:
         return Path(os.environ["TICKETS_DIR"])
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from booley.project_dir import resolve_project_dir
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from booley.runtime.project_dir import resolve_project_dir
 
     return resolve_project_dir() / "tickets"
 
@@ -174,7 +174,7 @@ def detect_project_root() -> Path:
     if "PROJECT_ROOT" in os.environ:
         return Path(os.environ["PROJECT_ROOT"])
     try:
-        from booley.project_dir import resolve_project_dir
+        from booley.runtime.project_dir import resolve_project_dir
 
         project_dir = resolve_project_dir()
     except FileNotFoundError:

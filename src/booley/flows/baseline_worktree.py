@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from booley.fusesoc_registry import state_cores_dir
+from booley.fusesoc.fusesoc_registry import state_cores_dir
 
 logger = logging.getLogger(__name__)
 

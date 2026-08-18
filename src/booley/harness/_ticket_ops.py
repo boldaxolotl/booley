@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from booley.config.settings import _load_booley_toml
+from booley.runtime.timefmt import parse_timestamp
 from booley.ticket_board.analytics import (
     attribute_tokens_to_steps,
     collect_all_messages,
@@ -52,9 +54,6 @@ from booley.ticket_board.validation import (
     validate_ticket_fields,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
-from booley.timefmt import parse_timestamp
-
-from .config import _load_booley_toml
 
 logger = logging.getLogger(__name__)
 

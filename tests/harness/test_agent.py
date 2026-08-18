@@ -10,23 +10,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from booley.harness._codex_backend import _codex_run_subprocess, _codex_write_markdown
-from booley.harness.agent import (
+from booley.harness.blocking import AgentTimeoutError, TransientAPIError
+from booley.harness.models import AgentCallParams
+from booley.runtime._codex_backend import _codex_run_subprocess, _codex_write_markdown
+from booley.runtime.agent import (
     _is_transient_error,
     _transcript_path_for_attempt,
     _write_transcript_turn,
     call_agent,
     extract_json,
 )
-from booley.harness.agent_backend import (
+from booley.runtime.agent_backend import (
     CodexBackend,
     _codex_ensure_additional_properties,
     _codex_extract_structured,
     _codex_parse_events,
     _codex_sandbox_mode,
 )
-from booley.harness.blocking import AgentTimeoutError, TransientAPIError
-from booley.harness.models import AgentCallParams
 
 
 def _assistant_message():
@@ -289,13 +289,13 @@ class TestCodexExtractStructured:
 class TestCodexBackend:
     def test_health_check_not_on_path(self):
         backend = CodexBackend()
-        with patch("booley.harness._codex_backend.shutil.which", return_value=None):
+        with patch("booley.runtime._codex_backend.shutil.which", return_value=None):
             result = backend.health_check()
         assert "not found" in result
 
     def test_health_check_ok(self):
         backend = CodexBackend()
-        with patch("booley.harness._codex_backend.shutil.which", return_value="/usr/bin/codex"):
+        with patch("booley.runtime._codex_backend.shutil.which", return_value="/usr/bin/codex"):
             result = backend.health_check()
         assert result is None
 
@@ -331,11 +331,11 @@ class TestCodexBackend:
 
         with (
             patch(
-                "booley.harness._codex_backend._codex_spawn",
+                "booley.runtime._codex_backend._codex_spawn",
                 new_callable=AsyncMock,
                 return_value=(process, tmp_path),
             ),
-            patch("booley.harness._codex_backend.asyncio.wait_for", new=force_timeout),
+            patch("booley.runtime._codex_backend.asyncio.wait_for", new=force_timeout),
             pytest.raises(AgentTimeoutError, match="7200s"),
         ):
             await _codex_run_subprocess([], params, full_prompt="task", on_event=None)
@@ -356,7 +356,7 @@ class TestCodexBackend:
         process.wait = AsyncMock(return_value=-9)
 
         with patch(
-            "booley.harness._codex_backend._codex_spawn",
+            "booley.runtime._codex_backend._codex_spawn",
             new_callable=AsyncMock,
             return_value=(process, tmp_path),
         ):
@@ -381,7 +381,7 @@ class TestCodexBackend:
 
         with (
             patch.object(backend, "_call_once", new_callable=AsyncMock) as call_once,
-            patch("booley.harness._codex_backend.anyio.sleep", new_callable=AsyncMock) as sleep,
+            patch("booley.runtime._codex_backend.anyio.sleep", new_callable=AsyncMock) as sleep,
         ):
             call_once.side_effect = [TransientAPIError("server unavailable"), recovered]
             result = await backend.call(params)
@@ -654,12 +654,12 @@ class TestCallAgent:
     @pytest.fixture(autouse=True)
     def _disable_docker_sandbox(self):
         """Disable Docker sandbox so call_agent routes through ClaudeSDKBackend."""
-        from booley.harness._backend_config import (
+        from booley.config.agent import (
             BackendConfig,
             SandboxConfig,
             set_backend_config,
         )
-        from booley.harness.agent_backend import ClaudeSDKBackend
+        from booley.runtime.agent_backend import ClaudeSDKBackend
 
         cfg = BackendConfig(
             active_backend=ClaudeSDKBackend(),
@@ -670,7 +670,7 @@ class TestCallAgent:
         set_backend_config(None)
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_successful_call(self, mock_query):
         """Happy path: agent returns result message."""
         result_msg = _result_message()
@@ -695,7 +695,7 @@ class TestCallAgent:
         assert result.output_tokens == 500
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_assistant_message_accumulates_tokens(self, mock_query):
         """AssistantMessage usage tokens are accumulated."""
         msg1 = _assistant_message()
@@ -726,8 +726,8 @@ class TestCallAgent:
         assert result.output_tokens == 500
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.anyio.sleep", new_callable=AsyncMock)
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.anyio.sleep", new_callable=AsyncMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_transient_error_retried(self, mock_query, mock_sleep):
         """TransientAPIError triggers retry with backoff."""
         call_count = 0
@@ -759,7 +759,7 @@ class TestCallAgent:
         mock_sleep.assert_called_once()  # backoff sleep
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_extracts_json_from_text_when_no_structured(self, mock_query):
         """When output_format set but SDK returns no structured_output, extract from text."""
         result_msg = _result_message()
@@ -782,7 +782,7 @@ class TestCallAgent:
         assert result.structured == {"count": 5}
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_structured_output_empty_dict_fallback(self, mock_query):
         """Empty dict structured_output triggers text fallback extraction."""
         result_msg = _result_message()
@@ -806,7 +806,7 @@ class TestCallAgent:
         assert result.structured_fallback is True
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_successful_call_with_output_format_wrapping(self, mock_query):
         """output_format without type=json_schema gets auto-wrapped."""
         result_msg = _result_message()
@@ -832,7 +832,7 @@ class TestCallAgent:
         assert opts.output_format["type"] == "json_schema"
 
     @pytest.mark.asyncio
-    @patch("booley.harness._claude_backend.query", new_callable=MagicMock)
+    @patch("booley.runtime._claude_backend.query", new_callable=MagicMock)
     async def test_writes_transcript(self, mock_query, tmp_path: Path):
         """Transcript JSONL written when transcript_path provided."""
         msg = _assistant_message()

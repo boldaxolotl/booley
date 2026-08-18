@@ -26,8 +26,8 @@ from unittest.mock import patch
 import pytest
 
 from booley.dev_support.development_state import DevelopmentState, DutInfo
-from booley.mcp_tools.base import EXIT_SUCCESS, McpToolResult
-from booley.mcp_tools.tb_coder import (
+from booley.mcp.base import EXIT_SUCCESS, McpToolResult
+from booley.specialists.tb_coder import (
     TbCoderSpecialist,
     _category_dir_prefixes,
     _category_globs,
@@ -231,7 +231,7 @@ class TestTbCoderRunNarrowsScope:
             observed["scope_during_run"] = data["scope"]
             return McpToolResult(exit_code=EXIT_SUCCESS)
 
-        with patch("booley.mcp_tools.tb_coder.Specialist._run", _capture):
+        with patch("booley.specialists.tb_coder.Specialist._run", _capture):
             endpoint._run()
 
         scope = observed["scope_during_run"]
@@ -257,7 +257,7 @@ class TestTbCoderRunNarrowsScope:
             raise RuntimeError("agent crashed")
 
         with (
-            patch("booley.mcp_tools.tb_coder.Specialist._run", _boom),
+            patch("booley.specialists.tb_coder.Specialist._run", _boom),
             pytest.raises(RuntimeError),
         ):
             endpoint._run()
@@ -287,7 +287,7 @@ class TestTbCoderRunNarrowsScope:
             observed["scope_during_run"] = data["scope"]
             return McpToolResult(exit_code=EXIT_SUCCESS)
 
-        with patch("booley.mcp_tools.tb_coder.Specialist._run", _capture):
+        with patch("booley.specialists.tb_coder.Specialist._run", _capture):
             endpoint._run()
 
         scope = observed["scope_during_run"]
@@ -311,17 +311,17 @@ class TestOtherSpecialistsNotNarrowed:
     """
 
     def test_reviewer_has_no_narrowing(self):
-        from booley.mcp_tools.reviewer import ReviewerSpecialist
+        from booley.specialists.reviewer import ReviewerSpecialist
 
         assert not hasattr(ReviewerSpecialist, "_build_narrowed_scope")
 
     def test_mutation_tester_has_no_narrowing(self):
-        from booley.mcp_tools.mutation_tester import MutationTesterSpecialist
+        from booley.specialists.mutation_tester import MutationTesterSpecialist
 
         assert not hasattr(MutationTesterSpecialist, "_build_narrowed_scope")
 
     def test_coverage_analyst_has_no_narrowing(self):
-        from booley.mcp_tools.coverage_analyst import CoverageAnalystSpecialist
+        from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 
         assert not hasattr(CoverageAnalystSpecialist, "_build_narrowed_scope")
 

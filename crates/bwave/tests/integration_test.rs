@@ -9,12 +9,16 @@
 //!   `--limit`) are flattened into every query subcommand. Always go AFTER the
 //!   BWAVE_FILE positional.
 //! - `--include-reset` → `--with-reset`. `--max-lines N` → `--limit N`.
-//! - `--allow-vcd` is hidden but still accepted on query subcommands for raw VCD.
+//! - Query subcommands consume FST stores exclusively. Test VCD fixtures are
+//!   built to temporary FST stores before each query.
 //! - The bare-positional + mode-flag combos no longer exist — every invocation
 //!   names a subcommand.
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static QUERY_STORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Path to the binary cargo just built for THIS test run.
 ///
@@ -58,7 +62,7 @@ fn build_bwave(vcd_name: &str, test_id: &str) -> PathBuf {
     bwave
 }
 
-/// Run bwave against a built .fst store (no --allow-vcd needed).
+/// Run bwave against a built .fst store.
 fn run_bwave(args: &[&str]) -> (String, String, i32) {
     let output = Command::new(exe_path())
         .args(args)
@@ -70,31 +74,51 @@ fn run_bwave(args: &[&str]) -> (String, String, i32) {
     (stdout, stderr, code)
 }
 
-/// Run bwave with given args, ensuring `--allow-vcd` is appended once
-/// (legacy: tests that pass raw .vcd paths). The flag is hidden but accepted
-/// on every query subcommand. No-op if `--` separator was used in v0.1 —
-/// we just unconditionally append the hidden flag at the end of args.
-fn run(args: &[&str]) -> (String, String, i32) {
-    let mut full_args: Vec<&str> = Vec::with_capacity(args.len() + 1);
-    for &a in args {
-        // Drop legacy `--` separator — clap subcommands don't need it.
-        if a == "--" {
-            continue;
+/// Build a VCD fixture to a unique FST store, run one query, then remove it.
+fn run_query(args: &[&str]) -> (String, String, i32) {
+    let mut full_args: Vec<String> = args
+        .iter()
+        .filter(|arg| **arg != "--")
+        .map(|arg| (*arg).to_string())
+        .collect();
+    let mut temporary_store = None;
+    if let Some(input) = full_args.get(1).map(PathBuf::from) {
+        if input.extension().and_then(|suffix| suffix.to_str()) == Some("vcd") && input.exists() {
+            let sequence = QUERY_STORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let store =
+                input.with_extension(format!("query-{}-{sequence}.fst", std::process::id()));
+            let output = Command::new(exe_path())
+                .args([
+                    "build",
+                    input.to_str().unwrap(),
+                    "-o",
+                    store.to_str().unwrap(),
+                ])
+                .output()
+                .expect("fixture build failed");
+            assert!(
+                output.status.success(),
+                "fixture build failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            full_args[1] = store.to_string_lossy().into_owned();
+            temporary_store = Some(store);
         }
-        full_args.push(a);
     }
-    full_args.push("--allow-vcd");
     let output = Command::new(exe_path())
         .args(&full_args)
         .output()
         .expect("failed to execute bwave");
+    if let Some(store) = temporary_store {
+        let _ = std::fs::remove_file(store);
+    }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let code = output.status.code().unwrap_or(-1);
     (stdout, stderr, code)
 }
 
-/// Run bwave without --allow-vcd (for testing the rejection gate).
+/// Run bwave without preparing an FST store (for input-contract tests).
 fn run_raw(args: &[&str]) -> (String, String, i32) {
     let output = Command::new(exe_path())
         .args(args)
@@ -112,10 +136,12 @@ fn run_raw(args: &[&str]) -> (String, String, i32) {
 fn test_basic_sync_default() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
     // v0.2: default trace = `signal` subcommand
-    let (stdout, stderr, code) = run(&["signal", &vcd]);
+    let (stdout, stderr, code) = run_query(&["signal", &vcd]);
     assert_eq!(code, 0);
-    assert!(stderr.contains("sync: clock="), "should detect clock");
-    assert!(stderr.contains("sync: reset="), "should detect reset");
+    assert!(
+        stderr.contains("sync: period="),
+        "should detect the clock period"
+    );
     // Output should contain cycle numbers and signal values
     assert!(stdout.contains("1 "), "should have cycle 1 output");
 }
@@ -123,7 +149,7 @@ fn test_basic_sync_default() {
 #[test]
 fn test_basic_sync_with_include_reset() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--with-reset"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--with-reset"]);
     assert_eq!(code, 0);
     // With with-reset, should see all cycles from the start
     assert!(stdout.contains("1 "), "should have cycle 1");
@@ -134,13 +160,9 @@ fn test_basic_sync_with_include_reset() {
 #[test]
 fn test_basic_async() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["signal", &vcd, "--async"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async"]);
     assert_eq!(code, 0);
-    // Async mode should show timescale unit timestamps (raw ticks)
-    assert!(
-        stderr.contains("# timescale:"),
-        "should print timescale header"
-    );
+    // Async mode emits raw store ticks.
     let first_line = stdout.lines().next().unwrap_or("");
     let ts: Result<i64, _> = first_line.split_whitespace().next().unwrap_or("").parse();
     assert!(
@@ -154,7 +176,7 @@ fn test_basic_async() {
 #[test]
 fn test_list_signals_basic() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(stderr.contains("signals"), "should report count");
     // Should list signal names
@@ -167,7 +189,7 @@ fn test_list_signals_basic() {
 #[test]
 fn test_list_signals_with_pattern() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd, "-s", "*data*"]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd, "-s", "*data*"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("data"), "should match data signal");
     assert!(stderr.contains("1 signals"), "should match exactly 1");
@@ -178,7 +200,7 @@ fn test_list_signals_with_pattern() {
 #[test]
 fn test_stats() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["stats", &vcd]);
+    let (stdout, _stderr, code) = run_query(&["stats", &vcd]);
     assert_eq!(code, 0);
     assert!(stdout.contains("transitions"), "should show transitions");
     assert!(
@@ -193,7 +215,7 @@ fn test_stats() {
 #[test]
 fn test_find_stuck() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["stuck", &vcd]);
+    let (stdout, _stderr, code) = run_query(&["stuck", &vcd]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("# Stuck signals:"),
@@ -206,7 +228,7 @@ fn test_find_stuck() {
 #[test]
 fn test_find_value_sync() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*data*", "'hA", "--with-reset"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*data*", "'hA", "--with-reset"]);
     assert_eq!(code, 0);
     // data becomes 0x0A -> should match
     assert!(stdout.contains("cycle"), "should find match at a cycle");
@@ -215,7 +237,7 @@ fn test_find_value_sync() {
 #[test]
 fn test_find_value_async() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*data*", "'hFF", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*data*", "'hFF", "--async"]);
     assert_eq!(code, 0);
     assert!(!stdout.is_empty(), "should find FF match");
 }
@@ -223,7 +245,8 @@ fn test_find_value_async() {
 #[test]
 fn test_find_value_count() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*data*", "'hA", "--count", "--with-reset"]);
+    let (stdout, _stderr, code) =
+        run_query(&["find", &vcd, "*data*", "'hA", "--count", "--with-reset"]);
     assert_eq!(code, 0);
     let count: usize = stdout.trim().parse().unwrap_or(999);
     assert!(count >= 1, "should find at least 1 match");
@@ -232,7 +255,7 @@ fn test_find_value_count() {
 #[test]
 fn test_find_value_edge() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*rstn*", "rising", "--with-reset"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*rstn*", "rising", "--with-reset"]);
     assert_eq!(code, 0);
     assert!(!stdout.is_empty(), "should find rising edge on rstn");
 }
@@ -242,7 +265,7 @@ fn test_find_value_edge() {
 #[test]
 fn test_time_range() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--with-reset", "-t", "2:3"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--with-reset", "-t", "2:3"]);
     assert_eq!(code, 0);
     // Should only show cycles 2-3
     for line in stdout.lines() {
@@ -257,7 +280,7 @@ fn test_time_range() {
 #[test]
 fn test_invalid_time_range() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (_stdout, stderr, code) = run(&["signal", &vcd, "-t", "abc:def"]);
+    let (_stdout, stderr, code) = run_query(&["signal", &vcd, "-t", "abc:def"]);
     assert_ne!(code, 0, "should fail on invalid time range");
     assert!(stderr.contains("invalid time"), "should report parse error");
 }
@@ -267,7 +290,7 @@ fn test_invalid_time_range() {
 #[test]
 fn test_max_lines() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["signal", &vcd, "--with-reset", "--limit", "2"]);
+    let (stdout, stderr, code) = run_query(&["signal", &vcd, "--with-reset", "--limit", "2"]);
     assert_eq!(code, 0);
     assert!(
         stdout.lines().count() <= 3,
@@ -284,15 +307,16 @@ fn test_max_lines() {
 #[test]
 fn test_no_clock_fallback() {
     let vcd = vcd_path("test_no_clock.vcd").to_string_lossy().to_string();
-    let (_stdout, stderr, code) = run(&["signal", &vcd]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd]);
     assert_eq!(code, 0);
-    assert!(
-        stderr.contains("no clock signal found"),
-        "should warn about missing clock"
-    );
-    assert!(
-        stderr.contains("falling back to async"),
-        "should fall back to async mode"
+    let first_tick = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next());
+    assert_eq!(
+        first_tick,
+        Some("0"),
+        "clockless stores should use raw ticks"
     );
 }
 
@@ -301,7 +325,7 @@ fn test_no_clock_fallback() {
 #[test]
 fn test_xz_signals() {
     let vcd = vcd_path("test_xz.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async"]);
     assert_eq!(code, 0);
     // Should contain x or z values without crashing
     assert!(!stdout.is_empty(), "should produce output for x/z signals");
@@ -310,7 +334,7 @@ fn test_xz_signals() {
 #[test]
 fn test_find_stuck_x() {
     let vcd = vcd_path("test_xz.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["stuck", &vcd, "x"]);
+    let (stdout, _stderr, code) = run_query(&["stuck", &vcd, "x"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("# Stuck signals:"),
@@ -323,7 +347,7 @@ fn test_find_stuck_x() {
 #[test]
 fn test_aliases() {
     let vcd = vcd_path("test_aliases.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["list", &vcd]);
+    let (stdout, _stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(!stdout.is_empty(), "should list aliased signals");
 }
@@ -335,7 +359,7 @@ fn test_active_high_reset() {
     let vcd = vcd_path("test_active_high.vcd")
         .to_string_lossy()
         .to_string();
-    let (_stdout, stderr, code) = run(&["signal", &vcd]);
+    let (_stdout, stderr, code) = run_query(&["signal", &vcd]);
     assert_eq!(code, 0);
     // Should detect reset as active-high (no 'n' suffix)
     if stderr.contains("sync: reset=") {
@@ -353,12 +377,8 @@ fn test_ps_timescale() {
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["signal", &vcd, "--async"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async"]);
     assert_eq!(code, 0);
-    assert!(
-        stderr.contains("# timescale: 1ps"),
-        "should show 1ps timescale"
-    );
     // ps timescale: timestamps should be raw ticks (picoseconds), not ns.
     let max_ts = stdout
         .lines()
@@ -377,7 +397,7 @@ fn test_ps_timescale() {
 #[test]
 fn test_at_time_sync() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["value", &vcd, "--at", "2", "--with-reset"]);
+    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "2", "--with-reset"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("# Snapshot at cycle 2"),
@@ -397,9 +417,9 @@ fn test_at_time_sync() {
 
 #[test]
 fn test_nonexistent_file() {
-    let (_stdout, stderr, code) = run(&["signal", "nonexistent.vcd"]);
+    let (_stdout, stderr, code) = run_query(&["signal", "nonexistent.vcd"]);
     assert_ne!(code, 0);
-    assert!(stderr.contains("cannot open"));
+    assert!(stderr.contains("requires a built waveform store"));
 }
 
 // -- Sample (was sample-at) -------------------------------------------
@@ -409,14 +429,14 @@ fn test_sample_at_no_match() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
     // Raw-VCD path: the streaming extractor's init errors are query-vs-trace
     // mismatches, so they share the store path's caller-input exit code (2).
-    let (_stdout, stderr, code) = run(&["sample", &vcd, "*nonexistent*", "1"]);
+    let (_stdout, stderr, code) = run_query(&["sample", &vcd, "*nonexistent*", "1"]);
     assert_eq!(code, 2, "raw-VCD trigger miss must exit 2: {}", stderr);
     assert!(stderr.contains("no signals match"));
 
     // Store path: unified with the other total-miss exits — 2, same message.
     let bwave = build_bwave("test_basic.vcd", "sample_nomatch");
     let bp = bwave.to_string_lossy().to_string();
-    let (_stdout, stderr, code) = run(&["sample", &bp, "*nonexistent*", "1"]);
+    let (_stdout, stderr, code) = run_query(&["sample", &bp, "*nonexistent*", "1"]);
     let _ = std::fs::remove_file(&bwave);
     assert_eq!(code, 2, "store-path trigger miss must exit 2: {}", stderr);
     assert!(stderr.contains("no signals match trigger pattern"));
@@ -425,7 +445,7 @@ fn test_sample_at_no_match() {
 #[test]
 fn test_sample_at_basic() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (_stdout, stderr, code) = run(&[
+    let (_stdout, stderr, code) = run_query(&[
         "sample",
         &vcd,
         "*clk*",
@@ -450,12 +470,8 @@ fn test_at_time_async_ps() {
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["value", &vcd, "--at", "50000t", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "50000t", "--async"]);
     assert_eq!(code, 0);
-    assert!(
-        stderr.contains("# timescale: 1ps"),
-        "should show 1ps timescale"
-    );
     assert!(
         stdout.contains("# Snapshot at 50000"),
         "should snapshot at tick 50000, got: {}",
@@ -464,18 +480,15 @@ fn test_at_time_async_ps() {
 }
 
 #[test]
-fn test_at_time_async_ps_beyond_range() {
-    // `--at 999999999t` should fail (beyond sim range)
+fn test_at_time_async_ps_beyond_range_holds_last_value() {
+    // FST snapshot semantics hold the final value beyond the recorded range.
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (_stdout, stderr, code) = run(&["value", &vcd, "--at", "999999999t", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "999999999t", "--async"]);
     assert_eq!(code, 0);
-    assert!(stderr.contains("ERROR: --at"), "should report beyond range");
-    assert!(
-        stderr.contains("timescale"),
-        "error should mention timescale"
-    );
+    assert!(stdout.contains("# Snapshot at 999999999"));
+    assert!(stdout.contains("counter[7:0]"));
 }
 
 #[test]
@@ -484,7 +497,7 @@ fn test_time_range_async_ps() {
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async", "-t", "20000t:50000t"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async", "-t", "20000t:50000t"]);
     assert_eq!(code, 0);
     // All timestamps in output should be in the range [20000, 50000]
     for line in stdout.lines() {
@@ -506,7 +519,7 @@ fn test_find_value_async_ps_timestamp() {
     let vcd = vcd_path("test_ps_timescale.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*counter*", "05", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*counter*", "05", "--async"]);
     assert_eq!(code, 0);
     if !stdout.is_empty() {
         let ts: i64 = stdout
@@ -531,7 +544,7 @@ fn test_deep_hierarchy_list_signals() {
     let vcd = vcd_path("test_deep_hierarchy.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(stderr.contains("8 signals"), "should find 8 signals");
     assert!(stdout.contains("core"), "should show 'core' scope");
@@ -544,7 +557,7 @@ fn test_deep_hierarchy_scope_prefix() {
     let vcd = vcd_path("test_deep_hierarchy.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["signal", &vcd, "--async", "-s", "*subunit*"]);
+    let (stdout, stderr, code) = run_query(&["signal", &vcd, "--async", "-s", "*subunit*"]);
     assert_eq!(code, 0);
     assert!(stderr.contains("# scope:"), "should report scope prefix");
     assert!(!stdout.is_empty(), "should have output for subunit signals");
@@ -555,7 +568,7 @@ fn test_deep_hierarchy_signal_filtering() {
     let vcd = vcd_path("test_deep_hierarchy.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd, "-s", "*ctrl_en*"]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd, "-s", "*ctrl_en*"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("ctrl_en"), "should match ctrl_en");
     assert!(
@@ -571,7 +584,7 @@ fn test_wide_signals_list() {
     let vcd = vcd_path("test_wide_signals.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(stderr.contains("7 signals"), "should find 7 signals");
     assert!(stdout.contains("512-bit"), "should show 512-bit width");
@@ -584,7 +597,7 @@ fn test_wide_signals_256bit_values() {
     let vcd = vcd_path("test_wide_signals.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async", "-s", "*wide256*"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async", "-s", "*wide256*"]);
     assert_eq!(code, 0);
     // At t=10, wide256 = all 1s = 64 hex F's
     let has_all_f = stdout.lines().any(|l| l.contains(&"F".repeat(64)));
@@ -597,7 +610,7 @@ fn test_wide_signals_find_value_256bit() {
         .to_string_lossy()
         .to_string();
     let target = format!("'h{}", "F".repeat(64));
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*wide256*", &target, "--async"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*wide256*", &target, "--async"]);
     assert_eq!(code, 0);
     assert!(!stdout.is_empty(), "should find 256-bit all-F value");
     let ts: i64 = stdout
@@ -614,7 +627,7 @@ fn test_wide_signals_find_value_256bit() {
 #[test]
 fn test_dumpvars_fixture() {
     let vcd = vcd_path("test_dumpvars.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async"]);
     assert_eq!(code, 0);
     // After t=45, data should be 01010101 = 55
     let has_55 = stdout.lines().any(|l| l.contains("55"));
@@ -624,7 +637,7 @@ fn test_dumpvars_fixture() {
 #[test]
 fn test_dumpvars_fixture_at_time_after_dumpon() {
     let vcd = vcd_path("test_dumpvars.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["value", &vcd, "--at", "45ns", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "45ns", "--async"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("# Snapshot at 45"),
@@ -640,7 +653,7 @@ fn test_many_signals_list() {
     let vcd = vcd_path("test_many_signals.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     let count_line = stderr.lines().find(|l| l.contains("signals")).unwrap_or("");
     let count: usize = count_line
@@ -657,7 +670,7 @@ fn test_many_signals_stats() {
     let vcd = vcd_path("test_many_signals.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["stats", &vcd, "--with-reset", "-s", "*alu*"]);
+    let (stdout, _stderr, code) = run_query(&["stats", &vcd, "--with-reset", "-s", "*alu*"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("transitions"),
@@ -672,7 +685,7 @@ fn test_multiline_var_fixture() {
     let vcd = vcd_path("test_multiline_var.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(
         stderr.contains("3 signals"),
@@ -688,7 +701,7 @@ fn test_multiline_var_values() {
     let vcd = vcd_path("test_multiline_var.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async", "-s", "*data*"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async", "-s", "*data*"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("F"), "should see data=F");
 }
@@ -700,7 +713,7 @@ fn test_verilator_quirks_list() {
     let vcd = vcd_path("test_verilator_quirks.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(stderr.contains("4 signals"), "should find 4 signals");
     assert!(
@@ -714,7 +727,7 @@ fn test_verilator_quirks_tab_vector() {
     let vcd = vcd_path("test_verilator_quirks.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async", "-s", "*data*"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async", "-s", "*data*"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("A"),
@@ -729,7 +742,7 @@ fn test_real_values_list() {
     let vcd = vcd_path("test_real_values.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(stderr.contains("3 signals"), "should find 3 signals");
     assert!(stdout.contains("voltage"), "should list voltage");
@@ -741,7 +754,7 @@ fn test_real_values_async() {
     let vcd = vcd_path("test_real_values.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async", "-s", "*voltage*"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async", "-s", "*voltage*"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("1.5"), "should show voltage=1.5");
     assert!(stdout.contains("3.3"), "should show voltage=3.3");
@@ -753,7 +766,7 @@ fn test_real_values_find() {
     let vcd = vcd_path("test_real_values.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*voltage*", "3.3", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*voltage*", "3.3", "--async"]);
     assert_eq!(code, 0);
     assert!(!stdout.is_empty(), "should find voltage=3.3");
 }
@@ -763,7 +776,7 @@ fn test_real_values_find() {
 #[test]
 fn test_empty_sim_list_signals() {
     let vcd = vcd_path("test_empty_sim.vcd").to_string_lossy().to_string();
-    let (stdout, stderr, code) = run(&["list", &vcd]);
+    let (stdout, stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
     assert!(
         stderr.contains("2 signals"),
@@ -775,18 +788,16 @@ fn test_empty_sim_list_signals() {
 #[test]
 fn test_empty_sim_async() {
     let vcd = vcd_path("test_empty_sim.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["signal", &vcd, "--async"]);
+    let (stdout, _stderr, code) = run_query(&["signal", &vcd, "--async"]);
     assert_eq!(code, 0);
-    assert!(
-        stdout.is_empty(),
-        "header-only VCD should produce no async output"
-    );
+    assert!(stdout.contains("0 clk x"));
+    assert!(stdout.contains("0 data[7:0] x"));
 }
 
 #[test]
 fn test_empty_sim_stats() {
     let vcd = vcd_path("test_empty_sim.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["stats", &vcd, "--with-reset", "--async"]);
+    let (stdout, _stderr, code) = run_query(&["stats", &vcd, "--with-reset", "--async"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("# Simulation:"),
@@ -805,11 +816,11 @@ fn test_semantic_at_time_matches_async_trace() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
 
     // Get snapshot at t=15 (async mode)
-    let (snap_out, _stderr, code) = run(&["value", &vcd, "--at", "15ns", "--async"]);
+    let (snap_out, _stderr, code) = run_query(&["value", &vcd, "--at", "15ns", "--async"]);
     assert_eq!(code, 0);
 
     // Get full async trace up to t=15
-    let (full_out, _stderr, code) = run(&["signal", &vcd, "--async", "-t", ":15ns"]);
+    let (full_out, _stderr, code) = run_query(&["signal", &vcd, "--async", "-t", ":15ns"]);
     assert_eq!(code, 0);
 
     assert!(
@@ -848,7 +859,7 @@ fn test_semantic_at_time_matches_async_trace() {
 fn test_semantic_find_value_at_time_consistency() {
     // `find` returns timestamps; `value --at T` at that timestamp should confirm.
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (find_out, _stderr, code) = run(&["find", &vcd, "*data*", "'hA", "--async"]);
+    let (find_out, _stderr, code) = run_query(&["find", &vcd, "*data*", "'hA", "--async"]);
     assert_eq!(code, 0);
     assert!(!find_out.is_empty(), "should find data=A");
 
@@ -859,7 +870,7 @@ fn test_semantic_find_value_at_time_consistency() {
     // Async --at requires an explicit unit. `find` returned a raw tick, so
     // we annotate with `t` to round-trip without conversion.
     let ts_arg = format!("{}t", ts_str);
-    let (snap_out, _stderr, code) = run(&["value", &vcd, "--at", &ts_arg, "--async"]);
+    let (snap_out, _stderr, code) = run_query(&["value", &vcd, "--at", &ts_arg, "--async"]);
     assert_eq!(code, 0);
     assert!(
         snap_out.contains("A"),
@@ -876,7 +887,7 @@ fn test_list_signals_golden_deep_hierarchy() {
     let vcd = vcd_path("test_deep_hierarchy.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, _stderr, code) = run(&["list", &vcd]);
+    let (stdout, _stderr, code) = run_query(&["list", &vcd]);
     assert_eq!(code, 0);
 
     let lines: Vec<&str> = stdout.lines().collect();
@@ -903,7 +914,7 @@ fn test_list_signals_golden_deep_hierarchy() {
 fn test_at_time_cycle_0() {
     // `value --at 0` (sync mode) snapshots at cycle 0.
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["value", &vcd, "--at", "0", "--with-reset"]);
+    let (stdout, _stderr, code) = run_query(&["value", &vcd, "--at", "0", "--with-reset"]);
     assert_eq!(code, 0);
     assert!(
         stdout.contains("# Snapshot at cycle 0"),
@@ -914,7 +925,7 @@ fn test_at_time_cycle_0() {
 #[test]
 fn test_stats_with_never_changing_signal() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&["stats", &vcd, "-s", "*rstn*"]);
+    let (stdout, _stderr, code) = run_query(&["stats", &vcd, "-s", "*rstn*"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("transitions"), "should show transitions");
 }
@@ -922,9 +933,9 @@ fn test_stats_with_never_changing_signal() {
 #[test]
 fn test_find_stuck_with_filter() {
     let vcd = vcd_path("test_xz.vcd").to_string_lossy().to_string();
-    let (stdout1, _stderr, code) = run(&["stuck", &vcd, "x"]);
+    let (stdout1, _stderr, code) = run_query(&["stuck", &vcd, "x"]);
     assert_eq!(code, 0);
-    let (stdout2, _stderr, code) = run(&["stuck", &vcd]);
+    let (stdout2, _stderr, code) = run_query(&["stuck", &vcd]);
     assert_eq!(code, 0);
     let count1 = stdout1.lines().filter(|l| l.starts_with("  ")).count();
     let count2 = stdout2.lines().filter(|l| l.starts_with("  ")).count();
@@ -938,7 +949,7 @@ fn test_find_stuck_with_filter() {
 #[test]
 fn test_sample_at_sync_with_count() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (stdout, _stderr, code) = run(&[
+    let (stdout, _stderr, code) = run_query(&[
         "sample",
         &vcd,
         "*clk*",
@@ -1037,7 +1048,7 @@ fn test_wave_with_reset_skipping() {
 #[test]
 fn test_wave_rejects_raw_vcd() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    // wave is store-only: no --allow-vcd escape hatch
+    // Every query is store-only.
     let (_stdout, stderr, code) = run_raw(&["wave", &vcd, "-t", "1:3", "-s", "*data*"]);
     assert_eq!(code, 2, "wave on raw VCD must exit 2");
     assert!(
@@ -1052,9 +1063,9 @@ fn test_wave_rejects_raw_vcd() {
 #[test]
 fn test_rejects_vcd_input() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    // No --allow-vcd: signal subcommand should reject raw .vcd input.
+    // Signal queries reject raw .vcd input.
     let (_stdout, stderr, code) = run_raw(&["signal", &vcd]);
-    assert_eq!(code, 2, "should reject .vcd input without --allow-vcd");
+    assert_eq!(code, 2, "should reject .vcd input");
     assert!(
         stderr.contains("requires a built waveform store"),
         "expected store-required error, got: {}",
@@ -1063,10 +1074,11 @@ fn test_rejects_vcd_input() {
 }
 
 #[test]
-fn test_allow_vcd_flag_bypasses_rejection() {
+fn test_allow_vcd_flag_is_rejected() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    let (_stdout, _stderr, code) = run_raw(&["signal", &vcd, "--allow-vcd"]);
-    assert_eq!(code, 0, "should accept .vcd with --allow-vcd");
+    let (_stdout, stderr, code) = run_raw(&["signal", &vcd, "--allow-vcd"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("unexpected argument '--allow-vcd'"));
 }
 
 // -- --last, --before, --after (find subcommand) ---------------------
@@ -1074,14 +1086,14 @@ fn test_allow_vcd_flag_bypasses_rejection() {
 #[test]
 fn test_find_last_sync() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (all_stdout, _, all_code) = run(&["find", &vcd, "*state*", "0"]);
+    let (all_stdout, _, all_code) = run_query(&["find", &vcd, "*state*", "0"]);
     assert_eq!(all_code, 0, "all-matches query should succeed");
     let last_line = all_stdout
         .trim()
         .lines()
         .last()
         .expect("should have at least one match");
-    let (stdout, _stderr, code) = run(&["find", &vcd, "*state*", "0", "--last"]);
+    let (stdout, _stderr, code) = run_query(&["find", &vcd, "*state*", "0", "--last"]);
     assert_eq!(code, 0);
     assert_eq!(stdout.trim(), last_line.trim(), "should return last match");
     assert_eq!(
@@ -1094,8 +1106,8 @@ fn test_find_last_sync() {
 #[test]
 fn test_find_last_single_match() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (stdout_last, _, code_last) = run(&["find", &vcd, "*done*", "1", "--last"]);
-    let (stdout_first, _, code_first) = run(&["find", &vcd, "*done*", "1", "--first"]);
+    let (stdout_last, _, code_last) = run_query(&["find", &vcd, "*done*", "1", "--last"]);
+    let (stdout_first, _, code_first) = run_query(&["find", &vcd, "*done*", "1", "--first"]);
     assert_eq!(code_last, 0);
     assert_eq!(code_first, 0);
     assert_eq!(stdout_last.trim(), stdout_first.trim());
@@ -1104,7 +1116,7 @@ fn test_find_last_single_match() {
 #[test]
 fn test_find_last_conflicts_first() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (_, stderr, code) = run(&["find", &vcd, "*x*", "1", "--first", "--last"]);
+    let (_, stderr, code) = run_query(&["find", &vcd, "*x*", "1", "--first", "--last"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("mutually exclusive"));
 }
@@ -1112,7 +1124,7 @@ fn test_find_last_conflicts_first() {
 #[test]
 fn test_find_last_conflicts_count() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (_, stderr, code) = run(&["find", &vcd, "*x*", "1", "--last", "--count"]);
+    let (_, stderr, code) = run_query(&["find", &vcd, "*x*", "1", "--last", "--count"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("mutually exclusive"));
 }
@@ -1125,7 +1137,7 @@ fn test_find_last_conflicts_count() {
 #[test]
 fn test_before_implies_last() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (all_stdout, _, _) = run(&["find", &vcd, "*state*", "0"]);
+    let (all_stdout, _, _) = run_query(&["find", &vcd, "*state*", "0"]);
     let lines: Vec<&str> = all_stdout.trim().lines().collect();
     assert!(
         lines.len() >= 2,
@@ -1140,7 +1152,7 @@ fn test_before_implies_last() {
         .parse()
         .unwrap();
     let boundary = last_cycle + 1;
-    let (stdout, _, code) = run(&[
+    let (stdout, _, code) = run_query(&[
         "find",
         &vcd,
         "*state*",
@@ -1160,7 +1172,7 @@ fn test_before_implies_last() {
 #[test]
 fn test_after_implies_first() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (all_stdout, _, _) = run(&["find", &vcd, "*state*", "0"]);
+    let (all_stdout, _, _) = run_query(&["find", &vcd, "*state*", "0"]);
     let lines: Vec<&str> = all_stdout.trim().lines().collect();
     assert!(lines.len() >= 2, "need at least 2 matches for --after test");
     let first_cycle: i64 = lines[0].split_whitespace().nth(1).unwrap().parse().unwrap();
@@ -1172,7 +1184,7 @@ fn test_after_implies_first() {
         boundary,
         second_cycle
     );
-    let (stdout, _, code) = run(&[
+    let (stdout, _, code) = run_query(&[
         "find",
         &vcd,
         "*state*",
@@ -1192,7 +1204,7 @@ fn test_after_implies_first() {
 #[test]
 fn test_before_after_conflict() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (_, stderr, code) = run(&["find", &vcd, "*x*", "1", "--before", "5", "--after", "3"]);
+    let (_, stderr, code) = run_query(&["find", &vcd, "*x*", "1", "--before", "5", "--after", "3"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("mutually exclusive"));
 }
@@ -1200,7 +1212,7 @@ fn test_before_after_conflict() {
 #[test]
 fn test_before_with_time_conflict() {
     let vcd = vcd_path("small_clocked.vcd").to_string_lossy().to_string();
-    let (_, stderr, code) = run(&["find", &vcd, "*x*", "1", "--before", "5", "-t", "1:10"]);
+    let (_, stderr, code) = run_query(&["find", &vcd, "*x*", "1", "--before", "5", "-t", "1:10"]);
     assert_ne!(code, 0);
     assert!(stderr.contains("cannot be combined with"));
 }
@@ -1528,7 +1540,7 @@ fn test_clock_override_vcd_passthrough() {
     let vcd = vcd_path("test_dual_clock.vcd")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&[
+    let (stdout, stderr, code) = run_query(&[
         "signal", &vcd, "--clock", "*clk2*", "-s", "*data1*", "-t", "1:3",
     ]);
     assert_eq!(code, 0, "VCD clock override failed: {}", stderr);
@@ -2314,7 +2326,7 @@ fn test_native_verilator_fst_list() {
     let fst = vcd_path("native_verilator_counter.fst")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["list", &fst]);
+    let (stdout, stderr, code) = run_query(&["list", &fst]);
     assert_eq!(code, 0, "stderr: {}", stderr);
     // spaced VCD-token name "count [3:0]" must read back joined
     assert!(stdout.contains("count[3:0]"), "got: {}", stdout);
@@ -2331,7 +2343,7 @@ fn test_native_verilator_fst_values() {
     let fst = vcd_path("native_verilator_counter.fst")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["value", &fst, "--at", "5"]);
+    let (stdout, stderr, code) = run_query(&["value", &fst, "--at", "5"]);
     assert_eq!(code, 0, "stderr: {}", stderr);
     // counter released from reset counts 1/cycle: value 5 at cycle 5
     let count_line = stdout.lines().find(|l| l.starts_with("count[3:0]"));
@@ -2347,7 +2359,7 @@ fn test_native_verilator_fst_clock_rederivation() {
     let fst = vcd_path("native_verilator_counter.fst")
         .to_string_lossy()
         .to_string();
-    let (stdout, stderr, code) = run(&["stats", &fst]);
+    let (stdout, stderr, code) = run_query(&["stats", &fst]);
     assert_eq!(code, 0, "stderr: {}", stderr);
     // clock meta is re-derived from FST content: 10ns period, 36 cycles
     assert!(stdout.contains("36 cycles"), "got: {}", stdout);

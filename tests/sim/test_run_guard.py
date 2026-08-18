@@ -143,7 +143,7 @@ def _await_trip(guard, timeout_s: float = 2.0) -> None:
 def test_guard_kills_on_budget_breach(tmp_path: Path, monkeypatch):
     """Growth past the budget kills the proc and exposes a factual message."""
     # Patch kill_process_tree so the fake proc is 'killed' without real signals.
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
 
@@ -179,7 +179,7 @@ def test_guard_ignores_pre_existing_input_bytes(tmp_path: Path, monkeypatch):
     run dir and every later sim died in seconds blaming a testbench tracer,
     because the guard measured the directory's total size — inputs included.
     """
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
 
@@ -218,7 +218,7 @@ def test_guard_charges_bytes_written_before_start(tmp_path: Path, monkeypatch):
     everything the sim dumped during that walk — free bytes that silently
     raised the effective budget.
     """
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
 
@@ -245,7 +245,7 @@ def test_guard_baseline_falls_to_the_low_water_mark(tmp_path: Path, monkeypatch)
     runs away tracing would get ``budget + 3 GB`` of real disk if growth were
     measured from the size at spawn.
     """
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
 
@@ -281,7 +281,7 @@ def test_guard_kills_before_walking_for_evidence(tmp_path: Path, monkeypatch):
     seconds of runaway writing on exactly the pathological run. A SIGKILLed sim
     cannot truncate anything, so the evidence survives the kill.
     """
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     order: list[str] = []
 
@@ -310,7 +310,7 @@ def test_guard_kills_before_walking_for_evidence(tmp_path: Path, monkeypatch):
 
 
 def test_guard_does_not_trip_under_budget(tmp_path: Path, monkeypatch):
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
 
@@ -373,7 +373,7 @@ def _stall_guard(proc, clock, grace_s: float = 60.0) -> rg.SimTimeStallGuard:
 
 def test_stall_guard_trips_when_sim_time_never_leaves_zero(monkeypatch, tmp_path: Path):
     """The ravenoc failure: cocotb logs at 0.00ns forever, wall clock runs on."""
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
     clock = _FakeClock()
@@ -399,7 +399,7 @@ def test_stall_guard_trips_when_sim_time_never_leaves_zero(monkeypatch, tmp_path
 
 def test_stall_guard_never_trips_once_sim_time_advanced(monkeypatch):
     """A slow-but-live sim (time > 0) is permanently exempt."""
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
     clock = _FakeClock()
@@ -417,7 +417,7 @@ def test_stall_guard_never_trips_once_sim_time_advanced(monkeypatch):
 
 def test_stall_guard_stays_disarmed_without_any_sim_time_line(monkeypatch):
     """A run that never printed a cocotb line is not ours to judge."""
-    import booley.platform_paths as pp
+    import booley.runtime.platform_paths as pp
 
     monkeypatch.setattr(pp, "kill_process_tree", lambda p: p.kill())
     clock = _FakeClock()
@@ -566,7 +566,7 @@ def test_parent_death_guard_kills_the_whole_tree(monkeypatch):
     proc = _FakeProc()
     rg._supervised_children.clear()
     rg.supervise_child(proc)
-    monkeypatch.setattr("booley.platform_paths.kill_process_tree", killed.append)
+    monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", killed.append)
     try:
         rg.install_parent_death_guard()
         handler = signal.getsignal(signal.SIGTERM)

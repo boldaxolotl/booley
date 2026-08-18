@@ -14,7 +14,7 @@ from booley.harness.developer_prompt import (
     build_type_guidance_section,
     build_workflow_section,
 )
-from booley.mcp_tools.registry import McpToolInfo
+from booley.mcp.registry import McpToolInfo
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -29,7 +29,7 @@ def _make_mcp_tools() -> list[McpToolInfo]:
             description="Implement testbench changes",
             code_modifying=True,
         ),
-        McpToolInfo(name="sim", path="flows/simulate.py", description="Run simulation"),
+        McpToolInfo(name="sim", path="flows/sim/flow.py", description="Run simulation"),
     ]
 
 
@@ -363,9 +363,9 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         item = tmp_path / "item.md"
         item.write_text("---\nsummary: x\n---\n", encoding="utf-8")
         mcp_tools = [
-            McpToolInfo(name="sim", path="flows/simulate.py", description="Run simulation"),
-            McpToolInfo(name="elab", path="flows/elaborate.py", description="Run elaboration"),
-            McpToolInfo(name="lint", path="flows/lint.py", description="Run lint"),
+            McpToolInfo(name="sim", path="flows/sim/flow.py", description="Run simulation"),
+            McpToolInfo(name="elab", path="flows/elab/flow.py", description="Run elaboration"),
+            McpToolInfo(name="lint", path="flows/lint/flow.py", description="Run lint"),
             McpToolInfo(
                 name="submit_run_report",
                 path="mcp_tools/submit_run_report.py",
@@ -373,7 +373,7 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             ),
             McpToolInfo(
                 name="synth",
-                path="flows/asic_synthesize.py",
+                path="flows/synth/flow.py",
                 description="Run synthesis",
             ),
         ]

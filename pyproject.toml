@@ -37,7 +37,8 @@ dependencies = [
     "jsonschema>=4.0",
     "libcst>=1.9.0",
     "markdown-it-py>=4.0",
-    "mcp>=1.8",  # streamable-HTTP session manager (Interactive Mode transport)
+    # MCP 2.x removes Server.list_tools(), which mcp_server._build_server() uses.
+    "mcp>=1.8,<2",  # streamable-HTTP session manager (Interactive Mode transport)
     "mdit-py-plugins>=0.5",
     "mutmut>=3.0",
     "pydantic>=2.0",
@@ -71,7 +72,7 @@ dev = [
 
 [project.scripts]
 booley = "booley.harness.booley:main"
-booley-mcp = "booley.mcp_server:main"
+booley-mcp = "booley.mcp.server:main"
 bwave = "booley.bwave.cli:main"
 
 [project.urls]
@@ -208,13 +209,13 @@ known-first-party = ["booley"]
 "src/booley/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
 "src/booley/dev_support/development_state.py" = ["PLR0912", "N818"]
-"src/booley/mcp_tools/base.py" = ["B027"]
-"src/booley/flows/elaborate.py" = ["PLR0915"]
-"src/booley/mcp_tools/reviewer.py" = ["PLR0912"]
+"src/booley/mcp/base.py" = ["B027"]
+"src/booley/flows/elab/flow.py" = ["PLR0915"]
+"src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/harness/developer.py" = ["PLR0915"]
 "src/booley/harness/console/links.py" = ["PLR0911"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
-"src/booley/fusesoc_trace_overlay.py" = ["PLR0912", "PLR0915"]
+"src/booley/fusesoc/fusesoc_trace_overlay.py" = ["PLR0912", "PLR0915"]
 "src/booley/harness/init_cmd.py" = ["PLR0915", "F401"]
 "src/booley/yosys/openroad_timing.py" = ["PLR0911"]
 "crates/bwave/tests/gen_xcelium_dialect_vcd.py" = ["PLR0915"]

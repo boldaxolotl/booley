@@ -19,7 +19,7 @@ from booley.harness.terminal import (
     get_console_app,
     set_console_active,
 )
-from booley.mcp_tools.base import McpToolResult, _endpoint_end_event
+from booley.mcp.base import McpToolResult, _endpoint_end_event
 
 # ===========================================================================
 # Phase 0a: summary field in endpoint_end
@@ -60,11 +60,11 @@ class TestCriteriaUpdateEvent:
         state.criteria["lint_clean"] = CriterionEntry(mandatory=True)
         state.save()
 
-        from booley.mcp_tools.base import _emit_criteria_update
+        from booley.mcp.base import _emit_criteria_update
 
         # _write_display_event moved to MCP endpoint events (SRP); patch it at its home,
         # where _emit_criteria_update now resolves the name.
-        with patch("booley.mcp_tools.events._write_display_event") as mock_write:
+        with patch("booley.mcp.events._write_display_event") as mock_write:
             _emit_criteria_update(state)
             mock_write.assert_called_once()
             event = mock_write.call_args[0][0]
@@ -82,10 +82,10 @@ class TestCriteriaUpdateEvent:
         state.criteria["_blocked_reason"] = CriterionEntry(met=False)
         state.save()
 
-        from booley.mcp_tools.base import _emit_criteria_update
+        from booley.mcp.base import _emit_criteria_update
 
         # _write_display_event moved to MCP endpoint events (SRP); patch it at its home.
-        with patch("booley.mcp_tools.events._write_display_event") as mock_write:
+        with patch("booley.mcp.events._write_display_event") as mock_write:
             _emit_criteria_update(state)
             event = mock_write.call_args[0][0]
             assert "sim_pass" in event["criteria"]

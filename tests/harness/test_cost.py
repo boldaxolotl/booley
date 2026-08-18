@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from booley.harness._cost import _MODEL_PRICES, estimate_cost, format_usage_log
+from booley.runtime._cost import _MODEL_PRICES, estimate_cost, format_usage_log
 
 # ---------------------------------------------------------------------------
 # estimate_cost — reachable through the harness alias

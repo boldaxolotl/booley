@@ -1,7 +1,7 @@
 """booley init / booley doctor — project setup and health checks.
 
-Replaces bootstrap.py with package-aware logic. Uses booley.paths for all
-package data resolution and booley.project_dir for project directory discovery.
+Replaces bootstrap.py with package-aware logic. Uses booley.runtime.paths for all
+package data resolution and booley.runtime.project_dir for project directory discovery.
 
 Idempotent — safe to re-run. Each step checks preconditions and skips if
 already satisfied. Interactive prompts are skipped in --check-only mode
@@ -45,7 +45,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 from booley import __version__
-from booley.core_projection import (
+from booley.config.guidance_links import ensure_guidance_links
+from booley.config.settings import load_interactive_config
+from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
     authoritative_cores,
@@ -53,7 +55,7 @@ from booley.core_projection import (
     projection_issues,
     reconcile_projected_cores,
 )
-from booley.guidance_links import ensure_guidance_links
+from booley.harness import devcontainer as dc
 
 # --- Re-exported for backward compatibility (Single Responsibility split) ---
 # These symbols were relocated into sibling init_* modules so this file is just
@@ -61,13 +63,9 @@ from booley.guidance_links import ensure_guidance_links
 # existing importers (booley.harness.doctor, tests) and this module's own steps
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
-from booley.harness import auth_token, doctor_stamp, nangate_pdk
-from booley.harness import devcontainer as dc
+from booley.harness import doctor_stamp, nangate_pdk
 from booley.harness import interactive_docker as idk
-from booley.harness import project_image as pi
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
-from booley.harness.config import load_interactive_config
-from booley.harness.git_utils import add_git_excludes
 from booley.harness.init_common import (
     InitContext,
     StepResult,
@@ -99,6 +97,7 @@ from booley.harness.init_docker_image import (
     _step_docker_image,
     _try_pull_image,
     ensure_flavor_image,
+    source_fingerprint_mismatch,
 )
 from booley.harness.init_git_hooks import (
     _PROJECT_HOOK_SCRIPTS,
@@ -116,11 +115,14 @@ from booley.harness.init_skills import (
     _make_junction_or_symlink,
     _prune_stale_skill_links,
 )
-from booley.paths import docker_data_dir, skills_dir
-from booley.platform_paths import IS_WINDOWS, docker_mount_path
-from booley.project_dir import reset_cache, resolve_project_dir
+from booley.runtime import auth_token
+from booley.runtime import project_image as pi
+from booley.runtime.git import add_git_excludes
+from booley.runtime.paths import docker_data_dir, skills_dir
+from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
+from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.runtime.timefmt import detect_host_timezone
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
-from booley.timefmt import detect_host_timezone
 
 # ---------------------------------------------------------------------------
 # Layout constants
@@ -303,7 +305,7 @@ def _backfill_fusesoc_ignore(project_dir: Path, ctx: InitContext) -> None:
     """Ensure ``.booley_project/FUSESOC_IGNORE`` exists.
 
     The load-bearing half of the worktree-shadowing fix: Booley's own
-    :func:`~booley.fusesoc_registry.discover_cores` skips ``.booley_project/``
+    :func:`~booley.fusesoc.fusesoc_registry.discover_cores` skips ``.booley_project/``
     structurally, but FuseSoC's ``--cores-root`` recursive scan is out of
     Booley's code control — only this on-disk marker reaches it. Idempotent and
     self-healing so re-running ``booley init`` repairs a project that predates
@@ -367,7 +369,8 @@ def _step_project_dir(ctx: InitContext) -> None:
     reset_cache()
     ok(f"project directory created at {target}")
     info(
-        "  config skeletons created; run the booley-setup skill (Step 2, project config) to fill them"
+        "  config skeletons created; run the booley-setup skill starting at "
+        "Step 0 (planning). Its Step 2 fills these files."
     )
     ctx.record("project_dir", "ok", "created with config skeletons")
 
@@ -509,7 +512,7 @@ def _check_provider_creds(provider: str, auth_mode: str) -> None:
 
 
 def _step_auth(ctx: InitContext) -> None:
-    from booley.harness._backend_config import _DEFAULT_PROVIDER
+    from booley.config.agent import _DEFAULT_PROVIDER
 
     ctx.step_banner("agent authentication")
     info(
@@ -718,7 +721,7 @@ def _selected_image_handled(ctx: InitContext, sandbox: dict, generated: str) -> 
     return False
 
 
-def _project_image_setup_gate(
+def _project_image_setup_gate(  # noqa: PLR0911 — each early return is a distinct image-ownership/build gate
     ctx: InitContext,
 ) -> tuple[Path, Path, dict, str, str | None, bool] | None:
     """Run the early docker/project-dir/user-managed-image skip checks.
@@ -758,6 +761,18 @@ def _project_image_setup_gate(
     # dead-ended the natural "drop a requirements.txt, re-run init" path (F-5):
     # the user had to `docker build` and set [sandbox].image by hand.
     docker_dir = project_dir / "docker"
+    dockerfile = docker_dir / "Dockerfile"
+    parent = pi.dockerfile_parent_image(dockerfile)
+    parent_refreshed = False
+    if parent in FLAVOR_IMAGES:
+        result_count = len(ctx.results)
+        parent_refreshed = ensure_flavor_image(ctx, parent)
+        if parent_refreshed:
+            _warn_on_live_session_on_old_image(ctx, parent)
+        parent_result = ctx.results[-1] if len(ctx.results) > result_count else None
+        if parent_result is not None and parent_result.status in {"warn", "err"}:
+            return None
+
     user_owned = [
         p.name
         for p in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
@@ -766,14 +781,26 @@ def _project_image_setup_gate(
     if user_owned:
         owned = f"docker/{{{', '.join(user_owned)}}}"
         if idk.image_exists(generated):
-            warn(
-                f"manual edits detected in {owned} — leaving "
-                "them and the existing image untouched. Delete them (or set "
-                "[sandbox].image to your own image) to resume managed regeneration; "
-                "run `docker build` yourself to rebuild from your edits."
+            image_stale = source_fingerprint_mismatch(generated) is True
+            if not parent_refreshed and not image_stale:
+                warn(
+                    f"manual edits detected in {owned} — leaving "
+                    "them and the existing image untouched. Delete them (or set "
+                    "[sandbox].image to your own image) to resume managed regeneration; "
+                    "run `docker build` yourself to rebuild from your edits."
+                )
+                ctx.record("project_image", "skip", "manual edits preserved")
+                return None
+            reason = (
+                f"its Booley-managed parent '{parent}' was refreshed"
+                if parent_refreshed
+                else "its inherited Booley provenance is stale"
             )
-            ctx.record("project_image", "skip", "manual edits preserved")
-            return None
+            info(
+                f"manual edits detected in {owned}; rebuilding '{generated}' "
+                f"from those files because {reason}"
+            )
+            return project_dir, toml_path, sandbox, generated, configured, True
         info(
             f"manual edits detected in {owned} and image '{generated}' is not "
             "built — using your files as the build input (leaving them untouched)"
@@ -999,7 +1026,7 @@ def _project_sandbox_memory(project_root: Path) -> str:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return ""
-    from booley.harness._backend_config import _parse_sandbox_config
+    from booley.config.agent import _parse_sandbox_config
 
     return _parse_sandbox_config(data).memory
 
@@ -1113,8 +1140,8 @@ def _select_interactive_app(project_root: Path | None = None) -> str:
     Codex, else ``none`` (a devcontainer with no agent extension is still valid).
     """
     if project_root is not None:
+        from booley.config.agent import _VALID_PROVIDERS, _parse_provider
         from booley.core.config_paths import resolve_booley_toml
-        from booley.harness._backend_config import _VALID_PROVIDERS, _parse_provider
 
         config_path = resolve_booley_toml(project_root)
         if config_path.is_file():
@@ -1662,7 +1689,7 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
     if key == "agents":
         return (project_root / ".booley_project" / "AGENTS.md").is_file()
     flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
-    from booley.flow_names import DEFAULT_TARGET_KEY, config_section
+    from booley.targets.flow_names import DEFAULT_TARGET_KEY, config_section
 
     section = config_section(flows, key)
     if not section:
@@ -1674,7 +1701,7 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
 
 def _outstanding_setup_steps(project_root: Path) -> list[str]:
     """The booley-setup step lines this project has not satisfied yet."""
-    from booley.harness.config import _load_booley_toml
+    from booley.config.settings import _load_booley_toml
 
     data = _load_booley_toml(project_root)
     return [

@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from booley.harness.auth_token import config_dir
+from booley.runtime.auth_token import config_dir
 from booley.ticket_board.helpers import lock_fd, unlock_fd
 
 from .config import installation_name_error

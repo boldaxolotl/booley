@@ -6,7 +6,7 @@ import asyncio
 import time
 from pathlib import Path
 
-from booley.mcp_tools import job_records as jobrec
+from booley.runtime import job_records as jobrec
 from booley.ticket_board.helpers import is_pid_alive
 from booley.ticket_board.paths import ticket_runtime_dir
 

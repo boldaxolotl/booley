@@ -14,7 +14,7 @@ import time
 
 from tests.conftest import MINIMAL_FST_BYTES
 
-from booley.platform_paths import popen_new_group_kwargs
+from booley.runtime.platform_paths import popen_new_group_kwargs
 from booley.sim.trace_session import TraceSession
 
 

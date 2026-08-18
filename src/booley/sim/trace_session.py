@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import IO
 
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 
 def _bwave_cache_root() -> Path:
@@ -679,7 +679,7 @@ class TraceSession:
         """Record the stall incident and tree-kill sim + bwave processes."""
         import logging
 
-        from booley.platform_paths import kill_process_tree
+        from booley.runtime.platform_paths import kill_process_tree
 
         log = logging.getLogger(__name__)
         self._stall_killed = True

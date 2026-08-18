@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.harness.developer import _discover_mcp_surface
-from booley.mcp_tools.registry import McpToolInfo
+from booley.mcp.registry import McpToolInfo
 
 
 def test_review_criteria_fail_fast_when_reviewer_not_discovered(tmp_path, monkeypatch):
@@ -17,7 +17,7 @@ def test_review_criteria_fail_fast_when_reviewer_not_discovered(tmp_path, monkey
         lambda _root: ({"reviewer": {"enabled": False}}, {}),
     )
     monkeypatch.setattr(
-        "booley.mcp_tools.registry.discover_mcp_tools",
+        "booley.mcp.registry.discover_mcp_tools",
         lambda **_kwargs: [
             McpToolInfo(
                 name="sim",

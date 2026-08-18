@@ -1,0 +1,54 @@
+CAPI=2:
+name: booley:fixtures:ticket_mode_smoke:0.1.0
+description: Production-image Ticket Mode smoke fixture
+
+filesets:
+  rtl:
+    files:
+      - rtl/dut.sv: {file_type: systemVerilogSource}
+  tb_pass:
+    files:
+      - tb/tb_dut.sv: {file_type: systemVerilogSource}
+    tags: [tb]
+  tb_fail:
+    files:
+      - tb/tb_fail.sv: {file_type: systemVerilogSource}
+    tags: [tb]
+  constraints:
+    files:
+      - constraints/dut.sdc: {file_type: SDC}
+
+targets:
+  lint_smoke: &lint_target
+    flow: lint
+    flow_options:
+      tool: verible
+    filesets: [rtl]
+    toplevel: dut
+  lint_optional: *lint_target
+  sim_smoke: &sim_target
+    flow: sim
+    flow_options:
+      tool: icarus
+      iverilog_options: [-g2012]
+    filesets: [rtl, tb_pass]
+    toplevel: tb_dut
+  sim_fail:
+    flow: sim
+    flow_options:
+      tool: icarus
+      iverilog_options: [-g2012]
+    filesets: [rtl, tb_fail]
+    toplevel: tb_fail
+  synth_smoke:
+    default_tool: yosys
+    flow: generic
+    flow_options:
+      tool: yosys
+      arch: xilinx
+      frontend: sv2v
+      ppa_profile: compact
+      flatten: true
+      timing_engine: openroad
+    filesets: [rtl, constraints]
+    toplevel: dut

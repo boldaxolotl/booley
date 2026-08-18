@@ -25,7 +25,6 @@ from tests.bwave.test_wcp import FakeWcpServer
 from tests.conftest import MINIMAL_FST_BYTES
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
-BWAVE_CLI = str(BOOLEY_ROOT / "src" / "booley" / "bwave" / "cli.py")
 
 # `open` never reads the trace contents (the viewer does), but discovery does
 # check the store is real — header plus at least one value-change block, so a
@@ -1277,7 +1276,7 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     """`open` must not fall through to the query translator and die about globs."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: True)
+    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
     monkeypatch.setattr(sys, "argv", ["bwave", "open", "@dut", "-s", "tb.dut.fifo.*"])
 
     with pytest.raises(SystemExit) as exc:
@@ -1296,7 +1295,7 @@ def test_gui_is_container_only(monkeypatch, capsys):
     """Shared guard, but `open` is the most human-facing verb — pin it."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr("booley.runtime_context.inside_session_runtime", lambda: False)
+    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: False)
     monkeypatch.setattr(sys, "argv", ["bwave", "gui"])
 
     with pytest.raises(SystemExit) as exc:
@@ -1310,7 +1309,7 @@ def test_gui_is_container_only(monkeypatch, capsys):
 
 
 def test_gui_subprocess_smoke(tmp_path):
-    """`python cli.py open @dut` end-to-end with a stub `code` on PATH.
+    """`python -m booley.bwave.cli gui @dut` end-to-end with a stub editor CLI.
 
     Covers the argv-routing seam (_KNOWN_COMMANDS, dispatch) that in-process
     Namespace tests bypass — an unrouted `open` would fall through to query
@@ -1348,11 +1347,12 @@ def test_gui_subprocess_smoke(tmp_path):
 
     env = os.environ.copy()
     env["PATH"] = str(stub_dir) + os.pathsep + env["PATH"]
+    env["PYTHONPATH"] = str(BOOLEY_ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
     env["BOOLEY_CONTAINER"] = "1"
     env["BOOLEY_WCP_PORT"] = str(_dead_port())  # force the editor-CLI fallback
 
     r = subprocess.run(
-        [sys.executable, BWAVE_CLI, "gui", "@dut"],
+        [sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"],
         capture_output=True,
         text=True,
         timeout=60,

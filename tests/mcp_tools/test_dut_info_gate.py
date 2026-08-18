@@ -20,12 +20,12 @@ from unittest.mock import patch
 import pytest
 
 from booley.dev_support.development_state import DevelopmentState, DutInfo
-from booley.flows.simulate import SimulateFlow
-from booley.mcp_tools.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.mcp_tools.coverage_analyst import CoverageAnalystSpecialist
-from booley.mcp_tools.mutation_tester import MutationTesterSpecialist
-from booley.mcp_tools.reviewer import ReviewerSpecialist
-from booley.mcp_tools.tb_coder import TbCoderSpecialist
+from booley.flows.sim.flow import SimulateFlow
+from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
+from booley.specialists.mutation_tester import MutationTesterSpecialist
+from booley.specialists.reviewer import ReviewerSpecialist
+from booley.specialists.tb_coder import TbCoderSpecialist
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.heartbeat import Heartbeat, fmt_elapsed
+from booley.runtime.heartbeat import Heartbeat, fmt_elapsed
 
 # ---------------------------------------------------------------------------
 # fmt_elapsed
@@ -75,7 +75,7 @@ class TestHeartbeat:
         hb.stop()
         hb.stop()  # second call should be fine
 
-    @patch("booley.heartbeat._heartbeat_line")
+    @patch("booley.runtime.heartbeat._heartbeat_line")
     def test_heartbeat_fires(self, mock_hb_line):
         """Heartbeat should call _heartbeat_line after the interval."""
         hb = Heartbeat("sim", interval=0.05)  # very short for testing
@@ -87,8 +87,8 @@ class TestHeartbeat:
         first_call = mock_hb_line.call_args_list[0]
         assert first_call[0][0] == "sim"
 
-    @patch("booley.heartbeat.touch_reaper_heartbeat")
-    @patch("booley.heartbeat._heartbeat_line")
+    @patch("booley.runtime.heartbeat.touch_reaper_heartbeat")
+    @patch("booley.runtime.heartbeat._heartbeat_line")
     def test_heartbeat_keeps_session_runtime_alive(self, _mock_line, mock_touch):
         hb = Heartbeat("sim", interval=0.05)
         hb.start()
@@ -97,7 +97,7 @@ class TestHeartbeat:
 
         assert mock_touch.call_count >= 2  # immediate touch plus at least one tick
 
-    @patch("booley.heartbeat._heartbeat_line")
+    @patch("booley.runtime.heartbeat._heartbeat_line")
     def test_status_fn_appended(self, mock_hb_line):
         """status_fn return value should be passed as extra."""
         status_fn = MagicMock(return_value="stage: planning")
@@ -112,7 +112,7 @@ class TestHeartbeat:
                 assert "stage: planning" in call[0][2]
                 break
 
-    @patch("booley.heartbeat._heartbeat_line")
+    @patch("booley.runtime.heartbeat._heartbeat_line")
     def test_status_fn_exception_swallowed(self, mock_hb_line):
         """Exceptions from status_fn should be silently swallowed."""
 
@@ -131,7 +131,7 @@ class TestHeartbeat:
 # touch_reaper_heartbeat (ADR 0028 Decision 11)
 # ---------------------------------------------------------------------------
 
-from booley.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
+from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 
 
 class TestTouchReaperHeartbeat:
@@ -172,7 +172,7 @@ class TestRunnerTouchesReaperHeartbeat:
     (ADR 0028 Decision 11) — agent thinking time has no MCP traffic."""
 
     def test_run_with_heartbeat_touches_reaper(self, monkeypatch, tmp_path):
-        import booley.heartbeat as hb_mod
+        import booley.runtime.heartbeat as hb_mod
 
         calls: list[object] = []
         monkeypatch.setattr(

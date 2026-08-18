@@ -409,7 +409,7 @@ def _configured_source_roots(project_root: str | Path | None) -> list[str]:
     roots = {"rtl", "tb", "verif", "fw"}
     if project_root:
         try:
-            from booley.fusesoc_registry import source_dirs_from_core
+            from booley.fusesoc.fusesoc_registry import source_dirs_from_core
 
             rtl_dirs, tb_dirs, tb_incl = source_dirs_from_core(Path(project_root))
             roots.update(str(d).rstrip("/") for d in (*rtl_dirs, *tb_dirs, *tb_incl))
@@ -520,7 +520,7 @@ def _live_criterion_registry(
         load_project_criteria,
         merge_criteria_defs,
     )
-    from booley.mcp_tools.registry import discover_mcp_tools
+    from booley.mcp.registry import discover_mcp_tools
 
     base = load_base_criteria()
     project = []
@@ -632,8 +632,8 @@ def _validate_sim_entries(criteria: dict[str, Any]) -> list[str]:
 
 def _eligible_sim_target_selectors(declarations: dict[str, list[Any]]) -> list[str]:
     """Return copy-pasteable selectors for Targets the sim Booley Flow can drive."""
-    from booley import fusesoc_registry
-    from booley.target_surface import flow_can_drive
+    from booley.fusesoc import fusesoc_registry
+    from booley.targets.target_surface import flow_can_drive
 
     selectors: list[str] = []
     for bucket in declarations.values():
@@ -706,9 +706,9 @@ def _validate_sim_targets(
     project_root: str | Path,
 ) -> list[str]:
     """Reject structured ``sim_pass`` entries aimed at non-simulation Targets."""
-    from booley import fusesoc_registry
     from booley.dev_support.criteria import parse_sim_criterion
-    from booley.target_surface import flow_can_drive
+    from booley.fusesoc import fusesoc_registry
+    from booley.targets.target_surface import flow_can_drive
 
     root = Path(project_root)
     try:
@@ -870,7 +870,7 @@ def _source_prefixes(project_root: Path, section_name: str, default: str) -> lis
     follow-through).
     """
     try:
-        from booley.fusesoc_registry import source_dirs_from_core
+        from booley.fusesoc.fusesoc_registry import source_dirs_from_core
 
         rtl_dirs, tb_dirs, _incl = source_dirs_from_core(project_root)
     except Exception:  # noqa: BLE001 — registry unavailable; default prefix
@@ -878,14 +878,14 @@ def _source_prefixes(project_root: Path, section_name: str, default: str) -> lis
     dirs = tb_dirs if section_name == "testbench" else rtl_dirs
     if not dirs:
         return [default.rstrip("/") + "/"]
-    from booley.shared_infra import source_dir_prefixes
+    from booley.runtime.shared_infra import source_dir_prefixes
 
     return [prefix for prefix in source_dir_prefixes(dirs, project_root) if "\\" not in prefix]
 
 
 def _scope_hits_prefix(scope: list[str], prefixes: list[str]) -> bool:
     """True when a scope entry targets one of the configured source dirs."""
-    from booley.shared_infra import source_path_matches
+    from booley.runtime.shared_infra import source_path_matches
 
     for entry in scope:
         path = entry.removesuffix(" [new]")

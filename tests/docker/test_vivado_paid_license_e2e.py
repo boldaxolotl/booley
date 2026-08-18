@@ -139,7 +139,7 @@ def _flow_argv(container: str, *, timeout_ms: int) -> list[str]:
         container,
         "python3",
         "-m",
-        "booley.flows.fpga_impl",
+        "booley.flows.fpga",
         "--target",
         "fpga",
         "--work-dir",

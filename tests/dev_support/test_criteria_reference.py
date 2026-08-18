@@ -19,7 +19,7 @@ from booley.dev_support.criteria_reference import (
     render_criteria_params_reference,
     render_criteria_reference,
 )
-from booley.paths import cheatsheet_path
+from booley.runtime.paths import cheatsheet_path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

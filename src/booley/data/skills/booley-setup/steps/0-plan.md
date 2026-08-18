@@ -151,9 +151,10 @@ leaves all of this on a blank slate:
   dir is versioned nowhere;
 - `.git/hooks/commit-msg` + `pre-push` delegators, and
   `.devcontainer/devcontainer.json`;
-- exactly three lines in `.git/info/exclude` under the header
+- one generated block in `.git/info/exclude` under the header
   `# Booley (generated; local, uncommitted)`: `/.devcontainer`,
-  `/.booley_project`, `/.claude`.
+  `/.booley_project`, `/.claude`, and `/.booley-projected-*.core`. Older init
+  runs may have repeated the header; current init consolidates it.
 
 Tell-tales of a **prior setup** are therefore only things init never writes:
 any actual key in `booley.toml`/`tests.toml` (a `[sandbox].image`, `[stealth]`,
@@ -468,6 +469,12 @@ separate columns (see "How a row resolves"). The standard checklist:
      fileset paths. Booley projects ignored root-level copies for FuseSoC; do
      not create source-resolution symlinks. Native-core modernization findings
      outside the configured Target surface are notes, not setup work.
+   - **Hybrid integration footprint:** use only when the user or an enclosing
+     port workflow explicitly requires it. Keep operational `.booley_project/`
+     state local and ignored, while tracking the minimal repository-native
+     integration artifacts the project must retain (selected `.core` Target
+     edits, constraints, wrappers, and the setup/port report). This is not the
+     stealth-core layout: the tracked native core remains authoritative.
    When several native cores could own the new Target, mark this row for user
    review instead of guessing. A hidden authored core requires row 20's
    `[stealth] enabled = true`; non-stealth projects use tracked native cores.
@@ -602,7 +609,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     fate (merge / overwrite / leave); any project gotchas the user wants
     recorded (Step 3 only writes gotchas that came from an instruction file or
     from the user — collect them here, not mid-execution).
-16. **Git footprint — stealth or open?** Whether `.booley_project/` is visible
+16. **Git footprint — hidden, open, or an explicitly requested hybrid?** Whether `.booley_project/` is visible
     in the RTL repo's tracked tree. **Always a grill question**: the codebase
     cannot answer whether the user's colleagues are meant to know. *Hidden* (the
     default, and what `booley init` already set up): `.booley_project/` stays
@@ -610,7 +617,11 @@ separate columns (see "How a row resolves"). The standard checklist:
     `.git/info/exclude` — never `.gitignore`, which is itself a tracked file and
     would advertise Booley in the history it is supposed to keep clean. *Open*:
     `.booley_project/` is **committed** to the RTL repo like any other project
-    config. Step 4 executes whichever this row says.
+    config. **Hybrid** is reserved for an explicit port/integration policy:
+    keep `.booley_project/` hidden, but track the named native cores,
+    constraints, wrappers, durable root `AGENTS.md`, and report required by
+    that policy. Record the exact tracked allowlist in this row; do not broaden
+    it into committing operational state. Step 4 executes whichever this row says.
     A hidden authored `.core` is the stealth layout: row 20 must enable stealth,
     which also activates ignored root-level core projection. An open project
     uses tracked native cores. A hidden config-only project may leave stealth

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.project_dir import (
+from booley.runtime.project_dir import (
     reset_cache,
     resolve_checkout_project_dir,
     resolve_project_dir,

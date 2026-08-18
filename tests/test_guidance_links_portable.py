@@ -17,14 +17,14 @@ from pathlib import Path
 
 import pytest
 
-from booley.guidance_links import (
+from booley.config.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     _points_to,
     _portable_target,
     ensure_guidance_links,
 )
-from booley.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_dir import PROJECT_DIR_NAME
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:

@@ -25,9 +25,9 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.runtime.timefmt import parse_timestamp
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import existing_ticket_runtime_file
-from booley.timefmt import parse_timestamp
 
 logger = logging.getLogger("booley")
 
@@ -178,7 +178,7 @@ def _run_with_heartbeat(cmd: list[str], cwd: str, project_root: Path) -> int:
     Stdio is inherited so the developer's own logs appear in terminal.
     """
     try:
-        from booley.heartbeat import Heartbeat, touch_reaper_heartbeat
+        from booley.runtime.heartbeat import Heartbeat, touch_reaper_heartbeat
     except ImportError:
         logger.warning("heartbeat module not available -- running without heartbeat")
         # Fallback: run without heartbeat

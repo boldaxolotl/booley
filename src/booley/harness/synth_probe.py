@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from booley.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 PROBE_FILENAME = "synth_probe.json"
 

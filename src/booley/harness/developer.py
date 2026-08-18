@@ -29,7 +29,11 @@ from pathlib import Path
 from booley.dev_support.development_state import (
     DevelopmentState,
 )
-from booley.platform_paths import bash_bin
+from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_budget
+from booley.runtime.git import git_run
+from booley.runtime.platform_paths import bash_bin
+from booley.runtime.prompt_artifacts import write_prompt_artifacts
+from booley.runtime.timefmt import compact_utc_now
 from booley.ticket_board.paths import (
     existing_ticket_runtime_file,
     migrate_runtime_file,
@@ -37,14 +41,12 @@ from booley.ticket_board.paths import (
     ticket_runtime_dir,
     ticket_runtime_file,
 )
-from booley.timefmt import compact_utc_now
 
 from . import terminal, ticket_cli
 from .auto_retry import maybe_auto_retry, record_crash
 from .blocking import ContextExhaustedError, FatalError, block_ticket, fail_ticket
 from .colors import bold_green, green, yellow
 from .console_metrics import WorktreeLineCounter
-from .developer_budget import DeveloperBudget, run_with_developer_budget
 from .developer_display import (
     DisplayWatcher,
     _attach_click_links,
@@ -57,11 +59,9 @@ from .developer_display import (
     _wire_console_callbacks,
     agent_event_handler,
 )
-from .git_utils import git_run
 from .logging_utils import set_current_step, setup_file_logging, teardown_file_logging
 from .models import AgentResult, TicketContext
 from .preflight import run_preflight
-from .prompt_artifacts import write_prompt_artifacts
 from .terminal import (
     close_log,
     open_log,
@@ -112,7 +112,7 @@ def _recover_setup_state(ctx: TicketContext, project_root: Path) -> None:
 
 def _write_status(logs_dir: Path, slug: str, step: str) -> None:
     """Write minimal status.json for heartbeat display."""
-    from booley.timefmt import utc_now_rfc3339
+    from booley.runtime.timefmt import utc_now_rfc3339
 
     path = ticket_runtime_file(logs_dir, "status.json")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +177,8 @@ async def _prepare_ticket(
     Shared by log-mode and console-mode entry paths so the bring-up sequence
     stays identical.
     """
-    from .config import load_models_config
+    from booley.config.settings import load_models_config
+
     from .setup.intake import run as parse_validate
 
     load_models_config(project_root)
@@ -278,14 +279,33 @@ async def _run_ticket_body(ctx: TicketContext, project_root: Path, exec_start: f
     _display_ticket_banner(ctx)
 
     # On resume, restore worktree_path + feature_branch from setup step metadata
+    setup_was_complete = "setup" in ctx.completed_steps
     _recover_setup_state(ctx, project_root)
     _invalidate_missing_worktree(ctx, project_root)
+    resume_uses_existing_setup = setup_was_complete and "setup" in ctx.completed_steps
 
     # ---- Setup (if not already completed) ----
     if "setup" not in ctx.completed_steps:
         setup_blocked = await _run_setup_step(ctx, project_root)
         if setup_blocked:
             await _prepare_blocked_triage(ctx, project_root)
+            return
+
+    # A blocked ticket may have received an expanded scope during triage while
+    # retaining its worktree and completed setup marker. Refresh the persisted
+    # guard before the developer runs so newly authorized paths are not rejected
+    # by the old .scope.json or hook installation.
+    if resume_uses_existing_setup and ctx.worktree_path:
+        from .setup.workspace import refresh_scope_guards
+
+        try:
+            refresh_scope_guards(
+                ctx.worktree_path,
+                ctx.scope,
+                project_root=project_root,
+            )
+        except OSError as exc:
+            fail_ticket(ctx, f"scope guard refresh failed: {exc}", "setup")
             return
 
     # Setup created the worktree -- refresh the click-link resolver so
@@ -727,7 +747,7 @@ async def _discover_mcp_surface(
     project_mcp_tools_dir = project_root / ".booley_project" / "mcp_tools"
     mcp_tool_config, flow_config = _load_endpoint_config(project_root)
 
-    from booley.mcp_tools.registry import discover_mcp_tools
+    from booley.mcp.registry import discover_mcp_tools
 
     discovered_mcp_tools = discover_mcp_tools(
         booley_src=booley_src,
@@ -805,7 +825,7 @@ def _iter_criteria_keys(criteria: dict) -> list[str]:
 
 def _detect_backend_key() -> str:
     """Return 'codex' or 'claude' based on active backend config."""
-    from .config import get_backend_config as _get_cfg
+    from booley.config.settings import get_backend_config as _get_cfg
 
     _cfg = _get_cfg()
     _backend_name = getattr(_cfg.active_backend, "name", "").lower()
@@ -1274,13 +1294,14 @@ def _commit_leftover_edits(
     *committable* contains only paths authorized by the ticket Scope. Other
     dirty paths remain in the worktree for explicit triage.
     """
+    from booley.runtime.git import commit_scope
+
     from .blocking import BlockingError
     from .colors import yellow
     from .developer_guardrails import (
         GitStatusError,
         check_uncommitted_code_statuses,
     )
-    from .git_utils import commit_scope
     from .scope_policy import ScopeTier, classify_path
 
     logger.warning(
@@ -1395,8 +1416,12 @@ async def _resolve_ticket_disposition(
     run_index: int,
 ) -> None:
     """Read final state, check criteria acceptance, and transition the ticket."""
+    from booley.ticket_board.criteria_acceptance import (
+        build_criteria_summary_lines,
+        check_criteria_acceptance,
+    )
+
     from .colors import bold_red, dim, green, yellow
-    from .criteria_acceptance import build_criteria_summary_lines, check_criteria_acceptance
 
     verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir)
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
@@ -1456,7 +1481,7 @@ def _build_prompt_context(
     crash_summary: Path | None,
 ) -> tuple[str, str]:
     """Build developer system + user prompts from context."""
-    from booley.project_config import is_human_in_loop, is_run_report_enabled
+    from booley.config.project_config import is_human_in_loop, is_run_report_enabled
 
     from .developer_prompt import DeveloperPromptContext, build_developer_prompt
 
@@ -1494,7 +1519,7 @@ def _write_developer_prompt_snapshot(
     mcp_tool_names: list[str],
 ) -> None:
     """Persist the exact developer prompt before launching the agent."""
-    from .config import get_backend_config
+    from booley.config.settings import get_backend_config
 
     cfg = get_backend_config()
     attempt = os.environ.get("BOOLEY_ORACLE_FEEDBACK_ATTEMPT")
@@ -1586,7 +1611,7 @@ async def _run_developer_path(
 
         _ensure_worktree_populated(ctx.work_dir)
 
-        from .config import load_developer_limits_config
+        from booley.config.settings import load_developer_limits_config
 
         budget = DeveloperBudget(
             load_developer_limits_config(project_root),
@@ -1855,7 +1880,8 @@ async def _launch_developer_agent(
     call needs the pre-launch values, and the post-developer hook already
     re-exports the same vars anyway.
     """
-    from .config import get_backend_config
+    from booley.config.settings import get_backend_config
+
     from .models import AgentCallParams
 
     cfg = get_backend_config()
@@ -1927,7 +1953,7 @@ def _is_pid_alive(pid: int) -> bool:
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:
     """Load the ``[mcp_tools]`` and ``[flows]`` config namespaces."""
-    from .config import _load_booley_toml
+    from booley.config.settings import _load_booley_toml
 
     data = _load_booley_toml(project_root)
     if "tools" in data:
