@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.harness import init_cmd
+from booley.platform_paths import docker_mount_path
 from tests.conftest import require_symlinks
 
 
@@ -59,7 +60,7 @@ def test_resolves_symlink_to_real_dir(tmp_path, monkeypatch):
     (claude / "deslop").symlink_to(real)
 
     pairs = init_cmd._resolve_host_skills_sources(project_root)
-    assert pairs == [("deslop", str(real.resolve()))]
+    assert pairs == [("deslop", docker_mount_path(real.resolve()))]
 
 
 def test_excludes_builtins_by_path_and_name(tmp_path, monkeypatch):
@@ -90,7 +91,7 @@ def test_dedupes_by_name_across_both_dirs(tmp_path, monkeypatch):
     (home / ".agents" / "skills" / "grill-me").symlink_to(agents_real)
 
     pairs = init_cmd._resolve_host_skills_sources(project_root)
-    assert pairs == [("grill-me", str(claude_real.resolve()))]
+    assert pairs == [("grill-me", docker_mount_path(claude_real.resolve()))]
 
 
 def test_skips_dangling_and_non_skill_dirs(tmp_path, monkeypatch):

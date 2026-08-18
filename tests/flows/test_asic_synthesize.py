@@ -1629,6 +1629,8 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
                 encoding="utf-8",
             )
+            fresh = time.time() + 1
+            os.utime(build_dir / "yosys.log", (fresh, fresh))
             return SubprocessResult(
                 returncode=0, stdout="BOOLEY_STAGE: yosys\n", stderr="", duration_s=1.0
             )

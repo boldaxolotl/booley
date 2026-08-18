@@ -379,6 +379,7 @@ class TestDoctorCheck:
 
         assert any("outranks" in m for m in sink["pass"])
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
     def test_warns_when_stored_token_is_world_readable(self, home, monkeypatch):
         auth_token.store_token(_TOKEN).chmod(0o644)
 

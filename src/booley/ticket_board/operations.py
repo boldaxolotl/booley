@@ -772,7 +772,15 @@ def _archive_run_artifacts(log_dir: Path, preserved: set[str]) -> None:
     Only archives if there's meaningful content beyond the preserved files.
     The runs/ directory itself is preserved across resets.
     """
-    archivable = [p for p in log_dir.iterdir() if p.name not in preserved]
+    runtime_dir = log_dir / ".runtime"
+    runtime_entries = (
+        [entry for entry in runtime_dir.iterdir() if entry.name != "ticket.lock"]
+        if runtime_dir.is_dir()
+        else []
+    )
+    archivable = [p for p in log_dir.iterdir() if p.name not in preserved and p != runtime_dir]
+    if runtime_entries:
+        archivable.append(runtime_dir)
     if not archivable:
         return
 
@@ -788,7 +796,13 @@ def _archive_run_artifacts(log_dir: Path, preserved: set[str]) -> None:
 
     for entry in archivable:
         try:
-            shutil.move(str(entry), str(archive_dir / entry.name))
+            if entry == runtime_dir:
+                archived_runtime = archive_dir / entry.name
+                archived_runtime.mkdir()
+                for runtime_entry in runtime_entries:
+                    shutil.move(str(runtime_entry), str(archived_runtime / runtime_entry.name))
+            else:
+                shutil.move(str(entry), str(archive_dir / entry.name))
         except OSError:
             logger.warning("Failed to archive %s", entry)
 
@@ -912,7 +926,10 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
 
     # Keep human history, but move every active runtime artifact out of the
     # paths consumed by the board and the next developer run.
-    _wipe_log_dir(tio, slug, {"ticket.md", "runs", "blocked.md"})
+    # The ticket lock is held inside .runtime while reset runs. Windows cannot
+    # rename or delete an open file, so preserve that directory and archive
+    # every other runtime entry around the live lock.
+    _wipe_log_dir(tio, slug, {"ticket.md", "runs", "blocked.md", ".runtime"})
     reset_progress(tio.logs_dir, slug)
     _append_reset_boundary(tio.logs_dir, slug)
     if transition_history:

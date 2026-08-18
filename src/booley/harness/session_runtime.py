@@ -640,7 +640,7 @@ def _writable_bind(raw: object) -> bool:
     )
 
 
-def _container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect ladder
+def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed inspect ladder
     name: str,
     issuance: object,
     *,
@@ -709,7 +709,13 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect
     if set(networks) != set(expected_networks):
         return False
     devcontainer_workspace = labels.get("devcontainer.local_folder")
-    is_devcontainer = devcontainer_workspace == str(workspace.resolve())
+    try:
+        is_devcontainer = (
+            isinstance(devcontainer_workspace, str)
+            and Path(devcontainer_workspace).resolve() == workspace.resolve()
+        )
+    except OSError:
+        is_devcontainer = False
     env_sections = (spec.get("containerEnv") or {},)
     if not is_devcontainer:
         env_sections += (spec.get("remoteEnv") or {},)

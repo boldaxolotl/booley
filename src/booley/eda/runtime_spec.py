@@ -1094,7 +1094,8 @@ def _write_stamp(path: Path, issuance: Issuance) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temp_path = Path(temporary)
     try:
-        os.fchmod(descriptor, 0o600)
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(asdict(issuance), indent=2, sort_keys=True) + "\n")
             handle.flush()

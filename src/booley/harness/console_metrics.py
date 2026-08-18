@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -50,6 +51,10 @@ class WorktreeLineCounter:
             return None
         if raw_path.startswith("/work/"):
             raw_path = raw_path.removeprefix("/work/")
+        elif os.name == "nt" and raw_path.startswith("/"):
+            # A POSIX absolute path outside the Session Runtime workspace is
+            # not a path in the native Windows worktree.
+            return None
         path = Path(raw_path)
         try:
             if path.is_absolute():
