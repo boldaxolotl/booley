@@ -33,7 +33,7 @@ dependencies = [
     "fusesoc==2.4.6",
     "httpx>=0.28",
     "httpx-sse>=0.4",
-    "Jinja2>=3.1",
+    "Jinja2>=3.1.6",
     "jsonschema>=4.0",
     "libcst>=1.9.0",
     "markdown-it-py>=4.0",
