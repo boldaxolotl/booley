@@ -616,7 +616,10 @@ def _do_merge(slug, entry, *, cleanup: bool = True):
     if cleanup:
         remove_worktree_for_branch(merge_from)
         prune_worktrees()
-        delete_branch(merge_from)
+        # The merge may have landed in an integration branch other than the
+        # caller's current HEAD.  A plain `git branch -d` checks only HEAD and
+        # therefore rejects a branch that we just proved was merged above.
+        delete_branch(merge_from, force=True)
     return True
 
 

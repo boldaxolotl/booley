@@ -111,6 +111,21 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     assert Path(change["diff_right"]).read_text(encoding="utf-8").startswith("module new")
 
 
+def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["sim_pass"].update(
+        {"params": {"from_state": "fail"}, "ever_failed": False}
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+
+    assert facts["health"]["unverified_transitions"] == ["sim_pass"]
+
+
 def test_assessment_fills_missing_scope_deviation_for_human_review(tmp_path: Path):
     facts = {"scope": {"deviations": ["rtl/outside.sv"]}}
 
@@ -177,6 +192,25 @@ def test_render_marks_undecidable_scope_as_blocker(tmp_path: Path):
     assert "**Recommendation:** hold" in rendered
     assert "Scope calculation was undecidable." in rendered
     assert "do not infer clean scope" in rendered
+
+
+def test_render_surfaces_unverified_transition(tmp_path: Path):
+    ctx = _context(tmp_path)
+    package = {
+        "slug": "demo",
+        "assessment": _assessment(),
+        "criteria": [],
+        "commits": [],
+        "changed_files": [],
+        "developer_report_path": str(ctx.log_dir / "REPORT.md"),
+        "html_path": None,
+        "run_economics": "unavailable",
+        "health": {"unverified_transitions": ["sim_pass"]},
+    }
+
+    rendered = tp.render_review_briefing(package, [])
+
+    assert "UNVERIFIED TRANSITION: sim_pass" in rendered
 
 
 def test_changed_file_links_are_absolute(tmp_path: Path):
