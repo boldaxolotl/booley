@@ -301,9 +301,7 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     output = capsys.readouterr().out
     assert rc == 0
     assert "NOTE  project guidance file missing" in output
-    tool_calls = [
-        call for call in calls if call[:3] == [sys.executable, "-m", "booley.flows.simulate"]
-    ]
+    tool_calls = [call for call in calls if call[:3] == [sys.executable, "-m", "booley.flows.sim"]]
     assert tool_calls
     assert "--dry-run" in tool_calls[0]
     assert "--target" in tool_calls[0]
@@ -583,13 +581,13 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     # Two simulate invocations: the shallow dry-run (host) and the deep check.
     # Deep checks now run INSIDE the Session Runtime, so the
     # deep invocation is docker-wrapped rather than a bare host python call.
-    sim_calls = [call for call in calls if "booley.flows.simulate" in call]
+    sim_calls = [call for call in calls if "booley.flows.sim" in call]
     assert len(sim_calls) == 2
     dry_call, deep_call = sim_calls
     # Dry-run stays cheap on the host.
-    assert dry_call[:3] == [sys.executable, "-m", "booley.flows.simulate"]
+    assert dry_call[:3] == [sys.executable, "-m", "booley.flows.sim"]
     assert "--dry-run" in dry_call
-    # Deep runs in-container: `docker run ... <image> python3 -m booley.flows.simulate`.
+    # Deep runs in-container: `docker run ... <image> python3 -m booley.flows.sim`.
     assert deep_call[0] == "doc" + "ker" and deep_call[1] == "run"
     assert "--dry-run" not in deep_call
     assert deep_call[deep_call.index("--target") + 1] == "sim_fast"
@@ -691,7 +689,7 @@ def test_deep_check_routing_truth_table(
         assert cmd[:2] == ["doc" + "ker", "run"]
         # The wrapped inner command carries the in-container self-assertion.
         assert doctor._SANDBOX_GUARD_SCRIPT in cmd
-        assert "booley.flows.simulate" in cmd
+        assert "booley.flows.sim" in cmd
     else:
         assert cmd[0] == sys.executable
         assert cmd[1] != "run"  # not a container invocation
@@ -1011,7 +1009,7 @@ def test_flow_command_uses_first_config_and_first_test(tmp_path):
         image="booley-sandbox",
     )
 
-    assert cmd[:3] == [sys.executable, "-m", "booley.flows.simulate"]
+    assert cmd[:3] == [sys.executable, "-m", "booley.flows.sim"]
     assert cmd[cmd.index("--target") + 1] == "fast"
     # tb_top left the surface (ADR 0021) — sourced from the Target, not passed.
     assert "--tb-top" not in cmd
@@ -1916,7 +1914,7 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
     base_run = doctor.subprocess.run
 
     def run_with_tb_top_error(cmd, **kwargs):
-        if cmd[:3] == [sys.executable, "-m", "booley.flows.simulate"]:
+        if cmd[:3] == [sys.executable, "-m", "booley.flows.sim"]:
             return subprocess.CompletedProcess(
                 cmd,
                 2,
@@ -6665,6 +6663,7 @@ class TestSubscriptionCredsHealth:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
         for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(var, raising=False)

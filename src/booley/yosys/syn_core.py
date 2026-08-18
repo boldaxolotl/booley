@@ -608,11 +608,16 @@ def sv2v_argv(
     declarations, and the overrides are applied on the Yosys side
     (``chparam``), so passing them here would double-apply them.
     """
-    argv = [str(sv2v)]
-    argv += [f"-I{inc}" for inc in inc_dirs]
+
+    def boundary_path(value: Path | str) -> str:
+        """Render a path for the Linux Session Runtime command boundary."""
+        return str(value).replace("\\", "/")
+
+    argv = [boundary_path(sv2v)]
+    argv += [f"-I{boundary_path(inc)}" for inc in inc_dirs]
     argv += [f"-D{d}" for d in defines]
-    argv += [str(f) for f in source_files]
-    argv += ["-w", str(output)]
+    argv += [boundary_path(f) for f in source_files]
+    argv += ["-w", boundary_path(output)]
     return argv
 
 

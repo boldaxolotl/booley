@@ -56,11 +56,9 @@ def check_uncommitted_code_statuses(worktree: Path) -> list[DirtyFile]:
 
     Parsed from ``-z`` (NUL-delimited) output, never the default line format.
     Plain porcelain C-quotes any path holding a space or a non-ASCII byte
-    (``?? "docs spec.pdf"``), and those quotes used to be harmless only because
-    a quoted path could never match a Scope entry and was therefore discarded.
-    Now that out-of-Scope paths are committed rather than dropped, a quoted
-    string would reach ``git add`` as a literal pathspec and fail the whole
-    commit -- taking the in-Scope work with it.  ``-z`` emits raw bytes.
+    (``?? "docs spec.pdf"``). A quoted path cannot match a Scope entry, so an
+    authorized file could be mistaken for outside dirt and left behind.
+    ``-z`` emits the real path instead.
     """
     try:
         # Expand untracked directories to individual files.  The default

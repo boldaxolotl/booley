@@ -18,7 +18,7 @@ def _load_notifications_config() -> dict:
         return {}
     import sys as _sys
 
-    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from booley.runtime.project_dir import resolve_project_dir
 
     _proj = resolve_project_dir()

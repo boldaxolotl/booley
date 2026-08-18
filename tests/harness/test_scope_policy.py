@@ -1,4 +1,4 @@
-"""Tests for the advisory Scope policy (ADR 0046)."""
+"""Tests for ticket Scope authorization and deviation reporting."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ class TestRestoreArtifacts:
         assert not is_restore_artifact(SCOPE_NEW, "verif/lane1/new_tb.sv", "??")
 
     def test_out_of_scope_deletion_is_real_work(self):
-        """Advisory Scope removes the wall, not the robustness guard."""
+        """An outside deletion is ordinary triage work, not restore fallout."""
         assert not is_restore_artifact(SCOPE_NEW, "rtl/legacy.sv", " D")
 
     def test_deletion_owned_by_a_plain_entry_is_real_work(self):

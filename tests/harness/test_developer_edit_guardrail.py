@@ -117,7 +117,7 @@ def test_leftover_edits_are_committed_before_handoff(tmp_path: Path):
     block.assert_not_called()
 
 
-def test_remaining_dirty_files_block_handoff(tmp_path: Path):
+def test_in_scope_file_still_dirty_after_commit_blocks(tmp_path: Path):
     ctx = _make_ctx(tmp_path)
     state_path = _make_state(tmp_path)
 
@@ -125,8 +125,8 @@ def test_remaining_dirty_files_block_handoff(tmp_path: Path):
         patch(
             "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
             side_effect=[
-                [DirtyFile("rtl/dut.sv", " M"), DirtyFile("rogue.sv", " M")],
-                [DirtyFile("rtl/dut.sv", " M"), DirtyFile("rogue.sv", " M")],
+                [DirtyFile("rtl/dut.sv", " M")],
+                [DirtyFile("rtl/dut.sv", " M")],
             ],
         ),
         patch("booley.runtime.git.commit_scope", return_value=None),
@@ -140,12 +140,8 @@ def test_remaining_dirty_files_block_handoff(tmp_path: Path):
     block.assert_called_once()
 
 
-def test_out_of_scope_files_are_committed_not_abandoned(tmp_path: Path):
-    """Scope is advisory (ADR 0046): out-of-scope edits ride the same commit.
-
-    Abandoning them was the bug -- the branch shipped without work the agent
-    had already validated in its worktree.
-    """
+def test_out_of_scope_files_are_left_for_triage(tmp_path: Path):
+    """Outside dirt does not prevent the authorized subset from committing."""
     ctx = _make_ctx(tmp_path)
     state_path = _make_state(tmp_path)
 
@@ -154,23 +150,27 @@ def test_out_of_scope_files_are_committed_not_abandoned(tmp_path: Path):
             "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
             side_effect=[
                 [DirtyFile("rtl/dut.sv", " M"), DirtyFile("rtl/other.sv", " M")],
-                [],
+                [DirtyFile("rtl/other.sv", " M")],
             ],
         ),
         patch("booley.runtime.git.commit_scope", return_value=None) as commit,
         patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
         patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
+        patch("booley.harness.developer.terminal.raw") as terminal,
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=0)
 
     assert blocked is False
-    assert commit.call_args.args[1] == ["rtl/dut.sv", "rtl/other.sv"]
+    assert commit.call_args.args[1] == ["rtl/dut.sv"]
     block.assert_not_called()
+    assert any(
+        "rtl/other.sv" in call.args[0] and "uncommitted for triage" in call.args[0]
+        for call in terminal.call_args_list
+    )
 
 
-def test_out_of_scope_file_still_dirty_after_commit_blocks(tmp_path: Path):
-    """The commit was attempted and did not take -- that is a real failure."""
+def test_out_of_scope_file_still_dirty_after_commit_does_not_block(tmp_path: Path):
+    """The expected outside leftover is preserved for triage."""
     ctx = _make_ctx(tmp_path)
     state_path = _make_state(tmp_path)
 
@@ -189,8 +189,8 @@ def test_out_of_scope_file_still_dirty_after_commit_blocks(tmp_path: Path):
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
-    block.assert_called_once()
+    assert blocked is False
+    block.assert_not_called()
 
 
 def test_harness_owned_dirty_files_are_left_uncommitted(tmp_path: Path):
@@ -222,7 +222,7 @@ def test_harness_owned_dirty_files_are_left_uncommitted(tmp_path: Path):
 
 
 def test_stealth_cores_are_ordinary_work_not_harness_owned(tmp_path: Path):
-    """`.booley_project/cores/` is design description (ADR 0036), not bookkeeping."""
+    """A stealth core is triaged as ordinary outside work, not forbidden dirt."""
     ctx = _make_ctx(tmp_path)
     state_path = _make_state(tmp_path)
 
@@ -239,7 +239,7 @@ def test_stealth_cores_are_ordinary_work_not_harness_owned(tmp_path: Path):
         blocked = _run_post_guardrails(ctx, state_path, run_index=0)
 
     assert blocked is False
-    assert commit.call_args.args[1] == [".booley_project/cores/dut.core"]
+    commit.assert_not_called()
     block.assert_not_called()
 
 
@@ -267,8 +267,8 @@ def test_scoped_project_doc_is_committed_not_rejected(tmp_path: Path):
     block.assert_not_called()
 
 
-def test_scorer_files_still_dirty_after_commit_block(tmp_path: Path):
-    """The post-commit backstop: the branch lacks work the criteria measured."""
+def test_out_of_scope_scorer_file_is_left_for_triage(tmp_path: Path):
+    """Even scorer paths need ticket authorization before Booley commits them."""
     ctx = _make_ctx(tmp_path)
     state_path = _make_state(tmp_path)
 
@@ -278,20 +278,24 @@ def test_scorer_files_still_dirty_after_commit_block(tmp_path: Path):
             return_value=[DirtyFile("rtl/other.sv", " M")],
         ),
         patch("booley.runtime.git.commit_scope") as commit,
+        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
         patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
+        patch("booley.harness.developer.terminal.raw") as terminal,
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is True
-    commit.assert_called_once()
-    assert "scorer-consumed file(s) still uncommitted" in block.call_args.args[1]
-    assert (ctx.logs_dir / ".runtime" / "dirty_scorer_files.json").exists()
+    assert blocked is False
+    commit.assert_not_called()
+    block.assert_not_called()
+    assert any("rtl/other.sv" in call.args[0] for call in terminal.call_args_list)
 
 
 def test_duplicated_source_root_dirty_files_get_malformed_report(tmp_path: Path):
     """The dirty-tree path: the commit did not take, and the path is malformed."""
     ctx = _make_ctx(tmp_path)
+    nested = ctx.worktree_path / "rtl" / "rtl"
+    nested.mkdir(parents=True)
+    (nested / "other.sv").write_text("module other; endmodule\n", encoding="utf-8")
     state_path = _make_state(tmp_path)
     state = DevelopmentState.load(state_path)
     state.init_criteria({"sim_pass_default": True})
@@ -309,11 +313,11 @@ def test_duplicated_source_root_dirty_files_get_malformed_report(tmp_path: Path)
         blocked = _run_post_guardrails(ctx, state_path, run_index=1)
 
     assert blocked is True
-    commit.assert_called_once()
+    commit.assert_not_called()
     reason = block.call_args.args[1]
     assert reason.startswith("MALFORMED_SCORER_OUTPUT")
-    assert "duplicated source root" in reason
-    report = ctx.logs_dir / ".runtime" / "dirty_scorer_files.json"
+    assert "nested RTL source root" in reason
+    report = ctx.logs_dir / ".runtime" / "malformed_rtl_output.json"
     assert "rtl/rtl/other.sv" in report.read_text(encoding="utf-8")
 
 
@@ -364,7 +368,7 @@ def test_scorer_file_deleted_under_a_new_glob_blocks(tmp_path: Path):
     assert "rtl/legacy_fifo.sv" in block.call_args.args[1]
 
 
-def test_done_but_dirty_scorer_files_get_distinct_report(tmp_path: Path):
+def test_done_ticket_with_out_of_scope_scorer_file_still_handoffs(tmp_path: Path):
     ctx = _make_ctx(tmp_path)
     state_path = _make_completed_state(tmp_path)
 
@@ -373,18 +377,17 @@ def test_done_but_dirty_scorer_files_get_distinct_report(tmp_path: Path):
             "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
             return_value=[DirtyFile("rtl/other.sv", " M")],
         ),
-        patch("booley.runtime.git.commit_scope"),
+        patch("booley.runtime.git.commit_scope") as commit,
+        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
         patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
+        patch("booley.harness.developer.terminal.raw") as terminal,
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=2)
 
-    assert blocked is True
-    reason = block.call_args.args[1]
-    assert reason.startswith("DONE_BUT_DIRTY")
-    report = ctx.logs_dir / ".runtime" / "dirty_scorer_files.json"
-    assert report.exists()
-    assert "rtl/other.sv" in report.read_text(encoding="utf-8")
+    assert blocked is False
+    commit.assert_not_called()
+    block.assert_not_called()
+    assert any("rtl/other.sv" in call.args[0] for call in terminal.call_args_list)
 
 
 def test_deleted_files_under_new_scope_glob_do_not_block(tmp_path: Path):

@@ -39,8 +39,8 @@ from booley.core.boundary import as_int
 from booley.core.models import AgentCallParams
 from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
-from booley.flows import sim_edam
-from booley.flows.simulate import _resolve_run_cwd
+from booley.flows.sim import edam as sim_edam
+from booley.flows.sim.flow import _resolve_run_cwd
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -2999,7 +2999,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         eda_tool: str,
     ) -> McpToolResult:
         """Turn a non-zero traced-sim run into a structured error McpToolResult."""
-        from booley.flows.simulate import _detect_dut_info_diagnostic
+        from booley.flows.sim.flow import _detect_dut_info_diagnostic
 
         # run_sim_batch merges stderr→stdout, so check both streams
         detail = proc.stderr.strip() or proc.stdout.strip()
@@ -3040,7 +3040,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
     def _ensure_trace(self, trace_dir: Path, work_dir: Path) -> McpToolResult | None:  # noqa: PLR0911 — each prerequisite check returns its own early error McpToolResult
         """Run traced simulation if no trace file exists. Returns error McpToolResult or None."""
         from booley.flows.execution import resolve_execution
-        from booley.flows.simulate import SimulateFlow
+        from booley.flows.sim.flow import SimulateFlow
 
         # Pre-flight: dut_hier_path must bind to a real TB instance.  When
         # dut_info carries a stale path, iverilog elab fails fast (<0.3s)

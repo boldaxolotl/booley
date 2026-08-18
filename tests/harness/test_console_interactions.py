@@ -60,7 +60,7 @@ async def test_follow_mode_pauses_on_single_up_and_resumes_at_tail() -> None:
         assert main.scroll_y == main.max_scroll_y
 
         await pilot.press("up")
-        await pilot.pause()
+        await pilot.wait_for_scheduled_animations()
         paused_y = main.scroll_y
         assert paused_y < main.max_scroll_y
         assert main._auto_scroll is False

@@ -394,6 +394,7 @@ ENV BOOLEY_VERSION=${BOOLEY_VERSION} \
     BOOLEY_IMAGE_BUILT_AT=${BOOLEY_IMAGE_BUILT_AT}
 LABEL org.opencontainers.image.version=${BOOLEY_VERSION} \
       org.opencontainers.image.revision=${BOOLEY_SOURCE_REVISION} \
-      org.opencontainers.image.created=${BOOLEY_IMAGE_BUILT_AT}
+      org.opencontainers.image.created=${BOOLEY_IMAGE_BUILT_AT} \
+      org.opencontainers.image.source=https://github.com/boldaxolotl/booley
 
 WORKDIR /work

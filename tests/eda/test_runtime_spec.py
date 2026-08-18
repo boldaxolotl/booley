@@ -14,6 +14,7 @@ import pytest
 from booley.eda import authority, runtime_spec
 from booley.eda.vivado import wrapper_path
 from booley.harness import devcontainer as dc
+from booley.runtime.platform_paths import docker_mount_path
 
 
 def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -319,7 +320,8 @@ def test_project_data_mount_rejects_broad_and_mount_grammar_paths(
     (project / ".booley_project").mkdir()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", source)
     with pytest.raises(
-        runtime_spec.RuntimeSpecError, match=r"too broad|mount grammar|unavailable"
+        runtime_spec.RuntimeSpecError,
+        match=r"too broad|mount grammar|unavailable|must be an absolute host path",
     ):
         runtime_spec.authorized_project_data_source(project)
 
@@ -457,6 +459,7 @@ def test_trusted_validator_rejects_group_writable_parent_for_shared_group(
     assert not runtime_spec._trusted_validator(trusted, project)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX primary-group mode policy")
 def test_trusted_validator_allows_exclusive_primary_group_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -479,10 +482,12 @@ def test_seal_pins_absolute_host_executable_and_canonical_mount(issued) -> None:
     assert project not in Path(command[0]).parents
     expected_source = str((project / ".booley_project").resolve())
     assert stamp.project_data_source == expected_source
-    assert f"source={expected_source},target=/booley-project,type=bind" in spec["mounts"]
+    expected_mount_source = docker_mount_path(Path(expected_source))
+    assert f"source={expected_mount_source},target=/booley-project,type=bind" in spec["mounts"]
     assert spec["mounts"][1] == (
-        f"source={expected_source},target=/work/.booley_project,type=bind"
+        f"source={expected_mount_source},target=/work/.booley_project,type=bind"
     )
+    assert spec["mounts"][-1] == runtime_spec.expected_devcontainer_mount(project)
 
 
 def test_issue_rejects_missing_project_data_workspace_bind(issued) -> None:

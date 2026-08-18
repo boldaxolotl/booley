@@ -21,7 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.flows.execution import ExecutionSelection
-from booley.flows.simulate import SimulateFlow
+from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 
 _BOOLEY_ENV_VARS = (
@@ -118,7 +118,7 @@ class TestNoTicketDryRun:
     ``simulate --dry-run`` to a clean exit."""
 
     @patch(
-        "booley.flows.simulate._get_test_names",
+        "booley.flows.sim.flow._get_test_names",
         return_value={"lite": ["smoke", "stress"]},
     )
     @patch.object(
@@ -251,7 +251,7 @@ class TestAsicSynthesizeBaselineInteractive:
     ) -> None:
         import subprocess
 
-        from booley.flows.asic_synthesize import AsicSynthesizeFlow, SynthMetrics
+        from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
         from booley.mcp.base import McpToolResult
 
         monkeypatch.delenv("BOOLEY_SLUG", raising=False)

@@ -26,6 +26,13 @@ def lock_fd(f: IO) -> None:
     if sys.platform == "win32":
         import msvcrt
 
+        # msvcrt locks a byte range and an empty file has no byte to lock.
+        # Seed one byte before taking the lock; callers overwrite the lock
+        # stamp after acquisition.
+        f.seek(0, os.SEEK_END)
+        if f.tell() == 0:
+            f.write("\0")
+            f.flush()
         f.seek(0)
         msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
     else:
@@ -136,7 +143,7 @@ def detect_tickets_dir() -> Path:
     """
     if "TICKETS_DIR" in os.environ:
         return Path(os.environ["TICKETS_DIR"])
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from booley.runtime.project_dir import resolve_project_dir
 
     return resolve_project_dir() / "tickets"

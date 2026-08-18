@@ -24,7 +24,7 @@ from booley.dev_support.development_state import (
 # _coerce_metric / resolve_metric / min_gate_key live in threshold_eval now — the
 # per-clock refactor stopped re-exporting the coercion helper through
 # development_state (which now imports resolve_metric, not _coerce_metric).
-from booley.flows.threshold_eval import (
+from booley.flows.synth.threshold_eval import (
     _coerce_metric,
     min_gate_key,
     resolve_metric,

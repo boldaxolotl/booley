@@ -152,10 +152,12 @@ def _build_hook_delegator_body(
             'if [ ! -f "$SCRIPT" ]; then\n'
             "    # Secondary worktree (F-42): .booley_project/ is untracked, so it\n"
             "    # exists only in the MAIN worktree — reach it via the shared git dir.\n"
-            '    COMMON=$(cd "$ROOT" && git rev-parse --git-common-dir 2>/dev/null) || COMMON=\n'
+            '    COMMON=$(cd "$ROOT" && git rev-parse --path-format=absolute '
+            "--git-common-dir 2>/dev/null) || COMMON=\n"
             '    case "$COMMON" in\n'
             "        '') ;;\n"
             f'        /*) SCRIPT="$(dirname "$COMMON")/{script_rel}" ;;\n'
+            f'        [A-Za-z]:/*) SCRIPT="$(dirname "$COMMON")/{script_rel}" ;;\n'
             f'        *) SCRIPT="$(dirname "$ROOT/$COMMON")/{script_rel}" ;;\n'
             "    esac\n"
             "fi\n"

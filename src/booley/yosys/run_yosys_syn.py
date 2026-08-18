@@ -37,12 +37,12 @@ from booley.core.boundary import BoundaryError
 
 # Predefined configurations — imported from shared module (in parent dir)
 SCRIPT_DIR = Path(__file__).parent.resolve()
-sys.path.insert(0, str(SCRIPT_DIR.parent))
+sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
 from booley.runtime.heartbeat import fmt_elapsed as fmt_time
 from booley.runtime.shared_infra import (
     check_paths as _check_paths,
 )
-from booley.targets.synthesis_profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
+from booley.synthesis.profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.yosys import ppa as ppa_options
 from booley.yosys import syn_make
 from booley.yosys.syn_core import (  # Core synthesis functions

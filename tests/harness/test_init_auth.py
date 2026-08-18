@@ -74,6 +74,7 @@ def test_detect_auth_mode_reports_what_actually_bills(tmp_path, monkeypatch):
     # ANTHROPIC_API_KEY was reported as "subscription", but the key is what the
     # agent CLI uses (and bills). Detection must follow the CLI's precedence.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     creds = tmp_path / ".claude" / ".credentials.json"

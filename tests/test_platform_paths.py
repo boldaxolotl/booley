@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime import platform_paths
 from booley.runtime.platform_paths import (
@@ -119,6 +121,7 @@ class TestPopenNewGroupKwargs:
         assert result == {"start_new_session": True}
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.killpg is a POSIX API")
 @patch.object(platform_paths, "IS_WINDOWS", False)
 def test_kill_process_tree_kills_descendants_after_wrapper_exits():
     proc = type(

@@ -5012,7 +5012,7 @@ class TestBoardMoveTerminalActionOverrides:
 
             assert operations._do_merge("my-ticket", entry, cleanup=True) is True
             rm_wt.assert_called_once_with("feat/x")
-            del_branch.assert_called_once_with("feat/x")
+            del_branch.assert_called_once_with("feat/x", force=True)
 
 
 class TestArchiveWithSlug:

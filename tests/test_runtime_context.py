@@ -108,7 +108,12 @@ class TestEnsureProxyEnv:
 
         monkeypatch.setenv("https_proxy", "http://corp-proxy:3128")
         assert runtime_context.ensure_proxy_env() is False
-        assert "HTTPS_PROXY" not in os.environ
+        if os.name == "nt":
+            # Windows environment keys are case-insensitive: HTTPS_PROXY and
+            # https_proxy are the same entry.
+            assert os.environ["HTTPS_PROXY"] == "http://corp-proxy:3128"
+        else:
+            assert "HTTPS_PROXY" not in os.environ
         assert os.environ["https_proxy"] == "http://corp-proxy:3128"
 
 

@@ -218,9 +218,17 @@ def _link_target_under(link: Path, root: Path) -> Path | None:
     the target's own symlinks, so the answer depends only on the link text and
     cannot be perturbed by a symlinked path component above the project.
     """
-    target = Path(os.path.normpath(link.parent / link.readlink()))
-    root = Path(os.path.normpath(root))
+    target = _lexical_path(link.parent / link.readlink())
+    root = _lexical_path(root)
     return target if target == root or root in target.parents else None
+
+
+def _lexical_path(path: Path) -> Path:
+    """Normalize an absolute path without following its symlink target."""
+    value = os.path.abspath(os.path.normpath(path))  # noqa: PTH100 - lexical; do not follow links
+    if os.name == "nt" and value.startswith("\\\\?\\"):
+        value = value[4:]
+    return Path(value)
 
 
 def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> list[str]:

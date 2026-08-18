@@ -218,15 +218,10 @@ def _check_script_provenance(
     anything) means *nothing* can be confined → every imperative script is
     rejected.
 
-    Caveat since ADR 0046: an out-of-Scope script is no longer *immutable*.
-    Ticket Scope became advisory, so the agent can edit such a script and the
-    Harness will commit the edit as a reported deviation — where it previously
-    would have been dropped before reaching the branch. What survives is the
-    weaker guarantee this check was always able to make on its own: the script
-    is not something the ticket set out to author, and any change to it is
-    visible in the deviation report and the branch diff. Genuine immutability
-    needs a read-only mount, which decision 21 named and Booley does not yet
-    implement.
+    An out-of-Scope script is not physically immutable: the agent can edit it
+    in the worktree. The commit boundary preserves that edit for triage instead
+    of putting it on the ticket branch. Genuine immutability still needs a
+    read-only mount, which decision 21 named and Booley does not yet implement.
     """
     script_specs = _imperative_specs(core_doc)
     if not script_specs:

@@ -3,7 +3,7 @@
 The harness runs Booley endpoints in two contexts:
 
 * TOP_LEVEL: the outer harness Python process invokes a Flow directly
-  (CLI: ``python -m booley.flows.simulate``). Owns concurrent-run scan
+  (CLI: ``python -m booley.flows.sim``). Owns concurrent-run scan
   and orphan-lock reconciliation against ``display.jsonl``.
 * NESTED: the endpoint runs underneath an MCP server (either the
   developer's MCP server or a specialist sub-agent's nested MCP

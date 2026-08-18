@@ -253,8 +253,14 @@ def test_exact_issuance_labels_are_applied_to_all_relay_objects() -> None:
 def test_image_build_uses_packaged_dockerfile_and_relay_only_context() -> None:
     argv = relay_image_build_argv(image="relay:test")
     assert argv[:4] == ["image", "build", "--tag", "relay:test"]
-    assert argv[-2].endswith("src/booley/data/docker/Dockerfile.flexnet-relay")
-    assert argv[-1].endswith("src/booley/eda")
+    assert Path(argv[-2]).parts[-5:] == (
+        "src",
+        "booley",
+        "data",
+        "docker",
+        "Dockerfile.flexnet-relay",
+    )
+    assert Path(argv[-1]).parts[-3:] == ("src", "booley", "eda")
 
 
 def test_image_build_failure_is_actionable() -> None:

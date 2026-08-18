@@ -350,7 +350,7 @@ class TestPrePushFailsClosed:
         assert "    exit 1\n" in pre_push.split("no usable Python")[0]
         # Both still resolve through the shared git dir (F-42 stays fixed).
         for body in (commit_msg, pre_push):
-            assert "git rev-parse --git-common-dir" in body
+            assert "git rev-parse --path-format=absolute --git-common-dir" in body
 
 
 class TestLineEndingsStep:

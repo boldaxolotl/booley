@@ -2,7 +2,7 @@
 
 Fmax and critical-path delay are inherently *per-clock*: a single scalar is
 meaningless for any multi-clock design ("Fmax for *what* clock?"). Both
-:mod:`booley.flows.fpga_impl` and :mod:`booley.flows.asic_synthesize` therefore
+:mod:`booley.flows.fpga.flow` and :mod:`booley.flows.synth.flow` therefore
 report timing as a ``dict[str, ClockTiming]`` keyed by clock name rather than a
 pair of top-level scalars (the legacy ``critical_path_ps``/``fmax_mhz`` fields
 were removed — per-clock is the sole timing representation).

@@ -7,6 +7,7 @@ structured MCP tool definitions instead of relying on CLI syntax in the prompt.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -107,6 +108,9 @@ def generate_codex_config(
     lines.append("")
     lines.append("[mcp_servers.booley.env]")
     for key, val in sorted(merged_env.items()):
-        lines.append(f'{key} = "{val}"')
+        # JSON string escaping is compatible with TOML basic strings and
+        # protects Windows paths such as C:\\Users\\... from becoming invalid
+        # escape sequences in the generated config.
+        lines.append(f"{key} = {json.dumps(val)}")
 
     return "\n".join(lines) + "\n"

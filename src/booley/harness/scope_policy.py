@@ -1,18 +1,17 @@
-"""Ticket Scope policy -- the single owner of "what may this ticket touch?".
+"""Ticket Scope policy -- the single owner of "what may this ticket commit?".
 
-A Ticket's ``scope:`` list is *advisory* (ADR 0046).  It records which files the
-work is expected to touch, not which files the Developer Agent is permitted to
-touch.  An agent that must edit a neighbouring package to finish the job should
-edit it; the Harness commits that edit like any other and records that it
-happened, instead of throwing the work away behind the agent's back.
+A Ticket's ``scope:`` list is the authorization boundary for automatic commits.
+The Harness commits matching work, preserves other working-tree edits for
+explicit triage, and never lets unrelated dirt prevent authorized work from
+being saved.
 
 Three tiers, in increasing severity:
 
 ``OWNED``
     The path matches the ticket's Scope.  Ordinary work, nothing recorded.
 ``ADVISORY``
-    Any other file in the worktree.  Allowed, committed, and recorded in the
-    run's deviation report for triage to adjudicate.
+    Any other file in the worktree.  Preserved uncommitted and reported clearly
+    for triage to adjudicate.
 ``FORBIDDEN``
     Harness bookkeeping and the configuration the run is graded against.  Still
     hard-blocked, because these are not "work outside the plan" -- they are the
@@ -120,11 +119,9 @@ def classify_path(scope: list[str], path: str, status: str | None = None) -> Sco
     with the same deletion rules the staging path uses.  Omit it for paths that
     came from a committed diff, where no status applies.
 
-    The ``["*"]`` unknown-Scope sentinel carries no permission meaning here.
-    Under advisory Scope it collapses into the ordinary case: a ticket that
-    named no files has nothing owned, so everything it touched is a deviation
-    worth showing the human.  Blanket permission was only ever needed because
-    the old Scope was a wall; there is no wall left to open.
+    The ``["*"]`` unknown-Scope sentinel carries no permission meaning here: a
+    ticket that named no files has nothing authorized, so everything it touched
+    needs explicit triage.
     """
     if is_forbidden_path(path):
         return ScopeTier.FORBIDDEN
@@ -146,9 +143,8 @@ def is_restore_artifact(scope: list[str], path: str, status: str) -> bool:
     the agent but the harness -- sparse-worktree handling or a restore -- so
     committing that deletion would ship an accident as ticket work.
 
-    Advisory Scope does not change this.  It removes the *permission* wall, not
-    the robustness guard: an ordinary out-of-scope deletion (a file no `` [new]``
-    entry claims) is real work and commits like anything else.
+    An ordinary out-of-scope deletion (a file no `` [new]`` entry claims) is
+    preserved for triage like any other unauthorized edit.
     """
     if "D" not in status[:2]:
         return False
@@ -236,6 +232,6 @@ def write_deviation_report(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
-        # Informational only (ADR 0046) -- a report we cannot write must never
-        # take down a run that otherwise succeeded.
+        # Informational only -- a report we cannot write must never take down a
+        # run that otherwise succeeded.
         logger.warning("Could not write the Scope deviation report to %s: %s", report_path, exc)

@@ -249,7 +249,15 @@ def _config_is_populated(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        return tomllib.loads(path.read_text(encoding="utf-8")) != {}
+        content = path.read_text(encoding="utf-8")
+        # Recognize the init-created comment-only skeleton directly. This is
+        # independent of newline convention and avoids treating a CRLF copy as
+        # authored configuration on Windows.
+        if not any(
+            line.strip() and not line.lstrip().startswith("#") for line in content.splitlines()
+        ):
+            return False
+        return tomllib.loads(content) != {}
     except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
         return True  # unreadable/broken — treat as user content, refuse
 

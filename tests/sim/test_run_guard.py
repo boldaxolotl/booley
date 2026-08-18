@@ -153,7 +153,10 @@ def test_guard_kills_on_budget_breach(tmp_path: Path, monkeypatch):
     guard = rg.DiskBudgetGuard(run, 1024, proc, interval=0.01)
     guard.start()
     # Written AFTER start(): the budget measures growth during the run (F-23).
-    (run / "runaway.vcd").write_bytes(b"0" * 2048)
+    runaway = run / "runaway.vcd"
+    runaway.write_bytes(b"0" * 2048)
+    fresh = time.time() + 1
+    os.utime(runaway, (fresh, fresh))
     _await_trip(guard)
 
     assert guard.tripped is True

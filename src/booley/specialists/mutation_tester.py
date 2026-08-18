@@ -52,8 +52,8 @@ from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
-from booley.flows import sim_edam
-from booley.flows.simulate import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
+from booley.flows.sim import edam as sim_edam
+from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir

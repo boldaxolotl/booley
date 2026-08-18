@@ -12,11 +12,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# The synthesis package lives at ``<repo>/src/booley/yosys``. Insert the parent
-# (``src/booley``) on ``sys.path`` so the ``booley.*`` imports below resolve when
+# The synthesis package lives at ``<repo>/src/booley/yosys``. Insert ``src``
+# on ``sys.path`` so the ``booley.*`` imports below resolve when
 # this module is loaded before the package is otherwise on the path.
 SCRIPT_DIR = Path(__file__).parent.resolve()
-sys.path.insert(0, str(SCRIPT_DIR.parent))
+sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
 
 from booley.runtime.shared_infra import (
     get_rtl_dir,
