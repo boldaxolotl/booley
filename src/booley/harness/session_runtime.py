@@ -809,7 +809,10 @@ def _mounts_match_spec(
             continue
         source, kind, writable = expected[target]
         observed_source = item.get("Name") if kind == "volume" else item.get("Source")
-        if observed_source != source or item.get("Type") != kind or item.get("RW") is not writable:
+        source_matches = observed_source == source
+        if kind == "bind" and isinstance(observed_source, str) and not source_matches:
+            source_matches = docker_mount_path(Path(observed_source)) == source
+        if not source_matches or item.get("Type") != kind or item.get("RW") is not writable:
             return False
     return True
 

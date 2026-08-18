@@ -134,6 +134,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
         project,
         project_data_path,
     )
+    _pin_devcontainer_mount(spec, project)
     config = load_eda_config(project).get("vivado")
     host_provisioning = config is not None and config.provisioning == PROVISIONING_HOST
     try:
@@ -372,7 +373,7 @@ def expected_vivado_mount(installation: authority.Installation) -> str:
 
 def expected_devcontainer_mount(project_root: Path) -> str:
     """Final nested read-only bind protecting future runtime creation."""
-    source = project_root.resolve() / ".devcontainer"
+    source = docker_mount_path(project_root.resolve() / ".devcontainer")
     return f"source={source},target={DEVCONTAINER_TARGET},type=bind,readonly"
 
 
@@ -678,6 +679,32 @@ def _pin_project_data_mount(
         raise RuntimeSpecError("Project-data workspace view is already mounted")
     shadow_source = expected_source
     mounts.insert(index + 1, f"source={shadow_source},target={shadow_target},type=bind")
+
+
+def _pin_devcontainer_mount(spec: dict[str, Any], project: Path) -> None:
+    """Canonicalize the protected definition bind to Docker's host path form."""
+    mounts = spec.get("mounts")
+    if not isinstance(mounts, list) or any(not isinstance(item, str) for item in mounts):
+        raise RuntimeSpecError("devcontainer.json mounts must be a list of strings")
+    indexes = [
+        index for index, raw in enumerate(mounts) if _mount_target(raw) == DEVCONTAINER_TARGET
+    ]
+    if len(indexes) != 1:
+        raise RuntimeSpecError(
+            f"trusted target {DEVCONTAINER_TARGET} must have one exact read-only bind"
+        )
+    index = indexes[0]
+    source = project.resolve() / ".devcontainer"
+    canonical = expected_devcontainer_mount(project)
+    allowed = {
+        f"source={source},target={DEVCONTAINER_TARGET},type=bind,readonly",
+        canonical,
+    }
+    if mounts[index] not in allowed:
+        raise RuntimeSpecError(
+            f"trusted target {DEVCONTAINER_TARGET} must have one exact read-only bind"
+        )
+    mounts[index] = canonical
 
 
 def _project_data_shadow_target(project: Path, source: Path) -> str | None:
