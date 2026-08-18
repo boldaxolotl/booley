@@ -56,9 +56,7 @@ def ensure_guidance_links(project_root: Path, project_dir: Path) -> list[Path]:
         link = project_root / name
         if not guidance_entry_current(project_root, link, canon):
             if _is_git_tracked(project_root, link):
-                raise OSError(
-                    f"tracked root guidance file differs from canonical copy: {link}"
-                )
+                raise OSError(f"tracked root guidance file differs from canonical copy: {link}")
             _link_file(link, canon, target)
         links.append(link)
     add_git_excludes(project_root, LINK_NAMES, header=_EXCLUDE_HEADER)

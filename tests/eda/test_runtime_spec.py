@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from contextlib import contextmanager
 from dataclasses import replace
@@ -15,8 +16,35 @@ from booley.eda.vivado import wrapper_path
 from booley.harness import devcontainer as dc
 
 
+def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create a host-owned validator without relying on the runner's install layout."""
+    prefix = tmp_path / "trusted-prefix"
+    executable = prefix / "bin" / ("booley.exe" if os.name == "nt" else "booley")
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {executable.parent.resolve(): prefix.resolve()},
+    )
+    return executable
+
+
 @pytest.fixture
-def issued(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    executable = _install_trusted_validator(tmp_path, monkeypatch)
+    monkeypatch.setenv("PATH", str(executable.parent))
+    return executable
+
+
+@pytest.fixture
+def issued(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+):
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -141,8 +169,13 @@ def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
     ],
 )
 def test_dangerous_full_spec_drift_is_rejected_before_issuance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate, match: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+    mutate,
+    match: str,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -162,8 +195,11 @@ def test_dangerous_full_spec_drift_is_rejected_before_issuance(
 
 
 def test_readonly_false_does_not_satisfy_protected_mount(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -194,8 +230,11 @@ def test_nested_definition_mount_is_final() -> None:
 
 
 def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -250,8 +289,11 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
 
 
 def test_issue_rejects_mutable_image_reference(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -317,8 +359,11 @@ def test_project_data_mount_rejects_nested_workspace_source(
 
 
 def test_seal_rejects_project_controlled_mount_source(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -367,8 +412,8 @@ def test_seal_skips_tmp_path_poisoned_booley(
     poisoned.parent.mkdir()
     poisoned.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     poisoned.chmod(0o755)
-    trusted_bin = Path.home() / ".local" / "bin"
-    monkeypatch.setenv("PATH", f"{poisoned.parent}:{trusted_bin}")
+    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(poisoned.parent), str(trusted.parent))))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -378,7 +423,7 @@ def test_seal_skips_tmp_path_poisoned_booley(
     )
     runtime_spec.pin_image(spec)
     runtime_spec.seal(project, spec)
-    assert Path(spec["initializeCommand"][0]).parent == trusted_bin
+    assert Path(spec["initializeCommand"][0]) == trusted
 
 
 def test_trusted_validator_rejects_group_writable_executable_for_shared_group(
@@ -464,17 +509,13 @@ def test_issue_rejects_readonly_project_data_workspace_bind(issued) -> None:
 
 
 def test_validator_bytes_are_bound_into_issuance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
-    trusted = tmp_path / "home" / ".local" / "bin" / "booley"
-    trusted.parent.mkdir(parents=True)
-    trusted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    trusted.chmod(0o755)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("PATH", str(trusted.parent))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -486,14 +527,17 @@ def test_validator_bytes_are_bound_into_issuance(
     runtime_spec.seal(project, spec)
     path = dc.write_devcontainer(project, spec)
     runtime_spec.issue(project, spec, path)
-    trusted.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    trusted_validator.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="validator has changed"):
         runtime_spec.validate(project, spec, path)
 
 
 def test_relay_image_bytes_are_bound_into_licensed_issuance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -542,8 +586,11 @@ def test_validate_rejects_post_issuance_project_data_symlink_swap(issued) -> Non
 
 
 def test_seal_requires_canonical_hash_scoped_state_volume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
 ) -> None:
+    del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
