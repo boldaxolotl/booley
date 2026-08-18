@@ -640,7 +640,7 @@ def _writable_bind(raw: object) -> bool:
     )
 
 
-def _container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect ladder
+def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-closed inspect ladder
     name: str,
     issuance: object,
     *,
@@ -709,7 +709,13 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912 - fail-closed inspect
     if set(networks) != set(expected_networks):
         return False
     devcontainer_workspace = labels.get("devcontainer.local_folder")
-    is_devcontainer = devcontainer_workspace == str(workspace.resolve())
+    try:
+        is_devcontainer = (
+            isinstance(devcontainer_workspace, str)
+            and Path(devcontainer_workspace).resolve() == workspace.resolve()
+        )
+    except OSError:
+        is_devcontainer = False
     env_sections = (spec.get("containerEnv") or {},)
     if not is_devcontainer:
         env_sections += (spec.get("remoteEnv") or {},)
@@ -803,7 +809,10 @@ def _mounts_match_spec(
             continue
         source, kind, writable = expected[target]
         observed_source = item.get("Name") if kind == "volume" else item.get("Source")
-        if observed_source != source or item.get("Type") != kind or item.get("RW") is not writable:
+        source_matches = observed_source == source
+        if kind == "bind" and isinstance(observed_source, str) and not source_matches:
+            source_matches = docker_mount_path(Path(observed_source)) == source
+        if not source_matches or item.get("Type") != kind or item.get("RW") is not writable:
             return False
     return True
 

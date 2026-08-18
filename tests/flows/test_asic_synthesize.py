@@ -1629,6 +1629,8 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 52480.0\nNumber of cells: 12345\n",
                 encoding="utf-8",
             )
+            fresh = time.time() + 1
+            os.utime(build_dir / "yosys.log", (fresh, fresh))
             return SubprocessResult(
                 returncode=0, stdout="BOOLEY_STAGE: yosys\n", stderr="", duration_s=1.0
             )
@@ -1685,6 +1687,8 @@ class TestFileBasedInterpretation:
                 "ERROR: ABC gave up on this netlist\n",
                 encoding="utf-8",
             )
+            fresh = time.time() + 1
+            os.utime(build_dir / "yosys.log", (fresh, fresh))
             return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
 
         with patch.object(flow, "_execute", side_effect=mock_execute):
@@ -1722,6 +1726,9 @@ class TestFileBasedInterpretation:
                 "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n",
                 encoding="utf-8",
             )
+            fresh = time.time() + 1
+            for stage_log in (build_dir / "yosys.log", build_dir / "sta.log"):
+                os.utime(stage_log, (fresh, fresh))
             return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
 
         with (

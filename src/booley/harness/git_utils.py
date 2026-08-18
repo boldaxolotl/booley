@@ -424,6 +424,8 @@ def commit_scope(
 
     Raises ValueError if scope is empty -- callers must provide explicit paths.
     Safety: refuses to commit in the main worktree (Principle 3).
+    Any unrelated paths already in the index are unstaged without changing
+    their working-tree content, so they cannot block the authorized commit.
 
     *literal* switches off glob interpretation, for callers passing real paths
     read off the worktree rather than ticket-authored Scope patterns.  A real
@@ -440,7 +442,7 @@ def commit_scope(
 
     scope = list(scope) if literal else expand_scope_globs(wt, list(scope))
     _stage_scope_files(wt, scope, literal=literal)
-    _verify_scope_staging(wt, scope, literal=literal)
+    _isolate_scope_staging(wt, scope, literal=literal)
 
     errors = validate_message(message)
     if errors:
@@ -483,8 +485,8 @@ def _stage_scope_files(wt: Path, scope: list[str], *, literal: bool = False) -> 
         )
 
 
-def _verify_scope_staging(wt: Path, scope: list[str], *, literal: bool = False) -> None:
-    """Verify no out-of-scope files were staged. Raises BlockingError if found."""
+def _isolate_scope_staging(wt: Path, scope: list[str], *, literal: bool = False) -> None:
+    """Unstage unrelated paths while preserving their working-tree changes."""
     if not literal and is_scope_unknown(scope):
         return
     # ``-z`` so a path with a space or a non-ASCII byte arrives unquoted and
@@ -499,12 +501,23 @@ def _verify_scope_staging(wt: Path, scope: list[str], *, literal: bool = False) 
             out_of_scope = [f for f in staged_files if f not in allowed]
         else:
             out_of_scope = [f for f in staged_files if not scope_matches_file(scope, f)]
-        if out_of_scope:
+        if not out_of_scope:
+            return
+        reset_result = git_run(
+            wt,
+            ["--literal-pathspecs", "reset", "--quiet", "HEAD", "--", *out_of_scope],
+        )
+        if reset_result.returncode != 0:
             raise BlockingError(
-                f"Out-of-scope files staged for commit: {out_of_scope} "
-                f"(ticket scope: {list(scope)}). Agent may have used raw "
-                f"git add outside commit_scope."
+                "Could not unstage out-of-scope files before scoped commit "
+                f"(rc={reset_result.returncode}): {reset_result.stderr.strip()} "
+                f"-- paths={out_of_scope}"
             )
+        logger.warning(
+            "Leaving %d out-of-scope staged file(s) uncommitted: %s",
+            len(out_of_scope),
+            ", ".join(out_of_scope[:5]),
+        )
 
 
 def _run_commit(wt: Path, scope: list[str], message: str) -> None:

@@ -617,7 +617,8 @@ def _open_lock(path: Path):
         descriptor = os.open(path, flags, 0o600)
     except OSError as exc:
         raise AuthorityError(f"cannot open EDA authority lock securely: {exc}") from exc
-    os.fchmod(descriptor, 0o600)
+    if os.name != "nt":
+        os.fchmod(descriptor, 0o600)
     info = os.fstat(descriptor)
     _validate_owner_mode(path, info, 0o600)
     return os.fdopen(descriptor, "r+")
@@ -627,7 +628,8 @@ def _atomic_write(path: Path, content: str) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temp_path = Path(temporary)
     try:
-        os.fchmod(descriptor, 0o600)
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()

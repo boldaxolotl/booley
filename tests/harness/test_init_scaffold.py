@@ -320,7 +320,7 @@ def test_existing_design_files_finds_rtl_and_cores(tmp_path: Path) -> None:
     stealth.mkdir(parents=True)
     (stealth / "stealth.core").write_text("CAPI=2:\n")
 
-    found = {str(p) for p in existing_design_files(tmp_path)}
+    found = {p.as_posix() for p in existing_design_files(tmp_path)}
     assert found == {"rtl/old.v", "chip.core", ".booley_project/cores/stealth.core"}
 
 
@@ -348,8 +348,8 @@ def test_step_overwrites_comment_only_skeletons(tmp_path: Path, monkeypatch, cap
     # over them is the supported "ran init first, then decided to scaffold" path.
     pd = tmp_path / ".booley_project"
     pd.mkdir()
-    (pd / "booley.toml").write_text(BOOLEY_TOML_SKELETON)
-    (pd / "tests.toml").write_text(TESTS_TOML_SKELETON)
+    (pd / "booley.toml").write_text(BOOLEY_TOML_SKELETON, encoding="utf-8")
+    (pd / "tests.toml").write_text(TESTS_TOML_SKELETON, encoding="utf-8")
     ctx = _ctx(tmp_path, monkeypatch)
     assert step_scaffold(ctx, _args()) is True
     cfg = tomllib.loads((pd / "booley.toml").read_text(encoding="utf-8"))

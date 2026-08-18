@@ -292,7 +292,28 @@ def _health(
         "missing_evidence": missing,
         "harness_paths": scope.get("harness_paths", []),
         "scope_undecidable": scope.get("decidable") is False,
+        "unverified_transitions": _unverified_transitions(state),
     }
+
+
+def _unverified_transitions(state: Mapping[str, Any]) -> list[str]:
+    """Return passing fail->pass criteria whose failing leg was not observed."""
+    criteria = state.get("criteria")
+    if not isinstance(criteria, Mapping):
+        return []
+    names = []
+    for name, value in criteria.items():
+        if not isinstance(name, str) or name.startswith("_") or not isinstance(value, Mapping):
+            continue
+        params = value.get("params")
+        if (
+            value.get("met") is True
+            and isinstance(params, Mapping)
+            and params.get("from_state") == "fail"
+            and value.get("ever_failed") is not True
+        ):
+            names.append(name)
+    return sorted(names)
 
 
 def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
@@ -519,6 +540,13 @@ def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> li
         values = health.get(key, [])
         if values:
             findings.append(f"{label}: {', '.join(map(str, values))}")
+    transitions = health.get("unverified_transitions", [])
+    if transitions:
+        findings.append(
+            "UNVERIFIED TRANSITION: "
+            + ", ".join(map(str, transitions))
+            + " declared 'fail -> pass' but no failing run was recorded."
+        )
     if diff_failures:
         findings.append(f"Diff viewer unavailable for: {', '.join(diff_failures)}")
     if health.get("scope_undecidable") is True:

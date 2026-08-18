@@ -186,8 +186,8 @@ The filesystem-backed state machine that tracks ticket lifecycle. Each status is
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Scope**:
-The set of files a ticket is *expected* to modify — a declaration of intent, not a permission boundary. The Developer Agent may edit anything in its worktree; files outside the Scope are committed like any other work, and the Harness records them in a per-run deviation report (`.runtime/scope_deviations.json`) that Ticket triage reads and a human adjudicates. Deviations are informational and never change a ticket's disposition. The per-worktree pre-commit hook warns on out-of-scope files to steer the agent, and hard-rejects only Harness bookkeeping (development state, Criteria, ticket files, `booley.toml`) — the record a run is graded against. The `["*"]` wildcard no longer grants blanket ownership: a ticket that names nothing owns nothing, so everything it touched is reported.
-_Avoid_: boundary, allowlist
+The set of files a ticket is authorized to commit. The Developer Agent may edit anything in its worktree, but the Harness commits only Scope-matching paths and preserves other edits uncommitted for Ticket triage. A per-run deviation report (`.runtime/scope_deviations.json`) records any outside paths that nevertheless reached branch history. The per-worktree pre-commit hook hard-rejects out-of-Scope files and Harness bookkeeping (development state, Criteria, ticket files, `booley.toml`). The `["*"]` sentinel grants no ownership: a ticket that names no files authorizes no automatic commits.
+_Avoid_: allowlist
 
 **Escalation**:
 A signal that a decision exceeds the current authority level, flowing Specialist to Developer Agent to Human. When the Developer Agent escalates, the ticket moves to blocked on the Ticket Board.

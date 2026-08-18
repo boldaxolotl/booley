@@ -27,7 +27,15 @@ def posix_relpath(path: Path | str, start: Path | str) -> str:
     normalizes to ``/`` on every host so the same string crosses the boundary
     unchanged.
     """
-    return Path(os.path.relpath(path, start)).as_posix()
+    try:
+        relative = os.path.relpath(path, start)
+    except ValueError:
+        # Windows cannot express a relative path between drive letters. This
+        # occurs for host-side reports when the checkout and runner temp
+        # directory live on different drives (GitHub uses D: and C:). Keep the
+        # pointer usable and slash-normalized instead of crashing the Flow.
+        return Path(path).resolve().as_posix()
+    return Path(relative).as_posix()
 
 
 def docker_mount_path(p: Path) -> str:

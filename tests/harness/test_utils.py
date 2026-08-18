@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.harness.blocking import BlockingError
 from booley.harness.git_utils import (
     commit_scope,
     expand_scope_globs,
@@ -51,9 +52,8 @@ class TestCommitScope:
         assert mock_run.call_count == 3
 
     @patch("booley.harness.git_utils.subprocess.run")
-    def test_out_of_scope_staged_files_raises(self, mock_run):
-        """Agent used raw 'git add' on files outside ticket scope → BlockingError."""
-        from booley.harness.blocking import BlockingError
+    def test_out_of_scope_staged_files_are_unstaged(self, mock_run):
+        """A raw staged outsider is preserved but excluded from the commit."""
 
         def side_effect(args, **kwargs):
             cmd = args[1] if len(args) > 1 else ""
@@ -70,13 +70,22 @@ class TestCommitScope:
             return subprocess.CompletedProcess(args=args, returncode=0)
 
         mock_run.side_effect = side_effect
-        with pytest.raises(BlockingError, match="Out-of-scope"):
-            commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
+        commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
+
+        reset_args = mock_run.call_args_list[2][0][0]
+        assert reset_args[1:7] == [
+            "--literal-pathspecs",
+            "reset",
+            "--quiet",
+            "HEAD",
+            "--",
+            "rtl/rogue_file.sv",
+        ]
+        assert mock_run.call_args_list[-1][0][0][1:] == ["commit", "-m", "fix: stuff"]
 
     @patch("booley.harness.git_utils.subprocess.run")
-    def test_out_of_scope_staged_deletion_raises(self, mock_run):
-        """Out-of-scope staged deletions are also scope violations."""
-        from booley.harness.blocking import BlockingError
+    def test_out_of_scope_staged_deletion_is_unstaged(self, mock_run):
+        """An outside deletion is preserved in the worktree, not committed."""
 
         def side_effect(args, **kwargs):
             cmd = args[1] if len(args) > 1 else ""
@@ -91,7 +100,35 @@ class TestCommitScope:
             return subprocess.CompletedProcess(args=args, returncode=0)
 
         mock_run.side_effect = side_effect
-        with pytest.raises(BlockingError, match="Out-of-scope"):
+        commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
+
+        reset_args = mock_run.call_args_list[2][0][0]
+        assert reset_args[-1] == "README.md"
+
+    @patch("booley.harness.git_utils.subprocess.run")
+    def test_out_of_scope_unstage_failure_blocks(self, mock_run):
+        """Do not commit a mixed index if the outsider cannot be unstaged."""
+
+        def side_effect(args, **kwargs):
+            cmd = args[1] if len(args) > 1 else ""
+            if cmd == "diff":
+                return subprocess.CompletedProcess(
+                    args=args,
+                    returncode=0,
+                    stdout="rtl/foo.sv\0rtl/rogue_file.sv\0",
+                    stderr="",
+                )
+            if "reset" in args:
+                return subprocess.CompletedProcess(
+                    args=args,
+                    returncode=1,
+                    stdout="",
+                    stderr="index is locked",
+                )
+            return subprocess.CompletedProcess(args=args, returncode=0)
+
+        mock_run.side_effect = side_effect
+        with pytest.raises(BlockingError, match="Could not unstage out-of-scope"):
             commit_scope(Path("/wt"), ["rtl/foo.sv"], "fix: stuff")
 
     @patch("booley.harness.git_utils.subprocess.run")

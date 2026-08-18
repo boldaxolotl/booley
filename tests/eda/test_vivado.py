@@ -42,6 +42,7 @@ def test_rejects_missing_release_sibling(release: Path) -> None:
         vivado.inspect_installation(release)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX executable mode bit")
 def test_rejects_non_executable_launcher(release: Path) -> None:
     launcher = release / "Vivado" / "bin" / "vivado"
     launcher.chmod(0o644)

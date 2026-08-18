@@ -149,9 +149,8 @@ def main() -> int:
     if scope is None:
         return 0
 
-    # The ["*"] unknown-scope sentinel no longer grants blanket ownership
-    # (ADR 0046): a ticket that named nothing owns nothing, so everything it
-    # touched is worth showing the human.
+    # The ["*"] unknown-scope sentinel grants no ownership: a ticket that named
+    # nothing owns nothing, so everything it touched needs human triage.
     wildcard = scope == ["*"]
     out_of_scope = [f for f in staged if wildcard or not _matches_scope(f, scope)]
     if out_of_scope:

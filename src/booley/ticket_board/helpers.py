@@ -26,6 +26,13 @@ def lock_fd(f: IO) -> None:
     if sys.platform == "win32":
         import msvcrt
 
+        # msvcrt locks a byte range and an empty file has no byte to lock.
+        # Seed one byte before taking the lock; callers overwrite the lock
+        # stamp after acquisition.
+        f.seek(0, os.SEEK_END)
+        if f.tell() == 0:
+            f.write("\0")
+            f.flush()
         f.seek(0)
         msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
     else:

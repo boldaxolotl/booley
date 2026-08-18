@@ -2934,13 +2934,11 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
     requested = arguments.get("timeout")
     if requested is None:
         sim_seconds = max(1, _resolve_sim_timeout_ms(work_dir) // 1000)
-        non_trace_margin_s = 0
     else:
         try:
             sim_seconds = max(1, int(requested) // 1000)
         except (TypeError, ValueError):
             return default
-        non_trace_margin_s = 30
 
     raw_target = str(arguments.get("target") or "").strip()
     if not raw_target:
@@ -2958,7 +2956,7 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
 
     campaign_budget_s = sim_seconds * work_units
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
-    call_margin_s = 0 if arguments.get("trace") else non_trace_margin_s
+    call_margin_s = 0 if arguments.get("trace") else 30
     return max(default, campaign_budget_s) + trace_margin_s + call_margin_s
 
 

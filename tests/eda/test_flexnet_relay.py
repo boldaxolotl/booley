@@ -195,7 +195,7 @@ async def test_idle_connection_is_closed_with_metadata_only_reason(caplog) -> No
 async def test_activity_in_either_direction_resets_connection_idle_timeout() -> None:
     async def streaming(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         assert await reader.readexactly(1) == b"?"
-        for _ in range(5):
+        for _ in range(10):
             writer.write(b"x")
             await writer.drain()
             await asyncio.sleep(0.03)
@@ -204,13 +204,13 @@ async def test_activity_in_either_direction_resets_connection_idle_timeout() -> 
 
     upstream = await _start_server(streaming)
     port = upstream.sockets[0].getsockname()[1]
-    relay = FlexNetRelay(_test_config((port, port), idle_timeout=0.05))
+    relay = FlexNetRelay(_test_config((port, port), idle_timeout=0.15))
     await relay.start()
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
         writer.write(b"?")
         await writer.drain()
-        assert await asyncio.wait_for(reader.readexactly(5), timeout=1) == b"xxxxx"
+        assert await asyncio.wait_for(reader.readexactly(10), timeout=2) == b"xxxxxxxxxx"
         writer.close()
         await writer.wait_closed()
     finally:

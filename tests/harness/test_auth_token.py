@@ -7,6 +7,7 @@ mounted subscription credentials and logs the agent out.
 
 from __future__ import annotations
 
+import os
 import stat
 from pathlib import Path
 
@@ -35,11 +36,13 @@ def home(tmp_path, monkeypatch):
 def isolated_home(home, monkeypatch):
     """Also redirect ``Path.home()`` so the real ``~/.claude`` login can't leak in."""
     monkeypatch.setenv("HOME", str(home / "userhome"))
+    monkeypatch.setenv("USERPROFILE", str(home / "userhome"))
     (home / "userhome").mkdir(exist_ok=True)
     return home / "userhome"
 
 
 class TestStorage:
+    @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
     def test_stores_token_private_to_owner(self, home):
         path = auth_token.store_token(_TOKEN)
 
@@ -54,6 +57,7 @@ class TestStorage:
         assert "booley" in auth_token.token_path().parts[-2]
         assert auth_token.token_path().name == "claude-oauth-token"
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
     def test_rewrite_tightens_a_loose_mode(self, home):
         path = auth_token.store_token(_TOKEN)
         path.chmod(0o644)
@@ -375,6 +379,7 @@ class TestDoctorCheck:
 
         assert any("outranks" in m for m in sink["pass"])
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows ACLs are not POSIX mode bits")
     def test_warns_when_stored_token_is_world_readable(self, home, monkeypatch):
         auth_token.store_token(_TOKEN).chmod(0o644)
 

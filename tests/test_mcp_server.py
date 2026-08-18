@@ -454,6 +454,18 @@ class TestMcpToolTimeoutSeconds:
         )
         assert timeout == 630
 
+    def test_simulate_configured_default_gets_small_margin(self, tmp_path):
+        with patch(
+            "booley.flows.simulate._resolve_sim_timeout_ms",
+            return_value=600_000,
+        ):
+            timeout = self._mcp_tool_timeout_seconds(
+                "sim",
+                {"work_dir": str(tmp_path), "trace": False},
+                {"default_timeout": 600},
+            )
+        assert timeout == 630
+
     def test_simulate_campaign_budget_scales_by_work_units(self):
         with patch(
             "booley.flows.simulate._resolve_sim_campaign_work_units",
@@ -528,21 +540,22 @@ class TestMcpToolTimeoutSeconds:
             {"work_dir": str(tmp_path), "trace": False},
             {"default_timeout": 600},
         )
-        # max(default 600, 1800000ms -> 1800s) + 0 (no trace).
-        assert timeout == 1800
+        # max(default 600, 1800000ms -> 1800s) + report-persistence margin.
+        assert timeout == 1830
 
     def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
         """No --timeout and no config knob -> the wrapper default budget stands."""
         from booley.project_dir import reset_cache
 
         reset_cache()
-        # default (600) vs the 600s builtin sim default -> max is 600, no margin.
+        # The wrapper default and builtin sim budget are both 600s, then the
+        # outer watchdog adds time for report persistence and process cleanup.
         timeout = self._mcp_tool_timeout_seconds(
             "sim",
             {"work_dir": str(tmp_path), "trace": False},
             {"default_timeout": 600},
         )
-        assert timeout == 600
+        assert timeout == 630
 
 
 # ---------------------------------------------------------------------------

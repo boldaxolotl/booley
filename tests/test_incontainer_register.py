@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from booley import incontainer_register as reg
 from tests.conftest import require_symlinks
@@ -469,7 +470,8 @@ class TestApplyStoredCredential:
         settings = json.loads(reg.claude_settings_path(tmp_path).read_text())
         assert settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-stored"
         # The file now holds a secret — owner-only, like the host store.
-        assert reg.claude_settings_path(tmp_path).stat().st_mode & 0o077 == 0
+        if os.name != "nt":
+            assert reg.claude_settings_path(tmp_path).stat().st_mode & 0o077 == 0
 
     def test_claude_idempotent(self, tmp_path, monkeypatch):
         self._clear_env(monkeypatch)
@@ -553,7 +555,8 @@ class TestApplyStoredCredential:
         assert reg.apply_stored_credential("codex", tmp_path) == "written"
         auth = json.loads(reg.codex_auth_path(tmp_path).read_text())
         assert auth == {"OPENAI_API_KEY": "sk-proj-stored"}
-        assert reg.codex_auth_path(tmp_path).stat().st_mode & 0o077 == 0
+        if os.name != "nt":
+            assert reg.codex_auth_path(tmp_path).stat().st_mode & 0o077 == 0
 
     def test_codex_idempotent(self, tmp_path, monkeypatch):
         self._clear_env(monkeypatch)
@@ -651,7 +654,8 @@ class TestClaudePermissionMode:
     def test_owner_only_mode(self, tmp_path):
         # Shares a file with the OAuth token, so it must not widen the mode.
         reg._apply_claude_permission_mode(tmp_path)
-        assert reg.claude_settings_path(tmp_path).stat().st_mode & 0o077 == 0
+        if os.name != "nt":
+            assert reg.claude_settings_path(tmp_path).stat().st_mode & 0o077 == 0
 
     def test_preserves_credential_and_permission_rules(self, tmp_path):
         path = reg.claude_settings_path(tmp_path)
