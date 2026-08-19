@@ -40,6 +40,21 @@ def _commit_all(repo: Path, message: str) -> None:
     _git(repo, "commit", "-m", message)
 
 
+def _commit_board_ticket(project: Path, state: str, slug: str) -> Path:
+    ticket = project / "tickets" / "board" / state / f"{slug}.md"
+    ticket.parent.mkdir(parents=True, exist_ok=True)
+    ticket.write_text(f"# {slug}\n", encoding="utf-8")
+    _commit_all(project, f"chore: add {slug} ticket")
+    return ticket
+
+
+def _move_board_ticket(ticket: Path, state: str) -> Path:
+    destination = ticket.parent.parent / state / ticket.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    ticket.rename(destination)
+    return destination
+
+
 def _make_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TicketContext:
     root = tmp_path / "rtl-project"
     root.mkdir()
@@ -158,6 +173,38 @@ def test_dirty_project_repo_is_not_silently_snapshotted(
         prepare_project_worktree(ctx)
 
 
+def test_unstaged_board_enqueue_and_claim_do_not_block_project_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    project = ctx.project_root / ".booley_project"
+    draft = _commit_board_ticket(project, "drafts", ctx.slug)
+
+    queued = _move_board_ticket(draft, "queue")
+    active = _move_board_ticket(queued, "active")
+    nested = prepare_project_worktree(ctx)
+
+    assert nested is not None
+    assert active.is_file()
+    assert _git(project, "status", "--short").splitlines() == [
+        f"D tickets/board/drafts/{ctx.slug}.md",
+        "?? tickets/board/active/",
+    ]
+
+
+def test_staged_board_change_still_blocks_project_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    project = ctx.project_root / ".booley_project"
+    queued = _commit_board_ticket(project, "queue", ctx.slug)
+    _move_board_ticket(queued, "active")
+    _git(project, "add", "-A")
+
+    with pytest.raises(ProjectWorktreeError, match="uncommitted changes"):
+        prepare_project_worktree(ctx)
+
+
 def test_project_branch_merges_and_cleans_up_with_ticket(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -181,6 +228,52 @@ def test_project_branch_merges_and_cleans_up_with_ticket(
     assert not nested.exists()
     branches = _git(ctx.project_root / ".booley_project", "branch", "--format=%(refname:short)")
     assert project_ticket_branch(ctx.slug) not in branches.splitlines()
+
+
+def test_project_branch_merges_with_unstaged_board_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    project = ctx.project_root / ".booley_project"
+    queued = _commit_board_ticket(project, "queue", ctx.slug)
+    nested = prepare_project_worktree(ctx)
+    assert nested is not None
+    (nested / "cores" / "dut.core").write_text(
+        "CAPI=2:\nname: ::dut:3\n", encoding="utf-8"
+    )
+    _commit_ticket_paths(ctx, [".booley_project/cores/dut.core"], "fix: update core")
+    review = _move_board_ticket(queued, "review")
+
+    ok, error = merge_project_ticket_branch(ctx.project_root, ctx.slug, "merge project content")
+
+    assert ok, error
+    assert review.is_file()
+    assert not queued.exists()
+    assert "::dut:3" in (project / "cores" / "dut.core").read_text(encoding="utf-8")
+    assert _git(project, "status", "--short").splitlines() == [
+        f"D tickets/board/queue/{ctx.slug}.md",
+        "?? tickets/board/review/",
+    ]
+
+
+def test_project_branch_cannot_modify_ticket_board(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    project = ctx.project_root / ".booley_project"
+    _commit_board_ticket(project, "queue", ctx.slug)
+    nested = prepare_project_worktree(ctx)
+    assert nested is not None
+    nested_ticket = nested / "tickets" / "board" / "queue" / f"{ctx.slug}.md"
+    nested_ticket.write_text("tampered\n", encoding="utf-8")
+    _commit_all(nested, "bad: modify ticket state")
+
+    ok, error = merge_project_ticket_branch(ctx.project_root, ctx.slug, "merge ticket state")
+
+    assert not ok
+    assert "modifies Ticket Board state" in error
+    source_ticket = project / "tickets" / "board" / "queue" / f"{ctx.slug}.md"
+    assert source_ticket.read_text(encoding="utf-8") == f"# {ctx.slug}\n"
 
 
 def test_project_merge_conflict_is_aborted(

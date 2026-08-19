@@ -8,6 +8,8 @@ from pathlib import Path
 
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.ticket_repositories import (
+    ProjectRepositoryStatusError,
+    blocking_project_repository_changes,
     project_repository_expected,
     project_ticket_branch,
     resolve_inner_project_repo,
@@ -51,11 +53,30 @@ def cleanup_project_ticket_branch(project_root: Path, slug: str) -> bool:
 
 
 def _merge_in_checkout(checkout: Path, branch: str, message: str) -> tuple[bool, str]:
-    status = _git(checkout, "status", "--porcelain", "--untracked-files=all")
-    if status.returncode != 0:
-        return False, status.stderr.strip()
-    if status.stdout.strip():
-        return False, f"project merge checkout at {checkout} has uncommitted changes"
+    ticket_changes = _git(
+        checkout,
+        "diff",
+        "--name-only",
+        "-z",
+        f"HEAD...{branch}",
+        "--",
+        "tickets/",
+    )
+    if ticket_changes.returncode != 0:
+        return False, (ticket_changes.stderr or ticket_changes.stdout).strip()
+    changed_tickets = [path for path in ticket_changes.stdout.split("\0") if path]
+    if changed_tickets:
+        return False, (
+            f"project branch {branch!r} modifies Ticket Board state: "
+            f"{', '.join(changed_tickets[:5])}"
+        )
+    try:
+        blocking = blocking_project_repository_changes(checkout)
+    except ProjectRepositoryStatusError as exc:
+        return False, str(exc)
+    if blocking:
+        paths = ", ".join(change.path for change in blocking[:5])
+        return False, f"project merge checkout at {checkout} has uncommitted changes: {paths}"
     result = _git(checkout, "merge", "--no-ff", branch, "-m", message)
     if result.returncode != 0:
         _git(checkout, "merge", "--abort")

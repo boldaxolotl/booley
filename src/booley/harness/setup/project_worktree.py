@@ -9,6 +9,8 @@ from booley.harness.models import TicketContext
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.ticket_repositories import (
+    ProjectRepositoryStatusError,
+    blocking_project_repository_changes,
     paired_project_repository,
     project_ticket_branch,
     resolve_inner_project_repo,
@@ -73,13 +75,15 @@ def _outer_ignores_project_dir(project_root: Path) -> bool:
 
 
 def _require_clean_source(source: Path) -> None:
-    result = _git(source, "status", "--porcelain", "--untracked-files=all")
-    if result.returncode != 0:
-        raise ProjectWorktreeError(f"could not inspect project repository: {result.stderr.strip()}")
-    if result.stdout.strip():
+    try:
+        blocking = blocking_project_repository_changes(source)
+    except ProjectRepositoryStatusError as exc:
+        raise ProjectWorktreeError(f"could not inspect project repository: {exc}") from exc
+    if blocking:
+        paths = ", ".join(change.path for change in blocking[:5])
         raise ProjectWorktreeError(
             f"project repository at {source} has uncommitted changes; commit or restore "
-            "them before starting or resuming a ticket"
+            f"them before starting or resuming a ticket: {paths}"
         )
 
 

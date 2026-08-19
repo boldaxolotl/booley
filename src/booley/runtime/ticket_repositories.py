@@ -10,6 +10,7 @@ from pathlib import Path
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 
 PROJECT_BRANCH_PREFIX = "booley-ticket/"
+PROJECT_BOARD_PREFIX = "tickets/board/"
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,18 @@ class TicketRepository:
     def ticket_path(self, local_path: str) -> str:
         """Translate a repository-relative path into the ticket checkout."""
         return f"{self.path_prefix}/{local_path}" if self.path_prefix else local_path
+
+
+@dataclass(frozen=True)
+class ProjectRepositoryChange:
+    """One uncommitted path in the standalone project repository."""
+
+    path: str
+    status: str
+
+
+class ProjectRepositoryStatusError(RuntimeError):
+    """Raised when Git cannot report project-repository changes."""
 
 
 def project_ticket_branch(slug: str) -> str:
@@ -119,6 +132,62 @@ def ticket_repositories(ticket_worktree: Path) -> tuple[TicketRepository, ...]:
     outer = TicketRepository(ticket_worktree)
     project = paired_project_repository(ticket_worktree)
     return (outer, project) if project is not None else (outer,)
+
+
+def blocking_project_repository_changes(
+    repository: Path,
+) -> tuple[ProjectRepositoryChange, ...]:
+    """Return dirt that must block project worktree creation or merging.
+
+    Ticket Board transitions deliberately mutate ``tickets/board/`` in the
+    main project checkout. Booley leaves those moves unstaged, so they can
+    coexist with a Git worktree or a merge whose branch cannot modify ticket
+    state. Staged board changes remain blocking because Git may refuse to
+    merge with a non-clean index.
+    """
+    result = _git(
+        repository,
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules",
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise ProjectRepositoryStatusError(
+            f"git status failed in {repository} (rc={result.returncode}): {detail}"
+        )
+    return tuple(
+        change
+        for change in _parse_porcelain_z(result.stdout)
+        if not _is_unstaged_board_change(change)
+    )
+
+
+def _parse_porcelain_z(stdout: str) -> tuple[ProjectRepositoryChange, ...]:
+    """Parse NUL-delimited porcelain output, consuming rename origins."""
+    fields = [field for field in stdout.split("\0") if field]
+    changes: list[ProjectRepositoryChange] = []
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        status, path = record[:2], record[3:]
+        if "R" in status or "C" in status:
+            index += 1
+        if path:
+            changes.append(ProjectRepositoryChange(path, status))
+    return tuple(changes)
+
+
+def _is_unstaged_board_change(change: ProjectRepositoryChange) -> bool:
+    """Whether *change* is ordinary filesystem-backed board churn."""
+    normalized = change.path.replace("\\", "/").removeprefix("./")
+    unstaged = change.status == "??" or change.status.startswith(" ")
+    return unstaged and normalized.startswith(PROJECT_BOARD_PREFIX)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
