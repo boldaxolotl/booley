@@ -87,6 +87,8 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> list[s
     if file_path is None:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return []
+    # Lookup accepts feature-branch aliases; persistent ticket state does not.
+    slug = file_path.stem
 
     # A queued/running/review ticket silently disappearing is a footgun (A-5):
     # archiving is destructive (worktree, branch, and logs go with it), so a
@@ -107,6 +109,22 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> list[s
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
     with tio._ticket_lock(slug):
+        from .project_git_ops import cleanup_project_ticket_branch
+
+        if not cleanup_project_ticket_branch(tio._project_root, slug):
+            print(
+                f"Error: could not clean up project repository branch for '{slug}'",
+                file=sys.stderr,
+            )
+            return []
+        if fields.get("feature_branch", "") and not cleanup_worktree_and_branch(
+            fields["feature_branch"], force=True
+        ):
+            print(
+                f"Error: could not clean up feature branch for '{slug}'",
+                file=sys.stderr,
+            )
+            return []
         tio._append_transition_unlocked(
             slug,
             f"{status}:{fields.get('step', '')}",
@@ -114,8 +132,6 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> list[s
             "ticket-triage",
             "user archived",
         )
-        if fields.get("feature_branch", ""):
-            cleanup_worktree_and_branch(fields["feature_branch"])
         file_path.unlink(missing_ok=True)
         _cleanup_log_dir(log_dir, keep_logs)
 
@@ -151,6 +167,23 @@ def op_archive(
                 summary = fields.get("summary", md_file.stem)
             except OSError:
                 summary = md_file.stem
+                fields = {}
+            from .project_git_ops import cleanup_project_ticket_branch
+
+            if not cleanup_project_ticket_branch(tio._project_root, ticket_slug):
+                print(
+                    f"Error: could not clean up project repository branch for '{ticket_slug}'",
+                    file=sys.stderr,
+                )
+                continue
+            if fields.get("feature_branch", "") and not cleanup_worktree_and_branch(
+                fields["feature_branch"], force=True
+            ):
+                print(
+                    f"Error: could not clean up feature branch for '{ticket_slug}'",
+                    file=sys.stderr,
+                )
+                continue
             archived.append(summary)
             md_file.unlink()
             _cleanup_log_dir(log_dir, keep_logs)

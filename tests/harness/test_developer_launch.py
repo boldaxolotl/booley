@@ -157,6 +157,35 @@ def test_launch_developer_agent_env_dir_override(tmp_path, monkeypatch):
     assert cfg.active_backend.captured["params"].developer_mcp_tools is None
 
 
+def test_launch_restores_control_plane_project_dir_after_ticket_local_call(tmp_path, monkeypatch):
+    cfg = _DummyConfig()
+    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+
+    control_project_dir = tmp_path / "control-project"
+    control_project_dir.mkdir()
+    checkout = tmp_path / "ticket-checkout"
+    ticket_project_dir = checkout / ".booley_project"
+    ticket_project_dir.mkdir(parents=True)
+
+    with _env_guard():
+        os.environ["BOOLEY_PROJECT_DIR"] = str(control_project_dir)
+        asyncio.run(
+            developer._launch_developer_agent(
+                "prompt",
+                system_prompt="system",
+                cwd=checkout,
+                slug="my-ticket",
+                state_path=tmp_path / "booley_state.json",
+                logs_dir=control_project_dir / "tickets" / "logs" / "my-ticket",
+                project_root=tmp_path,
+            )
+        )
+
+        assert os.environ["BOOLEY_PROJECT_DIR"] == str(control_project_dir)
+
+    assert cfg.active_backend.captured["env"]["BOOLEY_PROJECT_DIR"] == str(ticket_project_dir)
+
+
 def test_launch_passes_developer_budget_to_backend(tmp_path, monkeypatch):
     cfg = _DummyConfig()
     monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)

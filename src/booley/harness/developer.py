@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from booley.dev_support.development_state import (
     DevelopmentState,
@@ -71,6 +72,9 @@ from .terminal import (
     step_start_header,
 )
 from .worktree_health import check_worktree_health
+
+if TYPE_CHECKING:
+    from .developer_guardrails import DirtyFile
 
 logger = logging.getLogger(__name__)
 
@@ -839,7 +843,13 @@ def _start_display_watcher(
     console_app = terminal.get_console_app()
     if console_app:
         line_counter = (
-            WorktreeLineCounter(ctx.worktree_path, ctx.branch) if ctx.worktree_path else None
+            WorktreeLineCounter(
+                ctx.worktree_path,
+                ctx.branch,
+                reported_root=ctx.project_root,
+            )
+            if ctx.worktree_path
+            else None
         )
         watcher = DisplayWatcher(
             existing_ticket_runtime_file(ctx.logs_dir, "display.jsonl"),
@@ -1064,6 +1074,53 @@ def _guard_scorer_restore_artifacts(
     return True
 
 
+def _check_ticket_dirty_statuses(worktree: Path) -> list[DirtyFile]:
+    """Return dirty paths from the outer and paired project repositories."""
+    from booley.runtime.ticket_repositories import ticket_repositories
+
+    from .developer_guardrails import DirtyFile, check_uncommitted_code_statuses
+
+    dirty: list[DirtyFile] = []
+    for repository in ticket_repositories(worktree):
+        dirty.extend(
+            DirtyFile(repository.ticket_path(entry.path), entry.status)
+            for entry in check_uncommitted_code_statuses(repository.worktree)
+        )
+    return dirty
+
+
+def _commit_ticket_paths(ctx: TicketContext, paths: list[str], message: str) -> None:
+    """Commit authorized paths in each repository, attempting every repository."""
+    from booley.runtime.git import commit_scope
+    from booley.runtime.ticket_repositories import ticket_repositories
+
+    from .blocking import BlockingError
+
+    assert ctx.worktree_path is not None
+    repositories = ticket_repositories(ctx.worktree_path)
+    project_prefixes = {repo.path_prefix for repo in repositories if repo.path_prefix}
+    failures: list[str] = []
+    for repository in repositories:
+        if repository.path_prefix:
+            selected = [path for path in paths if path.startswith(f"{repository.path_prefix}/")]
+        else:
+            selected = [
+                path
+                for path in paths
+                if not any(path.startswith(f"{prefix}/") for prefix in project_prefixes)
+            ]
+        if not selected:
+            continue
+        local_paths = [repository.local_path(path) for path in selected]
+        try:
+            commit_scope(repository.worktree, local_paths, message, literal=True)
+        except BlockingError as exc:
+            label = repository.path_prefix or "outer repository"
+            failures.append(f"{label}: {exc}")
+    if failures:
+        raise BlockingError("; ".join(failures))
+
+
 def _run_post_guardrails(
     ctx: TicketContext,
     state_path: Path,
@@ -1073,7 +1130,6 @@ def _run_post_guardrails(
     from .colors import yellow
     from .developer_guardrails import (
         GitStatusError,
-        check_uncommitted_code_statuses,
     )
     from .scope_policy import ScopeTier, classify_path, is_restore_artifact
 
@@ -1081,7 +1137,7 @@ def _run_post_guardrails(
     # committed branch history, so commit them before handoff.
     if ctx.worktree_path:
         try:
-            dirty = check_uncommitted_code_statuses(ctx.worktree_path)
+            dirty = _check_ticket_dirty_statuses(ctx.worktree_path)
         except GitStatusError as exc:
             logger.warning("Cannot inspect uncommitted edits for %s: %s", ctx.slug, exc)
             block_ticket(
@@ -1294,13 +1350,10 @@ def _commit_leftover_edits(
     *committable* contains only paths authorized by the ticket Scope. Other
     dirty paths remain in the worktree for explicit triage.
     """
-    from booley.runtime.git import commit_scope
-
     from .blocking import BlockingError
     from .colors import yellow
     from .developer_guardrails import (
         GitStatusError,
-        check_uncommitted_code_statuses,
     )
     from .scope_policy import ScopeTier, classify_path
 
@@ -1309,14 +1362,7 @@ def _commit_leftover_edits(
     )
     terminal.raw(f"  {yellow('LEFTOVER EDITS')} committing {len(committable)} file(s)")
     try:
-        commit_scope(
-            ctx.worktree_path,
-            committable,
-            _leftover_commit_message(ctx, committable),
-            # Real worktree paths, not ticket-authored Scope patterns: a file
-            # legitimately named `rtl/mem[0].sv` must be staged as itself.
-            literal=True,
-        )
+        _commit_ticket_paths(ctx, committable, _leftover_commit_message(ctx, committable))
     except BlockingError as exc:
         logger.warning("Leftover-edit commit failed for %s: %s", ctx.slug, exc)
         block_ticket(
@@ -1329,7 +1375,7 @@ def _commit_leftover_edits(
         return True
 
     try:
-        remaining = check_uncommitted_code_statuses(ctx.worktree_path)
+        remaining = _check_ticket_dirty_statuses(ctx.worktree_path)
     except GitStatusError as exc:
         logger.warning("Cannot recheck leftover edits for %s: %s", ctx.slug, exc)
         block_ticket(
@@ -1714,6 +1760,17 @@ def _resolve_booley_project_dir(project_root: Path) -> Path:
     return project_dir
 
 
+def _ticket_project_dir(ctx: TicketContext) -> Path:
+    """Return ticket-authored project content, falling back to control-plane data."""
+    if ctx.worktree_path is not None:
+        from booley.runtime.ticket_repositories import paired_project_repository
+
+        repository = paired_project_repository(ctx.worktree_path)
+        if repository is not None:
+            return repository.worktree
+    return _resolve_booley_project_dir(ctx.project_root)
+
+
 def _find_hook_script(ctx: TicketContext) -> Path | None:
     """Find post-developer hook script (.sh, .py, or bare) in project hooks dir."""
     hook_dir = _resolve_booley_project_dir(ctx.project_root) / "hooks"
@@ -1741,7 +1798,7 @@ def _build_hook_env(
                 ticket_file = str(candidate_path)
                 break
 
-    project_dir = _resolve_booley_project_dir(ctx.project_root)
+    project_dir = _ticket_project_dir(ctx)
 
     return {
         **os.environ,
@@ -1872,13 +1929,13 @@ async def _launch_developer_agent(
     no runtime mounts, no path remapping. Every path handed to the agent
     (and to the stdio Booley MCP server it spawns) is the Runner's real path.
 
-    Env contract: the BOOLEY_* vars below are EXPORTED into ``os.environ``
-    permanently — the agent CLI and its stdio MCP server inherit the parent
-    environment (Claude directly; Codex via the per-ticket HOME config that
-    bakes the current BOOLEY_* env). We deliberately skip restore-on-exit:
-    this Runner process is dedicated to the ticket, so nothing after the
-    call needs the pre-launch values, and the post-developer hook already
-    re-exports the same vars anyway.
+    Env contract: the BOOLEY_* vars below are EXPORTED into ``os.environ`` so
+    the agent CLI and its stdio MCP server inherit the parent environment
+    (Claude directly; Codex via the per-ticket HOME config that bakes the
+    current BOOLEY_* env). ``BOOLEY_PROJECT_DIR`` is scoped to the backend
+    call: ticket-authored content may come from a paired checkout, while
+    post-agent Ticket Board transitions must return to the control-plane
+    project directory.
     """
     from booley.config.settings import get_backend_config
 
@@ -1906,15 +1963,15 @@ async def _launch_developer_agent(
         "BOOLEY_AGENT_ROLE": "ticket",
     }
     if project_root is not None:
-        endpoint_env["BOOLEY_PROJECT_DIR"] = str(_resolve_booley_project_dir(project_root))
+        from booley.runtime.project_dir import resolve_checkout_project_dir
+
+        endpoint_env["BOOLEY_PROJECT_DIR"] = str(resolve_checkout_project_dir(Path(cwd)))
     if mcp_tools is not None:
         # Explicit MCP-exposure allowlist for the developer's stdio server
         # (mcp_server._explicit_mcp_allowlist). Filters MCP visibility only;
         # nested-agent markers (BOOLEY_NESTED_AGENT) are NOT set here — the
         # developer must see the full specialist surface.
         endpoint_env["BOOLEY_MCP_TOOLS"] = ",".join(mcp_tools)
-    os.environ.update(endpoint_env)
-
     params = AgentCallParams(
         prompt=prompt,
         model=model,
@@ -1936,7 +1993,15 @@ async def _launch_developer_agent(
     backend_kwargs = {"on_event": on_event}
     if developer_budget is not None:
         backend_kwargs["developer_budget"] = developer_budget
-    return await cfg.active_backend.call(params, **backend_kwargs)
+    previous_project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
+    os.environ.update(endpoint_env)
+    try:
+        return await cfg.active_backend.call(params, **backend_kwargs)
+    finally:
+        if previous_project_dir is None:
+            os.environ.pop("BOOLEY_PROJECT_DIR", None)
+        else:
+            os.environ["BOOLEY_PROJECT_DIR"] = previous_project_dir
 
 
 def _is_pid_alive(pid: int) -> bool:

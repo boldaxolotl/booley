@@ -2968,31 +2968,43 @@ def _mcp_tool_timeout_seconds(
 
     name = canonical(name)
     default = int(mcp_tool_def.get("default_timeout") or 600)
-    if name == "synth":
-        # Synth's public timeout is PER TARGET, while this watchdog owns the
-        # whole sequential matrix.  A fixed 7200s cap discarded completed
-        # targets from nine-target runs.  Budget every selected target (and
-        # both baseline/current passes) plus configure/finalize headroom.
+    if name in {"synth", "fpga"}:
+        # Implementation-flow public timeouts are PER TARGET, while this
+        # watchdog owns the whole sequential matrix. Budget every selected
+        # target and both baseline/current passes, plus orchestration headroom.
         from booley.flows.flow_config import resolve_flow_default_target
-        from booley.flows.synth.flow import _resolve_synth_timeout_ms
+
+        if name == "synth":
+            from booley.flows.synth.flow import _resolve_synth_timeout_ms
+
+            timeout_resolver = _resolve_synth_timeout_ms
+            criterion_prefix = "synthesis_ok_"
+        else:
+            from booley.flows.fpga.flow import _resolve_fpga_timeout_ms
+
+            timeout_resolver = _resolve_fpga_timeout_ms
+            criterion_prefix = "fpga_impl_ok_"
 
         work_dir_raw = arguments.get("work_dir")
         work_dir = Path(work_dir_raw) if work_dir_raw else None
         try:
             per_target_s = max(
                 1,
-                _resolve_synth_timeout_ms(work_dir, arguments.get("timeout")) // 1000,
+                timeout_resolver(work_dir, arguments.get("timeout")) // 1000,
             )
         except Exception:  # noqa: BLE001 — malformed config is graded by the child
             return default
         raw_target = str(arguments.get("target") or "").strip()
         if not raw_target and work_dir is not None:
             try:
-                raw_target = resolve_flow_default_target("synth", work_dir)
+                raw_target = resolve_flow_default_target(name, work_dir)
             except Exception:  # noqa: BLE001 — child owns the actionable config error
                 raw_target = ""
         target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
-        pass_count = target_count * (2 if arguments.get("baseline") else 1)
+        has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(
+            criterion_prefix
+        )
+        pass_count = target_count * (2 if has_baseline else 1)
         setup_margin_s = 60 * pass_count
         finalize_margin_s = 120
         return max(
@@ -3003,6 +3015,29 @@ def _mcp_tool_timeout_seconds(
     if name != "sim":
         return default
     return _sim_mcp_tool_timeout_seconds(arguments, default)
+
+
+def _ticket_baseline_required(criterion_prefix: str) -> bool:
+    """Whether persisted criteria will auto-enable an implementation baseline."""
+    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+
+    state_path = os.environ.get("BOOLEY_STATE_FILE")
+    if not state_path:
+        return False
+    try:
+        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    criteria = state.get("criteria") if isinstance(state, dict) else None
+    if not isinstance(criteria, dict):
+        return False
+    return any(
+        isinstance(entry, dict)
+        and isinstance(entry.get("params"), dict)
+        and bool(entry["params"].get(BASELINE_REF_PARAM))
+        for name, entry in criteria.items()
+        if name.startswith(criterion_prefix)
+    )
 
 
 async def _dispatch_special_mcp_tool(

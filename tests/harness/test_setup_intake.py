@@ -67,6 +67,63 @@ class TestReturnValue:
         assert result.slug == sample_ticket.stem
 
 
+def test_fpga_relative_criterion_freezes_recipe_and_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FPGA QoR intake pins the same revision-owned evidence as synthesis."""
+    from booley.flows.recipe_evidence import (
+        BASELINE_REF_PARAM,
+        RECIPE_FINGERPRINT_PARAM,
+        RECIPE_SNAPSHOT_PARAM,
+    )
+    from booley.fusesoc import fusesoc_registry
+    from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
+    from booley.harness.setup.intake import _freeze_fpga_recipe_fingerprints
+
+    xdc = tmp_path / "timing.xdc"
+    xdc.write_text("create_clock -period 10 [get_ports clk]\n", encoding="utf-8")
+    resolved = ResolvedTarget(
+        name="fpga_core",
+        vlnv="::core:0",
+        toplevel="top",
+        eda_tool="vivado",
+        files=(ResolvedFile(name="timing.xdc", file_type="xdc"),),
+        parameters={},
+        build_root=tmp_path,
+        edam_path=tmp_path / "core.eda.yml",
+        flow_options={"tool": "vivado", "part": "xc7a35tcpg236-1"},
+    )
+    monkeypatch.setattr(fusesoc_registry, "resolve_ref", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        fusesoc_registry,
+        "resolve_target",
+        lambda *_args, **_kwargs: resolved,
+    )
+    ctx = TicketContext(
+        slug="fpga-qor",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="feature",
+        branch="main",
+        summary="FPGA QoR",
+        project_root=tmp_path,
+        worktree_path=tmp_path,
+        base_sha="a" * 40,
+    )
+    params = {"fpga_impl_ok_fpga_core": {"lut_count_increase_at_most": 10}}
+
+    _freeze_fpga_recipe_fingerprints(
+        ctx,
+        {"fpga_impl_ok_fpga_core": True},
+        params,
+    )
+
+    frozen = params["fpga_impl_ok_fpga_core"]
+    assert frozen[BASELINE_REF_PARAM] == "a" * 40
+    assert frozen[RECIPE_FINGERPRINT_PARAM]
+    assert frozen[RECIPE_SNAPSHOT_PARAM]["flow_options"]["part"] == "xc7a35tcpg236-1"
+
+
 # ---------------------------------------------------------------------------
 # Resume action dispatch
 # ---------------------------------------------------------------------------

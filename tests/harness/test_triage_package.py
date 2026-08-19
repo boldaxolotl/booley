@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.harness import triage_package as tp
@@ -21,6 +21,7 @@ class Context:
     base_sha: str
     head_sha: str
     feature_branch: str = "demo"
+    project_repository: object | None = None
 
 
 def _git(root: Path, *args: str) -> str:
@@ -109,6 +110,137 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     assert change["path"] == "rtl/new.sv"
     assert Path(change["diff_left"]).read_text(encoding="utf-8").startswith("module old")
     assert Path(change["diff_right"]).read_text(encoding="utf-8").startswith("module new")
+
+
+def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    project = ctx.worktree / ".booley_project"
+    project.mkdir()
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.com")
+    core = project / "cores" / "demo.core"
+    core.parent.mkdir()
+    core.write_text("name: ::demo:0\n", encoding="utf-8")
+    _git(project, "add", ".")
+    _git(project, "commit", "-qm", "project base")
+    base = _git(project, "rev-parse", "HEAD")
+    core.write_text("name: ::demo:1\n", encoding="utf-8")
+    _git(project, "commit", "-qam", "update project core")
+    head = _git(project, "rev-parse", "HEAD")
+    project_repository = type(
+        "ProjectRepository",
+        (),
+        {"worktree": project, "base_sha": base, "head_sha": head},
+    )()
+    ctx = replace(ctx, project_repository=project_repository)
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+
+    assert facts["commits"][-1]["repository"] == "project"
+    assert facts["commits"][-1]["subject"] == "update project core"
+    project_change = facts["changed_files"][-1]
+    assert project_change["repository"] == "project"
+    assert project_change["path"] == ".booley_project/cores/demo.core"
+    assert Path(project_change["diff_left"]).read_text(encoding="utf-8") == ("name: ::demo:0\n")
+    assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == ("name: ::demo:1\n")
+
+
+def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["synthesis_ok_core"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "cells": 90,
+            "recipe_comparison": {
+                "target": "synth_core",
+                "baseline_ref": "a" * 40,
+                "baseline_fingerprint": "b" * 64,
+                "current_fingerprint": "c" * 64,
+                "changed": True,
+                "changes": [
+                    {
+                        "path": "parameters.ENABLE_ZBB",
+                        "before": 0,
+                        "after": 1,
+                    }
+                ],
+            },
+            "checks": [
+                {
+                    "param": "cell_count_increase_at_most",
+                    "pass": True,
+                    "baseline": 85,
+                    "current": 90,
+                    "pct": 5.88,
+                    "threshold": 11,
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+
+    assert facts["recipe_comparisons"][0]["target"] == "synth_core"
+    assert "#### Implementation Target recipes" in rendered
+    assert "parameters.ENABLE_ZBB" in rendered
+    assert "cell_count_increase_at_most" in rendered
+
+
+def test_review_facts_and_briefing_reveal_fpga_recipe_changes(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["fpga_impl_ok_core"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "recipe_comparison": {
+                "flow": "fpga",
+                "target": "fpga_core",
+                "baseline_fingerprint": "b" * 64,
+                "current_fingerprint": "c" * 64,
+                "changed": True,
+                "changes": [
+                    {
+                        "path": "flow_options.part",
+                        "before": "xc7a35t",
+                        "after": "xc7a200t",
+                    }
+                ],
+            },
+            "checks": [
+                {
+                    "param": "lut_count_increase_at_most",
+                    "pass": True,
+                    "baseline": 100,
+                    "current": 105,
+                    "pct": 5.0,
+                    "threshold": 10,
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+
+    comparison = next(row for row in facts["recipe_comparisons"] if row["flow"] == "fpga")
+    assert comparison["target"] == "fpga_core"
+    assert "`fpga:fpga_core`" in rendered
+    assert "flow_options.part" in rendered
+    assert "lut_count_increase_at_most" in rendered
 
 
 def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, monkeypatch):

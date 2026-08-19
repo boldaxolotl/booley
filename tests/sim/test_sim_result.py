@@ -260,6 +260,11 @@ class TestWriteRunLog:
         # ... and starts on a clean line boundary, not mid-line.
         assert body.splitlines()[0].startswith("line ")
 
+    def test_none_cap_preserves_unabridged_output(self, tmp_path):
+        text = "complete simulator evidence\n"
+        sr.write_run_log(tmp_path, text, max_bytes=None)
+        assert (tmp_path / "run.log").read_text(encoding="utf-8") == text
+
     def test_overwrites_previous_log(self, tmp_path):
         sr.write_run_log(tmp_path, "first run")
         sr.write_run_log(tmp_path, "second run")

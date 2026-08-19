@@ -555,7 +555,7 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _do_merge(slug, entry, *, cleanup: bool = True):
+def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = None):
     """Perform the merge step of op_complete. Returns True on success.
 
     ``merge_into`` is usually the branch checked out in the primary worktree
@@ -584,6 +584,17 @@ def _do_merge(slug, entry, *, cleanup: bool = True):
 
     merge_msg = f"merge({slug}): {'integration' if is_integration else 'feature'} completed"
 
+    if not _merge_outer_repository(merge_into, merge_from, merge_msg):
+        return False
+    if project_root is not None and not _merge_project_repository(project_root, slug, merge_msg):
+        return False
+
+    # Both merges landed — now it is safe to drop the ticket worktrees and branches.
+    return not cleanup or _cleanup_merged_branches(project_root, slug, merge_from)
+
+
+def _merge_outer_repository(merge_into: str, merge_from: str, merge_msg: str) -> bool:
+    """Merge the RTL feature branch in an existing or temporary checkout."""
     checkout = find_checkout_of_branch(merge_into)
     if checkout:
         # Merge in the existing checkout. Git itself refuses to clobber
@@ -611,29 +622,54 @@ def _do_merge(slug, entry, *, cleanup: bool = True):
         if not ok:
             print(f"Error: merge failed: {err}", file=sys.stderr)
             return False
+    return True
 
-    # Merge landed — now it is safe to drop the ticket worktree and branch.
-    if cleanup:
+
+def _merge_project_repository(project_root: Path, slug: str, message: str) -> bool:
+    from .project_git_ops import merge_project_ticket_branch
+
+    ok, err = merge_project_ticket_branch(project_root, slug, message)
+    if not ok:
+        print(f"Error: project repository merge failed: {err}", file=sys.stderr)
+    return ok
+
+
+def _cleanup_merged_branches(project_root: Path | None, slug: str, merge_from: str) -> bool:
+    if project_root is not None:
+        from .project_git_ops import cleanup_project_ticket_branch
+
+        if not cleanup_project_ticket_branch(project_root, slug):
+            print("Error: project repository cleanup failed", file=sys.stderr)
+            return False
+    if merge_from:
         remove_worktree_for_branch(merge_from)
         prune_worktrees()
         # The merge may have landed in an integration branch other than the
         # caller's current HEAD.  A plain `git branch -d` checks only HEAD and
         # therefore rejects a branch that we just proved was merged above.
-        delete_branch(merge_from, force=True)
+        if not delete_branch(merge_from, force=True):
+            print(f"Error: could not delete merged branch '{merge_from}'", file=sys.stderr)
+            return False
     return True
 
 
-def _do_cleanup(entry, on_success):
+def _do_cleanup(slug: str, entry: dict, on_success: OnSuccess, project_root: Path) -> bool:
     """Perform the cleanup step of op_complete."""
+    from .project_git_ops import cleanup_project_ticket_branch
+
+    if not cleanup_project_ticket_branch(project_root, slug):
+        return False
     fb = entry.get("feature_branch", "") or entry.get("branch", "")
     if not fb:
-        return
+        return True
     wt_path = find_worktree_for_branch(fb)
     if wt_path:
         remove_worktree(wt_path)
         prune_worktrees()
-    if not on_success.merge and entry.get("feature_branch", ""):
-        delete_branch(entry["feature_branch"], force=True)
+    feature_branch = entry.get("feature_branch", "")
+    if on_success.merge or not feature_branch:
+        return True
+    return delete_branch(feature_branch, force=True)
 
 
 def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> OnSuccess:
@@ -679,6 +715,9 @@ def op_complete(
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
+    # ``feature_branch`` is an accepted lookup alias, but all runtime paths and
+    # paired repository branches are keyed by the ticket filename stem.
+    slug = Path(str(entry["file"])).stem
 
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
 
@@ -693,15 +732,25 @@ def op_complete(
     # Merge FIRST: the review->done transition must only be recorded once the
     # terminal actions have actually succeeded. Approving before merging left
     # tickets marked done with their fix stranded on an unmerged branch (F-16b).
-    if on_success.merge and not _do_merge(slug, entry, cleanup=on_success.cleanup):
+    if on_success.merge and not _do_merge(
+        slug,
+        entry,
+        cleanup=on_success.cleanup,
+        project_root=tio._project_root,
+    ):
         print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
+        return False
+
+    if (
+        on_success.cleanup
+        and not on_success.merge
+        and not _do_cleanup(slug, entry, on_success, tio._project_root)
+    ):
+        print(f"Error: cleanup failed for '{slug}'; ticket stays in review", file=sys.stderr)
         return False
 
     if not op_approve(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
-
-    if on_success.cleanup:
-        _do_cleanup(entry, on_success)
 
     # The worktree is gone by now (cleanup removed it, whether from the merge
     # step or the cleanup step), so the creation locks it left behind can go
@@ -964,16 +1013,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
                 file=sys.stderr,
             )
             return False
-        feature_branch = entry.get("feature_branch", "")
-        # Full reset explicitly promises to discard the ticket branch. A
-        # non-forced delete leaves every implemented ticket unreset because
-        # its feature branch is intentionally not merged yet.
-        if feature_branch and not cleanup_worktree_and_branch(feature_branch, force=True):
-            print(
-                f"Error: reset could not delete feature branch '{feature_branch}'. "
-                "Ticket was not moved to queue.",
-                file=sys.stderr,
-            )
+        if not _cleanup_reset_branches(tio._project_root, slug, entry.get("feature_branch", "")):
             return False
 
         if not _move_to_queue(tio, file_path):
@@ -987,6 +1027,25 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
             "user reset ticket",
         )
 
+    return True
+
+
+def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) -> bool:
+    """Discard both repositories' ticket branches during a full reset."""
+    from .project_git_ops import cleanup_project_ticket_branch
+
+    if not cleanup_project_ticket_branch(project_root, slug):
+        print(
+            f"Error: reset could not delete project repository branch for '{slug}'.",
+            file=sys.stderr,
+        )
+        return False
+    if feature_branch and not cleanup_worktree_and_branch(feature_branch, force=True):
+        print(
+            f"Error: reset could not delete feature branch '{feature_branch}'.",
+            file=sys.stderr,
+        )
+        return False
     return True
 
 

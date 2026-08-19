@@ -492,7 +492,11 @@ def write_run_log_progress(
     return path
 
 
-def write_run_log(work_dir: str | Path, text: str, max_bytes: int = 10_000_000) -> Path:
+def write_run_log(
+    work_dir: str | Path,
+    text: str,
+    max_bytes: int | None = 10_000_000,
+) -> Path:
     """Persist the raw simulator output to ``<work_dir>/run.log``.
 
     Companion to :func:`write_result_json`, written into the same directory:
@@ -504,8 +508,9 @@ def write_run_log(work_dir: str | Path, text: str, max_bytes: int = 10_000_000) 
     Oversized output keeps the TAIL (that is where the verdict sentinel,
     assertion failures and ``$fatal`` wording live) and prepends a one-line
     truncation marker recording the original size; the written file never
-    exceeds *max_bytes*. The write is atomic (PID-suffixed tmp + rename, the
-    ``_job_records`` idiom) so a concurrent reader never sees a torn log.
+    exceeds *max_bytes*. Pass ``None`` when the caller's contract requires an
+    unabridged archival copy. The write is atomic (PID-suffixed tmp + rename,
+    the ``_job_records`` idiom) so a concurrent reader never sees a torn log.
 
     An existing :func:`begin_run_log` header is carried over verbatim — the
     run-halves write this file from their own child process and know nothing
@@ -520,7 +525,15 @@ def write_run_log(work_dir: str | Path, text: str, max_bytes: int = 10_000_000) 
     # errors="replace" upstream, but a TB can still smuggle lone surrogates
     # through — never let an encode error lose the whole log.
     body = text.encode("utf-8", errors="replace")
-    data = header + _cap_log_bytes(body, max(0, max_bytes - len(header)))
+    data = (
+        header + body
+        if max_bytes is None
+        else header
+        + _cap_log_bytes(
+            body,
+            max(0, max_bytes - len(header)),
+        )
+    )
     _atomic_write(path, data)
     return path
 

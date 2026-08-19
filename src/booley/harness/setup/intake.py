@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,7 @@ def _build_context(
         on_success=OnSuccess.from_dict(fields.get("on_success")),
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
+        base_sha=fields.get("base_sha", ""),
         feature_branch=fields.get("feature_branch", ""),
         completed_steps=fields.get("steps_completed", []),
         current_step=fields.get("stage", ""),
@@ -380,6 +382,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
+    _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
 
     # Migration: reject retired criterion keys by name. This has to hard-error --
     # an unrecognized key is otherwise created as *optional* (development_state),
@@ -434,59 +437,157 @@ def _freeze_synthesis_recipe_fingerprints(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Freeze each synthesis criterion's normalized Target recipe at intake."""
-    synth_keys = [key for key in expanded if key.startswith("synthesis_ok_")]
-    if not synth_keys:
-        return
+    from booley.flows.synth.recipe import default_recipe_args, synthesis_recipe_snapshot
 
-    from booley.core.boundary import BoundaryError
-    from booley.flows.synth.recipe import (
-        RECIPE_FINGERPRINT_PARAM,
-        default_recipe_args,
-        synthesis_recipe_fingerprint,
+    _freeze_recipe_family(
+        ctx,
+        expanded,
+        criterion_params,
+        prefix="synthesis_ok_",
+        flow_label="Synthesis",
+        snapshot_builder=lambda resolved, target: synthesis_recipe_snapshot(
+            resolved,
+            default_recipe_args(),
+            target=target,
+        ),
     )
-    from booley.fusesoc import fusesoc_registry
 
-    recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze"
-    for key in synth_keys:
-        target = key.removeprefix("synthesis_ok_")
+
+def _freeze_fpga_recipe_fingerprints(
+    ctx: TicketContext,
+    expanded: dict[str, bool],
+    criterion_params: dict[str, dict[str, Any]],
+) -> None:
+    """Freeze each FPGA criterion's normalized Target recipe at intake."""
+    from booley.flows.fpga.recipe import fpga_recipe_snapshot
+
+    _freeze_recipe_family(
+        ctx,
+        expanded,
+        criterion_params,
+        prefix="fpga_impl_ok_",
+        flow_label="FPGA implementation",
+        snapshot_builder=lambda resolved, target: fpga_recipe_snapshot(
+            resolved,
+            target=target,
+        ),
+    )
+
+
+def _freeze_recipe_family(
+    ctx: TicketContext,
+    expanded: dict[str, bool],
+    criterion_params: dict[str, dict[str, Any]],
+    *,
+    prefix: str,
+    flow_label: str,
+    snapshot_builder: Callable[[Any, str], dict[str, Any]],
+) -> None:
+    """Freeze one implementation criterion family's revision-owned recipes."""
+    from booley.flows.recipe_evidence import (
+        RECIPE_FINGERPRINT_PARAM,
+        RECIPE_SNAPSHOT_PARAM,
+        recipe_snapshot_fingerprint,
+    )
+
+    keys = [key for key in expanded if key.startswith(prefix)]
+    recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze" / prefix.rstrip("_")
+    for key in keys:
+        target = key.removeprefix(prefix)
+        params = criterion_params.setdefault(key, {})
+        needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
         build_root = recipe_root / target
         shutil.rmtree(build_root, ignore_errors=True)
-        try:
-            fusesoc_registry.resolve_ref(ctx.work_dir, target)
-        except fusesoc_registry.UnknownTargetError:
-            # A ticket may introduce the Target named by its own acceptance
-            # criterion. There is no pre-change recipe to pin in that case;
-            # the synthesis Flow will resolve and validate the Target after the
-            # developer authors it. Existing Targets still keep the anti-drift
-            # snapshot below, and every other registry failure remains fatal.
-            logger.info(
-                "Synthesis Target %r is not authored at ticket intake; "
-                "deferring validation until synthesis Flow execution",
-                target,
-            )
+        snapshot = _snapshot_intake_recipe(
+            ctx,
+            key,
+            target,
+            build_root,
+            needs_baseline,
+            flow_label,
+            snapshot_builder,
+        )
+        if snapshot is None:
             continue
-        except fusesoc_registry.FuseSocError as exc:
+        params[RECIPE_FINGERPRINT_PARAM] = recipe_snapshot_fingerprint(snapshot)
+        params[RECIPE_SNAPSHOT_PARAM] = snapshot
+
+
+def _pin_recipe_baseline(
+    ctx: TicketContext,
+    key: str,
+    params: dict[str, Any],
+    flow_label: str,
+) -> bool:
+    """Pin relative recipe evidence to the ticket baseline, returning whether needed."""
+    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+
+    needs_baseline = _has_relative_threshold(params)
+    if needs_baseline and not ctx.base_sha:
+        raise FatalError(
+            f"{flow_label} criterion {key!r} requires a baseline-relative "
+            "threshold, but the ticket has no base_sha",
+            slug=ctx.slug,
+        )
+    if needs_baseline:
+        params[BASELINE_REF_PARAM] = ctx.base_sha
+    return needs_baseline
+
+
+def _snapshot_intake_recipe(
+    ctx: TicketContext,
+    key: str,
+    target: str,
+    build_root: Path,
+    needs_baseline: bool,
+    flow_label: str,
+    snapshot_builder: Callable[[Any, str], dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Resolve one intake Target and return its normalized recipe when it exists."""
+    from booley.core.boundary import BoundaryError
+    from booley.fusesoc import fusesoc_registry
+
+    try:
+        fusesoc_registry.resolve_ref(ctx.work_dir, target)
+    except fusesoc_registry.UnknownTargetError:
+        if needs_baseline:
             raise FatalError(
-                f"Cannot freeze synthesis recipe for Target {target!r}: {exc}",
+                f"{flow_label} criterion {key!r} requires baseline metrics, but "
+                f"Target {target!r} does not exist at ticket intake",
                 slug=ctx.slug,
-            ) from exc
-        try:
-            resolved = fusesoc_registry.resolve_target(
-                target,
-                project_root=ctx.work_dir,
-                build_root=build_root,
-            )
-            fingerprint = synthesis_recipe_fingerprint(
-                resolved,
-                default_recipe_args(),
-                target=target,
-            )
-        except (fusesoc_registry.TargetResolutionError, BoundaryError, OSError) as exc:
-            raise FatalError(
-                f"Cannot freeze synthesis recipe for Target {target!r}: {exc}",
-                slug=ctx.slug,
-            ) from exc
-        criterion_params.setdefault(key, {})[RECIPE_FINGERPRINT_PARAM] = fingerprint
+            ) from None
+        logger.info(
+            "%s Target %r is not authored at ticket intake; deferring validation",
+            flow_label,
+            target,
+        )
+        return None
+    except fusesoc_registry.FuseSocError as exc:
+        raise FatalError(
+            f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
+            slug=ctx.slug,
+        ) from exc
+    try:
+        resolved = fusesoc_registry.resolve_target(
+            target,
+            project_root=ctx.work_dir,
+            build_root=build_root,
+        )
+        return snapshot_builder(resolved, target)
+    except (fusesoc_registry.TargetResolutionError, BoundaryError, OSError) as exc:
+        raise FatalError(
+            f"Cannot freeze {flow_label.lower()} recipe for Target {target!r}: {exc}",
+            slug=ctx.slug,
+        ) from exc
+
+
+def _has_relative_threshold(params: dict[str, Any]) -> bool:
+    """Whether criterion params require baseline metrics."""
+    return any(
+        key.endswith(("_increase_at_most", "_reduce_at_least"))
+        for key in params
+        if not key.startswith("_")
+    )
 
 
 def _criteria_state_needs_reinit(ctx: TicketContext) -> bool:

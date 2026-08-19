@@ -148,6 +148,8 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
 
+In Ticket Mode, synthesis and FPGA implementation recipes are revision-owned by default; there is no ticket field for declaring whether a recipe may change. Intake snapshots each existing Target's normalized recipe. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion then automatically runs `base_sha` with that revision's Target recipe and the ticket head with the current recipe. Recipe changes are allowed and shown with the QoR deltas in the Review package. Missing or mismatched baseline evidence fails the criterion instead of skipping its relative checks.
+
 **`synthesis_ok` (ASIC)**
 
 | Metric | _max | _min | _increase_at_most | _reduce_at_least |

@@ -172,6 +172,42 @@ def test_stealth_cores_copied_into_worktree(tmp_path: Path) -> None:
     assert (stealth / "top.core").is_file()
 
 
+def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
+    """A ticket's paired project repo contributes its old Target definition."""
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _init_repo(outer)
+    (outer / ".git" / "info" / "exclude").write_text(
+        "/.booley_project\n",
+        encoding="utf-8",
+    )
+
+    project = outer / ".booley_project"
+    (project / "cores").mkdir(parents=True)
+    _git(project, "init", "-q")
+    _git(project, "config", "user.email", "t@example.com")
+    _git(project, "config", "user.name", "Test")
+    (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
+    core = project / "cores" / "top.core"
+    core.write_text("recipe: baseline\n", encoding="utf-8")
+    _commit_all(project, "project baseline")
+
+    ticket = project / "worktrees" / "ticket"
+    _git(outer, "worktree", "add", "-b", "ticket", str(ticket), "HEAD")
+    paired = ticket / ".booley_project"
+    _git(project, "worktree", "add", "-b", "booley-ticket/ticket", str(paired), "master")
+    _git(paired, "branch", "--set-upstream-to=master")
+    (paired / "cores" / "top.core").write_text("recipe: current\n", encoding="utf-8")
+    _commit_all(paired, "change target recipe")
+
+    with baseline_worktree(ticket, "HEAD") as baseline:
+        frozen = baseline / ".booley_project" / "cores" / "top.core"
+        assert frozen.read_text(encoding="utf-8") == "recipe: baseline\n"
+        assert (baseline / ".booley_project" / ".git").is_file()
+
+    assert (paired / "cores" / "top.core").read_text(encoding="utf-8") == "recipe: current\n"
+
+
 def _stealth_core_linking_to_rtl(repo: Path, link_name: str = "rtl") -> Path:
     """A stealth core dir whose fileset reaches repo-root ``rtl/`` via a
     core-relative resolution link (ADR 0036). Returns the link path."""

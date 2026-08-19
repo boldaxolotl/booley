@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import stat
@@ -15,8 +16,15 @@ _SANDBOX_WORKTREE = Path("/work")
 class WorktreeLineCounter:
     """Return the current text-line delta from a ticket's fork base."""
 
-    def __init__(self, worktree: Path, base_ref: str) -> None:
-        self._worktree = worktree
+    def __init__(
+        self,
+        worktree: Path,
+        base_ref: str,
+        *,
+        reported_root: Path | None = None,
+    ) -> None:
+        self._worktree = worktree.resolve()
+        self._reported_root = reported_root.resolve() if reported_root is not None else None
         self._base_sha = self._resolve_base(base_ref)
 
     def snapshot(self) -> tuple[int, int] | None:
@@ -56,16 +64,21 @@ class WorktreeLineCounter:
             # not a path in the native Windows worktree.
             return None
         path = Path(raw_path)
+        if ".." in path.parts:
+            return None
         try:
             if path.is_absolute():
                 try:
                     path = path.relative_to(self._worktree)
                 except ValueError:
                     path = path.relative_to(_SANDBOX_WORKTREE)
+            elif self._reported_root is not None:
+                with contextlib.suppress(ValueError):
+                    path = (self._reported_root / path).resolve().relative_to(self._worktree)
             normalized = Path(path).as_posix()
         except (TypeError, ValueError):
             return None
-        if normalized in ("", ".") or ".." in path.parts:
+        if normalized in ("", "."):
             return None
         return normalized.removeprefix("./")
 

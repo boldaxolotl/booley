@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -520,6 +521,58 @@ class TestMcpToolTimeoutSeconds:
             {"default_timeout": 600},
         )
         assert timeout == 4 * 4000 + 4 * 60 + 120
+
+    def test_synth_ticket_baseline_budgets_both_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        state = tmp_path / "state.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "criteria": {
+                        "synthesis_ok_core": {
+                            "params": {"_baseline_ref": "a" * 40},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
+
+        timeout = self._mcp_tool_timeout_seconds(
+            "synth",
+            {"target": "core", "timeout": 4_000_000},
+            {"default_timeout": 600},
+        )
+
+        assert timeout == 2 * 4000 + 2 * 60 + 120
+
+    def test_fpga_ticket_baseline_budgets_both_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        state = tmp_path / "state.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "criteria": {
+                        "fpga_impl_ok_core": {
+                            "params": {"_baseline_ref": "a" * 40},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
+
+        timeout = self._mcp_tool_timeout_seconds(
+            "fpga",
+            {"target": "core", "timeout": 4_000_000},
+            {"default_timeout": 7200},
+        )
+
+        assert timeout == 2 * 4000 + 2 * 60 + 120
 
     def test_simulate_no_timeout_arg_honors_config_knob(self, tmp_path: Path):
         """F4: with no --timeout arg the watchdog honors [flows.sim].timeout_ms.

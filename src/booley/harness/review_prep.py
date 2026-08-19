@@ -28,6 +28,10 @@ from booley.core.models import AgentCallParams, AgentResult
 from booley.dev_support.development_state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.paths import skills_dir
+from booley.runtime.ticket_repositories import (
+    paired_project_repository,
+    project_repository_expected,
+)
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
@@ -92,6 +96,16 @@ class ReviewPrepConcurrentChangeError(ReviewPrepError):
 
 
 @dataclass(frozen=True)
+class ProjectReviewRepository:
+    """Immutable revision pair for the ticket's nested project repository."""
+
+    worktree: Path
+    base_sha: str
+    head_sha: str
+    feature_branch: str
+
+
+@dataclass(frozen=True)
 class ReviewPrepContext:
     """Resolved immutable inputs for one HTML-explanation generation."""
 
@@ -105,6 +119,7 @@ class ReviewPrepContext:
     head_sha: str
     feature_branch: str
     triage_report_enabled: bool = True
+    project_repository: ProjectReviewRepository | None = None
 
 
 @dataclass(frozen=True)
@@ -219,6 +234,7 @@ def _resolve_context(
     entry = tio.find_ticket(slug)
     if not entry:
         raise ReviewPrepError(f"ticket '{slug}' was not found")
+    slug = Path(str(entry["file"])).stem
     allowed_statuses = (
         {"review", "blocked"}
         if require_review
@@ -244,6 +260,7 @@ def _resolve_context(
     worktree = Path(checkout).resolve()
     head_sha = _git(worktree, "rev-parse", "HEAD").strip()
     base_sha = _resolve_base_sha(worktree, entry, head_sha)
+    project_repository = _resolve_project_review_repository(worktree, slug)
     return ReviewPrepContext(
         project_root=project_root,
         slug=slug,
@@ -255,7 +272,28 @@ def _resolve_context(
         head_sha=head_sha,
         feature_branch=feature_branch,
         triage_report_enabled=report_enabled,
+        project_repository=project_repository,
     )
+
+
+def _resolve_project_review_repository(
+    worktree: Path, slug: str
+) -> ProjectReviewRepository | None:
+    repository = paired_project_repository(worktree)
+    if repository is None:
+        if project_repository_expected(worktree):
+            raise ReviewPrepError("configured project repository has no paired ticket checkout")
+        return None
+    feature_branch = _git(repository.worktree, "branch", "--show-current").strip()
+    expected = f"booley-ticket/{slug}"
+    if feature_branch != expected:
+        raise ReviewPrepError(
+            f"paired project checkout uses branch {feature_branch!r}, expected {expected!r}"
+        )
+    head_sha = _git(repository.worktree, "rev-parse", "HEAD").strip()
+    upstream = _git(repository.worktree, "rev-parse", "@{upstream}").strip()
+    base_sha = _git(repository.worktree, "merge-base", upstream, head_sha).strip()
+    return ProjectReviewRepository(repository.worktree, base_sha, head_sha, feature_branch)
 
 
 def _prompt_text() -> str:
@@ -340,6 +378,19 @@ def _source_fingerprint(ctx: ReviewPrepContext) -> str:
         "--untracked-files=all",
     )
     digest.update(status.encode("utf-8"))
+    if ctx.project_repository is not None:
+        project = ctx.project_repository
+        digest.update(project.base_sha.encode("ascii"))
+        digest.update(project.head_sha.encode("ascii"))
+        digest.update(
+            _git(
+                project.worktree,
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ).encode("utf-8")
+        )
     for label, path in _source_paths(ctx):
         digest.update(label.encode("utf-8"))
         digest.update(b"\0")
@@ -390,7 +441,7 @@ def _fresh_outcome(
 def _base_manifest(
     ctx: ReviewPrepContext, prompt_sha: str, source_sha: str, status: str
 ) -> dict[str, Any]:
-    return {
+    manifest = {
         "version": _PROMPT_VERSION,
         "status": status,
         "slug": ctx.slug,
@@ -401,6 +452,10 @@ def _base_manifest(
         "source_sha256": source_sha,
         "updated_at": utc_now_rfc3339(),
     }
+    if ctx.project_repository is not None:
+        manifest["project_base_sha"] = ctx.project_repository.base_sha
+        manifest["project_head_sha"] = ctx.project_repository.head_sha
+    return manifest
 
 
 def _collect_git_evidence(ctx: ReviewPrepContext) -> dict[str, Path]:
@@ -417,6 +472,40 @@ def _collect_git_evidence(ctx: ReviewPrepContext) -> dict[str, Path]:
     _atomic_write(paths["commits"], _git(ctx.worktree, "log", revision, "--format=- %h %s"))
     _atomic_write(paths["files"], _git(ctx.worktree, "diff", "--name-status", revision))
     _atomic_write(paths["status"], _git(ctx.worktree, "status", "--short"))
+    if ctx.project_repository is not None:
+        project = ctx.project_repository
+        project_revision = f"{project.base_sha}..{project.head_sha}"
+        _atomic_write(
+            paths["diff"],
+            paths["diff"].read_text(encoding="utf-8")
+            + "\n\n# .booley_project repository\n"
+            + _git(project.worktree, "diff", "--no-color", project_revision),
+        )
+        _atomic_write(
+            paths["commits"],
+            paths["commits"].read_text(encoding="utf-8")
+            + "\n# .booley_project repository\n"
+            + _git(project.worktree, "log", project_revision, "--format=- %h %s"),
+        )
+        project_files = _git(project.worktree, "diff", "--name-status", project_revision)
+        prefixed_files = "\n".join(
+            "\t".join([columns[0], *(f".booley_project/{path}" for path in columns[1:])])
+            for line in project_files.splitlines()
+            if len(columns := line.split("\t")) > 1
+        )
+        _atomic_write(
+            paths["files"],
+            paths["files"].read_text(encoding="utf-8") + "\n" + prefixed_files,
+        )
+        project_status = _git(project.worktree, "status", "--short")
+        _atomic_write(
+            paths["status"],
+            paths["status"].read_text(encoding="utf-8")
+            + "\n"
+            + "\n".join(
+                f"{line[:3]}.booley_project/{line[3:]}" for line in project_status.splitlines()
+            ),
+        )
     return paths
 
 
@@ -513,6 +602,16 @@ def _agent_workspace(
             ctx.head_sha,
         )
         _extract_repository_snapshot(archive_path, repository)
+        if ctx.project_repository is not None:
+            project_archive = root / "project-source.tar"
+            _git(
+                ctx.project_repository.worktree,
+                "archive",
+                "--format=tar",
+                f"--output={project_archive}",
+                ctx.project_repository.head_sha,
+            )
+            _extract_repository_snapshot(project_archive, repository / ".booley_project")
 
         input_dir = root / "review-input"
         copied: dict[str, Path] = {}

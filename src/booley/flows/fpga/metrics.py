@@ -50,6 +50,9 @@ class FpgaMetrics:
     # ``impl``, ``synth``). The report names directories, not a file inventory
     # — see :mod:`booley.flows.artifacts`.
     dirs: dict[str, str] = field(default_factory=dict)
+    #: Normalized Target recipe used for this exact implementation run.
+    recipe_snapshot: dict[str, Any] = field(default_factory=dict)
+    recipe_fingerprint: str = ""
 
     @property
     def has_primary_metrics(self) -> bool:

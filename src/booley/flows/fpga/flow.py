@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -43,9 +43,22 @@ from booley.targets.parameter_integrity import validate_top_parameter_intent, vl
 from .. import artifacts
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
-from ..baseline_worktree import BaselineWorktreeError, baseline_worktree, git_short_sha
+from ..baseline_worktree import (
+    BaselineWorktreeError,
+    baseline_worktree,
+    git_full_sha,
+    git_short_sha,
+    resolve_ticket_baseline,
+)
 from ..clock_timing import per_clock_from_json, worst_clock
 from ..flow_config import resolve_flow_default_target
+from ..recipe_evidence import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_REF_DETAIL,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_SNAPSHOT_DETAIL,
+)
 from . import cache as fpga_cache
 from . import edam as fpga_edam
 from .metrics import (
@@ -58,6 +71,7 @@ from .metrics import (
     _unique_strings,
     _vlogdefine_args,
 )
+from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +84,8 @@ class _PreparedFpgaCommand:
     work_root: Path
     fingerprint: str
     require_bitstream: bool
+    recipe_snapshot: dict[str, Any] = field(default_factory=dict)
+    recipe_fingerprint: str = ""
 
     def __iter__(self):
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
@@ -108,6 +124,18 @@ def _load_flow_config(work_dir: Path) -> dict[str, Any]:
     cfg = _load_rtl_config(work_dir)
     flows = cfg.get("flows", {}) if cfg else {}
     return config_section(flows, "fpga") if isinstance(flows, dict) else {}
+
+
+def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> int:
+    """Resolve the per-target FPGA implementation budget for MCP and Flow callers."""
+    if requested is not None:
+        try:
+            return max(1, int(requested))
+        except (TypeError, ValueError):
+            return 7_200_000
+    if work_dir is None:
+        return 7_200_000
+    return max(1, as_int(_load_flow_config(work_dir).get("timeout_ms"), 7_200_000))
 
 
 def _float_metric(data: dict[str, Any], key: str) -> float | None:
@@ -179,10 +207,7 @@ class FpgaImplFlow(BooleyFlow):
         default value is larger than asic synth's; only the resolution
         *mechanism* is unified with asic (mirrors ``_timeout_ms`` there).
         """
-        if self.args.timeout is not None:
-            return max(1, int(self.args.timeout))
-        cfg = _load_flow_config(self.args.work_dir)
-        return max(1, as_int(cfg.get("timeout_ms"), 7_200_000))
+        return _resolve_fpga_timeout_ms(self.args.work_dir, self.args.timeout)
 
     def _get_timeout(self) -> int:
         """Per-config timeout in whole seconds (see :meth:`_timeout_ms`)."""
@@ -193,6 +218,7 @@ class FpgaImplFlow(BooleyFlow):
         # swaps ``self.args.work_dir`` to a throwaway worktree.  It distinguishes
         # primary-run artifacts from temporary baseline artifacts.
         self._project_root = Path(self.args.work_dir)
+        self._baseline_full_sha: str | None = None
         if not self.args.target:  # ADR 0030: fall back to [flows.fpga].default_target
             self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
         targets = fusesoc_registry.resolve_target_selection(
@@ -208,9 +234,11 @@ class FpgaImplFlow(BooleyFlow):
                 ),
             )
 
+        baseline_error = self._apply_ticket_baseline(targets)
+
         # Resolve enablement and retired configuration once per run.
         selection = self._resolve_execution()
-        err = self.validate_execution(selection)
+        err = baseline_error or self.validate_execution(selection)
         if err is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=err)
         if not selection.enabled:
@@ -238,6 +266,20 @@ class FpgaImplFlow(BooleyFlow):
                     self._format_config_line(tgt, metrics, baseline_results.get(tgt))
                 )
         return self._aggregate_results(targets, current_results, baseline_results, short_sha)
+
+    def _apply_ticket_baseline(self, targets: list[str]) -> str | None:
+        """Default relative ticket criteria to their immutable baseline SHA."""
+        baseline, full_sha, error = resolve_ticket_baseline(
+            self.state.criteria,
+            "fpga_impl_ok_",
+            targets,
+            self.args.baseline,
+            Path(self.args.work_dir),
+            "fpga",
+        )
+        self.args.baseline = baseline
+        self._baseline_full_sha = full_sha
+        return error
 
     def _dry_run(self, targets: list[str]) -> McpToolResult:
         # Unlike the make-driven built-ins' side-effect-free setup_command preview
@@ -353,6 +395,7 @@ class FpgaImplFlow(BooleyFlow):
         if out_of_context:
             fpga_edam.enable_out_of_context(work_root, project_name)
         run_cmd = fpga_edam.fpga_run_command(work_root, Path(self.args.work_dir))
+        recipe_snapshot = fpga_recipe_snapshot(resolved, target=target)
         fingerprint = fpga_cache.input_fingerprint(
             resolved,
             edam,
@@ -363,6 +406,8 @@ class FpgaImplFlow(BooleyFlow):
             work_root=work_root,
             fingerprint=fingerprint,
             require_bitstream=not out_of_context,
+            recipe_snapshot=recipe_snapshot,
+            recipe_fingerprint=fpga_recipe_snapshot_fingerprint(recipe_snapshot),
         )
 
     def _resolve_part(self, flow_options: Any) -> str:
@@ -418,7 +463,7 @@ class FpgaImplFlow(BooleyFlow):
                 require_bitstream=require_bitstream,
             )
             if cached is not None:
-                return cached
+                return self._attach_recipe_evidence(cached, prepared)
 
         # A cache miss must execute the recipe even if Make's timestamps claim
         # it is current. Otherwise a no-op leaves only old reports, and there is
@@ -494,6 +539,16 @@ class FpgaImplFlow(BooleyFlow):
                 require_bitstream=require_bitstream,
                 min_mtime=result.dispatched_unix,
             )
+        return self._attach_recipe_evidence(metrics, prepared)
+
+    @staticmethod
+    def _attach_recipe_evidence(
+        metrics: FpgaMetrics,
+        prepared: Any,
+    ) -> FpgaMetrics:
+        """Attach the recipe materialized for this run to its metrics."""
+        metrics.recipe_snapshot = getattr(prepared, "recipe_snapshot", {})
+        metrics.recipe_fingerprint = getattr(prepared, "recipe_fingerprint", "")
         return metrics
 
     def _load_cached_metrics(
@@ -722,6 +777,9 @@ class FpgaImplFlow(BooleyFlow):
 
         project_root = Path(self.args.work_dir)
         short_sha = git_short_sha(baseline_ref, project_root)
+        full_sha = git_full_sha(str(baseline_ref), project_root)
+        if full_sha is not None:
+            self._baseline_full_sha = full_sha
         baseline_results: dict[str, FpgaMetrics] = {}
         try:
             with baseline_worktree(project_root, baseline_ref) as wt:
@@ -766,7 +824,7 @@ class FpgaImplFlow(BooleyFlow):
                 overall_pass = False
             self._write_target_report(cfg, cur, base, short_sha)
             if not cur.infra_error:
-                self._set_config_criterion(cfg, cur, base)
+                self._set_config_criterion(cfg, cur, base, short_sha)
         lines.append("")
         lines.append("RESULT: PASS" if overall_pass else f"RESULT: FAIL ({'; '.join(failures)})")
         report_text = "\n".join(lines)
@@ -896,8 +954,12 @@ class FpgaImplFlow(BooleyFlow):
             "cached": cur.cached,
             "cache_fingerprint": cur.cache_fingerprint or None,
             "metrics": _metrics_detail(cur),
+            "recipe_fingerprint": cur.recipe_fingerprint or None,
+            "recipe_snapshot": cur.recipe_snapshot or None,
             "baseline_ref": baseline_ref,
             "baseline_metrics": _metrics_detail(base, baseline=True) if base else None,
+            "baseline_recipe_fingerprint": base.recipe_fingerprint if base else None,
+            "baseline_recipe_snapshot": base.recipe_snapshot if base else None,
         }
         report_path = report_dir / f"fpga_{cfg}.json"
         # Top-level ``artifacts`` mirrors the block inside ``metrics`` and adds
@@ -918,6 +980,7 @@ class FpgaImplFlow(BooleyFlow):
         cfg: str,
         cur: FpgaMetrics,
         base: FpgaMetrics | None,
+        baseline_ref: str | None,
     ) -> None:
         detail = {
             **_metrics_detail(cur),
@@ -927,11 +990,17 @@ class FpgaImplFlow(BooleyFlow):
             "returncode": cur.returncode,
             "timed_out": cur.timed_out,
             "passed": cur.passed,
+            RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
+            RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
             "_metric_map": dict(_FPGA_METRIC_MAP),
             "_min_allowed": ["fmax_mhz", "wns_ns", "whs_ns"],
         }
         if base:
             detail["baseline_metrics"] = _metrics_detail(base, baseline=True)
+            detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
+            detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
+        if baseline_ref:
+            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(
             f"fpga_impl_ok_{cfg}",
             cur.passed,

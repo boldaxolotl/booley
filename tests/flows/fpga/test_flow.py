@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,11 @@ from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
 from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
+from booley.flows.recipe_evidence import (
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_PARAM,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
@@ -98,6 +104,88 @@ def _flow(tmp_path: Path, state_file: Path, *extra_args: str) -> FpgaImplFlow:
     )
     flow.read_state()
     return flow
+
+
+def test_relative_ticket_criterion_auto_applies_pinned_baseline(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    flow = _flow(tmp_path, state_file)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "rtl.v").write_text("module rtl; endmodule\n", encoding="utf-8")
+    subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    flow.state.init_criteria(
+        {"fpga_impl_ok_default": True},
+        criterion_params={"fpga_impl_ok_default": {BASELINE_REF_PARAM: base_sha}},
+    )
+
+    assert flow._apply_ticket_baseline(["default"]) is None
+    assert flow.args.baseline == base_sha
+
+
+def test_changed_fpga_recipe_is_evidence_not_a_rejection(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    flow = _flow(tmp_path, state_file)
+    baseline_ref = "a" * 40
+    baseline_snapshot = {
+        "flow": "fpga",
+        "target": "default",
+        "flow_options": {"part": "old"},
+    }
+    current_snapshot = {
+        "flow": "fpga",
+        "target": "default",
+        "flow_options": {"part": "new"},
+    }
+    flow.state.init_criteria(
+        {"fpga_impl_ok_default": True},
+        criterion_params={
+            "fpga_impl_ok_default": {
+                "lut_count_increase_at_most": 10,
+                BASELINE_REF_PARAM: baseline_ref,
+                RECIPE_FINGERPRINT_PARAM: "baseline-recipe",
+                RECIPE_SNAPSHOT_PARAM: baseline_snapshot,
+            }
+        },
+    )
+    flow._baseline_full_sha = baseline_ref
+    base = FpgaMetrics(
+        lut_count=100,
+        ff_count=50,
+        wns_ns=0.2,
+        whs_ns=0.1,
+        recipe_snapshot=baseline_snapshot,
+        recipe_fingerprint="baseline-recipe",
+    )
+    cur = FpgaMetrics(
+        lut_count=105,
+        ff_count=52,
+        wns_ns=0.2,
+        whs_ns=0.1,
+        recipe_snapshot=current_snapshot,
+        recipe_fingerprint="current-recipe",
+    )
+
+    flow._set_config_criterion("default", cur, base, baseline_ref[:12])
+
+    entry = flow.state.criteria["fpga_impl_ok_default"]
+    assert entry.met is True
+    assert entry.detail["recipe_comparison"]["flow"] == "fpga"
+    assert entry.detail["recipe_comparison"]["changes"] == [
+        {"path": "flow_options.part", "before": "old", "after": "new"}
+    ]
 
 
 def _collect_flow(work_dir: Path) -> FpgaImplFlow:

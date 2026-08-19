@@ -17,6 +17,7 @@ from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
 from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
+from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
 
 from ..models import StepResult, TicketContext
 from ..worktree_health import check_worktree_health
@@ -157,6 +158,8 @@ def _find_project_dir(project_root: Path) -> Path:
 
 def _resync_project_hooks(project_root: Path, worktree_path: Path) -> None:
     """Copy project hooks from main repo into worktree to avoid stale copies."""
+    if paired_project_repository(worktree_path) is not None:
+        return
     src = _find_project_dir(project_root) / "hooks"
     dst = worktree_path / ".booley_project" / "hooks"
     if not src.is_dir():
@@ -257,10 +260,12 @@ def _run_project_hook_local(run: _HookRun) -> StepResult | None:
     """Run the project hook on the host."""
     ctx = run.ctx
     worktree_path = ctx.worktree_path
+    paired = paired_project_repository(worktree_path)
+    project_content_dir = paired.worktree if paired is not None else run.project_dir
     env = {
         **os.environ,
         "BOOLEY_WORKTREE": str(worktree_path),
-        "BOOLEY_PROJECT_DIR": str(run.project_dir),
+        "BOOLEY_PROJECT_DIR": str(project_content_dir),
         "BOOLEY_PROJECT_ROOT": str(ctx.project_root),
         "BOOLEY_TICKET_SLUG": ctx.slug,
         "BOOLEY_TICKET_FILE": run.ticket_file,
@@ -298,6 +303,9 @@ def _run_project_hook_local(run: _HookRun) -> StepResult | None:
 
 def _remove_stale_worktree(project_root: Path, worktree_path: Path) -> None:
     """Force-remove a worktree and prune dangling refs."""
+    from .project_worktree import remove_project_worktree
+
+    remove_project_worktree(project_root, worktree_path)
     subprocess.run(
         ["git", "worktree", "remove", str(worktree_path), "--force"],
         cwd=project_root,
@@ -690,6 +698,11 @@ def _freeze_synth_baseline(ctx: TicketContext) -> StepResult | None:
     if not ctx.has_synth:
         return None
 
+    if ctx.base_sha:
+        ctx._synth_baseline_sha = ctx.base_sha
+        logger.debug("Using ticket synthesis baseline SHA: %s", ctx.base_sha[:12])
+        return None
+
     base_sha_result = subprocess.run(
         ["git", "rev-parse", ctx.branch],
         cwd=str(ctx.project_root),
@@ -745,7 +758,20 @@ async def run(ctx: TicketContext) -> StepResult:
     if fail:
         return fail
 
+    from .project_worktree import ProjectWorktreeError, prepare_project_worktree
+
+    try:
+        project_worktree = prepare_project_worktree(ctx)
+    except ProjectWorktreeError as exc:
+        return StepResult(block_reason=f"Project worktree setup failed: {exc}")
+
     _install_scope_hook(worktree_path, ctx.scope, project_root=project_root)
+    if project_worktree is not None:
+        _install_scope_hook(
+            project_worktree,
+            project_repository_scope(ctx.scope_raw),
+            project_root=project_root,
+        )
     sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
 
     # Project hook + commit any files it staged

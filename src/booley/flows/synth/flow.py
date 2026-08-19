@@ -42,7 +42,13 @@ from booley.yosys.syn_core import (
 
 from .. import artifacts
 from ..base import BooleyFlow, SubprocessResult
-from ..baseline_worktree import BaselineWorktreeError, baseline_worktree, git_short_sha
+from ..baseline_worktree import (
+    BaselineWorktreeError,
+    baseline_worktree,
+    git_full_sha,
+    git_short_sha,
+    resolve_ticket_baseline,
+)
 from ..clock_timing import (
     ClockTiming,
     make_clock_timing,
@@ -56,9 +62,14 @@ from ..target_parameters import vlogdefine_args as _vlogdefine_args
 from ..target_parameters import vlogparam_args as _vlogparam_args
 from .ppa_config import add_ppa_arguments
 from .recipe import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_REF_DETAIL,
     RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_SNAPSHOT_DETAIL,
     synthesis_recipe_args,
-    synthesis_recipe_fingerprint,
+    synthesis_recipe_snapshot,
+    synthesis_recipe_snapshot_fingerprint,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,6 +250,10 @@ class SynthMetrics:
     #: ``timing``). The report names directories, not a file inventory — see
     #: :mod:`booley.flows.artifacts`.
     dirs: dict[str, str] = field(default_factory=dict)
+    #: Normalized Target recipe used for this exact run. Kept with the metrics
+    #: so a baseline pass cannot be overwritten by the later current pass.
+    recipe_snapshot: dict[str, Any] = field(default_factory=dict)
+    recipe_fingerprint: str = ""
 
     @property
     def unexpected_latches(self) -> int:
@@ -766,15 +781,11 @@ def _build_report_dict(
 def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     """Detect a no-op ``--baseline`` self-comparison and return an actionable warning.
 
-    ``_baseline_worktree._copy_stealth_cores`` mirrors the LIVE
-    ``.booley_project/cores/`` (ADR 0036) into the baseline worktree, and the
-    host-repo ``<ref>`` the worktree is checked out at never tracked those
-    stealth files to begin with. A project whose RTL lives *as real files* under
-    stealth cores therefore synthesizes byte-identical sources on BOTH sides of
-    the delta, and the reported area/Fmax change is a guaranteed ~+0.0% — a
-    reassuring pass that actually measured nothing. (Cores that reach the RTL
-    through core-relative resolution links are fine: the copy preserves the
-    links, so they resolve against the worktree's checkout.)
+    An unpaired project may mirror live ``.booley_project/cores/`` (ADR 0036)
+    into the baseline worktree because the outer Git ref does not contain those
+    files. A project whose RTL lives as real files below those cores can therefore
+    synthesize byte-identical sources on both sides. Paired project repositories
+    instead materialize their ticket fork, but can still compare identical RTL.
 
     Compare the canonical source fingerprint (:func:`compute_source_fingerprint`,
     the same ``_source_fingerprint`` the criteria records already stamp) of the
@@ -783,6 +794,10 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     between the ref and HEAD isn't nagged about a legitimately-zero delta.
     Returns ``None`` when there is nothing to warn about (or the fingerprint
     can't be computed — never let the guard itself break a run).
+
+    The caller later suppresses this warning when the two normalized Target
+    recipes differ, because that is a meaningful comparison even with identical
+    RTL sources.
     """
     from booley.fusesoc.fusesoc_registry import state_cores_dir
 
@@ -797,14 +812,10 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     if cur != base:
         return None
     return (
-        "baseline and current synthesized byte-identical RTL -- the reported "
-        "delta is a no-op self-comparison, not a real regression check. This "
-        "project authors RTL under stealth cores (.booley_project/cores/, ADR "
-        "0036), whose real files are mirrored into the baseline worktree from "
-        "the LIVE tree, so --baseline cannot see the ref's version of them. "
-        "Compare against a ref whose git-tracked RTL differs, or reach the RTL "
-        "through core-relative resolution links (which DO follow the ref), "
-        "before trusting a +0.0% delta."
+        "baseline and current synthesized byte-identical RTL with an unchanged "
+        "Target recipe -- the reported delta is a no-op self-comparison, not a "
+        "real regression check. Compare against a ref whose RTL or Target recipe "
+        "differs before trusting a +0.0% delta."
     )
 
 
@@ -1049,14 +1060,11 @@ class AsicSynthesizeFlow(BooleyFlow):
             build_root=build_root,
         )
 
-        recipe_fingerprints = getattr(self, "_recipe_fingerprints", None)
-        if recipe_fingerprints is None:
-            recipe_fingerprints = self._recipe_fingerprints = {}
-        recipe_fingerprints[target] = synthesis_recipe_fingerprint(
-            resolved,
-            self.args,
-            target=target,
-        )
+        snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
+        evidence = getattr(self, "_recipe_evidence", None)
+        if evidence is None:
+            evidence = self._recipe_evidence = {}
+        evidence[target] = (snapshot, synthesis_recipe_snapshot_fingerprint(snapshot))
 
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
@@ -1165,11 +1173,11 @@ class AsicSynthesizeFlow(BooleyFlow):
         except SystemExit as exc:
             msg = str(exc.code) if exc.code is not None else "synthesis configure failed"
             logger.warning("Synth %s: configure failed: %s", target, msg)
-            return _infra_metrics(msg), msg
+            return self._attach_recipe_evidence(target, _infra_metrics(msg)), msg
         except OSError as exc:
             msg = f"failed to render synthesis build dir: {exc}"
             logger.warning("Synth %s: %s", target, msg)
-            return _infra_metrics(msg), msg
+            return self._attach_recipe_evidence(target, _infra_metrics(msg)), msg
 
         # A bare `make -C <rel>` runs the generated plan with EDA binaries from
         # the Session Runtime PATH.
@@ -1185,7 +1193,15 @@ class AsicSynthesizeFlow(BooleyFlow):
         start = time.monotonic()
         proc_result = self._execute_boundary(make_cmd, timeout=self._get_timeout())
         elapsed = time.monotonic() - start
-        return self._interpret_boundary_run(target, plan, proc_result, elapsed)
+        metrics, output = self._interpret_boundary_run(target, plan, proc_result, elapsed)
+        return self._attach_recipe_evidence(target, metrics), output
+
+    def _attach_recipe_evidence(self, target: str, metrics: SynthMetrics) -> SynthMetrics:
+        """Attach the recipe resolved before this run to its metrics."""
+        evidence = getattr(self, "_recipe_evidence", {}).get(target)
+        if evidence is not None:
+            metrics.recipe_snapshot, metrics.recipe_fingerprint = evidence
+        return metrics
 
     def _interpret_boundary_run(
         self,
@@ -1512,7 +1528,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """Durably record one terminal target before the next one starts."""
         self._write_target_report(target, metrics, baseline_metrics, baseline_ref)
         if not metrics.infra_error:
-            self._set_config_criterion(target, metrics, baseline_metrics)
+            self._set_config_criterion(target, metrics, baseline_metrics, baseline_ref)
             if self.state._file_path is not None:
                 self.state.save()
 
@@ -1533,6 +1549,20 @@ class AsicSynthesizeFlow(BooleyFlow):
             return f"synth: {exc}"
         return None
 
+    def _apply_ticket_baseline(self, targets: list[str]) -> str | None:
+        """Default relative ticket criteria to their immutable baseline SHA."""
+        baseline, full_sha, error = resolve_ticket_baseline(
+            self.state.criteria,
+            "synthesis_ok_",
+            targets,
+            self.args.baseline,
+            Path(self.args.work_dir),
+            "synth",
+        )
+        self.args.baseline = baseline
+        self._baseline_full_sha = full_sha
+        return error
+
     def _run(self) -> McpToolResult:
         """Execute synthesis for all targets, optionally comparing to baseline."""
         from booley.fusesoc import fusesoc_registry
@@ -1541,6 +1571,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         # detected; read by _aggregate_results. Reset per run so a stale value
         # from a reused instance never leaks into a fresh invocation.
         self._baseline_selfcompare_msg: str | None = None
+        self._baseline_full_sha: str | None = None
 
         if not self.args.target:  # ADR 0030: fall back to [flows.synth].default_target
             self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
@@ -1557,6 +1588,9 @@ class AsicSynthesizeFlow(BooleyFlow):
                     "else vlnv#name)."
                 ),
             )
+        baseline_error = self._apply_ticket_baseline(targets)
+        if baseline_error is not None:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=baseline_error)
         # Resolve enablement and legacy-migration errors once per run, then
         # reuse the result in each config and the dry-run report.
         selection = self._resolve_execution()
@@ -1605,6 +1639,14 @@ class AsicSynthesizeFlow(BooleyFlow):
                         baseline_results.get(tgt),
                     )
                 )
+
+        if self._baseline_selfcompare_msg and any(
+            baseline_results.get(target) is not None
+            and baseline_results[target].recipe_fingerprint
+            != current_results[target].recipe_fingerprint
+            for target in targets
+        ):
+            self._baseline_selfcompare_msg = None
 
         # Collect results and format output
         result = self._aggregate_results(
@@ -1693,6 +1735,9 @@ class AsicSynthesizeFlow(BooleyFlow):
 
         project_root = Path(self.args.work_dir)
         short_sha = git_short_sha(baseline_ref, project_root)
+        full_sha = git_full_sha(str(baseline_ref), project_root)
+        if full_sha is not None:
+            self._baseline_full_sha = full_sha
         baseline_results: dict[str, SynthMetrics] = {}
         try:
             with baseline_worktree(project_root, baseline_ref) as wt:
@@ -2063,6 +2108,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         tgt: str,
         cur: SynthMetrics,
         base: SynthMetrics | None,
+        baseline_ref: str | None,
     ) -> None:
         """Set the synthesis_ok criterion for one target."""
         detail: dict[str, Any] = {
@@ -2098,7 +2144,8 @@ class AsicSynthesizeFlow(BooleyFlow):
             "ppa_complete": cur.ppa_complete,
             "peak_rss_mb": cur.peak_rss_mb,
             "passed": cur.passed,
-            RECIPE_FINGERPRINT_DETAIL: getattr(self, "_recipe_fingerprints", {}).get(tgt),
+            RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
+            RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
             "_metric_map": {
                 "area": "area_um2",
                 "area_um2": "area_um2",
@@ -2127,6 +2174,10 @@ class AsicSynthesizeFlow(BooleyFlow):
                 "wire_count": base.wire_count,
                 "per_clock": per_clock_to_json(base.per_clock),
             }
+            detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
+            detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
+        if baseline_ref:
+            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(
             f"synthesis_ok_{tgt}",
             cur.passed,

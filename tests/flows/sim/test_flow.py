@@ -21,6 +21,7 @@ from booley.flows.sim.flow import (
     TargetResult,
     _append_batch_output_lines,
     _append_error_excerpt,
+    _artifact_path_component,
     _build_display_lines,
     _build_run_script,
     _filter_tests,
@@ -92,6 +93,14 @@ def test_campaign_work_units_count_native_tests_and_cocotb_batches(tmp_path: Pat
         )
 
     assert units == 3  # two native processes plus one cocotb batch
+
+
+def test_artifact_path_component_never_embeds_unsafe_test_names():
+    assert _artifact_path_component("sign_case_65") == "sign_case_65"
+    encoded = _artifact_path_component("../../outside/reports")
+    assert encoded.startswith("~sha256-")
+    assert "/" not in encoded
+    assert encoded != _artifact_path_component("../../different")
 
 
 # A minimal sim `.core` for the real-fusesoc resolution e2e: the custom
@@ -1026,6 +1035,95 @@ class TestReportGeneration:
         assert len(report["tests"]) == 2
         assert report["tests"][0]["name"] == "smoke"
         assert report["tests"][0]["cycles"] == 2561
+
+    def test_grouped_hdl_run_preserves_each_test_log_after_later_failure(
+        self,
+        tmp_path: Path,
+    ):
+        """Each HDL process gets durable evidence before the next one starts."""
+        flow = _make_flow(tmp_path, config="lite")
+        build_root = tmp_path / "build"
+        build_root.mkdir()
+        flow._record_run_log_dir("lite", build_root)
+        first_path = tmp_path / "reports/artifacts/sim_lite/tests/smoke/run.log"
+        first_bytes: bytes | None = None
+        calls = 0
+
+        def execute(_cmd):
+            nonlocal calls, first_bytes
+            calls += 1
+            if calls == 1:
+                return SubprocessResult(
+                    returncode=0,
+                    stdout="SMOKE_ONLY\n[SIM_RESULT] PASSED\n",
+                    duration_s=0.1,
+                )
+            assert first_path.is_file(), "first artifact must land before test two starts"
+            first_bytes = first_path.read_bytes()
+            return SubprocessResult(
+                returncode=1,
+                stdout="STRESS_ONLY\n[SIM_RESULT] FAILED\n",
+                duration_s=0.1,
+            )
+
+        with (
+            patch(
+                "booley.flows.sim.flow._get_test_names",
+                return_value={"lite": ["smoke", "stress"]},
+            ),
+            patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX),
+            patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
+            patch.object(flow, "_execute", side_effect=execute),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert calls == 2
+        report = json.loads((tmp_path / "reports/sim_lite.json").read_text())
+        assert [test["name"] for test in report["tests"]] == ["smoke", "stress"]
+        pointers = [test["artifacts"]["run_log"] for test in report["tests"]]
+        assert pointers == [
+            "reports/artifacts/sim_lite/tests/smoke/run.log",
+            "reports/artifacts/sim_lite/tests/stress/run.log",
+        ]
+        smoke_log, stress_log = (tmp_path / pointer for pointer in pointers)
+        assert smoke_log.read_bytes() == first_bytes
+        assert "SMOKE_ONLY" in smoke_log.read_text()
+        assert "STRESS_ONLY" not in smoke_log.read_text()
+        assert "STRESS_ONLY" in stress_log.read_text()
+        assert "SMOKE_ONLY" not in stress_log.read_text()
+        # Compatibility/live-tail contract: the Target-level file remains and
+        # holds the most recently completed test.
+        assert "STRESS_ONLY" in (build_root / "run.log").read_text()
+        assert "SMOKE_ONLY" not in (build_root / "run.log").read_text()
+
+    def test_single_hdl_test_report_has_the_same_run_log_artifact(self, tmp_path: Path):
+        flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "smoke"])
+        with (
+            patch(
+                "booley.flows.sim.flow._get_test_names",
+                return_value={"lite": ["smoke", "stress"]},
+            ),
+            patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX),
+            patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
+            patch.object(
+                flow,
+                "_execute",
+                return_value=SubprocessResult(
+                    returncode=0,
+                    stdout="SINGLE_ONLY\n[SIM_RESULT] PASSED\n",
+                    duration_s=0.1,
+                ),
+            ),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_SUCCESS
+        report = json.loads((tmp_path / "reports/sim_lite.json").read_text())
+        assert len(report["tests"]) == 1
+        pointer = report["tests"][0]["artifacts"]["run_log"]
+        assert pointer == "reports/artifacts/sim_lite/tests/smoke/run.log"
+        assert "SINGLE_ONLY" in (tmp_path / pointer).read_text()
 
     def test_completed_target_survives_later_campaign_crash(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite,full")

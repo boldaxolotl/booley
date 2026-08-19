@@ -18,6 +18,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from booley.flows.recipe_evidence import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_REF_DETAIL,
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_DETAIL,
+    RECIPE_SNAPSHOT_PARAM,
+    recipe_changes,
+)
 from booley.flows.source_fingerprint import (  # noqa: F401  # compatibility re-export
     SOURCE_FINGERPRINT_DETAIL_KEY,
     as_str_list,
@@ -46,6 +56,14 @@ from .interface_spec import (  # noqa: F401  # re-exported for backward compatib
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _recipe_flow(baseline: Any, current: Any) -> str | None:
+    """Return the implementation-flow label embedded in either snapshot."""
+    for snapshot in (current, baseline):
+        if isinstance(snapshot, dict) and isinstance(snapshot.get("flow"), str):
+            return snapshot["flow"]
+    return None
 
 
 class DutInfoValidationError(ValueError):
@@ -551,30 +569,8 @@ class DevelopmentState:
         min_allowed = set(detail.get("_min_allowed", ["fmax_mhz"]))
         baseline = detail.get("baseline_metrics", {})
 
-        from booley.flows.synth.recipe import (
-            RECIPE_FINGERPRINT_DETAIL,
-            RECIPE_FINGERPRINT_PARAM,
-        )
-
-        expected_recipe = params.get(RECIPE_FINGERPRINT_PARAM)
-        if expected_recipe is not None:
-            actual_recipe = detail.get(RECIPE_FINGERPRINT_DETAIL)
-            recipe_matches = actual_recipe == expected_recipe
-            checks.append(
-                {
-                    "param": RECIPE_FINGERPRINT_PARAM,
-                    "expected": expected_recipe,
-                    "actual": actual_recipe,
-                    "pass": recipe_matches,
-                    "detail": (
-                        "synthesis recipe matches the ticket-intake snapshot"
-                        if recipe_matches
-                        else "synthesis recipe differs from the ticket-intake snapshot"
-                    ),
-                }
-            )
-            if not recipe_matches:
-                all_pass = False
+        if not self._evaluate_recipe_evidence(entry, checks):
+            all_pass = False
 
         for param_key, threshold in params.items():
             if param_key.startswith("_"):
@@ -596,6 +592,58 @@ class DevelopmentState:
         if not all_pass:
             entry.met = False
             entry.ever_met = False
+
+    @staticmethod
+    def _evaluate_recipe_evidence(
+        entry: CriterionEntry,
+        checks: list[dict[str, Any]],
+    ) -> bool:
+        """Record old/new recipe changes and validate pinned baseline evidence."""
+        expected_recipe = entry.params.get(RECIPE_FINGERPRINT_PARAM)
+        if expected_recipe is None:
+            return True
+        detail = entry.detail
+        actual_recipe = detail.get(RECIPE_FINGERPRINT_DETAIL)
+        expected_ref = entry.params.get(BASELINE_REF_PARAM)
+        actual_ref = detail.get(BASELINE_REF_DETAIL)
+        baseline_recipe = detail.get(BASELINE_RECIPE_FINGERPRINT_DETAIL)
+        complete = actual_recipe is not None
+        if expected_ref is not None:
+            complete = (
+                complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
+            )
+        baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
+        current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
+        if isinstance(baseline_snapshot, dict):
+            complete = complete and isinstance(current_snapshot, dict)
+        changes = (
+            recipe_changes(baseline_snapshot, current_snapshot)
+            if isinstance(baseline_snapshot, dict) and isinstance(current_snapshot, dict)
+            else []
+        )
+        detail["recipe_comparison"] = {
+            "flow": _recipe_flow(baseline_snapshot, current_snapshot),
+            "target": current_snapshot.get("target")
+            if isinstance(current_snapshot, dict)
+            else None,
+            "baseline_ref": expected_ref,
+            "baseline_fingerprint": expected_recipe,
+            "current_fingerprint": actual_recipe,
+            "changed": actual_recipe != expected_recipe,
+            "changes": changes,
+        }
+        checks.append(
+            {
+                "param": "_recipe_evidence",
+                "expected": expected_ref or expected_recipe,
+                "actual": actual_ref or actual_recipe,
+                "pass": complete,
+                "detail": "baseline recipe is pinned; current recipe change is recorded"
+                if complete
+                else "implementation recipe comparison evidence is incomplete",
+            }
+        )
+        return complete
 
     def _check_single_threshold(
         self,
@@ -669,7 +717,7 @@ class DevelopmentState:
         if metric_key is None:
             return {
                 "param": param_key,
-                "pass": True,
+                "pass": False,
                 "skipped": True,
                 "reason": f"unknown metric prefix {metric_prefix!r}",
             }
@@ -679,23 +727,31 @@ class DevelopmentState:
         # of raising TypeError (or a "0"-string dividing by zero) below.
         base_value, _ = resolve_metric(baseline or {}, metric_prefix, metric_map)
 
-        if base_value is None or base_value == 0:
+        if base_value is None:
             logger.warning(
-                "Skipping delta check %r: no baseline for %s",
+                "Cannot evaluate delta check %r: no baseline for %s",
                 param_key,
                 metric_key,
             )
             return {
                 "param": param_key,
-                "pass": True,
+                "pass": False,
                 "skipped": True,
                 "reason": f"no baseline for {metric_key}",
+            }
+
+        if base_value == 0:
+            return {
+                "param": param_key,
+                "pass": False,
+                "skipped": True,
+                "reason": f"zero baseline for {metric_key} cannot define a percentage",
             }
 
         if cur_value is None:
             return {
                 "param": param_key,
-                "pass": True,
+                "pass": False,
                 "skipped": True,
                 "reason": f"current {metric_key} not available",
             }
