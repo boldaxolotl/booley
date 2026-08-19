@@ -39,6 +39,7 @@ EDA tools differ in how they are configured, invoked, and interpreted. Booley gi
 - **One typed Booley Flow surface**: the same structured call and normalized verdict across tools serving the same Flow—for example, Icarus Verilog and Verilator for simulation—so agents do not need to adapt to each tool's CLI and output. The same contract is designed to extend to Cadence Xcelium and Synopsys VCS as support is added ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/FEATURES.md#structured-booley-flow-contracts)).
 - **Agent-agnostic**: Claude Code and Codex drive the same Booley Flows through MCP, so changing models does not change the toolchain ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/FEATURES.md#llm-backend-selection)).
 - **One IDE**: the editor, agent, and EDA tools share a VS Code window, keeping RTL work, tool runs, and results in one place.
+- **Reproducible team environment**: the open-source EDA stack, agent tooling, and system dependencies are supplied through the project's Docker environment. Every team member works with the same pinned tool versions instead of maintaining a separate local EDA setup, reducing onboarding effort and eliminating many environment-specific failures ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/WHY.md#why-docker)).
 
 ### You can't let an agent loose on your machine
 
