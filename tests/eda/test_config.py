@@ -12,6 +12,7 @@ from booley.eda.config import (
     load_eda_config,
     parse_eda_config,
     retired_config_error,
+    validate_host_provisioning_platform,
 )
 from booley.runtime.project_dir import reset_cache
 
@@ -28,6 +29,19 @@ def test_host_selects_provisioning_without_an_installation_name() -> None:
     assert parse_eda_config({"vivado": {"provisioning": "host"}}) == {
         "vivado": EdaConfig("vivado", "host")
     }
+
+
+def test_windows_rejects_host_provisioning() -> None:
+    configs = parse_eda_config({"vivado": {"provisioning": "host"}})
+
+    with pytest.raises(EdaConfigError, match=r"unsupported on Windows.*eda\.vivado"):
+        validate_host_provisioning_platform(configs, platform_name="win32")
+
+
+def test_windows_accepts_image_provisioning() -> None:
+    configs = parse_eda_config({"vivado": {"provisioning": "image"}})
+
+    validate_host_provisioning_platform(configs, platform_name="win32")
 
 
 @pytest.mark.parametrize(
@@ -75,6 +89,7 @@ def test_load_eda_config_uses_external_project_data_dir(
         encoding="utf-8",
     )
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setattr("booley.eda.config.sys.platform", "linux")
     reset_cache()
     try:
         assert load_eda_config(project) == {"vivado": EdaConfig("vivado", "host")}

@@ -51,6 +51,7 @@ FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 LABEL_FINGERPRINT = "booley.build-fingerprint"
 LABEL_BASE_IMAGE_ID = "booley.base-image-id"
 LABEL_VERSION = "org.opencontainers.image.version"
+DEFAULT_IMAGE_PULL_TIMEOUT_S = 7200
 
 
 def _source_version(booley_root: Path) -> str | None:
@@ -332,17 +333,39 @@ def remote_tag(image: str, version: str) -> str:
     return f"{registry}/{image}:{version}"
 
 
+def _image_pull_timeout_seconds() -> int:
+    """Return the bounded registry-pull deadline, accepting a host override."""
+    raw = os.environ.get("BOOLEY_IMAGE_PULL_TIMEOUT", str(DEFAULT_IMAGE_PULL_TIMEOUT_S))
+    try:
+        timeout = int(raw)
+    except ValueError:
+        warn(
+            f"invalid BOOLEY_IMAGE_PULL_TIMEOUT={raw!r}; "
+            f"using {DEFAULT_IMAGE_PULL_TIMEOUT_S} seconds"
+        )
+        return DEFAULT_IMAGE_PULL_TIMEOUT_S
+    if timeout <= 0:
+        warn(
+            f"invalid BOOLEY_IMAGE_PULL_TIMEOUT={raw!r}; "
+            f"using {DEFAULT_IMAGE_PULL_TIMEOUT_S} seconds"
+        )
+        return DEFAULT_IMAGE_PULL_TIMEOUT_S
+    return timeout
+
+
 def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
     tag = remote_tag(image, version)
     info(f"trying to pull pre-built image: {tag}")
+    timeout = _image_pull_timeout_seconds()
     try:
         result = subprocess.run(
             ["docker", "pull", tag],
             text=True,
-            timeout=300,
+            timeout=timeout,
             check=False,
         )
         if result.returncode != 0:
+            warn(f"pre-built image pull failed for {tag} (docker exited {result.returncode})")
             return False
         subprocess.run(
             ["docker", "tag", tag, image],
@@ -354,7 +377,14 @@ def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
         # alone (its content can't match a local source fingerprint).
         _stamp_image_fingerprint(image, f"pulled:{version}")
         return True
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except subprocess.TimeoutExpired:
+        warn(
+            f"pre-built image pull timed out after {timeout // 60} minutes; "
+            "override with BOOLEY_IMAGE_PULL_TIMEOUT (seconds)"
+        )
+        return False
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        warn(f"pre-built image pull failed for {tag}: {exc}")
         return False
 
 

@@ -221,6 +221,58 @@ class TestImageLabel:
 
 
 # ---------------------------------------------------------------------------
+# Registry pull timeout
+# ---------------------------------------------------------------------------
+
+
+class TestImagePull:
+    def test_large_image_gets_two_hour_default(self, monkeypatch):
+        calls: list[tuple[list[str], int]] = []
+
+        class _Result:
+            returncode = 1
+
+        def _run(cmd, **kwargs):
+            calls.append((cmd, kwargs["timeout"]))
+            return _Result()
+
+        monkeypatch.delenv("BOOLEY_IMAGE_PULL_TIMEOUT", raising=False)
+        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
+
+        assert init_docker_image._try_pull_image("0.2.0") is False
+        assert calls == [
+            (
+                ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.0"],
+                init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S,
+            )
+        ]
+
+    def test_pull_timeout_can_be_overridden(self, monkeypatch):
+        seen: list[int] = []
+
+        def _run(cmd, **kwargs):
+            seen.append(kwargs["timeout"])
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+        monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", "900")
+        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
+
+        assert init_docker_image._try_pull_image("0.2.0") is False
+        assert seen == [900]
+
+    def test_invalid_pull_timeout_uses_default(self, monkeypatch):
+        monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", "never")
+        warnings: list[str] = []
+        monkeypatch.setattr(init_docker_image, "warn", warnings.append)
+
+        assert (
+            init_docker_image._image_pull_timeout_seconds()
+            == init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S
+        )
+        assert any("invalid BOOLEY_IMAGE_PULL_TIMEOUT" in message for message in warnings)
+
+
+# ---------------------------------------------------------------------------
 # Build-cache size report (SETUP-24) — _size_to_gb / _report_build_cache
 # ---------------------------------------------------------------------------
 

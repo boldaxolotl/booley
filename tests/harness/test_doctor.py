@@ -1452,6 +1452,26 @@ class TestRetiredCommercialEdaConfig:
         assert "retired" in retired_config_error({"flows": {"sim": {"venue": "host"}}})
 
 
+def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeypatch):
+    from booley.eda import config as eda_config
+
+    passes: list[str] = []
+    warns: list[str] = []
+    fails: list[str] = []
+    monkeypatch.setattr(eda_config.sys, "platform", "win32")
+
+    valid = doctor._validate_booley_toml(
+        {"eda": {"vivado": {"provisioning": "host"}}},
+        tmp_path,
+        passes.append,
+        warns.append,
+        lambda message, fix="": fails.append(message),
+    )
+
+    assert valid is False
+    assert any("host provisioning is unsupported on Windows" in message for message in fails)
+
+
 class TestValidateAgentTable:
     """A typo'd provider is fatal, not advisory: `_parse_provider` raises rather
     than run a backend the project never chose, so every agent run dies with a

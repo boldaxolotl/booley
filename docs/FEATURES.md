@@ -170,7 +170,7 @@ standard image-provisioned toolchain works on Windows just as it does on Linux:
 you don't need to build Verilator, Yosys, or the rest natively. Host-provisioned
 commercial EDA is Linux x86-64 only. Docker Desktop runs Linux containers, and
 a native Windows EDA installation cannot execute merely because its directory
-is mounted into one. See [INSTALL.md](INSTALL.md).
+is mounted into one. See [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
 
 ## Firmware-in-the-Loop Debug
 

@@ -192,6 +192,71 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         assert "An unmet `_clean` review is different" in system
         assert "call `reviewer` again to verify them" in system
 
+    def test_baseline_qor_rule_requires_relative_implementation_criterion(
+        self, tmp_path: Path
+    ):
+        ticket = tmp_path / "ticket.md"
+        ticket.write_text("---\nsummary: x\n---\n", encoding="utf-8")
+        phrase = "Target recipes are revision-owned"
+
+        for criterion_name, threshold in (
+            ("synthesis_ok", "cell_count_increase_at_most"),
+            ("fpga_impl_ok", "clk.critical_path_ps_reduce_at_least"),
+        ):
+            system, _ = build_developer_prompt(
+                DeveloperPromptContext(
+                    ticket_path=ticket,
+                    state_path=tmp_path / "state.json",
+                    logs_dir=tmp_path,
+                    slug="s",
+                    mcp_tools=[],
+                    criteria={
+                        "optional": {
+                            criterion_name: {
+                                "targets": ["qor"],
+                                threshold: 5,
+                            }
+                        }
+                    },
+                )
+            )
+
+            assert phrase in system
+            assert "Recipe differences are evidence, not failures" in system
+            assert "do not alter a Target merely to reproduce the baseline recipe" in system
+
+    def test_baseline_qor_rule_omitted_without_relative_implementation_criterion(
+        self, tmp_path: Path
+    ):
+        ticket = tmp_path / "ticket.md"
+        ticket.write_text("---\nsummary: x\n---\n", encoding="utf-8")
+
+        for criteria in (
+            None,
+            {"mandatory": {"lint_clean": ["lint_core"]}},
+            {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": ["synth_core"],
+                        "cell_count_max": 500,
+                    }
+                }
+            },
+        ):
+            system, _ = build_developer_prompt(
+                DeveloperPromptContext(
+                    ticket_path=ticket,
+                    state_path=tmp_path / "state.json",
+                    logs_dir=tmp_path,
+                    slug="s",
+                    mcp_tools=[],
+                    criteria=criteria,
+                )
+            )
+
+            assert "BASELINE QoR CRITERIA" not in system
+            assert "Target recipes are revision-owned" not in system
+
     def test_system_prompt_directs_dut_info_fill_before_work(self, tmp_path: Path):
         """Developer Agent is the sole dut_info populator and must fill it first."""
         ticket = tmp_path / "ticket.md"
