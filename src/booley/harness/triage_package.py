@@ -147,6 +147,48 @@ def _criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
 
 
+def _recipe_comparisons(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Extract deterministic old/new implementation-recipe evidence from state."""
+    raw = state.get("criteria")
+    if not isinstance(raw, Mapping):
+        return []
+    rows: list[dict[str, Any]] = []
+    for criterion, entry in raw.items():
+        name = str(criterion)
+        if not name.startswith(("synthesis_ok_", "fpga_impl_ok_")) or not isinstance(
+            entry, Mapping
+        ):
+            continue
+        detail = entry.get("detail")
+        comparison = detail.get("recipe_comparison") if isinstance(detail, Mapping) else None
+        if not isinstance(comparison, Mapping):
+            continue
+        checks = detail.get("checks") if isinstance(detail.get("checks"), list) else []
+        flow = comparison.get("flow") or (
+            "fpga" if name.startswith("fpga_impl_ok_") else "synth"
+        )
+        prefix = "fpga_impl_ok_" if flow == "fpga" else "synthesis_ok_"
+        rows.append(
+            {
+                "criterion": name,
+                "flow": flow,
+                "target": comparison.get("target") or name.removeprefix(prefix),
+                "changed": comparison.get("changed") is True,
+                "baseline_ref": comparison.get("baseline_ref"),
+                "baseline_fingerprint": comparison.get("baseline_fingerprint"),
+                "current_fingerprint": comparison.get("current_fingerprint"),
+                "changes": list(comparison.get("changes") or []),
+                "qor_checks": [
+                    dict(check)
+                    for check in checks
+                    if isinstance(check, Mapping)
+                    and not str(check.get("param", "")).startswith("_")
+                ],
+            }
+        )
+    return sorted(rows, key=lambda row: row["criterion"])
+
+
 def _repository_commits(
     worktree: Path, base_sha: str, head_sha: str, repository: str
 ) -> list[dict[str, str]]:
@@ -425,6 +467,7 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         "head_sha": ctx.head_sha,
         "worktree": str(ctx.worktree),
         "criteria": _criteria(state),
+        "recipe_comparisons": _recipe_comparisons(state),
         "scope": scope,
         "commits": _commits(ctx),
         "changed_files": changes,
@@ -575,6 +618,36 @@ def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
         )
 
 
+def _render_recipe_comparisons(lines: list[str], package: Mapping[str, Any]) -> None:
+    """Render Target recipe changes and the QoR checks they contextualize."""
+    rows = package.get("recipe_comparisons", [])
+    if not rows:
+        return
+    lines.extend(["", "#### Implementation Target recipes", ""])
+    for row in rows:
+        relation = "changed" if row.get("changed") else "unchanged"
+        baseline = str(row.get("baseline_fingerprint") or "unavailable")[:12]
+        current = str(row.get("current_fingerprint") or "unavailable")[:12]
+        lines.append(
+            f"- `{row.get('flow', 'implementation')}:{row['target']}` — **{relation}** "
+            f"(baseline `{baseline}`, current `{current}`)"
+        )
+        for change in row.get("changes", []):
+            before = _short_value(change.get("before"))
+            after = _short_value(change.get("after"))
+            lines.append(f"  - `{change.get('path')}`: `{before}` → `{after}`")
+        for check in row.get("qor_checks", []):
+            verdict = "PASS" if check.get("pass") else "FAIL"
+            if check.get("skipped"):
+                summary = str(check.get("reason", "not evaluated"))
+            else:
+                summary = (
+                    f"{check.get('baseline')} → {check.get('current')}; "
+                    f"measured {check.get('pct')}%, limit {check.get('threshold')}%"
+                )
+            lines.append(f"  - `{check.get('param')}` — **{verdict}**: {summary}")
+
+
 def _render_scope(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(["", "#### Scope deviations", ""])
     rows = package["assessment"].get("scope_deviations", [])
@@ -664,6 +737,7 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     ]
     lines.extend(f"{index}. {item}" for index, item in enumerate(blockers, 1))
     _render_criteria(lines, package)
+    _render_recipe_comparisons(lines, package)
     _render_scope(lines, package)
     _render_commits(lines, package)
     _render_changes(lines, package, set(diff_failures))

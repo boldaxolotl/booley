@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -17,10 +16,38 @@ from booley.yosys.syn_core import (
     resolve_slang_options,
 )
 
+from ..recipe_evidence import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_RECIPE_SNAPSHOT_DETAIL,
+    BASELINE_REF_DETAIL,
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_DETAIL,
+    RECIPE_SNAPSHOT_PARAM,
+    jsonable,
+    recipe_changes,
+    recipe_snapshot_fingerprint,
+)
 from .ppa_config import append_ppa_args
 
-RECIPE_FINGERPRINT_PARAM = "_recipe_fingerprint"
-RECIPE_FINGERPRINT_DETAIL = "_recipe_fingerprint"
+__all__ = [
+    "BASELINE_RECIPE_FINGERPRINT_DETAIL",
+    "BASELINE_RECIPE_SNAPSHOT_DETAIL",
+    "BASELINE_REF_DETAIL",
+    "BASELINE_REF_PARAM",
+    "RECIPE_FINGERPRINT_DETAIL",
+    "RECIPE_FINGERPRINT_PARAM",
+    "RECIPE_SNAPSHOT_DETAIL",
+    "RECIPE_SNAPSHOT_PARAM",
+    "default_recipe_args",
+    "synthesis_recipe_args",
+    "synthesis_recipe_changes",
+    "synthesis_recipe_fingerprint",
+    "synthesis_recipe_snapshot",
+    "synthesis_recipe_snapshot_fingerprint",
+]
+
 _DEFAULT_TIMING_ENGINE = "openroad"
 
 
@@ -105,13 +132,13 @@ def synthesis_recipe_args(
     return out
 
 
-def synthesis_recipe_fingerprint(
+def synthesis_recipe_snapshot(
     resolved: Any,
     args: argparse.Namespace,
     *,
     target: str,
-) -> str:
-    """Hash the normalized complete recipe and design constraints for a Target."""
+) -> dict[str, Any]:
+    """Return the normalized recipe and design constraints for a Target."""
     constraints = []
     for sdc_file in resolved.sdc_files:
         path = sdc_file.absolute(resolved.build_root)
@@ -125,27 +152,37 @@ def synthesis_recipe_fingerprint(
             digest = None
         constraints.append({"name": sdc_file.name, "sha256": digest})
 
-    payload = {
+    return {
         "schema": 1,
         "target": target,
+        "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,
-        "parameters": _jsonable(resolved.parameters),
+        "parameters": jsonable(resolved.parameters),
         "recipe_args": synthesis_recipe_args(resolved.flow_options, args, target=target),
         "constraints": constraints,
         "default_clock_ps": getattr(args, "default_clock", None),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _jsonable(value: Any) -> Any:
-    """Convert EDAM/YAML values into a deterministic JSON-safe structure."""
-    if isinstance(value, Mapping):
-        return {str(key): _jsonable(item) for key, item in sorted(value.items(), key=str)}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, Path):
-        return value.as_posix()
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+def synthesis_recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
+    """Hash one normalized synthesis-recipe snapshot."""
+    return recipe_snapshot_fingerprint(snapshot)
+
+
+def synthesis_recipe_fingerprint(
+    resolved: Any,
+    args: argparse.Namespace,
+    *,
+    target: str,
+) -> str:
+    """Hash the normalized complete recipe and design constraints for a Target."""
+    snapshot = synthesis_recipe_snapshot(resolved, args, target=target)
+    return synthesis_recipe_snapshot_fingerprint(snapshot)
+
+
+def synthesis_recipe_changes(
+    baseline: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return deterministic leaf-level changes between two recipe snapshots."""
+    return recipe_changes(baseline, current)

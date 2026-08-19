@@ -698,6 +698,11 @@ def _freeze_synth_baseline(ctx: TicketContext) -> StepResult | None:
     if not ctx.has_synth:
         return None
 
+    if ctx.base_sha:
+        ctx._synth_baseline_sha = ctx.base_sha
+        logger.debug("Using ticket synthesis baseline SHA: %s", ctx.base_sha[:12])
+        return None
+
     base_sha_result = subprocess.run(
         ["git", "rev-parse", ctx.branch],
         cwd=str(ctx.project_root),

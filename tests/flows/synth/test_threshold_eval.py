@@ -15,7 +15,15 @@ from pathlib import Path
 import pytest
 
 from booley.dev_support.development_state import DevelopmentState
-from booley.flows.synth.recipe import RECIPE_FINGERPRINT_DETAIL, RECIPE_FINGERPRINT_PARAM
+from booley.flows.synth.recipe import (
+    BASELINE_RECIPE_FINGERPRINT_DETAIL,
+    BASELINE_REF_DETAIL,
+    BASELINE_REF_PARAM,
+    RECIPE_FINGERPRINT_DETAIL,
+    RECIPE_FINGERPRINT_PARAM,
+    RECIPE_SNAPSHOT_DETAIL,
+    RECIPE_SNAPSHOT_PARAM,
+)
 
 
 def _per_clock(critical_path_ps: float, fmax_mhz: float, clock: str = "clk_i") -> dict:
@@ -59,17 +67,46 @@ class TestRecipeFingerprint:
         assert state.is_met("synthesis_ok_default")
         assert state.criteria["synthesis_ok_default"].detail["checks"][0]["pass"] is True
 
-    def test_changed_recipe_rejects_otherwise_passing_evidence(self, state):
-        _init_with_params(state, {RECIPE_FINGERPRINT_PARAM: "frozen"})
+    def test_changed_recipe_is_recorded_without_rejecting_evidence(self, state):
+        baseline = {"target": "default", "recipe_args": ["balanced"]}
+        current = {"target": "default", "recipe_args": ["delay"]}
+        _init_with_params(
+            state,
+            {RECIPE_FINGERPRINT_PARAM: "frozen", RECIPE_SNAPSHOT_PARAM: baseline},
+        )
         state.set_criterion(
             "synthesis_ok_default",
             True,
-            detail={RECIPE_FINGERPRINT_DETAIL: "changed"},
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: "changed",
+                RECIPE_SNAPSHOT_DETAIL: current,
+            },
         )
-        assert not state.is_met("synthesis_ok_default")
-        check = state.criteria["synthesis_ok_default"].detail["checks"][0]
-        assert check["expected"] == "frozen"
-        assert check["actual"] == "changed"
+        assert state.is_met("synthesis_ok_default")
+        comparison = state.criteria["synthesis_ok_default"].detail["recipe_comparison"]
+        assert comparison["changed"] is True
+        assert comparison["changes"] == [
+            {"path": "recipe_args[0]", "before": "balanced", "after": "delay"}
+        ]
+
+    def test_relative_recipe_evidence_requires_pinned_baseline(self, state):
+        params = {
+            RECIPE_FINGERPRINT_PARAM: "frozen",
+            RECIPE_SNAPSHOT_PARAM: {"target": "default"},
+            BASELINE_REF_PARAM: "a" * 40,
+        }
+        _init_with_params(state, params)
+        state.set_criterion(
+            "synthesis_ok_default",
+            True,
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: "changed",
+                RECIPE_SNAPSHOT_DETAIL: {"target": "default", "mode": "new"},
+                BASELINE_RECIPE_FINGERPRINT_DETAIL: "frozen",
+                BASELINE_REF_DETAIL: "a" * 40,
+            },
+        )
+        assert state.is_met("synthesis_ok_default")
 
 
 # ===========================================================================
@@ -458,7 +495,7 @@ class TestReductionFloors:
 
 
 class TestDeltaWithoutBaseline:
-    def test_skips_with_warning(self, state):
+    def test_missing_baseline_fails_closed(self, state):
         _init_with_params(state, {"cell_count_reduce_at_least": 10})
         state.set_criterion(
             "synthesis_ok_default",
@@ -476,10 +513,10 @@ class TestDeltaWithoutBaseline:
                 # No baseline_metrics!
             },
         )
-        # Delta checks skipped → criterion still passes
-        assert state.is_met("synthesis_ok_default")
+        assert not state.is_met("synthesis_ok_default")
         checks = state.criteria["synthesis_ok_default"].detail["checks"]
         assert checks[0]["skipped"] is True
+        assert checks[0]["pass"] is False
 
 
 # ===========================================================================

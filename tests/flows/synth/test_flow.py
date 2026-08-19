@@ -45,6 +45,7 @@ from booley.flows.synth.flow import (
     _worst_critical_path_ps,
     synth_target_report_slug,
 )
+from booley.flows.synth.recipe import BASELINE_REF_PARAM
 from booley.fusesoc import fusesoc_registry
 from booley.harness import nangate_pdk
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
@@ -133,6 +134,36 @@ def flow_and_state(state_file: Path, tmp_path: Path):
     )
     flow.read_state()
     return flow, state_file
+
+
+def test_relative_ticket_criterion_auto_applies_pinned_baseline(
+    flow_and_state, tmp_path: Path
+) -> None:
+    flow, _ = flow_and_state
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "rtl.v").write_text("module rtl; endmodule\n", encoding="utf-8")
+    subprocess.run(["git", "add", "rtl.v"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    flow.state.init_criteria(
+        {"synthesis_ok_lite": True},
+        criterion_params={"synthesis_ok_lite": {BASELINE_REF_PARAM: base_sha}},
+    )
+
+    assert flow._apply_ticket_baseline(["lite"]) is None
+    assert flow.args.baseline == base_sha
 
 
 def _write_execution_config(tmp_path: Path, body: str) -> None:

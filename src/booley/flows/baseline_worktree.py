@@ -13,6 +13,11 @@ touched and delta mode works identically in both modes. The worktree lives under
 ``<project>/.booley_project/`` — git-ignored (never pollutes ``git status``) and
 inside the Session Runtime workspace. It is force-removed on context exit,
 even if the body raises.
+
+For Ticket Mode's paired ``.booley_project`` repository, the outer baseline
+worktree receives a nested detached worktree at the ticket branch's fork point.
+That preserves the baseline revision's Target definitions and recipe instead of
+mirroring live project data into both comparisons.
 """
 
 from __future__ import annotations
@@ -21,11 +26,15 @@ import logging
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from booley.fusesoc.fusesoc_registry import state_cores_dir
+from booley.runtime.ticket_repositories import paired_project_repository
+
+from .recipe_evidence import BASELINE_REF_PARAM
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +59,48 @@ def git_short_sha(ref: str, cwd: Path) -> str:
         check=False,
     )
     return result.stdout.strip() if result.returncode == 0 else ref[:8]
+
+
+def git_full_sha(ref: str, cwd: Path) -> str | None:
+    """Resolve *ref* to a full commit SHA, returning None on invalid input."""
+    result = _git(cwd, "rev-parse", "--verify", f"{ref}^{{commit}}", timeout=30)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def resolve_ticket_baseline(
+    criteria: Mapping[str, Any],
+    criterion_prefix: str,
+    targets: list[str],
+    requested: str | None,
+    project_root: Path,
+    flow_name: str,
+) -> tuple[str | None, str | None, str | None]:
+    """Resolve and enforce one immutable ticket baseline across selected Targets."""
+    refs = {
+        params[BASELINE_REF_PARAM]
+        for target in targets
+        if (entry := criteria.get(f"{criterion_prefix}{target}")) is not None
+        and isinstance((params := getattr(entry, "params", None)), dict)
+        and isinstance(params.get(BASELINE_REF_PARAM), str)
+        and params[BASELINE_REF_PARAM]
+    }
+    if not refs:
+        return requested, None, None
+    if len(refs) != 1:
+        return requested, None, f"{flow_name}: selected criteria carry conflicting baseline refs"
+    expected = next(iter(refs))
+    selected = requested or expected
+    actual_sha = git_full_sha(selected, project_root)
+    expected_sha = git_full_sha(expected, project_root)
+    if actual_sha is None or expected_sha is None:
+        return selected, None, f"{flow_name}: ticket baseline ref cannot be resolved to a commit"
+    if actual_sha != expected_sha:
+        error = (
+            f"{flow_name}: baseline-relative ticket criteria require the pinned "
+            f"base_sha {expected_sha}; got {actual_sha}"
+        )
+        return selected, None, error
+    return selected, actual_sha, None
 
 
 @contextmanager
@@ -92,12 +143,17 @@ def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
             f"git worktree add for baseline ref {ref!r} failed: {detail or add.returncode}"
         )
 
+    paired_baseline: Path | None = None
     try:
         _populate_submodules(wt_dir, ref)
-        _copy_stealth_cores(project_root, wt_dir, ref)
+        paired_baseline = _install_paired_project_baseline(project_root, wt_dir)
+        if paired_baseline is None:
+            _copy_stealth_cores(project_root, wt_dir, ref)
         _copy_root_quarantine_marker(project_root, wt_dir)
         yield wt_dir
     finally:
+        if paired_baseline is not None:
+            _remove_paired_project_baseline(project_root, paired_baseline)
         rm = _git(
             project_root,
             "worktree",
@@ -115,6 +171,72 @@ def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
                 (rm.stderr or rm.stdout or "").strip(),
             )
         _git(project_root, "worktree", "prune", timeout=30)
+
+
+def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path | None:
+    """Check out the paired project repository at its ticket fork point."""
+    repository = paired_project_repository(project_root)
+    if repository is None:
+        return None
+    base_sha = _paired_project_base_sha(repository.worktree)
+    destination = wt_dir / ".booley_project"
+    add = _git(
+        repository.worktree,
+        "worktree",
+        "add",
+        "--detach",
+        "--force",
+        str(destination),
+        base_sha,
+        timeout=120,
+    )
+    if add.returncode != 0:
+        detail = (add.stderr or add.stdout or "").strip()
+        raise BaselineWorktreeError(
+            f"could not materialize paired project baseline {base_sha[:12]}: "
+            f"{detail or add.returncode}"
+        )
+    return destination
+
+
+def _paired_project_base_sha(project_worktree: Path) -> str:
+    """Resolve the immutable fork point of a paired ticket project branch."""
+    upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
+    if upstream.returncode != 0:
+        raise BaselineWorktreeError("paired project ticket branch has no baseline upstream")
+    merge_base = _git(
+        project_worktree,
+        "merge-base",
+        upstream.stdout.strip(),
+        "HEAD",
+        timeout=30,
+    )
+    if merge_base.returncode != 0 or not merge_base.stdout.strip():
+        raise BaselineWorktreeError("could not resolve paired project ticket fork point")
+    return merge_base.stdout.strip()
+
+
+def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
+    """Remove the nested project worktree before its outer worktree disappears."""
+    repository = paired_project_repository(project_root)
+    if repository is None:
+        logger.warning("paired project repository disappeared before baseline cleanup")
+        return
+    result = _git(
+        repository.worktree,
+        "worktree",
+        "remove",
+        "--force",
+        str(baseline),
+        timeout=60,
+    )
+    if result.returncode != 0:
+        logger.warning(
+            "paired project baseline cleanup failed for %s: %s",
+            baseline,
+            (result.stderr or result.stdout or "").strip(),
+        )
+    _git(repository.worktree, "worktree", "prune", timeout=30)
 
 
 def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
@@ -156,9 +278,10 @@ def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
     ``.booley_project/`` is git-excluded, so a fresh ``git worktree add``
     checkout carries no ``.booley_project/cores/`` — and the baseline run
     scans cores relative to the *worktree*, so stealth-only projects would
-    silently compare against zero cores. Copying the *live* stealth cores is
-    the pragmatic choice: Flow config is likewise read from the live project
-    dir, not the baseline ref.
+    silently compare against zero cores. For an unpaired project, copying the
+    *live* stealth cores is the pragmatic choice: Flow config is likewise read
+    from the live project dir, not the baseline ref. Paired project repositories
+    take the separate fork-point worktree path before this helper is called.
 
     Symlinks are copied **as symlinks**. A stealth ``.core`` resolves its
     filesets relative to itself, so it reaches the RTL through core-relative

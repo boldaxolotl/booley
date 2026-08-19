@@ -51,6 +51,9 @@ class TicketContext:
     project_root: Path = field(default_factory=Path.cwd)
     # Transcript logging (--no-transcripts to disable)
     save_transcripts: bool = True
+    # Immutable outer-repository baseline stamped into ticket frontmatter.
+    # Appended for positional compatibility with existing context constructors.
+    base_sha: str = ""
 
     @property
     def work_dir(self) -> Path:

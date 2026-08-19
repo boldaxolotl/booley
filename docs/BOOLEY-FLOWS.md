@@ -510,6 +510,25 @@ Either way the failing stage's own output (a missing liberty file, a
 Yosys/sv2v error) is carried into the report, so the reason is named instead
 of a bare "no metrics".
 
+#### Ticket baselines and recipe changes
+
+Ticket Mode treats a Target's synthesis recipe as revision-owned by default;
+the ticket has no `same`/`different` recipe control field. Intake snapshots the
+normalized recipe of each existing Target named by `synthesis_ok`. When the
+criterion contains a baseline-relative threshold, `synth` automatically runs
+the ticket's immutable `base_sha` with the Target recipe from that revision,
+then runs the ticket head with its current Target recipe. For projects whose
+`.booley_project` is a paired Git repository, the baseline run likewise uses
+the paired repository's ticket fork point rather than copying the live Target
+definition into both runs.
+
+A recipe difference is evidence, not a failure: acceptance comes from the
+requested cell-count, area, and timing checks. The Review package shows the
+normalized recipe changes next to those QoR deltas during triage. A missing or
+mismatched baseline, baseline recipe, or metric fails closed; Booley never
+reports a relative criterion as passing when it skipped the comparison.
+The same revision-owned contract applies to `fpga_impl_ok` below.
+
 ### Reports and Criteria detail
 
 For each Target, the Flow writes:
@@ -531,6 +550,8 @@ The Criteria detail includes:
 - `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`,
   `multi_driven`, `process_count`
 - `baseline_metrics`, when `--baseline` is used
+- normalized current/baseline recipe fingerprints and snapshots, with their
+  semantic differences summarized in the Review package
 - `_metric_map` and `_min_allowed` for threshold/acceptance display
 
 ## `fpga`
@@ -605,7 +626,9 @@ Field rules:
   `[flows.fpga].default_target`.
 - `--baseline`: compare against a git ref. The baseline is built in an
   ephemeral `git worktree`, so it works in Interactive Mode as well as Ticket
-  Mode (the two execution modes; see [CONTEXT.md](CONTEXT.md)).
+  Mode (the two execution modes; see [CONTEXT.md](CONTEXT.md)). A Ticket Mode
+  criterion with a relative threshold supplies its immutable `base_sha`
+  automatically.
 - `--no-cache`: force a fresh implementation even when a matching reusable
   result exists. The fresh result replaces the cache after it completes.
 - `--dry-run`: validate inputs and print the planned Vivado build
@@ -708,6 +731,19 @@ clock `clk_i` (see [USAGE.md](USAGE.md#synthesis--fpga-threshold-flavours)).
 Provisioning and setup failures are Flow errors. Missing metrics, timing
 violations, and critical design conditions are design failures.
 
+#### Ticket baselines and recipe changes
+
+As with `synthesis_ok`, Ticket Mode snapshots the normalized FPGA Target recipe
+at intake and needs no `same`/`different` control field. For a relative
+`fpga_impl_ok` threshold, the baseline pass implements `base_sha` with its
+revision's part, out-of-context choice, parameters, toplevel, and XDC contents;
+the current pass uses the ticket head's recipe. Paired `.booley_project`
+repositories use their ticket fork point for the baseline Target definition.
+
+Recipe changes are accepted and listed beside utilization and timing deltas in
+the Review package. The criterion fails closed when its pinned baseline,
+baseline recipe, or requested metrics are missing or mismatched.
+
 ### Reports and Criteria detail
 
 For each Target, the Flow writes:
@@ -726,4 +762,6 @@ The Criteria detail includes:
 - `has_primary_metrics`, `timing_met`, `has_critical`
 - `latches`, `comb_loops`, `multi_driven`
 - `baseline_metrics`, when `--baseline` is used
+- normalized current/baseline recipe fingerprints and snapshots, with their
+  semantic differences summarized in the Review package
 - `_metric_map` and `_min_allowed` for threshold/acceptance display

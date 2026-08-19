@@ -151,6 +151,102 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
     )
 
 
+def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["synthesis_ok_core"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "cells": 90,
+            "recipe_comparison": {
+                "target": "synth_core",
+                "baseline_ref": "a" * 40,
+                "baseline_fingerprint": "b" * 64,
+                "current_fingerprint": "c" * 64,
+                "changed": True,
+                "changes": [
+                    {
+                        "path": "parameters.ENABLE_ZBB",
+                        "before": 0,
+                        "after": 1,
+                    }
+                ],
+            },
+            "checks": [
+                {
+                    "param": "cell_count_increase_at_most",
+                    "pass": True,
+                    "baseline": 85,
+                    "current": 90,
+                    "pct": 5.88,
+                    "threshold": 11,
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+
+    assert facts["recipe_comparisons"][0]["target"] == "synth_core"
+    assert "#### Implementation Target recipes" in rendered
+    assert "parameters.ENABLE_ZBB" in rendered
+    assert "cell_count_increase_at_most" in rendered
+
+
+def test_review_facts_and_briefing_reveal_fpga_recipe_changes(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["fpga_impl_ok_core"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "recipe_comparison": {
+                "flow": "fpga",
+                "target": "fpga_core",
+                "baseline_fingerprint": "b" * 64,
+                "current_fingerprint": "c" * 64,
+                "changed": True,
+                "changes": [
+                    {
+                        "path": "flow_options.part",
+                        "before": "xc7a35t",
+                        "after": "xc7a200t",
+                    }
+                ],
+            },
+            "checks": [
+                {
+                    "param": "lut_count_increase_at_most",
+                    "pass": True,
+                    "baseline": 100,
+                    "current": 105,
+                    "pct": 5.0,
+                    "threshold": 10,
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+
+    comparison = next(row for row in facts["recipe_comparisons"] if row["flow"] == "fpga")
+    assert comparison["target"] == "fpga_core"
+    assert "`fpga:fpga_core`" in rendered
+    assert "flow_options.part" in rendered
+    assert "lut_count_increase_at_most" in rendered
+
+
 def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"

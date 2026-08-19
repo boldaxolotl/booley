@@ -116,6 +116,8 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
         work_root=tmp_path,
         fingerprint="a" * 64,
         require_bitstream=True,
+        recipe_snapshot={"flow": "fpga", "target": "fpga_demo"},
+        recipe_fingerprint="recipe-a",
     )
     with (
         patch.object(flow, "_prepare_fpga_command", return_value=prepared),
@@ -132,6 +134,7 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
     assert metrics.passed
     assert metrics.cached
     assert metrics.cache_fingerprint == "a" * 64
+    assert metrics.recipe_fingerprint == "recipe-a"
 
 
 def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
