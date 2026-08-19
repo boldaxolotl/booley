@@ -192,9 +192,13 @@ Every run writes a per-Target JSON report at
 `<runtime>/flow-reports/sim_{target}.json` carrying the resolved identity (`target`,
 `tb_top`, `eda_tool`), timing, the target `passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
-`error_tail`. Alongside each run's build dir sit two durable artifacts: `run.log`
-(full raw simulator output, tail-truncated to 10 MB) and `result.json` (the
-structured verdict). cocotb adds its `results.xml`.
+`error_tail`. For native HDL Targets, every entry also carries
+`artifacts.run_log`, a work-directory-relative pointer to an atomic,
+unabridged copy of that test's simulator output. A grouped run preserves this
+copy before starting the next test, including for failed, timed-out, and
+inconclusive tests that produced output. The Target build directory retains its
+compatibility `run.log` (the latest test's output, tail-truncated to 10 MB) and
+`result.json`; cocotb adds its `results.xml`.
 
 `sim` adds one stricter invariant: it omits the entire block unless the current
 run's header proves the pointers are fresh. A build that dies before the

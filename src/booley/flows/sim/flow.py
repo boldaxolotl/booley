@@ -8,6 +8,7 @@ cycle count extraction, and structured JSON reporting.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import logging
@@ -220,6 +221,12 @@ _TRACE_OK_RE = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
 # BOOLEY_MCP_MAX_STDOUT_BYTES (see output_budget.scaled).
 _MAX_EXCERPT_LINES = 30
 
+# A directly embedded test name must be one bounded path component. Names
+# outside this intentionally conservative portable set are represented by a
+# collision-resistant digest; the leading ``~`` keeps the encoded namespace
+# disjoint from every directly embedded name.
+_SAFE_ARTIFACT_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
 
 @dataclass
 class TestResult:
@@ -252,6 +259,10 @@ class TestResult:
     # waveform, so it rides the first entry.
     trace_path: str = ""
     trace_bytes: int = 0
+    # Work-dir-relative immutable copy of this test's complete simulator
+    # output. Empty only when no simulator output was available or no report
+    # directory was requested.
+    run_log_path: str = ""
 
 
 @dataclass
@@ -287,6 +298,14 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     tmp.replace(path)
+
+
+def _artifact_path_component(value: str) -> str:
+    """Return one traversal-safe, bounded component representing *value*."""
+    if _SAFE_ARTIFACT_COMPONENT_RE.fullmatch(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"~sha256-{digest}"
 
 
 def parse_cycles(output: str) -> int | None:
@@ -816,6 +835,8 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
     if test.trace_path:
         entry["trace_path"] = test.trace_path
         entry["trace_bytes"] = test.trace_bytes
+    if test.run_log_path:
+        entry["artifacts"] = {"run_log": test.run_log_path}
     if not test.test_validated:
         entry["validation_note"] = "test name was not validated against configs.toml"
     return entry
@@ -2091,14 +2112,17 @@ class SimulateFlow(BooleyFlow):
             proc.returncode,
         )
         self._persist_full_run_log(target, proc)
+        test_run_log = self._persist_test_run_log(target, test_name or target, proc)
         _raise_if_build_eda_tool_missing(combined)
 
-        return self._interpret_sim_result(
+        result = self._interpret_sim_result(
             combined,
             proc,
             target,
             test_name,
         )
+        result.run_log_path = test_run_log or ""
+        return result
 
     def _persist_full_run_log(self, target: str, proc: Any) -> None:
         """Overwrite *target*'s ``run.log`` with the WHOLE subprocess output.
@@ -2121,6 +2145,34 @@ class SimulateFlow(BooleyFlow):
             write_run_log(log_dir, proc.stdout + ("\n" + proc.stderr if proc.stderr else ""))
         except OSError:
             logger.debug("failed to persist the full sim run.log in %s", log_dir, exc_info=True)
+
+    def _persist_test_run_log(self, target: str, test_name: str, proc: Any) -> str | None:
+        """Atomically archive one test's unabridged output and return its pointer.
+
+        The copy lands before control returns to the Target loop, so a later
+        test may replace the live Target-level ``run.log`` without changing
+        this test's evidence. Unsafe or oversized external test names are never
+        interpolated into a path directly.
+        """
+        report_dir = self.args.report_dir
+        output = proc.stdout + ("\n" + proc.stderr if proc.stderr else "")
+        if report_dir is None or not output:
+            return None
+        target_component = _artifact_path_component(f"sim_{target}")
+        test_component = _artifact_path_component(test_name)
+        artifact_dir = report_dir / "artifacts" / target_component / "tests" / test_component
+        try:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            path = write_run_log(artifact_dir, output, max_bytes=None)
+        except OSError:
+            logger.debug(
+                "failed to preserve the per-test sim run.log for %s/%s",
+                target,
+                test_name,
+                exc_info=True,
+            )
+            return None
+        return artifacts.relative(path, self.args.work_dir)
 
     def _interpret_sim_result(
         self,
