@@ -1929,13 +1929,13 @@ async def _launch_developer_agent(
     no runtime mounts, no path remapping. Every path handed to the agent
     (and to the stdio Booley MCP server it spawns) is the Runner's real path.
 
-    Env contract: the BOOLEY_* vars below are EXPORTED into ``os.environ``
-    permanently — the agent CLI and its stdio MCP server inherit the parent
-    environment (Claude directly; Codex via the per-ticket HOME config that
-    bakes the current BOOLEY_* env). We deliberately skip restore-on-exit:
-    this Runner process is dedicated to the ticket, so nothing after the
-    call needs the pre-launch values, and the post-developer hook already
-    re-exports the same vars anyway.
+    Env contract: the BOOLEY_* vars below are EXPORTED into ``os.environ`` so
+    the agent CLI and its stdio MCP server inherit the parent environment
+    (Claude directly; Codex via the per-ticket HOME config that bakes the
+    current BOOLEY_* env). ``BOOLEY_PROJECT_DIR`` is scoped to the backend
+    call: ticket-authored content may come from a paired checkout, while
+    post-agent Ticket Board transitions must return to the control-plane
+    project directory.
     """
     from booley.config.settings import get_backend_config
 
@@ -1972,8 +1972,6 @@ async def _launch_developer_agent(
         # nested-agent markers (BOOLEY_NESTED_AGENT) are NOT set here — the
         # developer must see the full specialist surface.
         endpoint_env["BOOLEY_MCP_TOOLS"] = ",".join(mcp_tools)
-    os.environ.update(endpoint_env)
-
     params = AgentCallParams(
         prompt=prompt,
         model=model,
@@ -1995,7 +1993,15 @@ async def _launch_developer_agent(
     backend_kwargs = {"on_event": on_event}
     if developer_budget is not None:
         backend_kwargs["developer_budget"] = developer_budget
-    return await cfg.active_backend.call(params, **backend_kwargs)
+    previous_project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
+    os.environ.update(endpoint_env)
+    try:
+        return await cfg.active_backend.call(params, **backend_kwargs)
+    finally:
+        if previous_project_dir is None:
+            os.environ.pop("BOOLEY_PROJECT_DIR", None)
+        else:
+            os.environ["BOOLEY_PROJECT_DIR"] = previous_project_dir
 
 
 def _is_pid_alive(pid: int) -> bool:
