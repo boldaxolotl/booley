@@ -172,8 +172,7 @@ def op_archive(
 
             if not cleanup_project_ticket_branch(tio._project_root, ticket_slug):
                 print(
-                    f"Error: could not clean up project repository branch for "
-                    f"'{ticket_slug}'",
+                    f"Error: could not clean up project repository branch for '{ticket_slug}'",
                     file=sys.stderr,
                 )
                 continue

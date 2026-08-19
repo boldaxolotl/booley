@@ -105,9 +105,7 @@ def _prepare_destination(destination: Path) -> None:
     if not destination.exists():
         return
     if (destination / ".git").exists():
-        raise ProjectWorktreeError(
-            f"refusing to replace unexpected Git checkout at {destination}"
-        )
+        raise ProjectWorktreeError(f"refusing to replace unexpected Git checkout at {destination}")
     safe_rmtree(destination)
 
 

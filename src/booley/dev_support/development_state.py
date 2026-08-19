@@ -609,7 +609,9 @@ class DevelopmentState:
         baseline_recipe = detail.get(BASELINE_RECIPE_FINGERPRINT_DETAIL)
         complete = actual_recipe is not None
         if expected_ref is not None:
-            complete = complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
+            complete = (
+                complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
+            )
         baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
         current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
         if isinstance(baseline_snapshot, dict):

@@ -1000,9 +1000,7 @@ class FpgaImplFlow(BooleyFlow):
             detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
             detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
         if baseline_ref:
-            detail[BASELINE_REF_DETAIL] = (
-                getattr(self, "_baseline_full_sha", None) or baseline_ref
-            )
+            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(
             f"fpga_impl_ok_{cfg}",
             cur.passed,

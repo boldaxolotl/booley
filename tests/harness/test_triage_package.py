@@ -143,12 +143,8 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
     project_change = facts["changed_files"][-1]
     assert project_change["repository"] == "project"
     assert project_change["path"] == ".booley_project/cores/demo.core"
-    assert Path(project_change["diff_left"]).read_text(encoding="utf-8") == (
-        "name: ::demo:0\n"
-    )
-    assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == (
-        "name: ::demo:1\n"
-    )
+    assert Path(project_change["diff_left"]).read_text(encoding="utf-8") == ("name: ::demo:0\n")
+    assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == ("name: ::demo:1\n")
 
 
 def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):

@@ -147,9 +147,7 @@ def test_outer_and_project_edits_commit_to_separate_repositories(
     (ctx.worktree_path / "rtl" / "dut.sv").write_text(
         "module dut; wire changed; endmodule\n", encoding="utf-8"
     )
-    (nested / "cores" / "dut.core").write_text(
-        "CAPI=2:\nname: ::dut:1\n", encoding="utf-8"
-    )
+    (nested / "cores" / "dut.core").write_text("CAPI=2:\nname: ::dut:1\n", encoding="utf-8")
 
     dirty = _check_ticket_dirty_statuses(ctx.worktree_path)
     paths = [entry.path for entry in dirty]
@@ -238,9 +236,7 @@ def test_project_branch_merges_with_unstaged_board_state(
     queued = _commit_board_ticket(project, "queue", ctx.slug)
     nested = prepare_project_worktree(ctx)
     assert nested is not None
-    (nested / "cores" / "dut.core").write_text(
-        "CAPI=2:\nname: ::dut:3\n", encoding="utf-8"
-    )
+    (nested / "cores" / "dut.core").write_text("CAPI=2:\nname: ::dut:3\n", encoding="utf-8")
     _commit_ticket_paths(ctx, [".booley_project/cores/dut.core"], "fix: update core")
     review = _move_board_ticket(queued, "review")
 

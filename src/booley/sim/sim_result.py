@@ -525,9 +525,14 @@ def write_run_log(
     # errors="replace" upstream, but a TB can still smuggle lone surrogates
     # through — never let an encode error lose the whole log.
     body = text.encode("utf-8", errors="replace")
-    data = header + body if max_bytes is None else header + _cap_log_bytes(
-        body,
-        max(0, max_bytes - len(header)),
+    data = (
+        header + body
+        if max_bytes is None
+        else header
+        + _cap_log_bytes(
+            body,
+            max(0, max_bytes - len(header)),
+        )
     )
     _atomic_write(path, data)
     return path

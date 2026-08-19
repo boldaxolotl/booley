@@ -164,9 +164,7 @@ def _recipe_comparisons(state: Mapping[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(comparison, Mapping):
             continue
         checks = detail.get("checks") if isinstance(detail.get("checks"), list) else []
-        flow = comparison.get("flow") or (
-            "fpga" if name.startswith("fpga_impl_ok_") else "synth"
-        )
+        flow = comparison.get("flow") or ("fpga" if name.startswith("fpga_impl_ok_") else "synth")
         prefix = "fpga_impl_ok_" if flow == "fpga" else "synthesis_ok_"
         rows.append(
             {
@@ -193,9 +191,7 @@ def _repository_commits(
     worktree: Path, base_sha: str, head_sha: str, repository: str
 ) -> list[dict[str, str]]:
     revision = f"{base_sha}..{head_sha}"
-    output = _git_at(
-        worktree, "log", "--reverse", "--format=%H%x00%h%x00%s", revision, "--"
-    )
+    output = _git_at(worktree, "log", "--reverse", "--format=%H%x00%h%x00%s", revision, "--")
     rows = []
     for line in output.splitlines():
         parts = line.split("\0", 2)
@@ -242,9 +238,7 @@ def _repository_changed_files(
     path_prefix: str = "",
 ) -> list[dict[str, Any]]:
     revision = f"{base_sha}..{head_sha}"
-    output = _git_at(
-        worktree, "diff", "--find-renames", "--name-status", "-z", revision, "--"
-    )
+    output = _git_at(worktree, "diff", "--find-renames", "--name-status", "-z", revision, "--")
     tokens = output.split("\0")
     if tokens and not tokens[-1]:
         tokens.pop()
@@ -284,9 +278,7 @@ def _repository_changed_files(
 
 
 def _changed_files(ctx: TriageContext) -> list[dict[str, Any]]:
-    rows = _repository_changed_files(
-        ctx.worktree, ctx.base_sha, ctx.head_sha, repository="rtl"
-    )
+    rows = _repository_changed_files(ctx.worktree, ctx.base_sha, ctx.head_sha, repository="rtl")
     project = getattr(ctx, "project_repository", None)
     if project is not None:
         rows.extend(
@@ -341,16 +333,12 @@ def _write_diff_pair(
     repository = change.get("_worktree", ctx)
     local_path = change.get("_local_path", new_path)
     local_old = (
-        change.get("_old_local_path") or local_path
-        if "_old_local_path" in change
-        else old_path
+        change.get("_old_local_path") or local_path if "_old_local_path" in change else old_path
     )
     base_sha = change.get("_base_sha", ctx.base_sha)
     head_sha = change.get("_head_sha", ctx.head_sha)
     left.write_bytes(_revision_content(repository, base_sha, local_old))
-    right.write_bytes(
-        _revision_content(repository, head_sha, local_path)
-    )
+    right.write_bytes(_revision_content(repository, head_sha, local_path))
     public = {key: value for key, value in change.items() if not key.startswith("_")}
     return {**public, "diff_left": str(left), "diff_right": str(right)}
 

@@ -282,9 +282,7 @@ def _resolve_project_review_repository(
     repository = paired_project_repository(worktree)
     if repository is None:
         if project_repository_expected(worktree):
-            raise ReviewPrepError(
-                "configured project repository has no paired ticket checkout"
-            )
+            raise ReviewPrepError("configured project repository has no paired ticket checkout")
         return None
     feature_branch = _git(repository.worktree, "branch", "--show-current").strip()
     expected = f"booley-ticket/{slug}"
@@ -491,9 +489,7 @@ def _collect_git_evidence(ctx: ReviewPrepContext) -> dict[str, Path]:
         )
         project_files = _git(project.worktree, "diff", "--name-status", project_revision)
         prefixed_files = "\n".join(
-            "\t".join(
-                [columns[0], *(f".booley_project/{path}" for path in columns[1:])]
-            )
+            "\t".join([columns[0], *(f".booley_project/{path}" for path in columns[1:])])
             for line in project_files.splitlines()
             if len(columns := line.split("\t")) > 1
         )
@@ -507,8 +503,7 @@ def _collect_git_evidence(ctx: ReviewPrepContext) -> dict[str, Path]:
             paths["status"].read_text(encoding="utf-8")
             + "\n"
             + "\n".join(
-                f"{line[:3]}.booley_project/{line[3:]}"
-                for line in project_status.splitlines()
+                f"{line[:3]}.booley_project/{line[3:]}" for line in project_status.splitlines()
             ),
         )
     return paths
