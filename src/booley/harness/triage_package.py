@@ -35,9 +35,9 @@ class TriageContext(Protocol):
     feature_branch: str
 
 
-def _git(ctx: TriageContext, *args: str) -> str:
+def _git_at(worktree: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(ctx.worktree), *args],
+        ["git", "-C", str(worktree), *args],
         capture_output=True,
         text=True,
         timeout=60,
@@ -47,6 +47,10 @@ def _git(ctx: TriageContext, *args: str) -> str:
         detail = (result.stderr or result.stdout).strip()[:1000]
         raise TriagePackageError(f"git {' '.join(args)} failed: {detail}")
     return result.stdout
+
+
+def _git(ctx: TriageContext, *args: str) -> str:
+    return _git_at(ctx.worktree, *args)
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -143,14 +147,40 @@ def _criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
 
 
-def _commits(ctx: TriageContext) -> list[dict[str, str]]:
-    revision = f"{ctx.base_sha}..{ctx.head_sha}"
-    output = _git(ctx, "log", "--reverse", "--format=%H%x00%h%x00%s", revision, "--")
+def _repository_commits(
+    worktree: Path, base_sha: str, head_sha: str, repository: str
+) -> list[dict[str, str]]:
+    revision = f"{base_sha}..{head_sha}"
+    output = _git_at(
+        worktree, "log", "--reverse", "--format=%H%x00%h%x00%s", revision, "--"
+    )
     rows = []
     for line in output.splitlines():
         parts = line.split("\0", 2)
         if len(parts) == 3:
-            rows.append({"sha": parts[0], "abbrev": parts[1], "subject": parts[2]})
+            rows.append(
+                {
+                    "sha": parts[0],
+                    "abbrev": parts[1],
+                    "subject": parts[2],
+                    "repository": repository,
+                }
+            )
+    return rows
+
+
+def _commits(ctx: TriageContext) -> list[dict[str, str]]:
+    rows = _repository_commits(ctx.worktree, ctx.base_sha, ctx.head_sha, "rtl")
+    project = getattr(ctx, "project_repository", None)
+    if project is not None:
+        rows.extend(
+            _repository_commits(
+                project.worktree,
+                project.base_sha,
+                project.head_sha,
+                "project",
+            )
+        )
     return rows
 
 
@@ -161,9 +191,18 @@ def _safe_repo_path(value: str) -> str:
     return path.as_posix()
 
 
-def _changed_files(ctx: TriageContext) -> list[dict[str, Any]]:
-    revision = f"{ctx.base_sha}..{ctx.head_sha}"
-    output = _git(ctx, "diff", "--find-renames", "--name-status", "-z", revision, "--")
+def _repository_changed_files(
+    worktree: Path,
+    base_sha: str,
+    head_sha: str,
+    *,
+    repository: str,
+    path_prefix: str = "",
+) -> list[dict[str, Any]]:
+    revision = f"{base_sha}..{head_sha}"
+    output = _git_at(
+        worktree, "diff", "--find-renames", "--name-status", "-z", revision, "--"
+    )
     tokens = output.split("\0")
     if tokens and not tokens[-1]:
         tokens.pop()
@@ -184,13 +223,47 @@ def _changed_files(ctx: TriageContext) -> list[dict[str, Any]]:
             old_path = None
             path = _safe_repo_path(tokens[index])
             index += 1
-        rows.append({"status": status, "path": path, "old_path": old_path})
+        display_path = f"{path_prefix}/{path}" if path_prefix else path
+        display_old = f"{path_prefix}/{old_path}" if path_prefix and old_path else old_path
+        rows.append(
+            {
+                "status": status,
+                "path": display_path,
+                "old_path": display_old,
+                "repository": repository,
+                "_worktree": worktree,
+                "_base_sha": base_sha,
+                "_head_sha": head_sha,
+                "_local_path": path,
+                "_old_local_path": old_path,
+            }
+        )
     return rows
 
 
-def _revision_content(ctx: TriageContext, revision: str, path: str) -> bytes:
+def _changed_files(ctx: TriageContext) -> list[dict[str, Any]]:
+    rows = _repository_changed_files(
+        ctx.worktree, ctx.base_sha, ctx.head_sha, repository="rtl"
+    )
+    project = getattr(ctx, "project_repository", None)
+    if project is not None:
+        rows.extend(
+            _repository_changed_files(
+                project.worktree,
+                project.base_sha,
+                project.head_sha,
+                repository="project",
+                path_prefix=".booley_project",
+            )
+        )
+    return rows
+
+
+def _revision_content(repository: Any, revision: str, path: str) -> bytes:
+    """Read one revision path, accepting a context for API compatibility."""
+    worktree = Path(getattr(repository, "worktree", repository))
     tree = subprocess.run(
-        ["git", "-C", str(ctx.worktree), "ls-tree", "-z", revision, "--", path],
+        ["git", "-C", str(worktree), "ls-tree", "-z", revision, "--", path],
         capture_output=True,
         timeout=60,
         check=False,
@@ -202,7 +275,7 @@ def _revision_content(ctx: TriageContext, revision: str, path: str) -> bytes:
     if mode == "160000" or object_type == "commit":
         return f"Submodule commit {object_id}\n".encode()
     result = subprocess.run(
-        ["git", "-C", str(ctx.worktree), "show", f"{revision}:{path}"],
+        ["git", "-C", str(worktree), "show", f"{revision}:{path}"],
         capture_output=True,
         timeout=60,
         check=False,
@@ -223,9 +296,21 @@ def _write_diff_pair(
     right = root / number / "head" / new_path
     left.parent.mkdir(parents=True, exist_ok=True)
     right.parent.mkdir(parents=True, exist_ok=True)
-    left.write_bytes(_revision_content(ctx, ctx.base_sha, old_path))
-    right.write_bytes(_revision_content(ctx, ctx.head_sha, new_path))
-    return {**change, "diff_left": str(left), "diff_right": str(right)}
+    repository = change.get("_worktree", ctx)
+    local_path = change.get("_local_path", new_path)
+    local_old = (
+        change.get("_old_local_path") or local_path
+        if "_old_local_path" in change
+        else old_path
+    )
+    base_sha = change.get("_base_sha", ctx.base_sha)
+    head_sha = change.get("_head_sha", ctx.head_sha)
+    left.write_bytes(_revision_content(repository, base_sha, local_old))
+    right.write_bytes(
+        _revision_content(repository, head_sha, local_path)
+    )
+    public = {key: value for key, value in change.items() if not key.startswith("_")}
+    return {**public, "diff_left": str(left), "diff_right": str(right)}
 
 
 def _materialize_diffs(ctx: TriageContext, changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -285,8 +370,15 @@ def _health(
     ):
         if not path.is_file():
             missing.append(name)
+    dirty = _git(ctx, "status", "--short").splitlines()
+    project = getattr(ctx, "project_repository", None)
+    if project is not None:
+        dirty.extend(
+            f"{line[:3]}.booley_project/{line[3:]}"
+            for line in _git_at(project.worktree, "status", "--short").splitlines()
+        )
     return {
-        "dirty_worktree": _git(ctx, "status", "--short").splitlines(),
+        "dirty_worktree": dirty,
         "exit_2_tools": exit_2,
         "developer_crashes": crashes,
         "missing_evidence": missing,

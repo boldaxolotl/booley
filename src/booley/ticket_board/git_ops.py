@@ -194,7 +194,19 @@ def merge_branch(merge_from: str, message: str, cwd: str, timeout: int = 60) -> 
             cwd=cwd,
             check=False,
         )
-        return r.returncode == 0, r.stderr.strip()
+        if r.returncode == 0:
+            return True, r.stderr.strip()
+        # A failed content merge leaves MERGE_HEAD and conflict entries behind.
+        # Completion must be retryable and must not poison the target checkout.
+        subprocess.run(
+            ["git", "merge", "--abort"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            check=False,
+        )
+        return False, (r.stderr or r.stdout).strip()
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
         return False, str(exc)
 

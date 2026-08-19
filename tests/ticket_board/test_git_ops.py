@@ -200,6 +200,7 @@ class TestMergeBranch:
         ok, err = merge_branch("feature", "merge commit", "/repo")
         assert ok is False
         assert "CONFLICT" in err
+        assert mock_run.call_args_list[-1].args[0] == ["git", "merge", "--abort"]
 
     @patch("subprocess.run")
     def test_timeout(self, mock_run):

@@ -5,15 +5,23 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from booley.dev_support.development_state import DevelopmentState
 from booley.dev_support.validate_commit_msg import MAX_SUMMARY_LEN, validate_message
-from booley.harness.developer import _leftover_commit_message, _run_post_guardrails
+from booley.harness.blocking import BlockingError
+from booley.harness.developer import (
+    _commit_ticket_paths,
+    _leftover_commit_message,
+    _run_post_guardrails,
+)
 from booley.harness.developer_guardrails import (
     DirtyFile,
     GitStatusError,
     check_uncommitted_code_statuses,
 )
 from booley.harness.models import TicketContext
+from booley.runtime.ticket_repositories import TicketRepository
 
 
 def _make_ctx(tmp_path: Path) -> TicketContext:
@@ -115,6 +123,36 @@ def test_leftover_edits_are_committed_before_handoff(tmp_path: Path):
         literal=True,
     )
     block.assert_not_called()
+
+
+def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
+    """A failed outer add must not prevent the authorized project commit."""
+    ctx = _make_ctx(tmp_path)
+    project_worktree = ctx.worktree_path / ".booley_project"
+    repositories = (
+        TicketRepository(ctx.worktree_path),
+        TicketRepository(project_worktree, ".booley_project"),
+    )
+    with (
+        patch(
+            "booley.runtime.ticket_repositories.ticket_repositories",
+            return_value=repositories,
+        ),
+        patch(
+            "booley.runtime.git.commit_scope",
+            side_effect=[BlockingError("outer failed"), None],
+        ) as commit,
+        pytest.raises(BlockingError, match="outer failed"),
+    ):
+        _commit_ticket_paths(
+            ctx,
+            ["rtl/dut.sv", ".booley_project/cores/dut.core"],
+            "fix: route both",
+        )
+
+    assert commit.call_count == 2
+    assert commit.call_args_list[1].args[0] == project_worktree
+    assert commit.call_args_list[1].args[1] == ["cores/dut.core"]
 
 
 def test_in_scope_file_still_dirty_after_commit_blocks(tmp_path: Path):

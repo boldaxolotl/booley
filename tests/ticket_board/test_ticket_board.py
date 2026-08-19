@@ -4947,6 +4947,12 @@ class TestBoardMoveTerminalActionOverrides:
             assert op_board_move(tio, "my-ticket", "done") is True
         assert do_merge.call_count == 1
 
+    def test_feature_branch_alias_uses_canonical_slug_for_terminal_actions(self, tmp_path):
+        tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
+        with patch("booley.ticket_board.operations._do_merge", return_value=True) as do_merge:
+            assert op_board_move(tio, "feat/my-ticket", "done") is True
+        assert do_merge.call_args.args[0] == "my-ticket"
+
     def test_no_cleanup_skips_the_cleanup_step(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=False, cleanup=True)
         with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
@@ -4972,7 +4978,7 @@ class TestBoardMoveTerminalActionOverrides:
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
         with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
             assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
-        assert do_cleanup.call_args.args[1].merge is False
+        assert do_cleanup.call_args.args[2].merge is False
 
     def test_overrides_never_enable_a_declined_action(self, tmp_path):
         """Subtractive only: a ticket that opted out of merging does not start

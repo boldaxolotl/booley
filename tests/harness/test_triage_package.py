@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.harness import triage_package as tp
@@ -21,6 +21,7 @@ class Context:
     base_sha: str
     head_sha: str
     feature_branch: str = "demo"
+    project_repository: object | None = None
 
 
 def _git(root: Path, *args: str) -> str:
@@ -109,6 +110,45 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     assert change["path"] == "rtl/new.sv"
     assert Path(change["diff_left"]).read_text(encoding="utf-8").startswith("module old")
     assert Path(change["diff_right"]).read_text(encoding="utf-8").startswith("module new")
+
+
+def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    project = ctx.worktree / ".booley_project"
+    project.mkdir()
+    _git(project, "init", "-q")
+    _git(project, "config", "user.name", "Test")
+    _git(project, "config", "user.email", "test@example.com")
+    core = project / "cores" / "demo.core"
+    core.parent.mkdir()
+    core.write_text("name: ::demo:0\n", encoding="utf-8")
+    _git(project, "add", ".")
+    _git(project, "commit", "-qm", "project base")
+    base = _git(project, "rev-parse", "HEAD")
+    core.write_text("name: ::demo:1\n", encoding="utf-8")
+    _git(project, "commit", "-qam", "update project core")
+    head = _git(project, "rev-parse", "HEAD")
+    project_repository = type(
+        "ProjectRepository",
+        (),
+        {"worktree": project, "base_sha": base, "head_sha": head},
+    )()
+    ctx = replace(ctx, project_repository=project_repository)
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+
+    assert facts["commits"][-1]["repository"] == "project"
+    assert facts["commits"][-1]["subject"] == "update project core"
+    project_change = facts["changed_files"][-1]
+    assert project_change["repository"] == "project"
+    assert project_change["path"] == ".booley_project/cores/demo.core"
+    assert Path(project_change["diff_left"]).read_text(encoding="utf-8") == (
+        "name: ::demo:0\n"
+    )
+    assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == (
+        "name: ::demo:1\n"
+    )
 
 
 def test_review_facts_record_unverified_fail_to_pass_transition(tmp_path: Path, monkeypatch):
