@@ -7,7 +7,7 @@ assumed.
 
 This guide starts after installation and project setup. It assumes `booley
 init` and the `booley-setup` skill have finished successfully; if they have not,
-install Booley with [INSTALL.md](INSTALL.md), then follow
+install Booley from the [README](../README.md#installation), then follow
 [SETUP.md](SETUP.md).
 
 Booley gives an LLM coding agent access to your project's configured EDA flows.
@@ -58,8 +58,8 @@ such as `booley cheat --commands --project`.
 that one needs the Session Runtime; both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
-If `booley` is not found, return to the installation instructions in
-[INSTALL.md](INSTALL.md#install-the-cli). Do not continue into the
+If `booley` is not found, return to the [installation instructions](../README.md#installation).
+Do not continue into the
 container until plain `booley doctor` has no unresolved failures or warnings.
 
 ## Choose a mode

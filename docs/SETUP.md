@@ -1,8 +1,8 @@
 # Setup
 
 This guide connects an installed Booley CLI to a specific RTL project. It
-assumes you have completed [INSTALL.md](INSTALL.md), including its host
-prerequisites, and that `booley --version` works.
+assumes you have completed the [README installation](../README.md#installation)
+and that `booley --version` works.
 
 Project setup has two parts: `booley init` bootstraps the repository, then the
 **`booley-setup` skill** handles the decisions and validation: feasibility
@@ -45,9 +45,7 @@ Their build systems have nothing in common (FuseSoC, bare Makefiles, a vendor te
 ## Bootstrap the project · host
 
 Run the bootstrap on the host before the skill takes over. The host versus
-Session Runtime split is introduced in
-[INSTALL.md](INSTALL.md#host-and-session-runtime) and specified fully in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Session Runtime split is described in [ARCHITECTURE.md](ARCHITECTURE.md#overview).
 
 > **`booley init` is the host command; the workflow CLI is container-only.**
 > `booley run`, `booley board`, and `bwave` refuse to run on the host (Reopen
@@ -239,7 +237,7 @@ project details leak into history). Stealth mode itself is covered in
 
 ## See also
 
-- [INSTALL.md](INSTALL.md): host prerequisites and CLI installation.
+- [README installation](../README.md#installation): host prerequisites and CLI installation.
 - [CONFIG.md](CONFIG.md): configuration field reference and advanced setups
   (custom image/EDA tools and post-setup hook).
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at

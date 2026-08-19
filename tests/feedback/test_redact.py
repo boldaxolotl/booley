@@ -111,6 +111,15 @@ class TestScrubbing:
         assert "booley" in out
         assert "docker" in out
 
+    def test_framework_name_survives_when_the_repo_itself_is_named_booley(self, tmp_path):
+        """The repo directory is also an automatic design-identifier candidate."""
+        root = tmp_path / "Booley"
+        (root / ".booley_project").mkdir(parents=True)
+
+        out, _ = redact("Booley feedback should preserve the word booley", root)
+
+        assert out == "Booley feedback should preserve the word booley"
+
 
 class TestNotOverreaching:
     def test_generic_identifiers_survive(self, project):

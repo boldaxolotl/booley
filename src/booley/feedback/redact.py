@@ -89,6 +89,10 @@ GENERIC_IDENTIFIERS = frozenset(
         "toplevel",
         "verilog",
         "vhdl",
+        # Public framework vocabulary, never a private design identifier.  This
+        # also covers working on Booley itself, where the repository directory
+        # contributes "Booley" to the automatic candidate set.
+        "booley",
     }
 )
 

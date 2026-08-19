@@ -573,6 +573,31 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
         assert ctx.results[-1].status == "ok"
 
+    def test_fix_flag_ignores_init_created_untracked_gitattributes(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        self._crlf_repo(tmp_path)
+
+        # A normal first run writes the policy but leaves the destructive
+        # re-checkout for an explicit second invocation.
+        _step_line_endings(_ctx(tmp_path))
+        assert (tmp_path / ".gitattributes").exists()
+        assert (
+            "?? .gitattributes"
+            in subprocess.run(
+                ["git", "-C", str(tmp_path), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+
+        ctx = _ctx(tmp_path, fix_line_endings=True)
+        _step_line_endings(ctx)
+
+        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
+        assert ctx.results[-1].status == "ok"
+
     def test_fix_flag_refuses_on_a_dirty_tree(self, tmp_path: Path):
         # The re-checkout deletes every tracked file. Uncommitted work would
         # not survive it, so a dirty tree is a hard stop — init is not the
@@ -638,13 +663,15 @@ class TestLineEndingsAutoFix:
 
         self._crlf_repo(tmp_path)
         (tmp_path / "notes.txt").write_bytes(b"keep me\n")
-        (tmp_path / ".gitignore").write_bytes(b"notes.txt\n")
-        subprocess.run(
-            ["git", "-C", str(tmp_path), "add", ".gitignore"],
-            capture_output=True,
-            check=True,
+        assert (
+            "?? notes.txt"
+            in subprocess.run(
+                ["git", "-C", str(tmp_path), "status", "--porcelain"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
         )
-        _git_commit(tmp_path)
         ctx = _ctx(tmp_path, fix_line_endings=True)
 
         _step_line_endings(ctx)

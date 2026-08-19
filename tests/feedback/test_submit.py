@@ -8,6 +8,8 @@ failure mode the token and ``--dry-run`` now exist to prevent.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from booley.feedback import submit as submit_mod
@@ -25,6 +27,7 @@ from booley.feedback.submit import (
     read_mode,
     submit,
 )
+from booley.harness import colors
 
 
 @pytest.fixture
@@ -305,6 +308,14 @@ class TestPreview:
     def test_it_shows_the_exact_body(self, project_dir):
         out = preview("the body text", ["a risk"], "nothing")
         assert "the body text" in out
+
+    def test_it_visually_separates_the_body_from_preview_chrome(self, project_dir):
+        with patch.object(colors, "COLORS_ENABLED", True):
+            out = preview("the body text", [], "nothing")
+
+        assert "╭── exact text that would be posted ──" in out
+        assert "\033[38;5;39mthe body text\033[0m" in out
+        assert "╰── end of exact text ──" in out
 
     def test_it_states_the_issue_is_public_and_named(self, project_dir):
         out = preview("b", [], "nothing")

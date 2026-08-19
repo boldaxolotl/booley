@@ -93,6 +93,20 @@ repeating until the gate passes or the reviewer reaches its bounded impasse.
 
 """
 
+_BASELINE_QOR_RULE = """\
+**BASELINE QoR CRITERIA**: For baseline-relative `synthesis_ok` and \
+`fpga_impl_ok` criteria, Target recipes are revision-owned. Booley runs \
+`base_sha` with the baseline revision's recipe and the ticket head with the \
+current recipe. Recipe differences are evidence, not failures—do not alter a \
+Target merely to reproduce the baseline recipe. Acceptance is determined by \
+the requested QoR thresholds. Missing or mismatched baseline evidence is an \
+infrastructure failure, not a reason to skip comparisons.
+
+"""
+
+_BASELINE_RELATIVE_SUFFIXES = ("_increase_at_most", "_reduce_at_least")
+_REVISION_OWNED_QOR_CRITERIA = frozenset({"synthesis_ok", "fpga_impl_ok"})
+
 _RULE_EXIT_WITH_REPORT = """\
 2. **EXIT CONDITION**: When all mandatory criteria are met, your final action \
 is `submit_run_report`. Pass exactly one type-specific report arg, include \
@@ -202,6 +216,7 @@ are never yours to edit, and commits touching them are rejected.
 def _build_rules_section(
     human_in_the_loop: bool = True,
     run_report: bool = True,
+    criteria: dict[str, Any] | None = None,
 ) -> str:
     """Build rules section.
 
@@ -213,6 +228,7 @@ def _build_rules_section(
             submit_run_report exit requirement, while retaining a report when
             optional criteria remain unmet. Default True keeps the report as
             every run's final action.
+        criteria: Raw ticket criteria used to render criterion-specific rules.
     """
     if human_in_the_loop:
         blocked_rule = _RULE_BLOCKED_HITL
@@ -228,12 +244,35 @@ def _build_rules_section(
     parts = [
         "# Rules\n\n",
         _RULES_PREFIX,
+        _BASELINE_QOR_RULE if _has_baseline_relative_qor_criteria(criteria) else "",
         _RULE_EXIT_WITH_REPORT if run_report else _RULE_EXIT_NO_REPORT,
         blocked_rule,
         rules_after_blocked,
         rules_tail,
     ]
     return "".join(parts)
+
+
+def _has_baseline_relative_qor_criteria(criteria: dict[str, Any] | None) -> bool:
+    """Return whether ticket criteria require a revision-owned QoR baseline."""
+    if not criteria:
+        return False
+    for section_name in ("mandatory", "optional"):
+        section = criteria.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for criterion_name, params in section.items():
+            if criterion_name not in _REVISION_OWNED_QOR_CRITERIA or not isinstance(
+                params, dict
+            ):
+                continue
+            if any(
+                param.endswith(_BASELINE_RELATIVE_SUFFIXES)
+                for param in params
+                if param != "targets"
+            ):
+                return True
+    return False
 
 
 _TYPE_GUIDANCE = {
@@ -718,6 +757,7 @@ def build_developer_prompt(
         + _build_rules_section(
             human_in_the_loop=ctx.human_in_the_loop,
             run_report=ctx.run_report,
+            criteria=ctx.criteria,
         )
     )
     user_prompt = _build_user_prompt_sections(
