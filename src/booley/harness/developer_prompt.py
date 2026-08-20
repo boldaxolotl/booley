@@ -262,9 +262,7 @@ def _has_baseline_relative_qor_criteria(criteria: dict[str, Any] | None) -> bool
         if not isinstance(section, dict):
             continue
         for criterion_name, params in section.items():
-            if criterion_name not in _REVISION_OWNED_QOR_CRITERIA or not isinstance(
-                params, dict
-            ):
+            if criterion_name not in _REVISION_OWNED_QOR_CRITERIA or not isinstance(params, dict):
                 continue
             if any(
                 param.endswith(_BASELINE_RELATIVE_SUFFIXES)
