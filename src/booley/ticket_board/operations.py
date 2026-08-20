@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -38,7 +39,7 @@ from .lifecycle import (
     format_user_board_moves,
     is_user_board_move,
 )
-from .logs import RESET_BOUNDARY_PREFIX, reset_progress
+from .logs import RESET_BOUNDARY_PREFIX, reset_progress, save_progress
 from .notifications import is_event_enabled, ntfy_review_digest, ntfy_send
 from .paths import (
     existing_human_log_file,
@@ -56,7 +57,15 @@ if TYPE_CHECKING:  # booley.core.models is imported lazily in the bodies below
 
 
 def _op_move_and_log(
-    tio, slug, to_dir, updates, transition: tuple[str, str, str, str], append_step=None
+    tio,
+    slug,
+    to_dir,
+    updates,
+    transition: tuple[str, str, str, str],
+    append_step=None,
+    *,
+    expected_status: str | None = None,
+    expected_execution_id: str | None = None,
 ):
     """Move ticket, update fields, log transition atomically.
 
@@ -64,6 +73,7 @@ def _op_move_and_log(
     interleaved writes under concurrent execution (docs/PRINCIPLES §7).
     """
     from_state = transition[0]
+    locked_status = expected_status or from_state.partition(":")[0]
     success = tio.move_and_update(
         slug,
         to_dir,
@@ -71,6 +81,8 @@ def _op_move_and_log(
         append_step=append_step,
         transition=transition,
         enforce_lifecycle=True,
+        expected_status=locked_status,
+        expected_execution_id=expected_execution_id,
     )
     if not success:
         print(f"Error: operation failed for '{slug}'", file=sys.stderr)
@@ -200,7 +212,12 @@ def _get_old_state(tio, slug, default_step=""):
     return entry, old_status, old_step
 
 
-def op_activate(tio: Any, slug: str, owner_pid: int | None = None) -> bool:
+def op_activate(
+    tio: Any,
+    slug: str,
+    owner_pid: int | None = None,
+    execution_id: str | None = None,
+) -> bool:
     """Activate a ticket for execution: move to active/, log transition.
 
     When the ticket is already running, checks PID ownership to prevent
@@ -215,8 +232,9 @@ def op_activate(tio: Any, slug: str, owner_pid: int | None = None) -> bool:
 
     if owner_pid is None:
         owner_pid = os.getpid()
+    execution_id = execution_id or uuid.uuid4().hex
 
-    _entry, old_status, old_step = _get_old_state(tio, slug)
+    entry, old_status, old_step = _get_old_state(tio, slug)
 
     if old_status == "running":
         lock_path = existing_runtime_file(tio.tickets_dir / "logs", slug, "ticket.lock")
@@ -230,9 +248,13 @@ def op_activate(tio: Any, slug: str, owner_pid: int | None = None) -> bool:
         # holds it, so no re-read of the PID is needed inside the block.
         # (read_lock_pid / write_text would open a second handle and
         # collide with msvcrt.locking on Windows → Errno 13.)
-        with tio._ticket_lock(slug):
-            pass  # lock acquired + PID stamped by _ticket_lock
-        return True
+        old_execution_id = entry.get("execution_id", "") if entry else ""
+        return tio.stamp_execution(
+            slug,
+            execution_id,
+            owner_pid,
+            expected_execution_id=old_execution_id,
+        )
 
     # F-43: this is the run loop's PRE-claim (`booley run --ticket <slug>` moves
     # the ticket to active/ before the harness starts), and the harness's own
@@ -240,13 +262,15 @@ def op_activate(tio: Any, slug: str, owner_pid: int | None = None) -> bool:
     # (resume)" told a never-run ticket's transitions.log it had resumed. The
     # resume wording is only truthful when there is something to resume: prior
     # progress, or a ticket coming back from blocked/failed.
-    resumed = old_status in ("blocked", "failed") or bool(_entry and _entry.get("steps_completed"))
+    resumed = old_status in ("blocked", "failed") or bool(
+        entry and entry.get("steps_completed")
+    )
     detail = "picked up (resume)" if resumed else "claimed for execution"
     return _op_move_and_log(
         tio,
         slug,
         "active",
-        {},
+        {"execution_id": execution_id, "execution_owner_pid": owner_pid},
         (
             f"{old_status}:{old_step}",
             f"running:{old_step}",
@@ -278,6 +302,10 @@ def op_claim(tio: Any, slug: str) -> bool:
         dest = active_dir / file_path.name
         if dest.exists():
             return False
+        progress = tio._load_or_bootstrap_progress(slug, file_path)
+        progress["execution_id"] = uuid.uuid4().hex
+        progress["execution_owner_pid"] = os.getpid()
+        save_progress(tio.logs_dir, slug, progress)
         shutil.move(str(file_path), str(dest))
         tio._append_transition_unlocked(
             slug, "queued:claim", "running:claim", "ticket-execute", "claimed for execution"
@@ -285,7 +313,14 @@ def op_claim(tio: Any, slug: str) -> bool:
     return True
 
 
-def op_block(tio: Any, slug: str, reason: str, step: str) -> bool:
+def op_block(
+    tio: Any,
+    slug: str,
+    reason: str,
+    step: str,
+    *,
+    expected_execution_id: str | None = None,
+) -> bool:
     """Block a ticket: move to blocked/, update frontmatter, log transition."""
     entry, old_status, old_step = _get_old_state(tio, slug, step)
 
@@ -295,6 +330,8 @@ def op_block(tio: Any, slug: str, reason: str, step: str) -> bool:
         "blocked",
         {"blocked_reason": reason, "blocked_step": step},
         (f"{old_status}:{old_step}", f"blocked:{step}", "ticket-execute", f"blocked -- {reason}"),
+        expected_status="running" if expected_execution_id is not None else None,
+        expected_execution_id=expected_execution_id,
     )
     if ok and is_event_enabled("blocked"):
         ticket_name = entry.get("summary", slug) if entry else slug
@@ -332,7 +369,14 @@ def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
     )
 
 
-def _handoff_to_review(tio, slug, entry, old_status, old_step):
+def _handoff_to_review(
+    tio,
+    slug,
+    entry,
+    old_status,
+    old_step,
+    expected_execution_id: str | None,
+):
     """Move ticket to review/ and send notification if enabled.
 
     ``on_success.cleanup`` is deliberately NOT honored here: the reviewer needs
@@ -354,6 +398,8 @@ def _handoff_to_review(tio, slug, entry, old_status, old_step):
         {"step": "summary"},
         (f"{old_status}:{old_step}", "review:summary", "ticket-execute", "ready for user review"),
         append_step="summary",
+        expected_status="running" if expected_execution_id is not None else None,
+        expected_execution_id=expected_execution_id,
     )
     if ok and is_event_enabled("review"):
         ticket_name = entry.get("summary", slug) if entry else slug
@@ -363,7 +409,12 @@ def _handoff_to_review(tio, slug, entry, old_status, old_step):
     return ok
 
 
-def op_handoff(tio: Any, slug: str) -> bool:
+def op_handoff(
+    tio: Any,
+    slug: str,
+    *,
+    expected_execution_id: str | None = None,
+) -> bool:
     """Hand off ticket after development: route by on_success.destination.
 
     destination=review (default): move to review/, notify.
@@ -400,10 +451,19 @@ def op_handoff(tio: Any, slug: str) -> bool:
                 "ready for completion (destination=done)",
             ),
             append_step="summary",
+            expected_status="running" if expected_execution_id is not None else None,
+            expected_execution_id=expected_execution_id,
         )
         return ok and op_complete(tio, slug)
 
-    return _handoff_to_review(tio, slug, entry, old_status, old_step)
+    return _handoff_to_review(
+        tio,
+        slug,
+        entry,
+        old_status,
+        old_step,
+        expected_execution_id,
+    )
 
 
 def op_unblock(

@@ -62,6 +62,9 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
             "booley.harness.review_prep.prepare_review",
             new_callable=AsyncMock,
         ),
+        "verify_review": patch(
+            "booley.harness.review_prep.verify_review_handoff",
+        ),
         # Silence terminal output so tests don't spam stdout.
         "terminal_raw": patch("booley.harness.developer.terminal.raw"),
         "terminal_crit": patch(
