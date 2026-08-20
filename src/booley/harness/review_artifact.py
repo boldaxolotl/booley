@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
 
@@ -64,7 +64,15 @@ def _optional_path(row: Mapping[str, Any], key: str) -> str | None:
     value = row.get(key)
     if value is None:
         return None
-    if not isinstance(value, str) or not value or not Path(value).is_absolute():
+    if (
+        not isinstance(value, str)
+        or not value
+        or not (
+            Path(value).is_absolute()
+            or PurePosixPath(value).is_absolute()
+            or PureWindowsPath(value).is_absolute()
+        )
+    ):
         raise ReviewArtifactError(f"{key} must be an absolute path or null")
     return value
 

@@ -51,6 +51,7 @@ def test_posix_permission_denied_is_conservatively_alive(monkeypatch: pytest.Mon
     def deny(_pid: int, _signal: int) -> None:
         raise PermissionError
 
-    monkeypatch.setattr(runtime_pid.os, "kill", deny)
+    monkeypatch.setattr(runtime_pid.sys, "platform", "linux")
+    monkeypatch.setattr(runtime_pid.os, "kill", deny, raising=False)
 
     assert runtime_pid.is_pid_alive(1234) is True

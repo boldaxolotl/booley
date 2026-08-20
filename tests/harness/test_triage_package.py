@@ -6,6 +6,7 @@ import json
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import quote
 
 from booley.harness import triage_package as tp
 
@@ -385,7 +386,7 @@ def test_changed_file_links_are_absolute(tmp_path: Path):
 
     tp._render_changes(lines, package, set())
 
-    assert str(path.resolve()) in "\n".join(lines)
+    assert quote(str(path.resolve()), safe="/:") in "\n".join(lines)
 
 
 def test_changed_symlink_link_does_not_follow_target(tmp_path: Path):
@@ -405,5 +406,5 @@ def test_changed_symlink_link_does_not_follow_target(tmp_path: Path):
     tp._render_changes(lines, package, set())
 
     rendered = "\n".join(lines)
-    assert str(link.absolute()) in rendered
-    assert str(outside) not in rendered
+    assert quote(str(link.absolute()), safe="/:") in rendered
+    assert quote(str(outside), safe="/:") not in rendered
