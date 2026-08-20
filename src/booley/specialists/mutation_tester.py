@@ -2619,9 +2619,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     @staticmethod
     def _suite_output(runs: list[MutationTestRun]) -> str:
         """Render per-test output without losing which test produced it."""
-        return "\n".join(
-            f"===== {run.test_name} =====\n{run.output or run.error}" for run in runs
-        )
+        return "\n".join(f"===== {run.test_name} =====\n{run.output or run.error}" for run in runs)
 
     @staticmethod
     def _suite_infra_reason(runs: list[MutationTestRun]) -> str:
@@ -2744,9 +2742,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     invalid=invalid,
                     detected=detected,
                     sim_output_snippet=snippet,
-                    selector_observed=(
-                        f"{lock_mod.MUT_ECHO_PREFIX}{mut_id}" in combined
-                    ),
+                    selector_observed=(f"{lock_mod.MUT_ECHO_PREFIX}{mut_id}" in combined),
                     log_path=self._persist_mutant_log(mut_id, combined),
                 )
             )

@@ -3284,9 +3284,7 @@ class SimulateFlow(BooleyFlow):
             available_tests = lookup_target_section(test_names_map, target) or []
             if not available_tests:
                 return [None]
-            kept = [
-                test for test in available_tests if test not in self._effective_skips(target)
-            ]
+            kept = [test for test in available_tests if test not in self._effective_skips(target)]
             return kept or list(available_tests)
         suite = resolve_target_test_suite(
             target,

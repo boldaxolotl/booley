@@ -559,8 +559,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dut-hier-path",
         default=None,
-        help="Full DUT hierarchy path (e.g. tb.gen[0].uut); "
-        "the leaf is used as --dut-instance.",
+        help="Full DUT hierarchy path (e.g. tb.gen[0].uut); the leaf is used as --dut-instance.",
     )
     parser.add_argument(
         "--start-time", type=int, default=0, help="Start comparison at this timestamp"

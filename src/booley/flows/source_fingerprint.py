@@ -144,9 +144,7 @@ def _campaign_files(root: Path, target: str | None) -> list[str]:
     try:
         from booley.fusesoc.fusesoc_registry import discover_cores, resolve_ref
 
-        core_files = (
-            [resolve_ref(root, target).core_file] if target else discover_cores(root)
-        )
+        core_files = [resolve_ref(root, target).core_file] if target else discover_cores(root)
     except Exception:  # noqa: BLE001 — source hashes still provide freshness evidence
         pass
     files = [

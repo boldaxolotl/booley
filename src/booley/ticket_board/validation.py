@@ -208,9 +208,7 @@ def _validate_criterion_list(section_name, key, value, errors):
             )
         elif key in _TARGET_CAMPAIGN_CRITERIA and isinstance(item, dict):
             _validate_campaign_item(f"criteria.{section_name}.{key}[{i}]", item, errors)
-    if key in _TARGET_CAMPAIGN_CRITERIA and not all(
-        isinstance(item, dict) for item in value
-    ):
+    if key in _TARGET_CAMPAIGN_CRITERIA and not all(isinstance(item, dict) for item in value):
         errors.append(f"criteria.{section_name}.{key}: use a list of Target campaign dicts")
 
 

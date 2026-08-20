@@ -56,17 +56,13 @@ def test_coverage_campaign_expands_target_and_threshold() -> None:
 
 
 def test_legacy_bare_campaign_is_rejected() -> None:
-    errors = validate_criteria_section(
-        {"mandatory": {"mutation_score": "8/10"}}
-    )
+    errors = validate_criteria_section({"mandatory": {"mutation_score": "8/10"}})
 
     assert any("per-target criterion" in error for error in errors)
 
 
 def test_campaign_requires_scope() -> None:
-    errors = validate_criteria_section(
-        {"mandatory": {"coverage_toggle": [{"target": "sim"}]}}
-    )
+    errors = validate_criteria_section({"mandatory": {"coverage_toggle": [{"target": "sim"}]}})
 
     assert any("scope must be a non-empty list[str]" in error for error in errors)
 
@@ -82,9 +78,7 @@ def test_campaign_requires_scope() -> None:
 def test_mutation_campaign_rejects_incoherent_counts(params) -> None:
     campaign = {"target": "sim", "scope": ["rtl/dut.sv"], **params}
     with pytest.raises(ValueError):
-        CriteriaTemplate.from_yaml(
-            {"mandatory": {"mutation_score": [campaign]}}
-        )
+        CriteriaTemplate.from_yaml({"mandatory": {"mutation_score": [campaign]}})
 
 
 @pytest.mark.parametrize("min_pct", [0, 101, True])
