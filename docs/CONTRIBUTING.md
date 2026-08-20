@@ -82,6 +82,8 @@ Booley never distributes any proprietary code. An integration drives the EDA
 tool's own CLI inside the Session Runtime. Commercial integrations additionally
 need a reviewed, fixed provisioning and licensing policy; Project configuration
 cannot supply host paths, commands, mounts, or arbitrary environment values.
+Each host-provisioned tool policy must define one canonical, read-only container
+mount target; only the administrator-registered host source may vary.
 
 ### How a port works: two moving parts
 Porting an EDA tool is **almost always these two steps**, in order:
