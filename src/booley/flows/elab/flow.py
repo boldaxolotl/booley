@@ -48,7 +48,7 @@ from booley.yosys.syn_core import (
 from .. import edam as edam_layer
 from .. import execution, output_budget
 from ..base import BooleyFlow, SubprocessResult
-from ..flow_config import _load_flow_config, resolve_flow_default_target
+from ..flow_config import _load_flow_config
 from ..human_display import cap_target_items
 
 logger = logging.getLogger(__name__)
@@ -1224,10 +1224,8 @@ class ElaborateFlow(BooleyFlow):
                 exit_code=EXIT_ERROR,
                 report_text="elab is disabled ([flows.elab].enabled = false).",
             )
-        if not self.args.target:  # ADR 0030: fall back to [flows.elab].default_target
-            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
-        err = self._validate_interactive_args()  # after the fallback, or it
-        if err is not None:  # refuses a target-less call the config satisfies
+        err = self._validate_interactive_args()
+        if err is not None:
             return err
         targets = fusesoc_registry.resolve_target_selection(
             self.args.target,
@@ -1237,8 +1235,8 @@ class ElaborateFlow(BooleyFlow):
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "elab: no Target selected. Pass --target <name> or set "
-                    "[flows.elab].default_target; a bare name must be unambiguous, "
+                    "elab: no Target selected. Pass --target <name>; a bare name "
+                    "must be unambiguous, "
                     "else qualify it as vlnv#name."
                 ),
             )

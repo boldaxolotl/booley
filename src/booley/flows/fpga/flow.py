@@ -51,7 +51,6 @@ from ..baseline_worktree import (
     resolve_ticket_baseline,
 )
 from ..clock_timing import per_clock_from_json, worst_clock
-from ..flow_config import resolve_flow_default_target
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_RECIPE_SNAPSHOT_DETAIL,
@@ -219,8 +218,6 @@ class FpgaImplFlow(BooleyFlow):
         # primary-run artifacts from temporary baseline artifacts.
         self._project_root = Path(self.args.work_dir)
         self._baseline_full_sha: str | None = None
-        if not self.args.target:  # ADR 0030: fall back to [flows.fpga].default_target
-            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
         targets = fusesoc_registry.resolve_target_selection(
             self.args.target,
             self.args.work_dir,
@@ -229,8 +226,8 @@ class FpgaImplFlow(BooleyFlow):
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "fpga: no Target selected. Pass --target <name> or set "
-                    "[flows.fpga].default_target (bare name if unambiguous, else vlnv#name)."
+                    "fpga: no Target selected. Pass --target <name> "
+                    "(bare name if unambiguous, else vlnv#name)."
                 ),
             )
 

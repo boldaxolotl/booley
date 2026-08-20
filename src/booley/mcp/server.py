@@ -129,8 +129,8 @@ _TARGETS_MCP_TOOL_DESCRIPTION = (
     "'target' argument accepts (ADR 0030). Cheap .core-YAML enumeration, no "
     "fusesoc run: per Target it reports the copy-pasteable selector "
     "(vlnv#name when the bare name is ambiguous), flow (sim/lint/generic), "
-    "declared EDA tool, cocotb module, declared toplevel, which Booley Flows it "
-    "is wired to via [flows.*].default_target, and which Booley Flows could drive it. "
+    "declared EDA tool, cocotb module, declared toplevel, which Doctor Flows the "
+    "Target selects via flow_options.booley.doctor, and which Booley Flows could drive it. "
     "Optional filters: 'for_flow' (one of synth, fpga, sim, lint, elab) "
     "keeps only Targets that Flow could drive; "
     "'glob' matches the bare name or vendor:library:name#target (e.g. "
@@ -2914,7 +2914,6 @@ async def _dispatch_booley_mcp_tool(
 
 def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> int:
     """Whole-campaign sim watchdog derived from its sequential work units."""
-    from booley.flows.flow_config import resolve_flow_default_target
     from booley.flows.sim.flow import (
         _TRACE_CLEANUP_MARGIN_S,
         _resolve_sim_campaign_work_units,
@@ -2933,8 +2932,6 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
             return default
 
     raw_target = str(arguments.get("target") or "").strip()
-    if not raw_target:
-        raw_target = resolve_flow_default_target("sim", work_dir)
     target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
     try:
         work_units = _resolve_sim_campaign_work_units(
@@ -2972,8 +2969,6 @@ def _mcp_tool_timeout_seconds(
         # Implementation-flow public timeouts are PER TARGET, while this
         # watchdog owns the whole sequential matrix. Budget every selected
         # target and both baseline/current passes, plus orchestration headroom.
-        from booley.flows.flow_config import resolve_flow_default_target
-
         if name == "synth":
             from booley.flows.synth.flow import _resolve_synth_timeout_ms
 
@@ -2995,11 +2990,6 @@ def _mcp_tool_timeout_seconds(
         except Exception:  # noqa: BLE001 — malformed config is graded by the child
             return default
         raw_target = str(arguments.get("target") or "").strip()
-        if not raw_target and work_dir is not None:
-            try:
-                raw_target = resolve_flow_default_target(name, work_dir)
-            except Exception:  # noqa: BLE001 — child owns the actionable config error
-                raw_target = ""
         target_count = max(1, len([tok for tok in raw_target.split(",") if tok.strip()]))
         has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(
             criterion_prefix

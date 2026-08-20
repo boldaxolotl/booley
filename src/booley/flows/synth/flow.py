@@ -56,7 +56,6 @@ from ..clock_timing import (
     worst_clock,
 )
 from ..execution import ExecutionSelection
-from ..flow_config import resolve_flow_default_target
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
 from ..target_parameters import vlogparam_args as _vlogparam_args
@@ -1573,8 +1572,6 @@ class AsicSynthesizeFlow(BooleyFlow):
         self._baseline_selfcompare_msg: str | None = None
         self._baseline_full_sha: str | None = None
 
-        if not self.args.target:  # ADR 0030: fall back to [flows.synth].default_target
-            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
         targets = fusesoc_registry.resolve_target_selection(
             self.args.target,
             self.args.work_dir,
@@ -1583,9 +1580,8 @@ class AsicSynthesizeFlow(BooleyFlow):
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=(
-                    "synth: no Target selected. Pass --target <name> or "
-                    "set [flows.synth].default_target (bare name if unambiguous, "
-                    "else vlnv#name)."
+                    "synth: no Target selected. Pass --target <name> "
+                    "(bare name if unambiguous, else vlnv#name)."
                 ),
             )
         baseline_error = self._apply_ticket_baseline(targets)

@@ -145,6 +145,7 @@ class BooleyFlow(McpTool):
     """
 
     endpoint_kind = "flow"
+    target_required = True
 
     def _run(self) -> McpToolResult:
         """Execute subprocess and interpret results."""
