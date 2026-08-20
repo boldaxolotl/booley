@@ -22,14 +22,12 @@ enabled = false
 
 [flows]
 
-# Every enabled Flow ALSO needs a `default_target` — the .core Target it drives
-# (e.g. the `sim_core`/`lint_core`/`synth_core` names from CORE_TEMPLATE.yaml).
-# An enabled Flow with no default target can never run; `booley doctor` fails on it.
-# Leave `default_target` unset only while the Flow is still disabled.
+# Flow calls always require an explicit `target`. Doctor's target matrix lives
+# beside each Target in the .core file as `flow_options.booley.doctor`; see
+# CORE_TEMPLATE.yaml. There is no target fallback in booley.toml.
 
 [flows.sim]
 enabled = false              # flip to true (or delete the line) when wired up
-# default_target = "sim_core"        # REQUIRED once enabled (.core Target name)
 # Per-test non-RTL build step (per-case firmware compile, vector staging)?
 # Declare it here — shell lines run inside the Session Runtime before each sim run,
 # under the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_RUN_CWD, ...):
@@ -44,7 +42,6 @@ enabled = false              # flip to true (or delete the line) when wired up
 
 [flows.lint]
 enabled = false
-# default_target = "lint_core"       # REQUIRED once enabled
 # warnings_as_errors = true  # false: warnings still print/report but exit 0
 # Lint waivers are NOT configured here: add a `.vlt` waiver file to the lint
 # Target's fileset in the .core (`file_type: vlt`) and Verilator picks it up.
@@ -56,12 +53,11 @@ enabled = false
 # enabled = false to opt out, in which case lint/sim cover elaboration.
 [flows.elab]
 enabled = false
-# default_target = "lint_core"       # REQUIRED once enabled
 
 [flows.synth]
 enabled = false              # synthesis recipe belongs in Target flow_options
-# default_target = "synth_core"      # REQUIRED once enabled
-# calibration_target = "synth_core" # reviewed heaviest target; required for a matrix
+# Doctor deep-runs every Target whose doctor list contains `synth` and retains
+# the largest measured memory peak.
 
 [jobs]
 # heavy_memory = "4g"        # per-HEAVY-job reservation; calibrate in Step 4

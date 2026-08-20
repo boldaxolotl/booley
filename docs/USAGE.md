@@ -350,7 +350,10 @@ booley targets sim_soc          # resolved detail view: parameters, files, SDC/X
 booley targets --json             # machine-readable (composes with all of the above)
 ```
 
-The listing is a cheap `.core`-YAML read (works host-side too) and marks each Target wired via `[flows.*].default_target` with `←`; only the single-Target detail view runs `fusesoc run --setup`, so run that one inside the Session Runtime. Agents get the same listing as the `booley_targets` MCP tool.
+The listing is a cheap `.core`-YAML read (works host-side too) and marks each
+Target's `flow_options.booley.doctor` selection with `Dr`; only the single-Target
+detail view runs `fusesoc run --setup`, so run that one inside the Session Runtime.
+Agents get the same listing as the `booley_targets` MCP tool.
 
 **Qualifying an ambiguous name.** When two cores declare the same Target name (normal in a multi-core repo), pass `vlnv#target` — the core's FuseSoC coordinate, a `#`, then the Target: `--target 'lowrisc:ibex:ibex_top#lint'`. The VLNV part can be shortened to any unambiguous suffix (`ibex_top#lint` works), and `booley targets` prints the shortest form that resolves. Quote it: `#` starts a comment in most shells.
 

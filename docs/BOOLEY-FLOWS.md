@@ -622,8 +622,7 @@ Flow configuration.
 
 Field rules:
 
-- `--target`: one or more FuseSoC Target names. When omitted, falls back to
-  `[flows.fpga].default_target`.
+- `--target`: one or more FuseSoC Target names; required on every invocation.
 - `--baseline`: compare against a git ref. The baseline is built in an
   ephemeral `git worktree`, so it works in Interactive Mode as well as Ticket
   Mode (the two execution modes; see [CONTEXT.md](CONTEXT.md)). A Ticket Mode

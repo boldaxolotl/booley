@@ -71,11 +71,12 @@ over that severity bug with a project waiver.
   `enabled = false` → a recorded SKIP. A project that
   cannot support a standalone elaboration check (non-FuseSoC, `lint`/`sim` cover it)
   should opt out rather than expose a broken Flow. Note that an exposed
-  `elab` with no `[flows.elab].default_target` fails the *plain* `booley
-  doctor` too — that Flow can never run, so it is caught before `--deep`.
+  `elab` with no Target marked by `flow_options.booley.doctor: [elab]` fails
+  the *plain* `booley doctor` too — that Flow can never run, so it is caught
+  before `--deep`.
 - **fail-path self-test**: each verification Flow WARNs
   `fail-path unvalidated` until its conventional project-owned bad fixture
-  exists. Doctor infers the good case from the configured default Target and
+  exists. Doctor infers the good case from the first marked Doctor Target and
   adds two lines — `good` must pass, `bad` must be *graded a failure*. For lint,
   author a `lint_selftest_bad` Target using an undeclared **RHS** reference (an
   undeclared LHS is only an implicit-net warning). For simulation, mirror the
@@ -87,15 +88,14 @@ over that severity bug with a project waiver.
 
 ### Heaviest synthesis and memory calibration
 
-When synthesis is enabled, the deep synthesis line is not a lightweight smoke:
-it must run the row-13 `[flows.synth].calibration_target`, meaning the heaviest
-supported configuration selected during planning. For a one-Target project the
-sole Target is implicit. For a matrix, do not finish setup while Doctor reports
-`synth.calibration-target-unset`.
+When synthesis is enabled, the deep synthesis lines are not lightweight smokes:
+Doctor runs every Target whose `flow_options.booley.doctor` contains `synth`.
+Mark the complete supported synthesis matrix; do not finish setup while an
+intended matrix member is unmarked.
 
 The run must reach a terminal, completed PPA report. After it passes, Doctor
-records the synthesis boundary's process-tree peak RSS and adds 15% rounded-up
-headroom to the HEAVY
+records each synthesis boundary's process-tree peak RSS, retains the largest,
+and adds 15% rounded-up headroom to the HEAVY
 job reservation. Re-run plain Doctor and use its memory-invariant arithmetic to
 settle both `[jobs].heavy_memory` and `[sandbox].memory`, then recreate the
 Session Runtime if the container limit changed and repeat the heaviest synthesis.
