@@ -88,6 +88,10 @@ def _emit_criteria_update(state: DevelopmentState, *, tb_top: str | None = None)
         }
         if e.stale:
             entry_d["stale"] = True
+        if e.ever_met:
+            entry_d["ever_met"] = True
+        if e.ever_failed:
+            entry_d["ever_failed"] = True
         criteria_snapshot[k] = entry_d
     # DUT info rides along on the same event — same watcher, same lifecycle.
     dut_info_snapshot = state.dut_info.to_dict() if hasattr(state, "dut_info") else {}

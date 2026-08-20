@@ -98,13 +98,22 @@ def _group_of(key: str) -> str | None:
     return None
 
 
+_CriterionStatus = Literal["met", "failing", "needs_recheck", "not_run"]
+
+
+def _criterion_status(entry: dict) -> _CriterionStatus:
+    """Classify a criterion by its current verdict and evidence freshness."""
+    if entry.get("met"):
+        return "met"
+    if entry.get("stale"):
+        return "needs_recheck"
+    if entry.get("detail") or entry.get("ever_failed") or entry.get("ever_met"):
+        return "failing"
+    return "not_run"
+
+
 def _is_never_evaluated(entry: dict) -> bool:
-    return (
-        not entry.get("met")
-        and not entry.get("detail")
-        and not entry.get("stale")
-        and not entry.get("ever_met")
-    )
+    return _criterion_status(entry) == "not_run"
 
 
 def _truncate_name(name: str, max_len: int = 28) -> str:
@@ -530,28 +539,25 @@ class TicketHeader(VerticalScroll):
 
         if self._criteria:
             real = {k: v for k, v in self._criteria.items() if not k.startswith("_")}
-            met = failing = pending = 0
+            counts: dict[_CriterionStatus, int] = {
+                "met": 0,
+                "failing": 0,
+                "needs_recheck": 0,
+                "not_run": 0,
+            }
             for v in real.values():
-                if v.get("met"):
-                    met += 1
-                elif _is_never_evaluated(v):
-                    pending += 1
-                else:
-                    # Tried-but-not-passing: failed last attempt, stale after
-                    # an RTL edit, or regressed. The harness will retry — it
-                    # is the "something's actively broken" signal.
-                    failing += 1
+                counts[_criterion_status(v)] += 1
 
             # Just the counts — press 'c' for the full breakdown.
             content.append("\n")
             first = True
-            for count, icon, label, style in (
-                (met, "✓", "met", "green"),
-                (failing, "↻", "failing", "red"),
-                # Uncolorized ✗ — pending is "not evaluated yet", not a
-                # problem, so it gets the neutral form of the fail mark.
-                (pending, "✗", "pending", "dim"),
+            for status, icon, label, style in (
+                ("met", "✓", "met", "green"),
+                ("failing", "✗", "failing", "red"),
+                ("needs_recheck", "↻", "recheck", "color(208)"),
+                ("not_run", "○", "not run", "dim"),
             ):
+                count = counts[status]
                 if count == 0:
                     continue
                 if not first:
@@ -586,11 +592,12 @@ class TicketHeader(VerticalScroll):
     ) -> tuple[
         list[tuple[str, dict]],
         list[tuple[str, dict]],
+        list[tuple[str, dict]],
         list[tuple[str, dict | None]],
     ]:
-        """Sort visible criteria into (met, failing, pending) render buckets.
+        """Sort criteria into failing, recheck, not-run, and met buckets.
 
-        All-pending groups collapse into a single placeholder pending row.
+        Groups whose criteria have never run collapse into one placeholder row.
         """
         real = {k: v for k, v in self._criteria.items() if not k.startswith("_")}
 
@@ -600,16 +607,17 @@ class TicketHeader(VerticalScroll):
             if gname is not None:
                 groups.setdefault(gname, []).append((k, v))
 
-        # Collapse all-pending groups into a single placeholder row.
+        # Collapse groups whose criteria have never run into one placeholder row.
         collapsed = {
             gname
             for gname, members in groups.items()
             if all(_is_never_evaluated(e) for _, e in members)
         }
 
-        met_items: list[tuple[str, dict]] = []
         failing_items: list[tuple[str, dict]] = []
-        pending_items: list[tuple[str, dict | None]] = []
+        recheck_items: list[tuple[str, dict]] = []
+        not_run_items: list[tuple[str, dict | None]] = []
+        met_items: list[tuple[str, dict]] = []
         emitted: set[str] = set()
 
         for key, entry in real.items():
@@ -617,64 +625,69 @@ class TicketHeader(VerticalScroll):
             if gname in collapsed:
                 if gname not in emitted:
                     emitted.add(gname)
-                    pending_items.append((gname, None))
+                    not_run_items.append((gname, None))
                 continue
-            if entry.get("met"):
+            status = _criterion_status(entry)
+            if status == "met":
                 met_items.append((key, entry))
-            elif _is_never_evaluated(entry):
-                pending_items.append((key, entry))
-            else:
-                # Failed last eval, stale, or regressed — all in the
-                # retry loop. Same icon as compact: ↻ red.
+            elif status == "failing":
                 failing_items.append((key, entry))
+            elif status == "needs_recheck":
+                recheck_items.append((key, entry))
+            else:
+                not_run_items.append((key, entry))
 
-        return met_items, failing_items, pending_items
+        return failing_items, recheck_items, not_run_items, met_items
 
-    def _render_expanded_criteria(self, content: Text, name_max: int) -> None:
-        """Render the met → failing → pending criteria rows into ``content``."""
-        met_items, failing_items, pending_items = self._bucket_expanded_criteria()
-
-        # Order: met → failing → pending. Good news first, then what
-        # the harness is actively chewing on, then the long tail.
-        need_blank = False
-
-        for key, entry in met_items:
-            name = _truncate_name(key, name_max)
-            content.append("✓ ", style="green")
-            content.append(name, style="dim")
+    @staticmethod
+    def _append_expanded_section(
+        content: Text,
+        items: list[tuple[str, dict | None]],
+        *,
+        heading: str,
+        icon: str,
+        style: str,
+        name_max: int,
+    ) -> None:
+        """Append one labeled criterion-status section."""
+        content.append(f"{icon} {heading}\n", style=f"bold {style}")
+        for key, entry in items:
+            content.append("  ")
+            if entry is None:
+                content.append(f"{key} (not yet run)\n", style="dim italic")
+                continue
+            content.append(
+                _truncate_name(key, name_max), style="dim" if icon in {"✓", "○"} else ""
+            )
             metric = _format_metric(key, entry)
             if metric and metric not in key:
                 content.append(f"  {metric}", style="dim")
             content.append("\n")
-        if met_items:
-            need_blank = True
 
-        if failing_items:
-            if need_blank:
+    def _render_expanded_criteria(self, content: Text, name_max: int) -> None:
+        """Render actionable criteria first, followed by not-run and met."""
+        buckets = self._bucket_expanded_criteria()
+        sections = (
+            (buckets[0], "Failing", "✗", "red"),
+            (buckets[1], "Needs recheck", "↻", "color(208)"),
+            (buckets[2], "Not run", "○", "dim"),
+            (buckets[3], "Met", "✓", "green"),
+        )
+        rendered_section = False
+        for items, heading, icon, style in sections:
+            if not items:
+                continue
+            if rendered_section:
                 content.append("\n")
-            for key, entry in failing_items:
-                name = _truncate_name(key, name_max)
-                content.append("↻ ", style="red")
-                content.append(name + "\n")
-                metric = _format_metric(key, entry)
-                if metric and metric not in key:
-                    content.append(f"  {metric}\n", style="dim")
-            need_blank = True
-
-        if pending_items:
-            if need_blank:
-                content.append("\n")
-            for key, entry in pending_items:
-                if entry is None:
-                    content.append("✗ ", style="dim")
-                    content.append(
-                        f"{key} (not yet run)\n",
-                        style="dim italic",
-                    )
-                else:
-                    name = _truncate_name(key, name_max)
-                    content.append("✗ ", style="dim")
-                    content.append(name + "\n", style="dim")
+            self._append_expanded_section(
+                content,
+                items,
+                heading=heading,
+                icon=icon,
+                style=style,
+                name_max=name_max,
+            )
+            rendered_section = True
 
     def _render_expanded(self) -> None:
         content = Text()

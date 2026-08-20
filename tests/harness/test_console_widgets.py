@@ -256,6 +256,15 @@ class TestTicketHeader:
                         "met": False,
                         "mandatory": True,
                         "detail": {"exit_code": 1},
+                        "ever_failed": True,
+                        "params": {},
+                    },
+                    "synthesis_ok": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {"cells": 1200},
+                        "ever_met": True,
+                        "stale": True,
                         "params": {},
                     },
                     "coverage_toggle": {
@@ -271,15 +280,20 @@ class TestTicketHeader:
             content = str(header.query_one("#header-content").render())
             assert "2 met" in content
             assert "1 failing" in content
-            assert "2 pending" in content
+            assert "1 recheck" in content
+            assert "2 not run" in content
+            assert "✓" in content
+            assert "✗" in content
+            assert "↻" in content
+            assert "○" in content
             assert "press c" in content
             # No criterion names in compact view.
             assert "review_rtl" not in content
             assert "coverage_toggle" not in content
 
     @pytest.mark.asyncio
-    async def test_expanded_order_met_failing_pending(self):
-        """Expanded list is grouped: met first, then failing, then pending."""
+    async def test_expanded_order_and_icons_for_all_statuses(self):
+        """Expanded criteria prioritize actionable states and label each group."""
         async with TicketHeaderTestApp().run_test() as pilot:
             header = pilot.app.query_one(TicketHeader)
             header.set_ticket_info("test", "feature", "main")
@@ -295,22 +309,37 @@ class TestTicketHeader:
                         "met": False,
                         "mandatory": True,
                         "detail": {"exit_code": 1},
+                        "ever_failed": True,
                         "params": {},
                     },
-                    "synthesis_ok": {"met": False, "mandatory": True, "detail": {}, "params": {}},
+                    "synthesis_ok": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {"cells": 1200},
+                        "ever_met": True,
+                        "stale": True,
+                        "params": {},
+                    },
+                    "formal_check": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {},
+                        "params": {},
+                    },
                 }
             )
             header.toggle_expanded()
             await pilot.pause()
             content = str(header.query_one("#header-content").render())
-            # Ordering check: lint (met) before sim (failing) before synthesis (pending).
             i_lint = content.find("lint_clean")
             i_sim = content.find("sim_pass")
             i_syn = content.find("synthesis_ok")
-            assert 0 <= i_lint < i_sim < i_syn
-            # Icons match the compact view.
-            assert "↻" in content  # failing
-            assert "✗" in content  # pending (uncolorized fail mark)
+            i_formal = content.find("formal_check")
+            assert 0 <= i_sim < i_syn < i_formal < i_lint
+            assert "✗ Failing" in content
+            assert "↻ Needs recheck" in content
+            assert "○ Not run" in content
+            assert "✓ Met" in content
 
     @pytest.mark.asyncio
     async def test_toggle_expanded(self):
@@ -356,7 +385,7 @@ class TestTicketHeader:
             assert "TB: tb_fifo" in content
 
     @pytest.mark.asyncio
-    async def test_met_unmet_pending_split(self):
+    async def test_met_failing_and_not_run_split(self):
         async with TicketHeaderTestApp().run_test() as pilot:
             header = pilot.app.query_one(TicketHeader)
             header.set_ticket_info("test", "feature", "main")
@@ -385,8 +414,9 @@ class TestTicketHeader:
             await pilot.pause()
             content = str(header.query_one("#header-content").render())
             assert "✓" in content
-            assert "↻" in content
-            assert "pending" in content
+            assert "✗" in content
+            assert "○" in content
+            assert "not run" in content
 
 
 # ===========================================================================
