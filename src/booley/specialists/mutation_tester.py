@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import quote
 
 from booley.config import project_config
 from booley.core.models import AgentCallParams
@@ -57,6 +58,7 @@ from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_si
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
+from booley.runtime.platform_paths import posix_relpath
 from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 
 from .specialist import Specialist
@@ -596,8 +598,28 @@ def generate_specs_markdown(specs: list[MutationSpec]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def generate_results_markdown(summary: MutationSummary, min_detected: int) -> str:
+def _mutation_source_link(
+    spec: MutationSpec,
+    mutated_rtl_paths: dict[str, str],
+) -> str:
+    label = f"{spec.file}:{spec.line}"
+    path = mutated_rtl_paths.get(spec.file)
+    return f"[{label}]({quote(path, safe='/:._-')})" if path else label
+
+
+def _markdown_table_cell(value: object) -> str:
+    return " ".join(str(value).split()).replace("|", r"\|")
+
+
+def generate_results_markdown(
+    summary: MutationSummary,
+    min_detected: int,
+    *,
+    mutated_rtl_paths: dict[str, str] | None = None,
+) -> str:
+    mutated_rtl_paths = mutated_rtl_paths or {}
     classified = summary.classify()
+    specs_by_index = {spec.index: spec for spec in summary.specs}
     valid = summary.detected_count + summary.not_detected_count
     status = "PASS" if summary.detected_count >= min_detected else "FAIL"
     lines = [
@@ -626,19 +648,23 @@ def generate_results_markdown(summary: MutationSummary, min_detected: int) -> st
             log = log_by_index.get(s.index)
             where = f" — sim log: {log}" if log else ""
             lines.append(
-                f"- **{s.file}:{s.line}** ({s.category}): "
+                f"- **{_mutation_source_link(s, mutated_rtl_paths)}** ({s.category}): "
                 f"`{s.original_code}` -> `{s.mutated_code}`{where}"
             )
         lines.append("")
     lines += [
-        "| # | Category | File:Line | Status | Snippet |",
-        "|---|----------|-----------|--------|---------|",
+        "| # | Mutation | Mutated RTL | Status | Snippet |",
+        "|---|----------|-------------|--------|---------|",
     ]
     for c in classified:
+        spec = specs_by_index[c["index"]]
         lines.append(
-            f"| {c['index']} | {c['category']} | "
-            f"{c['file']}:{c['line']} | {c['status']} | "
-            f"{c['sim_output_snippet'][:60]} |"
+            f"| {c['index']} | {_markdown_table_cell(c['category'])}: "
+            f"`{_markdown_table_cell(spec.original_code)}` → "
+            f"`{_markdown_table_cell(spec.mutated_code)}` | "
+            f"{_mutation_source_link(spec, mutated_rtl_paths)} | "
+            f"{c['status']} | "
+            f"{_markdown_table_cell(c['sim_output_snippet'][:60])} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -757,6 +783,7 @@ class MutationTesterSpecialist(Specialist):
         "tester runs deterministic sim loop"
     )
     code_modifying: bool = False
+    announce_success_report: bool = True
     min_model: str = "standard"
     default_timeout: int = 1800
     min_timeout: int = 1200
@@ -2913,11 +2940,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         inputs: RunResultInputs,
     ) -> McpToolResult:
         # Unpack the plan config + run outcome the assembly below reads.
-        min_detected, target, report_dir = (
-            plan.min_detected,
-            plan.target,
-            plan.report_dir,
-        )
+        min_detected, target = plan.min_detected, plan.target
         auto_mode, formula_count, complexity = (
             plan.auto_mode,
             plan.formula_count,
@@ -2952,52 +2975,29 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             detail["coverage_gap"] = True
             detail["diagnosis"] = "scope_not_covered_by_target_tests"
 
-        self.set_criterion(
-            "mutation_score",
-            passed,
-            detail={**detail, "target": target},
-        )
-
         # Per-mutant status + sim-log pointer. Only the failure path used to
         # carry this; on a PASS the surviving mutants (there can be survivors
         # in a run that still clears min_detected) were reported as a bare
         # tally with no way back to what they did.
         detail["classified"] = summary.classify()
 
-        # Artifacts.
-        if report_dir:
-            report_dir.mkdir(parents=True, exist_ok=True)
-            specs_md = generate_specs_markdown(summary.specs)
-            (report_dir / "mutation-specs.md").write_text(specs_md, encoding="utf-8")
-            results_md = generate_results_markdown(summary, min_detected)
-            (report_dir / "mutation-results.md").write_text(results_md, encoding="utf-8")
-            if complexity and not reused_lock:
-                (report_dir / "complexity-breakdown.json").write_text(
-                    json.dumps(complexity, indent=2),
-                    encoding="utf-8",
-                )
-            # These three files were written and never named anywhere a reader
-            # looks; the mutant-log dir is the entry point for the per-mutant
-            # logs cited in ``classified``.
-            _artifacts.merge_artifacts(
-                detail,
-                _artifacts.artifacts_block(
-                    self.args.work_dir,
-                    # The two authored deliverables stay named — they are this
-                    # Specialist's report, not build residue a listing would explain.
-                    specs=report_dir / "mutation-specs.md",
-                    results=report_dir / "mutation-results.md",
-                    dirs={
-                        "mutant_logs": lock_mod.mutant_logs_dir(),
-                        "verification_rounds": lock_mod.verification_rounds_dir(),
-                    },
-                ),
-            )
+        self._attach_campaign_artifacts(plan, inputs, detail)
+
+        self.set_criterion(
+            "mutation_score",
+            passed,
+            detail={**detail, "target": target},
+        )
 
         # Display lines. Both formatters read straight off (plan, inputs) and
         # recompute valid_count internally, so the explicit arg fan-out is gone.
         display = self._format_display_line(plan, inputs)
         report_text = self._format_report_text(plan, inputs)
+        artifact_lines = self._artifact_display_lines(detail)
+        if artifact_lines:
+            report_text += "\n\nArtifacts:\n" + "\n".join(
+                f"  {line}" for line in artifact_lines
+            )
 
         return McpToolResult(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
@@ -3005,8 +3005,109 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             criterion_met=passed,
             detail=detail,
             report_text=report_text,
-            display_lines=[display],
+            display_lines=[display, *artifact_lines],
         )
+
+    def _attach_campaign_artifacts(
+        self,
+        plan: MutationRunPlan,
+        inputs: RunResultInputs,
+        detail: dict[str, Any],
+    ) -> None:
+        artifact_dir = self.reserve_invocation_dir() if plan.report_dir else None
+        mutated_rtl = self._preserve_mutated_rtl(plan.scope_files, artifact_dir)
+        detail["mutated_rtl_files"] = self._mutated_rtl_detail(mutated_rtl)
+        self._attach_campaign_directories(detail, artifact_dir)
+        if artifact_dir is None:
+            return
+        specs_path = artifact_dir / "mutation-specs.md"
+        specs_path.write_text(generate_specs_markdown(inputs.summary.specs), encoding="utf-8")
+        results_path = artifact_dir / "mutation-results.md"
+        source_links = {
+            source: posix_relpath(path, artifact_dir) for source, path in mutated_rtl.items()
+        }
+        results_path.write_text(
+            generate_results_markdown(
+                inputs.summary,
+                plan.min_detected,
+                mutated_rtl_paths=source_links,
+            ),
+            encoding="utf-8",
+        )
+        if plan.complexity and not inputs.reused_lock:
+            (artifact_dir / "complexity-breakdown.json").write_text(
+                json.dumps(plan.complexity, indent=2),
+                encoding="utf-8",
+            )
+        _artifacts.merge_artifacts(
+            detail,
+            _artifacts.artifacts_block(
+                self.args.work_dir,
+                specs=specs_path,
+                results=results_path,
+            ),
+        )
+
+    def _attach_campaign_directories(
+        self,
+        detail: dict[str, Any],
+        artifact_dir: Path | None,
+    ) -> None:
+        mutated_dir = (
+            artifact_dir / "mutated-rtl" if artifact_dir else lock_mod.lock_dir() / "muxed"
+        )
+        _artifacts.merge_artifacts(
+            detail,
+            _artifacts.artifacts_block(
+                self.args.work_dir,
+                dirs={
+                    "mutated_rtl": mutated_dir,
+                    "mutant_logs": lock_mod.mutant_logs_dir(),
+                    "verification_rounds": lock_mod.verification_rounds_dir(),
+                },
+            ),
+        )
+
+    def _preserve_mutated_rtl(
+        self,
+        scope_files: list[str],
+        artifact_dir: Path | None,
+    ) -> dict[str, Path]:
+        """Return inspectable muxed RTL, copying it into a durable run when possible."""
+        preserved: dict[str, Path] = {}
+        muxed_root = lock_mod.lock_dir() / "muxed"
+        for scope_file in scope_files:
+            source = lock_mod.muxed_path(scope_file)
+            if not source.is_file():
+                continue
+            if artifact_dir is None:
+                preserved[scope_file] = source
+                continue
+            destination = artifact_dir / "mutated-rtl" / source.relative_to(muxed_root)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            preserved[scope_file] = destination
+        return preserved
+
+    def _mutated_rtl_detail(self, mutated_rtl: dict[str, Path]) -> list[dict[str, str]]:
+        rows: list[dict[str, str]] = []
+        for source, path in mutated_rtl.items():
+            relative = _artifacts.relative(path, self.args.work_dir)
+            if relative is not None:
+                rows.append({"source": source, "path": relative})
+        return rows
+
+    @staticmethod
+    def _artifact_display_lines(detail: dict[str, Any]) -> list[str]:
+        lines = [
+            f"mutated RTL: {row['path']}"
+            for row in detail.get("mutated_rtl_files", [])
+            if isinstance(row, dict) and isinstance(row.get("path"), str)
+        ]
+        artifacts = detail.get("artifacts")
+        if isinstance(artifacts, dict) and isinstance(artifacts.get("results"), str):
+            lines.append(f"mutation report: {artifacts['results']}")
+        return lines
 
     @staticmethod
     def _format_display_line(
@@ -3172,6 +3273,7 @@ def _failure_detail(
         _artifacts.artifacts_block(
             work_dir,
             dirs={
+                "mutated_rtl": lock_mod.lock_dir() / "muxed",
                 "mutant_logs": lock_mod.mutant_logs_dir(),
                 "verification_rounds": lock_mod.verification_rounds_dir(),
             },

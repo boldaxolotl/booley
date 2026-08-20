@@ -147,6 +147,47 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
     assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == ("name: ::demo:1\n")
 
 
+def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    report = (
+        ctx.log_dir
+        / ".runtime"
+        / "mcp-tool-reports"
+        / "mutation_tester"
+        / "1"
+        / "mutation-results.md"
+    )
+    report.parent.mkdir(parents=True)
+    report.write_text("# Mutation Test Results\n", encoding="utf-8")
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["mutation_score"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "detected": 7,
+            "total_valid": 8,
+            "not_detected": 1,
+            "invalid": 0,
+            "artifacts": {
+                "results": "../logs/demo/.runtime/mcp-tool-reports/"
+                "mutation_tester/1/mutation-results.md"
+            },
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+    mutation = next(row for row in facts["criteria"] if row["criterion"] == "mutation_score")
+
+    assert mutation["report_path"] == str(report.resolve())
+    assert "detected=7, total_valid=8, not_detected=1, invalid=0" in mutation["metric"]
+    assert f"[mutation_score]({report.resolve()})" in rendered
+
+
 def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"
