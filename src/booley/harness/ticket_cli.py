@@ -204,9 +204,7 @@ def handoff(
     if expected_execution_id is None:
         get_ticket_ops().handoff(project_root, slug)
         return
-    get_ticket_ops().handoff(
-        project_root, slug, expected_execution_id=expected_execution_id
-    )
+    get_ticket_ops().handoff(project_root, slug, expected_execution_id=expected_execution_id)
 
 
 def unblock(
