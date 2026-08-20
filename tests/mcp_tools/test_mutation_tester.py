@@ -31,6 +31,7 @@ from booley.specialists.mutation_tester import (
     _extract_json,
     _sanitize_json_text,
     find_forbidden_specs,
+    generate_results_markdown,
     generate_specs_markdown,
     parse_creator_output,
 )
@@ -527,6 +528,30 @@ class TestArtifacts:
         assert "# Mutation Specifications" in md
         assert "operator_change" in md
 
+    def test_results_link_mutated_rtl_and_escape_rtl_operators(self):
+        spec = MutationSpec(
+            index=1,
+            category="operator_change",
+            file="rtl/mod (wide).sv",
+            line=12,
+            original_code="a | b",
+            mutated_code="a & b",
+        )
+        summary = MutationSummary(
+            specs=[spec],
+            results=[MutationResult(index=1, detected=False)],
+        )
+
+        md = generate_results_markdown(
+            summary,
+            1,
+            mutated_rtl_paths={spec.file: "mutated-rtl/rtl/mod (wide).sv"},
+        )
+
+        assert "[rtl/mod (wide).sv:12](mutated-rtl/rtl/mod%20%28wide%29.sv)" in md
+        assert "`a \\| b` → `a & b`" in md
+        assert "not_detected" in md
+
 
 # ---------------------------------------------------------------------------
 # Cold-start development with mocked agent + sim
@@ -881,6 +906,8 @@ class TestColdStart:
         _write_dut_top(tmp_path)
 
         specs = _sample_specs(2)
+        for spec in specs:
+            spec.file = f"./{scope}"
         _patch_invoke_agent(
             monkeypatch,
             [
@@ -915,6 +942,25 @@ class TestColdStart:
         assert result.detail["reused_lock"] is False
         assert result.detail["verification_rounds"] == 1
         assert "worktree not clean after sim sweep" not in result.report_text
+        mutated = result.detail["mutated_rtl_files"]
+        assert mutated == [
+            {
+                "source": scope,
+                "path": "reports/mutation_tester/1/mutated-rtl/rtl/mod_a.sv",
+            }
+        ]
+        assert (tmp_path / mutated[0]["path"]).is_file()
+        results_path = tmp_path / result.detail["artifacts"]["results"]
+        assert results_path.is_file()
+        results = results_path.read_text(encoding="utf-8")
+        assert "[rtl/mod_a.sv:41](mutated-rtl/rtl/mod_a.sv)" in results
+        assert "not_detected" in results
+        assert "mutated RTL: reports/mutation_tester/1/mutated-rtl/rtl/mod_a.sv" in (
+            result.report_text
+        )
+        criterion_detail = endpoint.state.criteria["mutation_score"].detail
+        assert criterion_detail["artifacts"]["results"] == result.detail["artifacts"]["results"]
+        assert criterion_detail["mutated_rtl_files"] == mutated
 
     def test_post_rollback_residue_still_warns(self, tmp_path: Path, monkeypatch):
         endpoint = _make_endpoint(tmp_path, monkeypatch)
