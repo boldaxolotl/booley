@@ -757,6 +757,7 @@ def _markdown_text(value: Any) -> str:
 def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(
         [
+            "",
             "#### Criteria",
             "",
             "| Category | Criterion | Required? | Status | Metric / evidence |",
@@ -866,6 +867,57 @@ def _render_explanation_highlights(lines: list[str], package: Mapping[str, Any])
         )
 
 
+def _render_reports(lines: list[str], package: Mapping[str, Any]) -> None:
+    assessment = package["assessment"]
+    report = str(package["developer_report_path"])
+    lines.extend(
+        [
+            "",
+            "#### Reports",
+            "",
+            f"- {_markdown_link('Developer Agent report (REPORT.md)', report)}",
+        ]
+    )
+    html_path = package.get("html_path")
+    if isinstance(html_path, str) and html_path:
+        lines.append(
+            f"- {_markdown_link('Polished HTML report', html_path)} — "
+            "open, then select **Show Preview**"
+        )
+    else:
+        lines.append("- Polished HTML report: unavailable")
+    lines.extend(
+        [
+            "",
+            f"- **Developer summary:** {_markdown_text(assessment['developer_summary'])}",
+            f"- **Uncertainties:** {_markdown_text(assessment['uncertainties'])}",
+            f"- **Optional omissions:** {_markdown_text(assessment['optional_omissions'])}",
+        ]
+    )
+
+
+def _render_decision(lines: list[str], package: Mapping[str, Any]) -> None:
+    assessment = package["assessment"]
+    blockers = list(assessment.get("decision_blockers", []))
+    health = package.get("health", {})
+    if health.get("scope_undecidable") is True:
+        blockers.append("Scope calculation was undecidable.")
+    recommendation = (
+        "hold" if health.get("scope_undecidable") is True else assessment["recommendation"]
+    )
+    lines.extend(
+        [
+            "",
+            "#### Decision summary",
+            "",
+            f"**Recommendation:** {_markdown_text(recommendation)} — "
+            f"{_markdown_text(assessment['reason'])}",
+            f"**Decision blockers:** {'none' if not blockers else ''}",
+        ]
+    )
+    lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(blockers, 1))
+
+
 def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> list[str]:
     health = package.get("health", {})
     findings = list(package["assessment"].get("findings", []))
@@ -893,65 +945,39 @@ def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> li
     return findings
 
 
-def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
-    """Render the fixed interactive review template from a validated package."""
-    assessment = package["assessment"]
-    blockers = list(assessment.get("decision_blockers", []))
-    health = package.get("health", {})
-    if health.get("scope_undecidable") is True:
-        blockers.append("Scope calculation was undecidable.")
-    recommendation = (
-        "hold" if health.get("scope_undecidable") is True else assessment["recommendation"]
+def _render_findings(
+    lines: list[str], package: Mapping[str, Any], diff_failures: list[str]
+) -> None:
+    lines.extend(["", "#### Findings", ""])
+    findings = _health_findings(package, diff_failures)
+    lines.extend(
+        [f"- {_markdown_text(item)}" for item in findings] or ["- Health checks: all passed."]
     )
-    lines = [
-        f"### {_markdown_text(package['slug'])}",
-        "",
-        f"**Recommendation:** {_markdown_text(recommendation)} — "
-        f"{_markdown_text(assessment['reason'])}",
-        f"**Decision blockers:** {'none' if not blockers else ''}",
-    ]
-    lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(blockers, 1))
-    _render_criteria(lines, package)
-    _render_recipe_comparisons(lines, package)
-    _render_scope(lines, package)
-    _render_commits(lines, package)
-    _render_changes(lines, package, set(diff_failures))
-    _render_explanation_highlights(lines, package)
-    report = str(package["developer_report_path"])
-    report_lines = [
-        "",
-        "#### Developer report",
-        "",
-        f"- Summary: {_markdown_text(assessment['developer_summary'])}",
-        f"- Uncertainties: {_markdown_text(assessment['uncertainties'])}",
-        f"- Optional omissions: {_markdown_text(assessment['optional_omissions'])}",
-        "",
-        "#### Reports",
-        "",
-        f"- {_markdown_link('Run report', report)}",
-    ]
-    html_path = package.get("html_path")
-    if isinstance(html_path, str) and html_path:
-        report_lines.append(
-            f"- {_markdown_link('HTML explanation', html_path)} — open, then select **Show Preview**"
-        )
-    else:
-        report_lines.append("- HTML explanation: unavailable")
-    report_lines.extend(
+
+
+def _render_economics(lines: list[str], package: Mapping[str, Any]) -> None:
+    lines.extend(
         [
             "",
             "#### Run economics",
             "",
             f"- {_markdown_text(package['run_economics'])}",
-            "",
-            "#### Findings",
-            "",
         ]
     )
-    lines.extend(report_lines)
-    findings = _health_findings(package, diff_failures)
-    lines.extend(
-        [f"- {_markdown_text(item)}" for item in findings] or ["- Health checks: all passed."]
-    )
+
+
+def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
+    """Render the fixed interactive review template from a validated package."""
+    lines = [f"### {_markdown_text(package['slug'])}"]
+    _render_reports(lines, package)
+    _render_explanation_highlights(lines, package)
+    _render_decision(lines, package)
+    _render_findings(lines, package, diff_failures)
+    _render_scope(lines, package)
+    _render_changes(lines, package, set(diff_failures))
+    _render_criteria(lines, package)
+    _render_recipe_comparisons(lines, package)
+    _render_commits(lines, package)
+    _render_economics(lines, package)
     lines.extend(["", "Choose: **approve** / **archive** / **reset** / **skip**."])
     return "\n".join(lines)

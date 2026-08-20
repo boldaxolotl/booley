@@ -332,6 +332,37 @@ def test_render_uses_precomputed_package_without_raw_evidence(tmp_path: Path):
     assert "Choose: **approve** / **archive** / **reset** / **skip**." in rendered
 
 
+def test_render_presents_reports_first_in_review_order(tmp_path: Path):
+    ctx = _context(tmp_path)
+    package = {
+        "slug": "demo",
+        "assessment": _assessment(),
+        "criteria": [],
+        "commits": [],
+        "changed_files": [],
+        "developer_report_path": str(ctx.log_dir / "REPORT.md"),
+        "html_path": str(ctx.log_dir / "explanation.html"),
+        "run_economics": "tokens=10 cost=$0.01",
+        "health": {},
+    }
+
+    rendered = tp.render_review_briefing(package, [])
+
+    ordered_sections = (
+        "#### Reports",
+        "#### Decision summary",
+        "#### Findings",
+        "#### Scope deviations",
+        "#### Changed files",
+        "#### Criteria",
+        "#### Commit history",
+        "#### Run economics",
+    )
+    positions = [rendered.index(section) for section in ordered_sections]
+    assert positions == sorted(positions)
+    assert rendered.index("Developer Agent report") < rendered.index("Polished HTML report")
+
+
 def test_render_marks_undecidable_scope_as_blocker(tmp_path: Path):
     ctx = _context(tmp_path)
     package = {
