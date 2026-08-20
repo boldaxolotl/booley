@@ -1091,6 +1091,12 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             if fusesoc_registry.canonical_project_path(work_dir, spec.file) not in allowed
         ]
 
+    @staticmethod
+    def _canonicalize_spec_paths(specs: list[MutationSpec], work_dir: Path) -> None:
+        """Normalize validated creator paths for downstream artifact lookups."""
+        for spec in specs:
+            spec.file = fusesoc_registry.canonical_project_path(work_dir, spec.file)
+
     def _validate_scope_against_target(self, scope_files: list[str]) -> McpToolResult | None:
         """Fail fast when a ``--scope`` entry isn't a source file of ``--target``.
 
@@ -1539,6 +1545,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     retry_prompt = self._build_retry_prompt(last_outcome)
                     continue
                 break
+            self._canonicalize_spec_paths(specs, work_dir)
 
             # Phase 3.4 — forbidden-category gate (spec validation).
             forbidden = find_forbidden_specs(specs)
@@ -2995,9 +3002,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         report_text = self._format_report_text(plan, inputs)
         artifact_lines = self._artifact_display_lines(detail)
         if artifact_lines:
-            report_text += "\n\nArtifacts:\n" + "\n".join(
-                f"  {line}" for line in artifact_lines
-            )
+            report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
 
         return McpToolResult(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
