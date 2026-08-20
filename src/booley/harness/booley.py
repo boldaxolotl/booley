@@ -573,6 +573,11 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         action="store_true",
         help="Run real first-config sim/lint/synthesis smoke checks",
     )
+    doctor_p.add_argument(
+        "--skip-agent-checks",
+        action="store_true",
+        help="Skip agent credential inspection and the live Developer authorization probe",
+    )
 
     init_p = sub.add_parser("init", help="Set up a new Booley project")
     init_p.add_argument(

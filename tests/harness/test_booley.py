@@ -48,6 +48,17 @@ def test_doctor_parser_accepts_deep_flag():
     assert args.deep is True
 
 
+def test_doctor_parser_accepts_skip_agent_checks_flag():
+    parser = tlr._build_parser()
+
+    args = tlr._normalize_args(
+        parser,
+        parser.parse_args(["doctor", "--deep", "--skip-agent-checks"]),
+    )
+
+    assert args.skip_agent_checks is True
+
+
 def test_doctor_parser_accepts_explicit_project_root(tmp_path):
     parser = tlr._build_parser()
 

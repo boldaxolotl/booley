@@ -58,6 +58,13 @@ such as `booley cheat --commands --project`.
 that one needs the Session Runtime; both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
+Credential-free release automation can use
+`booley doctor --deep --skip-agent-checks`. Doctor reports the agent credential
+inspection, Ticket Mode backend-health check, and live Developer authorization
+probe as skipped; every non-agent project, runtime, Ticket Mode, and EDA check
+still runs. This flag is for smoke tests, not the normal setup gate before an
+agent session.
+
 If `booley` is not found, return to the installation instructions in
 [INSTALL.md](INSTALL.md#install-the-cli). Do not continue into the
 container until plain `booley doctor` has no unresolved failures or warnings.
@@ -773,6 +780,9 @@ booley doctor
 
 # Run real smoke checks against the first applicable sim/lint/synthesis Targets
 booley doctor --deep
+
+# Release smoke only: omit credentials and the live Developer probe
+booley doctor --deep --skip-agent-checks
 ```
 
 Every manual doctor run that ends with zero FAILs and zero active WARNs records

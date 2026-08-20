@@ -483,13 +483,26 @@ def run_doctor_result(
 
     verbose = getattr(args, "verbose", False)
     deep = getattr(args, "deep", False)
+    skip_agent_checks = getattr(args, "skip_agent_checks", False)
     reporter = _create_reporter(project_root, verbose=verbose)
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
-    _run_runtime_phase(project, docker_exe, verbose, reporter)
+    _run_runtime_phase(
+        project,
+        docker_exe,
+        verbose,
+        reporter,
+        skip_agent_checks=skip_agent_checks,
+    )
     _run_flow_and_core_phase(project, docker_exe, verbose, reporter)
 
     if deep:
-        _run_deep_phase(project, docker_exe, verbose, reporter)
+        _run_deep_phase(
+            project,
+            docker_exe,
+            verbose,
+            reporter,
+            skip_agent_checks=skip_agent_checks,
+        )
 
     # Only a fully clean run refreshes the freshness stamp that session start
     # and the ticket sweep nag against (fail-soft; never changes Doctor's rc).
@@ -556,6 +569,8 @@ def _run_runtime_phase(
     docker_exe: str | None,
     verbose: bool,
     reporter: _Reporter,
+    *,
+    skip_agent_checks: bool = False,
 ) -> None:
     """Run runtime-location, container, MCP, and preflight-parity checks."""
     sandbox_image = _sandbox_image(project)
@@ -588,6 +603,7 @@ def _run_runtime_phase(
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        skip_agent_checks=skip_agent_checks,
     )
     _run_preflight_parity_checks(
         project,
@@ -596,6 +612,7 @@ def _run_runtime_phase(
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
+        skip_agent_checks=skip_agent_checks,
     )
 
 
@@ -639,6 +656,8 @@ def _run_deep_phase(
     docker_exe: str | None,
     verbose: bool,
     reporter: _Reporter,
+    *,
+    skip_agent_checks: bool = False,
 ) -> None:
     banner("Deep checks")
     if project is None:
@@ -647,7 +666,10 @@ def _run_deep_phase(
     # First, before the EDA smoke checks: the probe's RUSAGE_CHILDREN reading
     # is exact only while no bigger child (a real sim/synth run) has been
     # reaped yet.
-    _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
+    if skip_agent_checks:
+        reporter.skip_("developer authorization probe skipped by --skip-agent-checks")
+    else:
+        _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
     _run_deep_checks(
         project,
         docker_exe,
@@ -3000,6 +3022,8 @@ def _run_mcp_checks(
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    skip_agent_checks: bool = False,
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
@@ -3021,11 +3045,14 @@ def _run_mcp_checks(
     _check_devcontainer_excludes(project.project_root, _pass, _warn)
     _check_interactive_logs_gitignore(project.project_dir, _pass, _warn)
     _check_interactive_logs_tracked(project.project_dir, _pass, _fail)
-    provider = _configured_provider(project)
-    auth_policy = _configured_auth_policy(project)
-    _check_agent_auth_token(provider, _pass, _warn, _skip, policy=auth_policy)
-    _check_oauth_token(provider, _pass, _warn, _skip, policy=auth_policy, _note=_note)
-    _check_subscription_creds_health(provider, _pass, _warn, policy=auth_policy)
+    if skip_agent_checks:
+        _skip("agent credential checks skipped by --skip-agent-checks")
+    else:
+        provider = _configured_provider(project)
+        auth_policy = _configured_auth_policy(project)
+        _check_agent_auth_token(provider, _pass, _warn, _skip, policy=auth_policy)
+        _check_oauth_token(provider, _pass, _warn, _skip, policy=auth_policy, _note=_note)
+        _check_subscription_creds_health(provider, _pass, _warn, policy=auth_policy)
     _check_interactive_docker_objects(docker_exe, _pass, _warn, _skip)
     _check_wcp_server(project, docker_exe, _pass, _skip, _fail)
     _check_interactive_state_volumes(project, docker_exe, verbose, _pass, _note, _skip)
@@ -3312,7 +3339,12 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if not _check_runtime_isolation(_pass, _fail):
             return
         mounted = Path("/opt/booley-eda/vivado").is_dir()
-        if vivado is not None and vivado.provisioning == PROVISIONING_HOST and not mounted:
+        if (
+            vivado is not None
+            and vivado.provisioning == PROVISIONING_HOST
+            and _flow_selection(project, "fpga").enabled
+            and not mounted
+        ):
             _fail(
                 "host-provisioned Vivado is absent from the Session Runtime",
                 "reissue the spec on the host and recreate the Session Runtime",
@@ -3321,7 +3353,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if mounted:
             _check_mounted_vivado_runtime(_pass, _fail)
         else:
-            _pass("Session Runtime has no host-mounted commercial EDA request")
+            _pass("Session Runtime has no active host-mounted commercial EDA request")
         return
 
     from booley.eda import runtime_spec
@@ -4309,6 +4341,8 @@ def _run_preflight_parity_checks(
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    skip_agent_checks: bool = False,
 ) -> None:
     """Mirror cheap run preflight checks in doctor output."""
     banner("Run checks")
@@ -4321,7 +4355,10 @@ def _run_preflight_parity_checks(
     _check_repo_footprint(project.project_root, _pass, _warn)
     _check_ticket_board_import(project.project_root, _pass, _fail)
     _check_custom_endpoints_and_criteria(project.project_root, _pass, _fail)
-    _check_agent_backend_health(project.project_root, _pass, _warn, _note=_note)
+    if skip_agent_checks:
+        _skip("worker backend health check skipped by --skip-agent-checks")
+    else:
+        _check_agent_backend_health(project.project_root, _pass, _warn, _note=_note)
 
 
 def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:

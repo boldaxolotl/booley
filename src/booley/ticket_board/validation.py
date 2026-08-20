@@ -781,22 +781,18 @@ def _validate_retired_criteria(criteria: dict[str, Any]) -> list[str]:
 def _validate_flow_coherence(criteria: dict[str, Any], project_root: str | Path) -> list[str]:
     """Check criterion prefixes against disabled Flows in booley.toml."""
     errors: list[str] = []
-    from .execution import disabled_flow_steps
+    from .execution import disabled_flows
 
-    disabled = disabled_flow_steps(Path(project_root))
+    disabled = disabled_flows(Path(project_root))
     if not disabled:
         return errors
-
-    from .constants import FLOW_STEP_MAP
-
-    disabled_flows = {flow for flow, step in FLOW_STEP_MAP.items() if step in disabled}
     for section_name in ("mandatory", "optional"):
         section = criteria.get(section_name, {})
         if not isinstance(section, dict):
             continue
         for crit_key in section:
             for prefix, flow in CRITERION_FLOW_MAP.items():
-                if crit_key.startswith(prefix) and flow in disabled_flows:
+                if crit_key.startswith(prefix) and flow in disabled:
                     errors.append(
                         f"criteria.{section_name}.{crit_key} requires "
                         f"Flow {flow} which is disabled in booley.toml"
