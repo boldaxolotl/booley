@@ -47,6 +47,7 @@ from .agent import (  # noqa: F401 — re-exported as public API of configuratio
 from .editor import (  # noqa: F401 — re-exported as public API of configuration settings
     VSCODE_EDITOR,
     ResolvedEditor,
+    resolve_editor,
 )
 
 # --- Re-exports: harness limits (owned by _limits.py) ---

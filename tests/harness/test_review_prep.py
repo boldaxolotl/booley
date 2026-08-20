@@ -16,25 +16,30 @@ from booley.core.models import AgentResult
 from booley.harness import review_prep as rp
 
 
-def _html(extra: str = "") -> str:
-    filler = "A grounded explanation of the change. " * 40
-    quiz = "\n".join(
-        f"""<div class="quiz-question">
-  <button class="quiz-option" data-correct="true" data-feedback="Yes">A{i}</button>
-  <button class="quiz-option" data-correct="false" data-feedback="No">B{i}</button>
-  <div class="quiz-feedback"></div>
-</div>"""
-        for i in range(5)
-    )
-    return f"""<!doctype html>
-<html><head><style>pre {{ white-space: pre-wrap; }}</style></head><body>
-<h1>Background</h1><p>{filler}</p>
-<h1>Intuition</h1><p>{filler}</p>
-<h1>Code</h1><pre>line one\nline two</pre>
-<h1>Quiz</h1>
-{quiz}
-{extra}
-</body></html>"""
+def _explanation() -> dict:
+    return {
+        "background": [{"title": "Existing system", "body": "Grounded background."}],
+        "intuition": [{"title": "Core idea", "body": "A concrete toy example."}],
+        "code_references": [
+            {
+                "repository": "rtl",
+                "path": "rtl/core.sv",
+                "revision": "b" * 40,
+                "summary": "The change keeps the invariant explicit.",
+            }
+        ],
+        "findings": [{"title": "Edge case", "detail": "Exited owners remain distinguishable."}],
+        "quiz": [
+            {
+                "question": f"Question {index}?",
+                "choices": [
+                    {"text": "Correct", "correct": True, "feedback": "Yes"},
+                    {"text": "Incorrect", "correct": False, "feedback": "No"},
+                ],
+            }
+            for index in range(5)
+        ],
+    }
 
 
 def _ctx(tmp_path: Path) -> rp.ReviewPrepContext:
@@ -71,8 +76,18 @@ def _assessment() -> dict:
 
 def _facts() -> dict:
     return {
-        "version": 1,
+        "version": 2,
+        "kind": "review",
         "slug": "demo",
+        "feature_branch": "demo",
+        "repositories": [
+            {
+                "name": "rtl",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "worktree": "/tmp/worktree",
+            }
+        ],
         "scope": {"deviations": []},
         "criteria": [],
         "commits": [],
@@ -122,11 +137,11 @@ def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: P
 
     prepared = rp._write_output(
         ctx,
-        {"html": _html(), "assessment": assessment},
+        {"explanation": _explanation(), "assessment": assessment},
         facts,
     )
 
-    assert prepared.html_path and prepared.html_path.is_file()
+    assert prepared.explanation is not None
     assert prepared.assessment["optional_omissions"] == "none"
     assert prepared.assessment["recommendation"] == "hold"
     assert prepared.assessment["scope_deviations"][0]["path"] == "rtl/outside.sv"
@@ -138,7 +153,7 @@ def test_write_output_falls_back_when_structured_response_is_missing(tmp_path: P
 
     prepared = rp._write_output(_ctx(tmp_path), None, facts)
 
-    assert prepared.html_path is None
+    assert prepared.explanation is None
     assert prepared.html_error
     assert prepared.assessment_error
     assert prepared.assessment["recommendation"] == "hold"
@@ -151,75 +166,12 @@ def test_write_output_falls_back_when_structured_response_is_missing(tmp_path: P
     ]
 
 
-def test_secure_html_removes_agent_script_and_injects_trusted_behavior():
-    raw = _html("<script>fetch('https://example.invalid')</script>")
-    secured = rp._secure_html({"html": raw})
+def test_output_schema_contains_structured_explanation_not_html():
+    schema = rp._output_schema()
 
-    assert "fetch(" not in secured
-    assert "Content-Security-Policy" in secured
-    assert "script-src 'sha256-" in secured
-    assert "script-src 'unsafe-inline'" not in secured
-    assert "event.target.closest('.quiz-option')" in secured
-
-
-def test_secure_html_injects_whitespace_preservation_for_bare_pre():
-    raw = _html().replace("<style>pre { white-space: pre-wrap; }</style>", "")
-
-    secured = rp._secure_html({"html": raw})
-
-    assert "pre { white-space: pre-wrap !important; }" in secured
-
-
-@pytest.mark.parametrize(
-    "extra, message",
-    [
-        ('<img src="https://example.invalid/x.png">', "unsafe src"),
-        ('<button onclick="alert(1)">bad</button>', "event handler"),
-        ('<meta http-equiv="refresh" content="0; url=/">', "meta policy"),
-        ('<a href="javascript:alert(1)">bad</a>', "unsafe href"),
-        ('<a href="data:text/html,bad">bad</a>', "unsafe href"),
-        ('<div srcdoc="<script>alert(1)</script>">bad</div>', "forbidden srcdoc"),
-        ('<div style="background:url(javascript:alert(1))">bad</div>', "HTML CSS"),
-    ],
-)
-def test_secure_html_rejects_active_content(extra: str, message: str):
-    with pytest.raises(rp.ReviewPrepError, match=message):
-        rp._secure_html({"html": _html(extra)})
-
-
-@pytest.mark.parametrize(
-    "css",
-    [
-        "html { scroll-behavior: smooth; }",
-        ".diagram { overscroll-behavior: contain; }",
-    ],
-)
-def test_secure_html_accepts_passive_behavior_properties(css: str):
-    raw = _html().replace(
-        "pre { white-space: pre-wrap; }", css + " pre { white-space: pre-wrap; }"
-    )
-
-    secured = rp._secure_html({"html": raw})
-
-    assert css in secured
-
-
-@pytest.mark.parametrize(
-    "css, construct",
-    [
-        (".card { background: url(https://example.invalid/x.png); }", "url\\(\\)"),
-        ('@import "https://example.invalid/theme.css";', "@import"),
-        (".card { width: expression(alert(1)); }", "expression\\(\\)"),
-        (".card { behavior: none; }", "behavior property"),
-    ],
-)
-def test_secure_html_identifies_disallowed_css_construct(css: str, construct: str):
-    raw = _html().replace(
-        "pre { white-space: pre-wrap; }", css + " pre { white-space: pre-wrap; }"
-    )
-
-    with pytest.raises(rp.ReviewPrepError, match=construct):
-        rp._secure_html({"html": raw})
+    assert "explanation" in schema["properties"]
+    assert "html" not in schema["properties"]
+    assert schema["properties"]["explanation"]["properties"]["quiz"]["minItems"] == 5
 
 
 def test_fresh_outcome_requires_matching_identity_and_files(tmp_path: Path):
@@ -394,7 +346,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
 
     async def invoke(*_args, **_kwargs):
         return AgentResult(
-            structured={"html": _html(), "assessment": _assessment()},
+            structured={"explanation": _explanation(), "assessment": _assessment()},
             cost_usd=0.125,
         )
 
@@ -463,7 +415,15 @@ def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monk
     package_path = ctx.runtime_dir / "briefing.json"
     package_path.parent.mkdir(parents=True)
     package = {
-        "version": 1,
+        "version": 2,
+        "repositories": [
+            {
+                "name": "rtl",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "worktree": str(tmp_path / "worktree"),
+            }
+        ],
         "slug": "demo",
         "assessment": _assessment(),
         "criteria": [],
@@ -492,14 +452,26 @@ def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monk
 
     assert outcome.status == "ready"
     assert "**Recommendation:** approve" in outcome.briefing
-    assert opened == [package]
+    assert len(opened) == 1
+    assert opened[0]["slug"] == package["slug"]
+    assert opened[0].version == 2
 
 
 def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path, monkeypatch):
     ctx = replace(_ctx(tmp_path), triage_report_enabled=False)
     facts = {
-        "version": 1,
+        "version": 2,
+        "kind": "review",
         "slug": "demo",
+        "feature_branch": "demo",
+        "repositories": [
+            {
+                "name": "rtl",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "worktree": str(ctx.worktree),
+            }
+        ],
         "scope": {"decidable": True, "deviations": ["rtl/extra.sv"]},
         "criteria": [],
         "commits": [],
@@ -529,7 +501,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
 
     async def invoke(*_args, **_kwargs):
-        return AgentResult(structured={"html": "broken", "assessment": _assessment()})
+        return AgentResult(structured={"explanation": {"quiz": []}, "assessment": _assessment()})
 
     @contextmanager
     def workspace(_ctx, _evidence):
@@ -559,7 +531,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     manifest = json.loads((ctx.runtime_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "ready"
     assert manifest["html_path"] is None
-    assert "HTML is incomplete" in manifest["html_error"]
+    assert "background must be a list" in manifest["html_error"]
     briefing = json.loads(Path(manifest["briefing_path"]).read_text(encoding="utf-8"))
     assert briefing["html_path"] is None
     assert any(
@@ -605,7 +577,7 @@ async def test_prepare_review_marks_live_input_changes_concurrent(tmp_path: Path
     async def invoke(*_args, **_kwargs):
         nonlocal invoked
         invoked = True
-        return AgentResult(structured={"html": _html()})
+        return AgentResult(structured={"explanation": _explanation()})
 
     @contextmanager
     def workspace(_ctx, _evidence):

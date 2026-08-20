@@ -363,12 +363,12 @@ def _attach_click_links(app, ctx, project_root: Path) -> None:
     run resolve against project only.
     """
     try:
-        from booley.config.settings import VSCODE_EDITOR
+        from booley.config.settings import VSCODE_EDITOR, resolve_editor
 
         from .console.links import build_link_context
         from .console.widgets import MainPane
 
-        editor = VSCODE_EDITOR
+        editor = resolve_editor() or VSCODE_EDITOR
 
         link_ctx = build_link_context(
             project_root=project_root,
