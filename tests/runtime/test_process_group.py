@@ -30,11 +30,17 @@ def test_force_signal_uses_captured_group_after_direct_child_exit(
     process = type("Process", (), {"pid": 999, "returncode": None, "kill": lambda self: None})()
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(process_group.sys, "platform", "linux")
-    monkeypatch.setattr(process_group.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    monkeypatch.setattr(process_group.signal, "SIGKILL", 9, raising=False)
+    monkeypatch.setattr(
+        process_group.os,
+        "killpg",
+        lambda pgid, sig: calls.append((pgid, sig)),
+        raising=False,
+    )
 
     process_group.force_async_process_group_now(process, process_group.ProcessGroup(417))
 
-    assert calls == [(417, signal.SIGKILL)]
+    assert calls == [(417, 9)]
 
 
 @pytest.mark.asyncio
@@ -51,7 +57,12 @@ async def test_async_graceful_termination_uses_captured_group(
 
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(process_group.sys, "platform", "linux")
-    monkeypatch.setattr(process_group.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)))
+    monkeypatch.setattr(
+        process_group.os,
+        "killpg",
+        lambda pgid, sig: calls.append((pgid, sig)),
+        raising=False,
+    )
 
     await process_group.terminate_async_process_group(Process(), process_group.ProcessGroup(417))
 

@@ -38,12 +38,12 @@ def acquire_file_lock(handle: IO[Any]) -> None:
     if sys.platform == "win32":
         import msvcrt
 
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write("\0")
-            handle.flush()
-        handle.seek(0)
         try:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write("\0")
+                handle.flush()
+            handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as exc:
             _raise_lock_error(exc)
