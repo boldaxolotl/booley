@@ -147,6 +147,35 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
     assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == ("name: ::demo:1\n")
 
 
+def test_review_facts_classify_symlink_binary_and_submodule_content(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    link = ctx.worktree / "rtl" / "link.sv"
+    link.symlink_to("new.sv")
+    (ctx.worktree / "rtl" / "blob.bin").write_bytes(b"before\0after")
+    submodule_commit = _git(ctx.worktree, "rev-parse", "HEAD")
+    _git(
+        ctx.worktree,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{submodule_commit},deps/ip",
+    )
+    _git(ctx.worktree, "add", "rtl/link.sv", "rtl/blob.bin")
+    _git(ctx.worktree, "commit", "-qm", "add special content")
+    ctx = replace(ctx, head_sha=_git(ctx.worktree, "rev-parse", "HEAD"))
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    changes = {row["path"]: row for row in tp.build_review_facts(ctx)["changed_files"]}
+
+    assert changes["rtl/link.sv"]["content_kind"] == "symlink"
+    assert changes["rtl/link.sv"]["presentation"] == "text"
+    assert changes["rtl/blob.bin"]["content_kind"] == "regular"
+    assert changes["rtl/blob.bin"]["presentation"] == "binary"
+    assert changes["deps/ip"]["content_kind"] == "submodule"
+    assert changes["deps/ip"]["action"] == "added"
+    assert changes["deps/ip"]["new_endpoint"]["workspace_path"] is None
+
+
 def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     state_path = ctx.log_dir / ".runtime" / "booley_state.json"

@@ -262,9 +262,7 @@ def op_activate(
     # (resume)" told a never-run ticket's transitions.log it had resumed. The
     # resume wording is only truthful when there is something to resume: prior
     # progress, or a ticket coming back from blocked/failed.
-    resumed = old_status in ("blocked", "failed") or bool(
-        entry and entry.get("steps_completed")
-    )
+    resumed = old_status in ("blocked", "failed") or bool(entry and entry.get("steps_completed"))
     detail = "picked up (resume)" if resumed else "claimed for execution"
     return _op_move_and_log(
         tio,

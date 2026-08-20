@@ -124,7 +124,7 @@ class TicketIO:
                 lock_file.write(pid_to_stamp)
                 lock_file.flush()
                 return
-            except (BlockingIOError, OSError) as lock_err:
+            except BlockingIOError as lock_err:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"Could not acquire lock for '{slug}' within "
@@ -387,10 +387,7 @@ class TicketIO:
 
             progress = self._load_or_bootstrap_progress(slug, file_path)
             actual_execution_id = progress.get("execution_id", "")
-            if (
-                expected_execution_id is not None
-                and actual_execution_id != expected_execution_id
-            ):
+            if expected_execution_id is not None and actual_execution_id != expected_execution_id:
                 print(
                     f"Error: ticket '{slug}' execution changed concurrently: expected "
                     f"{expected_execution_id}, found {actual_execution_id or '<none>'}",

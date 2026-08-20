@@ -192,9 +192,7 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         assert "An unmet `_clean` review is different" in system
         assert "call `reviewer` again to verify them" in system
 
-    def test_baseline_qor_rule_requires_relative_implementation_criterion(
-        self, tmp_path: Path
-    ):
+    def test_baseline_qor_rule_requires_relative_implementation_criterion(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"
         ticket.write_text("---\nsummary: x\n---\n", encoding="utf-8")
         phrase = "Target recipes are revision-owned"
