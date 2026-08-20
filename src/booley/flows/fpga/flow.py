@@ -59,6 +59,11 @@ from ..recipe_evidence import (
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_SNAPSHOT_DETAIL,
 )
+from ..run_evidence import (
+    BASELINE_RUN_EVIDENCE_DETAIL,
+    RUN_EVIDENCE_DETAIL,
+    build_flow_run_evidence,
+)
 from . import cache as fpga_cache
 from . import edam as fpga_edam
 from .metrics import (
@@ -86,6 +91,7 @@ class _PreparedFpgaCommand:
     require_bitstream: bool
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
+    run_evidence: dict[str, Any] = field(default_factory=dict)
 
     def __iter__(self):
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
@@ -401,13 +407,21 @@ class FpgaImplFlow(BooleyFlow):
             edam,
             out_of_context=out_of_context,
         )
+        recipe_fingerprint = fpga_recipe_snapshot_fingerprint(recipe_snapshot)
+        run_evidence = build_flow_run_evidence(
+            flow=self.name,
+            target=target,
+            recipe_sha256=recipe_fingerprint,
+            work_dir=work_dir,
+        )
         return _PreparedFpgaCommand(
             run_cmd=run_cmd,
             work_root=work_root,
             fingerprint=fingerprint,
             require_bitstream=not out_of_context,
             recipe_snapshot=recipe_snapshot,
-            recipe_fingerprint=fpga_recipe_snapshot_fingerprint(recipe_snapshot),
+            recipe_fingerprint=recipe_fingerprint,
+            run_evidence=run_evidence.as_dict(),
         )
 
     def _resolve_part(self, flow_options: Any) -> str:
@@ -538,6 +552,7 @@ class FpgaImplFlow(BooleyFlow):
                 fingerprint,
                 require_bitstream=require_bitstream,
                 min_mtime=result.dispatched_unix,
+                producer_evidence=getattr(prepared, "run_evidence", {}),
             )
         return self._attach_recipe_evidence(metrics, prepared)
 
@@ -549,6 +564,11 @@ class FpgaImplFlow(BooleyFlow):
         """Attach the recipe materialized for this run to its metrics."""
         metrics.recipe_snapshot = getattr(prepared, "recipe_snapshot", {})
         metrics.recipe_fingerprint = getattr(prepared, "recipe_fingerprint", "")
+        current_evidence = getattr(prepared, "run_evidence", {})
+        if metrics.cached:
+            metrics.cache_consumer_run_id = str(current_evidence.get("run_id", ""))
+        else:
+            metrics.run_evidence = current_evidence
         return metrics
 
     def _load_cached_metrics(
@@ -574,6 +594,7 @@ class FpgaImplFlow(BooleyFlow):
             return None
         metrics.cached = True
         metrics.cache_fingerprint = hit.fingerprint
+        metrics.run_evidence = hit.producer_evidence
         metrics.dirs = self._artifact_dirs(work_root)
         self._attach_existing_log(target, metrics)
         return metrics
@@ -956,10 +977,13 @@ class FpgaImplFlow(BooleyFlow):
             "metrics": _metrics_detail(cur),
             "recipe_fingerprint": cur.recipe_fingerprint or None,
             "recipe_snapshot": cur.recipe_snapshot or None,
+            "run_evidence": cur.run_evidence or None,
+            "cache_consumer_run_id": cur.cache_consumer_run_id or None,
             "baseline_ref": baseline_ref,
             "baseline_metrics": _metrics_detail(base, baseline=True) if base else None,
             "baseline_recipe_fingerprint": base.recipe_fingerprint if base else None,
             "baseline_recipe_snapshot": base.recipe_snapshot if base else None,
+            "baseline_run_evidence": base.run_evidence if base else None,
         }
         report_path = report_dir / f"fpga_{cfg}.json"
         # Top-level ``artifacts`` mirrors the block inside ``metrics`` and adds
@@ -992,6 +1016,8 @@ class FpgaImplFlow(BooleyFlow):
             "passed": cur.passed,
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
+            RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
+            "_cache_consumer_run_id": cur.cache_consumer_run_id or None,
             "_metric_map": dict(_FPGA_METRIC_MAP),
             "_min_allowed": ["fmax_mhz", "wns_ns", "whs_ns"],
         }
@@ -999,6 +1025,7 @@ class FpgaImplFlow(BooleyFlow):
             detail["baseline_metrics"] = _metrics_detail(base, baseline=True)
             detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
             detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
+            detail[BASELINE_RUN_EVIDENCE_DETAIL] = base.run_evidence or None
         if baseline_ref:
             detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(

@@ -402,7 +402,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
     def workspace(_ctx, _evidence):
         yield rp.ReviewAgentWorkspace(ctx.worktree, {"diff": evidence})
 
-    monkeypatch.setattr(rp, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
     monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
@@ -438,6 +438,12 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
         "ticket",
         "triage_facts",
     }
+
+    assert rp.verify_review_handoff(tmp_path, "demo").ready
+    briefing_path = Path(manifest["briefing_path"])
+    briefing_path.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(rp.ReviewPrepError, match="no current"):
+        rp.verify_review_handoff(tmp_path, "demo")
 
 
 def test_source_fingerprint_survives_ticket_handoff(tmp_path: Path, monkeypatch):

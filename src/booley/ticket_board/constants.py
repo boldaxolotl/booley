@@ -112,6 +112,8 @@ RUNTIME_FIELDS = {
     "error",
     "blocked_reason",
     "blocked_step",
+    "execution_id",
+    "execution_owner_pid",
 }
 
 # ---------------------------------------------------------------------------

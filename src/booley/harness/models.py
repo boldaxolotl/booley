@@ -54,6 +54,8 @@ class TicketContext:
     # Immutable outer-repository baseline stamped into ticket frontmatter.
     # Appended for positional compatibility with existing context constructors.
     base_sha: str = ""
+    # Generation stamped atomically when this harness execution activates the ticket.
+    execution_id: str = ""
 
     @property
     def work_dir(self) -> Path:

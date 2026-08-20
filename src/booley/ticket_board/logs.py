@@ -38,6 +38,8 @@ PROGRESS_DEFAULTS = {
     "error": None,
     "blocked_reason": None,
     "blocked_step": None,
+    "execution_id": "",
+    "execution_owner_pid": None,
 }
 
 

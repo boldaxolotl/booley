@@ -146,10 +146,11 @@ def block_ticket(
 ) -> None:
     """Block ticket and append entry to blocked.md."""
     logger.warning("Blocking %s at %s: %s", ctx.slug, step, reason)
+    ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
+    ticket_cli.block(ctx.project_root, ctx.slug, reason=reason, step=step, **ownership)
     _append_blocked_entry(
         ctx.logs_dir, reason, step, "blocked", run_index=run_index, questions=questions
     )
-    ticket_cli.block(ctx.project_root, ctx.slug, reason=reason, step=step)
 
 
 def fail_ticket(
@@ -157,7 +158,8 @@ def fail_ticket(
 ) -> None:
     """Fail ticket — delegates to block with error semantics."""
     logger.error("Failing %s at %s: %s", ctx.slug, step, error)
+    ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
+    ticket_cli.block(ctx.project_root, ctx.slug, reason=error, step=step, **ownership)
     _append_blocked_entry(
         ctx.logs_dir, error, step, "crashed" if crashed else "failed", run_index=run_index
     )
-    ticket_cli.block(ctx.project_root, ctx.slug, reason=error, step=step)

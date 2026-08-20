@@ -1082,6 +1082,17 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
         )
 
 
+def verify_review_handoff(project_root: Path, slug: str) -> ReviewPrepOutcome:
+    """Return the current ready package or reject review handoff."""
+    ctx = _resolve_context(project_root.resolve(), slug, require_review=False)
+    prompt_sha = _prompt_hash(_prompt_text())
+    source_sha = _source_fingerprint(ctx)
+    outcome = _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
+    if outcome is None:
+        raise ReviewPrepError(f"ticket {slug!r} has no current, integrity-checked review package")
+    return outcome
+
+
 async def prepare_review_command(
     project_root: Path, slug: str, *, force: bool = False
 ) -> ReviewPrepOutcome:
