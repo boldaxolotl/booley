@@ -403,9 +403,12 @@ class TestFindingSchema:
         assert any("evidence" in e for e in errs)
 
     def test_waived_requires_non_blank_justification(self):
-        assert _validate_finding_dict(
-            {"index": 1, "status": "WAIVED", "justification": "intentional tradeoff"}
-        ) == []
+        assert (
+            _validate_finding_dict(
+                {"index": 1, "status": "WAIVED", "justification": "intentional tradeoff"}
+            )
+            == []
+        )
         errs = _validate_finding_dict({"index": 1, "status": "WAIVED"})
         assert any("justification" in error for error in errs)
 

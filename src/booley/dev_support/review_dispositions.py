@@ -85,6 +85,4 @@ def review_report_required(criteria: Mapping[str, Any]) -> bool:
     """Return whether review evidence requires a user-facing run report."""
     if any(key.startswith("review_") and key.endswith("_done") for key in criteria):
         return True
-    return any(
-        row["disposition"] == "waived" for row in collect_review_dispositions(criteria)
-    )
+    return any(row["disposition"] == "waived" for row in collect_review_dispositions(criteria))

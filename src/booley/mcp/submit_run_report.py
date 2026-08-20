@@ -471,8 +471,7 @@ class SubmitRunReportMcpTool(McpTool):
         done_criteria = sorted(
             key
             for key, entry in self.state.criteria.items()
-            if key.startswith("review_") and key.endswith("_done")
-            and entry.met
+            if key.startswith("review_") and key.endswith("_done") and entry.met
         )
         if not visible and not done_criteria:
             return ""
