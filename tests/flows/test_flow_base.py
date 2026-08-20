@@ -57,7 +57,7 @@ class TestBooleyFlowExecution:
         env = _env_with_state(state_file)
         flow = EchoFlow()
         with patch.dict(os.environ, env):
-            flow.parse_args(["--message", "hello world"])
+            flow.parse_args(["--target", "test", "--message", "hello world"])
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -89,7 +89,7 @@ class TestBooleyFlowExecution:
         env = _env_with_state(state_file)
         flow = MissingCmdFlow()
         with patch.dict(os.environ, env):
-            flow.parse_args([])
+            flow.parse_args(["--target", "test"])
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -116,7 +116,7 @@ class TestBooleyFlowExecution:
         env = _env_with_state(state_file)
         flow = EmptyFlow()
         with patch.dict(os.environ, env):
-            flow.parse_args([])
+            flow.parse_args(["--target", "test"])
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -140,7 +140,7 @@ class TestResourceEvidence:
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         result = flow._execute_local(
             [
                 sys.executable,
@@ -171,7 +171,7 @@ class TestBoundaryExecutor:
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         with patch.object(flow, "_execute") as execute:
             execute.return_value = SubprocessResult(returncode=0, stdout="ok")
             result = flow._execute_boundary(["make", "-C", "b/r"])
@@ -201,7 +201,7 @@ class TestOpenRunLog:
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         return flow
 
     def test_truncates_to_a_header_naming_this_run(self, tmp_path: Path):
@@ -286,7 +286,7 @@ class TestTimeoutKillsTheWholeTree:
         DevelopmentState.load(state_file).save()
         flow = HangFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         flow.read_state()
         return flow
 

@@ -48,7 +48,7 @@ def _audit(
 ):
     pd = tmp_path / ".booley_project"
     pd.mkdir(exist_ok=True)
-    sim: dict = {"default_target": "sim_core"}
+    sim: dict = {}
     if enabled is not None:
         sim["enabled"] = enabled
     (pd / "tests.toml").write_text('[sim_core]\ntests = ["hello_world"]\n', encoding="utf-8")
@@ -56,6 +56,15 @@ def _audit(
         overlay = pd / "selftest" / "sim" / "bad-overlay" / "firmware.hex"
         overlay.parent.mkdir(parents=True)
         overlay.write_text("broken\n", encoding="utf-8")
+    (tmp_path / "unit.core").write_text(
+        "CAPI=2:\n"
+        "name: booley::unit:0\n"
+        "targets:\n"
+        "  sim_core:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
     return doctor.ProjectAudit(
         project_root=tmp_path,
         project_dir=pd,
@@ -133,7 +142,7 @@ def _lint_audit(tmp_path, *, fixture: bool = True):
         "targets:\n"
         "  lint_core:\n"
         "    flow: lint\n"
-        "    flow_options: {tool: verilator}\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
         f"{bad_target}",
         encoding="utf-8",
     )
@@ -143,7 +152,7 @@ def _lint_audit(tmp_path, *, fixture: bool = True):
         booley_toml={
             "flows": {
                 "sim": {"enabled": False},
-                "lint": {"default_target": "lint_core"},
+                "lint": {},
             }
         },
         configs_toml={},

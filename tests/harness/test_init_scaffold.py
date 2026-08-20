@@ -92,12 +92,19 @@ def test_default_combo_files_and_shapes() -> None:
 
     lint = core["targets"]["lint"]
     assert lint["flow"] == "lint"
-    assert lint["flow_options"] == {"tool": "verilator"}
+    assert lint["flow_options"] == {
+        "tool": "verilator",
+        "booley": {"doctor": ["lint"]},
+    }
     assert lint["toplevel"] == "my_ip"
 
     synth = core["targets"]["synth"]
     assert synth["flow"] == "generic"
-    assert synth["flow_options"] == {"tool": "yosys", "arch": "xilinx"}
+    assert synth["flow_options"] == {
+        "tool": "yosys",
+        "arch": "xilinx",
+        "booley": {"doctor": ["synth"]},
+    }
     assert "constraints" in synth["filesets"]
     sdc_entry = core["filesets"]["constraints"]["files"][0]
     assert sdc_entry == {"constraints/my_ip.sdc": {"file_type": "SDC"}}
@@ -108,13 +115,12 @@ def test_default_combo_files_and_shapes() -> None:
     # the commit sanitizer would redact its own MCP tool name from subjects and
     # drop multi-line bodies for no privacy gain.
     assert cfg["stealth"] == {"enabled": False}
-    # ADR 0039: one builder, so no `backend` line — just the Target (and venue
-    # where it differs from the default). `enabled = true` is implicit.
-    assert cfg["flows"]["sim"] == {"default_target": "sim"}
-    assert cfg["flows"]["lint"] == {"default_target": "lint"}
-    # Elaborate reuses the (cheap) verilator lint Target.
-    assert cfg["flows"]["elab"] == {"default_target": "lint"}
-    assert cfg["flows"]["synth"] == {"default_target": "synth"}
+    # Target selection lives beside each Target in the .core file.
+    assert cfg["flows"]["sim"] == {}
+    assert cfg["flows"]["lint"] == {}
+    assert cfg["flows"]["elab"] == {}
+    assert cfg["flows"]["synth"] == {}
+    assert sim["flow_options"]["booley"]["doctor"] == ["sim", "elab"]
     assert "fpga" not in cfg["flows"]
 
     tests_cfg = tomllib.loads(files[".booley_project/tests.toml"])
@@ -150,7 +156,11 @@ def test_icarus_lint_target_gets_g2012() -> None:
     # keyed on the EDA tool so the gap cannot reopen if the wizard grows one.
     core = _core(scaffold_files(_choices(lint_eda_tool="icarus")))
     opts = core["targets"]["lint"]["flow_options"]
-    assert opts == {"tool": "icarus", "iverilog_options": ["-g2012"]}
+    assert opts == {
+        "tool": "icarus",
+        "iverilog_options": ["-g2012"],
+        "booley": {"doctor": ["lint"]},
+    }
 
 
 def test_cocotb_combo_shapes() -> None:
@@ -185,17 +195,21 @@ def test_cocotb_verilator_options() -> None:
 def test_verible_lint_falls_back_to_sim_for_elaborate() -> None:
     files = scaffold_files(_choices(lint_eda_tool="verible"))
     core = _core(files)
-    assert core["targets"]["lint"]["flow_options"] == {"tool": "verible"}
+    assert core["targets"]["lint"]["flow_options"] == {
+        "tool": "verible",
+        "booley": {"doctor": ["lint"]},
+    }
 
     cfg = tomllib.loads(files[".booley_project/booley.toml"])
-    # verible can't elaborate; the sandbox sim Target is the fallback.
-    assert cfg["flows"]["elab"] == {"default_target": "sim"}
+    # verible can't elaborate; the sim Target explicitly opts into elab.
+    assert cfg["flows"]["elab"] == {}
+    assert core["targets"]["sim"]["flow_options"]["booley"]["doctor"] == ["sim", "elab"]
 
 
 def test_verible_lint_reuses_sim_for_elaborate() -> None:
     files = scaffold_files(_choices(lint_eda_tool="verible"))
     cfg = tomllib.loads(files[".booley_project/booley.toml"])
-    assert cfg["flows"]["elab"] == {"default_target": "sim"}
+    assert cfg["flows"]["elab"] == {}
 
 
 def test_no_asic_omits_synth_target_and_sdc() -> None:
@@ -226,7 +240,7 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
 
     cfg = tomllib.loads(files[".booley_project/booley.toml"])
     assert "backend" not in cfg["flows"]["fpga"]
-    assert cfg["flows"]["fpga"]["default_target"] == "fpga"
+    assert cfg["flows"]["fpga"] == {}
 
 
 @pytest.mark.parametrize("tb_style", ["sv", "cocotb"])
