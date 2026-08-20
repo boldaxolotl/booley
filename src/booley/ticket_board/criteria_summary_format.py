@@ -58,7 +58,7 @@ _COVERAGE_DETAIL_KEYS = {
 def _format_coverage_metric(key: str, d: dict, p: dict, stale: bool) -> str | None:
     """Format a coverage criterion's ``pct`` (need threshold%), or None if N/A."""
     for prefix, sub_key in _COVERAGE_DETAIL_KEYS.items():
-        if key == prefix:
+        if key == prefix or key.startswith(f"{prefix}_"):
             sub = d.get(sub_key, {})
             pct = sub.get("pct") if isinstance(sub, dict) else None
             if pct is not None:
@@ -176,7 +176,7 @@ def format_criterion_metric(key: str, entry) -> str:  # noqa: PLR0911 — metric
             return synth
 
     # Mutation score
-    if key == "mutation_score":
+    if key.startswith("mutation_score"):
         mutation = _format_mutation_metric(d)
         if mutation is not None:
             return mutation

@@ -16,8 +16,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
-
 from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -44,17 +42,6 @@ from booley.flows.synth.threshold_eval import (
 )
 from booley.runtime.timefmt import utc_now_rfc3339
 
-# Concerns split into sibling leaf modules (principle 8 — Single Responsibility).
-# The names below are re-exported for backward compatibility: this module has
-# many external importers that do ``from booley.dev_support.development_state import
-# X``, so every moved public symbol must keep resolving from here unchanged.
-from .interface_spec import (  # noqa: F401  # re-exported for backward compatibility
-    BitFieldSpec,
-    InterfaceSpec,
-    ParameterSpec,
-    PortSpec,
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -64,146 +51,6 @@ def _recipe_flow(baseline: Any, current: Any) -> str | None:
         if isinstance(snapshot, dict) and isinstance(snapshot.get("flow"), str):
             return snapshot["flow"]
     return None
-
-
-class DutInfoValidationError(ValueError):
-    """Raised when ``DutInfo`` fails schema validation.
-
-    Distinct from Pydantic's ``ValidationError`` so callers can catch only
-    DUT-info validation problems without swallowing unrelated schema errors.
-    """
-
-
-class DutInfo(BaseModel):
-    """Structural identity of a ticket's design-under-test and its testbench.
-
-    Seeded mechanically from the ticket's scope and sim criteria (or supplied
-    via MCP endpoint arguments in Interactive Mode); the Developer Agent corrects it when a
-    Flow flags it stale. Consumed by simulate, coverage_analyst, bwave,
-    compare_vcd, and the developer gate.
-
-    ADR 0022 (dec 12) shrank this to the DUT-identification overlay: the file
-    sets and ``tb_top_module`` left DUT Info because FuseSoC owns them — the
-    RTL/TB file partition is derived from ``.core`` ``tags:[tb]`` at resolve
-    time (dec 13), and ``tb_top_module`` is the resolved sim Target's
-    ``toplevel``. What remains is what FuseSoC has no concept of:
-    ``dut_top_module`` (which built module is the DUT), ``dut_hier_path`` (where
-    it is instantiated in the TB), and the DUT-side ``interface`` contract.
-
-    Pydantic-validated at every entry point.  The schema-boundary invariant is
-    **Single-DUT**: ``dut_hier_path`` is a single hierarchical path string;
-    legacy state files carrying ``dut_hier_paths: list`` with more than one
-    entry are rejected on load (see ``from_dict``).  A wrong ``dut_top_module``
-    is caught reactively against the resolved Target's elaborator output (dec
-    14), not by a proactive schema check.
-    """
-
-    model_config = ConfigDict(extra="ignore", validate_assignment=True)
-
-    dut_top_module: str = ""
-    dut_hier_path: str = ""
-    # Post-ticket interface contract for the DUT.  Optional in the schema —
-    # nothing populates it mechanically today; it survives round-trips from
-    # older state files (written when a specialist declared it) — so a
-    # downstream consumer that reads dut_info.interface and finds None is the
-    # normal case, not an error.
-    interface: InterfaceSpec | None = None
-
-    def __init__(self, **data: Any) -> None:
-        """Validate at construction; surface schema errors as DutInfoValidationError.
-
-        Pydantic wraps any ``ValueError`` raised by a model validator in a
-        ``pydantic.ValidationError``.  Endpoints and tests that catch
-        ``DutInfoValidationError`` (the type the validator itself raises) need
-        this unwrap so direct ``DutInfo(...)`` construction and ``from_dict``
-        surface the same error type with the same message — one schema, one
-        error type, regardless of entry point.
-        """
-        try:
-            super().__init__(**data)
-        except ValidationError as exc:
-            raise DutInfoValidationError(_first_error_message(exc)) from exc
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return non-empty fields only — compact form for YAML / JSON storage."""
-        d: dict[str, Any] = {}
-        if self.dut_top_module:
-            d["dut_top_module"] = self.dut_top_module
-        if self.dut_hier_path:
-            d["dut_hier_path"] = self.dut_hier_path
-        if self.interface is not None and not self.interface.is_empty():
-            d["interface"] = self.interface.model_dump(exclude_none=True)
-        return d
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> DutInfo:
-        """Build a validated DutInfo from a dict (state file / YAML frontmatter).
-
-        Raises ``DutInfoValidationError`` when the placeholder rule fires or the
-        legacy ``dut_hier_paths`` list carries more than one entry.
-        """
-        if not d:
-            return cls()
-        # Backward compat: state files written before the single-DUT invariant
-        # carried ``dut_hier_paths: list[str]``.  Convert here before model
-        # validation runs so the schema sees only the canonical scalar field.
-        norm = dict(d)
-        dut_hier_path = norm.get("dut_hier_path", "") or ""
-        if not dut_hier_path and "dut_hier_paths" in norm:
-            legacy = list(norm.pop("dut_hier_paths") or [])
-            if len(legacy) > 1:
-                raise DutInfoValidationError(
-                    f"State file carries legacy dut_hier_paths with "
-                    f"{len(legacy)} entries {legacy}; Booley now enforces "
-                    "exactly one DUT instance per TB. Reset the ticket and "
-                    "set dut_info to a single dut_wrap module.",
-                )
-            dut_hier_path = legacy[0] if legacy else ""
-        norm["dut_hier_path"] = dut_hier_path
-        try:
-            return cls.model_validate(norm)
-        except ValidationError as exc:
-            # Unwrap Pydantic's wrapping so callers see DutInfoValidationError
-            # (which is what the @model_validator raised internally).
-            raise DutInfoValidationError(_first_error_message(exc)) from exc
-
-    def has_dut_half(self) -> bool:
-        """True when the DUT half is populated (seeding resolved the DUT).
-
-        The DUT half is ``dut_top_module`` (plus the optional ``interface``);
-        the file set left DUT Info (dec 12-13), so the DUT-identity field alone
-        marks the half present.
-        """
-        return bool(self.dut_top_module)
-
-    def has_tb_half(self) -> bool:
-        """True when the TB half is populated (seeding resolved the TB side).
-
-        The TB half is ``dut_hier_path``; ``tb_top_module`` and the TB file
-        set left DUT Info (dec 12-13), so the instantiation path marks the half.
-        """
-        return bool(self.dut_hier_path)
-
-    def is_empty(self) -> bool:
-        """True when no field has been populated."""
-        return not (
-            self.dut_top_module
-            or self.dut_hier_path
-            or (self.interface is not None and not self.interface.is_empty())
-        )
-
-
-def _first_error_message(exc: ValidationError) -> str:
-    """Extract a clean message from a Pydantic ValidationError.
-
-    Strips the ``Value error, `` prefix that Pydantic prepends when a custom
-    validator raises ``ValueError``, so callers see the message verbatim.
-    """
-    errs = exc.errors()
-    if not errs:
-        return str(exc)
-    msg = str(errs[0].get("msg", "")).removeprefix("Value error, ")
-    return msg or str(exc)
 
 
 @dataclass
@@ -326,9 +173,6 @@ class DevelopmentState:
     flow_key_aliases: dict[str, list[str]] = field(default_factory=dict)
     # Flow/MCP endpoint execution timeline (append-only log)
     timeline: list[dict[str, Any]] = field(default_factory=list)
-    # Structural identity of the DUT/TB for this ticket (seeded mechanically
-    # from scope and sim criteria; corrected by the Developer Agent as needed)
-    dut_info: DutInfo = field(default_factory=DutInfo)
     # Last worktree/root used by an endpoint; final acceptance uses this for
     # source freshness checks when the harness does not pass a work_dir.
     work_dir: str = ""
@@ -356,7 +200,6 @@ class DevelopmentState:
                 category_map=data.get("category_map", {}),
                 flow_key_aliases=data.get("flow_key_aliases", {}),
                 timeline=data.get("timeline", []),
-                dut_info=DutInfo.from_dict(data.get("dut_info", {})),
                 work_dir=data.get("work_dir", ""),
                 last_updated=data.get("last_updated", ""),
             )
@@ -396,8 +239,6 @@ class DevelopmentState:
             d["work_dir"] = self.work_dir
         if self.flow_key_aliases:
             d["flow_key_aliases"] = self.flow_key_aliases
-        if not self.dut_info.is_empty():
-            d["dut_info"] = self.dut_info.to_dict()
         return d
 
     # --- Criteria operations ---
@@ -921,60 +762,6 @@ class DevelopmentState:
     def total_cost(self) -> float:
         """Sum cost_usd across all timeline entries (endpoints + developer + summary)."""
         return sum(e.get("cost_usd", 0) for e in self.timeline)
-
-
-# Field-to-criteria-prefix map for DutInfo-driven invalidation (per ADR 0009).
-# Each field name maps to the set of criterion prefixes whose results are
-# invalidated when that field changes.
-_DUT_INFO_INVALIDATION: dict[str, tuple[str, ...]] = {
-    "dut_top_module": ("sim_", "coverage_", "synthesis_"),
-    "dut_hier_path": ("coverage_",),
-}
-
-
-def invalidate_for_dut_info_change(
-    state: DevelopmentState,
-    old: DutInfo,
-    new: DutInfo,
-) -> list[str]:
-    """Mark criteria stale based on which ``dut_info`` fields changed.
-
-    Returns the list of criterion keys that were marked stale.  Field-to-prefix
-    mapping follows ADR 0009 Consequences.  ``met`` and ``ever_met`` are not
-    touched — only the ``stale`` flag is set, leaving the Developer Agent free to
-    decide whether to re-run.  ADR 0022 (dec 12-13) shrank DUT Info to the
-    surviving overlay fields, so only those drive invalidation now (file-set
-    changes are tracked by FuseSoC, not here).
-    """
-    changed_fields: set[str] = set()
-    # Scalar overlay fields: any difference counts.
-    for fld in ("dut_top_module", "dut_hier_path"):
-        if getattr(old, fld) != getattr(new, fld):
-            changed_fields.add(fld)
-    if not changed_fields:
-        return []
-
-    prefixes: set[str] = set()
-    for fld in changed_fields:
-        prefixes.update(_DUT_INFO_INVALIDATION.get(fld, ()))
-
-    now = utc_now_rfc3339()
-    stale_keys: list[str] = []
-    for key, entry in state.criteria.items():
-        if entry.locked:
-            continue
-        if any(key.startswith(p) for p in prefixes) and entry.met:
-            entry.stale = True
-            entry.updated_at = now
-            stale_keys.append(key)
-    if stale_keys:
-        logger.info(
-            "dut_info change invalidated %d criteria (fields=%s): %s",
-            len(stale_keys),
-            sorted(changed_fields),
-            ", ".join(stale_keys),
-        )
-    return stale_keys
 
 
 def _atomic_replace(src: Path, dst: Path) -> None:

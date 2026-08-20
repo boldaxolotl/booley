@@ -258,6 +258,8 @@ def _stale_verification_entry(
 
 def _verification_fingerprint_categories(key: str) -> set[str]:
     """Return source categories a verification criterion must fingerprint."""
+    if key.startswith(("mutation_score_", "coverage_")):
+        return {"rtl", "tb", "campaign"}
     if key.startswith(("sim_", "elab_")):
         return {"rtl", "tb"}
     if key.startswith(("lint_", "synthesis_", "fpga_impl_")):

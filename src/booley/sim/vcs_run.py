@@ -13,8 +13,6 @@ Session Runtime integration:
     :func:`sim_result.count_sva_errors_vcs`.
   * :func:`reemit_vcs_summary` — appends the ``[SIM_SUMMARY]`` sentinel the
     verdict layer scrapes (the VCS mirror of ``sim_edam.reemit_sim_summary``).
-  * :func:`_check_dut_info_diagnostics` — VCS elab/bind error patterns for
-    the stale-dut_info diagnostic, mirroring the xcelium/icarus helpers.
   * ``python -m booley.sim.vcs_run --parse-log <vcs.log>`` — the offline entry
     point: parse a hand-carried log, print the summary, write ``result.json``.
     This is an internal calibration and debugging aid.
@@ -36,7 +34,6 @@ import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from booley.sim.sim_result import (
     SIM_SUMMARY_PREFIX,
@@ -118,74 +115,6 @@ def reemit_vcs_summary(output: str, exit_code: int) -> str:
     summary = format_summary(v.passed, v.sva_errors, inconclusive=v.inconclusive)
     sep = "" if (not output or output.endswith("\n")) else "\n"
     return f"{output}{sep}{summary}"
-
-
-def _check_dut_info_diagnostics(
-    combined_output: str,
-    dut_info: Any = None,
-) -> str | None:
-    """Scan VCS output for known dut_info-mismatch patterns.
-
-    The VCS mirror of the xcelium/icarus/verilator helpers — returns a
-    human-readable message naming the suspected stale field, or None. Patterns
-    PROVISIONAL pending Phase D calibration against real vcs X-2025.06 wording
-    (ADR 0025); matching is case-insensitive:
-
-      * unresolved hierarchy path / cross-module reference — ``dut_hier_path``
-        is stale (elab ``Error-[XMRE]``-family cross-module reference failures
-        or a bind that could not resolve);
-      * unresolved top / module definition — ``tb_top_module`` is stale (a
-        ``-top`` naming a module the analyzed libraries don't define, e.g.
-        ``Error-[URMI] Unresolved modules`` wording).
-    """
-    if not combined_output:
-        return None
-    # dut_hier_path mismatches surface from hierarchical-reference binding.
-    hier_markers = (
-        "could not be bound",
-        "cross-module reference",  # Error-[XMRE] family (provisional)
-        "cross module reference",
-        "hierarchical reference",
-    )
-    # tb_top_module mismatches surface from the -top elaboration root.
-    top_markers = (
-        "unresolved module",  # Error-[URMI] (provisional)
-        "module definition not found",
-        "top module",
-    )
-
-    matched_lines: list[str] = []
-    matched_field: str | None = None
-    for line in combined_output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        lowered = stripped.lower()
-        if matched_field is None and any(m in lowered for m in hier_markers):
-            matched_field = "dut_hier_path"
-        if matched_field is None and any(m in lowered for m in top_markers):
-            matched_field = "tb_top_module"
-        if any(m in lowered for m in hier_markers + top_markers):
-            matched_lines.append(stripped)
-
-    if matched_field is None:
-        return None
-
-    expected = ""
-    if dut_info is not None:
-        if matched_field == "dut_hier_path":
-            expected = getattr(dut_info, "dut_hier_path", "") or ""
-        elif matched_field == "tb_top_module":
-            expected = getattr(dut_info, "tb_top_module", "") or ""
-
-    snippet = "\n".join(matched_lines[:5])
-    parts = [f"dut_info stale: {matched_field} in state does not match elaborated design."]
-    if expected:
-        parts.append(f"Expected: {expected}")
-    parts.append(f"Diagnostic: {snippet}")
-    # Both fields are TB-side dut_info fields (mirrors the xcelium helper).
-    parts.append("Correct dut_info.")
-    return "\n".join(parts)
 
 
 def parse_log_file(

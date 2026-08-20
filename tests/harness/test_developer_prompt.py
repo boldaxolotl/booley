@@ -255,8 +255,7 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             assert "BASELINE QoR CRITERIA" not in system
             assert "Target recipes are revision-owned" not in system
 
-    def test_system_prompt_directs_dut_info_fill_before_work(self, tmp_path: Path):
-        """Developer Agent is the sole dut_info populator and must fill it first."""
+    def test_system_prompt_uses_targets_as_execution_boundary(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"
         ticket.write_text("---\nsummary: x\n---\n", encoding="utf-8")
         state = tmp_path / "no_state.json"
@@ -271,18 +270,9 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             )
         )
 
-        assert "Fill the `dut_info` before doing any work" in system
-        # The directive must reference the state file as the write target and
-        # name the fields the developer owns.
-        assert "BOOLEY_STATE_FILE" in system
-        # ADR 0022 dec 12-13: dut_info shrank to the two overlay fields the
-        # developer authors; the file sets + TB top come from the .core.
-        for field in ("dut_top_module", "dut_hier_path"):
-            assert field in system
-        for removed in ("dut_files", "tb_files", "tb_top_module"):
-            assert removed not in system
-        # It must land before the numbered rules so it reads as a first action.
-        assert system.index("Fill the `dut_info`") < system.index("# Rules")
+        assert "Targets are the execution boundary" in system
+        assert "complete runnable test suite" in system
+        assert "dut_info" not in system
 
     def test_startup_instruction_points_to_ticket_snapshot(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"

@@ -53,9 +53,13 @@ criteria:
     review_rtl_optimization_done: true  # -> reviewer --category rtl --focus optimization
     review_rtl_code_style_done: true    # -> reviewer --category rtl --focus code_style
 
-    # --- Mutation (global) -------------------------------------------------
+    # --- Mutation (per Target; all runnable Target tests are implicit) -----
     # SVA is authored inline as part of TB authoring — no separate criterion.
-    mutation_score: "8/10"                   # -> mutation_tester Specialist; at least 8/10 mutations detected
+    mutation_score:
+      - target: sim_default
+        scope: [rtl/design.sv]
+        min_detected: 8
+        total: 10
 
 # -- Runtime fields are stamped by Booley or stored in logs/<slug>/.runtime/progress.json --
 # feature_branch, created, base_sha, integration_base
