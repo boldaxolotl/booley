@@ -58,16 +58,19 @@ def _core_source_files(
         return None
     if not discover_cores(work_dir):
         return None
-    cs = (
-        target_source_files(
-            work_dir,
-            target,
-            include_dependencies=True,
-            include_headers=True,
+    try:
+        cs = (
+            target_source_files(
+                work_dir,
+                target,
+                include_dependencies=True,
+                include_headers=True,
+            )
+            if target
+            else classified_sources(work_dir)
         )
-        if target
-        else classified_sources(work_dir)
-    )
+    except Exception:  # noqa: BLE001 — unresolved target; use directory fallback
+        return None
     return list(cs.rtl_source_files), list(cs.tb_files)
 
 
@@ -135,6 +138,28 @@ def _hash_source_group(work_dir: Path, source_dirs: list[str]) -> dict[str, Any]
     return {"digest": digest.hexdigest(), "files": file_names}
 
 
+def _campaign_files(root: Path, target: str | None) -> list[str]:
+    """Configuration files that define a Target campaign's execution recipe."""
+    core_files: list[Path] = []
+    try:
+        from booley.fusesoc.fusesoc_registry import discover_cores, resolve_ref
+
+        core_files = (
+            [resolve_ref(root, target).core_file] if target else discover_cores(root)
+        )
+    except Exception:  # noqa: BLE001 — source hashes still provide freshness evidence
+        pass
+    files = [
+        path.resolve().relative_to(root).as_posix()
+        for path in core_files
+        if path.is_file() and path.resolve().is_relative_to(root)
+    ]
+    tests_toml = root / ".booley_project" / "tests.toml"
+    if tests_toml.is_file():
+        files.append(tests_toml.relative_to(root).as_posix())
+    return files
+
+
 def compute_source_fingerprint(
     work_dir: Path,
     *,
@@ -149,6 +174,7 @@ def compute_source_fingerprint(
     the default source directories.
     """
     root = work_dir.resolve()
+    campaign = _hash_named_files(root, _campaign_files(root, target))
     core = _core_source_files(root, target)
     if core is not None:
         rtl_files, tb_files = core
@@ -160,6 +186,7 @@ def compute_source_fingerprint(
             "tb_dirs": sorted({PurePosixPath(f).parent.as_posix() for f in tb_files}),
             "rtl": _hash_named_files(root, rtl_files),
             "tb": _hash_named_files(root, tb_files),
+            "campaign": campaign,
         }
     rtl_dirs, tb_dirs = _read_source_dirs(root)
     return {
@@ -170,4 +197,5 @@ def compute_source_fingerprint(
         "tb_dirs": tb_dirs,
         "rtl": _hash_source_group(root, rtl_dirs),
         "tb": _hash_source_group(root, tb_dirs),
+        "campaign": campaign,
     }

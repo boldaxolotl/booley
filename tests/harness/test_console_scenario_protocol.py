@@ -12,7 +12,6 @@ from booley.harness.console.app import ConsolePhase
 from booley.harness.console.events import (
     AgentThinking,
     CriteriaChanged,
-    DutInfoChanged,
     McpToolCompleted,
     McpToolProgress,
     McpToolStarted,
@@ -77,7 +76,6 @@ LEDGER_EVENTS: list[dict | str] = [
     {
         "type": "criteria_update",
         "criteria": {"sim_pass": {"met": True, "mandatory": True}},
-        "dut_info": {"dut_top_module": "top", "tb_top_module": "top_tb"},
     },
     {"type": "future_event", "value": 1},
 ]
@@ -97,7 +95,6 @@ def _watcher_for_app(path: Path, app: ConsoleTestApp) -> DisplayWatcher:
             AgentThinking(text, is_specialist=True)
         ),
         on_criteria_update=lambda criteria: app.post_message(CriteriaChanged(criteria)),
-        on_dut_info_update=lambda info: app.post_message(DutInfoChanged(info)),
         on_endpoint_summary=lambda name, target, code, duration, cost, summary, out_tok, added, removed, display: (
             app.post_message(
                 McpToolCompleted(
@@ -159,7 +156,6 @@ async def test_jsonl_stream_reconciles_boxes_strips_and_status_ledger(tmp_path: 
 
         header = app.query_one(TicketHeader)
         assert header._criteria["sim_pass"]["met"] is True
-        assert header._dut_info == {"dut_top_module": "top", "tb_top_module": "top_tb"}
 
 
 def test_watcher_stop_during_partial_record_is_prompt(tmp_path: Path) -> None:

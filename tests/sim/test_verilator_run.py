@@ -241,49 +241,6 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     assert work_dir.is_dir()
 
 
-# ---------------------------------------------------------------------------
-# _check_dut_info_diagnostics (Verilator)
-# ---------------------------------------------------------------------------
-
-
-class TestVerilatorDutInfoDiagnostics:
-    """Phase 5.3: empirical patterns from observed Verilator failures.
-
-    Verilator's wording may shift across versions — these patterns are
-    best-effort and tagged EMPIRICAL in the source.
-    """
-
-    def test_no_such_scope_flags_hier_paths(self):
-        out = "%Error: no such scope tb.dut.foo\n"
-        msg = vr._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "dut_hier_path" in msg
-
-    def test_cannot_find_module_flags_tb_top(self):
-        out = "%Error: Cannot find module tb_typo\n"
-        msg = vr._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "tb_top_module" in msg
-
-    def test_cannot_find_file_flags_tb_top(self):
-        out = "%Error: Cannot find file: verif/tb.sv\n"
-        msg = vr._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "tb_top_module" in msg
-
-    def test_hierarchical_reference_not_found(self):
-        out = "%Error: Hierarchical reference not found: tb.dut.x\n"
-        msg = vr._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "dut_hier_path" in msg
-
-    def test_clean_output_returns_none(self):
-        assert vr._check_dut_info_diagnostics("all clean\n") is None
-
-    def test_empty_output_returns_none(self):
-        assert vr._check_dut_info_diagnostics("") is None
-
-
 @pytest.mark.parametrize("bad", ["0", "-5"])
 def test_parse_args_rejects_non_positive_timeout(bad: str):
     # A non-positive timeout would make the deadline math time out instantly.

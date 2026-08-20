@@ -145,14 +145,6 @@ class CriteriaChanged(Message):
         self.criteria = criteria
 
 
-class DutInfoChanged(Message):
-    """DUT-info snapshot update (dut_top_module / tb_top_module)."""
-
-    def __init__(self, dut_info: dict) -> None:
-        super().__init__()
-        self.dut_info = dut_info
-
-
 class SetupProgress(Message):
     """Setup phase status line."""
 

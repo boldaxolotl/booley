@@ -68,16 +68,11 @@ The following environment variables are set and propagated to MCP tool calls aut
 - `BOOLEY_LOGS_DIR` — directory for Flow and Specialist reports and artifacts
 - `BOOLEY_STATE_FILE` — path to booley_state.json (criteria tracking)
 
-**Fill the `dut_info` before doing any work.** It is the design-under-test \
-identity that gates simulate/coverage and you are its only author. Read \
-the ticket and the RTL/TB sources, then directly edit the `dut_info` object in \
-`$BOOLEY_STATE_FILE` with: `dut_top_module` (the DUT's module name inside the \
-built design) and `dut_hier_path` (the DUT instance path inside the TB, e.g. \
-`tb_top.dut`). The RTL-vs-TB source partition and the TB top come from the \
-FuseSoC `.core` Target (testbench filesets carry `tags: [tb]`; the TB top is \
-the sim Target's `toplevel`), so they are not part of `dut_info`. The next MCP tool \
-call validates the block, so populate it accurately before invoking any other \
-MCP tool.
+Targets are the execution boundary. Select the criterion's Target when invoking \
+a Flow or Specialist. Mutation and coverage automatically run the complete \
+runnable test suite declared for that Target; do not narrow them to one test. \
+The specialists derive module and hierarchy identity from the Target, scoped \
+RTL, and produced traces.
 
 """
 

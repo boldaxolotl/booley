@@ -173,7 +173,7 @@ class TestCheatCommand:
         specialists_out = capsys.readouterr().out
         assert "Specialists" in specialists_out
         assert "review_rtl_protocol" in specialists_out
-        assert 'mutation_score: "K/N"' in specialists_out
+        assert "Target campaign with target + scope" in specialists_out
         assert "\n  sim " not in specialists_out
 
     @pytest.mark.parametrize("section", ("commands", "project", "skills"))

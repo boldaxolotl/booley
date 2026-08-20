@@ -276,8 +276,7 @@ def build_category_deny_patterns(
 # Projection strategy: keep summary counts and gating metadata (``met``,
 # ``mandatory``, ``ever_met``, ``CRITICAL/MAJOR/MINOR``, ``verify_attempts``),
 # drop the prose payload (``pending``, ``resolved``, ``checks``, ``issue_list``)
-# from opposite-category criteria. ``dut_info`` is preserved — the TB coder
-# legitimately needs the port contract to drive the DUT.
+# from opposite-category criteria. Other state sections pass through unchanged.
 
 # Criterion-key prefixes that describe RTL-side artifacts (their detail leaks
 # RTL signal names, code references, fix suggestions naming RTL ports).
@@ -335,8 +334,8 @@ def project_state_for_category(
     Strips ``detail.pending`` / ``detail.resolved`` / ``detail.checks`` etc.
     from criteria whose key prefix names the opposite category. Counts and
     gating fields survive so threshold logic still works for an outside
-    observer. ``dut_info`` and ``timeline`` are passed through unchanged —
-    the contract and the agent-capability-call ledger are not the leak channel.
+    observer. Other state sections, including ``timeline``, pass through
+    unchanged; the agent-capability-call ledger is not the leak channel.
 
     Idempotent and safe to call on non-dict input (returns *state* unchanged).
     """

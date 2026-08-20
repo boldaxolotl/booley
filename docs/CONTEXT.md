@@ -123,10 +123,6 @@ _Avoid_: python testbench config, cocotb core, cocotb suite
 Project-declared shell commands that Booley executes inside the **Session Runtime** immediately before each simulation run, with the run's test selection and authoritative run directory in the environment. For an HDL-testbench Target the hook fires once per test; for a **Cocotb Target** it fires once before the batched run. This is the sanctioned seam for non-RTL per-test build steps (per-case firmware compiles, vector staging) that FuseSoC cannot express.
 _Avoid_: pre-test hook, prebuild adapter, test fixture script
 
-**DUT Info**:
-A structured overlay recording the one structural fact FuseSoC has no concept of: which module inside a resolved **Target** is the design-under-test (`dut_top_module`) and the hierarchical path at which it is instantiated in the testbench (`dut_hier_path`). The testbench top is the sim Target's `toplevel`, and the RTL-vs-testbench file partition is derived from the Target's FuseSoC fileset tags (`tags: [tb]`). Neither is stored in DUT Info. Produced by any appropriate Developer Agent path (mechanical seeding from Scope and sim Criteria, the Developer Agent's own setup edits, preflight, or explicit Flow arguments), validated by `sim` against the resolved Target's elaborator output, and consumed by every Booley Flow and Specialist that scopes its work to "the DUT" or "the TB." For a **Cocotb Target** the overlay is degenerate: the DUT is the Target's `toplevel` and `dut_hier_path` is the root instance. In Ticket Mode it lives in `.runtime/booley_state.json`; in Interactive Mode (no Ticket) the agent passes the overlay per call.
-_Avoid_: design metadata, scope info, ticket scope (overlaps with **Scope**); the legacy five-field form (`dut_files`/`tb_files`/`tb_top_module` now come from the Target)
-
 ### Flows, EDA tools, and MCP tools
 
 | Term | Meaning | Examples |
