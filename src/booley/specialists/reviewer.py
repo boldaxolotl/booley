@@ -2,8 +2,8 @@
 
 Runs LLM-powered code review on RTL or testbench files, reports issues by
 severity (CRITICAL, MAJOR, MINOR).  Each invocation covers exactly ONE focus
-category.  A one-shot guard prevents the developer from re-running the
-same review focus twice.
+category. An idempotency guard prevents re-running the same review focus while
+its persisted source fingerprint remains current.
 
 Exit codes: 0 = gate passed, 1 = gate failed, 2 = Specialist error.
 """
@@ -11,6 +11,7 @@ Exit codes: 0 = gate passed, 1 = gate failed, 2 = Specialist error.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from typing import Any, ClassVar
 
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
+from booley.dev_support.development_state import compute_source_fingerprint
 from booley.dev_support.workspace_isolation import (
     filter_state_file_for_category,
 )
@@ -83,8 +85,12 @@ ALL_CONFIDENCES = frozenset({CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW}
 # Verify-pass per-finding status enum (case-insensitive on input,
 # canonicalized to upper case here).
 VERIFY_STATUS_FIXED = "FIXED"
+VERIFY_STATUS_WAIVED = "WAIVED"
 VERIFY_STATUS_STILL_PRESENT = "STILL_PRESENT"
-ALL_VERIFY_STATUSES = frozenset({VERIFY_STATUS_FIXED, VERIFY_STATUS_STILL_PRESENT})
+ALL_VERIFY_STATUSES = frozenset(
+    {VERIFY_STATUS_FIXED, VERIFY_STATUS_WAIVED, VERIFY_STATUS_STILL_PRESENT}
+)
+REVIEW_DETAIL_VERSION = 2
 
 # RTL source prefixes — derived from the authored .core filesets.
 _RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\", "fw/", "fw\\")
@@ -570,6 +576,14 @@ class ReviewIssue:
         )
 
 
+def _finding_record(issue: ReviewIssue) -> dict[str, Any]:
+    """Return one persisted finding with a stable content-derived identifier."""
+    record = issue.to_dict()
+    identity = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    record["finding_id"] = hashlib.sha256(identity.encode()).hexdigest()[:16]
+    return record
+
+
 def _validate_issue_dict(d: Any, allowed_category: str | None = None) -> list[str]:
     """Return list of schema violations for one issue dict. Empty = valid.
 
@@ -637,6 +651,10 @@ def _validate_finding_dict(d: Any) -> list[str]:
                 "FIXED status requires a non-empty 'evidence' string "
                 "(format: '<file:line> — <justification>')",
             )
+    if isinstance(status_raw, str) and status_raw.upper() == VERIFY_STATUS_WAIVED:
+        justification = d.get("justification")
+        if not isinstance(justification, str) or not justification.strip():
+            errs.append("WAIVED status requires a non-empty 'justification' string")
     return errs
 
 
@@ -891,23 +909,6 @@ def _format_issue_line(issue: ReviewIssue) -> str:
     """Render one finding as a compact ``[C] file:line — summary`` display line."""
     tag = _SEVERITY_TAG.get(issue.severity.upper(), issue.severity[0])
     return f"[{tag}] {issue.file}:{issue.line} — {issue.summary}"
-
-
-def _auto_downgrade_stale(issue_list: list[dict[str, Any]]) -> int:
-    """Downgrade MAJOR still_present findings to MINOR after repeated impasse.
-
-    Items without an explicit ``status`` field are treated as still_present
-    (every entry in the new ``pending`` list is still_present by definition).
-    Returns number of findings downgraded.
-    """
-    downgraded = 0
-    for iss in issue_list:
-        status = iss.get("status", "still_present")
-        if status == "still_present" and iss.get("severity") == SEVERITY_MAJOR:
-            iss["severity"] = SEVERITY_MINOR
-            iss["impasse"] = True
-            downgraded += 1
-    return downgraded
 
 
 def validate_scope_category(
@@ -1541,7 +1542,7 @@ object, even after calling the capability.
     # --- Main execution override ---
 
     def _run(self) -> McpToolResult:  # noqa: PLR0911 — one early return per validation/mode branch of the review flow
-        """Single-focus review with _done (one-shot) or _clean (verify loop) mode."""
+        """Single-focus review with terminal _done or disposition-loop _clean mode."""
         errors = self._validate_args()
         if errors:
             return McpToolResult(
@@ -1599,9 +1600,9 @@ object, even after calling the capability.
         if self._is_clean_mode():
             return self._run_clean_mode(crit_key)
 
-        # _done mode is one-shot and records completion, not cleanliness.
+        # _done mode records terminal review completion, not cleanliness.
         # Findings remain available in detail; callers that need a blocking
-        # fix-and-reverify workflow must request the corresponding _clean gate.
+        # disposition workflow must request the corresponding _clean gate.
         if self.state and self.state.is_met(crit_key):
             return self._replay_done_verdict(crit_key)
 
@@ -1620,12 +1621,12 @@ object, even after calling the capability.
 
     # --- _clean mode ---
 
-    def _run_clean_mode(self, crit_key: str) -> McpToolResult:
+    def _run_clean_mode(self, crit_key: str) -> McpToolResult:  # noqa: PLR0911
         """Drive the _clean criterion through initial review → verify loop."""
         # Already met — nothing to do
         if self.state and self.state.is_met(crit_key):
             msg = (
-                f"{crit_key} already met — this review is permanently done. "
+                f"{crit_key} already met for the current source fingerprint. "
                 "Do not call this reviewer again; proceed with remaining work."
             )
             return McpToolResult(
@@ -1668,16 +1669,24 @@ object, even after calling the capability.
         # Hard cap: consecutive attempts without a coder fix
         if verify_attempts >= 2:
             msg = (
-                f"{crit_key}: 2 verify attempts exhausted — still-present issues remain. Blocking."
+                f"{crit_key}: 2 verify attempts exhausted — unresolved findings remain. "
+                "Fix them or propose explicit, justified review waivers; findings are never "
+                "waived automatically."
             )
             return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
 
         if total_cycles >= 3:
-            self._apply_impasse_downgrade(crit_key, prior_detail, total_cycles)
+            msg = (
+                f"{crit_key}: 3 review/resolve cycles exhausted — unresolved findings "
+                "remain. Blocking without creating an automatic waiver."
+            )
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
 
         self.emit_progress("verify mode: checking if prior findings are resolved")
         overall_start = time.monotonic()
-        remaining, output_lines, remaining_indices = self._run_verify_review(prior_detail)
+        remaining, output_lines, remaining_indices, dispositions = self._run_verify_review(
+            prior_detail
+        )
         if remaining is None:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -1689,6 +1698,7 @@ object, even after calling the capability.
             output_lines,
             prior_detail,
             remaining_indices=remaining_indices,
+            dispositions=dispositions,
             elapsed=elapsed,
             crit_key=crit_key,
         )
@@ -1720,11 +1730,18 @@ object, even after calling the capability.
                 kept.append(finding)
             else:
                 entry = dict(finding)
-                entry["status"] = "project_policy" if policy_conflict else "out_of_diff_scope"
+                entry["status"] = "excluded"
+                entry["exclusion_reason"] = (
+                    "conflicts with the configured project simulation contract"
+                    if policy_conflict
+                    else "outside the enforced diff scope"
+                )
+                entry["disposition_actor"] = "harness_policy"
                 resolved_now.append(entry)
         if not resolved_now:
             return prior_detail, 0
         detail = dict(prior_detail)
+        detail["review_detail_version"] = REVIEW_DETAIL_VERSION
         detail["pending"] = kept
         detail["resolved"] = list(detail.get("resolved", [])) + resolved_now
         detail.pop("issue_list", None)
@@ -1751,45 +1768,41 @@ object, even after calling the capability.
             crit_key=crit_key,
         )
 
-    def _apply_impasse_downgrade(
-        self,
-        crit_key: str,
-        prior_detail: dict[str, Any],
-        total_cycles: int,
-    ) -> None:
-        """Auto-downgrade stale findings past the impasse cap.
+    def _review_source_digest(self) -> str:
+        """Return the current digest for this review's RTL or TB category."""
+        try:
+            fingerprint = compute_source_fingerprint(Path(self.args.work_dir))
+        except OSError:
+            logger.warning("Could not fingerprint sources for review freshness", exc_info=True)
+            return ""
+        category = "rtl" if self.args.category == "rtl" else "tb"
+        value = fingerprint.get(category, {})
+        return str(value.get("digest", "")) if isinstance(value, dict) else ""
 
-        Impasse cap: total cycles across all coder fixes. Stale findings
-        that survive 3+ review→coder→verify rounds are auto-downgraded
-        and *moved* from pending → resolved (accepted-as-noted). They no
-        longer block the gate, and ``pending`` keeps its strict meaning
-        of "open, blocking items" — which is what the development_state
-        met=True-vs-pending assertion relies on.
-        """
-        pending = list(prior_detail.get("pending") or prior_detail.get("issue_list", []))
-        downgraded = _auto_downgrade_stale(pending)
-        if downgraded:
-            logger.info(
-                "%s: downgraded %d stale finding(s) after %d total cycles "
-                "(accepted-as-noted, moved to resolved)",
-                crit_key,
-                downgraded,
-                total_cycles,
-            )
-            still_open = [i for i in pending if not i.get("impasse")]
-            impasse_items = [i for i in pending if i.get("impasse")]
-            for item in impasse_items:
-                item["status"] = "impasse_deferred"
-            prior_detail["pending"] = still_open
-            prior_detail["resolved"] = list(prior_detail.get("resolved", [])) + impasse_items
-            prior_detail.pop("issue_list", None)
-            self.set_criterion(crit_key, False, detail=prior_detail)
+    def _rediscover_after_source_change(
+        self,
+        prior_detail: dict[str, Any],
+        pending: list[dict[str, Any]],
+    ) -> tuple[list[ReviewIssue] | None, list[str], str] | None:
+        """Run a fresh discovery pass after fixes changed reviewed sources."""
+        if pending:
+            return None
+        current = self._review_source_digest()
+        previous = str(prior_detail.get("review_source_digest", ""))
+        # Legacy in-flight state predates discovery fingerprints. Preserve its
+        # existing targeted-verify behavior; every newly-created clean review
+        # records the digest and receives the final discovery guarantee.
+        if not previous or (current and previous == current):
+            return None
+        self.emit_progress("final discovery: source changed after review findings")
+        issues, lines = self._run_single_review()
+        return issues, lines, current
 
     def _replay_done_verdict(self, crit_key: str) -> McpToolResult:
         """Re-report an already-completed _done review instead of re-running it.
 
-        Reviews are one-shot: once a category review completed, re-reviewing
-        it burns a creator round for a verdict that cannot change. That is a
+        Reviews are idempotent while their source fingerprint is current:
+        re-reviewing burns a creator round for a verdict that cannot change. That is a
         *policy* decision, not a Specialist failure, so this is a benign idempotent
         outcome (exit 0) rather than the exit-2 reserved for "the Specialist could
         not run". The prior verdict is replayed verbatim from criterion state
@@ -1800,22 +1813,22 @@ object, even after calling the capability.
         issues = [ReviewIssue.from_dict(d) for d in prior.get("issue_list", [])]
         counts = count_by_severity(issues)
         gate_passed = bool(prior.get("gate_passed", check_gate(counts)))
-        status, count_str = _format_status_and_counts(counts, gate_passed)
+        _status, count_str = _format_status_and_counts(counts, gate_passed)
+        outcome = "REVIEWED WITH FINDINGS" if issues else "REVIEWED — NO FINDINGS"
 
         lines = [
-            f"{crit_key} already completed — reviews are one-shot, so this call "
+            f"{crit_key} already completed for the current source, so this call "
             "did NOT re-run the review.",
             "Replaying the recorded verdict verbatim:",
-            f"\nRESULT: {status} ({count_str})",
+            f"\nRESULT: {outcome} ({count_str})",
         ]
         lines += [f"  {_format_issue_line(iss)}" for iss in issues]
         lines.append(
-            "\nThis review is one-shot and already completed: code changes made "
-            "after it do not reopen it, and calling `reviewer` "
-            "again only replays this verdict. Proceed to the next workflow "
-            "step; if the code changed substantially since the review, say so "
-            "in `submit_run_report` rather than re-reviewing. Use a `_clean` "
-            "review criterion when findings must be fixed and re-verified."
+            "\nThis review is already completed for the current source. Calling "
+            "`reviewer` again only replays this verdict while the reviewed source remains "
+            "current. A later source edit makes the criterion stale and requires "
+            "a new final review. Use a `_clean` review criterion when findings "
+            "must be fixed or explicitly waived and re-verified."
         )
         report_text = "\n".join(lines)
         print(report_text)
@@ -1826,7 +1839,7 @@ object, even after calling the capability.
             criterion_met=True,
             detail=dict(prior),
             display_lines=[
-                f"SKIPPED: {crit_key} already completed (one-shot) — prior verdict replayed"
+                f"SKIPPED: {crit_key} already completed for current source — prior verdict replayed"
             ],
             report_text=report_text,
         )
@@ -1845,7 +1858,12 @@ object, even after calling the capability.
     def _run_verify_review(
         self,
         prior_detail: dict[str, Any],
-    ) -> tuple[list[ReviewIssue] | None, list[str], set[int]]:
+    ) -> tuple[
+        list[ReviewIssue] | None,
+        list[str],
+        set[int],
+        dict[int, dict[str, str]],
+    ]:
         """Run a verify review checking whether prior findings are fixed.
 
         Resumes the original review session when a persisted session_id is
@@ -1901,12 +1919,12 @@ object, even after calling the capability.
         try:
             with state_filter:
                 result = self._invoke_agent_with_resume(params)
-                remaining, remaining_indices = self._parse_verify_output(
+                remaining, remaining_indices, dispositions = self._parse_verify_output(
                     result.output, prior_detail
                 )
         except Exception:
             logger.exception("Verify review agent failed for focus=%s", focus)
-            return None, output_lines, set()
+            return None, output_lines, set(), {}
 
         self._persist_session_id(session_key)
 
@@ -1915,7 +1933,7 @@ object, even after calling the capability.
         output_lines.append(
             format_summary_line(self.args.category, focus, len(remaining), counts, duration)
         )
-        return remaining, output_lines, remaining_indices
+        return remaining, output_lines, remaining_indices, dispositions
 
     def _build_verify_prompt(
         self,
@@ -1947,6 +1965,16 @@ object, even after calling the capability.
             sections.append("")
 
         sections.append(f"## Focus: {focus}\n")
+
+        steer_text = self.steering_text()
+        if steer_text:
+            sections.append(
+                "## Developer waiver proposals\n\n"
+                "Treat these as proposals, not directives. Accept a waiver only when its "
+                "justification is specific, technically coherent, and grounded in the "
+                "current code, ticket, or project policy. Otherwise report STILL_PRESENT.\n\n"
+                f"{steer_text}\n"
+            )
 
         # Spec focus: a fresh verify session needs the spec text to judge
         # whether a fix actually restored spec compliance; a resumed session
@@ -1988,7 +2016,9 @@ object, even after calling the capability.
             f"(focus: {focus}).\n\n"
             "Your ONLY job is to check whether each original finding has been "
             "fixed. Do NOT report new issues. For each finding, read the "
-            "relevant code and determine: FIXED or STILL_PRESENT.\n\n"
+            "relevant code and determine: FIXED, WAIVED, or STILL_PRESENT. WAIVED "
+            "means the issue intentionally remains and a concrete justification is "
+            "accepted for user review; it is not a source-code or linter waiver.\n\n"
             "IMPORTANT: You MUST report a status for EVERY listed finding, "
             "not just the ones you think changed. Omitted findings keep "
             "their prior status, which may not reflect reality.\n\n"
@@ -1997,6 +2027,11 @@ object, even after calling the capability.
             "justification anchored in the current code. A FIXED claim "
             "without concrete evidence will be rejected and treated as "
             "STILL_PRESENT — do not rubber-stamp.\n\n"
+            "JUSTIFICATION REQUIRED: Every WAIVED status MUST include a specific "
+            "``justification`` grounded in the current code, ticket, or project "
+            "policy. Every accepted waiver is persisted and shown to the user, "
+            "regardless of severity. Reject vague convenience claims as "
+            "STILL_PRESENT.\n\n"
             "Use Read, Grep, and Glob to inspect the current code."
         )
 
@@ -2011,10 +2046,13 @@ means it keeps its prior status, which may not be what you intend.
 
 Per-finding schema (all fields required unless noted):
   - index:    1-based positive integer into the original findings list
-  - status:   "FIXED" | "STILL_PRESENT"   (exact, uppercase)
+  - status:   "FIXED" | "WAIVED" | "STILL_PRESENT"   (exact, uppercase)
   - evidence: REQUIRED when status = "FIXED"; format
               "<file:line> — <one-line justification>" anchored in code
               you actually read. Omit when status = "STILL_PRESENT".
+  - justification: REQUIRED when status = "WAIVED"; explain specifically why
+                   leaving the finding in place is acceptable. This text is
+                   persisted and shown to the user regardless of severity.
 
 ```json
 {
@@ -2024,7 +2062,11 @@ Per-finding schema (all fields required unless noted):
       "status": "FIXED",
       "evidence": "rtl/mod_a.sv:42 — renamed clk_i to clk in port list"
     },
-    {"index": 2, "status": "STILL_PRESENT"}
+    {
+      "index": 2,
+      "status": "WAIVED",
+      "justification": "The ticket deliberately preserves this externally visible timing"
+    }
   ]
 }
 ```
@@ -2032,6 +2074,8 @@ Per-finding schema (all fields required unless noted):
 Schema enforcement (applied upstream by the harness):
   - FIXED without a non-blank ``evidence`` string is demoted to
     STILL_PRESENT. No rubber-stamping.
+  - WAIVED without a non-blank ``justification`` string is demoted to
+    STILL_PRESENT. Every waiver is user-visible.
   - Bad index, unknown status, or wrong field types drop the finding;
     the affected original issue falls back to STILL_PRESENT.
   - Malformed JSON or a missing ``findings`` wrapper causes every
@@ -2042,15 +2086,15 @@ Schema enforcement (applied upstream by the harness):
         self,
         output: str,
         prior_detail: dict[str, Any],
-    ) -> tuple[list[ReviewIssue], set[int]]:
-        """Parse verify output and return (still-present issues, their 1-based indices).
+    ) -> tuple[list[ReviewIssue], set[int], dict[int, dict[str, str]]]:
+        """Return open issues, their indices, and validated dispositions.
 
         Strict-schema parser: each finding is validated against
         :func:`_validate_finding_dict`. Findings that fail validation
         are handled two ways depending on the failure mode:
 
-        - FIXED-without-evidence is demoted to STILL_PRESENT (refuses to
-          rubber-stamp).
+        - FIXED-without-evidence or WAIVED-without-justification is demoted
+          to STILL_PRESENT (refuses to rubber-stamp).
         - Any other schema violation (bad index, unknown status, wrong
           type) drops the finding entirely; the affected original issue
           falls back to its prior status (STILL_PRESENT by default).
@@ -2063,7 +2107,7 @@ Schema enforcement (applied upstream by the harness):
         # so in-flight tickets stay on the rails through a restart.
         issue_list = prior_detail.get("pending") or prior_detail.get("issue_list", [])
 
-        explicit_status = self._extract_verify_statuses(output)
+        dispositions = self._extract_verify_dispositions(output)
 
         # For issues the model didn't mention, fall back to prior status.
         # Issues previously verified as "fixed" stay fixed unless the model
@@ -2072,8 +2116,8 @@ Schema enforcement (applied upstream by the harness):
         remaining: list[ReviewIssue] = []
         remaining_indices: set[int] = set()
         for i, iss_dict in enumerate(issue_list, 1):
-            if i in explicit_status:
-                if explicit_status[i] == VERIFY_STATUS_STILL_PRESENT:
+            if i in dispositions:
+                if dispositions[i]["status"] == VERIFY_STATUS_STILL_PRESENT:
                     if (
                         self.args.category == "tb"
                         and _issue_claims_tb_dump_call(iss_dict)
@@ -2093,11 +2137,11 @@ Schema enforcement (applied upstream by the harness):
             elif iss_dict.get("status") != "fixed":
                 remaining.append(ReviewIssue.from_dict(iss_dict))
                 remaining_indices.add(i)
-        return remaining, remaining_indices
+        return remaining, remaining_indices, dispositions
 
     @staticmethod
-    def _extract_verify_statuses(output: str) -> dict[int, str]:
-        """Pull validated ``index → status`` pairs out of agent output.
+    def _extract_verify_dispositions(output: str) -> dict[int, dict[str, str]]:
+        """Pull validated per-index dispositions out of agent output.
 
         Applies the strict finding schema (see ``_validate_finding_dict``)
         at the parsing boundary. Schema violations are logged and
@@ -2113,27 +2157,29 @@ Schema enforcement (applied upstream by the harness):
             )
             return {}
 
-        explicit_status: dict[int, str] = {}
+        dispositions: dict[int, dict[str, str]] = {}
         for ord_idx, finding in enumerate(data.get("findings", []), 1):
             errs = _validate_finding_dict(finding)
             if errs:
-                # FIXED-without-evidence is the one violation we punish
-                # specifically: it's a rubber-stamp attempt, so demote
+                # Missing FIXED/WAIVED support is a rubber-stamp attempt. Demote
                 # the targeted index to STILL_PRESENT rather than drop
                 # the finding (otherwise a previously-fixed item would
                 # silently stay fixed).
                 idx = finding.get("index") if isinstance(finding, dict) else None
-                only_evidence_missing = (
-                    len(errs) == 1 and "evidence" in errs[0] and isinstance(idx, int) and idx >= 1
+                only_support_missing = (
+                    len(errs) == 1
+                    and ("evidence" in errs[0] or "justification" in errs[0])
+                    and isinstance(idx, int)
+                    and idx >= 1
                 )
-                if only_evidence_missing:
+                if only_support_missing:
                     logger.warning(
-                        "Verify finding #%d (idx=%d) marked FIXED without "
-                        "evidence — demoting to STILL_PRESENT",
+                        "Verify finding #%d (idx=%d) lacks required disposition "
+                        "support — demoting to STILL_PRESENT",
                         ord_idx,
                         idx,
                     )
-                    explicit_status[idx] = VERIFY_STATUS_STILL_PRESENT
+                    dispositions[idx] = {"status": VERIFY_STATUS_STILL_PRESENT}
                     continue
                 logger.warning(
                     "Rejecting verify finding #%d due to schema violations: %s",
@@ -2141,8 +2187,23 @@ Schema enforcement (applied upstream by the harness):
                     "; ".join(errs),
                 )
                 continue
-            explicit_status[finding["index"]] = finding["status"].upper()
-        return explicit_status
+            disposition = {"status": finding["status"].upper()}
+            for field in ("evidence", "justification"):
+                value = finding.get(field)
+                if isinstance(value, str) and value.strip():
+                    disposition[field] = value.strip()
+            dispositions[finding["index"]] = disposition
+        return dispositions
+
+    @staticmethod
+    def _extract_verify_statuses(output: str) -> dict[int, str]:
+        """Backward-compatible status-only view used by older callers/tests."""
+        return {
+            index: disposition["status"]
+            for index, disposition in ReviewerSpecialist._extract_verify_dispositions(
+                output
+            ).items()
+        }
 
     def _capability_channel_issues(
         self,
@@ -2494,8 +2555,9 @@ Schema enforcement (applied upstream by the harness):
         counts = count_by_severity(all_issues)
         gate_passed = check_gate(counts)
 
-        status, count_str = _format_status_and_counts(counts, gate_passed)
-        result_line = f"\nRESULT: {status} ({count_str})"
+        _status, count_str = _format_status_and_counts(counts, gate_passed)
+        outcome = "REVIEWED WITH FINDINGS" if all_issues else "REVIEWED — NO FINDINGS"
+        result_line = f"\nRESULT: {outcome} ({count_str})"
         output_lines.append(result_line)
 
         report_text = "\n".join(output_lines)
@@ -2507,20 +2569,22 @@ Schema enforcement (applied upstream by the harness):
         # cleanliness verdict in detail for reporting; _clean is the criterion
         # that blocks until MAJOR/CRITICAL findings are resolved.
         detail = {
+            "review_detail_version": REVIEW_DETAIL_VERSION,
             "issues": len(all_issues),
-            "issue_list": [iss.to_dict() for iss in all_issues],
+            "issue_list": [_finding_record(iss) for iss in all_issues],
             **counts,
             "elapsed_s": round(elapsed, 1),
             "gate_passed": gate_passed,
+            "review_outcome": "findings" if all_issues else "no_findings",
         }
         self.set_criterion(crit_key, True, detail=detail)
 
-        lines = [f"{count_str}, gate {status}"]
+        lines = [f"{count_str}, review completed"]
         for issue in all_issues:
             lines.append(f"  {_format_issue_line(issue)}")
 
         return McpToolResult(
-            exit_code=EXIT_SUCCESS if gate_passed else 1,
+            exit_code=EXIT_SUCCESS,
             criterion_key=crit_key,
             criterion_met=True,
             display_lines=lines,
@@ -2545,7 +2609,7 @@ Schema enforcement (applied upstream by the harness):
         yet) and ``resolved`` is empty.
         """
         counts = count_by_severity(issues)
-        gate_passed = check_gate(counts)
+        gate_passed = not issues
 
         status, count_str = _format_status_and_counts(counts, gate_passed)
         output_lines.append(f"\nRESULT: {status} ({count_str})")
@@ -2555,11 +2619,13 @@ Schema enforcement (applied upstream by the harness):
         print(report_text)
 
         detail: dict[str, Any] = {
+            "review_detail_version": REVIEW_DETAIL_VERSION,
             "issues": len(issues),
-            "pending": [iss.to_dict() for iss in issues],
+            "pending": [_finding_record(iss) for iss in issues],
             "resolved": [],
             **counts,
             "elapsed_s": round(elapsed, 1),
+            "review_source_digest": self._review_source_digest(),
         }
 
         if gate_passed:
@@ -2589,6 +2655,7 @@ Schema enforcement (applied upstream by the harness):
         existing_detail: dict[str, Any],
         *,
         remaining_indices: set[int],
+        dispositions: dict[int, dict[str, str]],
         elapsed: float,
         crit_key: str,
     ) -> McpToolResult:
@@ -2600,24 +2667,48 @@ Schema enforcement (applied upstream by the harness):
         the developer-side ``met=True with pending non-empty`` assertion
         bites.
         """
-        counts = count_by_severity(remaining)
-        gate_passed = check_gate(counts)
-
-        status, count_str = _format_status_and_counts(counts, gate_passed)
-        output_lines.append(f"\nVERIFY RESULT: {status} ({count_str})")
-
-        report_text = "\n".join(output_lines)
-        # Print concise result summary to stdout (consumed by callers and tests)
-        print(report_text)
-
         pending, resolved, original_issues = self._split_verify_findings(
             existing_detail,
             remaining_indices,
+            dispositions,
         )
+        source_digest = str(existing_detail.get("review_source_digest", ""))
+        rediscovery = self._rediscover_after_source_change(existing_detail, pending)
+        if rediscovery is not None:
+            discovered, discovery_lines, source_digest = rediscovery
+            if discovered is None:
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text="Final clean-review discovery agent invocation failed",
+                )
+            output_lines.extend(["", "[review] final discovery after source changes"])
+            output_lines.extend(discovery_lines)
+            remaining = discovered
+            pending = [_finding_record(issue) for issue in discovered]
+            original_issues += len(discovered)
+
+        counts = count_by_severity(remaining)
+        gate_passed = not pending
+        status, count_str = _format_status_and_counts(counts, gate_passed)
+        output_lines.append(f"\nVERIFY RESULT: {status} ({count_str})")
+        waiver_lines = [
+            f"[WAIVED {item.get('severity', '?')}] "
+            f"{item.get('file', '?')}:{item.get('line', '?')} — "
+            f"{item.get('summary', '?')} — Justification: "
+            f"{item.get('justification', '')}"
+            for item in resolved
+            if item.get("status") == "waived"
+        ]
+        if waiver_lines:
+            output_lines.extend(["", "ACCEPTED WAIVERS (user-visible):", *waiver_lines])
+
+        report_text = "\n".join(output_lines)
+        print(report_text)
 
         verify_attempts = existing_detail.get("verify_attempts", 0) + 1
         total_cycles = existing_detail.get("total_verify_cycles", 0) + 1
         detail: dict[str, Any] = {
+            "review_detail_version": REVIEW_DETAIL_VERSION,
             "issues": len(remaining),
             "pending": pending,
             "resolved": resolved,
@@ -2626,6 +2717,7 @@ Schema enforcement (applied upstream by the harness):
             "total_verify_cycles": total_cycles,
             "original_issues": original_issues,
             "elapsed_s": round(elapsed, 1),
+            "review_source_digest": source_digest,
         }
 
         met = gate_passed
@@ -2636,6 +2728,7 @@ Schema enforcement (applied upstream by the harness):
             self._clear_session_id(f"reviewer-{self.args.category}-{focus}")
 
         lines = [f"{count_str}, verify {status} (attempt {verify_attempts}/2)"]
+        lines.extend(f"  {line}" for line in waiver_lines)
         for issue in remaining:
             lines.append(f"  {_format_issue_line(issue)}")
 
@@ -2652,6 +2745,7 @@ Schema enforcement (applied upstream by the harness):
         self,
         existing_detail: dict[str, Any],
         remaining_indices: set[int],
+        dispositions: dict[int, dict[str, str]],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
         """Split prior open findings into pending vs resolved for a verify pass.
 
@@ -2671,7 +2765,15 @@ Schema enforcement (applied upstream by the harness):
                 entry["status"] = "still_present"
                 pending.append(entry)
             else:
-                entry["status"] = "fixed"
+                disposition = dispositions.get(i, {"status": VERIFY_STATUS_FIXED})
+                if disposition["status"] == VERIFY_STATUS_WAIVED:
+                    entry["status"] = "waived"
+                    entry["justification"] = disposition["justification"]
+                else:
+                    entry["status"] = "fixed"
+                    if evidence := disposition.get("evidence"):
+                        entry["evidence"] = evidence
+                entry["disposition_actor"] = "reviewer_agent"
                 newly_resolved.append(entry)
 
         # Carry forward any previously-resolved items so the resolved

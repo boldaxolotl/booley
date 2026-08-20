@@ -196,8 +196,9 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "#### `reviewer`",
         "",
         "Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and "
-        "`MINOR` findings and can satisfy either a one-shot `_done` review or a "
-        "durable `_clean` review gate that re-checks fixes.",
+        "`MINOR` findings. A terminal `_done` review reports findings without "
+        "triggering fixes; `_clean` requires every finding to be verified fixed "
+        "or explicitly waived with user-visible justification.",
         "Call `reviewer --scope <file,...> --category <category> --focus <focus>`.",
         "",
         "| Category | Focus | What it checks | Sets |",

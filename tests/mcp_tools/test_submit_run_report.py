@@ -581,6 +581,69 @@ class TestOptionalCriteriaJustification:
         )
 
 
+def test_report_renders_done_findings_and_every_clean_waiver(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = DevelopmentState.load(state_file)
+    state.init_criteria(
+        {
+            "review_rtl_bugs_done": False,
+            "review_rtl_security_clean": False,
+        }
+    )
+    finding = {
+        "severity": "MINOR",
+        "file": "rtl/dut.sv",
+        "line": 7,
+        "summary": "Intentional diagnostic timing",
+    }
+    state.set_criterion(
+        "review_rtl_bugs_done",
+        True,
+        detail={"issues": 1, "issue_list": [finding]},
+    )
+    state.set_criterion(
+        "review_rtl_security_clean",
+        True,
+        detail={
+            "issues": 0,
+            "pending": [],
+            "resolved": [
+                {
+                    **finding,
+                    "status": "waived",
+                    "justification": "Required by the ticket's debug interface.",
+                }
+            ],
+        },
+    )
+    state.save()
+
+    exit_code, _state = _run_endpoint(
+        state_file,
+        tmp_path,
+        "feature",
+        [
+            "--summary",
+            "Implemented the requested behavior.",
+            "--design-decisions",
+            "Preserved diagnostic timing.",
+            "--uncertainties",
+            "No additional uncertainty.",
+        ],
+        monkeypatch,
+    )
+
+    assert exit_code == EXIT_SUCCESS
+    report = (tmp_path / "REPORT.md").read_text(encoding="utf-8")
+    assert "## Review findings and waivers" in report
+    assert "REPORTED MINOR" in report
+    assert "WAIVED MINOR" in report
+    assert "Required by the ticket's debug interface." in report
+
+
 # ---------------------------------------------------------------------------
 # Reset-on-code-change -- _report_submitted goes stale when categories reset
 # ---------------------------------------------------------------------------

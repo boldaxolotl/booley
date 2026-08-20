@@ -454,7 +454,7 @@ class TestCriteriaOperations:
         assert state.criteria["lint_clean_lite"].ever_met is True
 
     def test_ever_met_survives_reset_category(self, state: DevelopmentState):
-        # Use a resettable criterion (lint_) — review_ is one-shot now
+        # Use an immediately resettable criterion; review freshness is fingerprint-owned.
         state.set_criterion("lint_clean_lite", True)
         assert state.criteria["lint_clean_lite"].ever_met is True
         state.reset_category(CATEGORY_RTL)

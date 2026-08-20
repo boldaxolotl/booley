@@ -196,6 +196,10 @@ def _matches_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
 
 def _verification_fingerprint_categories(key: str) -> set[str]:
     """Return source categories that a passing verification criterion depends on."""
+    if key.startswith("review_rtl_"):
+        return {CATEGORY_RTL}
+    if key.startswith("review_tb_"):
+        return {CATEGORY_TB}
     if key.startswith(("mutation_score_", "coverage_")):
         return {CATEGORY_RTL, CATEGORY_TB, "campaign"}
     if key.startswith(("sim_", "elab_")):

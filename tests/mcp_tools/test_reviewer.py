@@ -19,7 +19,6 @@ from booley.specialists.reviewer import (
     TB_FOCUS_CATEGORIES,
     ReviewerSpecialist,
     ReviewIssue,
-    _auto_downgrade_stale,
     _validate_finding_dict,
     _validate_issue_dict,
     check_gate,
@@ -403,6 +402,13 @@ class TestFindingSchema:
         errs = _validate_finding_dict(d)
         assert any("evidence" in e for e in errs)
 
+    def test_waived_requires_non_blank_justification(self):
+        assert _validate_finding_dict(
+            {"index": 1, "status": "WAIVED", "justification": "intentional tradeoff"}
+        ) == []
+        errs = _validate_finding_dict({"index": 1, "status": "WAIVED"})
+        assert any("justification" in error for error in errs)
+
     def test_zero_index_rejected(self):
         errs = _validate_finding_dict({"index": 0, "status": "STILL_PRESENT"})
         assert any("index" in e for e in errs)
@@ -532,7 +538,7 @@ class TestReportFindingsCapture:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1  # gate fails on the MAJOR-mapped finding
+        assert result.exit_code == 0  # _done completed; findings are reported separately
         assert result.detail["issues"] == 1
         st = DevelopmentState.load(state_file)
         # Criterion recorded as performed (not a Specialist error).
@@ -633,7 +639,7 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1  # FAIL, not the old PASS-at-exit-0
+        assert result.exit_code == 0
         assert result.criterion_met is True  # _done records review completion
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
@@ -670,7 +676,7 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.detail["issues"] == 1
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -689,7 +695,7 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         # Text channel taken whole — not merged with the agent-capability channel.
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
@@ -706,7 +712,7 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_MAJOR] == 1
 
@@ -816,7 +822,7 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_MAJOR] == 1
         assert result.detail["gate_passed"] is False
@@ -1004,9 +1010,8 @@ class TestUpstreamReviewRejection:
         endpoint.read_state()
         result = endpoint._run()
 
-        # Only the valid CRITICAL is counted (exit_code=1 because critical
-        # still fails the gate, but criterion is set so the review is
-        # recorded as performed).
+        # Only the valid CRITICAL is counted; _done completion is independent
+        # from the quality verdict recorded in detail.
         assert result.detail["issues"] == 1
         assert result.detail["CRITICAL"] == 1
 
@@ -1674,7 +1679,7 @@ class TestFullRtlReview:
         st = DevelopmentState.load(state_file)
         assert st.is_met("review_rtl_bugs_done") is True
         captured = capsys.readouterr()
-        assert "RESULT: PASS" in captured.out
+        assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_critical_issues_done_met(self, mock_agent, state_file: Path, capsys):
@@ -1698,14 +1703,14 @@ class TestFullRtlReview:
         )
         endpoint.read_state()
         result = endpoint._run()
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         assert result.criterion_met is True
         assert result.criterion_key == "review_rtl_bugs_done"
         st = DevelopmentState.load(state_file)
         assert st.is_met("review_rtl_bugs_done") is True
         assert st.criteria["review_rtl_bugs_done"].detail["gate_passed"] is False
         captured = capsys.readouterr()
-        assert "RESULT: FAIL" in captured.out
+        assert "RESULT: REVIEWED WITH FINDINGS" in captured.out
         assert "critical" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -1718,7 +1723,7 @@ class TestFullRtlReview:
         t1.parse_args(common)
         t1.read_state()
         first = t1._run()
-        assert first.exit_code == 1
+        assert first.exit_code == 0
         assert first.criterion_met is True
 
         t2 = ReviewerSpecialist()
@@ -1728,7 +1733,7 @@ class TestFullRtlReview:
         assert replay.exit_code == 0
         assert replay.criterion_met is True
         assert "already completed" in replay.report_text
-        assert "RESULT: FAIL" in replay.report_text
+        assert "RESULT: REVIEWED WITH FINDINGS" in replay.report_text
         assert mock_agent.call_count == 1
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -1737,7 +1742,7 @@ class TestFullRtlReview:
         mock_agent,
         state_file: Path,
     ):
-        """Steering cannot turn one-shot _done into a cleanliness workflow."""
+        """Steering cannot turn terminal _done into a cleanliness workflow."""
         common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
         mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
 
@@ -1846,7 +1851,7 @@ class TestFullTbReview:
         result = endpoint._run()
         assert result.exit_code == 0
         captured = capsys.readouterr()
-        assert "RESULT: PASS" in captured.out
+        assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
     @patch("booley.specialists.reviewer._get_tb_prefixes", return_value=("tb/", "tb\\"))
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -1875,8 +1880,9 @@ class TestFullTbReview:
 
 
 class TestDiffRefInRun:
+    @patch.object(ReviewerSpecialist, "_prepare_diff_boundary", return_value=None)
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_diff_ref_passed_to_prompt(self, mock_agent, state_file: Path):
+    def test_diff_ref_passed_to_prompt(self, mock_agent, _prepare, state_file: Path):
         mock_agent.return_value = _make_agent_result([])
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2230,7 +2236,7 @@ class TestOneShotGuard:
 
         assert result.exit_code == 0
         assert mock_agent.call_count == 0
-        assert "RESULT: PASS (1 minor)" in result.report_text
+        assert "RESULT: REVIEWED WITH FINDINGS (1 minor)" in result.report_text
         assert "rtl/mod_a.sv:42 — unused signal" in result.report_text
         # State is untouched: replaying must not rewrite the recorded verdict.
         assert DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
@@ -2332,6 +2338,26 @@ class TestCleanModeInitial:
         assert st.is_met("review_rtl_bugs_clean") is False
 
     @patch("booley.specialists.specialist._call_agent_sync")
+    def test_minor_finding_remains_open_until_fixed_or_waived(
+        self,
+        mock_agent,
+        state_file: Path,
+    ):
+        mock_agent.return_value = _make_agent_result([_make_issue_dict("MINOR")])
+        st = DevelopmentState.load(state_file)
+        st.set_criterion("review_rtl_bugs_clean", met=False)
+        st.save()
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(_review_args())
+        endpoint.read_state()
+        result = endpoint._run()
+
+        assert result.exit_code == 1
+        assert result.criterion_met is False
+        assert len(result.detail["pending"]) == 1
+
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_clean_already_met_returns_early(
         self,
         mock_agent,
@@ -2363,6 +2389,102 @@ class TestCleanModeInitial:
 
 class TestCleanModeVerify:
     """Tests for _clean mode: verify review pass."""
+
+    @patch("booley.specialists.specialist._call_agent_sync")
+    def test_source_change_triggers_fresh_discovery_before_clean_passes(
+        self,
+        mock_agent,
+        state_file: Path,
+    ):
+        mock_agent.side_effect = [
+            MagicMock(
+                output=json.dumps(
+                    {
+                        "findings": [
+                            {
+                                "index": 1,
+                                "status": "FIXED",
+                                "evidence": "rtl/mod_a.sv:5 — original bug fixed",
+                            }
+                        ]
+                    }
+                ),
+                structured=None,
+            ),
+            _make_agent_result([_make_issue_dict("MINOR", summary="New final-state issue")]),
+        ]
+        st = DevelopmentState.load(state_file)
+        st.set_criterion(
+            "review_rtl_bugs_clean",
+            met=False,
+            detail={
+                "issues": 1,
+                "pending": [_make_issue_dict("MAJOR")],
+                "resolved": [],
+                "verify_attempts": 0,
+                "original_issues": 1,
+                "review_source_digest": "prior-source-digest",
+            },
+        )
+        st.save()
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(_review_args())
+        endpoint.read_state()
+        result = endpoint._run()
+
+        assert mock_agent.call_count == 2
+        assert result.exit_code == 1
+        assert result.criterion_met is False
+        assert result.detail["pending"][0]["summary"] == "New final-state issue"
+
+    @patch("booley.specialists.specialist._call_agent_sync")
+    def test_justified_waiver_resolves_finding_and_is_persisted(
+        self,
+        mock_agent,
+        state_file: Path,
+    ):
+        mock_agent.return_value = MagicMock(
+            output=json.dumps(
+                {
+                    "findings": [
+                        {
+                            "index": 1,
+                            "status": "WAIVED",
+                            "justification": "The ticket requires this observable latency.",
+                        }
+                    ]
+                }
+            ),
+            structured=None,
+        )
+        st = DevelopmentState.load(state_file)
+        st.set_criterion(
+            "review_rtl_bugs_clean",
+            met=False,
+            detail={
+                "issues": 1,
+                "pending": [_make_issue_dict("MINOR")],
+                "resolved": [],
+                "verify_attempts": 0,
+                "original_issues": 1,
+            },
+        )
+        st.save()
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args([*_review_args(), "--steer", "Waive finding 1: required latency"])
+        endpoint.read_state()
+        result = endpoint._run()
+
+        assert result.exit_code == 0
+        assert result.criterion_met is True
+        waiver = result.detail["resolved"][0]
+        assert waiver["status"] == "waived"
+        assert waiver["justification"] == "The ticket requires this observable latency."
+        assert "WAIVED MINOR" in "\n".join(result.display_lines)
+        assert "ACCEPTED WAIVERS (user-visible)" in result.report_text
+        assert "Justification: The ticket requires this observable latency." in result.report_text
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_verify_all_fixed_becomes_met(
@@ -2830,252 +2952,38 @@ class TestMutualExclusionGuard:
 
 
 # ---------------------------------------------------------------------------
-# _auto_downgrade_stale
+# Bounded clean-review impasse
 # ---------------------------------------------------------------------------
 
 
-class TestAutoDowngradeStale:
-    """Unit tests for _auto_downgrade_stale."""
-
-    def test_downgrades_major_still_present(self):
-        issues = [
-            {"severity": "MAJOR", "status": "still_present", "summary": "A"},
-            {"severity": "MAJOR", "status": "still_present", "summary": "B"},
-        ]
-        count = _auto_downgrade_stale(issues)
-        assert count == 2
-        assert all(i["severity"] == "MINOR" for i in issues)
-        assert all(i["impasse"] is True for i in issues)
-
-    def test_does_not_downgrade_critical(self):
-        issues = [
-            {"severity": "CRITICAL", "status": "still_present", "summary": "X"},
-        ]
-        count = _auto_downgrade_stale(issues)
-        assert count == 0
-        assert issues[0]["severity"] == "CRITICAL"
-
-    def test_does_not_downgrade_fixed(self):
-        issues = [
-            {"severity": "MAJOR", "status": "fixed", "summary": "Y"},
-        ]
-        count = _auto_downgrade_stale(issues)
-        assert count == 0
-        assert issues[0]["severity"] == "MAJOR"
-
-    def test_does_not_downgrade_minor(self):
-        issues = [
-            {"severity": "MINOR", "status": "still_present", "summary": "Z"},
-        ]
-        count = _auto_downgrade_stale(issues)
-        assert count == 0
-        assert issues[0]["severity"] == "MINOR"
-
-    def test_mixed_severities(self):
-        issues = [
-            {"severity": "CRITICAL", "status": "still_present", "summary": "A"},
-            {"severity": "MAJOR", "status": "still_present", "summary": "B"},
-            {"severity": "MAJOR", "status": "fixed", "summary": "C"},
-            {"severity": "MINOR", "status": "still_present", "summary": "D"},
-        ]
-        count = _auto_downgrade_stale(issues)
-        assert count == 1
-        assert issues[0]["severity"] == "CRITICAL"
-        assert issues[1]["severity"] == "MINOR"
-        assert issues[1]["impasse"] is True
-        assert issues[2]["severity"] == "MAJOR"
-        assert issues[3]["severity"] == "MINOR"
-
-    def test_empty_list(self):
-        assert _auto_downgrade_stale([]) == 0
-
-
-# ---------------------------------------------------------------------------
-# Impasse / downgrade integration (_clean mode, total_verify_cycles >= 3)
-# ---------------------------------------------------------------------------
-
-
-class TestImpaseDowngradeIntegration:
-    """Integration: total_verify_cycles >= 3 triggers auto-downgrade, gate passes."""
-
+class TestCleanReviewImpasse:
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_impasse_downgrades_then_gate_passes(
-        self,
-        mock_agent,
-        state_file: Path,
-        capsys,
-    ):
-        """After 3 total cycles, MAJOR still_present → MINOR, gate passes."""
-        # Verify agent says the one remaining MAJOR issue is still there
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {"index": 1, "status": "STILL_PRESENT"},
-                    ]
-                }
-            ),
-            structured=None,
-        )
+    def test_impasse_never_creates_automatic_waiver(self, mock_agent, state_file: Path):
         st = DevelopmentState.load(state_file)
+        finding = _make_issue_dict("MAJOR", summary="Still unresolved")
         st.set_criterion(
             "review_rtl_bugs_clean",
             met=False,
             detail={
                 "issues": 1,
-                "issue_list": [
-                    {
-                        **_make_issue_dict("MAJOR", summary="Missing edge case"),
-                        "status": "still_present",
-                    },
-                ],
-                "CRITICAL": 0,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
+                "pending": [finding],
+                "resolved": [],
                 "total_verify_cycles": 3,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
             },
         )
         st.save()
 
         endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
+        endpoint.parse_args(_review_args())
         endpoint.read_state()
         result = endpoint._run()
 
-        # The MAJOR was downgraded to MINOR before the verify call,
-        # so the verify result sees only MINORs → gate passes
-        assert result.criterion_met is True
-        assert result.exit_code == 0
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_impasse_does_not_downgrade_critical(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """CRITICAL issues are never auto-downgraded — gate stays failed."""
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {"index": 1, "status": "STILL_PRESENT"},
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 1,
-                "issue_list": [
-                    {
-                        **_make_issue_dict("CRITICAL", summary="Security flaw"),
-                        "status": "still_present",
-                    },
-                ],
-                "CRITICAL": 1,
-                "MAJOR": 0,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "total_verify_cycles": 3,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        result = endpoint._run()
-
-        assert result.criterion_met is False
         assert result.exit_code == 1
-        assert result.detail["CRITICAL"] == 1
-
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_impasse_downgrade_persisted_before_verify(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Downgrade is persisted to state before verify agent call.
-
-        Regression: if verify fails after downgrade, the downgraded severities
-        must survive in state (not be lost with the failed verify).
-        """
-        mock_agent.side_effect = RuntimeError("agent crash")
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 1,
-                "issue_list": [
-                    {
-                        **_make_issue_dict("MAJOR", summary="Stale finding"),
-                        "status": "still_present",
-                    },
-                ],
-                "CRITICAL": 0,
-                "MAJOR": 1,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "total_verify_cycles": 3,
-                "original_issues": 1,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-        endpoint.read_state()
-        result = endpoint._run()
-
-        # Verify failed, but downgrade should be persisted. After
-        # impasse, the downgraded item moves out of pending into
-        # resolved (accepted-as-noted) so future verify cycles ignore it.
-        assert result.exit_code == 2
-        st = DevelopmentState.load(state_file)
-        detail = st.criteria["review_rtl_bugs_clean"].detail
-        assert detail["pending"] == []
-        assert detail["resolved"][0]["severity"] == "MINOR"
-        assert detail["resolved"][0]["impasse"] is True
-        assert detail["resolved"][0]["status"] == "impasse_deferred"
+        assert "without creating an automatic waiver" in result.report_text
+        assert mock_agent.call_count == 0
+        detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_clean"].detail
+        assert detail["pending"] == [finding]
+        assert detail["resolved"] == []
 
 
 # ---------------------------------------------------------------------------

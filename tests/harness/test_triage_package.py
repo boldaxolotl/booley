@@ -113,6 +113,39 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     assert Path(change["diff_right"]).read_text(encoding="utf-8").startswith("module new")
 
 
+def test_review_facts_include_every_waiver_with_justification(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["review_security_clean"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "issues": 0,
+            "pending": [],
+            "resolved": [
+                {
+                    "severity": "MINOR",
+                    "file": "rtl/new.sv",
+                    "line": 4,
+                    "summary": "Intentional visibility",
+                    "status": "waived",
+                    "justification": "The debug interface is required by the ticket.",
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "tokens=10 cost=$0.01")
+
+    facts = tp.build_review_facts(ctx)
+
+    waiver = facts["review_dispositions"][0]
+    assert waiver["disposition"] == "waived"
+    assert waiver["severity"] == "MINOR"
+    assert waiver["justification"] == "The debug interface is required by the ticket."
+
+
 def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     project = ctx.worktree / ".booley_project"

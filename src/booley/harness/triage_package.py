@@ -582,6 +582,8 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
                 "worktree": str(project.worktree),
             }
         )
+    from booley.dev_support.review_dispositions import collect_review_dispositions
+
     return {
         "version": TRIAGE_PACKAGE_VERSION,
         "kind": "review",
@@ -592,6 +594,7 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         "worktree": str(ctx.worktree),
         "repositories": repositories,
         "criteria": _criteria(state),
+        "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
         "scope": scope,
         "commits": _commits(ctx),
@@ -771,6 +774,33 @@ def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
         )
 
 
+def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) -> None:
+    rows = package.get("review_dispositions", [])
+    if not rows:
+        return
+    lines.extend(
+        [
+            "",
+            "#### Review findings and dispositions",
+            "",
+            "| Criterion | Severity | Location | Disposition | Finding / justification |",
+            "|-----------|----------|----------|-------------|-------------------------|",
+        ]
+    )
+    for row in rows:
+        location = f"{row.get('file', '')}:{row.get('line', 0)}"
+        explanation = row.get("summary", "")
+        if row.get("disposition") == "waived":
+            explanation = f"{explanation} — Waiver: {row.get('justification', '')}"
+        lines.append(
+            f"| `{_markdown_text(row.get('criterion', ''))}` | "
+            f"{_markdown_text(row.get('severity', ''))} | "
+            f"`{_markdown_text(location)}` | "
+            f"{_markdown_text(row.get('disposition', ''))} | "
+            f"{_markdown_text(explanation)} |"
+        )
+
+
 def _render_recipe_comparisons(lines: list[str], package: Mapping[str, Any]) -> None:
     """Render Target recipe changes and the QoR checks they contextualize."""
     rows = package.get("recipe_comparisons", [])
@@ -912,6 +942,7 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     ]
     lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(blockers, 1))
     _render_criteria(lines, package)
+    _render_review_dispositions(lines, package)
     _render_recipe_comparisons(lines, package)
     _render_scope(lines, package)
     _render_commits(lines, package)

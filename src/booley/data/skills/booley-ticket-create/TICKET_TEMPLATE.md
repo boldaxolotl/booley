@@ -42,8 +42,8 @@ criteria:
 
     # --- Review (global) ---------------------------------------------------
     # Each review focus is a separate criterion. --focus is required.
-    review_rtl_bugs_done: true         # -> reviewer --category rtl --focus bugs (one-shot)
-    review_tb_quality_done: true       # -> reviewer --category tb --focus quality (one-shot)
+    review_rtl_bugs_done: true         # -> terminal advisory review; report, do not fix
+    review_tb_quality_done: true       # -> terminal advisory review; report, do not fix
 
   optional:
     # --- More review focuses (opt-in per ticket) ---------------------------

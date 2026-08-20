@@ -258,6 +258,10 @@ def _stale_verification_entry(
 
 def _verification_fingerprint_categories(key: str) -> set[str]:
     """Return source categories a verification criterion must fingerprint."""
+    if key.startswith("review_rtl_"):
+        return {"rtl"}
+    if key.startswith("review_tb_"):
+        return {"tb"}
     if key.startswith(("mutation_score_", "coverage_")):
         return {"rtl", "tb", "campaign"}
     if key.startswith(("sim_", "elab_")):
@@ -367,13 +371,18 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
 def _run_report_gate_error(state) -> str | None:
     """Return why final report evidence is insufficient, or ``None``."""
     from booley.config.project_config import is_run_report_enabled
+    from booley.dev_support.review_dispositions import review_report_required
 
     unmet_optional = sorted(
         key
         for key, entry in state.criteria.items()
         if not key.startswith("_") and not entry.mandatory and not entry.met
     )
-    if not is_run_report_enabled() and not unmet_optional:
+    if (
+        not is_run_report_enabled()
+        and not unmet_optional
+        and not review_report_required(state.criteria)
+    ):
         return None
 
     report_entry = state.criteria.get(_REPORT_CRITERION)
