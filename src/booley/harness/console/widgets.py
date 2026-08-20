@@ -103,10 +103,10 @@ _CriterionStatus = Literal["met", "failing", "needs_recheck", "not_run"]
 
 def _criterion_status(entry: dict) -> _CriterionStatus:
     """Classify a criterion by its current verdict and evidence freshness."""
-    if entry.get("met"):
-        return "met"
     if entry.get("stale"):
         return "needs_recheck"
+    if entry.get("met"):
+        return "met"
     if entry.get("detail") or entry.get("ever_failed") or entry.get("ever_met"):
         return "failing"
     return "not_run"

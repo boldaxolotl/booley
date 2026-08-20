@@ -260,7 +260,7 @@ class TestTicketHeader:
                         "params": {},
                     },
                     "synthesis_ok": {
-                        "met": False,
+                        "met": True,
                         "mandatory": True,
                         "detail": {"cells": 1200},
                         "ever_met": True,
@@ -313,7 +313,7 @@ class TestTicketHeader:
                         "params": {},
                     },
                     "synthesis_ok": {
-                        "met": False,
+                        "met": True,
                         "mandatory": True,
                         "detail": {"cells": 1200},
                         "ever_met": True,
