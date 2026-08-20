@@ -906,6 +906,8 @@ class TestColdStart:
         _write_dut_top(tmp_path)
 
         specs = _sample_specs(2)
+        for spec in specs:
+            spec.file = f"./{scope}"
         _patch_invoke_agent(
             monkeypatch,
             [
