@@ -900,8 +900,10 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
 def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
     """Validate one registered criterion parameter value."""
     if param == "scope":
-        if not isinstance(value, list) or not value or not all(
-            isinstance(path, str) and path.strip() for path in value
+        if (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(path, str) and path.strip() for path in value)
         ):
             raise ValueError(f"{key} param 'scope' must be a non-empty list[str]")
         return
@@ -911,9 +913,7 @@ def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
         return
     if key == "mutation_score" and param in {"min_detected", "total"}:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(
-                f"{key} param {param!r} must be a positive integer, got {value!r}"
-            )
+            raise ValueError(f"{key} param {param!r} must be a positive integer, got {value!r}")
         return
     if key.startswith("coverage_") and param == "min_pct":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -922,6 +922,4 @@ def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
             raise ValueError(f"{key} param 'min_pct' must be in (0, 100], got {value!r}")
         return
     if not isinstance(value, (int, float)) or value <= 0:
-        raise ValueError(
-            f"{key} param {param!r} must be a positive number, got {value!r}"
-        )
+        raise ValueError(f"{key} param {param!r} must be a positive number, got {value!r}")

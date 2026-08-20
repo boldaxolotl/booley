@@ -646,9 +646,7 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     build_dir = tmp_path / "build"
     build_dir.mkdir()
     endpoint._run_elab("default", tmp_path, build_dir)
-    runs = endpoint._run_target_test_suite(
-        "default", tmp_path, build_dir, "tb", mut_id=1
-    )
+    runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb", mut_id=1)
 
     sim_cmds = captured[1:]
     assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
@@ -688,9 +686,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
     build_dir = tmp_path / "build"
     build_dir.mkdir()
     endpoint._run_elab("lib:ip:core#default", tmp_path, build_dir)
-    endpoint._run_target_test_suite(
-        "lib:ip:core#default", tmp_path, build_dir, "tb", mut_id=1
-    )
+    endpoint._run_target_test_suite("lib:ip:core#default", tmp_path, build_dir, "tb", mut_id=1)
 
     sim_cmds = captured[1:]
     assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]

@@ -1714,6 +1714,7 @@ class TestDiscoverDutScope:
         result = endpoint._discover_dut_scope(Path("fake.bwave"), ["aes"])
         assert result == "tb.uu_aes.*"
 
+
 # ===================================================================
 # _find_trace_file (static)
 # ===================================================================

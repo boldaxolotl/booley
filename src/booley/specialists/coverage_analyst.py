@@ -1972,9 +1972,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         return McpToolResult(
             exit_code=exit_code,
             criterion_key=(
-                active_keys[0]
-                if active_keys
-                else self._target_criterion_key("coverage_toggle")
+                active_keys[0] if active_keys else self._target_criterion_key("coverage_toggle")
             ),
             criterion_met=all_pass,
             detail=report_dict,
@@ -2369,9 +2367,15 @@ abort path". Omit this field or leave empty if all criteria are already met.
         for trace_dir in trace_dirs:
             stats, error, is_infra = self._run_mechanical_measurement(trace_dir)
             if not stats:
-                return [], [], [], [], McpToolResult(
-                    exit_code=EXIT_ERROR if is_infra else EXIT_FAILURE,
-                    report_text=f"Phase 1 failed for {trace_dir}: {error or 'unknown'}",
+                return (
+                    [],
+                    [],
+                    [],
+                    [],
+                    McpToolResult(
+                        exit_code=EXIT_ERROR if is_infra else EXIT_FAILURE,
+                        report_text=f"Phase 1 failed for {trace_dir}: {error or 'unknown'}",
+                    ),
                 )
             measured.append(stats)
         stats = self._merge_signal_stats(measured)
@@ -2379,8 +2383,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         toggle_failures, low_diversity = self._pre_filter_for_waiver(stats)
         output_lines.append(f"  {len(stats)} aggregate signals measured")
         output_lines.append(
-            f"  {len(toggle_failures)} toggle failures, "
-            f"{len(low_diversity)} low-diversity signals"
+            f"  {len(toggle_failures)} toggle failures, {len(low_diversity)} low-diversity signals"
         )
         return stats, structural_noise, toggle_failures, low_diversity, None
 
