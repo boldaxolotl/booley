@@ -20,6 +20,11 @@ class TargetTestSuite:
         """Human-readable names, including the native default invocation."""
         return tuple(test if test is not None else "<default>" for test in self.tests)
 
+    @property
+    def all_skipped(self) -> bool:
+        """Whether the Target declared tests but excluded every one of them."""
+        return not self.tests and bool(self.skipped)
+
 
 def configured_test_names() -> Mapping[str, list[str]]:
     """Return the tests.toml test registry, or an empty registry if unavailable."""
@@ -49,9 +54,11 @@ def resolve_target_test_suite(
 ) -> TargetTestSuite:
     """Resolve all runnable tests for *target*.
 
-    Durable skips are honored. An all-skipped Target runs its complete declared
-    list so a campaign can never pass vacuously. A Target without a declared
-    list gets one native default invocation, represented by ``None``.
+    Durable skips are always honored. An all-skipped Target returns an empty
+    runnable suite plus the complete skip list so callers can fail clearly
+    instead of passing vacuously or executing known-hanging tests. A Target
+    without a declared list gets one native default invocation, represented by
+    ``None``.
     """
     names = configured_test_names() if test_names is None else test_names
     skips_by_target = configured_test_skips() if test_skips is None else test_skips
@@ -62,6 +69,6 @@ def resolve_target_test_suite(
     durable_skips = set(lookup_target_section(skips_by_target, target) or [])
     runnable = [test for test in available if test not in durable_skips]
     if not runnable:
-        return TargetTestSuite(tuple(available))
+        return TargetTestSuite((), tuple(available))
     skipped = tuple(test for test in available if test in durable_skips)
     return TargetTestSuite(tuple(runnable), skipped)

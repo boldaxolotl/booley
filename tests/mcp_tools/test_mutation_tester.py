@@ -20,6 +20,7 @@ import pytest
 
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.development_state import DevelopmentState
+from booley.flows.sim.target_tests import TargetTestSuite
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
@@ -55,6 +56,23 @@ def test_creator_specs_cannot_claim_out_of_scope_files(tmp_path: Path) -> None:
     outside = MutationTesterSpecialist._specs_outside_scope([spec], ["rtl/owned.sv"], tmp_path)
 
     assert outside == [spec]
+
+
+def test_dut_top_derivation_ignores_commented_modules(tmp_path: Path, monkeypatch) -> None:
+    rtl = tmp_path / "rtl"
+    rtl.mkdir()
+    (rtl / "design.sv").write_text(
+        "// module stale_line;\n/* module stale_block; */\nmodule actual_dut; endmodule\n",
+        encoding="utf-8",
+    )
+    endpoint = _make_endpoint(
+        tmp_path,
+        monkeypatch,
+        scope="rtl/design.sv",
+        dut_top_module="",
+    )
+
+    assert endpoint._dut_top_module() == "actual_dut"
 
 
 def _env_with_state(
@@ -170,6 +188,21 @@ def _sample_specs(n: int = 3, category: str = "operator_change") -> list[Mutatio
         )
         for i in range(1, n + 1)
     ]
+
+
+def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    suite = TargetTestSuite((), ("smoke", "corner"))
+    with (
+        patch.object(endpoint, "_validate_scope_against_target", return_value=None),
+        patch.object(endpoint, "_validate_target_runner"),
+        patch.object(endpoint, "cocotb_target", return_value=None),
+        patch("booley.specialists.mutation_tester.resolve_target_test_suite", return_value=suite),
+    ):
+        result = endpoint._run()
+
+    assert result.exit_code == EXIT_ERROR
+    assert "no runnable tests" in result.report_text
 
 
 def _sample_creator_json(specs: list[MutationSpec]) -> str:

@@ -477,6 +477,64 @@ _COVERAGE_CRITERIA_TABLE = (
     ("coverage_expression", "EXPRESSION", "expression", "no expression conditions found"),
 )
 
+_VSC_PROMPT_TEMPLATE = """You are a virtual signal creator. Your job is to define virtual signals
+for RTL branch conditions and test them interactively using bwave.
+
+You MUST NOT read any testbench files ({tb_dirs} or any configured testbench
+source directory).
+
+## Step 1: Learn bwave syntax
+
+Run `bwave --help` to learn the syntax for `--virtual` signals.
+
+## Step 2: Read RTL and identify conditions
+
+Read all RTL files in scope and identify top-level if/else conditions:
+{scope_str}
+{spec_section}
+## Available Signals (from Phase 1)
+
+These signals are available in the trace:
+{signal_list_str}
+
+{mode_section}
+## Target Trace Files
+
+{trace_path_str}
+
+## Step 3: Test Each Expression
+
+For each branch/expression, query every Target trace above with bwave and union
+the observed values before deciding coverage:
+
+    bwave --stats --format json --virtual "br_name = *signal >= 'd16" -s br_name TRACE_FILE
+
+A branch is **met** if both 0 and 1 appear across the combined value_hist of
+the complete Target test suite.
+
+**Rules:**
+- 5 attempts max per expression. If it still errors, mark as "errored" and move on.
+- Do NOT waive or excuse missed branches — just report the facts.
+- Skip trivial reset/clock conditions.
+
+## Step 4: Output Results
+
+Output a JSON object with your findings:
+
+```json
+{{
+  "branch_results": [
+    {{"name": "br_fifo_full", "expr": "bwave --virtual \\"br_fifo_full = *count >= 'd8\\" -s br_fifo_full", "met": true, "reason": "both 0 and 1 observed"}},
+    {{"name": "br_enable", "expr": "bwave --virtual \\"br_enable = *en\\" -s br_enable", "met": false, "reason": "never false (0)"}}
+  ],
+  "expression_results": [
+    {{"name": "expr_a_gt_b", "expr": "bwave --virtual \\"expr_a_gt_b = *a > *b\\" -s expr_a_gt_b", "met": true, "reason": "both values observed"}},
+    {{"name": "expr_err", "expr": "...", "met": false, "reason": "", "errored": true, "error_msg": "bwave syntax error after 5 attempts"}}
+  ]
+}}
+```
+"""
+
 
 def _trace_test_plusargs(target: str, test: str | None) -> list[str]:
     """Render the test-selection plusarg for a coverage trace run (decision 16).
@@ -664,7 +722,7 @@ class CoverageAnalystSpecialist(Specialist):
                 )
             except OSError:
                 continue
-            for module in module_re.findall(text):
+            for module in module_re.findall(self._strip_sv_comments(text)):
                 if module not in modules:
                     modules.append(module)
         return modules or self._extract_modules_from_scope(self.args.scope)
@@ -1248,90 +1306,27 @@ For each branch condition, decompose into atomic sub-expressions and test each.
         """Build prompt for virtual signal creator (Phase 2)."""
         scope_files = [f.strip() for f in self.args.scope.split(",") if f.strip()]
         scope_str = "\n".join(f"- `{f}`" for f in scope_files)
-
         trace_dirs = getattr(self, "_trace_dirs", [trace_dir])
         trace_files = [
             trace_file
             for candidate in trace_dirs
             if (trace_file := self._find_trace_file(candidate)) is not None
         ]
-        trace_path_str = "\n".join(f"- `{path}`" for path in trace_files)
-        if not trace_path_str:
-            trace_path_str = "- `<trace_file>`"
-
-        spec_section = ""
-        if hasattr(self.args, "instruction") and self.args.instruction:
-            spec_section = f"\n## Spec / Context\n\n{self.args.instruction}\n"
-
+        trace_paths = "\n".join(f"- `{path}`" for path in trace_files) or "- `<trace_file>`"
+        instruction = getattr(self.args, "instruction", "")
+        spec_section = f"\n## Spec / Context\n\n{instruction}\n" if instruction else ""
         tb_dirs = ", ".join(_configured_testbench_source_dirs(self.args.work_dir))
-
-        # Include Phase 1 signal list (capped at 100)
-        sig_lines = []
-        for s in signal_stats[:100]:
-            sig_lines.append(f"  - `{s.name}` (width: {s.width})")
+        signal_lines = [f"  - `{s.name}` (width: {s.width})" for s in signal_stats[:100]]
         if len(signal_stats) > 100:
-            sig_lines.append(f"  ... and {len(signal_stats) - 100} more")
-        signal_list_str = "\n".join(sig_lines)
-
-        mode_section = self._vsc_mode_section(need_branch, need_expression)
-
-        return f"""You are a virtual signal creator. Your job is to define virtual signals
-for RTL branch conditions and test them interactively using bwave.
-
-You MUST NOT read any testbench files ({tb_dirs} or any configured testbench
-source directory).
-
-## Step 1: Learn bwave syntax
-
-Run `bwave --help` to learn the syntax for `--virtual` signals.
-
-## Step 2: Read RTL and identify conditions
-
-Read all RTL files in scope and identify top-level if/else conditions:
-{scope_str}
-{spec_section}
-## Available Signals (from Phase 1)
-
-These signals are available in the trace:
-{signal_list_str}
-
-{mode_section}
-## Target Trace Files
-
-{trace_path_str}
-
-## Step 3: Test Each Expression
-
-For each branch/expression, query every Target trace above with bwave and union
-the observed values before deciding coverage:
-
-    bwave --stats --format json --virtual "br_name = *signal >= 'd16" -s br_name TRACE_FILE
-
-A branch is **met** if both 0 and 1 appear across the combined value_hist of
-the complete Target test suite.
-
-**Rules:**
-- 5 attempts max per expression. If it still errors, mark as "errored" and move on.
-- Do NOT waive or excuse missed branches — just report the facts.
-- Skip trivial reset/clock conditions.
-
-## Step 4: Output Results
-
-Output a JSON object with your findings:
-
-```json
-{{
-  "branch_results": [
-    {{"name": "br_fifo_full", "expr": "bwave --virtual \\"br_fifo_full = *count >= 'd8\\" -s br_fifo_full", "met": true, "reason": "both 0 and 1 observed"}},
-    {{"name": "br_enable", "expr": "bwave --virtual \\"br_enable = *en\\" -s br_enable", "met": false, "reason": "never false (0)"}}
-  ],
-  "expression_results": [
-    {{"name": "expr_a_gt_b", "expr": "bwave --virtual \\"expr_a_gt_b = *a > *b\\" -s expr_a_gt_b", "met": true, "reason": "both values observed"}},
-    {{"name": "expr_err", "expr": "...", "met": false, "reason": "", "errored": true, "error_msg": "bwave syntax error after 5 attempts"}}
-  ]
-}}
-```
-"""
+            signal_lines.append(f"  ... and {len(signal_stats) - 100} more")
+        return _VSC_PROMPT_TEMPLATE.format(
+            tb_dirs=tb_dirs,
+            scope_str=scope_str,
+            spec_section=spec_section,
+            signal_list_str="\n".join(signal_lines),
+            mode_section=self._vsc_mode_section(need_branch, need_expression),
+            trace_path_str=trace_paths,
+        )
 
     @staticmethod
     def _parse_vsc_output(
@@ -1785,6 +1780,26 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     # --- Phase 5: Scoring ---
 
+    def _set_coverage_criterion(
+        self,
+        criterion: str,
+        passed: bool,
+        detail_key: str,
+        score: dict,
+        *,
+        error: str | None = None,
+    ) -> None:
+        """Record one Target-scoped coverage verdict in development state."""
+        detail = {detail_key: score, "target": self.args.target}
+        if error is not None:
+            detail["error"] = error
+        self.set_criterion(
+            self._target_criterion_key(criterion),
+            passed,
+            detail=detail,
+            source_target=self.args.target,
+        )
+
     def _emit_criterion_result(
         self,
         active: set[str],
@@ -1811,32 +1826,23 @@ abort path". Omit this field or leave empty if all criteria are already met.
         threshold = scored["min"][detail_key]
         errored_fail = scored["errored_fail"].get(detail_key, False)
         if score["pct"] is not None:
-            self.set_criterion(
-                self._target_criterion_key(criterion),
-                passed,
-                detail={detail_key: score, "target": self.args.target},
-                source_target=self.args.target,
-            )
+            self._set_coverage_criterion(criterion, passed, detail_key, score)
             suffix = " (>50% errored)" if errored_fail else ""
             results_lines.append(
                 f"  {label}: {score['pct']:.0f}% (need {threshold}%) — "
                 f"{'PASS' if passed else 'FAIL'}{suffix}"
             )
         elif criterion in self._phase_errors:
-            self.set_criterion(
-                self._target_criterion_key(criterion),
+            self._set_coverage_criterion(
+                criterion,
                 False,
-                detail={detail_key: score, "error": "phase_failed", "target": self.args.target},
-                source_target=self.args.target,
+                detail_key,
+                score,
+                error="phase_failed",
             )
             results_lines.append(f"  {label}: ERROR (phase failed) — FAIL")
         else:
-            self.set_criterion(
-                self._target_criterion_key(criterion),
-                True,
-                detail={detail_key: score, "target": self.args.target},
-                source_target=self.args.target,
-            )
+            self._set_coverage_criterion(criterion, True, detail_key, score)
             results_lines.append(f"  {label}: N/A ({na_reason}) — PASS")
 
     def _score_coverage_criteria(self, report: CoverageReport, active: set[str]) -> dict:
@@ -2322,6 +2328,19 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> tuple[list[str], list[Path], McpToolResult | None]:
         """Produce traces for every runnable test owned by the selected Target."""
         suite = resolve_target_test_suite(self.args.target)
+        if suite.all_skipped:
+            skipped = ", ".join(suite.skipped)
+            return (
+                [],
+                [],
+                McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"coverage_analyst: Target {self.args.target!r} has no runnable "
+                        f"tests; every declared test is skipped: {skipped}"
+                    ),
+                ),
+            )
         tests = (None,) if self._is_cocotb_target() else suite.tests
         trace_dirs: list[Path] = []
         scope_files: list[str] = []
@@ -2886,6 +2905,116 @@ abort path". Omit this field or leave empty if all criteria are already met.
             build_root=build_root,
         )
 
+    def _cocotb_trace_run_cmd(
+        self,
+        eda_tool: str,
+        build_dir: str,
+        trace_dir: Path,
+        work_dir: Path,
+        run_timeout: int,
+        cocotb_module: str,
+    ) -> tuple[list[str], str]:
+        """Build one traced Cocotb invocation for the Target suite."""
+        suite = resolve_target_test_suite(self.args.target)
+        run_cmd = [
+            "python3",
+            "-m",
+            "booley.sim.cocotb_run",
+            "--build-dir",
+            build_dir,
+            "--eda-tool",
+            eda_tool,
+            "--cocotb-module",
+            cocotb_module,
+            "--work-dir",
+            posix_relpath(trace_dir, work_dir),
+            "--timeout",
+            str(run_timeout),
+            "--trace",
+        ]
+        run_cmd.extend(f"--test={test}" for test in suite.tests if test is not None)
+        return run_cmd, f"{eda_tool} cocotb compilation failed"
+
+    @staticmethod
+    def _hdl_trace_run_cmd(
+        is_icarus: bool,
+        resolved: Any,
+        build_dir: str,
+        trace_dir: Path,
+        work_dir: Path,
+        run_timeout: int,
+    ) -> tuple[list[str], str]:
+        """Build one traced native-HDL simulator invocation."""
+        module = "booley.sim.iverilog_run" if is_icarus else "booley.sim.verilator_run"
+        build_option = "--build-dir" if is_icarus else "--bin-dir"
+        run_cmd = [
+            "python3",
+            "-m",
+            module,
+            build_option,
+            build_dir,
+        ]
+        if not is_icarus:
+            run_cmd.extend(("--top", resolved.toplevel))
+        run_cmd.extend(
+            (
+                "--work-dir",
+                posix_relpath(trace_dir, work_dir),
+                "--timeout",
+                str(run_timeout),
+                "--trace",
+            )
+        )
+        marker = "iverilog compilation failed" if is_icarus else "Verilator elaboration failed"
+        return run_cmd, marker
+
+    def _trace_run_cmd(
+        self,
+        eda_tool: str,
+        resolved: Any,
+        build_dir: str,
+        trace_dir: Path,
+        work_dir: Path,
+        run_timeout: int,
+    ) -> tuple[list[str], str]:
+        """Select the traced run-half for the Target's simulator family."""
+        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
+        cocotb_module = lookup_target_section(cocotb_modules, self.args.target)
+        if cocotb_module:
+            return self._cocotb_trace_run_cmd(
+                eda_tool,
+                build_dir,
+                trace_dir,
+                work_dir,
+                run_timeout,
+                str(cocotb_module),
+            )
+        return self._hdl_trace_run_cmd(
+            eda_tool == "icarus",
+            resolved,
+            build_dir,
+            trace_dir,
+            work_dir,
+            run_timeout,
+        )
+
+    def _add_trace_run_options(
+        self,
+        run_cmd: list[str],
+        trace_scope: str,
+        run_cwd: str | None,
+    ) -> None:
+        """Append scope, cwd, and selected-test options to a run-half command."""
+        if trace_scope:
+            run_cmd += ["--trace-scope", trace_scope]
+        if run_cwd:
+            run_cmd += ["--run-cwd", run_cwd]
+        selected_test = getattr(self, "_coverage_test", None)
+        run_cmd.extend(
+            f"--plusarg={plusarg}"
+            for plusarg in _trace_test_plusargs(self.args.target, selected_test)
+        )
+
     def _build_edalize_trace_cmd(
         self,
         work_dir: Path,
@@ -2893,103 +3022,29 @@ abort path". Omit this field or leave empty if all criteria are already met.
         trace_scope: str,
         run_timeout: int,
     ) -> list[str]:
-        """Resolve the sim Target and return its edalize build + traced-run command.
-
-        Mirrors ``simulate._prepare_sim_command`` (ADR 0022 dec. 4): FuseSoC
-        ``resolve_target`` (``run --setup``) leaves a ready-to-``make`` build
-        dir, then the run half ships through the EDA-tool-specific run-half module —
-        :mod:`booley.sim.verilator_run` (Verilator) or :mod:`booley.sim.iverilog_run`
-        (Icarus) — with ``--trace`` so a queryable ``.fst`` store lands. The store
-        is steered to *trace_dir* — where :meth:`_find_trace_file` looks — via
-        ``--work-dir``. Icarus needs the EDA-tool-aware trace overlay (an
-        ``-s<dump-module>`` root so ``booley_vcd_dump`` elaborates); the overlay is
-        resolved then cleaned up, exactly like simulate. ``resolve_target`` runs
-        in-process; only the ``make … && <run-half>`` pair is shipped through the
-        shell so a broken build never fires the run. Raises on setup failure.
-        """
+        """Resolve the Target and return its guarded build + traced-run command."""
         eda_tool = sim_edam.normalize_eda_tool(
             fusesoc_registry.target_eda_tools(work_dir).get(self.args.target)
         )
         is_icarus = eda_tool == "icarus"
-
         resolved = self._resolve_trace_target(
             fusesoc_registry,
             edam_layer,
             work_dir,
             is_icarus,
         )
-        rel = edam_layer.relpath_for_make(resolved.build_root, work_dir)
-        build_cmd = edam_layer.make_command(rel)
+        build_dir = edam_layer.relpath_for_make(resolved.build_root, work_dir)
+        build_cmd = edam_layer.make_command(build_dir)
         run_cwd = _resolve_run_cwd(work_dir)
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
-        cocotb_module = lookup_target_section(
-            cocotb_modules,
-            self.args.target,
+        run_cmd, marker = self._trace_run_cmd(
+            eda_tool,
+            resolved,
+            build_dir,
+            trace_dir,
+            work_dir,
+            run_timeout,
         )
-
-        # Paths stay relative to work_dir (the shell's cwd); the run-half resolves
-        # them absolute before switching to --run-cwd, so a TB that opens
-        # vectors/firmware relative to cwd still finds them.
-        if cocotb_module:
-            suite = resolve_target_test_suite(self.args.target)
-            run_cmd = [
-                "python3",
-                "-m",
-                "booley.sim.cocotb_run",
-                "--build-dir",
-                rel,
-                "--eda-tool",
-                eda_tool,
-                "--cocotb-module",
-                str(cocotb_module),
-                "--work-dir",
-                posix_relpath(trace_dir, work_dir),
-                "--timeout",
-                str(run_timeout),
-                "--trace",
-            ]
-            run_cmd.extend(f"--test={test}" for test in suite.tests if test is not None)
-            marker = f"{eda_tool} cocotb compilation failed"
-        elif is_icarus:
-            run_cmd = [
-                "python3",
-                "-m",
-                "booley.sim.iverilog_run",
-                "--build-dir",
-                rel,
-                "--work-dir",
-                posix_relpath(trace_dir, work_dir),
-                "--timeout",
-                str(run_timeout),
-                "--trace",
-            ]
-            marker = "iverilog compilation failed"
-        else:
-            run_cmd = [
-                "python3",
-                "-m",
-                "booley.sim.verilator_run",
-                "--bin-dir",
-                rel,
-                "--top",
-                resolved.toplevel,
-                "--work-dir",
-                posix_relpath(trace_dir, work_dir),
-                "--timeout",
-                str(run_timeout),
-                "--trace",
-            ]
-            marker = "Verilator elaboration failed"
-        if trace_scope:
-            run_cmd += ["--trace-scope", trace_scope]
-        if run_cwd:
-            run_cmd += ["--run-cwd", run_cwd]
-        selected_test = getattr(self, "_coverage_test", None)
-        for pa in _trace_test_plusargs(self.args.target, selected_test):
-            run_cmd.append(f"--plusarg={pa}")
-
-        # On build failure echo the canonical marker (_ELAB_FAIL_RE / the rc!=0
-        # diagnostics below key off it); `exit 1` stops the run from firing.
+        self._add_trace_run_options(run_cmd, trace_scope, run_cwd)
         script = (
             f"{shlex.join(build_cmd)} "
             f'|| {{ echo "ERROR: {marker} (rc=$?)"; exit 1; }}\n'
@@ -3132,7 +3187,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
         target = self.args.target
         test = test_name
         resolved_test = None
-        if test and target in TEST_NAMES and TEST_NAMES[target]:
+        declared_tests = lookup_target_section(TEST_NAMES, target) or []
+        if test and declared_tests:
             resolved_test = test
         return derive_work_dir(
             Path(self.args.work_dir),

@@ -416,10 +416,7 @@ FPGA_IMPL_OK_MUTEX_PAIRS: list[tuple[str, str]] = [
     ("critical_path_ps_max", "fmax_mhz_min"),
 ]
 
-# Registry: criterion name -> (valid params, mutex pairs)
-_CRITERION_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str, str]]]] = {
-    "synthesis_ok": (SYNTHESIS_OK_PARAMS, SYNTHESIS_OK_MUTEX_PAIRS),
-    "fpga_impl_ok": (FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS),
+_TARGET_CAMPAIGN_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str, str]]]] = {
     "mutation_score": (
         frozenset({"scope", "min_detected", "total", "auto"}),
         [("auto", "total")],
@@ -430,6 +427,17 @@ _CRITERION_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str, str]]
     "coverage_branch": (frozenset({"scope", "min_pct"}), []),
     "coverage_expression": (frozenset({"scope", "min_pct"}), []),
     "coverage_mean": (frozenset({"scope", "min_pct"}), []),
+}
+
+# Criteria whose execution and acceptance evidence belong to one Target campaign.
+TARGET_CAMPAIGN_CRITERIA: frozenset[str] = frozenset(_TARGET_CAMPAIGN_PARAM_REGISTRY)
+
+
+# Registry: criterion name -> (valid params, mutex pairs)
+_CRITERION_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str, str]]]] = {
+    "synthesis_ok": (SYNTHESIS_OK_PARAMS, SYNTHESIS_OK_MUTEX_PAIRS),
+    "fpga_impl_ok": (FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS),
+    **_TARGET_CAMPAIGN_PARAM_REGISTRY,
 }
 
 # Fmax and critical-path delay are inherently per-clock, so a threshold on one
@@ -582,18 +590,11 @@ TEMPLATE_REGISTRY: dict[str, list[CriterionSpec]] = {
 
 # Criteria that Flows always set with a target suffix (e.g. sim_pass_default).
 # A ticket declaring these as bare scalars (sim_pass: true) will never match.
-PER_TARGET_CRITERIA: frozenset[str] = frozenset(
-    spec.name for specs in TEMPLATE_REGISTRY.values() for spec in specs if spec.per_target
-) | frozenset(
-    {
-        "mutation_score",
-        "coverage_toggle",
-        "coverage_fsm",
-        "coverage_value",
-        "coverage_branch",
-        "coverage_expression",
-        "coverage_mean",
-    }
+PER_TARGET_CRITERIA: frozenset[str] = (
+    frozenset(
+        spec.name for specs in TEMPLATE_REGISTRY.values() for spec in specs if spec.per_target
+    )
+    | TARGET_CAMPAIGN_CRITERIA
 )
 
 

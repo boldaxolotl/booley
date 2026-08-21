@@ -456,15 +456,18 @@ class TestSkipList:
             # Nothing reported skipped — the override ran it.
             assert flow._skipped_tests("lite", self._NAMES) == []
 
-    def test_all_skipped_falls_back_to_running_all(self, tmp_path: Path):
-        # An all-skip target is a misconfig; never pass vacuously with 0 tests.
+    def test_all_skipped_is_rejected(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         with patch(
             "booley.flows.sim.flow._get_test_skips",
             return_value={"lite": list(self._NAMES["lite"])},
         ):
-            assert flow._resolve_tests_to_run("lite", self._NAMES) == self._NAMES["lite"]
-            assert flow._skipped_tests("lite", self._NAMES) == []
+            result = flow._validate_runnable_tests(["lite"], self._NAMES)
+            assert result is not None
+            assert result.exit_code == EXIT_ERROR
+            assert "no runnable tests" in result.report_text
+            assert flow._resolve_tests_to_run("lite", self._NAMES) == []
+            assert flow._skipped_tests("lite", self._NAMES) == self._NAMES["lite"]
 
     def test_no_skip_runs_every_test(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
