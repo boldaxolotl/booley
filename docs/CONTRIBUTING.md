@@ -186,5 +186,18 @@ Porting EDA tools is #1, but not the only way to help:
 - **Match the surrounding code**: comment density, naming, and idiom.
 - **One concern per PR.** An EDA-tool port, a refactor, and a doc fix are three PRs.
 
+## Branch and pull request workflow
+
+Booley uses a mainline workflow; there is no permanent development integration
+branch. Start each feature, fix, refactor, or documentation branch from the
+latest `main`, and open its pull request directly into `main`. Keep the branch
+focused on one concern, make sure the required checks pass, and delete it after
+merge.
+
+`main` is kept releasable, but merging a pull request does not publish a new
+Booley version. Releases are deliberate: a versioned commit on `main` is tagged
+with a matching `v*` tag, which triggers the package and container publishing
+workflows.
+
 Questions? Open an issue. Especially if it starts with "I have a licensed
 copy of…".
