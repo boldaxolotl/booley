@@ -30,6 +30,10 @@ import json
 import logging
 from pathlib import Path
 
+from booley.dev_support.contract_path_policy import (
+    is_static_contract_path,
+    normalize_contract_path,
+)
 from booley.runtime.git import (
     git_run,
     is_new_scope_entry,
@@ -76,7 +80,6 @@ _FORBIDDEN_PREFIXES: tuple[str, ...] = (
 # documentation also lives here by design; a ticket may legitimately update a
 # memory map or interface contract alongside the implementation.
 _FORBIDDEN_CARVE_OUTS: tuple[str, ...] = (
-    ".booley_project/cores/",
     ".booley_project/adapters/",
     ".booley_project/docs/",
 )
@@ -91,19 +94,12 @@ _FORBIDDEN_EXACT: frozenset[str] = frozenset(
 )
 
 
-def _normalize(path: str) -> str:
-    """Return *path* with forward slashes and no leading ``./``."""
-    normalized = path.replace("\\", "/").strip()
-    return normalized.removeprefix("./")
-
-
 def is_forbidden_path(path: str) -> bool:
-    """True when *path* is Harness bookkeeping the agent must not modify.
+    """True when *path* is Harness bookkeeping the agent must not modify."""
+    normalized = normalize_contract_path(path)
 
-    Intentionally duplicated in ``dev_support.scope_precommit_hook`` -- that hook
-    runs as a standalone script inside a worktree and cannot import Booley.
-    """
-    normalized = _normalize(path)
+    if is_static_contract_path(normalized):
+        return True
     if normalized in _FORBIDDEN_EXACT:
         return True
     if any(normalized.startswith(carve_out) for carve_out in _FORBIDDEN_CARVE_OUTS):

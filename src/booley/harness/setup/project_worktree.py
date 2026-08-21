@@ -28,13 +28,14 @@ def prepare_project_worktree(ctx: TicketContext) -> Path | None:
     if ctx.worktree_path is None:
         return None
     source = resolve_inner_project_repo(ctx.project_root)
+    expected_sha = ctx.target_contract.project_sha if ctx.target_contract is not None else ""
     existing = paired_project_repository(ctx.worktree_path)
     if existing is not None:
         if source is None:
             raise ProjectWorktreeError(
                 "paired project checkout exists but its source repository is unavailable"
             )
-        _verify_existing_worktree(existing.worktree, source, ctx.slug)
+        _verify_existing_worktree(existing.worktree, source, ctx.slug, expected_sha)
         return existing.worktree
 
     if source is None:
@@ -54,7 +55,14 @@ def prepare_project_worktree(ctx: TicketContext) -> Path | None:
     base = _ticket_base_branch(source, ctx.branch)
     _prepare_destination(destination)
     _git(source, "worktree", "prune")
-    _attach_branch(source, destination, branch, base, resume=ctx.workspace_intent == "resume")
+    _attach_branch(
+        source,
+        destination,
+        branch,
+        base,
+        resume=ctx.workspace_intent == "resume",
+        expected_sha=expected_sha,
+    )
     _set_local_upstream(source, branch, base)
     return destination
 
@@ -116,10 +124,16 @@ def _attach_branch(
     base: str,
     *,
     resume: bool,
+    expected_sha: str = "",
 ) -> None:
     branch_sha = _ref_sha(source, f"refs/heads/{branch}")
     base_sha = _ref_sha(source, f"refs/heads/{base}")
-    if branch_sha and not resume and branch_sha != base_sha:
+    if expected_sha and branch_sha != expected_sha:
+        raise ProjectWorktreeError(
+            f"project contract branch {branch!r} points at {branch_sha or 'nothing'}, "
+            f"expected recorded project_sha {expected_sha}"
+        )
+    if branch_sha and not expected_sha and not resume and branch_sha != base_sha:
         raise ProjectWorktreeError(
             f"refusing to reset surviving project branch {branch!r}; resume or triage it first"
         )
@@ -142,7 +156,9 @@ def _set_local_upstream(source: Path, branch: str, base: str) -> None:
         )
 
 
-def _verify_existing_worktree(worktree: Path, source: Path, slug: str) -> None:
+def _verify_existing_worktree(
+    worktree: Path, source: Path, slug: str, expected_sha: str = ""
+) -> None:
     result = _git(worktree, "branch", "--show-current")
     expected = project_ticket_branch(slug)
     if result.returncode != 0 or result.stdout.strip() != expected:
@@ -159,6 +175,10 @@ def _verify_existing_worktree(worktree: Path, source: Path, slug: str) -> None:
     if upstream.returncode != 0 or not upstream.stdout.strip():
         raise ProjectWorktreeError(
             f"paired project branch {expected!r} has no recorded merge target"
+        )
+    if expected_sha and _ref_sha(worktree, "HEAD") != expected_sha:
+        raise ProjectWorktreeError(
+            f"paired project worktree HEAD does not match recorded project_sha {expected_sha}"
         )
 
 

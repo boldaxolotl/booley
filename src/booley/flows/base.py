@@ -147,6 +147,31 @@ class BooleyFlow(McpTool):
     endpoint_kind = "flow"
     target_required = True
 
+    def _pre_state_gate(self) -> McpToolResult | None:
+        """Reject a changed Target/control-plane surface before any Flow runs."""
+        ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
+        if not ticket_file:
+            return None
+        from booley.ticket_board.target_contract import (
+            CONTRACT_BLOCK_REASON,
+            TargetContractError,
+            load_ticket_contract,
+            verify_surface,
+        )
+
+        try:
+            contract = load_ticket_contract(ticket_file)
+            if contract is None:
+                logger.warning("Legacy ticket Flow run has no immutable Target contract")
+                return None
+            verify_surface(contract, Path(self.args.work_dir))
+        except (OSError, TargetContractError) as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"BLOCKED: {CONTRACT_BLOCK_REASON}: {exc}",
+            )
+        return None
+
     def _run(self) -> McpToolResult:
         """Execute subprocess and interpret results."""
         cmd = self._build_command()

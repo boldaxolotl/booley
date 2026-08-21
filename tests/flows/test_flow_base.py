@@ -94,6 +94,36 @@ class TestBooleyFlowExecution:
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
 
+    def test_target_contract_is_checked_before_flow_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.ticket_board.frontmatter import format_frontmatter
+        from booley.ticket_board.target_contract import build_contract
+
+        contract = build_contract(tmp_path, outer_sha="a" * 40)
+        ticket = tmp_path / "ticket.md"
+        ticket.write_text(
+            format_frontmatter(
+                {
+                    "base_sha": contract.outer_sha,
+                    "target_contract": contract.as_dict(),
+                },
+                "ticket",
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+        flow = EchoFlow()
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+        assert flow._pre_state_gate() is None
+
+        (tmp_path / "changed.core").write_text("CAPI=2:\nname: ::changed:0\n")
+        rejected = flow._pre_state_gate()
+
+        assert rejected is not None
+        assert rejected.exit_code == EXIT_ERROR
+        assert "target-contract-change-required" in rejected.report_text
+
     def test_empty_command(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         from booley.dev_support.development_state import DevelopmentState
