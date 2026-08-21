@@ -4939,24 +4939,35 @@ def _check_core_setup_hazards(
             )
 
 
-def _check_doctor_target_compatibility(root: Path, _pass: Check, _fail: Fail) -> None:
-    """Validate every explicit Doctor Target/Flow pairing."""
+def _doctor_target_incompatibility(
+    target: str,
+    flow_name: str,
+    ref: fusesoc_registry.TargetRef,
+) -> tuple[str, str] | None:
+    """Return the diagnostic for an invalid Doctor Target/Flow pairing."""
     from booley.targets.target_surface import flow_can_drive
 
+    if flow_can_drive(flow_name, ref):
+        return None
+    return (
+        f"Target {target!r} selects incompatible Doctor Flow {flow_name!r} "
+        f"(CAPI2 flow={ref.flow or '?'}, EDA tool={ref.eda_tool or '?'})",
+        f"remove {flow_name!r} from flow_options.booley.doctor or fix the "
+        "Target's `flow` and `flow_options.tool` fields",
+    )
+
+
+def _check_doctor_target_compatibility(root: Path, _pass: Check, _fail: Fail) -> None:
+    """Validate every explicit Doctor Target/Flow pairing."""
     declarations = fusesoc_registry.target_declarations(root)
     selected = 0
     for name, refs in declarations.items():
         for ref in refs:
             for flow_name in ref.doctor_flows:
                 selected += 1
-                if flow_can_drive(flow_name, ref):
-                    continue
-                _fail(
-                    f"Target {name!r} selects incompatible Doctor Flow {flow_name!r} "
-                    f"(flow={ref.flow or '?'}, EDA tool={ref.eda_tool or '?'})",
-                    f"remove {flow_name!r} from flow_options.booley.doctor or "
-                    "fix the Target's flow/tool declaration",
-                )
+                failure = _doctor_target_incompatibility(name, flow_name, ref)
+                if failure:
+                    _fail(*failure)
     if selected:
         _pass(f"Doctor Target matrix valid: {selected} Target/Flow pair(s)")
     else:
@@ -5377,7 +5388,7 @@ def _check_target_naming(
     del refs  # qualified duplicate Target names need exact declaration scope
     state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
-    wired = _doctor_axis_by_target(project)
+    doctor_axes = _doctor_axis_by_target(project)
     try:
         declarations = fusesoc_registry.target_declarations(root)
     except fusesoc_registry.FuseSocError:
@@ -5393,7 +5404,7 @@ def _check_target_naming(
         _pass("Target names follow the <axis>_<subject> convention")
         return
     for name, ref in offenders:
-        suggestion = target_naming.suggest_name(name, wired.get(name))
+        suggestion = target_naming.suggest_name(name, doctor_axes.get(name))
         fix = (
             f"rename it '{suggestion}'"
             if suggestion
@@ -7581,8 +7592,6 @@ def _doctor_target_seed(project: ProjectAudit) -> list[str]:
 
 def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) -> list[str]:
     """Validate and return the Target matrix selected for *flow_name*."""
-    from booley.targets.target_surface import flow_can_drive
-
     targets = _doctor_targets(project, flow_name)
     if not targets:
         try:
@@ -7603,13 +7612,9 @@ def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) ->
         except fusesoc_registry.FuseSocError as exc:
             _fail(f"{flow_name} Doctor Target {target!r} does not resolve: {exc}", "fix the .core")
             continue
-        if not flow_can_drive(flow_name, ref):
-            _fail(
-                f"{flow_name} cannot drive Doctor Target {target!r} "
-                f"(flow={ref.flow or '?'}, EDA tool={ref.eda_tool or '?'})",
-                f"remove {flow_name!r} from that Target's flow_options.booley.doctor "
-                "or fix its flow/tool declaration",
-            )
+        failure = _doctor_target_incompatibility(target, flow_name, ref)
+        if failure:
+            _fail(*failure)
             continue
         valid.append(target)
     return valid
