@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from booley.harness.developer_display import DisplayWatcher
+from booley.harness.developer_display import DisplayWatcher, _push_initial_criteria
 from booley.harness.terminal import (
     get_console_app,
     set_console_active,
@@ -90,6 +90,57 @@ class TestCriteriaUpdateEvent:
             event = mock_write.call_args[0][0]
             assert "sim_pass" in event["criteria"]
             assert "_blocked_reason" not in event["criteria"]
+
+    def test_criteria_update_includes_status_history(self, tmp_path: Path):
+        from booley.dev_support.development_state import CriterionEntry, DevelopmentState
+
+        state = DevelopmentState()
+        state._file_path = tmp_path / "state.json"
+        state.criteria["sim_pass"] = CriterionEntry(
+            met=False,
+            mandatory=True,
+            ever_met=True,
+            ever_failed=True,
+            stale=True,
+        )
+        state.save()
+
+        from booley.mcp.base import _emit_criteria_update
+
+        with patch("booley.mcp.events._write_display_event") as mock_write:
+            _emit_criteria_update(state)
+
+        entry = mock_write.call_args[0][0]["criteria"]["sim_pass"]
+        assert entry["stale"] is True
+        assert entry["ever_met"] is True
+        assert entry["ever_failed"] is True
+
+    def test_initial_criteria_include_status_history(self, tmp_path: Path):
+        from booley.dev_support.development_state import CriterionEntry, DevelopmentState
+        from booley.harness.console.events import CriteriaChanged
+
+        state_path = tmp_path / "state.json"
+        state = DevelopmentState()
+        state._file_path = state_path
+        state.criteria["sim_pass"] = CriterionEntry(
+            met=False,
+            mandatory=True,
+            ever_met=True,
+            stale=True,
+        )
+        state.save()
+        app = MagicMock()
+
+        _push_initial_criteria(state_path, app)
+
+        criteria_event = next(
+            call.args[0]
+            for call in app.post_message.call_args_list
+            if isinstance(call.args[0], CriteriaChanged)
+        )
+        entry = criteria_event.criteria["sim_pass"]
+        assert entry["stale"] is True
+        assert entry["ever_met"] is True
 
 
 # ===========================================================================

@@ -264,7 +264,7 @@ def _partition_criteria_lines(
         if gname in collapsed:
             if gname not in emitted:
                 emitted.add(gname)
-                not_met_lines.append(f"{gray('·')} {dim(f'{gname} (not yet run)')}")
+                not_met_lines.append(f"{gray('○')} {dim(f'{gname} (not yet run)')}")
             continue
 
         line = fmt(key, entry)
@@ -301,7 +301,7 @@ def build_criteria_summary_lines(state_path: Path) -> tuple[list[str], str]:
         if entry.met:
             return green("✓")
         if _is_never_evaluated(entry):
-            return gray("·")
+            return gray("○")
         if getattr(entry, "stale", False):
             return amber("↻")
         return red("✗")

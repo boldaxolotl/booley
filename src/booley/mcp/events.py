@@ -44,6 +44,10 @@ def _emit_criteria_update(state: DevelopmentState) -> None:
         }
         if e.stale:
             entry_d["stale"] = True
+        if e.ever_met:
+            entry_d["ever_met"] = True
+        if e.ever_failed:
+            entry_d["ever_failed"] = True
         criteria_snapshot[k] = entry_d
     _write_display_event(
         {

@@ -135,6 +135,10 @@ def _criterion_metric(entry: Mapping[str, Any]) -> str:
         "cell_count",
         "area",
         "score",
+        "detected",
+        "total_valid",
+        "not_detected",
+        "invalid",
         "mutations_detected",
         "mutations_total",
         "issues",
@@ -145,7 +149,36 @@ def _criterion_metric(entry: Mapping[str, Any]) -> str:
     return (", ".join(parts) or "persisted criterion state")[:240] + " · booley_state.json"
 
 
-def _criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _criterion_report_path(
+    name: str,
+    entry: Mapping[str, Any],
+    *,
+    worktree: Path,
+    project_root: Path,
+) -> str | None:
+    """Resolve a trusted ticket artifact that should open from a criterion."""
+    if name != "mutation_score":
+        return None
+    detail = entry.get("detail")
+    artifacts = detail.get("artifacts") if isinstance(detail, Mapping) else None
+    raw_path = artifacts.get("results") if isinstance(artifacts, Mapping) else None
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    candidate = Path(raw_path)
+    resolved = (candidate if candidate.is_absolute() else worktree / candidate).resolve()
+    try:
+        resolved.relative_to(project_root.resolve())
+    except ValueError:
+        return None
+    return str(resolved) if resolved.is_file() else None
+
+
+def _criteria(
+    state: Mapping[str, Any],
+    *,
+    worktree: Path,
+    project_root: Path,
+) -> list[dict[str, Any]]:
     raw = state.get("criteria")
     if not isinstance(raw, dict):
         return []
@@ -163,6 +196,12 @@ def _criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "outcome": _criterion_outcome(value),
                 "freshness": _criterion_freshness(value),
                 "metric": _criterion_metric(value),
+                "report_path": _criterion_report_path(
+                    name,
+                    value,
+                    worktree=worktree,
+                    project_root=project_root,
+                ),
             }
         )
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
@@ -593,7 +632,11 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         "head_sha": ctx.head_sha,
         "worktree": str(ctx.worktree),
         "repositories": repositories,
-        "criteria": _criteria(state),
+        "criteria": _criteria(
+            state,
+            worktree=ctx.worktree,
+            project_root=ctx.project_root,
+        ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
         "scope": scope,
@@ -767,8 +810,11 @@ def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
         ]
     )
     for row in package.get("criteria", []):
+        criterion = f"`{_markdown_text(row['criterion'])}`"
+        if isinstance(row.get("report_path"), str):
+            criterion = _markdown_link(row["criterion"], row["report_path"])
         lines.append(
-            f"| {_markdown_text(row['category'])} | `{_markdown_text(row['criterion'])}` | "
+            f"| {_markdown_text(row['category'])} | {criterion} | "
             f"{_markdown_text(row['required'])} | {_markdown_text(row['status'])} | "
             f"{_markdown_text(row['metric'])} |"
         )

@@ -52,6 +52,7 @@ LABEL_FINGERPRINT = "booley.build-fingerprint"
 LABEL_BASE_IMAGE_ID = "booley.base-image-id"
 LABEL_VERSION = "org.opencontainers.image.version"
 DEFAULT_IMAGE_PULL_TIMEOUT_S = 7200
+DEFAULT_IMAGE_TAG_TIMEOUT_S = 30
 
 
 def _source_version(booley_root: Path) -> str | None:
@@ -364,28 +365,40 @@ def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
             timeout=timeout,
             check=False,
         )
-        if result.returncode != 0:
-            warn(f"pre-built image pull failed for {tag} (docker exited {result.returncode})")
-            return False
-        subprocess.run(
-            ["docker", "tag", tag, image],
-            capture_output=True,
-            timeout=30,
-            check=True,
-        )
-        # Mark provenance so the staleness guard leaves this pre-built image
-        # alone (its content can't match a local source fingerprint).
-        _stamp_image_fingerprint(image, f"pulled:{version}")
-        return True
     except subprocess.TimeoutExpired:
         warn(
-            f"pre-built image pull timed out after {timeout // 60} minutes; "
+            f"pre-built image pull timed out after {timeout} seconds; "
             "override with BOOLEY_IMAGE_PULL_TIMEOUT (seconds)"
         )
         return False
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         warn(f"pre-built image pull failed for {tag}: {exc}")
         return False
+    if result.returncode != 0:
+        warn(f"pre-built image pull failed for {tag} (docker exited {result.returncode})")
+        return False
+
+    try:
+        subprocess.run(
+            ["docker", "tag", tag, image],
+            capture_output=True,
+            timeout=DEFAULT_IMAGE_TAG_TIMEOUT_S,
+            check=True,
+        )
+    except subprocess.TimeoutExpired:
+        warn(
+            f"could not tag pulled image {tag} as {image}: "
+            f"docker tag timed out after {DEFAULT_IMAGE_TAG_TIMEOUT_S} seconds"
+        )
+        return False
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        warn(f"could not tag pulled image {tag} as {image}: {exc}")
+        return False
+
+    # Mark provenance so the staleness guard leaves this pre-built image
+    # alone (its content can't match a local source fingerprint).
+    _stamp_image_fingerprint(image, f"pulled:{version}")
+    return True
 
 
 def _base_image_note(selected_image: str) -> None:

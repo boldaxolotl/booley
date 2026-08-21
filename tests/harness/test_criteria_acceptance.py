@@ -620,7 +620,7 @@ class TestBuildCriteriaSummaryLines:
     def _strip(text: str) -> str:
         return _ANSI_RE.sub("", text)
 
-    def test_pending_criterion_shows_dot(self, tmp_path: Path):
+    def test_not_run_criterion_shows_open_circle(self, tmp_path: Path):
         lines = self._build(
             tmp_path,
             {
@@ -628,7 +628,7 @@ class TestBuildCriteriaSummaryLines:
             },
         )
         raw = self._strip(lines[0])
-        assert raw.startswith("· ")
+        assert raw.startswith("○ ")
         assert "sim_pass" in raw
 
     def test_failed_criterion_shows_cross(self, tmp_path: Path):

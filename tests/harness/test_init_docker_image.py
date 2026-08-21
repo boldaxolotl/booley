@@ -260,6 +260,27 @@ class TestImagePull:
         assert init_docker_image._try_pull_image("0.2.0") is False
         assert seen == [900]
 
+    def test_tag_timeout_is_not_reported_as_a_pull_timeout(self, monkeypatch):
+        calls: list[list[str]] = []
+        warnings: list[str] = []
+
+        class _Result:
+            returncode = 0
+
+        def _run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["docker", "tag"]:
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            return _Result()
+
+        monkeypatch.setattr(init_docker_image.subprocess, "run", _run)
+        monkeypatch.setattr(init_docker_image, "warn", warnings.append)
+
+        assert init_docker_image._try_pull_image("0.2.0") is False
+        assert [call[:2] for call in calls] == [["docker", "pull"], ["docker", "tag"]]
+        assert any("docker tag timed out after 30 seconds" in message for message in warnings)
+        assert not any("pull timed out" in message for message in warnings)
+
     def test_invalid_pull_timeout_uses_default(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", "never")
         warnings: list[str] = []

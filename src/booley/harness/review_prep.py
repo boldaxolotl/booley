@@ -318,6 +318,7 @@ def _source_paths(ctx: ReviewPrepContext) -> list[tuple[str, Path]]:
         ".runtime/scope_deviations.json",
         ".runtime/developer",
         ".runtime/flow-reports",
+        ".runtime/mcp-tool-reports",
     ):
         candidate = ctx.log_dir / relative
         if candidate.is_dir():
@@ -527,6 +528,7 @@ def _review_sources(ctx: ReviewPrepContext, evidence: dict[str, Path]) -> dict[s
         "scope_deviations": ctx.log_dir / ".runtime" / "scope_deviations.json",
         "developer_transcripts": ctx.log_dir / ".runtime" / "developer",
         "flow_reports": ctx.log_dir / ".runtime" / "flow-reports",
+        "specialist_reports": ctx.log_dir / ".runtime" / "mcp-tool-reports",
         "triage_facts": ctx.runtime_dir / "facts.json",
     }
     return {

@@ -550,16 +550,23 @@ def _push_initial_criteria(state_path: Path, app: object) -> None:
         if not state_path.exists():
             return
         state = DevelopmentState.load(state_path)
-        snapshot = {
-            k: {
-                "met": e.met,
-                "mandatory": e.mandatory,
-                "detail": e.detail or {},
-                "params": e.params or {},
+        snapshot = {}
+        for key, entry in state.criteria.items():
+            if key.startswith("_"):
+                continue
+            display_entry = {
+                "met": entry.met,
+                "mandatory": entry.mandatory,
+                "detail": entry.detail or {},
+                "params": entry.params or {},
             }
-            for k, e in state.criteria.items()
-            if not k.startswith("_")
-        }
+            if entry.stale:
+                display_entry["stale"] = True
+            if entry.ever_met:
+                display_entry["ever_met"] = True
+            if entry.ever_failed:
+                display_entry["ever_failed"] = True
+            snapshot[key] = display_entry
         if snapshot:
             app.post_message(CriteriaChanged(snapshot))
     except Exception:  # noqa: BLE001 — initial UI push is best-effort; failure must not abort startup
