@@ -59,31 +59,39 @@ def _find_skill_targets() -> list[Path]:
     return targets
 
 
-def _is_booley_skill_link(link: Path, src: Path) -> bool:
-    """True when *link* is a symlink/junction Booley deployed into a skills dir.
+def _link_target(link: Path) -> str | None:
+    """Return a link or junction's lexical target without requiring it to exist."""
+    if not (link.is_symlink() or _is_windows_junction(link)):
+        return None
+    try:
+        raw = os.readlink(link)  # noqa: PTH115 — lexical target may be dangling
+    except OSError:
+        return None
+    return raw if os.path.isabs(raw) else os.path.join(str(link.parent), raw)  # noqa: PTH117, PTH118
 
-    Booley always creates each skill link pointing at ``<skills_dir>/<name>`` — so
-    a Booley-owned link's target (or intended target, for a now-dangling one) has
-    ``src`` as its parent. A user's own real directory is never a symlink/junction
-    and never matches, so it is safe from pruning.
-    """
+
+def _is_booley_skill_link(link: Path, src: Path) -> bool:
+    """True when *link* targets a skill in the active Booley installation."""
     # os.path (not pathlib) is deliberate here: this is lexical path handling on
     # a possibly-dangling symlink target. pathlib's resolve-based API would
     # follow the link or require it to exist, defeating the dangling-link check.
-    src_norm = os.path.normpath(str(src))
-    if link.is_symlink():
-        raw = os.readlink(link)  # noqa: PTH115 — see note above (lexical, no resolve)
-        target = raw if os.path.isabs(raw) else os.path.join(str(link.parent), raw)  # noqa: PTH117, PTH118
-        # Compare intended parent even when the target no longer exists (dangling).
-        return os.path.normpath(os.path.dirname(os.path.normpath(target))) == src_norm  # noqa: PTH120
-    # Windows junction: a reparse-point directory whose real path resolves under src.
-    if IS_WINDOWS and link.is_dir():
-        try:
-            real = os.path.realpath(link)
-        except OSError:
-            return False
-        return os.path.normpath(os.path.dirname(real)) == src_norm  # noqa: PTH120
-    return False
+    target = _link_target(link)
+    if target is None:
+        return False
+    parent = os.path.normcase(
+        os.path.normpath(os.path.dirname(os.path.normpath(target)))  # noqa: PTH120
+    )
+    return parent == os.path.normcase(os.path.normpath(str(src)))
+
+
+def _is_packaged_booley_skill_link(link: Path) -> bool:
+    """True when a link target has Booley's stable packaged-skills layout."""
+    target = _link_target(link)
+    if target is None:
+        return False
+    parent = os.path.normcase(os.path.normpath(os.path.dirname(target)))  # noqa: PTH120
+    suffix = os.path.normcase(os.path.join("booley", "data", "skills"))  # noqa: PTH118
+    return parent == suffix or parent.endswith(f"{os.sep}{suffix}")
 
 
 def _exists_nofollow(path: Path) -> bool:
@@ -130,10 +138,15 @@ def _prune_stale_skill_links(skills_target: Path, src: Path, current: set[str]) 
         link_like = entry.is_symlink() or _is_windows_junction(entry)
 
         # A current-name link may point into a removed installation rather than
-        # the active package's `src`, so ownership cannot be inferred from its
-        # old target. The current Booley skill name plus link metadata is the
-        # narrow boundary that lets init repair it without touching real dirs.
-        current_dangling = name in current and dangling and link_like
+        # the active package's `src`. Repair it only when the lexical target
+        # proves it came from Booley's packaged skill tree; an unrelated user
+        # link can also be dangling and must remain untouched.
+        current_dangling = (
+            name in current
+            and dangling
+            and link_like
+            and _is_packaged_booley_skill_link(entry)
+        )
         if not current_dangling and (name in current or not _is_booley_skill_link(entry, src)):
             continue
         superseded = name.startswith("booley-setup-")  # old per-step naming
