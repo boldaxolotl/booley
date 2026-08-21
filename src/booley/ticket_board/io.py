@@ -726,7 +726,14 @@ class TicketIO:
             )
         from .contract_ops import open_contract
 
-        return open_contract(self._project_root, ticket_path, slug).as_dict()
+        fields, _body = parse_frontmatter(ticket_path.read_text(encoding="utf-8"))
+        recover_legacy = status == "blocked" and fields.get("target_contract") is None
+        return open_contract(
+            self._project_root,
+            ticket_path,
+            slug,
+            recover_legacy=recover_legacy,
+        ).as_dict()
 
     def contract_seal(self, slug: str) -> dict[str, Any]:
         """Seal contract commits and publish their identity into the ticket."""

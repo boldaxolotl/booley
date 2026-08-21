@@ -1013,7 +1013,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
                 file=sys.stderr,
             )
             return False
-        if not _cleanup_reset_branches(tio._project_root, slug, entry.get("feature_branch", "")):
+        if not _reset_ticket_branches(tio._project_root, slug, entry):
             return False
 
         if not _move_to_queue(tio, file_path):
@@ -1043,6 +1043,33 @@ def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) 
     if feature_branch and not cleanup_worktree_and_branch(feature_branch, force=True):
         print(
             f"Error: reset could not delete feature branch '{feature_branch}'.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _reset_ticket_branches(
+    project_root: Path, slug: str, entry: dict[str, Any]
+) -> bool:
+    """Restore a sealed contract or remove legacy ticket branches."""
+    raw_contract = entry.get("target_contract")
+    if raw_contract is None:
+        return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
+    from .contract_ops import ContractOperationError, reset_contract_worktrees
+    from .target_contract import TargetContract, TargetContractError
+
+    try:
+        contract = TargetContract.from_mapping(raw_contract)
+        reset_contract_worktrees(
+            project_root,
+            slug,
+            contract,
+            str(entry.get("branch", "")),
+        )
+    except (ContractOperationError, TargetContractError, OSError) as exc:
+        print(
+            f"Error: reset could not restore sealed contract for '{slug}': {exc}",
             file=sys.stderr,
         )
         return False

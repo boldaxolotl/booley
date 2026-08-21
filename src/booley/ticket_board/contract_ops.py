@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.dev_support.contract_path_policy import is_static_contract_path
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import resolve_project_dir
@@ -26,7 +27,6 @@ from .target_contract import (
     build_contract,
     contract_control_paths,
     criterion_targets,
-    is_static_contract_path,
     resolve_commit,
     validate_criterion_targets,
     validate_targets_for_seal,
@@ -35,7 +35,7 @@ from .target_contract import (
 from .validation import validate_ticket_fields
 
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
-_PROGRAM_SUFFIXES = frozenset({".py", ".sh", ".tcl", ".pl", ".rb"})
+_LEGACY_ARCHIVE_PREFIX = "booley-legacy-archive"
 
 
 class ContractOperationError(RuntimeError):
@@ -127,7 +127,11 @@ def _project_base_branch(repository: Path, requested: str) -> str:
 
 
 def open_contract(
-    project_root: Path | str, ticket_path: Path | str, slug: str
+    project_root: Path | str,
+    ticket_path: Path | str,
+    slug: str,
+    *,
+    recover_legacy: bool = False,
 ) -> ContractWorktrees:
     """Create the outer and optional project-data authoring worktrees."""
     if not _SAFE_SLUG_RE.fullmatch(slug):
@@ -138,6 +142,8 @@ def open_contract(
     if not isinstance(branch, str) or not branch:
         raise ContractOperationError("ticket has no destination branch")
     outer = resolve_project_dir(root) / "worktrees" / slug
+    if recover_legacy:
+        _archive_legacy_worktrees(root, outer, slug)
     outer_base = _attach_worktree(root, outer, slug, branch)
     try:
         project, project_base = _open_project_contract(root, outer, slug, branch)
@@ -145,6 +151,27 @@ def open_contract(
         _git(root, "worktree", "remove", "--force", str(outer))
         raise
     return ContractWorktrees(outer, project, outer_base, project_base)
+
+
+def _archive_legacy_worktrees(root: Path, outer: Path, slug: str) -> None:
+    """Preserve blocked legacy branches, then clear their execution worktrees."""
+    source = resolve_inner_project_repo(root)
+    outer_sha = _branch_sha(root, slug)
+    project_branch = project_ticket_branch(slug)
+    project_sha = _branch_sha(source, project_branch) if source is not None else ""
+    if outer_sha:
+        _archive_ref(root, _legacy_archive(slug, outer_sha), outer_sha)
+    if source is not None and project_sha:
+        _archive_ref(source, _legacy_archive(slug, project_sha), project_sha)
+    paired = paired_project_repository(outer) if outer.is_dir() else None
+    _remove_contract_worktrees(root, outer, paired, source)
+    _delete_branch(root, slug)
+    if source is not None:
+        _delete_branch(source, project_branch)
+
+
+def _legacy_archive(slug: str, sha: str) -> str:
+    return f"{_LEGACY_ARCHIVE_PREFIX}/{slug}/{sha[:12]}"
 
 
 def _open_project_contract(
@@ -193,12 +220,10 @@ def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[s
     return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
 
 
-def _is_authoring_path(path: str, manifest: set[str]) -> bool:
-    return (
-        path in manifest
-        or is_static_contract_path(path)
-        or Path(path).suffix.casefold() in _PROGRAM_SUFFIXES
-    )
+def _is_authoring_path(repository: Path, path: str, manifest: set[str]) -> bool:
+    if path in manifest:
+        return True
+    return not (repository / path).exists() and is_static_contract_path(path)
 
 
 def _validate_authoring_changes(
@@ -206,7 +231,9 @@ def _validate_authoring_changes(
 ) -> list[str]:
     changed = _status_paths(repository)
     manifest = _local_manifest_paths(surface_root, project_repository)
-    invalid = [path for path in changed if not _is_authoring_path(path, manifest)]
+    invalid = [
+        path for path in changed if not _is_authoring_path(repository, path, manifest)
+    ]
     if invalid:
         raise ContractOperationError(
             "contract authoring worktree contains non-control changes: " + ", ".join(invalid)
@@ -372,6 +399,57 @@ def validate_open_seal(
     except ValueError as exc:
         errors.append(str(exc))
     return errors
+
+
+def reset_contract_worktrees(
+    project_root: Path | str,
+    slug: str,
+    contract: TargetContract,
+    requested_branch: str,
+) -> None:
+    """Discard implementation state and restore the sealed authoring checkouts."""
+    root = Path(project_root).resolve()
+    _full_commit(root, contract.outer_sha)
+    source = resolve_inner_project_repo(root)
+    _validate_reset_project_source(source, contract)
+    outer = resolve_project_dir(root) / "worktrees" / slug
+    paired = paired_project_repository(outer) if outer.is_dir() else None
+    _remove_contract_worktrees(root, outer, paired, source)
+    _delete_branch(root, slug)
+    if source is not None:
+        _delete_branch(source, project_ticket_branch(slug))
+    _attach_worktree(root, outer, slug, contract.outer_sha)
+    _restore_project_contract(source, outer, slug, requested_branch, contract)
+    errors = validate_open_seal(root, slug, contract)
+    if errors:
+        raise ContractOperationError("could not restore sealed contract: " + "; ".join(errors))
+
+
+def _validate_reset_project_source(
+    source: Path | None, contract: TargetContract
+) -> None:
+    if contract.project_sha and source is None:
+        raise ContractOperationError("sealed project repository is unavailable")
+    if source is not None and not contract.project_sha:
+        raise ContractOperationError("sealed contract has no project repository commit")
+    if source is not None:
+        _full_commit(source, contract.project_sha)
+
+
+def _restore_project_contract(
+    source: Path | None,
+    outer: Path,
+    slug: str,
+    requested_branch: str,
+    contract: TargetContract,
+) -> None:
+    if source is None:
+        return
+    branch = project_ticket_branch(slug)
+    destination = ticket_project_worktree(outer)
+    _attach_worktree(source, destination, branch, contract.project_sha)
+    base_branch = _project_base_branch(source, requested_branch)
+    _require_git(source, "branch", f"--set-upstream-to={base_branch}", branch)
 
 
 def _validate_project_seal(

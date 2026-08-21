@@ -82,7 +82,10 @@ This archives the prior contract commits, removes execution evidence and
 implementation worktrees, returns a blocked ticket to drafts, and opens fresh
 authoring checkouts. Review, seal, and enqueue it again. An unsealed legacy
 blocked ticket must instead run `contract-open` and `contract-seal` before a
-normal reset can restart it.
+normal reset can restart it. `contract-open` preserves any surviving legacy
+implementation branch under `booley-legacy-archive/<slug>/<sha>` before opening
+the clean authoring checkout; reset then restores the sealed checkout rather
+than deleting its contract branch.
 
 ## Consequences
 

@@ -30,6 +30,10 @@ import json
 import logging
 from pathlib import Path
 
+from booley.dev_support.contract_path_policy import (
+    is_static_contract_path,
+    normalize_contract_path,
+)
 from booley.runtime.git import (
     git_run,
     is_new_scope_entry,
@@ -90,20 +94,9 @@ _FORBIDDEN_EXACT: frozenset[str] = frozenset(
 )
 
 
-def _normalize(path: str) -> str:
-    """Return *path* with forward slashes and no leading ``./``."""
-    normalized = path.replace("\\", "/").strip()
-    return normalized.removeprefix("./")
-
-
 def is_forbidden_path(path: str) -> bool:
-    """True when *path* is Harness bookkeeping the agent must not modify.
-
-    Intentionally duplicated in ``dev_support.scope_precommit_hook`` -- that hook
-    runs as a standalone script inside a worktree and cannot import Booley.
-    """
-    normalized = _normalize(path)
-    from booley.ticket_board.target_contract import is_static_contract_path
+    """True when *path* is Harness bookkeeping the agent must not modify."""
+    normalized = normalize_contract_path(path)
 
     if is_static_contract_path(normalized):
         return True

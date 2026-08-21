@@ -18,6 +18,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from booley.dev_support.contract_path_policy import (
+        is_static_contract_path,
+        normalize_contract_path,
+    )
+except ModuleNotFoundError:
+    from contract_path_policy import is_static_contract_path, normalize_contract_path
+
 # Intentional duplication of harness.scope_policy._FORBIDDEN_* -- this hook must
 # run standalone inside a worktree, without Booley on sys.path.  Keep in sync.
 _FORBIDDEN_PREFIXES = (".booley_project/", ".booley/", ".git/")
@@ -26,7 +34,6 @@ _FORBIDDEN_CARVE_OUTS = (
     ".booley_project/docs/",
 )
 _FORBIDDEN_EXACT = frozenset({".scope.json"})
-_CONTRACT_SUFFIXES = frozenset({".core", ".sdc", ".xdc"})
 
 
 def _load_scope(wt: Path) -> list[str] | None:
@@ -91,12 +98,9 @@ def _staged_files() -> list[str]:
 
 def _is_forbidden(filepath: str, contract_controls: set[str] | None = None) -> bool:
     """True for harness bookkeeping the agent must never commit."""
-    normalized = filepath.replace("\\", "/").strip().removeprefix("./")
-    contract_path = (
-        normalized in (contract_controls or set())
-        or Path(normalized).suffix.casefold() in _CONTRACT_SUFFIXES
-        or normalized in {".booley_project/tests.toml", ".booley_project/booley.toml"}
-        or normalized.startswith((".booley_project/hooks/", ".booley_project/generators/"))
+    normalized = normalize_contract_path(filepath)
+    contract_path = normalized in (contract_controls or set()) or is_static_contract_path(
+        normalized
     )
     if contract_path:
         return True

@@ -137,6 +137,47 @@ def test_seal_rejects_non_control_implementation_changes(tmp_path: Path) -> None
         tio.contract_seal("change-target")
 
 
+def test_seal_rejects_unreferenced_program_changes(tmp_path: Path) -> None:
+    _root, tio, _ticket = _native_project(tmp_path)
+    opened = tio.contract_open("change-target")
+    outer = Path(opened["outer_worktree"])
+    (outer / "unrelated.py").write_text("print('implementation')\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="non-control changes"):
+        tio.contract_seal("change-target")
+
+
+def test_blocked_legacy_contract_open_archives_work_and_can_reset(tmp_path: Path) -> None:
+    root, tio, ticket = _native_project(tmp_path)
+    slug = "change-target"
+    legacy_worktree = root / ".booley_project" / "worktrees" / slug
+    _git(root, "worktree", "add", "-b", slug, str(legacy_worktree), "main")
+    (legacy_worktree / "rtl" / "toy.sv").write_text(
+        "module toy; wire legacy_work; endmodule\n",
+        encoding="utf-8",
+    )
+    legacy_sha = _commit_all(legacy_worktree, "legacy implementation")
+    blocked = ticket.parent.parent / "blocked" / ticket.name
+    blocked.parent.mkdir(parents=True)
+    ticket.rename(blocked)
+
+    opened = tio.contract_open(slug)
+
+    outer = Path(opened["outer_worktree"])
+    archive = f"booley-legacy-archive/{slug}/{legacy_sha[:12]}"
+    assert _git(root, "rev-parse", archive) == legacy_sha
+    assert _git(outer, "rev-parse", "HEAD") == _git(root, "rev-parse", "main")
+    _write_core(outer, version="2.0")
+    sealed = tio.contract_seal(slug)
+
+    assert op_reset(tio, slug) is True
+    queued = blocked.parent.parent / "queue" / blocked.name
+    assert queued.is_file()
+    assert _git(root, "rev-parse", slug) == sealed["outer_sha"]
+    assert _git(outer, "rev-parse", "HEAD") == sealed["outer_sha"]
+    assert tio.init_ticket(queued) is not None
+
+
 def test_revise_archives_identity_resets_evidence_and_reopens(tmp_path: Path) -> None:
     root, tio, ticket = _native_project(tmp_path)
     opened = tio.contract_open("change-target")
@@ -209,6 +250,19 @@ def test_standalone_project_repository_gets_paired_contract_commit(tmp_path: Pat
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["target_contract"]["project_sha"] == sealed["project_sha"]
     assert tio.enqueue_ticket("change-target") is True
+
+    queued = ticket.parent.parent / "queue" / ticket.name
+    blocked = ticket.parent.parent / "blocked" / ticket.name
+    blocked.parent.mkdir(parents=True)
+    queued.rename(blocked)
+    (outer / "rtl" / "toy.sv").write_text("module toy; wire retry; endmodule\n")
+    _commit_all(outer, "outer implementation")
+    (paired / "booley.toml").write_text("[flows.lint]\ndefault_target = 'other'\n")
+    _commit_all(paired, "project implementation")
+
+    assert op_reset(tio, "change-target") is True
+    assert _git(outer, "rev-parse", "HEAD") == sealed["outer_sha"]
+    assert _git(paired, "rev-parse", "HEAD") == sealed["project_sha"]
 
 
 def test_failed_cross_repository_seal_restores_unpublished_branch_refs(

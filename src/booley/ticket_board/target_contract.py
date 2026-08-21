@@ -18,6 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from booley.core.boundary import (
+    BoundaryError,
+    as_str,
+    is_str_list,
+    require_dict,
+    require_str,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.targets.target_surface import flow_can_drive
 
@@ -26,7 +33,6 @@ CONTRACT_BLOCK_REASON = "target-contract-change-required"
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-_CONTROL_SUFFIXES = frozenset({".core", ".sdc", ".xdc"})
 _PROGRAM_SUFFIXES = frozenset({".py", ".sh", ".tcl", ".pl", ".rb"})
 _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 _FLOW_BY_CRITERION = {
@@ -61,8 +67,10 @@ class TargetContract:
     @classmethod
     def from_mapping(cls, value: Any) -> TargetContract:
         """Validate external frontmatter and return a typed contract."""
-        if not isinstance(value, Mapping):
-            raise TargetContractError("target_contract must be a mapping")
+        try:
+            value = require_dict(value, field="target_contract")
+        except BoundaryError as exc:
+            raise TargetContractError(str(exc)) from exc
         schema = value.get("schema")
         if schema != SCHEMA_VERSION:
             raise TargetContractError(
@@ -123,21 +131,24 @@ class CriterionTarget:
 
 
 def _required_string(value: Mapping[str, Any], key: str) -> str:
-    raw = value.get(key)
-    if not isinstance(raw, str) or not raw.strip():
+    try:
+        raw = require_str(value, key).strip()
+    except BoundaryError as exc:
+        raise TargetContractError(f"target_contract.{key} must be a non-empty string") from exc
+    if not raw:
         raise TargetContractError(f"target_contract.{key} must be a non-empty string")
-    return raw.strip()
+    return raw
 
 
 def _optional_string(value: Mapping[str, Any], key: str) -> str:
-    raw = value.get(key, "")
-    if not isinstance(raw, str):
+    raw = as_str(value.get(key, ""))
+    if raw is None:
         raise TargetContractError(f"target_contract.{key} must be a string")
     return raw.strip()
 
 
 def _string_tuple(value: Any, key: str) -> tuple[str, ...]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not is_str_list(value):
         raise TargetContractError(f"target_contract.{key} must be a list[str]")
     normalized = tuple(item.strip() for item in value)
     if any(not item for item in normalized):
@@ -298,17 +309,6 @@ def surface_digest(project_root: Path | str) -> str:
 def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
     """Return concrete surface paths for commit and pre-commit enforcement."""
     return tuple(row.path for row in surface_entries(project_root))
-
-
-def is_static_contract_path(path: str) -> bool:
-    """Recognize control paths even when a newly added file is not in the manifest."""
-    normalized = path.replace("\\", "/").strip().removeprefix("./")
-    candidate = PurePosixPath(normalized)
-    if candidate.suffix.casefold() in _CONTROL_SUFFIXES:
-        return True
-    if normalized in {".booley_project/tests.toml", ".booley_project/booley.toml"}:
-        return True
-    return normalized.startswith((".booley_project/hooks/", ".booley_project/generators/"))
 
 
 def _criterion_flow(key: str) -> str | None:

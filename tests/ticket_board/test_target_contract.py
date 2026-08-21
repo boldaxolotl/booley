@@ -134,6 +134,27 @@ def test_contract_requires_sorted_unique_targets() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ([], "target_contract must be a mapping"),
+        (
+            {
+                "schema": 1,
+                "outer_sha": "a" * 40,
+                "project_sha": "",
+                "surface_digest": "b" * 64,
+                "targets": "sim_toy",
+            },
+            r"target_contract\.targets must be a list\[str\]",
+        ),
+    ],
+)
+def test_contract_boundary_rejects_invalid_shapes(value: object, message: str) -> None:
+    with pytest.raises(TargetContractError, match=message):
+        TargetContract.from_mapping(value)
+
+
 def test_surface_ignores_rtl_but_covers_every_control_input(tmp_path: Path) -> None:
     project = _project(tmp_path)
     original = surface_digest(project)
