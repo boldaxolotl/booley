@@ -212,18 +212,20 @@ jobs:
             -e EXPECTED_BOOLEY_VERSION \
             "${IMAGE}" bash -euo pipefail -c '
               python -c "import booley, os; assert booley.__version__ == os.environ[\"EXPECTED_BOOLEY_VERSION\"]"
-              bash .booley_project/hooks/post-setup.sh
+              project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
+              ticket_slug=add-rv32-zbb-pcpi-co-processor
+              bash "${project_dir}/hooks/post-setup.sh"
               booley doctor --deep --skip-agent-checks
 
-              ticket=.booley_project/tickets/board/queue/add-rv32-zbb-pcpi-co-processor.md
+              ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
               python -m booley.ticket_board parse-ticket "${ticket}" >/dev/null
-              python -m booley.ticket_board show add-rv32-zbb-pcpi-co-processor >/dev/null
+              python -m booley.ticket_board show "${ticket_slug}" >/dev/null
               python -c "from pathlib import Path; from booley.harness.preflight import run_preflight; run_preflight(Path.cwd())"
               booley board show
 
               before="$(sha256sum "${ticket}")"
-              booley run --ticket add-rv32-zbb-pcpi-co-processor --dry-run
+              booley run --ticket "${ticket_slug}" --dry-run
               test -f "${ticket}"
-              test ! -e .booley_project/tickets/board/active/add-rv32-zbb-pcpi-co-processor.md
+              test ! -e "${project_dir}/tickets/board/active/${ticket_slug}.md"
               test "${before}" = "$(sha256sum "${ticket}")"
             '

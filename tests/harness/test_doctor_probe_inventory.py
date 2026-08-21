@@ -82,7 +82,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_mcp_checks": frozenset(
         {
-            "_check_agent_auth_token",
             "_check_devcontainer_excludes",
             "_check_devcontainer_spec",
             "_check_interactive_docker_objects",
@@ -91,9 +90,8 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_interactive_logs_tracked",
             "_check_interactive_state_volumes",
             "_check_issued_image_keepers",
-            "_check_oauth_token",
-            "_check_subscription_creds_health",
             "_check_wcp_server",
+            "_run_agent_credential_checks",
             "_run_mcp_probe",
         }
     ),

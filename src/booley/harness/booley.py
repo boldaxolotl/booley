@@ -576,7 +576,10 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
     doctor_p.add_argument(
         "--skip-agent-checks",
         action="store_true",
-        help="Skip agent credential inspection and the live Developer authorization probe",
+        help=(
+            "With --deep, skip agent credential inspection and the live "
+            "Developer authorization probe"
+        ),
     )
 
     init_p = sub.add_parser("init", help="Set up a new Booley project")
@@ -777,6 +780,8 @@ def _normalize_args(
             parser.print_help()
             sys.exit(0)
 
+    _validate_doctor_args(parser, args)
+
     if args.command == "run":
         for attr, default in _RUN_DEFAULTS.items():
             if not hasattr(args, attr):
@@ -792,6 +797,19 @@ def _normalize_args(
         _apply_dry_run_implications(args)
 
     return args
+
+
+def _validate_doctor_args(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> None:
+    """Reject incomplete Doctor automation profiles at the CLI boundary."""
+    if (
+        args.command == "doctor"
+        and getattr(args, "skip_agent_checks", False)
+        and not getattr(args, "deep", False)
+    ):
+        parser.error("--skip-agent-checks requires --deep")
 
 
 def _apply_dry_run_implications(args: argparse.Namespace) -> None:
@@ -1493,6 +1511,18 @@ def _setup_runtime(args: argparse.Namespace, project_root: Path) -> str:
     return venv_py
 
 
+def _preview_ticket_run(args: argparse.Namespace, project_root: Path) -> int:
+    """Describe one Ticket Mode run without changing runtime or board state."""
+    counts = get_ticket_counts(project_root)
+    if counts.get("executable", 0) == 0:
+        _handle_idle(args, counts, _IdleState())
+        return 0
+    venv_py = find_venv_python(project_root)
+    _log_attempt(args, 1, counts)
+    _show_dry_run(venv_py)
+    return 0
+
+
 def _will_use_console(args: argparse.Namespace) -> bool:
     """Mirror harness `_detect_console`: would the child run the TUI?
 
@@ -1939,12 +1969,17 @@ def _execute_one_ticket(
     _log_attempt(args, attempt, counts)
 
     if args.dry_run:
-        logger.debug("[dry-run] Would run: %s -m booley.harness", venv_py)
-        status_indent(f"{dim('[dry-run]')} Would run: {venv_py} -m booley.harness")
+        _show_dry_run(venv_py)
         return "break"
 
     exit_code, elapsed = _run_harness(args, project_root, venv_py)
     return _handle_post_run(args, project_root, exit_code, elapsed)
+
+
+def _show_dry_run(venv_py: str) -> None:
+    """Render the command an observational Ticket Mode preview would run."""
+    logger.debug("[dry-run] Would run: %s -m booley.harness", venv_py)
+    status_indent(f"{dim('[dry-run]')} Would run: {venv_py} -m booley.harness")
 
 
 # ---------------------------------------------------------------------------
@@ -2019,6 +2054,9 @@ def main() -> int:
         return early
 
     # Only 'run' subcommand reaches here.
+    if args.dry_run:
+        _print_banner(args)
+        return _preview_ticket_run(args, project_root)
     venv_py = _setup_runtime(args, project_root)
     _print_banner(args)
     return _ticket_loop(args, project_root, venv_py)

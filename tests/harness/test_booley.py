@@ -59,6 +59,16 @@ def test_doctor_parser_accepts_skip_agent_checks_flag():
     assert args.skip_agent_checks is True
 
 
+def test_doctor_parser_requires_deep_for_skip_agent_checks(capsys):
+    parser = tlr._build_parser()
+
+    with pytest.raises(SystemExit) as exc:
+        tlr._normalize_args(parser, parser.parse_args(["doctor", "--skip-agent-checks"]))
+
+    assert exc.value.code == 2
+    assert "--skip-agent-checks requires --deep" in capsys.readouterr().err
+
+
 def test_doctor_parser_accepts_explicit_project_root(tmp_path):
     parser = tlr._build_parser()
 
@@ -2019,6 +2029,52 @@ class TestDryRunImplications:
             action = tlr._handle_idle(args, counts, tlr._IdleState())
         assert action == "break"
         assert "-n 2" in status.call_args.args[0]
+
+    def test_preview_only_reads_board_and_environment(self, tmp_path):
+        args = self._parse(["run", "--dry-run"])
+        counts = {
+            "active": 0,
+            "waiting": 0,
+            "blocked": 0,
+            "review": 0,
+            "executable": 1,
+        }
+        with (
+            patch.object(tlr, "get_ticket_counts", return_value=counts) as classify,
+            patch.object(tlr, "find_venv_python", return_value="/venv/python") as find_python,
+            patch.object(tlr, "_log_attempt") as log_attempt,
+            patch.object(tlr, "_show_dry_run") as show,
+        ):
+            rc = tlr._preview_ticket_run(args, tmp_path)
+
+        assert rc == 0
+        classify.assert_called_once_with(tmp_path)
+        find_python.assert_called_once_with(tmp_path)
+        log_attempt.assert_called_once_with(args, 1, counts)
+        show.assert_called_once_with("/venv/python")
+
+    def test_main_bypasses_mutating_runtime_for_preview(self, tmp_path, monkeypatch):
+        args = self._parse(["run", "--dry-run", "--project-root", str(tmp_path)])
+        preview = MagicMock(return_value=0)
+        monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+        monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+        monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
+        monkeypatch.setattr(tlr, "_handle_early_exits", lambda *_args: None)
+        monkeypatch.setattr(tlr, "_print_banner", lambda _args: None)
+        monkeypatch.setattr(tlr, "_preview_ticket_run", preview)
+        monkeypatch.setattr(
+            tlr,
+            "_setup_runtime",
+            lambda *_args: pytest.fail("dry-run must not set up mutating runtime state"),
+        )
+        monkeypatch.setattr(
+            tlr,
+            "_ticket_loop",
+            lambda *_args: pytest.fail("dry-run must not enter the mutating ticket loop"),
+        )
+
+        assert tlr.main() == 0
+        preview.assert_called_once_with(args, tmp_path)
 
 
 class TestNamedTicketImplications:

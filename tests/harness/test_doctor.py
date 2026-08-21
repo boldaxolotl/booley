@@ -621,6 +621,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     assert "agent credential checks skipped by --skip-agent-checks" in output
     assert "worker backend health check skipped by --skip-agent-checks" in output
     assert "developer authorization probe skipped by --skip-agent-checks" in output
+    assert doctor_stamp.load_stamp(project_dir) is None
 
 
 # ---------------------------------------------------------------------------
