@@ -16,6 +16,15 @@ on_success:
 dependencies: []
 priority: medium
 
+# -- Seal fields (written only by contract-seal; never author these) --------
+target_contract:
+  schema: 1
+  outer_sha: <exact outer contract commit>
+  project_sha: <exact paired project-data commit or empty>
+  surface_digest: <normalized Target/control-plane SHA-256>
+  targets: [<every criterion Target>]
+base_sha: <identical to target_contract.outer_sha>
+
 # -- Acceptance criteria ------------------------------------------------
 # STRUCTURE only — `booley cheat --criteria` is the single source of truth for criterion names,
 # params, and the `targets:` scoping key (rendered from criteria.toml + the MCP tool
@@ -58,7 +67,7 @@ criteria:
     mutation_score: "8/10"                   # -> mutation_tester Specialist; at least 8/10 mutations detected
 
 # -- Runtime fields are stamped by Booley or stored in logs/<slug>/.runtime/progress.json --
-# feature_branch, created, base_sha, integration_base
+# feature_branch, created, integration_base
 # current_tool, tools_completed, last_update, blocked_reason, blocked_tool
 ---
 

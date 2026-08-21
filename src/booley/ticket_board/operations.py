@@ -1059,6 +1059,18 @@ def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
+    project_root = Path(getattr(tio, "_project_root", ""))
+    if (
+        entry.get("status") == "blocked"
+        and entry.get("target_contract") is None
+        and (project_root / ".git").exists()
+    ):
+        print(
+            f"Error: legacy blocked ticket '{slug}' must be sealed with a Target "
+            "contract before it can restart; run contract-open and contract-seal first.",
+            file=sys.stderr,
+        )
+        return False
 
     # ``find_ticket`` accepts both the canonical slug and user-facing aliases
     # such as a copied ``<slug>.md`` filename or feature branch. Runtime paths,

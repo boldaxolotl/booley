@@ -1062,6 +1062,9 @@ def validate_ticket_fields(
 
     errors.extend(_validate_basic_fields(fields, body))
     errors.extend(_validate_on_success(fields.get("on_success")))
+    from .target_contract import validate_contract_fields
+
+    errors.extend(validate_contract_fields(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)
     errors.extend(scope_errors)

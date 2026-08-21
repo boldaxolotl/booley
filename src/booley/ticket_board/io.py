@@ -29,7 +29,6 @@ class TicketFileSpec:
     priority: str = "medium"
     criteria: dict[str, Any] | None = None
     body: str = ""
-    base_sha: str = ""
 
 
 from .constants import RUNTIME_FIELDS, normalize_dir
@@ -457,6 +456,18 @@ class TicketIO:
 
         # Canonical slug = filename stem (immutable after creation).
         slug = ticket_path.stem
+        with ticket_path.open(encoding="utf-8") as stream:
+            fields, _body = parse_frontmatter(stream.read())
+        contract_errors = self._validate_enqueue_contract(slug, fields)
+        if contract_errors:
+            print(
+                "Error: target-contract-change-required: ticket must be sealed "
+                "before fresh execution:",
+                file=sys.stderr,
+            )
+            for error in contract_errors:
+                print(f"  - {error}", file=sys.stderr)
+            return None
 
         with self._ticket_lock(slug):
             if not ticket_path.exists():
@@ -467,7 +478,7 @@ class TicketIO:
         return {"slug": slug, "logs_dir": str(log_dir)}
 
     @staticmethod
-    def _build_ticket_fields(spec: TicketFileSpec, base_sha: str) -> dict[str, Any]:
+    def _build_ticket_fields(spec: TicketFileSpec) -> dict[str, Any]:
         """Build the frontmatter fields dict from a TicketFileSpec."""
         fields = {
             "summary": spec.summary,
@@ -490,8 +501,6 @@ class TicketIO:
         # verification_plan.md in logs/ when it runs).
         if spec.dependencies:
             fields["dependencies"] = spec.dependencies
-        if base_sha:
-            fields["base_sha"] = base_sha
         return fields
 
     # Git branch names derived from slugs must fit in filesystem paths;
@@ -520,8 +529,7 @@ class TicketIO:
             print(f"Error: ticket '{slug}' already exists ({status}): {existing}", file=sys.stderr)
             return None
 
-        base_sha = spec.base_sha or self._resolve_base_sha(spec.branch)
-        fields = self._build_ticket_fields(spec, base_sha)
+        fields = self._build_ticket_fields(spec)
         body = spec.body or "\n## Description\n\nTODO: Add description.\n"
 
         drafts_dir = self.tickets_dir / "board" / "drafts"
@@ -657,6 +665,13 @@ class TicketIO:
         with ticket_path.open(encoding="utf-8") as f:
             fields, body = parse_frontmatter(f.read())
 
+        contract_errors = self._validate_enqueue_contract(slug, fields)
+        if contract_errors:
+            print("Error: ticket Target contract is not sealed:", file=sys.stderr)
+            for err in contract_errors:
+                print(f"  - {err}", file=sys.stderr)
+            return False
+
         validation_results = validate_ticket_fields(
             fields,
             body,
@@ -681,24 +696,65 @@ class TicketIO:
         with self._ticket_lock(slug):
             return self._enqueue_locked(slug, ticket_path, on_success, integration_base, has_unmet)
 
-    @staticmethod
-    def _resolve_base_sha(branch: str) -> str:
-        """Resolve branch HEAD to a full SHA for synthesis baseline stamping."""
-        import subprocess as _sp
+    def _validate_enqueue_contract(self, slug: str, fields: dict[str, Any]) -> list[str]:
+        """Require a schema-1 seal before a real Git project becomes executable."""
+        if not (self._project_root / ".git").exists():
+            return []  # lightweight filesystem-only consumers cannot verify Git identities
+        from .contract_ops import validate_open_seal
+        from .target_contract import TargetContract, TargetContractError
 
+        raw = fields.get("target_contract")
+        if raw is None:
+            return ["target_contract.schema: 1 is required; run contract-open/contract-seal"]
         try:
-            result = _sp.run(
-                ["git", "rev-parse", branch],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+            contract = TargetContract.from_mapping(raw)
+        except TargetContractError as exc:
+            return [str(exc)]
+        try:
+            return validate_open_seal(self._project_root, slug, contract)
+        except (RuntimeError, ValueError, OSError) as exc:
+            return [str(exc)]
+
+    def contract_open(self, slug: str) -> dict[str, str]:
+        """Open isolated contract-authoring worktrees for one draft ticket."""
+        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
+        if ticket_path is None:
+            raise FileNotFoundError(f"ticket {slug!r} does not exist")
+        if status not in {"draft", "blocked"}:
+            raise RuntimeError(
+                f"contract authoring requires a draft or blocked ticket, got {status!r}"
             )
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except (FileNotFoundError, _sp.TimeoutExpired):
-            pass
-        return ""
+        from .contract_ops import open_contract
+
+        return open_contract(self._project_root, ticket_path, slug).as_dict()
+
+    def contract_seal(self, slug: str) -> dict[str, Any]:
+        """Seal contract commits and publish their identity into the ticket."""
+        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
+        if ticket_path is None:
+            raise FileNotFoundError(f"ticket {slug!r} does not exist")
+        if status not in {"draft", "blocked"}:
+            raise RuntimeError(
+                f"contract sealing requires a draft or blocked ticket, got {status!r}"
+            )
+        from .contract_ops import seal_contract
+
+        return seal_contract(self._project_root, ticket_path, slug).as_dict()
+
+    def contract_revise(self, slug: str) -> dict[str, str]:
+        """Archive a draft/blocked seal, reset evidence, and reopen authoring."""
+        ticket_path, status = find_ticket_file(self.tickets_dir, slug)
+        if ticket_path is None or status is None:
+            raise FileNotFoundError(f"ticket {slug!r} does not exist")
+        from .contract_ops import revise_contract
+
+        return revise_contract(
+            self._project_root,
+            ticket_path,
+            slug,
+            status=status,
+            logs_dir=self.logs_dir,
+        ).as_dict()
 
     def _detect_dep_cycle(self, slug, deps, all_tickets=None):
         """Check for circular dependencies. Returns cycle path list or None.

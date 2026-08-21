@@ -17,6 +17,7 @@ from booley.runtime.filesystem_utils import copy_booley_tree, safe_rmtree
 from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
+from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
 
 from ..models import StepResult, TicketContext
@@ -63,12 +64,14 @@ def _install_scope_hook(
     scope: list[str],
     *,
     project_root: Path | None = None,
+    contract_surface_root: Path | None = None,
 ) -> None:
     """Write .scope.json and install the scope pre-commit hook (always) plus the
     stealth commit-msg hook (unless ``[stealth] enabled = false``)."""
     scope_file = worktree_path / ".scope.json"
+    controls = _hook_contract_controls(worktree_path, contract_surface_root)
     scope_file.write_text(
-        json.dumps({"scope": scope}, indent=2) + "\n",
+        json.dumps({"scope": scope, "contract_control": controls}, indent=2) + "\n",
         encoding="utf-8",
     )
     logger.debug("Wrote scope file: %s (%d entries)", scope_file, len(scope))
@@ -106,6 +109,24 @@ def _install_scope_hook(
     git_pointer = worktree_path / ".git"
     if git_pointer.is_file():
         _set_worktree_hooks_path(worktree_path, hooks_dir.as_posix())
+
+
+def _hook_contract_controls(
+    worktree_path: Path, surface_root: Path | None
+) -> list[str]:
+    """Translate sealed surface paths for the repository receiving the hook."""
+    root = surface_root or worktree_path
+    try:
+        from booley.ticket_board.target_contract import contract_control_paths
+
+        controls = contract_control_paths(root)
+    except (OSError, ValueError):
+        logger.warning("Could not enumerate Target contract controls for %s", root)
+        return []
+    if worktree_path == root:
+        return [path for path in controls if not path.startswith(".booley_project/")]
+    prefix = ".booley_project/"
+    return [path.removeprefix(prefix) for path in controls if path.startswith(prefix)]
 
 
 def refresh_scope_guards(
@@ -743,14 +764,20 @@ async def run(ctx: TicketContext) -> StepResult:
     _prune_stale_worktree_locks(project_root)
 
     # Worktree: reuse or create fresh
-    expected_wt = project_root / ".booley_project" / "worktrees" / ctx.slug
+    expected_wt = (
+        resolve_project_dir(project_root) / "worktrees" / ctx.slug
+        if ctx.target_contract is not None
+        else project_root / ".booley_project" / "worktrees" / ctx.slug
+    )
     if not _try_reuse_worktree(ctx, project_root, expected_wt):
         fail = _create_fresh_worktree(ctx, expected_wt)
         if fail:
             return fail
 
     worktree_path = ctx.worktree_path
-    base_ref = ctx.branch
+    base_ref = (
+        ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
+    )
     logger.info("Worktree ready")
 
     # Branch setup: ensure base, create feature branch
@@ -771,6 +798,7 @@ async def run(ctx: TicketContext) -> StepResult:
             project_worktree,
             project_repository_scope(ctx.scope_raw),
             project_root=project_root,
+            contract_surface_root=worktree_path,
         )
     sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
 

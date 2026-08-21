@@ -87,6 +87,8 @@ KNOWN_FIELDS = REQUIRED_FIELDS | {
     "feature_branch",
     "created",
     "base_sha",
+    "target_contract",
+    "target_contract_history",
     "on_success",
 }
 

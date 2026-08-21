@@ -33,6 +33,7 @@ from booley.dev_support.development_state import (
 from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_budget
 from booley.runtime.git import git_run
 from booley.runtime.platform_paths import bash_bin
+from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
 from booley.runtime.timefmt import compact_utc_now
 from booley.ticket_board.paths import (
@@ -90,7 +91,11 @@ def _recover_setup_state(ctx: TicketContext, project_root: Path) -> None:
 
     # Discover worktree from the deterministic path convention used by setup/workspace.py.
     if not ctx.worktree_path:
-        expected_wt = project_root / ".booley_project" / "worktrees" / ctx.slug
+        expected_wt = (
+            resolve_project_dir(project_root) / "worktrees" / ctx.slug
+            if ctx.target_contract is not None
+            else project_root / ".booley_project" / "worktrees" / ctx.slug
+        )
         if (expected_wt / ".git").exists():
             ctx.worktree_path = expected_wt
             logger.debug("Recovered worktree_path from filesystem: %s", expected_wt)
@@ -459,9 +464,9 @@ def _is_safe_worktree(ctx: TicketContext) -> bool:
     root_resolved = ctx.project_root.resolve()
     if wt_resolved == root_resolved:
         return False
-    allowed_parents = [
-        root_resolved / ".booley_project" / "worktrees",
-    ]
+    allowed_parents = [root_resolved / ".booley_project" / "worktrees"]
+    if ctx.target_contract is not None:
+        allowed_parents.append(resolve_project_dir(root_resolved) / "worktrees")
     return any(wt_resolved.is_relative_to(p) for p in allowed_parents)
 
 
@@ -1227,11 +1232,14 @@ def _report_scope_deviations(ctx: TicketContext) -> None:
     from .colors import yellow
     from .scope_policy import DEVIATION_REPORT_NAME, committed_deviations, write_deviation_report
 
-    result = committed_deviations(ctx.worktree_path, ctx.branch, ctx.scope_raw)
+    base_ref = (
+        ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
+    )
+    result = committed_deviations(ctx.worktree_path, base_ref, ctx.scope_raw)
     write_deviation_report(
         ticket_runtime_file(ctx.logs_dir, DEVIATION_REPORT_NAME),
         slug=ctx.slug,
-        base_branch=ctx.branch,
+        base_branch=base_ref,
         scope=ctx.scope_raw,
         result=result,
     )
@@ -1462,6 +1470,8 @@ async def _resolve_ticket_disposition(
     run_index: int,
 ) -> None:
     """Read final state, check criteria acceptance, and transition the ticket."""
+    if _block_changed_target_contract(ctx, run_index):
+        return
     from booley.ticket_board.criteria_acceptance import (
         build_criteria_summary_lines,
         check_criteria_acceptance,
@@ -1512,6 +1522,27 @@ async def _resolve_ticket_disposition(
             f"Unknown criteria verdict disposition {verdict.disposition!r} for "
             f"{ctx.slug} — expected one of: review, blocked, failed"
         )
+
+
+def _block_changed_target_contract(ctx: TicketContext, run_index: int) -> bool:
+    """Fail closed before review handoff when the sealed surface has changed."""
+    contract = ctx.target_contract
+    if contract is None:
+        logger.warning("Legacy ticket %s reaches handoff without a Target contract", ctx.slug)
+        return False
+    from booley.ticket_board.target_contract import (
+        CONTRACT_BLOCK_REASON,
+        TargetContractError,
+        verify_surface,
+    )
+
+    try:
+        verify_surface(contract, ctx.work_dir)
+    except (OSError, TargetContractError) as exc:
+        reason = f"{CONTRACT_BLOCK_REASON}: {exc}"
+        block_ticket(ctx, reason, "developer", run_index=run_index)
+        return True
+    return False
 
 
 def _build_prompt_context(

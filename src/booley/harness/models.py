@@ -21,6 +21,7 @@ from booley.core.models import (  # noqa: F401
     AgentResult,
     OnSuccess,
 )
+from booley.ticket_board.target_contract import TargetContract
 
 
 @dataclass
@@ -54,6 +55,8 @@ class TicketContext:
     # Immutable outer-repository baseline stamped into ticket frontmatter.
     # Appended for positional compatibility with existing context constructors.
     base_sha: str = ""
+    # Sealed Target/control-plane identity; appended for positional compatibility.
+    target_contract: TargetContract | None = None
 
     @property
     def work_dir(self) -> Path:

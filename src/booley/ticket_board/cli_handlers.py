@@ -10,6 +10,7 @@ import json
 import sys
 from pathlib import Path
 
+from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
 
 from .analytics import (
@@ -113,7 +114,12 @@ def _cmd_show(tio, args):
     slug = Path(entry["file"]).stem
     ticket_file = Path(tio.tickets_dir) / entry["file"]
     logs_dir = ticket_log_dir(tio.logs_dir, slug)
-    worktree = tio._project_root / ".booley_project" / "worktrees" / slug
+    worktree_root = (
+        resolve_project_dir(tio._project_root)
+        if entry.get("target_contract") is not None
+        else tio._project_root / ".booley_project"
+    )
+    worktree = worktree_root / "worktrees" / slug
     criteria = entry.get("criteria") or {}
     mandatory = criteria.get("mandatory") or {}
     optional = criteria.get("optional") or {}
@@ -505,10 +511,42 @@ def _cmd_create_file(tio, args):
             priority=args.priority,
             criteria=criteria,
             body=body,
-            base_sha=getattr(args, "base_sha", ""),
         ),
     )
     return 0 if result else 2
+
+
+def _cmd_contract_open(tio, args):
+    try:
+        result = tio.contract_open(args.slug)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    json.dump(result, sys.stdout, indent=2)
+    print()
+    return 0
+
+
+def _cmd_contract_seal(tio, args):
+    try:
+        result = tio.contract_seal(args.slug)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    json.dump(result, sys.stdout, indent=2)
+    print()
+    return 0
+
+
+def _cmd_revise_contract(tio, args):
+    try:
+        result = tio.contract_revise(args.slug)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    json.dump(result, sys.stdout, indent=2)
+    print()
+    return 0
 
 
 def _cmd_enqueue(tio, args):

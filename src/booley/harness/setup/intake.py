@@ -21,6 +21,7 @@ from booley.ticket_board.paths import (
     ticket_log_dir,
     ticket_runtime_dir,
 )
+from booley.ticket_board.target_contract import TargetContract, TargetContractError
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -100,6 +101,14 @@ def _build_context(
             slug=slug,
         )
 
+    raw_contract = fields.get("target_contract")
+    try:
+        target_contract = (
+            TargetContract.from_mapping(raw_contract) if raw_contract is not None else None
+        )
+    except TargetContractError as exc:
+        raise FatalError(f"Invalid Target contract: {exc}", slug=slug) from exc
+
     return TicketContext(
         slug=slug,
         ticket_path=ticket_path,
@@ -112,6 +121,7 @@ def _build_context(
         dependencies=fields.get("dependencies", []),
         priority=fields.get("priority", "medium"),
         base_sha=fields.get("base_sha", ""),
+        target_contract=target_contract,
         feature_branch=fields.get("feature_branch", ""),
         completed_steps=fields.get("steps_completed", []),
         current_step=fields.get("stage", ""),
@@ -321,10 +331,45 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     action = _detect_and_apply_resume(ctx, fields)
 
+    _verify_target_contract(ctx, action)
+
     if action == "fresh" or _criteria_state_needs_reinit(ctx):
         _init_criteria_state(ctx)
 
     return ctx
+
+
+def _verify_target_contract(ctx: TicketContext, action: str) -> None:
+    """Verify the sealed surface before criteria state can be initialized."""
+    contract = ctx.target_contract
+    if contract is None:
+        logger.warning("Legacy ticket %s has no immutable Target contract", ctx.slug)
+        return
+    from booley.runtime.project_dir import resolve_project_dir
+    from booley.ticket_board.contract_ops import validate_open_seal
+    from booley.ticket_board.target_contract import verify_surface
+
+    worktree = resolve_project_dir(ctx.project_root) / "worktrees" / ctx.slug
+    if action == "fresh":
+        try:
+            errors = validate_open_seal(ctx.project_root, ctx.slug, contract)
+        except (RuntimeError, ValueError, OSError) as exc:
+            errors = [str(exc)]
+        if errors:
+            raise FatalError(
+                f"target-contract-change-required: {'; '.join(errors)}",
+                slug=ctx.slug,
+            )
+        return
+    if not worktree.is_dir():
+        raise FatalError(
+            f"target-contract-change-required: ticket worktree is missing: {worktree}",
+            slug=ctx.slug,
+        )
+    try:
+        verify_surface(contract, worktree)
+    except TargetContractError as exc:
+        raise FatalError(str(exc), slug=ctx.slug) from exc
 
 
 def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
@@ -483,7 +528,7 @@ def _freeze_recipe_family(
     flow_label: str,
     snapshot_builder: Callable[[Any, str], dict[str, Any]],
 ) -> None:
-    """Freeze one implementation criterion family's revision-owned recipes."""
+    """Freeze one implementation criterion family's sealed contract recipes."""
     from booley.flows.recipe_evidence import (
         RECIPE_FINGERPRINT_PARAM,
         RECIPE_SNAPSHOT_PARAM,

@@ -210,6 +210,22 @@ class TestMain:
         ):
             assert main() == 1
 
+    def test_manifest_selected_generator_is_rejected(self, tmp_path: Path):
+        path = "scripts/build_recipe.py"
+        scope_file = tmp_path / ".scope.json"
+        scope_file.write_text(
+            json.dumps({"scope": [path], "contract_control": [path]})
+        )
+
+        with (
+            patch("booley.dev_support.scope_precommit_hook.Path.cwd", return_value=tmp_path),
+            patch(
+                "booley.dev_support.scope_precommit_hook._staged_files",
+                return_value=[path],
+            ),
+        ):
+            assert main() == 1
+
     def test_bookkeeping_check_runs_without_a_scope_file(self, tmp_path: Path):
         """The forbidden tier is scope-independent — no .scope.json, still blocked."""
         with (
@@ -221,8 +237,8 @@ class TestMain:
         ):
             assert main() == 1
 
-    def test_stealth_cores_are_not_bookkeeping(self, tmp_path: Path):
-        """`.booley_project/cores/` is authored design description (ADR 0036)."""
+    def test_stealth_cores_are_immutable_contract_inputs(self, tmp_path: Path):
+        """Scope cannot override the sealed stealth Target contract."""
         scope_file = tmp_path / ".scope.json"
         scope_file.write_text(json.dumps({"scope": [".booley_project/cores/dut.core"]}))
 
@@ -233,7 +249,7 @@ class TestMain:
                 return_value=[".booley_project/cores/dut.core"],
             ),
         ):
-            assert main() == 0
+            assert main() == 1
 
     def test_project_docs_are_not_bookkeeping(self, tmp_path: Path):
         """Project docs may be explicit ticket outputs, not acceptance state."""
