@@ -254,6 +254,7 @@ provisioning = "host"
         encoding="utf-8",
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr("booley.eda.config.sys.platform", "linux")
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     requested: list[bool] = []
 
