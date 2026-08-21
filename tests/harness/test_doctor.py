@@ -593,6 +593,37 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     assert deep_call[deep_call.index("--target") + 1] == "sim_fast"
 
 
+def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+
+    def unexpected_agent_check(*_args, **_kwargs):
+        raise AssertionError("agent check should have been skipped")
+
+    monkeypatch.setattr(doctor, "_check_agent_auth_token", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_check_oauth_token", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_check_subscription_creds_health", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_check_agent_backend_health", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_run_developer_probe", unexpected_agent_check)
+
+    rc = doctor.run_doctor(
+        argparse.Namespace(verbose=False, deep=True, skip_agent_checks=True),
+        tmp_path,
+    )
+
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert "agent credential checks skipped by --skip-agent-checks" in output
+    assert "worker backend health check skipped by --skip-agent-checks" in output
+    assert "developer authorization probe skipped by --skip-agent-checks" in output
+    assert doctor_stamp.load_stamp(project_dir) is None
+
+
 # ---------------------------------------------------------------------------
 # Sandbox routing + in-container self-assertion (b5e8681 regression class):
 # sandbox-semantics checks must run IN the sandbox, and a check that cannot
@@ -2301,6 +2332,36 @@ def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monke
     assert not rec.fails()
     assert any(
         f"mounted Vivado {vivado.SUPPORTED_VERSION}" in message
+        for level, message in rec.events
+        if level == "pass"
+    )
+
+
+def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(doctor, "_check_runtime_isolation", lambda *_args: True)
+    project = doctor.ProjectAudit(
+        tmp_path,
+        project_dir,
+        {
+            "eda": {"vivado": {"provisioning": "host"}},
+            "flows": {"fpga": {"enabled": False}},
+        },
+        {},
+        "sim",
+    )
+    rec = _Rec()
+
+    doctor._check_issued_session_runtime(project, None, rec.p, rec.s, rec.f)
+
+    assert not rec.fails()
+    assert any(
+        "no active host-mounted commercial EDA request" in message
         for level, message in rec.events
         if level == "pass"
     )
