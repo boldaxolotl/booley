@@ -120,6 +120,12 @@ impl<W: std::io::Write + std::io::Seek> FstBodyWriter<W> {
         self.buffer.signal_change(signal_id, value)
     }
 
+    /// Apply VCD width extension/truncation and encode a signal change in one
+    /// writer operation.
+    pub fn signal_change_vcd(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
+        self.buffer.signal_change_vcd(signal_id, value)
+    }
+
     /// flushes all value change data to disk
     pub fn flush(&mut self) -> Result<()> {
         self.buffer.flush(&mut self.out)?;
