@@ -51,6 +51,7 @@ def test_deploy_preserves_unrelated_current_name_dangling_link(tmp_path: Path, m
     user_skill = tmp_path / "temporarily-unmounted-team-skills" / "booley-setup"
     link = target / "booley-setup"
     link.symlink_to(user_skill)
+    original_target = link.readlink()
 
     monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
     monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
@@ -59,7 +60,7 @@ def test_deploy_preserves_unrelated_current_name_dangling_link(tmp_path: Path, m
     init_skills._deploy_skills(ctx)
 
     assert link.is_symlink()
-    assert link.readlink() == user_skill
+    assert link.readlink() == original_target
     assert ctx.results[-1].status == "err"
 
 
