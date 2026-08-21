@@ -120,13 +120,20 @@ class TestCriteriaTemplateYAML:
         yaml_section = {
             "mandatory": {"lint_clean": ["lite"]},
             "optional": {
-                "mutation_score": {"min": 0.8},
+                "mutation_score": [
+                    {
+                        "target": "lite",
+                        "scope": ["rtl/top.sv"],
+                        "min_detected": 8,
+                        "total": 10,
+                    }
+                ],
             },
         }
         t = CriteriaTemplate.from_yaml(yaml_section)
         expanded = t.expand(["lite"])
         assert expanded["lint_clean_lite"] is True
-        assert expanded["mutation_score"] is False  # optional
+        assert expanded["mutation_score_lite"] is False  # optional
 
     def test_empty_criteria_section(self):
         t = CriteriaTemplate.from_yaml({})

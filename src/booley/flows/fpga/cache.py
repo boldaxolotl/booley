@@ -14,7 +14,7 @@ from typing import Any
 
 from booley.eda.vivado import POLICY_REVISION, SUPPORTED_VERSION
 
-CACHE_SCHEMA = 1
+CACHE_SCHEMA = 2
 CACHE_FILE = ".booley-fpga-cache.json"
 _IMPLEMENTATION_REVISION = 1
 _REPORT_PATTERNS = (
@@ -30,6 +30,7 @@ class CacheHit:
 
     fingerprint: str
     report_text: str
+    producer_evidence: dict[str, Any]
 
 
 def _package_version(name: str) -> str:
@@ -156,9 +157,12 @@ def store(
     fingerprint: str,
     *,
     require_bitstream: bool,
+    producer_evidence: dict[str, Any],
     min_mtime: float | None = None,
 ) -> bool:
     """Atomically record validated artifact digests after a successful route."""
+    if not _valid_producer_evidence(producer_evidence):
+        return False
     paths = _artifact_paths(
         work_root,
         require_bitstream=require_bitstream,
@@ -183,6 +187,7 @@ def store(
         "schema": CACHE_SCHEMA,
         "fingerprint": fingerprint,
         "require_bitstream": require_bitstream,
+        "producer_evidence": producer_evidence,
         "artifacts": artifacts,
     }
     work_root.mkdir(parents=True, exist_ok=True)
@@ -220,7 +225,11 @@ def load(
     parts = _read_report_text(expected_paths)
     if parts is None:
         return None
-    return CacheHit(fingerprint=fingerprint, report_text="\n".join(parts))
+    return CacheHit(
+        fingerprint=fingerprint,
+        report_text="\n".join(parts),
+        producer_evidence=dict(raw["producer_evidence"]),
+    )
 
 
 def _read_metadata(work_root: Path) -> dict[str, Any] | None:
@@ -241,7 +250,18 @@ def _metadata_matches(
         and raw.get("schema") == CACHE_SCHEMA
         and raw.get("fingerprint") == fingerprint
         and raw.get("require_bitstream") is require_bitstream
+        and _valid_producer_evidence(raw.get("producer_evidence"))
         and isinstance(raw.get("artifacts"), list)
+    )
+
+
+def _valid_producer_evidence(value: Any) -> bool:
+    """Return whether cache metadata identifies its producing run."""
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return False
+    return all(
+        isinstance(value.get(key), str) and bool(value[key])
+        for key in ("run_id", "source_revision", "source_sha256", "recipe_sha256")
     )
 
 

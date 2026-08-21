@@ -26,11 +26,9 @@ from pathlib import Path
 
 _BIT_RANGE_RE = re.compile(r"\[[\d:]+\]$")
 
-# Default DUT instance leaf name used by the literal-name heuristic when
-# no explicit dut_scope is provided.  Historically hardcoded as "dut";
-# Phase 8.4 derives the leaf from dut_info.dut_hier_path when the caller
-# plumbs it through (CLI: --dut-instance).  Single-DUT invariant: there
-# is exactly one DUT path per TB.
+# Default DUT instance leaf name used by the literal-name heuristic when no
+# explicit DUT scope is provided. A caller-provided hierarchy path can override
+# the conventional ``dut`` leaf.
 _DEFAULT_DUT_INSTANCE = "dut"
 
 
@@ -212,8 +210,8 @@ def build_dut_signal_map(
     Filters to signals under the DUT hierarchy.  If ``dut_scope`` is given,
     matches signals whose scope starts with it; otherwise auto-detects by
     looking for a component matching ``dut_instance`` in the hierarchy.
-    ``dut_instance`` defaults to ``"dut"`` — callers with a populated
-    ``dut_info`` should pass the leaf of ``dut_info.dut_hier_path``.
+    ``dut_instance`` defaults to ``"dut"``; callers with a known hierarchy
+    path should pass its leaf.
     """
     result: dict[str, tuple[str, VCDSignal]] = {}
 
@@ -302,9 +300,8 @@ def compare_signals(
     """Compare DUT signals between two simulator VCD files.
 
     ``dut_instance`` is the leaf instance name used by the literal-name
-    heuristic when no ``dut_scope_*`` is provided.  Derive it from
-    ``dut_info.dut_hier_path`` via ``_leaf_from_hier_path`` for
-    runs with a seeded dut_info; defaults to ``"dut"`` for legacy callers.
+    heuristic when no ``dut_scope_*`` is provided. Derive it from a known
+    hierarchy path via ``_leaf_from_hier_path``; the default is ``"dut"``.
     """
     result = ComparisonResult()
 
@@ -557,15 +554,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--dut-instance",
         default=_DEFAULT_DUT_INSTANCE,
         help="DUT instance leaf name used by the auto-detect "
-        "heuristic (default: 'dut'). Pass the leaf of "
-        "dut_info.dut_hier_path when known.",
+        "heuristic (default: 'dut'). Pass the known hierarchy leaf when needed.",
     )
     parser.add_argument(
         "--dut-hier-path",
         default=None,
-        help="Full DUT hierarchy path (e.g. tb.gen[0].uut); "
-        "the leaf is used as --dut-instance. Convenience "
-        "for passing dut_info.dut_hier_path directly.",
+        help="Full DUT hierarchy path (e.g. tb.gen[0].uut); the leaf is used as --dut-instance.",
     )
     parser.add_argument(
         "--start-time", type=int, default=0, help="Start comparison at this timestamp"

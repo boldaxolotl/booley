@@ -58,7 +58,7 @@ _COVERAGE_DETAIL_KEYS = {
 def _format_coverage_metric(key: str, d: dict, p: dict, stale: bool) -> str | None:
     """Format a coverage criterion's ``pct`` (need threshold%), or None if N/A."""
     for prefix, sub_key in _COVERAGE_DETAIL_KEYS.items():
-        if key == prefix:
+        if key == prefix or key.startswith(f"{prefix}_"):
             sub = d.get(sub_key, {})
             pct = sub.get("pct") if isinstance(sub, dict) else None
             if pct is not None:
@@ -129,7 +129,9 @@ def _format_sim_metric(d: dict, stale: bool) -> str | None:
     return "?" if stale else f"{passed}/{total} tests"
 
 
-def _format_finding_count_metric(key: str, d: dict, stale: bool) -> str | None:
+def _format_finding_count_metric(  # noqa: PLR0911
+    key: str, d: dict, stale: bool
+) -> str | None:
     """Format the two count-of-findings criteria families (lint, reviewer).
 
     Both read as ``clean`` at zero, so they share a branch; returns None when
@@ -143,7 +145,19 @@ def _format_finding_count_metric(key: str, d: dict, stale: bool) -> str | None:
 
     if key.startswith("review_"):
         issues = d.get("issues")
-        return None if issues is None else (f"{issues} issues" if issues else "clean")
+        if issues is None:
+            return None
+        waived = sum(
+            1
+            for finding in d.get("resolved", [])
+            if isinstance(finding, dict)
+            and finding.get("status") in {"waived", "impasse_deferred"}
+        )
+        if key.endswith("_done"):
+            return f"reviewed, {issues} findings"
+        if issues:
+            return f"{issues} open"
+        return f"clean ({waived} waived)" if waived else "clean"
 
     return None
 
@@ -176,7 +190,7 @@ def format_criterion_metric(key: str, entry) -> str:  # noqa: PLR0911 — metric
             return synth
 
     # Mutation score
-    if key == "mutation_score":
+    if key.startswith("mutation_score"):
         mutation = _format_mutation_metric(d)
         if mutation is not None:
             return mutation

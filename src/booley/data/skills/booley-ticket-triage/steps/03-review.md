@@ -40,9 +40,10 @@ facts include every declared criterion, feature-branch commit (oldest first),
 changed path (including renames and submodules), recorded scope deviation,
 current-run usage summary, and mechanical health check. The report agent supplies
 the recommendation, scope classifications, report summary, blockers, and findings.
-The status of `review_*_done` is copied exactly from persisted criterion state;
-never infer staleness from later commits. `review_*_clean` remains explicitly
-freshness-sensitive.
+Both `review_*_done` and `review_*_clean` are freshness-sensitive to their
+recorded source fingerprint. The package also lists every review finding and
+disposition deterministically; every accepted waiver, including `MINOR`, must
+appear with its justification.
 
 ## 3. Decision
 

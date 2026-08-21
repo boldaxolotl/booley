@@ -6,6 +6,7 @@ import json
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import quote
 
 from booley.harness import triage_package as tp
 
@@ -112,6 +113,39 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     assert Path(change["diff_right"]).read_text(encoding="utf-8").startswith("module new")
 
 
+def test_review_facts_include_every_waiver_with_justification(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["review_security_clean"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "issues": 0,
+            "pending": [],
+            "resolved": [
+                {
+                    "severity": "MINOR",
+                    "file": "rtl/new.sv",
+                    "line": 4,
+                    "summary": "Intentional visibility",
+                    "status": "waived",
+                    "justification": "The debug interface is required by the ticket.",
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "tokens=10 cost=$0.01")
+
+    facts = tp.build_review_facts(ctx)
+
+    waiver = facts["review_dispositions"][0]
+    assert waiver["disposition"] == "waived"
+    assert waiver["severity"] == "MINOR"
+    assert waiver["justification"] == "The debug interface is required by the ticket."
+
+
 def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     project = ctx.worktree / ".booley_project"
@@ -145,6 +179,35 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
     assert project_change["path"] == ".booley_project/cores/demo.core"
     assert Path(project_change["diff_left"]).read_text(encoding="utf-8") == ("name: ::demo:0\n")
     assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == ("name: ::demo:1\n")
+
+
+def test_review_facts_classify_symlink_binary_and_submodule_content(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    link = ctx.worktree / "rtl" / "link.sv"
+    link.symlink_to("new.sv")
+    (ctx.worktree / "rtl" / "blob.bin").write_bytes(b"before\0after")
+    submodule_commit = _git(ctx.worktree, "rev-parse", "HEAD")
+    _git(
+        ctx.worktree,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{submodule_commit},deps/ip",
+    )
+    _git(ctx.worktree, "add", "rtl/link.sv", "rtl/blob.bin")
+    _git(ctx.worktree, "commit", "-qm", "add special content")
+    ctx = replace(ctx, head_sha=_git(ctx.worktree, "rev-parse", "HEAD"))
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    changes = {row["path"]: row for row in tp.build_review_facts(ctx)["changed_files"]}
+
+    assert changes["rtl/link.sv"]["content_kind"] == "symlink"
+    assert changes["rtl/link.sv"]["presentation"] == "text"
+    assert changes["rtl/blob.bin"]["content_kind"] == "regular"
+    assert changes["rtl/blob.bin"]["presentation"] == "binary"
+    assert changes["deps/ip"]["content_kind"] == "submodule"
+    assert changes["deps/ip"]["action"] == "added"
+    assert changes["deps/ip"]["new_endpoint"]["workspace_path"] is None
 
 
 def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, monkeypatch):
@@ -185,7 +248,8 @@ def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, m
 
     assert mutation["report_path"] == str(report.resolve())
     assert "detected=7, total_valid=8, not_detected=1, invalid=0" in mutation["metric"]
-    assert f"[mutation_score]({report.resolve()})" in rendered
+    report_link = quote(str(report.resolve()), safe="/:")
+    assert f"[mutation_score]({report_link})" in rendered
 
 
 def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
@@ -397,7 +461,7 @@ def test_changed_file_links_are_absolute(tmp_path: Path):
 
     tp._render_changes(lines, package, set())
 
-    assert str(path.resolve()) in "\n".join(lines)
+    assert quote(str(path.resolve()), safe="/:") in "\n".join(lines)
 
 
 def test_changed_symlink_link_does_not_follow_target(tmp_path: Path):
@@ -417,5 +481,5 @@ def test_changed_symlink_link_does_not_follow_target(tmp_path: Path):
     tp._render_changes(lines, package, set())
 
     rendered = "\n".join(lines)
-    assert str(link.absolute()) in rendered
-    assert str(outside) not in rendered
+    assert quote(str(link.absolute()), safe="/:") in rendered
+    assert quote(str(outside), safe="/:") not in rendered

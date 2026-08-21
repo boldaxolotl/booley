@@ -96,55 +96,55 @@ group       = "review"
 [mutation_score]
 description = "Mutation testing achieves minimum kill rate"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "verification"
 
 [coverage_toggle]
 description = "Signal toggle coverage: every bit transitions both 0→1 and 1→0"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "coverage"
 hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
 
 [coverage_fsm]
 description = "FSM state coverage: all identified states visited during simulation"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "coverage"
 hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
 
 [coverage_value]
 description = "Value coverage: sufficient value diversity observed per signal"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "coverage"
 hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
 
 [coverage_branch]
 description = "Branch coverage: RTL branch conditions exercised both true and false"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "coverage"
 hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
 
 [coverage_expression]
 description = "Expression coverage: sub-expression decomposition of branch conditions"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "coverage"
 hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
 
 [coverage_mean]
 description = "Mean coverage across the enabled coverage metrics meets threshold"
 workflow_region = "post_sim"
-per_target  = false
-category    = "none"
+per_target  = true
+category    = "rtl"
 group       = "coverage"
 hidden      = true  # coverage_analyst is de-registered (registry.SKIP_MODULES)
 

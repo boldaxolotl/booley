@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from booley.config.editor import VSCODE_EDITOR, ResolvedEditor
+from booley.config.editor import VSCODE_EDITOR, ResolvedEditor, resolve_editor
 
 
 class TestVSCodeEditor:
@@ -18,6 +18,18 @@ class TestVSCodeEditor:
 
     def test_diff_template(self):
         assert VSCODE_EDITOR.diff == ("code", "--diff", "{left}", "{right}")
+
+    def test_resolver_uses_first_supported_installed_editor(self):
+        found = {"codium": "/opt/bin/codium"}
+
+        editor = resolve_editor(found.get)
+
+        assert editor is not None
+        assert editor.open[0] == "/opt/bin/codium"
+        assert editor.diff == ("/opt/bin/codium", "--diff", "{left}", "{right}")
+
+    def test_resolver_returns_none_when_no_editor_is_installed(self):
+        assert resolve_editor(lambda _command: None) is None
 
 
 class TestResolvedEditor:

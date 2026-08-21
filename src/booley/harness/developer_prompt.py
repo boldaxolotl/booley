@@ -68,16 +68,11 @@ The following environment variables are set and propagated to MCP tool calls aut
 - `BOOLEY_LOGS_DIR` — directory for Flow and Specialist reports and artifacts
 - `BOOLEY_STATE_FILE` — path to booley_state.json (criteria tracking)
 
-**Fill the `dut_info` before doing any work.** It is the design-under-test \
-identity that gates simulate/coverage and you are its only author. Read \
-the ticket and the RTL/TB sources, then directly edit the `dut_info` object in \
-`$BOOLEY_STATE_FILE` with: `dut_top_module` (the DUT's module name inside the \
-built design) and `dut_hier_path` (the DUT instance path inside the TB, e.g. \
-`tb_top.dut`). The RTL-vs-TB source partition and the TB top come from the \
-FuseSoC `.core` Target (testbench filesets carry `tags: [tb]`; the TB top is \
-the sim Target's `toplevel`), so they are not part of `dut_info`. The next MCP tool \
-call validates the block, so populate it accurately before invoking any other \
-MCP tool.
+Targets are the execution boundary. Select the criterion's Target when invoking \
+a Flow or Specialist. Mutation and coverage automatically run the complete \
+runnable test suite declared for that Target; do not narrow them to one test. \
+The specialists derive module and hierarchy identity from the Target, scoped \
+RTL, and produced traces.
 
 """
 
@@ -85,11 +80,15 @@ _RULES_PREFIX = """\
 1. **CRITERIA FRESHNESS**: Any RTL/TB edit makes affected checks stale. The \
 Booley Flow framework resets stale criteria automatically; rerun the relevant lint, \
 simulation, and synthesis criteria before finishing. Reviews are the \
-exception: a `_done` review that already completed is one-shot and is never \
-reset by later edits. Calling `reviewer` again for that `_done` gate just \
-replays the recorded verdict (exit 0, no new review). An unmet `_clean` review \
-is different: fix its findings, then call `reviewer` again to verify them, \
-repeating until the gate passes or the reviewer reaches its bounded impasse.
+same: a passing review records the source fingerprint it checked and later \
+RTL/TB edits make it stale. A `_done` review is terminal and advisory: run it \
+only after every code-changing criterion, report every finding, and do not edit \
+the implementation in response during this ticket run. An unmet `_clean` review \
+is a resolution loop: fix each finding or propose an explicit waiver through \
+`reviewer --steer` with a specific justification, then call `reviewer` again. \
+The reviewer validates every FIXED or WAIVED disposition. Every accepted waiver, \
+including MINOR findings, is persisted and shown to the user. Never treat a \
+retry cap as permission to waive a finding silently.
 
 """
 
@@ -119,13 +118,14 @@ report, submit a fresh report.
 """
 
 # Rendered when the project disables routine run reports ([developer]
-# run_report = false). An unmet optional criterion still needs a justification,
-# so that exceptional path retains the report as its evidence artifact.
+# run_report = false). Review results that must reach the user and unmet optional
+# criteria still require a report, so those exceptional paths retain an artifact.
 _RULE_EXIT_NO_REPORT = """\
-2. **EXIT CONDITION**: This project disables routine end-of-run reports. When \
-all mandatory and optional criteria are met, the run is complete — stop \
-without calling `submit_run_report`. If any optional criteria remain unmet, \
-your final action is `submit_run_report`; pass \
+2. **EXIT CONDITION**: This project disables routine end-of-run reports. You \
+must still call `submit_run_report` when the ticket has any `_done` review, any \
+accepted `_clean` review waiver, or any unmet optional criterion, because those \
+results must reach the user. Otherwise, when all criteria are met, stop without \
+calling it. For unmet optional criteria, pass \
 `optional_criteria_justification` explaining why each one could not be \
 completed. The report is required in that case even though routine reports \
 are disabled.
@@ -395,17 +395,23 @@ def _criteria_keys(criteria: dict[str, Any]) -> set[str]:
 def _collect_workflow_buckets(
     keys: set[str],
     criterion_endpoint_map: dict[str, tuple[str, str]],
-) -> tuple[list[str], bool, list[str]]:
-    """Bucket criterion endpoints into pre-sim, sim-loop, and post-sim regions."""
+) -> tuple[list[str], bool, list[str], list[str]]:
+    """Bucket endpoints into fixable regions and terminal ``_done`` reviews."""
     pre_sim: list[str] = []
     core_loop = False
     post_sim: list[str] = []
+    final_reviews: list[str] = []
 
     for crit_key in keys:
         for prefix, (endpoint_name, region) in criterion_endpoint_map.items():
             clean_key = f"{prefix}_clean"
             if crit_key not in (prefix, clean_key) and not crit_key.startswith(prefix + "_"):
                 continue
+
+            if crit_key.startswith("review_") and crit_key.endswith("_done"):
+                if endpoint_name not in final_reviews:
+                    final_reviews.append(endpoint_name)
+                break
 
             if region == "pre_sim" and endpoint_name not in pre_sim:
                 pre_sim.append(endpoint_name)
@@ -419,6 +425,7 @@ def _collect_workflow_buckets(
         _sort_by_workflow_region(pre_sim, criterion_endpoint_map),
         core_loop,
         _sort_by_workflow_region(post_sim, criterion_endpoint_map),
+        _sort_by_workflow_region(final_reviews, criterion_endpoint_map),
     )
 
 
@@ -432,7 +439,7 @@ def _build_criteria_workflow(
     if criterion_endpoint_map is None:
         criterion_endpoint_map = _get_criterion_endpoint_map()
 
-    pre_sim, core_loop, post_sim = _collect_workflow_buckets(
+    pre_sim, core_loop, post_sim, final_reviews = _collect_workflow_buckets(
         _criteria_keys(criteria),
         criterion_endpoint_map,
     )
@@ -450,6 +457,11 @@ def _build_criteria_workflow(
         )
     if post_sim:
         parts.append(f"**Post-sim criteria:** {', '.join(post_sim)}")
+    if final_reviews:
+        parts.append(
+            "**Final advisory reviews (terminal; report findings, do not fix):** "
+            + ", ".join(final_reviews)
+        )
     return "\n".join(parts)
 
 
@@ -478,11 +490,14 @@ def build_workflow_section(
             f"Use {_capability_list()} freely; the harness enforces no ordering "
             "between regions.\n\n"
             "Review mode controls what happens after findings. A `_done` gate "
-            "is a one-shot completion record regardless of findings and is "
-            "never reopened by later edits, so finish the code you intend to "
-            "ship before spending it. An unmet `_clean` gate instead starts a "
-            "bounded fix-and-reverify loop: fix its findings, then invoke "
-            "`reviewer` again until verification passes or reports an impasse."
+            "is a final advisory review: it completes regardless of findings, "
+            "must be reported to the user, and must not trigger edits in this "
+            "ticket run. Later edits make it stale. An unmet `_clean` gate "
+            "starts a bounded disposition loop: fix findings or propose explicit "
+            "waivers with specific justifications through `--steer`, then invoke "
+            "`reviewer` again. The gate passes only when no finding remains open; "
+            "every accepted waiver is persisted and shown to the user regardless "
+            "of severity."
         )
     implementation = _implementation_region(ticket_type)
     implementation_text = f"{implementation}\n\n" if implementation else ""

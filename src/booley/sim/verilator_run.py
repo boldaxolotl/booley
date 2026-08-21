@@ -32,7 +32,6 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
 
 from booley.sim.sim_result import (
     count_sva_errors,
@@ -50,72 +49,6 @@ from booley.sim.trace_session import TraceSession
 #: Frequent enough that a poll a few seconds apart shows movement, rare enough
 #: that a chatty sim does not turn the log into a write loop (fpu F-18).
 RUN_LOG_PROGRESS_INTERVAL_S = 5.0
-
-
-def _check_dut_info_diagnostics(
-    combined_output: str,
-    dut_info: Any = None,
-) -> str | None:
-    """Scan Verilator elab+sim stdout+stderr for dut_info-mismatch patterns.
-
-    EMPIRICAL — Verilator's wording differs from iverilog's and may shift
-    across versions.  Patterns derived from observed failures:
-      * "Cannot find file" / "Cannot find module" — top/source file
-        missing, typically tb_top_module or dut_files stale.
-      * "no such scope" / "Scope not found" / "Hierarchical reference
-        not found" — a $dumpvars or +trace path did not resolve, i.e.
-        dut_hier_path is stale.
-      * "%Error: ... Cannot find top" — Verilator-specific top-module
-        resolution failure (tb_top_module stale).
-
-    Returns a human-readable message naming the suspected stale field,
-    or None when no pattern matches.
-    """
-    if not combined_output:
-        return None
-    hier_markers = (
-        "no such scope",
-        "Scope not found",
-        "Hierarchical reference not found",
-        "Can't find definition of variable",
-    )
-    top_markers = (
-        "Cannot find file",
-        "Cannot find module",
-        "Cannot find top",
-        "Cannot find top module",
-    )
-
-    matched_lines: list[str] = []
-    matched_field: str | None = None
-    for line in combined_output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if matched_field is None and any(m in stripped for m in hier_markers):
-            matched_field = "dut_hier_path"
-        if matched_field is None and any(m in stripped for m in top_markers):
-            matched_field = "tb_top_module"
-        if any(m in stripped for m in hier_markers + top_markers):
-            matched_lines.append(stripped)
-
-    if matched_field is None:
-        return None
-
-    expected = ""
-    if dut_info is not None:
-        if matched_field == "dut_hier_path":
-            expected = getattr(dut_info, "dut_hier_path", "") or ""
-        elif matched_field == "tb_top_module":
-            expected = getattr(dut_info, "tb_top_module", "") or ""
-
-    snippet = "\n".join(matched_lines[:5])
-    parts = [f"dut_info stale: {matched_field} in state does not match elaborated design."]
-    if expected:
-        parts.append(f"Expected: {expected}")
-    parts.append(f"Diagnostic: {snippet}")
-    parts.append("Correct dut_info.")
-    return "\n".join(parts)
 
 
 def _find_binary(bin_dir: Path, top_module: str) -> Path | None:

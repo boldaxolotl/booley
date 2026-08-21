@@ -49,7 +49,6 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
 
 from booley.sim.sim_result import (
     count_sva_errors,
@@ -223,62 +222,6 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
         print(msg)
         lines.append(msg + "\n")
     return lines, proc
-
-
-def _check_dut_info_diagnostics(
-    combined_output: str,
-    dut_info: Any = None,
-) -> str | None:
-    """Scan elab stdout+stderr for known dut_info-mismatch patterns.
-
-    Returns a human-readable message naming the suspected stale field, or None
-    when no pattern matches. Patterns are empirical — iverilog's wording is
-    fairly stable but may shift across versions. (Relocated from the retired
-    ``run_iverilog_sim`` so simulate's Icarus diagnostic survives that deletion.)
-
-    Pattern catalogue:
-      * "Unable to bind variable" / "Unable to find" — the $dumpvars hier path
-        bound at elab time did not resolve, indicating dut_hier_path is stale.
-      * "Unknown module" / "Cannot find module" — the -s top_module flag could
-        not resolve, indicating tb_top_module is stale.
-    """
-    if not combined_output:
-        return None
-    # dut_hier_path mismatches surface from $dumpvars binding failures.
-    hier_markers = ("Unable to bind variable", "Unable to find")
-    # tb_top_module mismatches surface from the top-level -s flag.
-    top_markers = ("Unknown module", "Cannot find module")
-
-    matched_lines: list[str] = []
-    matched_field: str | None = None
-    for line in combined_output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if matched_field is None and any(m in stripped for m in hier_markers):
-            matched_field = "dut_hier_path"
-        if matched_field is None and any(m in stripped for m in top_markers):
-            matched_field = "tb_top_module"
-        if any(m in stripped for m in hier_markers + top_markers):
-            matched_lines.append(stripped)
-
-    if matched_field is None:
-        return None
-
-    expected = ""
-    if dut_info is not None:
-        if matched_field == "dut_hier_path":
-            expected = getattr(dut_info, "dut_hier_path", "") or ""
-        elif matched_field == "tb_top_module":
-            expected = getattr(dut_info, "tb_top_module", "") or ""
-
-    snippet = "\n".join(matched_lines[:5])
-    parts = [f"dut_info stale: {matched_field} in state does not match elaborated design."]
-    if expected:
-        parts.append(f"Expected: {expected}")
-    parts.append(f"Diagnostic: {snippet}")
-    parts.append("Correct dut_info.")
-    return "\n".join(parts)
 
 
 def _evaluate_verdict(

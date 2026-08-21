@@ -1,14 +1,9 @@
-"""Editor configuration for Console clickable links.
-
-The Console always launches VS Code (``code``) for clickable file/ticket
-links — no user configuration. VS Code is already a hard dependency of
-Interactive Mode (ADR 0018), so assuming it here keeps the click path
-trivial. If ``code`` is not on PATH the subprocess layer degrades to a
-status-bar hint on the first click (see ``console/links.invoke``).
-"""
+"""Resolution of supported VS Code-family editor commands."""
 
 from __future__ import annotations
 
+import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -30,10 +25,37 @@ class ResolvedEditor:
     diff: tuple[str, ...] | None
 
 
-# The one and only editor. Tokens stay in argv form (no shell quoting) so
-# the click subprocess layer never goes through a shell.
-VSCODE_EDITOR = ResolvedEditor(
-    open=("code", "--goto", "{file}"),
-    open_at_line=("code", "--goto", "{file}:{line}"),
-    diff=("code", "--diff", "{left}", "{right}"),
-)
+EDITOR_COMMANDS = ("code", "code-insiders", "codium", "cursor", "windsurf")
+
+
+def editor_for_command(command: str) -> ResolvedEditor:
+    """Build argv templates for one VS Code-compatible command."""
+    return ResolvedEditor(
+        open=(command, "--goto", "{file}"),
+        open_at_line=(command, "--goto", "{file}:{line}"),
+        diff=(command, "--diff", "{left}", "{right}"),
+    )
+
+
+def resolve_editor_command(
+    which: Callable[[str], str | None] | None = None,
+) -> str | None:
+    """Return the first supported editor executable present on ``PATH``."""
+    resolver = which or shutil.which
+    for command in EDITOR_COMMANDS:
+        if found := resolver(command):
+            return found
+    return None
+
+
+def resolve_editor(
+    which: Callable[[str], str | None] | None = None,
+) -> ResolvedEditor | None:
+    """Resolve immutable command templates for the installed editor."""
+    command = resolve_editor_command(which)
+    return editor_for_command(command) if command is not None else None
+
+
+# Backward-compatible default for callers that need a launch attempt even when
+# discovery has not run yet.
+VSCODE_EDITOR = editor_for_command("code")

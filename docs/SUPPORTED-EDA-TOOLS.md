@@ -35,6 +35,14 @@ Two axes govern every flow:
   select a host command, path, arbitrary mount, license destination, or
   execution location.
 
+For every host-provisioned EDA tool, the built-in policy owns one canonical
+container path. The administrator may register different host installation
+paths, but every approved installation of a given tool is mounted at that same
+read-only destination inside the Session Runtime. Neither the Project nor the
+Installation Registration can configure the destination. This gives wrappers,
+Flows, Doctor checks, and future image changes one stable tool layout instead
+of making container paths part of Project configuration.
+
 ## Built-in flows
 
 | Booley Flow | EDA tool | Provisioning | Trace | Requirements |
@@ -50,7 +58,8 @@ Two axes govern every flow:
 
 Vivado 2025.2 on Linux x86-64 is the first supported host-provisioned EDA
 policy. An administrator registers its release root, and Booley mounts that
-root read-only at a fixed target inside the Session Runtime. The wrapper,
+root read-only at the fixed target `/opt/booley-eda/vivado` inside the Session
+Runtime. The wrapper,
 compatibility libraries, locale, image identity, mount, and environment are
 host-issued policy rather than Project settings. Vivado itself executes inside
 the runtime.

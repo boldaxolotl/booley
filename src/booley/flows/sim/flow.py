@@ -9,7 +9,6 @@ cycle count extraction, and structured JSON reporting.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import logging
 import os
@@ -22,7 +21,6 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, ClassVar
 
 from booley.config.project_config import lookup_target_section, render_test_selector
@@ -51,6 +49,7 @@ from ..flow_config import (
 )
 from ..human_display import cap_target_items
 from . import edam as sim_edam
+from .target_tests import resolve_target_test_suite
 
 logger = logging.getLogger(__name__)
 
@@ -169,18 +168,10 @@ _DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3  # 5 GiB
 # the open-source Verilator and Icarus run halves.
 _TRACE_CLEANUP_MARGIN_S = 90
 
-# Principle 9 (depend on abstractions): the one place that names each EDA-tool
-# family's concrete run-half module. ``_detect_dut_info_diagnostic`` and the
-# diagnostic helpers resolve the module through this registry instead of
-# re-scattering ``if eda_tool == …`` import chains. Every run-half exposes a
-# uniform ``_check_dut_info_diagnostics(output, dut_info)``.
 _SIM_RUN_HALVES: dict[str, str] = {
     "icarus": "booley.sim.iverilog_run",
     "verilator": "booley.sim.verilator_run",
 }
-# Run-half used when the resolved EDA tool has no dedicated entry (mirrors the old
-# fall-through default in ``_detect_dut_info_diagnostic``).
-_DEFAULT_RUN_HALF = "booley.sim.verilator_run"
 
 # Max error lines shown per test in the display box
 _MAX_DISPLAY_ERRORS = 3
@@ -375,28 +366,6 @@ def parse_sva_errors(output: str) -> int:
             if "Assertion" in line and ("FAILED" in line or "ERROR" in line):
                 count += 1
         return count
-
-
-def _detect_dut_info_diagnostic(
-    combined_output: str,
-    eda_tool: str,
-    dut_info: Any,
-) -> str | None:
-    """Route the combined sim output to the EDA-tool-specific diagnostic
-    helper.  Returns a structured stale-dut_info message or None.
-
-    ``eda_tool`` is the run-half family (``"verilator"``/``"icarus"``) derived
-    from the resolved Target — see :func:`sim_edam.normalize_eda_tool`. The
-    per-EDA-tool helpers in iverilog_run / verilator_run do the pattern matching —
-    they live next to the code that emits the underlying errors (the edalize
-    Icarus and Verilator run-halves).
-    """
-    module_name = _SIM_RUN_HALVES.get(eda_tool, _DEFAULT_RUN_HALF)
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError:
-        return None
-    return module._check_dut_info_diagnostics(combined_output, dut_info)
 
 
 def _resolve_run_cwd(work_dir: Path | None = None) -> str | None:
@@ -1111,9 +1080,6 @@ class SimulateFlow(BooleyFlow):
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
-
-    def required_dut_info_halves(self) -> frozenset[str]:
-        return frozenset({"dut", "tb"})
 
     def _add_args(self, parser: Any) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
@@ -2287,24 +2253,6 @@ class SimulateFlow(BooleyFlow):
             )
             error_tail = f"{trace_msg}\n{error_tail}".rstrip()
 
-        # Phase 5.4: when elab failed (or sim subprocess output carries a
-        # known stale-dut_info pattern), prepend the structured diagnostic
-        # so the developer gets actionable text rather than a generic
-        # tail.  Best-effort — only fires when the patterns match.
-        if not passed:
-            # ADR 0022 dec 14: the expected tb_top comes from the resolved
-            # Target (``tb_top_for_target``), not a stored ``dut_info`` field;
-            # ``dut_hier_path`` is the surviving DUT-overlay field.  Pass a shim
-            # so the runner-side diagnostics keep their ``dut_info``-shaped API.
-            diag_info = SimpleNamespace(
-                dut_hier_path=self.state.dut_info.dut_hier_path,
-                tb_top_module=self._tb_top_for_target(target),
-            )
-            diag = _detect_dut_info_diagnostic(
-                combined, self._eda_tool_for_target(target), diag_info
-            )
-            if diag:
-                error_tail = diag + "\n\n" + error_tail
         return error_tail
 
     def _validate_interactive_args(
@@ -2338,10 +2286,7 @@ class SimulateFlow(BooleyFlow):
         Returns a terminal ``McpToolResult`` on the first validation error;
         otherwise ``(targets, test_names_map)`` for the caller to continue with.
         """
-        # tb_top now comes from the resolved Target, not dut_info; --trace-scope
-        # has left the simulate surface (the --trace overlay traces full hierarchy).
-        # In Interactive Mode (no state file) the dut_info gate is bypassed, so we
-        # re-validate config selection here.
+        # The Target owns its top and trace hierarchy; validate selection here.
         selection = self._resolve_execution()
         selection_error = self.validate_execution(selection)
         if selection_error is not None:
@@ -3323,9 +3268,9 @@ class SimulateFlow(BooleyFlow):
         known test is skipped (a misconfigured all-skip), the skips are ignored
         rather than letting the target pass vacuously with zero tests run.
         """
-        available_tests = lookup_target_section(test_names_map, target) or []
-        skips = self._effective_skips(target)
         if self.args.test:
+            available_tests = lookup_target_section(test_names_map, target) or []
+            skips = self._effective_skips(target)
             matched = _filter_tests(available_tests, self.args.test)
             # No match: a declared-but-unmatched name is rejected up front by
             # _validate_test_selector, so this branch is only reached when the
@@ -3335,13 +3280,18 @@ class SimulateFlow(BooleyFlow):
             kept = [t for t in matched if t not in skips]
             # Explicit --test naming only skipped tests overrides the skip list.
             return kept or matched
-        if available_tests:
-            kept = [t for t in available_tests if t not in skips]
-            # Guard: never run zero tests (would pass vacuously) — an all-skip
-            # target is a misconfig; run everything and let the note surface it.
+        if self.args.skip:
+            available_tests = lookup_target_section(test_names_map, target) or []
+            if not available_tests:
+                return [None]
+            kept = [test for test in available_tests if test not in self._effective_skips(target)]
             return kept or list(available_tests)
-        # No test list available — single run without --test
-        return [None]
+        suite = resolve_target_test_suite(
+            target,
+            test_names=test_names_map,
+            test_skips=_get_test_skips(),
+        )
+        return list(suite.tests)
 
     def _skipped_tests(
         self,
@@ -3355,10 +3305,18 @@ class SimulateFlow(BooleyFlow):
         Empty when nothing was skipped, when ``--test`` overrode the skip list,
         or in the all-skip fallback (where skips were ignored, not applied).
         """
-        run = set(self._resolve_tests_to_run(target, test_names_map))
-        skips = self._effective_skips(target)
-        available = lookup_target_section(test_names_map, target) or []
-        return [t for t in available if t in skips and t not in run]
+        if self.args.test or self.args.skip:
+            run = set(self._resolve_tests_to_run(target, test_names_map))
+            skips = self._effective_skips(target)
+            available = lookup_target_section(test_names_map, target) or []
+            return [t for t in available if t in skips and t not in run]
+        return list(
+            resolve_target_test_suite(
+                target,
+                test_names=test_names_map,
+                test_skips=_get_test_skips(),
+            ).skipped
+        )
 
     def _handle_dry_run(
         self,

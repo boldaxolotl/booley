@@ -15,7 +15,6 @@ from booley.harness.console.widgets import (
     StatusBar,
     TicketHeader,
     TopStrip,
-    _format_dut_info,
     _render_entry_line,
 )
 
@@ -72,33 +71,6 @@ class BottomStripTestApp(App):
 class StatusBarTestApp(App):
     def compose(self) -> ComposeResult:
         yield StatusBar()
-
-
-# ===========================================================================
-# _format_dut_info — pure helper
-# ===========================================================================
-
-
-class TestFormatDutInfo:
-    def test_both_present(self):
-        s = _format_dut_info({"dut_top_module": "fifo", "tb_top_module": "tb_fifo"})
-        assert s == "DUT: fifo  |  TB: tb_fifo"
-
-    def test_dut_missing(self):
-        """An unplanned slot is omitted, not placeheld."""
-        s = _format_dut_info({"tb_top_module": "tb_fifo"})
-        assert s == "TB: tb_fifo"
-
-    def test_tb_missing(self):
-        s = _format_dut_info({"dut_top_module": "fifo"})
-        assert s == "DUT: fifo"
-
-    def test_both_missing(self):
-        """Nothing known yet → no line at all (callers skip on empty)."""
-        assert _format_dut_info({}) == ""
-
-    def test_none(self):
-        assert _format_dut_info(None) == ""
 
 
 # ===========================================================================
@@ -362,8 +334,8 @@ class TestTicketHeader:
             assert not header.has_class("expanded")
 
     @pytest.mark.asyncio
-    async def test_dut_info_hidden_when_empty(self):
-        """No DUT/TB line before the developer plans them — placeholders read as clutter."""
+    async def test_no_legacy_dut_or_tb_placeholders(self):
+        """The ticket header does not render removed DUT/TB placeholders."""
         async with TicketHeaderTestApp().run_test() as pilot:
             header = pilot.app.query_one(TicketHeader)
             header.set_ticket_info("test", "feature", "main")
@@ -372,17 +344,6 @@ class TestTicketHeader:
             assert "DUT:" not in content
             assert "TB:" not in content
             assert "not yet planned" not in content
-
-    @pytest.mark.asyncio
-    async def test_dut_info_rendered_from_state(self):
-        async with TicketHeaderTestApp().run_test() as pilot:
-            header = pilot.app.query_one(TicketHeader)
-            header.set_ticket_info("test", "feature", "main")
-            header.update_dut_info({"dut_top_module": "fifo", "tb_top_module": "tb_fifo"})
-            await pilot.pause()
-            content = str(header.query_one("#header-content").render())
-            assert "DUT: fifo" in content
-            assert "TB: tb_fifo" in content
 
     @pytest.mark.asyncio
     async def test_met_failing_and_not_run_split(self):
