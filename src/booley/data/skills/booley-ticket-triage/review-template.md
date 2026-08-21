@@ -44,6 +44,12 @@
 | Review | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 | Other | <criterion> | mandatory/optional | met/unmet/STALE/not run | <value and source> |
 
+#### Review findings and dispositions
+
+| Criterion | Severity | Location | Disposition | Finding / justification |
+|-----------|----------|----------|-------------|-------------------------|
+| <review criterion> | CRITICAL/MAJOR/MINOR | `<path>:<line>` | fixed/waived | <finding summary and waiver justification, if any> |
+
 #### Commit history
 
 - `<abbreviated SHA>` — <complete commit subject; one line per commit, oldest first>

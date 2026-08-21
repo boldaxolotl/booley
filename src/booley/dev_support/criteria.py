@@ -694,8 +694,8 @@ def _is_review_base_key(key: str) -> bool:
     """True if *key* is a review criterion base (no verdict suffix).
 
     Bare YAML review criteria mean "currently clean" and therefore expand to
-    ``_clean``. Authors who intentionally want a one-shot completed-review gate
-    can still spell ``_done`` explicitly.
+    ``_clean``. Authors who intentionally want a terminal advisory review that
+    reports findings without fixing them can spell ``_done`` explicitly.
     """
     return key.startswith("review_") and not key.endswith(("_done", "_clean"))
 
@@ -715,7 +715,7 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
       - scalar (str/bool/None): simple criterion, no expansion
 
     Review base keys (``review_rtl_spec``, ``review_tb_quality``, etc.)
-    expand into ``_clean``. Explicit ``_done`` retains one-shot semantics.
+    expand into ``_clean``. Explicit ``_done`` retains terminal advisory semantics.
     """
     if _is_review_base_key(key):
         return [CriterionSpec(f"{key}_clean", mandatory=mandatory)]

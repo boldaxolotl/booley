@@ -23,7 +23,7 @@ def _skill(root: Path, name: str) -> Path:
 
 def test_deploy_replaces_current_name_dangling_link(tmp_path: Path, monkeypatch):
     require_symlinks(tmp_path)
-    old_skill = _skill(tmp_path / "old" / "skills", "booley-setup")
+    old_skill = _skill(tmp_path / "old" / "booley" / "data" / "skills", "booley-setup")
     packaged = tmp_path / "installed" / "skills"
     new_skill = _skill(packaged, "booley-setup")
     target = tmp_path / "host" / "skills"
@@ -40,6 +40,28 @@ def test_deploy_replaces_current_name_dangling_link(tmp_path: Path, monkeypatch)
 
     assert link.resolve(strict=True) == new_skill.resolve()
     assert ctx.results[-1].status == "ok"
+
+
+def test_deploy_preserves_unrelated_current_name_dangling_link(tmp_path: Path, monkeypatch):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "booley" / "data" / "skills"
+    _skill(packaged, "booley-setup")
+    target = tmp_path / "host" / "skills"
+    target.mkdir(parents=True)
+    user_skill = tmp_path / "temporarily-unmounted-team-skills" / "booley-setup"
+    link = target / "booley-setup"
+    link.symlink_to(user_skill)
+    original_target = link.readlink()
+
+    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
+    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
+    ctx = InitContext(project_root=tmp_path)
+
+    init_skills._deploy_skills(ctx)
+
+    assert link.is_symlink()
+    assert link.readlink() == original_target
+    assert ctx.results[-1].status == "err"
 
 
 def test_deploy_records_link_creation_failure(tmp_path: Path, monkeypatch):
@@ -96,7 +118,7 @@ def test_deploy_preserves_healthy_link(tmp_path: Path, monkeypatch):
 
 @pytest.mark.skipif(os.name != "nt", reason="requires NTFS junctions")
 def test_prune_removes_current_name_dangling_windows_junction(tmp_path: Path):
-    old_skill = _skill(tmp_path / "old" / "skills", "booley-setup")
+    old_skill = _skill(tmp_path / "old" / "booley" / "data" / "skills", "booley-setup")
     target = tmp_path / "host" / "skills"
     target.mkdir(parents=True)
     link = target / "booley-setup"

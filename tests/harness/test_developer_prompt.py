@@ -163,16 +163,12 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
 
         assert "attempt every optional criterion" in system
         assert "disables routine end-of-run reports" in system
-        assert "all mandatory and optional criteria are met" in system
+        assert "must still call `submit_run_report`" in system
+        assert "any `_done` review" in system
         assert "optional_criteria_justification" in system
         assert "required in that case" in system
 
-    def test_criteria_freshness_rule_excludes_one_shot_reviews(self, tmp_path: Path):
-        """Rule 1 must not tell the agent to rerun a passed review (F-49).
-
-        The reviewer refuses to re-run a passed ``_done`` category; a prompt
-        that orders a rerun puts the two contracts in direct conflict.
-        """
+    def test_criteria_freshness_rule_covers_terminal_reviews(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"
         ticket.write_text("---\nsummary: x\n---\n", encoding="utf-8")
 
@@ -186,11 +182,10 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
             )
         )
         assert "simulation, and synthesis criteria before finishing" in system
-        assert "and review criteria before finishing" not in system
-        assert "one-shot and is never" in system
-        assert "replays the recorded verdict (exit 0, no new review)" in system
-        assert "An unmet `_clean` review is different" in system
-        assert "call `reviewer` again to verify them" in system
+        assert "A `_done` review is terminal and advisory" in system
+        assert "later RTL/TB edits make it stale" in system
+        assert "fix each finding or propose an explicit waiver" in system
+        assert "Every accepted waiver" in system
 
     def test_baseline_qor_rule_requires_relative_implementation_criterion(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"
@@ -811,7 +806,7 @@ class TestBuildWorkflowSection:
         assert "enforces no ordering" in section.lower()
 
     def test_distinguishes_done_review_from_clean_verify_loop(self):
-        """Workflow guidance must not describe every reviewer gate as one-shot."""
+        """Workflow guidance distinguishes terminal reviews from disposition loops."""
         section = build_workflow_section(
             criteria={
                 "mandatory": {
@@ -822,12 +817,11 @@ class TestBuildWorkflowSection:
             }
         )
         lowered = section.lower()
-        assert "one-shot" in lowered
+        assert "final advisory review" in lowered
         assert "regardless of findings" in lowered
         assert "an unmet `_clean` gate" in lowered
         assert "invoke `reviewer` again" in section
-        assert "until verification passes or reports an impasse" in section
-        assert "reviewer` gates are one-shot" not in lowered
+        assert "waivers with specific justifications" in lowered
 
     # --- Criteria-driven workflow tests ---
 

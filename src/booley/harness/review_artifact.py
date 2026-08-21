@@ -17,6 +17,7 @@ CONTENT_KINDS = frozenset({"regular", "symlink", "submodule"})
 PRESENTATIONS = frozenset({"text", "binary", "unavailable"})
 CRITERION_OUTCOMES = frozenset({"met", "unmet", "not_run"})
 CRITERION_FRESHNESS = frozenset({"current", "stale", "unknown"})
+REVIEW_DISPOSITIONS = frozenset({"reported", "open", "fixed", "waived", "excluded"})
 RECOMMENDATIONS = frozenset({"approve", "reset", "archive", "hold"})
 
 
@@ -246,6 +247,62 @@ class CriterionRow:
 
 
 @dataclass(frozen=True)
+class ReviewDispositionRow:
+    """One deterministic review finding and its current disposition."""
+
+    criterion: str
+    finding_id: str
+    severity: str
+    file: str
+    line: int
+    summary: str
+    disposition: str
+    evidence: str
+    justification: str
+    exclusion_reason: str
+    actor: str
+
+    @classmethod
+    def parse(cls, value: Any) -> ReviewDispositionRow:
+        row = require_dict(value, field="review disposition")
+        line = row.get("line")
+        if not isinstance(line, int) or isinstance(line, bool) or line < 0:
+            raise ReviewArtifactError("review disposition line must be non-negative integer")
+        disposition = _enum(row, "disposition", REVIEW_DISPOSITIONS)
+        justification = str(row.get("justification", ""))
+        if disposition == "waived" and not justification.strip():
+            raise ReviewArtifactError("waived review disposition needs justification")
+        return cls(
+            criterion=require_str(row, "criterion"),
+            finding_id=str(row.get("finding_id", "")),
+            severity=require_str(row, "severity"),
+            file=str(row.get("file", "")),
+            line=line,
+            summary=require_str(row, "summary"),
+            disposition=disposition,
+            evidence=str(row.get("evidence", "")),
+            justification=justification,
+            exclusion_reason=str(row.get("exclusion_reason", "")),
+            actor=str(row.get("actor", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "criterion": self.criterion,
+            "finding_id": self.finding_id,
+            "severity": self.severity,
+            "file": self.file,
+            "line": self.line,
+            "summary": self.summary,
+            "disposition": self.disposition,
+            "evidence": self.evidence,
+            "justification": self.justification,
+            "exclusion_reason": self.exclusion_reason,
+            "actor": self.actor,
+        }
+
+
+@dataclass(frozen=True)
 class ScopeAssessment:
     path: str
     classification: str
@@ -312,6 +369,7 @@ class ReviewPackage(Mapping[str, Any]):
     slug: str
     repositories: tuple[RepositoryRevision, ...]
     criteria: tuple[CriterionRow, ...]
+    review_dispositions: tuple[ReviewDispositionRow, ...]
     changed_files: tuple[FileChange, ...]
     assessment: SemanticAssessment
     commits: tuple[Mapping[str, Any], ...]
@@ -348,6 +406,13 @@ class ReviewPackage(Mapping[str, Any]):
                 repositories=repositories,
                 criteria=tuple(
                     CriterionRow.parse(item) for item in _rows(row.get("criteria"), "criteria")
+                ),
+                review_dispositions=tuple(
+                    ReviewDispositionRow.parse(item)
+                    for item in _rows(
+                        row.get("review_dispositions", []),
+                        "review_dispositions",
+                    )
                 ),
                 changed_files=tuple(
                     FileChange.parse(item)
@@ -390,6 +455,7 @@ class ReviewPackage(Mapping[str, Any]):
             "worktree": primary.worktree,
             "repositories": [row.to_dict() for row in self.repositories],
             "criteria": [row.to_dict() for row in self.criteria],
+            "review_dispositions": [row.to_dict() for row in self.review_dispositions],
             "recipe_comparisons": [_thaw(row) for row in self.recipe_comparisons],
             "scope": _thaw(self.scope),
             "commits": [_thaw(row) for row in self.commits],

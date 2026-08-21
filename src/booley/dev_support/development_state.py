@@ -129,13 +129,13 @@ _CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
     # sweep is an RTL structural check, so an RTL edit must reset its met
     # status — a stale green would defeat the every-attempt re-verification.
     "elaborate_standalone": frozenset({CATEGORY_RTL}),
-    # review_rtl / review_tb intentionally excluded — reviews are one-shot
-    # and must not be reset by implement (see commit 34a2a01).
+    # review_rtl / review_tb are invalidated by persisted source fingerprints
+    # at the acceptance boundary rather than by endpoint-local prefix resets.
 }
 
 # Review criteria belong to a category but are excluded from
-# _CATEGORY_PREFIXES to prevent met-status resets (one-shot _done reviews
-# must not be re-run).  However, _clean review criteria track
+# _CATEGORY_PREFIXES because final source-fingerprint validation owns their
+# met-status freshness. However, _clean review criteria track
 # verify_attempts in their detail dict, and those counters MUST be
 # cleared when the underlying code changes — otherwise the reviewer is
 # permanently blocked after exhausting attempts even though the coder

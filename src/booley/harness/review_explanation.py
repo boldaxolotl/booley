@@ -211,6 +211,30 @@ def _criteria_table(package: Mapping[str, Any]) -> str:
     )
 
 
+def _review_dispositions_table(package: Mapping[str, Any]) -> str:
+    rows = package.get("review_dispositions", [])
+    if not rows:
+        return ""
+    body = "".join(
+        "<tr>"
+        f"<td>{escape(str(row['criterion']))}</td>"
+        f"<td>{escape(str(row['severity']))}</td>"
+        f"<td><code>{escape(str(row['file']))}:{escape(str(row['line']))}</code></td>"
+        f"<td>{escape(str(row['disposition']))}</td>"
+        f"<td>{escape(str(row['summary']))}</td>"
+        f"<td>{escape(str(row.get('justification', '')))}</td>"
+        "</tr>"
+        for row in rows
+    )
+    return (
+        "<section><h2>Review findings and dispositions</h2><table>"
+        "<tr><th>Criterion</th><th>Severity</th><th>Location</th>"
+        "<th>Disposition</th><th>Finding</th><th>Waiver justification</th></tr>"
+        + body
+        + "</table></section>"
+    )
+
+
 def _changed_files(package: Mapping[str, Any]) -> str:
     rows = "".join(
         f"<li><code>{escape(str(row['path']))}</code> — "
@@ -277,6 +301,7 @@ def render_explanation_html(
         + f"<section><h2>Code and change references</h2>{references}</section>"
         + _changed_files(package)
         + _criteria_table(package)
+        + _review_dispositions_table(package)
         + "<section><h2>Findings</h2>"
         + explanation_findings
         + f"<ul>{package_findings}</ul></section>"

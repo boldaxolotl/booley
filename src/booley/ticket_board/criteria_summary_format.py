@@ -129,7 +129,9 @@ def _format_sim_metric(d: dict, stale: bool) -> str | None:
     return "?" if stale else f"{passed}/{total} tests"
 
 
-def _format_finding_count_metric(key: str, d: dict, stale: bool) -> str | None:
+def _format_finding_count_metric(  # noqa: PLR0911
+    key: str, d: dict, stale: bool
+) -> str | None:
     """Format the two count-of-findings criteria families (lint, reviewer).
 
     Both read as ``clean`` at zero, so they share a branch; returns None when
@@ -143,7 +145,19 @@ def _format_finding_count_metric(key: str, d: dict, stale: bool) -> str | None:
 
     if key.startswith("review_"):
         issues = d.get("issues")
-        return None if issues is None else (f"{issues} issues" if issues else "clean")
+        if issues is None:
+            return None
+        waived = sum(
+            1
+            for finding in d.get("resolved", [])
+            if isinstance(finding, dict)
+            and finding.get("status") in {"waived", "impasse_deferred"}
+        )
+        if key.endswith("_done"):
+            return f"reviewed, {issues} findings"
+        if issues:
+            return f"{issues} open"
+        return f"clean ({waived} waived)" if waived else "clean"
 
     return None
 
@@ -250,7 +264,7 @@ def _partition_criteria_lines(
         if gname in collapsed:
             if gname not in emitted:
                 emitted.add(gname)
-                not_met_lines.append(f"{gray('·')} {dim(f'{gname} (not yet run)')}")
+                not_met_lines.append(f"{gray('○')} {dim(f'{gname} (not yet run)')}")
             continue
 
         line = fmt(key, entry)
@@ -287,7 +301,7 @@ def build_criteria_summary_lines(state_path: Path) -> tuple[list[str], str]:
         if entry.met:
             return green("✓")
         if _is_never_evaluated(entry):
-            return gray("·")
+            return gray("○")
         if getattr(entry, "stale", False):
             return amber("↻")
         return red("✗")

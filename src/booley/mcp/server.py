@@ -119,7 +119,10 @@ _POLL_MCP_TOOL_DESCRIPTION = (
     "long-poll: the call blocks up to that long for the run to finish, turning "
     "a poll-loop into one blocking call; if the run is still going afterwards "
     "it returns 'RUNNING' — call again to keep waiting. Prefer few long polls "
-    "over many short ones. When the "
+    "over many short ones. Claude and Codex: omit 'wait_seconds' to use the "
+    "Session Runtime's configured poll window. Codex: if its programmatic exec "
+    "yields while this MCP call is still running, keep waiting on the same "
+    "running cell in short slices; do not start another booley_poll call. When the "
     "run finishes it returns the full result (EXIT_CODE + report), exactly as "
     "the original call would have. Safe to call across a server restart: the "
     "job is tracked on disk, so a poll always returns a definite answer."
@@ -1728,7 +1731,8 @@ def _poll_mcp_tool_def() -> dict[str, Any] | None:
                         "would die at the HTTP layer's ~300s cap). 0 answers "
                         "with the current status immediately. Omit to use the "
                         "server default wait "
-                        "(BOOLEY_MCP_JOB_POLL_WAIT_SECONDS, 240s)."
+                        f"(BOOLEY_MCP_JOB_POLL_WAIT_SECONDS, "
+                        f"{_DEFAULT_JOB_POLL_WAIT_SECONDS:g}s)."
                     ),
                 },
             },

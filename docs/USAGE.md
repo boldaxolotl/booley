@@ -278,7 +278,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings and can satisfy either a one-shot `_done` review or a durable `_clean` review gate that re-checks fixes.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
 Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
 
 | Category | Focus | What it checks | Sets |
@@ -485,7 +485,7 @@ So a ticket reported as `running` is the one sitting in `board/active/` — noth
 
 A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
 
-The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to the durable `_clean` gate, which becomes stale after later source changes; use an explicit `_done` suffix only when a one-shot completed review is intentional.
+The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
 
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate

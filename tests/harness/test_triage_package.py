@@ -113,6 +113,39 @@ def test_review_facts_materialize_rename_pair_and_oldest_first_commits(
     assert Path(change["diff_right"]).read_text(encoding="utf-8").startswith("module new")
 
 
+def test_review_facts_include_every_waiver_with_justification(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["review_security_clean"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "issues": 0,
+            "pending": [],
+            "resolved": [
+                {
+                    "severity": "MINOR",
+                    "file": "rtl/new.sv",
+                    "line": 4,
+                    "summary": "Intentional visibility",
+                    "status": "waived",
+                    "justification": "The debug interface is required by the ticket.",
+                }
+            ],
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "tokens=10 cost=$0.01")
+
+    facts = tp.build_review_facts(ctx)
+
+    waiver = facts["review_dispositions"][0]
+    assert waiver["disposition"] == "waived"
+    assert waiver["severity"] == "MINOR"
+    assert waiver["justification"] == "The debug interface is required by the ticket."
+
+
 def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     project = ctx.worktree / ".booley_project"
@@ -175,6 +208,48 @@ def test_review_facts_classify_symlink_binary_and_submodule_content(tmp_path: Pa
     assert changes["deps/ip"]["content_kind"] == "submodule"
     assert changes["deps/ip"]["action"] == "added"
     assert changes["deps/ip"]["new_endpoint"]["workspace_path"] is None
+
+
+def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, monkeypatch):
+    ctx = _context(tmp_path)
+    report = (
+        ctx.log_dir
+        / ".runtime"
+        / "mcp-tool-reports"
+        / "mutation_tester"
+        / "1"
+        / "mutation-results.md"
+    )
+    report.parent.mkdir(parents=True)
+    report.write_text("# Mutation Test Results\n", encoding="utf-8")
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["mutation_score"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "detected": 7,
+            "total_valid": 8,
+            "not_detected": 1,
+            "invalid": 0,
+            "artifacts": {
+                "results": "../logs/demo/.runtime/mcp-tool-reports/"
+                "mutation_tester/1/mutation-results.md"
+            },
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+    mutation = next(row for row in facts["criteria"] if row["criterion"] == "mutation_score")
+
+    assert mutation["report_path"] == str(report.resolve())
+    assert "detected=7, total_valid=8, not_detected=1, invalid=0" in mutation["metric"]
+    report_link = quote(str(report.resolve()), safe="/:")
+    assert f"[mutation_score]({report_link})" in rendered
 
 
 def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
@@ -348,6 +423,16 @@ def test_render_presents_reports_first_in_review_order(tmp_path: Path):
                 {"path": "src/booley/harness/triage_package.py", "summary": "Renderer order"}
             ],
         },
+        "review_dispositions": [
+            {
+                "criterion": "review_rtl_bugs_clean",
+                "severity": "MINOR",
+                "file": "rtl/dut.sv",
+                "line": 7,
+                "disposition": "fixed",
+                "summary": "Example finding",
+            }
+        ],
         "run_economics": "tokens=10 cost=$0.01",
         "health": {},
     }
@@ -362,6 +447,7 @@ def test_render_presents_reports_first_in_review_order(tmp_path: Path):
         "#### Scope deviations",
         "#### Changed files",
         "#### Criteria",
+        "#### Review findings and dispositions",
         "#### Commit history",
         "#### Run economics",
     )

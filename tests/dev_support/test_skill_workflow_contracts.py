@@ -77,6 +77,7 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "[Developer Agent report (REPORT.md)](/absolute/path/to/REPORT.md)",
         "[Polished HTML report](/absolute/runtime/path/to/report.html)",
         "#### Explanation highlights",
+        "#### Review findings and dispositions",
         "#### Run economics",
     ):
         assert required in template
@@ -88,6 +89,7 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "#### Scope deviations",
         "#### Changed files",
         "#### Criteria",
+        "#### Review findings and dispositions",
         "#### Commit history",
         "#### Run economics",
     )
@@ -101,15 +103,17 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
     assert "command:livePreview" not in template
 
 
-def test_triage_treats_completed_done_reviews_as_met_after_follow_up_fixes():
+def test_triage_treats_all_review_modes_as_freshness_sensitive():
     review = _skill_text("booley-ticket-triage", "steps/03-review.md")
+    contract = " ".join(review.split())
 
     for required in (
-        "`review_*_done` is copied exactly from persisted criterion state",
-        "never infer staleness from later commits",
-        "`review_*_clean` remains explicitly\nfreshness-sensitive",
+        "Both `review_*_done` and `review_*_clean` are freshness-sensitive",
+        "recorded source fingerprint",
+        "accepted waiver",
+        "including `MINOR`",
     ):
-        assert required in review
+        assert required in contract
 
 
 def test_ticket_create_defaults_every_review_to_done_mode():
@@ -132,7 +136,8 @@ def test_ticket_create_defaults_every_review_to_done_mode():
         "review_rtl_code_style_done",
     ):
         assert f"{criterion}: true" in template
-    assert "`_clean` is\n  opt-in only" in skill
+    assert "`_clean` is opt-in only" in skill
+    assert "Every `_clean` waiver must include a justification" in skill
 
 
 def test_ticket_create_grills_one_dependency_frontier_per_round():
