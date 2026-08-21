@@ -24,6 +24,7 @@ from booley.core.models import AgentCallParams, AgentResult
 from booley.dev_support.development_state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.paths import skills_dir
+from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
     project_repository_expected,
@@ -480,14 +481,27 @@ def _collect_git_evidence(ctx: ReviewPrepContext) -> dict[str, Path]:
     return paths
 
 
-def _extract_repository_snapshot(archive_path: Path, repository: Path) -> None:
-    """Extract regular Git-archive members without materializing symlinks."""
+def _extract_repository_snapshot(
+    archive_path: Path,
+    repository: Path,
+    *,
+    excluded_top_level: str | None = None,
+) -> None:
+    """Extract regular Git-archive members, optionally omitting one subtree."""
     repository.mkdir(parents=True)
+    repository_root = repository.resolve()
     with tarfile.open(archive_path) as archive:
         for member in archive.getmembers():
             target = (repository / member.name).resolve()
-            if repository.resolve() not in target.parents and target != repository.resolve():
+            if repository_root not in target.parents and target != repository_root:
                 raise ReviewPrepError(f"unsafe path in git archive: {member.name}")
+            relative = target.relative_to(repository_root)
+            if (
+                excluded_top_level is not None
+                and relative.parts
+                and relative.parts[0] == excluded_top_level
+            ):
+                continue
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
@@ -573,7 +587,11 @@ def _agent_workspace(
             f"--output={archive_path}",
             ctx.head_sha,
         )
-        _extract_repository_snapshot(archive_path, repository)
+        _extract_repository_snapshot(
+            archive_path,
+            repository,
+            excluded_top_level=(PROJECT_DIR_NAME if ctx.project_repository is not None else None),
+        )
         if ctx.project_repository is not None:
             project_archive = root / "project-source.tar"
             _git(
@@ -583,7 +601,7 @@ def _agent_workspace(
                 f"--output={project_archive}",
                 ctx.project_repository.head_sha,
             )
-            _extract_repository_snapshot(project_archive, repository / ".booley_project")
+            _extract_repository_snapshot(project_archive, repository / PROJECT_DIR_NAME)
 
         input_dir = root / "review-input"
         copied: dict[str, Path] = {}

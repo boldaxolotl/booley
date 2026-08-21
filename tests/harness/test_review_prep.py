@@ -61,6 +61,30 @@ def _git_evidence(path: Path) -> dict[str, Path]:
     return dict.fromkeys(("diff", "commits", "files", "status"), path)
 
 
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repository), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _create_git_snapshot(repository: Path, files: dict[str, str]) -> str:
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.email", "test@example.com")
+    _git(repository, "config", "user.name", "Test")
+    for relative, content in files.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(repository, "add", "-f", ".")
+    _git(repository, "commit", "-qm", "fixture")
+    return _git(repository, "rev-parse", "HEAD")
+
+
 def _assessment() -> dict:
     return {
         "recommendation": "approve",
@@ -243,22 +267,14 @@ async def test_agent_invocation_is_read_only(tmp_path: Path, monkeypatch):
 
 def test_agent_workspace_is_a_disposable_snapshot(tmp_path: Path):
     worktree = tmp_path / "live"
-    worktree.mkdir()
-    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
-    subprocess.run(
-        ["git", "-C", str(worktree), "config", "user.email", "test@example.com"], check=True
+    head = _create_git_snapshot(
+        worktree,
+        {
+            "source.txt": "committed\n",
+            f"{rp.PROJECT_DIR_NAME}/open-footprint.txt": "tracked by outer repository\n",
+        },
     )
-    subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Test"], check=True)
     source = worktree / "source.txt"
-    source.write_text("committed\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(worktree), "add", "source.txt"], check=True)
-    subprocess.run(["git", "-C", str(worktree), "commit", "-qm", "fixture"], check=True)
-    head = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     ctx = replace(_ctx(tmp_path), worktree=worktree, head_sha=head)
     ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
 
@@ -272,8 +288,58 @@ def test_agent_workspace_is_a_disposable_snapshot(tmp_path: Path):
         assert snapshot_source.read_text(encoding="utf-8") == "committed\n"
         snapshot_source.write_text("agent edit\n", encoding="utf-8")
         assert workspace.evidence["ticket"].read_text(encoding="utf-8") == "ticket\n"
+        open_footprint = workspace.repository / rp.PROJECT_DIR_NAME / "open-footprint.txt"
+        assert open_footprint.read_text(encoding="utf-8") == "tracked by outer repository\n"
 
     assert source.read_text(encoding="utf-8") == "committed\n"
+
+
+def test_agent_workspace_prefers_paired_project_snapshot(tmp_path: Path):
+    worktree = tmp_path / "live"
+    head = _create_git_snapshot(
+        worktree,
+        {
+            "source.txt": "outer source\n",
+            f"{rp.PROJECT_DIR_NAME}/stale.txt": "stale outer copy\n",
+            f"{rp.PROJECT_DIR_NAME}/shared.txt": "outer version\n",
+        },
+    )
+    project_worktree = tmp_path / "project-live"
+    project_head = _create_git_snapshot(
+        project_worktree,
+        {
+            "project-only.txt": "paired source\n",
+            "shared.txt": "paired version\n",
+        },
+    )
+    project_repository = rp.ProjectReviewRepository(
+        worktree=project_worktree,
+        base_sha=project_head,
+        head_sha=project_head,
+        feature_branch="booley-ticket/demo",
+    )
+    ctx = replace(
+        _ctx(tmp_path),
+        worktree=worktree,
+        head_sha=head,
+        project_repository=project_repository,
+    )
+    ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+    evidence = ctx.runtime_dir / "git-evidence.txt"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text("evidence\n", encoding="utf-8")
+    package = rp._build_evidence_package(ctx, "source", _git_evidence(evidence))
+
+    with rp._agent_workspace(ctx, package) as workspace:
+        project_snapshot = workspace.repository / rp.PROJECT_DIR_NAME
+        assert (workspace.repository / "source.txt").read_text(
+            encoding="utf-8"
+        ) == "outer source\n"
+        assert (project_snapshot / "project-only.txt").read_text(
+            encoding="utf-8"
+        ) == "paired source\n"
+        assert (project_snapshot / "shared.txt").read_text(encoding="utf-8") == "paired version\n"
+        assert not (project_snapshot / "stale.txt").exists()
 
 
 def test_find_checkout_uses_supplied_project_root(tmp_path: Path, monkeypatch):
