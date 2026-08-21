@@ -142,10 +142,7 @@ def _prune_stale_skill_links(skills_target: Path, src: Path, current: set[str]) 
         # proves it came from Booley's packaged skill tree; an unrelated user
         # link can also be dangling and must remain untouched.
         current_dangling = (
-            name in current
-            and dangling
-            and link_like
-            and _is_packaged_booley_skill_link(entry)
+            name in current and dangling and link_like and _is_packaged_booley_skill_link(entry)
         )
         if not current_dangling and (name in current or not _is_booley_skill_link(entry, src)):
             continue
