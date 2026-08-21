@@ -599,10 +599,18 @@ def test_report_renders_done_findings_and_every_clean_waiver(
         "line": 7,
         "summary": "Intentional diagnostic timing",
     }
+    review_fingerprint = {
+        "categories": [CATEGORY_RTL],
+        "fingerprint": compute_source_fingerprint(Path.cwd()),
+    }
     state.set_criterion(
         "review_rtl_bugs_done",
         True,
-        detail={"issues": 1, "issue_list": [finding]},
+        detail={
+            "issues": 1,
+            "issue_list": [finding],
+            SOURCE_FINGERPRINT_DETAIL_KEY: review_fingerprint,
+        },
     )
     state.set_criterion(
         "review_rtl_security_clean",
@@ -617,6 +625,7 @@ def test_report_renders_done_findings_and_every_clean_waiver(
                     "justification": "Required by the ticket's debug interface.",
                 }
             ],
+            SOURCE_FINGERPRINT_DETAIL_KEY: review_fingerprint,
         },
     )
     state.save()

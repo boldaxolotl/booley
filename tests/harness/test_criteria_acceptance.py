@@ -19,6 +19,7 @@ from booley.ticket_board.criteria_acceptance import (
     build_criteria_summary_lines,
     check_criteria_acceptance,
     format_criteria_verdict,
+    refresh_verification_freshness,
 )
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
@@ -512,6 +513,35 @@ class TestCheckCriteriaAcceptance:
         entry = DevelopmentState.load(state_path).criteria[criterion]
         assert entry.stale is True
         assert entry.detail["stale_source_categories"] == [category]
+
+    def test_optional_review_evidence_becomes_stale_after_source_edit(self, tmp_path: Path):
+        state_path, work_dir = self._fresh_state(tmp_path)
+        state = DevelopmentState.load(state_path)
+        state.init_criteria({"review_rtl_bugs_done": False})
+        state.set_criterion(
+            "review_rtl_bugs_done",
+            True,
+            detail={
+                "issues": 0,
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl"],
+                    "fingerprint": compute_source_fingerprint(work_dir),
+                },
+            },
+        )
+        state.save()
+        (work_dir / "rtl" / "dut.sv").write_text(
+            "module changed; endmodule\n",
+            encoding="utf-8",
+        )
+
+        stale = refresh_verification_freshness(state, work_dir=work_dir)
+
+        assert stale == ["review_rtl_bugs_done"]
+        entry = state.criteria["review_rtl_bugs_done"]
+        assert entry.mandatory is False
+        assert entry.met is False
+        assert entry.stale is True
 
     def test_rerun_sim_refreshes_stale_criterion(self, tmp_path: Path):
         state_path, work_dir = self._fresh_state(tmp_path)

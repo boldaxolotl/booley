@@ -17,6 +17,7 @@ from booley.specialists.reviewer import (
     SEVERITY_MAJOR,
     SEVERITY_MINOR,
     TB_FOCUS_CATEGORIES,
+    ReviewDiff,
     ReviewerSpecialist,
     ReviewIssue,
     _validate_finding_dict,
@@ -2440,6 +2441,74 @@ class TestCleanModeVerify:
         assert result.exit_code == 1
         assert result.criterion_met is False
         assert result.detail["pending"][0]["summary"] == "New final-state issue"
+
+    def test_excluding_last_finding_still_rediscovers_changed_source(
+        self,
+        state_file: Path,
+    ):
+        st = DevelopmentState.load(state_file)
+        st.set_criterion(
+            "review_rtl_bugs_clean",
+            met=False,
+            detail={
+                "issues": 1,
+                "pending": [_make_issue_dict("MAJOR", line=42)],
+                "resolved": [],
+                "review_source_digest": "prior-source-digest",
+            },
+        )
+        st.save()
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(_review_args())
+        endpoint.read_state()
+        endpoint._review_diff = ReviewDiff(
+            patch="",
+            changed_ranges={"rtl/mod_a.sv": ((100, 100),)},
+        )
+        discovered = _make_issue_dict("MINOR", summary="New final-state issue")
+        with patch.object(
+            endpoint,
+            "_run_single_review",
+            return_value=([ReviewIssue.from_dict(discovered)], ["fresh discovery"]),
+        ) as run_review:
+            result = endpoint._run_clean_mode("review_rtl_bugs_clean")
+
+        run_review.assert_called_once_with()
+        assert result.exit_code == 1
+        assert result.criterion_met is False
+        assert result.detail["pending"][0]["summary"] == "New final-state issue"
+        assert result.detail["resolved"][0]["status"] == "excluded"
+
+    def test_failed_rediscovery_after_exclusion_keeps_clean_unmet(
+        self,
+        state_file: Path,
+    ):
+        st = DevelopmentState.load(state_file)
+        st.set_criterion(
+            "review_rtl_bugs_clean",
+            met=False,
+            detail={
+                "issues": 1,
+                "pending": [_make_issue_dict("MAJOR", line=42)],
+                "resolved": [],
+                "review_source_digest": "prior-source-digest",
+            },
+        )
+        st.save()
+
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(_review_args())
+        endpoint.read_state()
+        endpoint._review_diff = ReviewDiff(
+            patch="",
+            changed_ranges={"rtl/mod_a.sv": ((100, 100),)},
+        )
+        with patch.object(endpoint, "_run_single_review", return_value=(None, [])):
+            result = endpoint._run_clean_mode("review_rtl_bugs_clean")
+
+        assert result.exit_code == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_clean")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_justified_waiver_resolves_finding_and_is_persisted(

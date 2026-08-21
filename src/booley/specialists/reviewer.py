@@ -1646,13 +1646,14 @@ object, even after calling the capability.
                     f"{crit_key}: resolved {resolved_count} stale finding(s) outside the "
                     "enforced diff or in conflict with the project's simulation contract."
                 )
-                return McpToolResult(
-                    exit_code=EXIT_SUCCESS,
-                    criterion_key=crit_key,
-                    criterion_met=True,
-                    detail=prior_detail,
-                    display_lines=[msg],
-                    report_text=msg,
+                return self._build_result_clean_verify(
+                    [],
+                    [msg],
+                    prior_detail,
+                    remaining_indices=set(),
+                    dispositions={},
+                    elapsed=0.0,
+                    crit_key=crit_key,
                 )
 
         has_prior_findings = prior_detail is not None and (
@@ -1748,7 +1749,10 @@ object, even after calling the capability.
         detail["issues"] = len(kept)
         counts = count_by_severity([ReviewIssue.from_dict(item) for item in kept])
         detail.update(counts)
-        self.set_criterion(crit_key, not kept, detail=detail)
+        # Keep the gate unmet until the caller completes final-state
+        # rediscovery. Persisting a passing fingerprint here would let the
+        # early exclusion path accept changed source that was never reviewed.
+        self.set_criterion(crit_key, False, detail=detail)
         return detail, len(resolved_now)
 
     def _run_clean_initial(self, crit_key: str) -> McpToolResult:

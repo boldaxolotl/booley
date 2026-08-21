@@ -144,7 +144,10 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
     stale_keys: list[str] = []
     fingerprints: dict[str | None, dict] = {}
     for key, entry in state.criteria.items():
-        if key.startswith("_") or not entry.mandatory or not entry.met:
+        if key.startswith("_") or not entry.met:
+            continue
+        is_review = key.startswith(("review_rtl_", "review_tb_"))
+        if not entry.mandatory and not is_review:
             continue
         categories = _verification_fingerprint_categories(key)
         if not categories:
