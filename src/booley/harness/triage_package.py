@@ -18,6 +18,14 @@ from booley.harness.review_explanation import StructuredExplanation
 
 TRIAGE_PACKAGE_VERSION = 2
 TRIAGE_ASSESSMENTS = frozenset({"approve", "reset", "archive", "hold"})
+_GIT_STATUS_ACTIONS = {
+    "A": "added",
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "copied",
+    "T": "type-changed",
+}
 
 
 class TriagePackageError(RuntimeError):
@@ -291,14 +299,7 @@ def _repository_changed_files(
             index += 1
         display_path = f"{path_prefix}/{path}" if path_prefix else path
         display_old = f"{path_prefix}/{old_path}" if path_prefix and old_path else old_path
-        action = {
-            "A": "added",
-            "M": "modified",
-            "D": "deleted",
-            "R": "renamed",
-            "C": "copied",
-            "T": "type-changed",
-        }.get(status[:1])
+        action = _GIT_STATUS_ACTIONS.get(status[:1])
         if action is None:
             raise TriagePackageError(f"unsupported git change action: {status!r}")
         rows.append(
@@ -418,14 +419,9 @@ def _write_diff_pair(
     presentation = "binary" if b"\0" in left_content or b"\0" in right_content else "text"
     public = {key: value for key, value in change.items() if not key.startswith("_")}
     workspace_path = None
-    action = public.get("action") or {
-        "A": "added",
-        "M": "modified",
-        "D": "deleted",
-        "R": "renamed",
-        "C": "copied",
-        "T": "type-changed",
-    }.get(str(public.get("status", ""))[:1], "modified")
+    action = public.get("action") or _GIT_STATUS_ACTIONS.get(
+        str(public.get("status", ""))[:1], "modified"
+    )
     public["action"] = action
     public.setdefault("similarity", None)
     if action != "deleted":
@@ -970,9 +966,9 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     """Render the fixed interactive review template from a validated package."""
     lines = [f"### {_markdown_text(package['slug'])}"]
     _render_reports(lines, package)
-    _render_explanation_highlights(lines, package)
     _render_decision(lines, package)
     _render_findings(lines, package, diff_failures)
+    _render_explanation_highlights(lines, package)
     _render_scope(lines, package)
     _render_changes(lines, package, set(diff_failures))
     _render_criteria(lines, package)

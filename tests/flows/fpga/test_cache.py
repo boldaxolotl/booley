@@ -104,6 +104,12 @@ def test_cache_hit_requires_exact_artifact_bytes(tmp_path: Path) -> None:
     assert fpga_cache.load(tmp_path, "a" * 64, require_bitstream=True) is None
 
 
+def test_cache_rejects_non_mapping_metadata_and_boolean_producer_version(tmp_path: Path) -> None:
+    (tmp_path / fpga_cache.CACHE_FILE).write_text("[]", encoding="utf-8")
+    assert fpga_cache._read_metadata(tmp_path) is None
+    assert not fpga_cache._valid_producer_evidence({**_run_evidence(), "version": True})
+
+
 def test_cache_store_requires_bitstream_when_target_is_not_ooc(tmp_path: Path) -> None:
     _artifacts(tmp_path, bitstream=False)
     assert not fpga_cache.store(

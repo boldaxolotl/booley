@@ -20,8 +20,9 @@ interactive triage and do not poll the manifest.
 
 The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
 the polished HTML report. It then presents the decision summary, actionable
-findings, scope deviations, changed files, deterministic criteria and Target
-recipe comparisons, commit history, run economics, and the decision choices.
+findings, explanation highlights, scope deviations, changed files, deterministic
+criteria and Target recipe comparisons, commit history, run economics, and the
+decision choices.
 
 If the command reports a missing or stale package, show that as a Booley
 post-processing finding and offer **reset** / **skip**. `prepare-review --force`

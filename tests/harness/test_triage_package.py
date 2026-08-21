@@ -342,6 +342,12 @@ def test_render_presents_reports_first_in_review_order(tmp_path: Path):
         "changed_files": [],
         "developer_report_path": str(ctx.log_dir / "REPORT.md"),
         "html_path": str(ctx.log_dir / "explanation.html"),
+        "explanation": {
+            "background": [{"title": "Why", "body": "The change reorders the briefing."}],
+            "code_references": [
+                {"path": "src/booley/harness/triage_package.py", "summary": "Renderer order"}
+            ],
+        },
         "run_economics": "tokens=10 cost=$0.01",
         "health": {},
     }
@@ -352,6 +358,7 @@ def test_render_presents_reports_first_in_review_order(tmp_path: Path):
         "#### Reports",
         "#### Decision summary",
         "#### Findings",
+        "#### Explanation highlights",
         "#### Scope deviations",
         "#### Changed files",
         "#### Criteria",
@@ -361,6 +368,7 @@ def test_render_presents_reports_first_in_review_order(tmp_path: Path):
     positions = [rendered.index(section) for section in ordered_sections]
     assert positions == sorted(positions)
     assert rendered.index("Developer Agent report") < rendered.index("Polished HTML report")
+    assert "The change reorders the briefing." in rendered
 
 
 def test_render_marks_undecidable_scope_as_blocker(tmp_path: Path):

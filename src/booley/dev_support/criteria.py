@@ -28,6 +28,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import (
+    BoundaryError,
+    as_positive_int,
+    is_str_list,
+    require_finite_number,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -900,11 +907,7 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
 def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
     """Validate one registered criterion parameter value."""
     if param == "scope":
-        if (
-            not isinstance(value, list)
-            or not value
-            or not all(isinstance(path, str) and path.strip() for path in value)
-        ):
+        if not is_str_list(value) or not value or not all(path.strip() for path in value):
             raise ValueError(f"{key} param 'scope' must be a non-empty list[str]")
         return
     if param == "auto":
@@ -912,14 +915,22 @@ def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
             raise ValueError(f"{key} param 'auto' must be true when present")
         return
     if key == "mutation_score" and param in {"min_detected", "total"}:
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        if as_positive_int(value, 0) == 0:
             raise ValueError(f"{key} param {param!r} must be a positive integer, got {value!r}")
         return
     if key.startswith("coverage_") and param == "min_pct":
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{key} param 'min_pct' must be numeric, got {value!r}")
-        if not 0 < value <= 100:
+        try:
+            number = require_finite_number(value, field=f"{key} param 'min_pct'")
+        except BoundaryError:
+            raise ValueError(f"{key} param 'min_pct' must be numeric, got {value!r}") from None
+        if not 0 < number <= 100:
             raise ValueError(f"{key} param 'min_pct' must be in (0, 100], got {value!r}")
         return
-    if not isinstance(value, (int, float)) or value <= 0:
+    try:
+        number = require_finite_number(value, field=f"{key} param {param!r}")
+    except BoundaryError:
+        raise ValueError(
+            f"{key} param {param!r} must be a positive number, got {value!r}"
+        ) from None
+    if number <= 0:
         raise ValueError(f"{key} param {param!r} must be a positive number, got {value!r}")

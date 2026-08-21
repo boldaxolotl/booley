@@ -18,6 +18,11 @@
 
 - <health checks, workflow anomalies, QoR observations, follow-ups, or none>
 
+#### Explanation highlights
+
+- **<background topic>:** <concise context from the polished report>
+- `<path>` — <code-reference summary from the polished report>
+
 #### Scope deviations
 
 - <none, or each deviation with Justified/Unjustified classification and reason>

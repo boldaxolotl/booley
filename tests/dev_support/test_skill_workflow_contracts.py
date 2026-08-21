@@ -76,6 +76,7 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "#### Reports",
         "[Developer Agent report (REPORT.md)](/absolute/path/to/REPORT.md)",
         "[Polished HTML report](/absolute/runtime/path/to/report.html)",
+        "#### Explanation highlights",
         "#### Run economics",
     ):
         assert required in template
@@ -83,6 +84,7 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "#### Reports",
         "#### Decision summary",
         "#### Findings",
+        "#### Explanation highlights",
         "#### Scope deviations",
         "#### Changed files",
         "#### Criteria",
