@@ -71,7 +71,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """FPGA QoR intake pins the same revision-owned evidence as synthesis."""
+    """FPGA QoR intake pins the same sealed-recipe evidence as synthesis."""
     from booley.flows.recipe_evidence import (
         BASELINE_REF_PARAM,
         RECIPE_FINGERPRINT_PARAM,

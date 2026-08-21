@@ -18,11 +18,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from booley.dev_support.contract_path_policy import (
+        is_static_contract_path,
+        normalize_contract_path,
+    )
+except ModuleNotFoundError:
+    from contract_path_policy import is_static_contract_path, normalize_contract_path
+
 # Intentional duplication of harness.scope_policy._FORBIDDEN_* -- this hook must
 # run standalone inside a worktree, without Booley on sys.path.  Keep in sync.
 _FORBIDDEN_PREFIXES = (".booley_project/", ".booley/", ".git/")
 _FORBIDDEN_CARVE_OUTS = (
-    ".booley_project/cores/",
     ".booley_project/adapters/",
     ".booley_project/docs/",
 )
@@ -51,6 +58,20 @@ def _load_scope(wt: Path) -> list[str] | None:
     return scope
 
 
+def _load_contract_controls(wt: Path) -> set[str]:
+    """Load exact sealed control paths; malformed policy fails closed to static rules."""
+    try:
+        data = json.loads((wt / ".scope.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    controls = data.get("contract_control")
+    if not isinstance(controls, list) or not all(isinstance(path, str) for path in controls):
+        return set()
+    return {path.replace("\\", "/").removeprefix("./") for path in controls}
+
+
 def _staged_files() -> list[str]:
     """Get list of files in the git index (staged for commit).
 
@@ -75,9 +96,14 @@ def _staged_files() -> list[str]:
     return [f for f in result.stdout.split("\0") if f.strip()]
 
 
-def _is_forbidden(filepath: str) -> bool:
+def _is_forbidden(filepath: str, contract_controls: set[str] | None = None) -> bool:
     """True for harness bookkeeping the agent must never commit."""
-    normalized = filepath.replace("\\", "/").strip().removeprefix("./")
+    normalized = normalize_contract_path(filepath)
+    contract_path = normalized in (contract_controls or set()) or is_static_contract_path(
+        normalized
+    )
+    if contract_path:
+        return True
     if normalized in _FORBIDDEN_EXACT:
         return True
     if any(normalized.startswith(c) for c in _FORBIDDEN_CARVE_OUTS):
@@ -104,14 +130,17 @@ def _matches_scope(filepath: str, scope: list[str]) -> bool:
 
 def _reject_forbidden(forbidden: list[str]) -> int:
     """Print the hard-block diagnostic for harness-owned paths."""
-    print("ERROR: Commit blocked — these files belong to the harness.", file=sys.stderr)
+    print(
+        "ERROR: Commit blocked — these files belong to the harness or sealed Target contract.",
+        file=sys.stderr,
+    )
     for f in forbidden:
         print(f"  - {f}", file=sys.stderr)
     print("", file=sys.stderr)
     print(
-        "Development state, criteria, ticket files, and booley.toml are the "
-        "record your run is graded against — editing them is never part of a "
-        "ticket. Unstage these and commit the rest.",
+        "Development state, criteria, ticket files, and Target/control-plane inputs are "
+        "the record your run is graded against. Unstage these and commit the rest; "
+        "request a Target contract revision when the sealed recipe must change.",
         file=sys.stderr,
     )
     return 1
@@ -136,13 +165,14 @@ def _reject_out_of_scope(out_of_scope: list[str], scope: list[str]) -> int:
 def main() -> int:
     wt = Path.cwd()
     scope = _load_scope(wt)
+    contract_controls = _load_contract_controls(wt)
 
     staged = _staged_files()
     if not staged:
         return 0
 
     # Scope-independent: runs even when .scope.json is missing or malformed.
-    forbidden = [f for f in staged if _is_forbidden(f)]
+    forbidden = [f for f in staged if _is_forbidden(f, contract_controls)]
     if forbidden:
         return _reject_forbidden(forbidden)
 

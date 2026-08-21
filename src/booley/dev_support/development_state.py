@@ -479,7 +479,7 @@ class DevelopmentState:
                 "expected": expected_ref or expected_recipe,
                 "actual": actual_ref or actual_recipe,
                 "pass": complete,
-                "detail": "baseline recipe is pinned; current recipe change is recorded"
+                "detail": "baseline and current evidence match the sealed recipe"
                 if complete
                 else "implementation recipe comparison evidence is incomplete",
             }

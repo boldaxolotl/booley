@@ -1071,7 +1071,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
                 file=sys.stderr,
             )
             return False
-        if not _cleanup_reset_branches(tio._project_root, slug, entry.get("feature_branch", "")):
+        if not _reset_ticket_branches(tio._project_root, slug, entry):
             return False
 
         if not _move_to_queue(tio, file_path):
@@ -1107,6 +1107,31 @@ def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) 
     return True
 
 
+def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any]) -> bool:
+    """Restore a sealed contract or remove legacy ticket branches."""
+    raw_contract = entry.get("target_contract")
+    if raw_contract is None:
+        return _cleanup_reset_branches(project_root, slug, entry.get("feature_branch", ""))
+    from .contract_ops import ContractOperationError, reset_contract_worktrees
+    from .target_contract import TargetContract, TargetContractError
+
+    try:
+        contract = TargetContract.from_mapping(raw_contract)
+        reset_contract_worktrees(
+            project_root,
+            slug,
+            contract,
+            str(entry.get("branch", "")),
+        )
+    except (ContractOperationError, TargetContractError, OSError) as exc:
+        print(
+            f"Error: reset could not restore sealed contract for '{slug}': {exc}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     """Reset a ticket's state and artifacts, then move it to queue/.
 
@@ -1116,6 +1141,18 @@ def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
+        return False
+    project_root = Path(getattr(tio, "_project_root", ""))
+    if (
+        entry.get("status") == "blocked"
+        and entry.get("target_contract") is None
+        and (project_root / ".git").exists()
+    ):
+        print(
+            f"Error: legacy blocked ticket '{slug}' must be sealed with a Target "
+            "contract before it can restart; run contract-open and contract-seal first.",
+            file=sys.stderr,
+        )
         return False
 
     # ``find_ticket`` accepts both the canonical slug and user-facing aliases
