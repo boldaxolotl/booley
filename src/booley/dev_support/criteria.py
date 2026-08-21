@@ -28,6 +28,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import (
+    BoundaryError,
+    as_positive_int,
+    is_str_list,
+    require_finite_number,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -413,6 +420,16 @@ FPGA_IMPL_OK_MUTEX_PAIRS: list[tuple[str, str]] = [
 _CRITERION_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str, str]]]] = {
     "synthesis_ok": (SYNTHESIS_OK_PARAMS, SYNTHESIS_OK_MUTEX_PAIRS),
     "fpga_impl_ok": (FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS),
+    "mutation_score": (
+        frozenset({"scope", "min_detected", "total", "auto"}),
+        [("auto", "total")],
+    ),
+    "coverage_toggle": (frozenset({"scope", "min_pct"}), []),
+    "coverage_fsm": (frozenset({"scope", "min_pct"}), []),
+    "coverage_value": (frozenset({"scope", "min_pct"}), []),
+    "coverage_branch": (frozenset({"scope", "min_pct"}), []),
+    "coverage_expression": (frozenset({"scope", "min_pct"}), []),
+    "coverage_mean": (frozenset({"scope", "min_pct"}), []),
 }
 
 # Fmax and critical-path delay are inherently per-clock, so a threshold on one
@@ -567,6 +584,16 @@ TEMPLATE_REGISTRY: dict[str, list[CriterionSpec]] = {
 # A ticket declaring these as bare scalars (sim_pass: true) will never match.
 PER_TARGET_CRITERIA: frozenset[str] = frozenset(
     spec.name for specs in TEMPLATE_REGISTRY.values() for spec in specs if spec.per_target
+) | frozenset(
+    {
+        "mutation_score",
+        "coverage_toggle",
+        "coverage_fsm",
+        "coverage_value",
+        "coverage_branch",
+        "coverage_expression",
+        "coverage_mean",
+    }
 )
 
 
@@ -595,7 +622,11 @@ class CriteriaTemplate:
                   - alu_tb@lite@all
                 review_rtl_spec_done: approved
               optional:
-                mutation_score: "8/10"    # at least 8 of 10 detected
+                mutation_score:
+                  - target: sim_alu
+                    scope: [rtl/alu.sv]
+                    min_detected: 8
+                    total: 10
         """
         specs: list[CriterionSpec] = []
         for key, value in criteria_section.get("mandatory", {}).items():
@@ -663,8 +694,8 @@ def _is_review_base_key(key: str) -> bool:
     """True if *key* is a review criterion base (no verdict suffix).
 
     Bare YAML review criteria mean "currently clean" and therefore expand to
-    ``_clean``. Authors who intentionally want a one-shot completed-review gate
-    can still spell ``_done`` explicitly.
+    ``_clean``. Authors who intentionally want a terminal advisory review that
+    reports findings without fixing them can spell ``_done`` explicitly.
     """
     return key.startswith("review_") and not key.endswith(("_done", "_clean"))
 
@@ -684,7 +715,7 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
       - scalar (str/bool/None): simple criterion, no expansion
 
     Review base keys (``review_rtl_spec``, ``review_tb_quality``, etc.)
-    expand into ``_clean``. Explicit ``_done`` retains one-shot semantics.
+    expand into ``_clean``. Explicit ``_done`` retains terminal advisory semantics.
     """
     if _is_review_base_key(key):
         return [CriterionSpec(f"{key}_clean", mandatory=mandatory)]
@@ -726,6 +757,25 @@ def _parse_list_criterion(
     """
     if not items:
         return [CriterionSpec(key, mandatory=mandatory)]
+    if all(isinstance(item, dict) and "target" in item for item in items):
+        specs = []
+        for item in items:
+            target = item.get("target")
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError(f"{key} campaign target must be a non-empty string")
+            params = {name: value for name, value in item.items() if name != "target"}
+            if key in _CRITERION_PARAM_REGISTRY:
+                _validate_criterion_params(key, params)
+            specs.append(
+                CriterionSpec(
+                    key,
+                    mandatory=mandatory,
+                    per_target=True,
+                    targets=[target],
+                    params=params,
+                )
+            )
+        return specs
     # Check if these are target names or explicit keys
     if all(isinstance(item, str) and "@" not in item and "->" not in item for item in items):
         target_names = [str(item) for item in items]
@@ -833,9 +883,14 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
             f"(per-clock metrics {sorted(_PER_CLOCK_METRICS)} may be clock-scoped "
             f"as '<clock>.<param>')"
         )
-    for k, v in params.items():
-        if not isinstance(v, (int, float)) or v <= 0:
-            raise ValueError(f"{key} param {k!r} must be a positive number, got {v!r}")
+    for param, value in params.items():
+        _validate_criterion_param_value(key, param, value)
+    if (
+        key == "mutation_score"
+        and {"min_detected", "total"} <= params.keys()
+        and params["min_detected"] > params["total"]
+    ):
+        raise ValueError("mutation_score min_detected cannot exceed total")
     # Mutex is per scope: clk_i.critical_path_ps_max and clk_i.fmax_mhz_min clash,
     # but clk_i.fmax_mhz_min and clk_2x.critical_path_ps_max do not.
     by_scope: dict[str, set[str]] = {}
@@ -847,3 +902,35 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
             if a in bases and b in bases:
                 where = f" (clock {scope!r})" if scope else ""
                 raise ValueError(f"{key} params {a!r} and {b!r} are mutually exclusive{where}")
+
+
+def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
+    """Validate one registered criterion parameter value."""
+    if param == "scope":
+        if not is_str_list(value) or not value or not all(path.strip() for path in value):
+            raise ValueError(f"{key} param 'scope' must be a non-empty list[str]")
+        return
+    if param == "auto":
+        if value is not True:
+            raise ValueError(f"{key} param 'auto' must be true when present")
+        return
+    if key == "mutation_score" and param in {"min_detected", "total"}:
+        if as_positive_int(value, 0) == 0:
+            raise ValueError(f"{key} param {param!r} must be a positive integer, got {value!r}")
+        return
+    if key.startswith("coverage_") and param == "min_pct":
+        try:
+            number = require_finite_number(value, field=f"{key} param 'min_pct'")
+        except BoundaryError:
+            raise ValueError(f"{key} param 'min_pct' must be numeric, got {value!r}") from None
+        if not 0 < number <= 100:
+            raise ValueError(f"{key} param 'min_pct' must be in (0, 100], got {value!r}")
+        return
+    try:
+        number = require_finite_number(value, field=f"{key} param {param!r}")
+    except BoundaryError:
+        raise ValueError(
+            f"{key} param {param!r} must be a positive number, got {value!r}"
+        ) from None
+    if number <= 0:
+        raise ValueError(f"{key} param {param!r} must be a positive number, got {value!r}")

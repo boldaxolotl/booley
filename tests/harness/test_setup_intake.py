@@ -342,6 +342,9 @@ class TestActivation:
 
         await run(str(sample_ticket), project_root)
         mock_cli.activate.assert_not_called()
+        mock_cli.init_ticket.assert_called_once()
+        assert mock_cli.init_ticket.call_args.kwargs["execution_id"]
+        assert mock_cli.init_ticket.call_args.kwargs["owner_pid"] == os.getpid()
 
     @pytest.mark.asyncio
     @patch("booley.harness.setup.intake.ticket_cli")
@@ -352,7 +355,11 @@ class TestActivation:
         from booley.harness.setup.intake import run
 
         await run(str(sample_ticket), project_root)
-        mock_cli.activate.assert_called_once_with(project_root, slug, owner_pid=os.getpid())
+        mock_cli.activate.assert_called_once()
+        args, kwargs = mock_cli.activate.call_args
+        assert args == (project_root, slug)
+        assert kwargs["owner_pid"] == os.getpid()
+        assert kwargs["execution_id"]
 
 
 # ---------------------------------------------------------------------------

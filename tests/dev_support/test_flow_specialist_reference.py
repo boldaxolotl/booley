@@ -151,8 +151,9 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     assert "| Complexity-scaled |" in rendered
     assert "Mutation goals in a ticket" not in rendered
     assert "Direct goal controls" not in rendered
-    assert 'mutation_score: "K/N"' in rendered
-    assert 'mutation_score: "auto"' in rendered
+    assert "Target campaign with `target` + `scope`" in rendered
+    assert "`total: N` and `min_detected: K`" in rendered
+    assert "`auto: true`" in rendered
     assert "--count N" in rendered
     assert "--count auto" in rendered
     assert "--min-detected K" in rendered

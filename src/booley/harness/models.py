@@ -55,6 +55,8 @@ class TicketContext:
     # Immutable outer-repository baseline stamped into ticket frontmatter.
     # Appended for positional compatibility with existing context constructors.
     base_sha: str = ""
+    # Generation stamped atomically when this harness execution activates the ticket.
+    execution_id: str = ""
     # Sealed Target/control-plane identity; appended for positional compatibility.
     target_contract: TargetContract | None = None
 

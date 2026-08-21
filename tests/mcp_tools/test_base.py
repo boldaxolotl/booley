@@ -15,7 +15,6 @@ from booley.dev_support.development_state import (
     CATEGORY_TB,
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    DutInfo,
     as_str_list,
 )
 from booley.mcp.base import (
@@ -26,7 +25,6 @@ from booley.mcp.base import (
     McpToolResult,
     _as_pid,
     _classify_files,
-    _display_tb_top,
     _scan_endpoint_events,
     _StdoutWitness,
     _write_display_event,
@@ -61,9 +59,6 @@ class SimLikeMcpTool(ConcreteMcpTool):
     """Dummy simulate endpoint used to assert base guard behavior."""
 
     name = "sim"
-
-    def required_dut_info_halves(self) -> frozenset[str]:
-        return frozenset({"dut", "tb"})
 
     def _run(self) -> McpToolResult:
         self.set_criterion("sim_pass_default", True)
@@ -284,10 +279,6 @@ class TestMcpToolGateBehavior:
                 "review_tb_quality_done": True,
                 "sim_pass_default": True,
             }
-        )
-        state.dut_info = DutInfo(
-            dut_top_module="dut",
-            dut_hier_path="tb.dut",
         )
         state.save()
 
@@ -1194,55 +1185,6 @@ class TestReadSourceDirs:
     def test_no_core_returns_none(self, tmp_path: Path):
         # No .core authored under work_dir → None (caller falls back to defaults).
         assert read_source_dirs_from_toml(tmp_path) is None
-
-
-class TestDisplayTbTop:
-    """_display_tb_top sources the console panel's TB top from the sim Target."""
-
-    _SIM_CORE = """\
-        CAPI=2:
-        name: ::demo:0
-        filesets:
-          rtl: {files: [rtl/dut.sv]}
-          tb: {files: [tb/tb_dut.sv], tags: [tb]}
-        targets:
-          sim:
-            flow: sim
-            flow_options: {endpoint: verilator}
-            filesets: [rtl, tb]
-            toplevel: tb_dut
-          synth:
-            flow: generic
-            flow_options: {endpoint: yosys}
-            filesets: [rtl]
-            toplevel: dut
-    """
-
-    def setup_method(self):
-        _display_tb_top.cache_clear()  # lru_cache persists across tests
-
-    def _write(self, tmp_path: Path) -> None:
-        (tmp_path / "design.core").write_text(
-            __import__("textwrap").dedent(self._SIM_CORE), encoding="utf-8"
-        )
-
-    def test_reads_sim_target_toplevel_from_core(self, tmp_path: Path):
-        self._write(tmp_path)
-        # Even when asked for the synth config, the panel shows the sim TB top.
-        assert _display_tb_top(str(tmp_path), "synth") == "tb_dut"
-
-    def test_prefers_selected_sim_config(self, tmp_path: Path):
-        self._write(tmp_path)
-        assert _display_tb_top(str(tmp_path), "sim") == "tb_dut"
-
-    def test_empty_when_no_core_target(self, tmp_path: Path):
-        # The legacy configs.toml tb_top fallback was removed; with no .core sim
-        # Target the display degrades to the placeholder ("").
-        (tmp_path / "configs.toml").write_text('[cfg]\ntb_top = "tb_legacy"\n', encoding="utf-8")
-        assert _display_tb_top(str(tmp_path), "cfg") == ""
-
-    def test_empty_when_nothing_resolvable(self, tmp_path: Path):
-        assert _display_tb_top(str(tmp_path), "") == ""
 
 
 class TestReportDirRejectsMangledHostPath:

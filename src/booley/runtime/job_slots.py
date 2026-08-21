@@ -45,7 +45,6 @@ import contextlib
 import json
 import logging
 import os
-import sys
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -56,6 +55,8 @@ from booley.runtime.job_records import (
     _proc_cmdline,
     parse_stamp,
 )
+from booley.runtime.pid import _windows_pid_alive as windows_pid_alive
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import rfc3339_from_epoch
 
 logger = logging.getLogger(__name__)
@@ -275,50 +276,10 @@ def _describe_holder(tok: SlotToken, now: float) -> str:
 
 
 def _windows_pid_alive(pid: int) -> bool:
-    # os.kill(pid, 0) is not a liveness probe on Windows: signal 0 is
-    # CTRL_C_EVENT, which GenerateConsoleCtrlEvent sprays across the
-    # whole console — interrupting the very session that spawned us.
-    import ctypes
-    from ctypes import wintypes
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    ERROR_INVALID_PARAMETER = 87
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not handle:
-        # Access denial and transient API failures are not proof of death. A
-        # false negative here lets another claimant reap a live process.
-        return ctypes.get_last_error() != ERROR_INVALID_PARAMETER
-    try:
-        # OpenProcess can succeed for recently-exited processes;
-        # verify the process hasn't terminated via its exit code.
-        exit_code = wintypes.DWORD()
-        STILL_ACTIVE = 259
-        if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return exit_code.value == STILL_ACTIVE
-        return True  # API call failed — assume alive to avoid false negatives
-    finally:
-        kernel32.CloseHandle(handle)
+    return windows_pid_alive(pid)
 
 
-def _default_pid_alive(pid: int) -> bool:
-    if sys.platform == "win32":
-        return _windows_pid_alive(pid)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, owned by someone else
-    except OSError:
-        return False
-    return True
+_default_pid_alive = is_pid_alive
 
 
 def parse_caps(data: dict) -> SlotCaps:

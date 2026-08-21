@@ -102,19 +102,34 @@ def _digest_sim_part(criteria: dict) -> str | None:
 
 
 def _digest_issues_part(criteria: dict) -> str | None:
-    """First open-issues count found in criteria detail, or None.
+    """Summarize open findings and accepted review waivers, or return None.
 
     Prefers the new ``pending`` field (open, blocking items) and falls back to
     the legacy ``issue_list`` for tickets predating the pending/resolved split.
     """
+    open_count = 0
+    waived_count = 0
     for crit in criteria.values():
         detail = crit.get("detail") if isinstance(crit, dict) else None
         if not isinstance(detail, dict):
             continue
         issues = detail.get("pending") or detail.get("issue_list")
         if isinstance(issues, list) and issues:
-            return f"{len(issues)} issues found"
-    return None
+            open_count += len(issues)
+        resolved = detail.get("resolved")
+        if isinstance(resolved, list):
+            waived_count += sum(
+                1
+                for finding in resolved
+                if isinstance(finding, dict)
+                and finding.get("status") in {"waived", "impasse_deferred"}
+            )
+    parts = []
+    if open_count:
+        parts.append(f"{open_count} issues found")
+    if waived_count:
+        parts.append(f"{waived_count} review waivers")
+    return ", ".join(parts) or None
 
 
 def ntfy_review_digest(logs_dir: str | Path, slug: str) -> str:

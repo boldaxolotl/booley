@@ -53,6 +53,10 @@ class FpgaMetrics:
     #: Normalized Target recipe used for this exact implementation run.
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
+    #: Provenance for the run that produced these artifacts.
+    run_evidence: dict[str, Any] = field(default_factory=dict)
+    #: Current run consuming a prior producer's cached artifacts.
+    cache_consumer_run_id: str = ""
 
     @property
     def has_primary_metrics(self) -> bool:

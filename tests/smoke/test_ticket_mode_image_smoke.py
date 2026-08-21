@@ -19,7 +19,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from booley.core.models import AgentCallParams, AgentResult
-from booley.dev_support.development_state import DevelopmentState, DutInfo
+from booley.dev_support.development_state import DevelopmentState
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
@@ -161,13 +161,6 @@ def _load_state() -> DevelopmentState:
     return DevelopmentState.load(Path(os.environ["BOOLEY_STATE_FILE"]))
 
 
-def _seed_dut_info(hier_path: str) -> None:
-    """Perform the identity edit required of every real Developer Agent."""
-    state = _load_state()
-    state.dut_info = DutInfo(dut_top_module="dut", dut_hier_path=hier_path)
-    state.save()
-
-
 def _criterion(state: DevelopmentState, prefix: str) -> Any:
     matches = [value for key, value in state.criteria.items() if key.startswith(prefix)]
     assert len(matches) == 1, f"expected one {prefix!r} criterion, got {len(matches)}"
@@ -175,7 +168,6 @@ def _criterion(state: DevelopmentState, prefix: str) -> Any:
 
 
 async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> None:
-    _seed_dut_info("tb_dut.u_dut")
     for endpoint, target in (
         ("lint", "lint_smoke"),
         ("elab", "sim_smoke"),
@@ -201,7 +193,6 @@ async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> No
 
 
 async def _blocked_script(driver: McpDriver, observations: dict[str, Any]) -> None:
-    _seed_dut_info("tb_fail.u_dut")
     code, text = await driver.call("sim", {"target": "sim_fail"})
     assert code == 1 and "intentional Ticket Mode smoke failure" in text
     code, text = await driver.call("submit_run_report", _report_args())

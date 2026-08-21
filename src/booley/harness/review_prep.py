@@ -6,28 +6,25 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import time
-from base64 import b64encode
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from booley.config.settings import get_backend_config, load_models_config
-from booley.core.boundary import BoundaryError, require_dict, require_str
+from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import AgentCallParams, AgentResult
 from booley.dev_support.development_state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.paths import skills_dir
+from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
     project_repository_expected,
@@ -38,7 +35,13 @@ from booley.ticket_board.io import TicketIO
 from booley.ticket_board.paths import existing_runtime_file, ticket_runtime_dir
 
 from .job_fence import wait_for_ticket_jobs
+from .review_artifact import ReviewPackage
 from .review_evidence import ReviewEvidenceError, ReviewEvidencePackage, build_review_evidence
+from .review_explanation import (
+    ExplanationError,
+    StructuredExplanation,
+    render_explanation_html,
+)
 from .triage_package import (
     TriagePackageError,
     build_review_facts,
@@ -52,43 +55,11 @@ from .triage_package import (
 logger = logging.getLogger(__name__)
 
 _PROMPT_FILE = "explain-diff-prompt.md"
-_PROMPT_VERSION = 3
-_MIN_HTML_CHARS = 1000
-_REQUIRED_HTML_SECTIONS = ("background", "intuition", "code", "quiz")
-_QUIZ_SCRIPT_BODY = """
-document.addEventListener('click', function (event) {
-  const button = event.target.closest('.quiz-option');
-  if (!button) return;
-  const question = button.closest('.quiz-question') || button.parentElement;
-  const output = question.querySelector('.quiz-feedback');
-  if (!output) return;
-  const correct = button.dataset.correct === 'true';
-  output.textContent = (correct ? 'Correct. ' : 'Not quite. ') +
-    (button.dataset.feedback || 'Review the explanation and try again.');
-  output.className = 'quiz-feedback ' + (correct ? 'correct' : 'incorrect');
-});
-""".strip()
-_QUIZ_SCRIPT = f"<script>{_QUIZ_SCRIPT_BODY}</script>"
-_CODE_BLOCK_STYLE = "<style>pre { white-space: pre-wrap !important; }</style>"
-_SCRIPT_HASH = b64encode(hashlib.sha256(_QUIZ_SCRIPT_BODY.encode("utf-8")).digest()).decode()
-_CSP = (
-    f"default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-{_SCRIPT_HASH}'; "
-    "img-src data:; font-src data:; connect-src 'none'; object-src 'none'; "
-    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-)
-_DISALLOWED_CSS = (
-    (re.compile(r"(?i)(?<![-\w])url\s*\("), "url()"),
-    (re.compile(r"(?i)@import\b"), "@import"),
-    (re.compile(r"(?i)(?<![-\w])expression\s*\("), "expression()"),
-    (
-        re.compile(r"(?i)(?:^|[;{])\s*[*_]?behavior\s*:"),
-        "legacy behavior property",
-    ),
-)
+_PROMPT_VERSION = 4
 
 
 class ReviewPrepError(RuntimeError):
-    """The HTML explanation could not be prepared or validated."""
+    """The structured review explanation could not be prepared or validated."""
 
 
 class ReviewPrepConcurrentChangeError(ReviewPrepError):
@@ -157,7 +128,7 @@ class ReviewAgentWorkspace:
 class PreparedReviewOutput:
     """Validated agent output, with optional components degraded independently."""
 
-    html_path: Path | None
+    explanation: StructuredExplanation | None
     assessment: dict[str, Any]
     html_error: str | None = None
     assessment_error: str | None = None
@@ -510,14 +481,27 @@ def _collect_git_evidence(ctx: ReviewPrepContext) -> dict[str, Path]:
     return paths
 
 
-def _extract_repository_snapshot(archive_path: Path, repository: Path) -> None:
-    """Extract regular Git-archive members without materializing symlinks."""
+def _extract_repository_snapshot(
+    archive_path: Path,
+    repository: Path,
+    *,
+    excluded_top_level: str | None = None,
+) -> None:
+    """Extract regular Git-archive members, optionally omitting one subtree."""
     repository.mkdir(parents=True)
+    repository_root = repository.resolve()
     with tarfile.open(archive_path) as archive:
         for member in archive.getmembers():
             target = (repository / member.name).resolve()
-            if repository.resolve() not in target.parents and target != repository.resolve():
+            if repository_root not in target.parents and target != repository_root:
                 raise ReviewPrepError(f"unsafe path in git archive: {member.name}")
+            relative = target.relative_to(repository_root)
+            if (
+                excluded_top_level is not None
+                and relative.parts
+                and relative.parts[0] == excluded_top_level
+            ):
+                continue
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
@@ -603,7 +587,11 @@ def _agent_workspace(
             f"--output={archive_path}",
             ctx.head_sha,
         )
-        _extract_repository_snapshot(archive_path, repository)
+        _extract_repository_snapshot(
+            archive_path,
+            repository,
+            excluded_top_level=(PROJECT_DIR_NAME if ctx.project_repository is not None else None),
+        )
         if ctx.project_repository is not None:
             project_archive = root / "project-source.tar"
             _git(
@@ -613,7 +601,7 @@ def _agent_workspace(
                 f"--output={project_archive}",
                 ctx.project_repository.head_sha,
             )
-            _extract_repository_snapshot(project_archive, repository / ".booley_project")
+            _extract_repository_snapshot(project_archive, repository / PROJECT_DIR_NAME)
 
         input_dir = root / "review-input"
         copied: dict[str, Path] = {}
@@ -649,18 +637,17 @@ snapshot of `{ctx.head_sha}`; all evidence paths below are disposable copies.
 Read the following prepared evidence and inspect surrounding repository code as needed:
 {evidence_lines}
 
-Return the self-contained Explain Diff document as `html` and the concise semantic
-`assessment` requested by the structured response. Deterministic facts (criteria,
-commits, changed files, health, and economics) are assembled by the harness; use
-the supplied facts to judge them without restating exhaustive tables.
+Return the plain-text structured `explanation` and concise semantic `assessment`
+requested by the response schema. Booley owns all HTML, CSS, JavaScript, and
+terminal rendering. Deterministic facts (criteria, commits, changed files, health,
+and economics) are assembled by the harness; use the supplied facts to judge them
+without restating exhaustive tables.
 For `assessment.scope_deviations`, return exactly one row for every path listed in
 the deterministic facts' `scope.deviations`, and do not add paths from elsewhere.
 
-Do not modify any file. Do not include `<script>` tags or inline event-handler
-attributes in the HTML; the harness injects the trusted quiz behavior. Render each
-quiz option as `<button class="quiz-option" data-correct="true|false"
-data-feedback="..."></button>` inside `.quiz-question`, with a `.quiz-feedback`
-element. The harness, not you, chooses and writes the final output path.
+Do not modify any file. Do not return HTML, CSS, JavaScript, Markdown markup, or
+control characters. Use plain prose in every string. Each quiz question must have
+multiple choices, exactly one correct choice, and feedback for every choice.
 """
 
 
@@ -668,7 +655,93 @@ def _output_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "html": {"type": "string"},
+            "explanation": {
+                "type": "object",
+                "properties": {
+                    "background": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "body": {"type": "string"},
+                            },
+                            "required": ["title", "body"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "intuition": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "body": {"type": "string"},
+                            },
+                            "required": ["title", "body"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "code_references": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "repository": {"type": "string"},
+                                "path": {"type": "string"},
+                                "revision": {"type": "string"},
+                                "summary": {"type": "string"},
+                            },
+                            "required": ["repository", "path", "revision", "summary"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "findings": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "detail": {"type": "string"},
+                            },
+                            "required": ["title", "detail"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "quiz": {
+                        "type": "array",
+                        "minItems": 5,
+                        "maxItems": 5,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string"},
+                                "choices": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "text": {"type": "string"},
+                                            "correct": {"type": "boolean"},
+                                            "feedback": {"type": "string"},
+                                        },
+                                        "required": ["text", "correct", "feedback"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
+                            "required": ["question", "choices"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["background", "intuition", "code_references", "findings", "quiz"],
+                "additionalProperties": False,
+            },
             "assessment": {
                 "type": "object",
                 "properties": {
@@ -716,7 +789,7 @@ def _output_schema() -> dict[str, Any]:
                 "additionalProperties": False,
             },
         },
-        "required": ["html", "assessment"],
+        "required": ["explanation", "assessment"],
         "additionalProperties": False,
     }
 
@@ -743,110 +816,6 @@ async def _invoke_agent(
         nested_mcp_tools=[],
     )
     return await call_agent(params)
-
-
-def _strip_untrusted_scripts(html: str) -> str:
-    cleaned = re.sub(r"(?is)<script\b[^>]*>.*?</script\s*>", "", html)
-    if re.search(r"(?i)<script\b", cleaned):
-        raise ReviewPrepError("HTML contains an unterminated script element")
-    return cleaned
-
-
-def _validate_css(value: str) -> None:
-    for pattern, construct in _DISALLOWED_CSS:
-        if pattern.search(value):
-            raise ReviewPrepError(f"HTML CSS contains disallowed {construct}")
-
-
-class _SafetyHTMLParser(HTMLParser):
-    """Reject active HTML features before the trusted quiz script is injected."""
-
-    _FORBIDDEN_TAGS = frozenset({"base", "embed", "form", "iframe", "math", "object", "svg"})
-    _FORBIDDEN_ATTRIBUTES = frozenset({"action", "formaction", "poster", "srcdoc", "xlink:href"})
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._in_style = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        lowered_tag = tag.lower()
-        if lowered_tag in self._FORBIDDEN_TAGS:
-            raise ReviewPrepError(f"HTML contains forbidden <{lowered_tag}> content")
-        if lowered_tag == "style":
-            self._in_style = True
-        normalized = {name.lower(): value or "" for name, value in attrs}
-        if lowered_tag == "meta" and "http-equiv" in normalized:
-            raise ReviewPrepError("HTML contains a forbidden meta policy")
-        for name, value in normalized.items():
-            if name.startswith("on"):
-                raise ReviewPrepError("HTML contains an inline event handler")
-            if name in self._FORBIDDEN_ATTRIBUTES:
-                raise ReviewPrepError(f"HTML contains forbidden {name} content")
-            if name == "style":
-                _validate_css(value)
-            if name == "href":
-                stripped = value.strip()
-                if stripped and not stripped.startswith("#"):
-                    scheme = urlsplit(stripped).scheme or "external"
-                    raise ReviewPrepError(f"HTML contains unsafe href scheme: {scheme}")
-            if name == "src":
-                stripped = value.strip()
-                safe_image = re.fullmatch(
-                    r"(?is)data:image/(?:png|gif|jpeg|webp);base64,[a-z0-9+/=\s]+",
-                    stripped,
-                )
-                if stripped and safe_image is None:
-                    scheme = urlsplit(stripped).scheme or "external"
-                    raise ReviewPrepError(f"HTML contains unsafe src scheme: {scheme}")
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.handle_starttag(tag, attrs)
-        if tag.lower() == "style":
-            self._in_style = False
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "style":
-            self._in_style = False
-
-    def handle_data(self, data: str) -> None:
-        if self._in_style:
-            _validate_css(data)
-
-
-def _validate_html_source(html: str) -> None:
-    lowered = html.lower()
-    if len(html) < _MIN_HTML_CHARS or "<html" not in lowered or "</html>" not in lowered:
-        raise ReviewPrepError("HTML is incomplete")
-    missing = [section for section in _REQUIRED_HTML_SECTIONS if section not in lowered]
-    if missing:
-        raise ReviewPrepError(f"HTML is missing required sections: {', '.join(missing)}")
-    if len(re.findall(r"(?i)class\s*=\s*['\"][^'\"]*quiz-question", html)) != 5:
-        raise ReviewPrepError("HTML must contain exactly five quiz questions")
-    if len(re.findall(r"(?i)class\s*=\s*['\"][^'\"]*quiz-option", html)) < 10:
-        raise ReviewPrepError("HTML quiz questions need multiple-choice options")
-    parser = _SafetyHTMLParser()
-    try:
-        parser.feed(html)
-        parser.close()
-    except ReviewPrepError:
-        raise
-    except Exception as exc:
-        raise ReviewPrepError(f"HTML could not be safely parsed: {exc}") from exc
-
-
-def _secure_html(structured: dict[str, Any]) -> str:
-    html = require_str(structured, "html").strip()
-    html = _strip_untrusted_scripts(html)
-    _validate_html_source(html)
-    csp = f'<meta http-equiv="Content-Security-Policy" content="{_CSP}">'
-    trusted_head = f"{csp}\n{_CODE_BLOCK_STYLE}"
-    html, count = re.subn(r"(?i)(<head\b[^>]*>)", rf"\1\n{trusted_head}", html, count=1)
-    if count != 1:
-        raise ReviewPrepError("HTML has no head element for the security policy")
-    html, count = re.subn(r"(?i)</body\s*>", _QUIZ_SCRIPT + "\n</body>", html, count=1)
-    if count != 1:
-        raise ReviewPrepError("HTML has no body element for quiz behavior")
-    return html.rstrip() + "\n"
 
 
 def _error_summary(exc: Exception) -> str:
@@ -877,7 +846,7 @@ def _fallback_assessment(facts: dict[str, Any], error: str) -> dict[str, Any]:
 
 
 def _write_output(
-    ctx: ReviewPrepContext, structured_value: Any, facts: dict[str, Any]
+    _ctx: ReviewPrepContext, structured_value: Any, facts: dict[str, Any]
 ) -> PreparedReviewOutput:
     try:
         structured = require_dict(structured_value, field="triage report response")
@@ -893,19 +862,15 @@ def _write_output(
         assessment = _fallback_assessment(facts, assessment_error)
 
     try:
-        html = _secure_html(structured)
-    except (BoundaryError, ReviewPrepError) as exc:
+        explanation = StructuredExplanation.parse(structured.get("explanation"))
+    except (BoundaryError, ExplanationError) as exc:
         html_error = _error_summary(exc)
         assessment["findings"] = [
             *assessment["findings"],
             f"HTML explanation unavailable: {html_error}",
         ]
         return PreparedReviewOutput(None, assessment, html_error, assessment_error)
-
-    html_name = f"{datetime.now(UTC):%Y-%m-%d}-explanation-{ctx.slug}.html"
-    html_path = ctx.log_dir / html_name
-    _atomic_write(html_path, html)
-    return PreparedReviewOutput(html_path, assessment, assessment_error=assessment_error)
+    return PreparedReviewOutput(explanation, assessment, assessment_error=assessment_error)
 
 
 def _record_call(
@@ -1030,7 +995,20 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
         _record_call(ctx, result, duration, exit_code=0)
         call_recorded = True
         facts = build_review_facts(ctx)
-        briefing_path = write_triage_package(ctx, facts, prepared.assessment, prepared.html_path)
+        html_path = None
+        if prepared.explanation is not None:
+            html_name = f"{datetime.now(UTC):%Y-%m-%d}-explanation-{ctx.slug}.html"
+            html_path = ctx.log_dir / html_name
+        briefing_path = write_triage_package(
+            ctx,
+            facts,
+            prepared.assessment,
+            html_path,
+            prepared.explanation,
+        )
+        package = load_triage_package(briefing_path)
+        if html_path is not None and prepared.explanation is not None:
+            _atomic_write(html_path, render_explanation_html(prepared.explanation, package))
         source_sha = _source_fingerprint(ctx)
         manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
         manifest.update(
@@ -1042,20 +1020,20 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
                 "model": get_backend_config().model_for_role("triage_report", "standard"),
             }
         )
-        if prepared.html_path is not None:
-            manifest["html_path"] = str(prepared.html_path)
-            manifest["html_sha256"] = _file_sha256(prepared.html_path)
+        if html_path is not None:
+            manifest["html_path"] = str(html_path)
+            manifest["html_sha256"] = _file_sha256(html_path)
         else:
             manifest["html_path"] = None
             manifest["html_error"] = prepared.html_error
         if prepared.assessment_error is not None:
             manifest["assessment_error"] = prepared.assessment_error
         _write_json(_manifest_path(ctx), manifest)
-        if prepared.html_path is None:
+        if html_path is None:
             return ReviewPrepOutcome(
                 "ready", "review briefing prepared; HTML explanation unavailable"
             )
-        return ReviewPrepOutcome("ready", "review package prepared", prepared.html_path)
+        return ReviewPrepOutcome("ready", "review package prepared", html_path)
     except Exception as exc:
         duration = time.monotonic() - started
         if "ctx" not in locals():
@@ -1082,6 +1060,17 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
             status=_failure_status(exc),
             record_call=not call_recorded,
         )
+
+
+def verify_review_handoff(project_root: Path, slug: str) -> ReviewPrepOutcome:
+    """Return the current ready package or reject review handoff."""
+    ctx = _resolve_context(project_root.resolve(), slug, require_review=False)
+    prompt_sha = _prompt_hash(_prompt_text())
+    source_sha = _source_fingerprint(ctx)
+    outcome = _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
+    if outcome is None:
+        raise ReviewPrepError(f"ticket {slug!r} has no current, integrity-checked review package")
+    return outcome
 
 
 async def prepare_review_command(
@@ -1114,7 +1103,7 @@ def review_briefing_command(
             facts = build_review_facts(ctx)
             scope = facts.get("scope", {})
             deviations = scope.get("deviations", []) if isinstance(scope, dict) else []
-            package = {
+            package_value = {
                 **facts,
                 "assessment": {
                     "recommendation": "hold",
@@ -1134,7 +1123,9 @@ def review_briefing_command(
                     "findings": [],
                 },
                 "html_path": None,
+                "explanation": None,
             }
+            package = ReviewPackage.parse(package_value)
             failures = open_package_diffs(package) if open_diffs else []
             return ReviewBriefingOutcome(
                 "ready",

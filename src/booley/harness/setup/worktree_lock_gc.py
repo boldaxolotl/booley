@@ -10,34 +10,13 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import shutil
-import sys
 import time
 from pathlib import Path
 
+from booley.runtime.pid import is_pid_alive
+
 logger = logging.getLogger(__name__)
-
-
-def _pid_alive(pid: int) -> bool:
-    """Check whether a process is still running (cross-platform)."""
-    if sys.platform == "win32":
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
 
 
 def _prune_stale_worktree_locks(
@@ -104,7 +83,7 @@ def _prune_one_lock(entry: Path, now: float, max_age_s: float) -> None:
         pid_file = entry / "pid"
         pid = _read_pid_file(pid_file) if pid_file.exists() else None
         if pid is not None:
-            if _pid_alive(pid):
+            if is_pid_alive(pid):
                 return
             logger.info(
                 "Removing worktree lock %s (owner PID %d is dead)",
@@ -125,7 +104,7 @@ def _prune_one_lock(entry: Path, now: float, max_age_s: float) -> None:
     if entry.is_file() and entry.name.endswith(".lock"):
         pid = _read_pid_file(entry)
         if pid is not None:
-            if _pid_alive(pid):
+            if is_pid_alive(pid):
                 return
             logger.info(
                 "Removing worktree lock file %s (owner PID %d is dead)",

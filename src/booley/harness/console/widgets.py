@@ -122,22 +122,6 @@ def _truncate_name(name: str, max_len: int = 28) -> str:
     return name[: max_len - 1] + "…"
 
 
-def _format_dut_info(dut_info: dict | None) -> str:
-    """Render "DUT: <dut_top>  |  TB: <tb_top>" from whatever is populated.
-
-    Unplanned slots are omitted rather than placeheld: early in a ticket
-    neither is known, and a header of ``<not yet planned>`` twice over is
-    noise. Empty string when nothing is known — callers skip the line.
-    """
-    info = dut_info or {}
-    parts = []
-    if dut := info.get("dut_top_module"):
-        parts.append(f"DUT: {dut}")
-    if tb := info.get("tb_top_module"):
-        parts.append(f"TB: {tb}")
-    return "  |  ".join(parts)
-
-
 def _format_token_count(tokens: int) -> str:
     """Compact token count: 812, 46k, 1.1m."""
     if tokens >= 1_000_000:
@@ -485,7 +469,6 @@ class TicketHeader(VerticalScroll):
         self._ticket_type: str = ""
         self._branch: str = ""
         self._criteria: dict = {}
-        self._dut_info: dict = {}
         self._expanded: bool = False
 
     def compose(self) -> ComposeResult:
@@ -504,10 +487,6 @@ class TicketHeader(VerticalScroll):
 
     def update_criteria(self, criteria: dict) -> None:
         self._criteria = criteria
-        self._render_header()
-
-    def update_dut_info(self, dut_info: dict) -> None:
-        self._dut_info = dut_info or {}
         self._render_header()
 
     def toggle_expanded(self) -> None:
@@ -533,10 +512,6 @@ class TicketHeader(VerticalScroll):
         meta = f" · {self._ticket_type} · {self._branch}"
         content.append(self._slug, style="bold yellow")
         content.append(meta)
-        if dut_line := _format_dut_info(self._dut_info):
-            content.append("\n")
-            content.append(dut_line, style="dim")
-
         if self._criteria:
             real = {k: v for k, v in self._criteria.items() if not k.startswith("_")}
             counts: dict[_CriterionStatus, int] = {
@@ -569,7 +544,7 @@ class TicketHeader(VerticalScroll):
         self.query_one("#header-content", Static).update(content)
 
     def _append_expanded_ticket_header(self, content: Text) -> None:
-        """Rule-bordered slug/meta/DUT block at the top of the expanded panel."""
+        """Rule-bordered slug and metadata at the top of the expanded panel."""
         meta = f"{self._ticket_type} · {self._branch}"
         avail = self.content_size.width
         w = max(avail - 2, max(len(l) for l in [self._slug, meta]) + 4)
@@ -582,8 +557,6 @@ class TicketHeader(VerticalScroll):
         content.append(f"  {slug_trunc}\n", style="bold yellow")
         meta_trunc = meta[: w - 2]
         content.append(f"  {meta_trunc}\n")
-        if dut_line := _format_dut_info(self._dut_info)[: w - 2]:
-            content.append(f"  {dut_line}\n", style="dim")
         content.append(rule + "\n", style="dim")
         content.append("\n")
 

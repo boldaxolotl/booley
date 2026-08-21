@@ -71,8 +71,8 @@ Build defaults from ticket type + configs (from `@config` segments in sim entrie
 > **Mandatory:**
 > 1. ✓ `lint_clean`: [configs] *(feature/refactor)*
 > 2. ✓ `sim_pass`: [tb @ config @ test @ cur -> exp, ...]
-> 3. ✓ `review_rtl_bugs_done` *(feature/refactor; one-shot review)*
-> 4. ✓ `review_tb_quality_done` *(feature/verification; one-shot review)*
+> 3. ✓ `review_rtl_bugs_done` *(feature/refactor; terminal advisory review)*
+> 4. ✓ `review_tb_quality_done` *(feature/verification; terminal advisory review)*
 >
 > **Optional:**
 > 5. ☐ `review_rtl_spec_done` *(feature tickets carrying a detailed spec)*
@@ -220,7 +220,7 @@ criteria:
 | Sim-style | `sim_pass: [tb@config@test@cur->exp]` |
 | Parameterized | `synthesis_ok: {targets: [<target>], cell_count_max: 500}` |
 | Parameterized | `fpga_impl_ok: {targets: [<target>], lut_count_max: 100000}` |
-| Scalar | Spell review criteria as `<key>_done` for the default one-shot review. Use `<key>_clean` only when the user explicitly requests a fix-and-reverify loop |
+| Scalar | Spell review criteria as `<key>_done` for the default terminal advisory review (report findings, do not fix). Use `<key>_clean` only when the user requests every finding fixed or explicitly waived with user-visible justification |
 
 ### Defaults by Ticket Type
 
@@ -255,8 +255,10 @@ mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" tabl
 ### Rules
 
 - ≥1 mandatory criterion required
-- Every default review criterion uses the explicit `_done` suffix. `_clean` is
-  opt-in only; never infer it merely because a review is mandatory.
+- Every default review criterion uses the explicit `_done` suffix and runs after
+  code-changing work. `_clean` is opt-in only; never infer it merely because a
+  review is mandatory. Every `_clean` waiver must include a justification and is
+  shown to the user regardless of severity.
 - Custom criterion types allowed beyond the catalog
 - A criterion may name a new Target only when ticket creation authors it in the
   contract worktree before sealing. Do not put contract controls in developer

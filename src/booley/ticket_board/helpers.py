@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
+from booley.runtime.file_lock import acquire_file_lock, release_file_lock
+from booley.runtime.pid import is_pid_alive as runtime_pid_alive
 from booley.runtime.timefmt import format_human_datetime, parse_timestamp, utc_now_rfc3339
 
 # ---------------------------------------------------------------------------
@@ -17,69 +19,18 @@ from booley.runtime.timefmt import format_human_datetime, parse_timestamp, utc_n
 
 
 def lock_fd(f: IO) -> None:
-    """Acquire an exclusive non-blocking lock on an open file.
-
-    On Windows, msvcrt.locking locks at the current file position. We
-    always seek to byte 0 first so that lock_fd / unlock_fd operate on
-    the same offset regardless of prior writes.
-    """
-    if sys.platform == "win32":
-        import msvcrt
-
-        # msvcrt locks a byte range and an empty file has no byte to lock.
-        # Seed one byte before taking the lock; callers overwrite the lock
-        # stamp after acquisition.
-        f.seek(0, os.SEEK_END)
-        if f.tell() == 0:
-            f.write("\0")
-            f.flush()
-        f.seek(0)
-        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    """Compatibility wrapper for the runtime-owned lock primitive."""
+    acquire_file_lock(f)
 
 
 def unlock_fd(f: IO) -> None:
-    """Release a lock acquired by lock_fd."""
-    if sys.platform == "win32":
-        import msvcrt
-
-        f.seek(0)
-        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    """Compatibility wrapper for the runtime-owned lock primitive."""
+    release_file_lock(f)
 
 
 def is_pid_alive(pid: int) -> bool:
-    """Check whether a process with the given PID is still running."""
-    if sys.platform == "win32":
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return False
-        try:
-            # OpenProcess can succeed for recently-exited processes;
-            # verify the process hasn't terminated via its exit code.
-            exit_code = ctypes.c_ulong()
-            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                STILL_ACTIVE = 259
-                return exit_code.value == STILL_ACTIVE
-            return True  # API call failed — assume alive to avoid false negatives
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # process exists but we can't signal it
+    """Compatibility wrapper for the runtime-owned PID probe."""
+    return runtime_pid_alive(pid)
 
 
 def read_lock_pid(lock_path: str | Path) -> int | None:

@@ -1078,10 +1078,6 @@ def _detect_codex() -> bool:
     return shutil.which("codex") is not None
 
 
-# VS Code (and compatible forks) CLI shims, in preference order. Interactive
-# Mode's "Reopen in Container" workflow (ADR 0018) needs one of these editors.
-_VSCODE_CLIS = ("code", "code-insiders", "codium", "cursor", "windsurf")
-
 # Per-platform user config dir names that indicate a GUI install even when the
 # `code` CLI shim was never added to PATH (a common macOS/Windows situation).
 _VSCODE_CONFIG_NAMES = ("Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf")
@@ -1110,10 +1106,10 @@ def _detect_vscode() -> tuple[str, str]:
                         PATH. *detail* is the discovered dir name.
       - ``"missing"`` — no VS Code(-family) install found; *detail* is ``""``.
     """
-    for cli in _VSCODE_CLIS:
-        found = shutil.which(cli)
-        if not found:
-            continue
+    from booley.config.editor import resolve_editor_command
+
+    found = resolve_editor_command()
+    if found:
         try:
             out = subprocess.run(
                 [found, "--version"],
@@ -1125,7 +1121,7 @@ def _detect_vscode() -> tuple[str, str]:
             version = (out.stdout or out.stderr).strip().splitlines()[0][:60]
         except (subprocess.SubprocessError, IndexError):
             version = "(version probe failed)"
-        return "cli", f"{cli} {version}"
+        return "cli", f"{Path(found).name} {version}"
     for cfg in _vscode_config_dirs():
         if cfg.is_dir():
             return "gui", cfg.name

@@ -48,6 +48,7 @@ from typing import Any, ClassVar
 from urllib.parse import quote
 
 from booley.config import project_config
+from booley.core.boundary import as_int
 from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.workspace_isolation import hide_opposite_sources
@@ -55,6 +56,7 @@ from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
+from booley.flows.sim.target_tests import TargetTestSuite, resolve_target_test_suite
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
@@ -233,6 +235,17 @@ class MutationResult:
     #: there is no error text at all, so the log is the only place the run's
     #: behaviour can be inspected. Empty when the log could not be written.
     log_path: str = ""
+
+
+@dataclass
+class MutationTestRun:
+    """Outcome of one test within a Target-wide mutation campaign."""
+
+    test_name: str
+    process: subprocess.CompletedProcess[str] | None = None
+    timed_out: bool = False
+    error: str = ""
+    output: str = ""
 
 
 @dataclass
@@ -795,14 +808,11 @@ class MutationTesterSpecialist(Specialist):
     # Maximum verification rounds during cold start (1 happy path + 2 retries).
     MAX_VERIFICATION_ROUNDS: ClassVar[int] = 3
 
-    def required_dut_info_halves(self) -> frozenset[str]:
-        return frozenset({"dut"})
-
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--scope",
-            required=True,
-            help="Comma-separated RTL file paths to mutate",
+            default=None,
+            help="Comma-separated RTL files to mutate; defaults from the Target criterion",
         )
         parser.add_argument(
             "--tb-top",
@@ -813,9 +823,9 @@ class MutationTesterSpecialist(Specialist):
             "--dut-top",
             default=None,
             help=(
-                "DUT top module name (e.g. 'my_core'). Defaults to "
-                "state.dut_info.dut_top_module in Ticket Mode; must be "
-                "passed explicitly in Interactive Mode."
+                "Optional mutation-injection module override. By default the "
+                "specialist derives the scoped module that contains the "
+                "mutations; pass this only when the scope is ambiguous."
             ),
         )
         parser.add_argument(
@@ -836,7 +846,7 @@ class MutationTesterSpecialist(Specialist):
         parser.add_argument(
             "--count",
             type=_count_type,
-            default=10,
+            default=None,
             help="Number of mutations: integer or 'auto' (default: 10)",
         )
         parser.add_argument(
@@ -847,15 +857,6 @@ class MutationTesterSpecialist(Specialist):
                 "Pass threshold: minimum mutations that must be killed "
                 "(default: all of --count, i.e. all-or-nothing). Lower it to "
                 "accept a partial mutation score."
-            ),
-        )
-        parser.add_argument(
-            "--test",
-            default=None,
-            help=(
-                "Configured tests.toml test to run for every mutant. Defaults "
-                "to the first test declared for --target; Targets without a "
-                "declared test keep the simulator's native default."
             ),
         )
         parser.add_argument(
@@ -918,7 +919,7 @@ class MutationTesterSpecialist(Specialist):
                 "initial `+MUT_ID=<k>` reader. Add `import booley_mut_pkg::*;` to "
                 "other scope modules that use `mut_id`."
             )
-        dut_info_section = self._dut_info_section()
+        boundary_section = self._mutation_boundary_section()
         task_section = self._creator_task_section(count, dut_top_module, selector)
         tb_dirs = ", ".join(_configured_testbench_dirs(self.args.work_dir))
 
@@ -931,7 +932,7 @@ Read the mutation testing guide at `{_mutation_guide_path()}` before starting.
 ## RTL Files in Scope
 
 {scope_str}
-{dut_info_section}
+{boundary_section}
 ## Harness-Provided Infrastructure
 
 {infrastructure}
@@ -976,12 +977,12 @@ The harness builds the design once and verifies by running MUT_ID=0
 On a verification failure the harness resumes this session with the log to
 fix the muxed files; then edit the source — do **not** return JSON again."""
 
-    def _dut_info_section(self) -> str:
+    def _mutation_boundary_section(self) -> str:
         top = self._dut_top_module()
         files = self._dut_files()
         if not top and not files:
             return ""
-        lines = ["\n## DUT Info\n"]
+        lines = ["\n## Mutation Boundary\n"]
         if top:
             lines.append(f"- Top module: `{top}`")
         if files:
@@ -1079,6 +1080,34 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             if (raw := value.strip())
         ]
 
+    def _apply_campaign_defaults(self) -> McpToolResult | None:
+        """Default mutation controls from this Target's criterion parameters."""
+        key = f"mutation_score_{self.args.target}"
+        entry = self.state.criteria.get(key)
+        params = entry.params if entry is not None else {}
+        if not self.args.scope:
+            raw_scope = params.get("scope", [])
+            if isinstance(raw_scope, str):
+                self.args.scope = raw_scope
+            elif isinstance(raw_scope, list):
+                self.args.scope = ",".join(str(path) for path in raw_scope)
+        if not self.args.scope:
+            return McpToolResult(
+                exit_code=EXIT_FAILURE,
+                report_text=(
+                    f"mutation_tester: {key} must declare scope: [rtl/file.sv, ...] "
+                    "or the invocation must pass --scope."
+                ),
+            )
+        if self.args.count is None:
+            if params.get("auto") is True:
+                self.args.count = "auto"
+            else:
+                self.args.count = params.get("total", 10)
+        if self.args.min_detected is None and params.get("min_detected") is not None:
+            self.args.min_detected = as_int(params.get("min_detected"))
+        return None
+
     @staticmethod
     def _specs_outside_scope(
         specs: list[MutationSpec], scope_files: list[str], work_dir: Path
@@ -1146,19 +1175,38 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         return None
 
     def _dut_top_module(self) -> str:
-        """Resolve DUT top module.
-
-        Priority: explicit ``--dut-top`` arg (Interactive Mode) > state
-        (Ticket Mode).  Empty string when neither is populated — callers
-        treat that as an error.
-        """
+        """Resolve the mutation-injection module from an override or RTL scope."""
         explicit = getattr(self.args, "dut_top", None)
         if explicit:
             return explicit
-        state = getattr(self, "_state", None)
-        if state is None:
-            return ""
-        return state.dut_info.dut_top_module or ""
+        modules_by_file: dict[str, set[str]] = {}
+        source_text: dict[str, str] = {}
+        module_re = re.compile(r"\bmodule\s+(?:automatic\s+)?([A-Za-z_]\w*)\b")
+        for rel_path in self._scope_files():
+            path = Path(self.args.work_dir) / rel_path
+            try:
+                text = path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                continue
+            modules = set(module_re.findall(text))
+            if modules:
+                modules_by_file[rel_path] = modules
+                source_text[rel_path] = text
+        declared = set().union(*modules_by_file.values()) if modules_by_file else set()
+        if len(declared) == 1:
+            return next(iter(declared))
+
+        instantiated = {
+            module
+            for module in declared
+            if any(
+                re.search(rf"\b{re.escape(module)}\s+(?:#\s*\([^;]*\)\s*)?\w+\s*\(", text)
+                for rel_path in modules_by_file
+                for text in [source_text[rel_path]]
+            )
+        }
+        roots = declared - instantiated
+        return next(iter(roots)) if len(roots) == 1 else ""
 
     def _dut_files(self) -> list[str]:
         """Resolve the DUT source files to inject mutation muxes into.
@@ -1197,11 +1245,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             return []
 
     def _validate_interactive_args(self) -> McpToolResult | None:
-        """Reject Interactive Mode invocations missing required DUT info.
-
-        In Ticket Mode the dut_info gate enforces these; in Interactive
-        Mode the outer agent must pass ``--dut-top`` and ``--dut-files``
-        explicitly (and ``--tb-top``, ``--target`` for the sim subloop).
+        """Reject invocations whose Target or mutation scope is incomplete.
 
         ``--tb-top`` is waived for a Cocotb Target: its binary is ``Vtop`` and
         the testbench is a Python module, so there is no SV testbench top to
@@ -1234,8 +1278,8 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
-                    "mutation_tester: --dut-top is required when running "
-                    "outside a ticket (DUT top module name to mutate)."
+                    "mutation_tester: could not derive one injection module "
+                    "from --scope. Pass --dut-top to resolve the ambiguity."
                 ),
             )
         if not self._dut_files():
@@ -1251,15 +1295,14 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     def _dut_top_path(self) -> Path:
         """Resolve the worktree path to the DUT top source file.
 
-        Raises McpToolResult-friendly RuntimeError when state has no
-        dut_top_module — the cold start cannot proceed without an
-        injection target.
+        Raises a user-facing RuntimeError when the scope has no unambiguous
+        injection module.
         """
         top = self._dut_top_module()
         if not top:
             raise RuntimeError(
-                "cannot run mutation_tester: state.dut_info.dut_top_module is "
-                "empty.  Set dut_info.dut_top_module (or pass --dut-top) first.",
+                "cannot run mutation_tester: no unique injection module could "
+                "be derived from --scope. Pass --dut-top to select one.",
             )
         path = lock_mod.find_dut_top_file(
             top,
@@ -1313,6 +1356,8 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         return count, complexity, formula_count, auto_mode
 
     def _run(self) -> McpToolResult:
+        if campaign_error := self._apply_campaign_defaults():
+            return campaign_error
         work_dir = self.args.work_dir
         report_dir = self.args.report_dir
         target = self.args.target
@@ -1331,7 +1376,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         try:
             self._validate_target_runner(target, work_dir)
             self.cocotb_target(target, work_dir)
-            self._selected_test(target)
+            self._target_test_suite(target)
         except UnsupportedSimTargetError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
 
@@ -1831,49 +1876,48 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         # 2. Baseline (MUT_ID=0).  An infra failure here is NOT the creator's
         # fault: blaming its (correct) mutations and re-prompting for two more
         # rounds cost $8.71 / 31 min on a 5-mutation run (SETUP-F-41a).
-        baseline = self._run_sim_pinned(
+        baseline_runs = self._run_target_test_suite(
             target,
             work_dir,
             build_path,
             self.args.tb_top,
             mut_id=0,
         )
-        infra = _infra_failure_reason(baseline)
+        baseline_output = self._suite_output(baseline_runs)
+        infra = self._suite_infra_reason(baseline_runs)
         if infra:
-            return self._infra_outcome(round_idx, infra, baseline)
-        baseline_passed = baseline.returncode == 0
+            return self._infra_outcome_text(round_idx, infra, baseline_output)
+        baseline_passed = self._baseline_suite_passed(baseline_runs)
 
         # 3. Pinned non-zero MUT_ID.  Pin k = ceil(N/2) so we hit a mutation
         # roughly in the middle of the index range — index 1 in edge cases.
         n = len(specs)
         pinned_k = max(1, math.ceil(n / 2)) if n > 0 else 1
-        pinned = self._run_sim_pinned(
+        pinned_runs = self._run_target_test_suite(
             target,
             work_dir,
             build_path,
             self.args.tb_top,
             mut_id=pinned_k,
         )
-        pinned_infra = _infra_failure_reason(pinned)
+        pinned_infra = self._suite_infra_reason(pinned_runs)
         if pinned_infra:
-            return self._infra_outcome(round_idx, pinned_infra, pinned)
+            return self._infra_outcome_text(
+                round_idx,
+                pinned_infra,
+                self._suite_output(pinned_runs),
+            )
         # "Pass" for pinned means: the simulator really ran, completed, and did
         # not hang.  A failing testbench under a real mutation is FINE — what
         # matters is that a run happened.  Grading is fail-CLOSED: only an
         # observed outcome counts, so the infra check above must have cleared
         # first (an unbuilt binary used to grade as a pass, and in a real sweep
         # would have been scored as a kill — SETUP-F-41b).
-        pinned_log = pinned.stdout + pinned.stderr
-        pinned_passed = (
-            "TIMEOUT" not in pinned_log
-            and "ERROR: Verilator simulation timed out" not in pinned_log
-            and "ERROR: iverilog simulation timed out" not in pinned_log
-            and "ERROR: cocotb simulation timed out" not in pinned_log
-            and pinned.returncode != 124  # subprocess timeout sentinel
-        )
+        pinned_log = self._suite_output(pinned_runs)
+        pinned_passed = all(not run.timed_out and not run.error for run in pinned_runs)
 
         ok = baseline_passed and pinned_passed
-        log_tail = _tail(baseline.stdout + baseline.stderr, 25) + "\n---\n" + _tail(pinned_log, 25)
+        log_tail = _tail(baseline_output, 25) + "\n---\n" + _tail(pinned_log, 25)
         reason = ""
         if not baseline_passed:
             reason = "MUT_ID=0 baseline did not pass — default branches incorrect"
@@ -1901,6 +1945,24 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             baseline_passed=False,
             pinned_passed=False,
             log_tail=_tail((proc.stdout or "") + (proc.stderr or ""), 50),
+            reason=f"simulation harness failure (not a mutation defect): {reason}",
+            infra_error=reason,
+        )
+        self._write_round_log(round_idx, outcome)
+        return outcome
+
+    def _infra_outcome_text(
+        self,
+        round_idx: int,
+        reason: str,
+        output: str,
+    ) -> VerificationOutcome:
+        """Record a Target-suite harness failure without inventing a process."""
+        outcome = VerificationOutcome(
+            ok=False,
+            baseline_passed=False,
+            pinned_passed=False,
+            log_tail=_tail(output, 50),
             reason=f"simulation harness failure (not a mutation defect): {reason}",
             infra_error=reason,
         )
@@ -2070,14 +2132,15 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                 return rebuild_error
 
             # 4. Baseline sanity (MUT_ID=0).
-            baseline = self._run_sim_pinned(
+            baseline_runs = self._run_target_test_suite(
                 target,
                 work_dir,
                 build_path,
                 self.args.tb_top,
                 mut_id=0,
             )
-            infra = _infra_failure_reason(baseline)
+            baseline_output = self._suite_output(baseline_runs)
+            infra = self._suite_infra_reason(baseline_runs)
             if infra:
                 # Same distinction as the cold path: an unrunnable simulator is
                 # not a broken lock, and --regen-lock would not fix it.
@@ -2086,17 +2149,17 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     report_text=(
                         "warm reuse: simulation harness failure (not a mutation "
                         f"defect): {infra}\n"
-                        f"{_tail(baseline.stdout + baseline.stderr, 30)}"
+                        f"{_tail(baseline_output, 30)}"
                     ),
                 )
-            if baseline.returncode != 0:
+            if not self._baseline_suite_passed(baseline_runs):
                 return McpToolResult(
                     exit_code=EXIT_ERROR,
                     report_text=(
                         "warm reuse: lock appears intact but MUT_ID=0 baseline "
                         "is broken — pass --regen-lock to force a fresh "
                         "creator run.\n"
-                        f"{_tail(baseline.stdout + baseline.stderr, 30)}"
+                        f"{_tail(baseline_output, 30)}"
                     ),
                 )
 
@@ -2329,25 +2392,10 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         )
         return edam_layer.relpath_for_make(resolved.build_root, work_dir)
 
-    def _selected_test(self, target: str) -> str | None:
-        """The declared test to pin for every mutant, validated against the Target.
-
-        ``--test`` wins; otherwise the Target's first declared test (classic
-        path) — see :meth:`_cocotb_sim_cmd` for why the cocotb path defaults to
-        the whole module instead. ``None`` means "no explicit selection".
-        """
-        # lookup_target_section, not a raw .get: a VLNV-qualified --target
-        # (``vlnv#sim``) must find the bare tests.toml section — a literal-key
-        # miss here silently ran every mutant on the TB default test, making
-        # the whole sweep read "survived".
-        tests = project_config.lookup_target_section(project_config.TEST_NAMES, target) or []
-        test_name = getattr(self.args, "test", None)
-        if test_name is not None and test_name not in tests:
-            raise UnsupportedSimTargetError(
-                f"mutation_tester: test {test_name!r} is not declared for "
-                f"{target!r}; available tests: {', '.join(tests) or '(none)'}"
-            )
-        return test_name
+    @staticmethod
+    def _target_test_suite(target: str) -> TargetTestSuite:
+        """Return every runnable test declared for *target*."""
+        return resolve_target_test_suite(target)
 
     def _cocotb_sim_cmd(
         self,
@@ -2358,6 +2406,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         work_dir: Path,
         mut_id: int,
         timeout: int,
+        test_names: tuple[str, ...],
     ) -> list[str]:
         """Build the :mod:`booley.sim.cocotb_run` invocation for one mutant.
 
@@ -2370,11 +2419,9 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         takes plusargs after the image, so ``$value$plusargs`` resolves either
         way.
 
-        Test selection differs from the classic path on purpose: cocotb batches
-        the whole module into one process, so with no explicit ``--test`` the
-        sweep runs every test — more chances to kill a mutant at the cost of a
-        single sim process. ``tests.toml`` ``select`` plusarg templates do not
-        apply to Cocotb Targets (ADR 0034 decision 2).
+        Cocotb batches the Target's complete resolved suite into one process.
+        ``tests.toml`` ``select`` plusarg templates do not apply to Cocotb
+        Targets (ADR 0034 decision 2).
         """
         cmd = [
             sys.executable,
@@ -2391,11 +2438,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             "--plusarg",
             f"MUT_ID={mut_id}",
         ]
-        test_name = self._selected_test(target)
-        if test_name is not None:
-            # ``=`` form like every selector-ish flag (F-12), matching
-            # simulate's cocotb invocation.
-            cmd.append(f"--test={test_name}")
+        cmd.extend(f"--test={test_name}" for test_name in test_names)
         run_cwd = _resolve_run_cwd(work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
@@ -2410,6 +2453,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         tb_top: str,
         mut_id: int,
         timeout: int,
+        test_name: str | None,
     ) -> list[str]:
         """Build the pinned ``V<top>`` invocation for one mutant (classic path).
 
@@ -2431,11 +2475,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             "--plusarg",
             f"MUT_ID={mut_id}",
         ]
-        # Same VLNV-tolerant lookup as _selected_test — see the comment there.
         tests = project_config.lookup_target_section(project_config.TEST_NAMES, target) or []
-        test_name = self._selected_test(target)
-        if test_name is None and tests:
-            test_name = tests[0]
         if test_name is not None:
             selector = project_config.render_test_selector(
                 target,
@@ -2459,6 +2499,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         work_dir: Path,
         mut_id: int,
         timeout: int,
+        test_name: str | None,
     ) -> list[str]:
         """Build the pinned ``vvp`` invocation for one classic Icarus mutant."""
         cmd = [
@@ -2473,9 +2514,6 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             f"MUT_ID={mut_id}",
         ]
         tests = project_config.lookup_target_section(project_config.TEST_NAMES, target) or []
-        test_name = self._selected_test(target)
-        if test_name is None and tests:
-            test_name = tests[0]
         if test_name is not None:
             selector = project_config.render_test_selector(
                 target,
@@ -2500,6 +2538,8 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         *,
         mut_id: int,
         timeout: int = 300,
+        test_name: str | None = None,
+        cocotb_tests: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess:
         """Run the prebuilt sim once with ``+MUT_ID=<k>`` (Unit A.3).
 
@@ -2523,6 +2563,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                 work_dir=work_dir,
                 mut_id=mut_id,
                 timeout=timeout,
+                test_names=cocotb_tests,
             )
         else:
             eda_tool = self.target_eda_tool(target, work_dir, build_path)
@@ -2533,6 +2574,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     work_dir=work_dir,
                     mut_id=mut_id,
                     timeout=timeout,
+                    test_name=test_name,
                 )
             elif eda_tool == "verilator":
                 cmd = self._verilator_sim_cmd(
@@ -2542,6 +2584,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     tb_top=tb_top,
                     mut_id=mut_id,
                     timeout=timeout,
+                    test_name=test_name,
                 )
             else:
                 raise UnsupportedSimTargetError(
@@ -2555,6 +2598,85 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             text=True,
             timeout=timeout,
             check=False,
+        )
+
+    def _run_target_test_suite(
+        self,
+        target: str,
+        work_dir: Path,
+        build_path: Path,
+        tb_top: str,
+        *,
+        mut_id: int,
+        timeout: int = 300,
+    ) -> list[MutationTestRun]:
+        """Run one mutation selector against the Target's complete test suite."""
+        suite = self._target_test_suite(target)
+        if self.cocotb_target(target, work_dir) is not None:
+            selected = tuple(test for test in suite.tests if test is not None)
+            invocations = [("<cocotb-suite>", None, selected)]
+        else:
+            invocations = [(test or "<default>", test, ()) for test in suite.tests]
+
+        runs: list[MutationTestRun] = []
+        for display_name, test_name, cocotb_tests in invocations:
+            try:
+                proc = self._run_sim_pinned(
+                    target,
+                    work_dir,
+                    build_path,
+                    tb_top,
+                    mut_id=mut_id,
+                    timeout=timeout,
+                    test_name=test_name,
+                    cocotb_tests=cocotb_tests,
+                )
+                runs.append(
+                    MutationTestRun(
+                        test_name=display_name,
+                        process=proc,
+                        output=(proc.stdout or "") + (proc.stderr or ""),
+                    )
+                )
+            except subprocess.TimeoutExpired as exc:
+                runs.append(
+                    MutationTestRun(
+                        test_name=display_name,
+                        timed_out=True,
+                        output=_timeout_output(exc),
+                    )
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                runs.append(MutationTestRun(test_name=display_name, error=str(exc)))
+        return runs
+
+    @staticmethod
+    def _suite_output(runs: list[MutationTestRun]) -> str:
+        """Render per-test output without losing which test produced it."""
+        return "\n".join(f"===== {run.test_name} =====\n{run.output or run.error}" for run in runs)
+
+    @staticmethod
+    def _suite_infra_reason(runs: list[MutationTestRun]) -> str:
+        """Return the first inconclusive suite outcome, or an empty string."""
+        for run in runs:
+            if run.error:
+                return f"{run.test_name}: {run.error}"
+            if run.timed_out:
+                return f"{run.test_name}: simulation timed out"
+            if run.process is not None and (reason := _infra_failure_reason(run.process)):
+                return f"{run.test_name}: {reason}"
+        return ""
+
+    @staticmethod
+    def _baseline_suite_passed(runs: list[MutationTestRun]) -> bool:
+        """A baseline passes only when every Target test completes successfully."""
+        return bool(runs) and all(
+            not run.timed_out
+            and not run.error
+            and run.process is not None
+            and not _infra_failure_reason(run.process)
+            and run.process.returncode == 0
+            for run in runs
         )
 
     def _persist_mutant_log(self, mut_id: int, output: str) -> str:
@@ -2628,55 +2750,36 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                 f"sim mutation {spec.index}/{len(specs)} (MUT_ID={spec.mut_id or spec.index})",
             )
             mut_id = spec.mut_id or spec.index
-            try:
-                proc = self._run_sim_pinned(
-                    target,
-                    work_dir,
-                    build_path,
-                    tb_top,
-                    mut_id=mut_id,
+            runs = self._run_target_test_suite(
+                target,
+                work_dir,
+                build_path,
+                tb_top,
+                mut_id=mut_id,
+            )
+            combined = self._suite_output(runs)
+            infra = self._suite_infra_reason(runs)
+            detected = any(
+                run.timed_out
+                or (
+                    run.process is not None
+                    and not _infra_failure_reason(run.process)
+                    and run.process.returncode != 0
                 )
-                combined = proc.stdout + proc.stderr
-                snippet = _tail(combined, 5)
-                snippet = snippet[-200:]
-                log_path = self._persist_mutant_log(mut_id, combined)
-                # Fail-closed: a run-half that never started the simulator also
-                # exits non-zero, and counting that as a kill would inflate the
-                # score with runs nobody observed (SETUP-F-41b). Grade it
-                # invalid — excluded from both detected and not-detected.
-                infra = _infra_failure_reason(proc)
-                results.append(
-                    MutationResult(
-                        index=spec.index,
-                        invalid=bool(infra),
-                        detected=(not infra and proc.returncode != 0),
-                        sim_output_snippet=(f"sim infra error: {infra}" if infra else snippet),
-                        selector_observed=(f"{lock_mod.MUT_ECHO_PREFIX}{mut_id}" in combined),
-                        log_path=log_path,
-                    )
+                for run in runs
+            )
+            invalid = bool(infra) and not detected
+            snippet = f"sim infra error: {infra}" if invalid else _tail(combined, 5)[-200:]
+            results.append(
+                MutationResult(
+                    index=spec.index,
+                    invalid=invalid,
+                    detected=detected,
+                    sim_output_snippet=snippet,
+                    selector_observed=(f"{lock_mod.MUT_ECHO_PREFIX}{mut_id}" in combined),
+                    log_path=self._persist_mutant_log(mut_id, combined),
                 )
-            except subprocess.TimeoutExpired as exc:
-                # A timeout still counts as detected, but the partial output is
-                # what tells a reader WHERE the mutant hung — keep it.
-                results.append(
-                    MutationResult(
-                        index=spec.index,
-                        detected=True,
-                        sim_output_snippet="simulation timed out",
-                        log_path=self._persist_mutant_log(
-                            mut_id,
-                            _timeout_output(exc) + "\n[booley] simulation timed out\n",
-                        ),
-                    )
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                results.append(
-                    MutationResult(
-                        index=spec.index,
-                        invalid=True,
-                        sim_output_snippet=f"sim error: {exc}",
-                    )
-                )
+            )
         return results, time.monotonic() - start
 
     # ------------------------------------------------------------------
@@ -2963,6 +3066,8 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         detail = _mutation_detail(summary, min_detected, count, valid_count)
         detail.update(
             {
+                "target": target,
+                "tests": list(self._target_test_suite(target).display_names),
                 "reused_lock": reused_lock,
                 "lock_created_at": lock_created_at,
                 "verification_rounds": verification_rounds,
@@ -2990,10 +3095,12 @@ Return a fresh JSON mutation spec list matching the updated muxes.
 
         self._attach_campaign_artifacts(plan, inputs, detail)
 
+        criterion_key = f"mutation_score_{target}"
         self.set_criterion(
-            "mutation_score",
+            criterion_key,
             passed,
-            detail={**detail, "target": target},
+            detail=detail,
+            source_target=target,
         )
 
         # Display lines. Both formatters read straight off (plan, inputs) and
@@ -3006,7 +3113,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
 
         return McpToolResult(
             exit_code=EXIT_SUCCESS if passed else EXIT_FAILURE,
-            criterion_key="mutation_score",
+            criterion_key=criterion_key,
             criterion_met=passed,
             detail=detail,
             report_text=report_text,

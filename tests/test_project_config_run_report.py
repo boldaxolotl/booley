@@ -51,8 +51,10 @@ class TestPromptExitRule:
         rules = _build_rules_section(run_report=False)
         assert "EXIT CONDITION" in rules
         assert "disables routine end-of-run reports" in rules
-        assert "all mandatory and optional criteria are met" in rules
-        assert "final action is `submit_run_report`" in rules
+        assert "any `_done` review" in rules
+        assert "accepted `_clean` review waiver" in rules
+        assert "any unmet optional criterion" in rules
+        assert "must still call `submit_run_report`" in rules
         assert "optional_criteria_justification" in rules
 
     def test_run_report_off_keeps_other_rules(self):

@@ -74,26 +74,46 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "`<abbreviated SHA>` — <complete commit subject; one line per commit, oldest first>",
         "#### Changed files",
         "#### Reports",
-        "[Run report](/absolute/path/to/REPORT.md)",
-        "[HTML explanation](/absolute/runtime/path/to/report.html)",
+        "[Developer Agent report (REPORT.md)](/absolute/path/to/REPORT.md)",
+        "[Polished HTML report](/absolute/runtime/path/to/report.html)",
+        "#### Explanation highlights",
+        "#### Review findings and dispositions",
         "#### Run economics",
     ):
         assert required in template
+    ordered_sections = (
+        "#### Reports",
+        "#### Decision summary",
+        "#### Findings",
+        "#### Explanation highlights",
+        "#### Scope deviations",
+        "#### Changed files",
+        "#### Criteria",
+        "#### Review findings and dispositions",
+        "#### Commit history",
+        "#### Run economics",
+    )
+    assert [template.index(section) for section in ordered_sections] == sorted(
+        template.index(section) for section in ordered_sections
+    )
+    assert template.index("Developer Agent report") < template.index("Polished HTML report")
     assert "run-summary.md" not in template
     assert "usage.md" not in template
     assert "prepare-review $SLUG" not in review
     assert "command:livePreview" not in template
 
 
-def test_triage_treats_completed_done_reviews_as_met_after_follow_up_fixes():
+def test_triage_treats_all_review_modes_as_freshness_sensitive():
     review = _skill_text("booley-ticket-triage", "steps/03-review.md")
+    contract = " ".join(review.split())
 
     for required in (
-        "`review_*_done` is copied exactly from persisted criterion state",
-        "never infer staleness from later commits",
-        "`review_*_clean` remains explicitly\nfreshness-sensitive",
+        "Both `review_*_done` and `review_*_clean` are freshness-sensitive",
+        "recorded source fingerprint",
+        "accepted waiver",
+        "including `MINOR`",
     ):
-        assert required in review
+        assert required in contract
 
 
 def test_ticket_create_defaults_every_review_to_done_mode():
@@ -116,7 +136,8 @@ def test_ticket_create_defaults_every_review_to_done_mode():
         "review_rtl_code_style_done",
     ):
         assert f"{criterion}: true" in template
-    assert "`_clean` is\n  opt-in only" in skill
+    assert "`_clean` is opt-in only" in skill
+    assert "Every `_clean` waiver must include a justification" in skill
 
 
 def test_ticket_create_grills_one_dependency_frontier_per_round():

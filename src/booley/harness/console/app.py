@@ -39,7 +39,6 @@ from .events import (
     AgentThinking,
     CriteriaChanged,
     DeveloperBudgetChanged,
-    DutInfoChanged,
     EditsChanged,
     FilesEdited,
     McpToolCompleted,
@@ -99,7 +98,6 @@ _VALID_PHASES_BY_MESSAGE: dict[str, frozenset[ConsolePhase]] = {
     "McpToolProgress": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
     "McpToolCompleted": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
     "CriteriaChanged": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
-    "DutInfoChanged": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
     "EditsChanged": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
     "FilesEdited": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
     "UsageChanged": frozenset({ConsolePhase.SETUP, ConsolePhase.RUNNING}),
@@ -312,11 +310,6 @@ class ConsoleApp(App):
         if not self._handler_phase_ok("CriteriaChanged"):
             return
         self.query_one(TicketHeader).update_criteria(event.criteria)
-
-    def on_dut_info_changed(self, event: DutInfoChanged) -> None:
-        if not self._handler_phase_ok("DutInfoChanged"):
-            return
-        self.query_one(TicketHeader).update_dut_info(event.dut_info)
 
     def on_setup_progress(self, event: SetupProgress) -> None:
         if not self._handler_phase_ok("SetupProgress"):

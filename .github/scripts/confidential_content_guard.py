@@ -434,9 +434,12 @@ def _iter_blob_data(repo: Path, object_ids: list[str]) -> Iterable[tuple[str, by
     finally:
         feeder.join(timeout=5)
         if process.poll() is None:
-            process.terminate()
-        process.wait(timeout=5)
-    if feed_errors or process.returncode not in (0, -15):
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+    if feed_errors or process.returncode != 0:
         raise GuardError("git cat-file failed while inspecting content")
 
 

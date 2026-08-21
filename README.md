@@ -13,6 +13,8 @@
 
 It's 2026, and LLMs are finally good enough to do real work. The software world already accepts this: agents write more and more of the code while humans move up to architecture, specification, review, and integration. Hardware moves slower, but it moves: every major EDA vendor and a wave of startups are shipping AI systems for chip design. Those systems are closed, expensive, and out of reach if you don't work at a big company. Raw agents like Claude Code and Codex are useful, but they lack tight integration with EDA tools and still fail in predictable ways on RTL work. So I built the framework I was missing: free and open source.
 
+The mental model behind Booley is simple: treat an agent like a talented junior engineer. It can write decent RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and—if given unrestricted access—perfectly capable of force-pushing over your Git history. You don't solve that by trusting it blindly or refusing to use it. You give it the right tools, a constrained workspace, explicit specifications, automated checks, and human review. Booley is that working environment.
+
 The idea:
 
 1. Take the most capable coding agents available (Claude Code, Codex).

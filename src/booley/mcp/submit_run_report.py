@@ -260,7 +260,7 @@ class SubmitRunReportMcpTool(McpTool):
             work_dir=Path(self.args.work_dir),
         )
         if stale:
-            _emit_criteria_update(self.state, tb_top=self._console_tb_top())
+            _emit_criteria_update(self.state)
         unmet = self.state.unmet_mandatory()
         if not unmet:
             return None
@@ -462,6 +462,44 @@ class SubmitRunReportMcpTool(McpTool):
         criteria = "\n".join(f"- `{key}`" for key in unmet_optional)
         return f"\n## Unmet optional criteria\n\n{criteria}\n\n{justification.strip()}\n"
 
+    def _review_dispositions_section(self) -> str:
+        """Render deterministic advisory findings and every accepted waiver."""
+        from booley.dev_support.review_dispositions import collect_review_dispositions
+
+        rows = collect_review_dispositions(self.state.criteria)
+        visible = [row for row in rows if row["disposition"] in {"reported", "waived"}]
+        done_criteria = sorted(
+            key
+            for key, entry in self.state.criteria.items()
+            if key.startswith("review_") and key.endswith("_done") and entry.met
+        )
+        if not visible and not done_criteria:
+            return ""
+        lines = ["", "## Review findings and waivers", ""]
+        reported_criteria = {
+            row["criterion"] for row in visible if row["disposition"] == "reported"
+        }
+        for criterion in done_criteria:
+            if criterion not in reported_criteria:
+                lines.append(f"- **REVIEWED — NO FINDINGS** `{self._report_text(criterion)}`")
+        for row in visible:
+            location = f"{row['file']}:{row['line']}" if row["file"] else "location unavailable"
+            label = "WAIVED" if row["disposition"] == "waived" else "REPORTED"
+            lines.append(
+                f"- **{label} {self._report_text(row['severity'])}** "
+                f"`{self._report_text(row['criterion'])}` at "
+                f"`{self._report_text(location)}` — {self._report_text(row['summary'])}"
+            )
+            if row["disposition"] == "waived":
+                lines.append(f"  - Justification: {self._report_text(row['justification'])}")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _report_text(value: object) -> str:
+        """Render persisted agent text inertly on one Markdown line."""
+        text = " ".join(str(value).split())
+        return text.replace("`", "'").replace("<", "&lt;").replace(">", "&gt;")
+
     def _write_report(
         self,
         *,
@@ -489,6 +527,7 @@ class SubmitRunReportMcpTool(McpTool):
         optional_section = self._optional_criteria_section(
             unmet_optional, optional_criteria_justification
         )
+        review_section = self._review_dispositions_section()
         content = (
             f"# Run report: {slug}\n"
             f"\n"
@@ -507,6 +546,7 @@ class SubmitRunReportMcpTool(McpTool):
             f"\n"
             f"{uncertainties.strip()}\n"
             f"{optional_section}"
+            f"{review_section}"
         )
 
         report_dir.mkdir(parents=True, exist_ok=True)

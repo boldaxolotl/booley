@@ -6,12 +6,17 @@ portable. Keeps the rest of Booley OS-agnostic without over-abstraction.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from booley.runtime.process_group import (
+    capture_process_group,
+    new_group_kwargs,
+    terminate_process_group,
+)
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -119,9 +124,7 @@ def popen_new_group_kwargs() -> dict:
     taskkill /T. On POSIX: start_new_session=True so killpg() reaches all
     descendants (xsim, xelab, yosys-abc, sv2v, .bat-spawned children, ...).
     """
-    if IS_WINDOWS:
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
+    return new_group_kwargs(is_windows=IS_WINDOWS)
 
 
 def kill_process_tree(proc: subprocess.Popen) -> None:
@@ -132,49 +135,5 @@ def kill_process_tree(proc: subprocess.Popen) -> None:
     otherwise become orphaned zombies. Safe to call on an already-dead
     process (best-effort, swallows errors).
     """
-    if IS_WINDOWS:
-        if proc.poll() is not None:
-            return
-        # taskkill /T walks the child-tree, /F is forceful.
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                timeout=10,
-                check=False,
-            )
-        # Fallback: direct kill in case taskkill isn't on PATH.
-        with contextlib.suppress(OSError):
-            proc.kill()
-    else:
-        import signal
-
-        # popen_new_group_kwargs() makes the child the leader of a fresh
-        # session, so its PID remains the process-group ID even if the wrapper
-        # exits before one of its simulator grandchildren.  Do not derive the
-        # PGID with getpgid(proc.pid): that fails in precisely that orphan race.
-        pgid = proc.pid
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        except OSError:
-            with contextlib.suppress(OSError):
-                proc.kill()
-            return
-
-        # Give the group a brief moment to exit cleanly, then kill any
-        # descendants that ignored SIGTERM. Waiting only for the direct child
-        # is insufficient: make/python can exit while Vtop keeps running.
-        if proc.poll() is None:
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(timeout=2)
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return
-        except OSError:
-            pass
-        else:
-            with contextlib.suppress(OSError, ProcessLookupError):
-                os.killpg(pgid, signal.SIGKILL)
+    group = capture_process_group(proc)
+    terminate_process_group(proc, group, is_windows=IS_WINDOWS)

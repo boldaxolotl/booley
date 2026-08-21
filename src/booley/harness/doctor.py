@@ -285,12 +285,30 @@ class DoctorFinding:
 
 
 @dataclass(frozen=True)
+class _DoctorProfile:
+    """Policy for one Doctor invocation."""
+
+    agent_checks: bool = True
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> _DoctorProfile:
+        """Resolve CLI policy once at Doctor's boundary."""
+        return cls(agent_checks=not getattr(args, "skip_agent_checks", False))
+
+    @property
+    def records_health_evidence(self) -> bool:
+        """Whether this complete profile may bless normal runtime health."""
+        return self.agent_checks
+
+
+@dataclass(frozen=True)
 class DoctorRunResult:
     """Machine-readable outcome of one Doctor invocation."""
 
     counts: dict[str, int]
     findings: tuple[DoctorFinding, ...]
     exit_code: int
+    health_evidence: bool = True
 
     @property
     def clean(self) -> bool:
@@ -313,6 +331,7 @@ class _Reporter:
 
     counts: dict[str, int]
     waivers: DoctorWaivers
+    profile: _DoctorProfile
     verbose: bool = False
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
     findings: list[DoctorFinding] | None = None
@@ -322,12 +341,14 @@ class _Reporter:
         cls,
         waivers: DoctorWaivers | None = None,
         *,
+        profile: _DoctorProfile | None = None,
         verbose: bool = False,
     ) -> _Reporter:
         waiver_set = waivers or DoctorWaivers.empty(Path(WAIVER_FILENAME))
         return cls(
             counts={"pass": 0, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
             waivers=waiver_set,
+            profile=profile or _DoctorProfile(),
             verbose=verbose,
             _reported_warning_keys=set(),
             findings=[],
@@ -379,6 +400,13 @@ class _Reporter:
         skip(f"SKIP  {msg}")
         self.counts["skip"] += 1
 
+    def agent_check_enabled(self, description: str) -> bool:
+        """Report a profile-disabled agent check and return whether to run it."""
+        if self.profile.agent_checks:
+            return True
+        self.skip_(f"{description} skipped by --skip-agent-checks")
+        return False
+
     def fail_(self, msg: str, fix: str = "") -> None:
         assert self.findings is not None
         self.findings.append(DoctorFinding("fail", str(msg), fix))
@@ -419,7 +447,12 @@ class _Reporter:
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
         assert self.findings is not None
-        return DoctorRunResult(dict(self.counts), tuple(self.findings), exit_code)
+        return DoctorRunResult(
+            dict(self.counts),
+            tuple(self.findings),
+            exit_code,
+            health_evidence=self.profile.records_health_evidence,
+        )
 
 
 def _warning_identity(finding: DoctorWarning) -> str:
@@ -440,9 +473,14 @@ def _load_waivers(project_root: Path) -> tuple[DoctorWaivers, str | None]:
         return DoctorWaivers.empty(project_dir / WAIVER_FILENAME), str(exc)
 
 
-def _create_reporter(project_root: Path, *, verbose: bool) -> _Reporter:
+def _create_reporter(
+    project_root: Path,
+    *,
+    profile: _DoctorProfile,
+    verbose: bool,
+) -> _Reporter:
     waivers, waiver_error = _load_waivers(project_root)
-    reporter = _Reporter.create(waivers, verbose=verbose)
+    reporter = _Reporter.create(waivers, profile=profile, verbose=verbose)
     if waiver_error:
         reporter.fail_(
             f"Doctor waiver file invalid: {waiver_error}",
@@ -483,7 +521,8 @@ def run_doctor_result(
 
     verbose = getattr(args, "verbose", False)
     deep = getattr(args, "deep", False)
-    reporter = _create_reporter(project_root, verbose=verbose)
+    profile = _DoctorProfile.from_args(args)
+    reporter = _create_reporter(project_root, profile=profile, verbose=verbose)
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
     _run_runtime_phase(project, docker_exe, verbose, reporter)
     _run_flow_and_core_phase(project, docker_exe, verbose, reporter)
@@ -491,18 +530,10 @@ def run_doctor_result(
     if deep:
         _run_deep_phase(project, docker_exe, verbose, reporter)
 
-    # Only a fully clean run refreshes the freshness stamp that session start
-    # and the ticket sweep nag against (fail-soft; never changes Doctor's rc).
-    if (
-        project is not None
-        and reporter.counts["fail"] == 0
-        and reporter.counts["warn"] == 0
-        and record_clean
-    ):
+    result = reporter.result(reporter.finish())
+    if project is not None and result.clean and result.health_evidence and record_clean:
         doctor_stamp.record_clean_run(project.project_dir, project_root, deep=deep)
-
-    exit_code = reporter.finish()
-    return reporter.result(exit_code)
+    return result
 
 
 def _run_project_phase(
@@ -583,20 +614,9 @@ def _run_runtime_phase(
         docker_exe,
         sandbox_image,
         verbose,
-        reporter.pass_,
-        reporter.note_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
+        reporter,
     )
-    _run_preflight_parity_checks(
-        project,
-        reporter.pass_,
-        reporter.note_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-    )
+    _run_preflight_parity_checks(project, reporter)
 
 
 def _run_flow_and_core_phase(
@@ -647,7 +667,8 @@ def _run_deep_phase(
     # First, before the EDA smoke checks: the probe's RUSAGE_CHILDREN reading
     # is exact only while no bigger child (a real sim/synth run) has been
     # reaped yet.
-    _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
+    if reporter.agent_check_enabled("developer authorization probe"):
+        _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
     _run_deep_checks(
         project,
         docker_exe,
@@ -3001,49 +3022,69 @@ def _run_mcp_checks(
     docker_exe: str | None,
     image: str,
     verbose: bool,
-    _pass: Check,
-    _note: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
+    reporter: _Reporter,
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
     banner("Interactive Mode checks")
     if project is None:
-        _skip("Interactive Mode checks skipped - project config invalid")
+        reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
 
     _check_devcontainer_spec(
         project.project_root,
         image,
         _declared_provider(project),
-        _pass,
-        _warn,
-        _fail,
-        _note=_note,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.fail_,
+        _note=reporter.note_,
     )
-    _check_issued_session_runtime(project, docker_exe, _pass, _skip, _fail)
-    _check_devcontainer_excludes(project.project_root, _pass, _warn)
-    _check_interactive_logs_gitignore(project.project_dir, _pass, _warn)
-    _check_interactive_logs_tracked(project.project_dir, _pass, _fail)
-    provider = _configured_provider(project)
-    auth_policy = _configured_auth_policy(project)
-    _check_agent_auth_token(provider, _pass, _warn, _skip, policy=auth_policy)
-    _check_oauth_token(provider, _pass, _warn, _skip, policy=auth_policy, _note=_note)
-    _check_subscription_creds_health(provider, _pass, _warn, policy=auth_policy)
-    _check_interactive_docker_objects(docker_exe, _pass, _warn, _skip)
-    _check_wcp_server(project, docker_exe, _pass, _skip, _fail)
-    _check_interactive_state_volumes(project, docker_exe, verbose, _pass, _note, _skip)
-    _check_issued_image_keepers(project, docker_exe, verbose, _pass, _note, _skip)
+    _check_issued_session_runtime(
+        project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_
+    )
+    _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
+    _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
+    _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
+    _run_agent_credential_checks(project, reporter)
+    _check_interactive_docker_objects(docker_exe, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    _check_interactive_state_volumes(
+        project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
+    )
+    _check_issued_image_keepers(
+        project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
+    )
 
     if not docker_exe:
-        _skip("MCP server probe skipped - container runtime unavailable")
+        reporter.skip_("MCP server probe skipped - container runtime unavailable")
         return
     if not _docker_image_exists_by_name(image):
-        _skip("MCP server probe skipped - sandbox image unavailable")
+        reporter.skip_("MCP server probe skipped - sandbox image unavailable")
         return
-    _run_mcp_probe(project, docker_exe, image, verbose, _pass, _warn, _fail)
+    _run_mcp_probe(
+        project, docker_exe, image, verbose, reporter.pass_, reporter.warn_, reporter.fail_
+    )
+
+
+def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> None:
+    """Run credential checks when the invocation profile includes agents."""
+    if not reporter.agent_check_enabled("agent credential checks"):
+        return
+    provider = _configured_provider(project)
+    auth_policy = _configured_auth_policy(project)
+    _check_agent_auth_token(
+        provider, reporter.pass_, reporter.warn_, reporter.skip_, policy=auth_policy
+    )
+    _check_oauth_token(
+        provider,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        policy=auth_policy,
+        _note=reporter.note_,
+    )
+    _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
 
 
 def _check_interactive_logs_gitignore(
@@ -3318,7 +3359,12 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if not _check_runtime_isolation(_pass, _fail):
             return
         mounted = Path("/opt/booley-eda/vivado").is_dir()
-        if vivado is not None and vivado.provisioning == PROVISIONING_HOST and not mounted:
+        if (
+            vivado is not None
+            and vivado.provisioning == PROVISIONING_HOST
+            and _flow_selection(project, "fpga").enabled
+            and not mounted
+        ):
             _fail(
                 "host-provisioned Vivado is absent from the Session Runtime",
                 "reissue the spec on the host and recreate the Session Runtime",
@@ -3327,7 +3373,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if mounted:
             _check_mounted_vivado_runtime(_pass, _fail)
         else:
-            _pass("Session Runtime has no host-mounted commercial EDA request")
+            _pass("Session Runtime has no active host-mounted commercial EDA request")
         return
 
     from booley.eda import runtime_spec
@@ -4310,24 +4356,26 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
 
 def _run_preflight_parity_checks(
     project: ProjectAudit | None,
-    _pass: Check,
-    _note: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
+    reporter: _Reporter,
 ) -> None:
     """Mirror cheap run preflight checks in doctor output."""
     banner("Run checks")
     if project is None:
-        _skip("run checks skipped - project config invalid")
+        reporter.skip_("run checks skipped - project config invalid")
         return
 
-    _check_tickets_tree(project.project_dir, _pass, _fail)
-    _check_git_state(project.project_root, _pass, _note, _fail)
-    _check_repo_footprint(project.project_root, _pass, _warn)
-    _check_ticket_board_import(project.project_root, _pass, _fail)
-    _check_custom_endpoints_and_criteria(project.project_root, _pass, _fail)
-    _check_agent_backend_health(project.project_root, _pass, _warn, _note=_note)
+    _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
+    _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
+    _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
+    _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    if reporter.agent_check_enabled("worker backend health check"):
+        _check_agent_backend_health(
+            project.project_root,
+            reporter.pass_,
+            reporter.warn_,
+            _note=reporter.note_,
+        )
 
 
 def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:

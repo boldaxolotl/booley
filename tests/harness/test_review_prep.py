@@ -16,25 +16,30 @@ from booley.core.models import AgentResult
 from booley.harness import review_prep as rp
 
 
-def _html(extra: str = "") -> str:
-    filler = "A grounded explanation of the change. " * 40
-    quiz = "\n".join(
-        f"""<div class="quiz-question">
-  <button class="quiz-option" data-correct="true" data-feedback="Yes">A{i}</button>
-  <button class="quiz-option" data-correct="false" data-feedback="No">B{i}</button>
-  <div class="quiz-feedback"></div>
-</div>"""
-        for i in range(5)
-    )
-    return f"""<!doctype html>
-<html><head><style>pre {{ white-space: pre-wrap; }}</style></head><body>
-<h1>Background</h1><p>{filler}</p>
-<h1>Intuition</h1><p>{filler}</p>
-<h1>Code</h1><pre>line one\nline two</pre>
-<h1>Quiz</h1>
-{quiz}
-{extra}
-</body></html>"""
+def _explanation() -> dict:
+    return {
+        "background": [{"title": "Existing system", "body": "Grounded background."}],
+        "intuition": [{"title": "Core idea", "body": "A concrete toy example."}],
+        "code_references": [
+            {
+                "repository": "rtl",
+                "path": "rtl/core.sv",
+                "revision": "b" * 40,
+                "summary": "The change keeps the invariant explicit.",
+            }
+        ],
+        "findings": [{"title": "Edge case", "detail": "Exited owners remain distinguishable."}],
+        "quiz": [
+            {
+                "question": f"Question {index}?",
+                "choices": [
+                    {"text": "Correct", "correct": True, "feedback": "Yes"},
+                    {"text": "Incorrect", "correct": False, "feedback": "No"},
+                ],
+            }
+            for index in range(5)
+        ],
+    }
 
 
 def _ctx(tmp_path: Path) -> rp.ReviewPrepContext:
@@ -56,6 +61,30 @@ def _git_evidence(path: Path) -> dict[str, Path]:
     return dict.fromkeys(("diff", "commits", "files", "status"), path)
 
 
+def _git(repository: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repository), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _create_git_snapshot(repository: Path, files: dict[str, str]) -> str:
+    repository.mkdir()
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.email", "test@example.com")
+    _git(repository, "config", "user.name", "Test")
+    for relative, content in files.items():
+        path = repository / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(repository, "add", "-f", ".")
+    _git(repository, "commit", "-qm", "fixture")
+    return _git(repository, "rev-parse", "HEAD")
+
+
 def _assessment() -> dict:
     return {
         "recommendation": "approve",
@@ -71,8 +100,18 @@ def _assessment() -> dict:
 
 def _facts() -> dict:
     return {
-        "version": 1,
+        "version": 2,
+        "kind": "review",
         "slug": "demo",
+        "feature_branch": "demo",
+        "repositories": [
+            {
+                "name": "rtl",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "worktree": "/tmp/worktree",
+            }
+        ],
         "scope": {"deviations": []},
         "criteria": [],
         "commits": [],
@@ -122,11 +161,11 @@ def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: P
 
     prepared = rp._write_output(
         ctx,
-        {"html": _html(), "assessment": assessment},
+        {"explanation": _explanation(), "assessment": assessment},
         facts,
     )
 
-    assert prepared.html_path and prepared.html_path.is_file()
+    assert prepared.explanation is not None
     assert prepared.assessment["optional_omissions"] == "none"
     assert prepared.assessment["recommendation"] == "hold"
     assert prepared.assessment["scope_deviations"][0]["path"] == "rtl/outside.sv"
@@ -138,7 +177,7 @@ def test_write_output_falls_back_when_structured_response_is_missing(tmp_path: P
 
     prepared = rp._write_output(_ctx(tmp_path), None, facts)
 
-    assert prepared.html_path is None
+    assert prepared.explanation is None
     assert prepared.html_error
     assert prepared.assessment_error
     assert prepared.assessment["recommendation"] == "hold"
@@ -151,75 +190,12 @@ def test_write_output_falls_back_when_structured_response_is_missing(tmp_path: P
     ]
 
 
-def test_secure_html_removes_agent_script_and_injects_trusted_behavior():
-    raw = _html("<script>fetch('https://example.invalid')</script>")
-    secured = rp._secure_html({"html": raw})
+def test_output_schema_contains_structured_explanation_not_html():
+    schema = rp._output_schema()
 
-    assert "fetch(" not in secured
-    assert "Content-Security-Policy" in secured
-    assert "script-src 'sha256-" in secured
-    assert "script-src 'unsafe-inline'" not in secured
-    assert "event.target.closest('.quiz-option')" in secured
-
-
-def test_secure_html_injects_whitespace_preservation_for_bare_pre():
-    raw = _html().replace("<style>pre { white-space: pre-wrap; }</style>", "")
-
-    secured = rp._secure_html({"html": raw})
-
-    assert "pre { white-space: pre-wrap !important; }" in secured
-
-
-@pytest.mark.parametrize(
-    "extra, message",
-    [
-        ('<img src="https://example.invalid/x.png">', "unsafe src"),
-        ('<button onclick="alert(1)">bad</button>', "event handler"),
-        ('<meta http-equiv="refresh" content="0; url=/">', "meta policy"),
-        ('<a href="javascript:alert(1)">bad</a>', "unsafe href"),
-        ('<a href="data:text/html,bad">bad</a>', "unsafe href"),
-        ('<div srcdoc="<script>alert(1)</script>">bad</div>', "forbidden srcdoc"),
-        ('<div style="background:url(javascript:alert(1))">bad</div>', "HTML CSS"),
-    ],
-)
-def test_secure_html_rejects_active_content(extra: str, message: str):
-    with pytest.raises(rp.ReviewPrepError, match=message):
-        rp._secure_html({"html": _html(extra)})
-
-
-@pytest.mark.parametrize(
-    "css",
-    [
-        "html { scroll-behavior: smooth; }",
-        ".diagram { overscroll-behavior: contain; }",
-    ],
-)
-def test_secure_html_accepts_passive_behavior_properties(css: str):
-    raw = _html().replace(
-        "pre { white-space: pre-wrap; }", css + " pre { white-space: pre-wrap; }"
-    )
-
-    secured = rp._secure_html({"html": raw})
-
-    assert css in secured
-
-
-@pytest.mark.parametrize(
-    "css, construct",
-    [
-        (".card { background: url(https://example.invalid/x.png); }", "url\\(\\)"),
-        ('@import "https://example.invalid/theme.css";', "@import"),
-        (".card { width: expression(alert(1)); }", "expression\\(\\)"),
-        (".card { behavior: none; }", "behavior property"),
-    ],
-)
-def test_secure_html_identifies_disallowed_css_construct(css: str, construct: str):
-    raw = _html().replace(
-        "pre { white-space: pre-wrap; }", css + " pre { white-space: pre-wrap; }"
-    )
-
-    with pytest.raises(rp.ReviewPrepError, match=construct):
-        rp._secure_html({"html": raw})
+    assert "explanation" in schema["properties"]
+    assert "html" not in schema["properties"]
+    assert schema["properties"]["explanation"]["properties"]["quiz"]["minItems"] == 5
 
 
 def test_fresh_outcome_requires_matching_identity_and_files(tmp_path: Path):
@@ -291,22 +267,14 @@ async def test_agent_invocation_is_read_only(tmp_path: Path, monkeypatch):
 
 def test_agent_workspace_is_a_disposable_snapshot(tmp_path: Path):
     worktree = tmp_path / "live"
-    worktree.mkdir()
-    subprocess.run(["git", "init", "-q", str(worktree)], check=True)
-    subprocess.run(
-        ["git", "-C", str(worktree), "config", "user.email", "test@example.com"], check=True
+    head = _create_git_snapshot(
+        worktree,
+        {
+            "source.txt": "committed\n",
+            f"{rp.PROJECT_DIR_NAME}/open-footprint.txt": "tracked by outer repository\n",
+        },
     )
-    subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Test"], check=True)
     source = worktree / "source.txt"
-    source.write_text("committed\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(worktree), "add", "source.txt"], check=True)
-    subprocess.run(["git", "-C", str(worktree), "commit", "-qm", "fixture"], check=True)
-    head = subprocess.run(
-        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
     ctx = replace(_ctx(tmp_path), worktree=worktree, head_sha=head)
     ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
 
@@ -320,8 +288,58 @@ def test_agent_workspace_is_a_disposable_snapshot(tmp_path: Path):
         assert snapshot_source.read_text(encoding="utf-8") == "committed\n"
         snapshot_source.write_text("agent edit\n", encoding="utf-8")
         assert workspace.evidence["ticket"].read_text(encoding="utf-8") == "ticket\n"
+        open_footprint = workspace.repository / rp.PROJECT_DIR_NAME / "open-footprint.txt"
+        assert open_footprint.read_text(encoding="utf-8") == "tracked by outer repository\n"
 
     assert source.read_text(encoding="utf-8") == "committed\n"
+
+
+def test_agent_workspace_prefers_paired_project_snapshot(tmp_path: Path):
+    worktree = tmp_path / "live"
+    head = _create_git_snapshot(
+        worktree,
+        {
+            "source.txt": "outer source\n",
+            f"{rp.PROJECT_DIR_NAME}/stale.txt": "stale outer copy\n",
+            f"{rp.PROJECT_DIR_NAME}/shared.txt": "outer version\n",
+        },
+    )
+    project_worktree = tmp_path / "project-live"
+    project_head = _create_git_snapshot(
+        project_worktree,
+        {
+            "project-only.txt": "paired source\n",
+            "shared.txt": "paired version\n",
+        },
+    )
+    project_repository = rp.ProjectReviewRepository(
+        worktree=project_worktree,
+        base_sha=project_head,
+        head_sha=project_head,
+        feature_branch="booley-ticket/demo",
+    )
+    ctx = replace(
+        _ctx(tmp_path),
+        worktree=worktree,
+        head_sha=head,
+        project_repository=project_repository,
+    )
+    ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+    evidence = ctx.runtime_dir / "git-evidence.txt"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text("evidence\n", encoding="utf-8")
+    package = rp._build_evidence_package(ctx, "source", _git_evidence(evidence))
+
+    with rp._agent_workspace(ctx, package) as workspace:
+        project_snapshot = workspace.repository / rp.PROJECT_DIR_NAME
+        assert (workspace.repository / "source.txt").read_text(
+            encoding="utf-8"
+        ) == "outer source\n"
+        assert (project_snapshot / "project-only.txt").read_text(
+            encoding="utf-8"
+        ) == "paired source\n"
+        assert (project_snapshot / "shared.txt").read_text(encoding="utf-8") == "paired version\n"
+        assert not (project_snapshot / "stale.txt").exists()
 
 
 def test_find_checkout_uses_supplied_project_root(tmp_path: Path, monkeypatch):
@@ -394,7 +412,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
 
     async def invoke(*_args, **_kwargs):
         return AgentResult(
-            structured={"html": _html(), "assessment": _assessment()},
+            structured={"explanation": _explanation(), "assessment": _assessment()},
             cost_usd=0.125,
         )
 
@@ -402,7 +420,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
     def workspace(_ctx, _evidence):
         yield rp.ReviewAgentWorkspace(ctx.worktree, {"diff": evidence})
 
-    monkeypatch.setattr(rp, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
     monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
@@ -439,6 +457,12 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
         "triage_facts",
     }
 
+    assert rp.verify_review_handoff(tmp_path, "demo").ready
+    briefing_path = Path(manifest["briefing_path"])
+    briefing_path.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(rp.ReviewPrepError, match="no current"):
+        rp.verify_review_handoff(tmp_path, "demo")
+
 
 def test_source_fingerprint_survives_ticket_handoff(tmp_path: Path, monkeypatch):
     running = _ctx(tmp_path)
@@ -457,7 +481,15 @@ def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monk
     package_path = ctx.runtime_dir / "briefing.json"
     package_path.parent.mkdir(parents=True)
     package = {
-        "version": 1,
+        "version": 2,
+        "repositories": [
+            {
+                "name": "rtl",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "worktree": str(tmp_path / "worktree"),
+            }
+        ],
         "slug": "demo",
         "assessment": _assessment(),
         "criteria": [],
@@ -486,14 +518,26 @@ def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monk
 
     assert outcome.status == "ready"
     assert "**Recommendation:** approve" in outcome.briefing
-    assert opened == [package]
+    assert len(opened) == 1
+    assert opened[0]["slug"] == package["slug"]
+    assert opened[0].version == 2
 
 
 def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path, monkeypatch):
     ctx = replace(_ctx(tmp_path), triage_report_enabled=False)
     facts = {
-        "version": 1,
+        "version": 2,
+        "kind": "review",
         "slug": "demo",
+        "feature_branch": "demo",
+        "repositories": [
+            {
+                "name": "rtl",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+                "worktree": str(ctx.worktree),
+            }
+        ],
         "scope": {"decidable": True, "deviations": ["rtl/extra.sv"]},
         "criteria": [],
         "commits": [],
@@ -510,7 +554,7 @@ def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path,
     assert outcome.status == "ready"
     assert "**Recommendation:** hold" in outcome.briefing
     assert "`rtl/extra.sv` — **Needs review**" in outcome.briefing
-    assert "HTML explanation: unavailable" in outcome.briefing
+    assert "Polished HTML report: unavailable" in outcome.briefing
 
 
 @pytest.mark.asyncio
@@ -523,7 +567,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
 
     async def invoke(*_args, **_kwargs):
-        return AgentResult(structured={"html": "broken", "assessment": _assessment()})
+        return AgentResult(structured={"explanation": {"quiz": []}, "assessment": _assessment()})
 
     @contextmanager
     def workspace(_ctx, _evidence):
@@ -553,7 +597,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     manifest = json.loads((ctx.runtime_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["status"] == "ready"
     assert manifest["html_path"] is None
-    assert "HTML is incomplete" in manifest["html_error"]
+    assert "background must be a list" in manifest["html_error"]
     briefing = json.loads(Path(manifest["briefing_path"]).read_text(encoding="utf-8"))
     assert briefing["html_path"] is None
     assert any(
@@ -561,7 +605,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     )
     briefing_outcome = rp.review_briefing_command(tmp_path, "demo", open_diffs=False)
     assert briefing_outcome.status == "ready"
-    assert "HTML explanation: unavailable" in briefing_outcome.briefing
+    assert "Polished HTML report: unavailable" in briefing_outcome.briefing
 
 
 @pytest.mark.asyncio
@@ -599,7 +643,7 @@ async def test_prepare_review_marks_live_input_changes_concurrent(tmp_path: Path
     async def invoke(*_args, **_kwargs):
         nonlocal invoked
         invoked = True
-        return AgentResult(structured={"html": _html()})
+        return AgentResult(structured={"explanation": _explanation()})
 
     @contextmanager
     def workspace(_ctx, _evidence):

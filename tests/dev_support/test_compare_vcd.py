@@ -187,7 +187,7 @@ class TestParseVcd:
 
 
 class TestLeafFromHierPath:
-    """Phase 8.4: leaf extraction from dut_info.dut_hier_path."""
+    """Leaf extraction from a traced hierarchical signal path."""
 
     def test_simple_path(self):
         assert _leaf_from_hier_path("tb.dut") == "dut"

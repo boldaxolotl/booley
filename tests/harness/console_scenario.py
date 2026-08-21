@@ -13,7 +13,6 @@ from booley.harness.console.app import ConsoleApp, ConsolePhase
 from booley.harness.console.events import (
     AgentThinking,
     CriteriaChanged,
-    DutInfoChanged,
     McpToolCompleted,
     McpToolProgress,
     McpToolStarted,
@@ -97,7 +96,6 @@ class ConsoleScenario:
             "main",
         )
         self.app.post_message(CriteriaChanged(INITIAL_CRITERIA))
-        self.app.post_message(DutInfoChanged({}))
 
     def start_running(self) -> None:
         self.app.transition_to(ConsolePhase.RUNNING)

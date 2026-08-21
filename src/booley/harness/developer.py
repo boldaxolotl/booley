@@ -1507,7 +1507,19 @@ async def _resolve_ticket_disposition(
             terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
         else:
             terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
-        ticket_cli.handoff(project_root, ctx.slug)
+        if ctx.on_success.destination == "review" and ctx.on_success.triage_report:
+            from .review_prep import ReviewPrepError, verify_review_handoff
+
+            try:
+                verify_review_handoff(project_root, ctx.slug)
+            except ReviewPrepError as exc:
+                reason = f"Review package changed before handoff: {exc}"
+                logger.warning("Review handoff verification failed for %s: %s", ctx.slug, exc)
+                block_ticket(ctx, reason, "post-processing", run_index=run_index)
+                terminal.raw(f"  {yellow('[BLOCK]')} review package verification failed")
+                return
+        ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
+        ticket_cli.handoff(project_root, ctx.slug, **ownership)
     elif verdict.disposition == "failed":
         fail_ticket(
             ctx,

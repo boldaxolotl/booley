@@ -87,23 +87,24 @@ def tb_source_prefixes(project_root: Path) -> list[str]:
     return prefixes or ["tb/"]
 
 
-def disabled_flow_steps(project_root: Path) -> set[str]:
-    """Return steps that should be skipped because their Flow is disabled.
-
-    Reads [flows.<name>] from the project's booley.toml and maps disabled
-    Flow settings to the stages they gate via FLOW_STEP_MAP.
-    """
+def disabled_flows(project_root: Path) -> set[str]:
+    """Return Flow names explicitly disabled in the project's booley.toml."""
     data = _load_project_toml(project_root)
     flows_section = data.get("flows", {})
     # Boundary: external TOML — a mistyped [flows] table means "nothing disabled".
     if not isinstance(flows_section, dict):
         return set()
-    skips: set[str] = set()
-    for flow_key, step_name in FLOW_STEP_MAP.items():
+    disabled: set[str] = set()
+    for flow_key in FLOW_STEP_MAP:
         flow_cfg = flows_section.get(flow_key, {})
         if isinstance(flow_cfg, dict) and flow_cfg.get("enabled", True) is False:
-            skips.add(step_name)
-    return skips
+            disabled.add(flow_key)
+    return disabled
+
+
+def disabled_flow_steps(project_root: Path) -> set[str]:
+    """Return stages gated by explicitly disabled Flows."""
+    return {FLOW_STEP_MAP[flow] for flow in disabled_flows(project_root)}
 
 
 def next_from_planned(planned_steps: list[str], current_step: str) -> str | None:
