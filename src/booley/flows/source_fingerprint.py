@@ -18,6 +18,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from booley.core import boundary
+from booley.fusesoc.fusesoc_registry import (
+    FuseSocError,
+    classified_sources,
+    discover_cores,
+    resolve_ref,
+    selectable_core_closure,
+    source_dirs_from_core,
+    target_source_files,
+)
+from booley.runtime.project_dir import resolve_checkout_project_dir
 
 logger = logging.getLogger(__name__)
 
@@ -48,40 +58,28 @@ def _core_source_files(
     hashing whole directories). When *target* is set, only that Target's
     dependency closure is returned.
     """
-    try:
-        from booley.fusesoc.fusesoc_registry import (
-            classified_sources,
-            discover_cores,
-            target_source_files,
-        )
-    except Exception:  # noqa: BLE001 — registry unavailable; use directory fallback
-        return None
     if not discover_cores(work_dir):
         return None
-    try:
-        cs = (
-            target_source_files(
-                work_dir,
-                target,
-                include_dependencies=True,
-                include_headers=True,
-            )
-            if target
-            else classified_sources(work_dir)
+    cs = (
+        target_source_files(
+            work_dir,
+            target,
+            include_dependencies=True,
+            include_headers=True,
         )
-    except Exception:  # noqa: BLE001 — unresolved target; use directory fallback
-        return None
+        if target
+        else classified_sources(work_dir)
+    )
     return list(cs.rtl_source_files), list(cs.tb_files)
 
 
 def _read_source_dirs(work_dir: Path) -> tuple[list[str], list[str]]:
     """RTL/TB source dirs from the ``.core`` filesets (legacy defaults if none)."""
     try:
-        from booley.fusesoc.fusesoc_registry import source_dirs_from_core
-
         rtl_dirs, tb_dirs, _incl = source_dirs_from_core(work_dir)
         return rtl_dirs, tb_dirs
-    except Exception:  # noqa: BLE001 — registry unavailable
+    except FuseSocError as exc:
+        logger.debug("No resolvable .core under %s; using legacy source dirs: %s", work_dir, exc)
         return ["rtl", "fw"], ["tb"]
 
 
@@ -138,24 +136,51 @@ def _hash_source_group(work_dir: Path, source_dirs: list[str]) -> dict[str, Any]
     return {"digest": digest.hexdigest(), "files": file_names}
 
 
-def _campaign_files(root: Path, target: str | None) -> list[str]:
-    """Configuration files that define a Target campaign's execution recipe."""
-    core_files: list[Path] = []
-    try:
-        from booley.fusesoc.fusesoc_registry import discover_cores, resolve_ref
+def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
+    """Return every authored core that can affect the selected campaign."""
+    cores = discover_cores(root)
+    if target is None or not cores:
+        return cores
+    resolve_ref(root, target)  # fail loudly for an unknown or ambiguous Target
+    closure = selectable_core_closure(root, [target])
+    if not closure:
+        raise RuntimeError(f"Target {target!r} resolved without a core dependency closure")
+    return sorted(closure)
 
-        core_files = [resolve_ref(root, target).core_file] if target else discover_cores(root)
-    except Exception:  # noqa: BLE001 — source hashes still provide freshness evidence
-        pass
+
+def _campaign_files(root: Path, target: str | None) -> list[tuple[str, Path]]:
+    """Named configuration files that define a Target campaign's recipe."""
     files = [
-        path.resolve().relative_to(root).as_posix()
-        for path in core_files
-        if path.is_file() and path.resolve().is_relative_to(root)
+        (path.resolve().relative_to(root).as_posix(), path.resolve())
+        for path in _campaign_core_files(root, target)
+        if path.is_file()
     ]
-    tests_toml = root / ".booley_project" / "tests.toml"
+    try:
+        tests_toml = resolve_checkout_project_dir(root) / "tests.toml"
+    except FileNotFoundError:
+        return files
     if tests_toml.is_file():
-        files.append(tests_toml.relative_to(root).as_posix())
+        try:
+            label = tests_toml.resolve().relative_to(root).as_posix()
+        except ValueError:
+            label = "project-dir/tests.toml"
+        files.append((label, tests_toml.resolve()))
     return files
+
+
+def _hash_file_entries(entries: list[tuple[str, Path]]) -> dict[str, Any]:
+    """SHA-256 over named files that may live outside the checkout root."""
+    digest = hashlib.sha256()
+    unique = dict(entries)
+    for name in sorted(unique):
+        data = unique[name].read_bytes()
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(len(data)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return {"digest": digest.hexdigest(), "files": sorted(unique)}
 
 
 def compute_source_fingerprint(
@@ -172,7 +197,7 @@ def compute_source_fingerprint(
     the default source directories.
     """
     root = work_dir.resolve()
-    campaign = _hash_named_files(root, _campaign_files(root, target))
+    campaign = _hash_file_entries(_campaign_files(root, target))
     core = _core_source_files(root, target)
     if core is not None:
         rtl_files, tb_files = core

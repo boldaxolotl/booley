@@ -34,6 +34,7 @@ from booley.dev_support.development_state import (
     compute_source_fingerprint,
 )
 from booley.flows import execution
+from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime import job_slots
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -478,8 +479,13 @@ class McpTool(ABC):
                 Path(self.args.work_dir),
                 target=source_target,
             )
-        except OSError:
-            logger.debug("Could not compute source fingerprint", exc_info=True)
+        except (OSError, FuseSocError) as exc:
+            logger.warning(
+                "Could not stamp source fingerprint for criterion %s, target %r: %s",
+                key,
+                source_target,
+                exc,
+            )
             return stamped
         stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = {
             "categories": sorted(categories),

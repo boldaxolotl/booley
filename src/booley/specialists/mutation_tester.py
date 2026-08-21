@@ -1155,10 +1155,11 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                 text = path.read_text(encoding="utf-8-sig", errors="replace")
             except OSError:
                 continue
-            modules = set(module_re.findall(text))
+            stripped = _strip_sv_comments(text)
+            modules = set(module_re.findall(stripped))
             if modules:
                 modules_by_file[rel_path] = modules
-                source_text[rel_path] = text
+                source_text[rel_path] = stripped
         declared = set().union(*modules_by_file.values()) if modules_by_file else set()
         if len(declared) == 1:
             return next(iter(declared))
@@ -2361,7 +2362,13 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     @staticmethod
     def _target_test_suite(target: str) -> TargetTestSuite:
         """Return every runnable test declared for *target*."""
-        return resolve_target_test_suite(target)
+        suite = resolve_target_test_suite(target)
+        if suite.all_skipped:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: Target {target!r} has no runnable tests; "
+                f"every declared test is skipped: {', '.join(suite.skipped)}"
+            )
+        return suite
 
     def _cocotb_sim_cmd(
         self,

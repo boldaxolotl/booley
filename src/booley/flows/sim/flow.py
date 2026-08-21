@@ -2325,6 +2325,10 @@ class SimulateFlow(BooleyFlow):
         if cocotb_error is not None:
             return cocotb_error
 
+        runnable_error = self._validate_runnable_tests(targets, test_names_map)
+        if runnable_error is not None:
+            return runnable_error
+
         if self.args.dry_run:
             return self._handle_dry_run(targets, test_names_map)
 
@@ -3254,6 +3258,27 @@ class SimulateFlow(BooleyFlow):
                 )
         return None
 
+    def _validate_runnable_tests(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> McpToolResult | None:
+        """Reject Targets whose skip policy excludes every declared test."""
+        if self.args.test:
+            return None  # an explicit selector deliberately overrides skips
+        for target in targets:
+            available = list(lookup_target_section(test_names_map, target) or [])
+            if available and all(test in self._effective_skips(target) for test in available):
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"sim: target {target!r} has no runnable tests; every declared "
+                        "test is excluded by tests.toml `skip` or --skip. Remove a skip "
+                        "or explicitly select one test with --test."
+                    ),
+                )
+        return None
+
     def _resolve_tests_to_run(
         self,
         target: str,
@@ -3265,8 +3290,8 @@ class SimulateFlow(BooleyFlow):
         they don't each burn the full per-test wall-clock budget. An explicit
         ``--test`` selector that matches *only* skipped tests still runs them —
         naming a test by hand is a clear override of the skip list. When every
-        known test is skipped (a misconfigured all-skip), the skips are ignored
-        rather than letting the target pass vacuously with zero tests run.
+        known test is skipped, pre-run validation rejects the Target rather
+        than passing vacuously or executing known-hanging tests.
         """
         if self.args.test:
             available_tests = lookup_target_section(test_names_map, target) or []
@@ -3285,7 +3310,7 @@ class SimulateFlow(BooleyFlow):
             if not available_tests:
                 return [None]
             kept = [test for test in available_tests if test not in self._effective_skips(target)]
-            return kept or list(available_tests)
+            return kept
         suite = resolve_target_test_suite(
             target,
             test_names=test_names_map,
@@ -3302,8 +3327,7 @@ class SimulateFlow(BooleyFlow):
 
         Mirrors :meth:`_resolve_tests_to_run`'s decision so the display can
         report what was skipped — silent truncation reads as "ran everything".
-        Empty when nothing was skipped, when ``--test`` overrode the skip list,
-        or in the all-skip fallback (where skips were ignored, not applied).
+        Empty when nothing was skipped or when ``--test`` overrode the skip list.
         """
         if self.args.test or self.args.skip:
             run = set(self._resolve_tests_to_run(target, test_names_map))

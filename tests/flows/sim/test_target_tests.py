@@ -14,15 +14,16 @@ def test_resolves_all_non_skipped_target_tests() -> None:
     assert suite.skipped == ("read",)
 
 
-def test_all_skipped_falls_back_to_full_suite() -> None:
+def test_all_skipped_returns_empty_runnable_suite() -> None:
     suite = resolve_target_test_suite(
         "sim",
         test_names={"sim": ["reset", "read"]},
         test_skips={"sim": ["reset", "read"]},
     )
 
-    assert suite.tests == ("reset", "read")
-    assert suite.skipped == ()
+    assert suite.tests == ()
+    assert suite.skipped == ("reset", "read")
+    assert suite.all_skipped is True
 
 
 def test_target_without_declared_tests_gets_default_invocation() -> None:
