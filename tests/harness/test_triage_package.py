@@ -248,7 +248,8 @@ def test_mutation_criterion_links_to_preserved_campaign_report(tmp_path: Path, m
 
     assert mutation["report_path"] == str(report.resolve())
     assert "detected=7, total_valid=8, not_detected=1, invalid=0" in mutation["metric"]
-    assert f"[mutation_score]({report.resolve()})" in rendered
+    report_link = quote(str(report.resolve()), safe="/:")
+    assert f"[mutation_score]({report_link})" in rendered
 
 
 def test_review_facts_and_briefing_reveal_recipe_changes(tmp_path: Path, monkeypatch):
