@@ -59,6 +59,7 @@ def _initialize_project(tmp_path: Path) -> Path:
         stream.write("\n/.booley_project/\n")
     _run_git(project, "add", ".")
     _run_git(project, "commit", "-m", "Initialize Ticket Mode smoke fixture")
+    reset_cache()
     return project
 
 
