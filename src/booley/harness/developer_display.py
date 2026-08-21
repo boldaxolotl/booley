@@ -50,7 +50,6 @@ class DisplayWatcher:
         on_endpoint_start: Callable[[str, str | None], None] | None = None,
         on_specialist_thinking: Callable[[str], None] | None = None,
         on_criteria_update: Callable[[dict], None] | None = None,
-        on_dut_info_update: Callable[[dict], None] | None = None,
         on_endpoint_progress: Callable[[str], None] | None = None,
         on_endpoint_summary: Callable[
             [str, str | None, int, float, float, str, int, int, int, list[str] | None], None
@@ -85,7 +84,6 @@ class DisplayWatcher:
         self.on_endpoint_progress = on_endpoint_progress
         self.on_specialist_thinking = on_specialist_thinking
         self.on_criteria_update = on_criteria_update
-        self.on_dut_info_update = on_dut_info_update
         self.on_endpoint_summary = on_endpoint_summary
 
     def start(self) -> None:
@@ -234,13 +232,10 @@ class DisplayWatcher:
             )
 
     def _handle_criteria_update(self, event: dict) -> None:
-        """display.jsonl ``criteria_update``: forward criteria (+ optional dut_info)."""
+        """Forward a display.jsonl criteria snapshot."""
         criteria = event.get("criteria", {})
         if self.on_criteria_update:
             self.on_criteria_update(criteria)
-        # dut_info rides along on the same event (Phase 10).
-        if "dut_info" in event and self.on_dut_info_update:
-            self.on_dut_info_update(event.get("dut_info", {}))
 
     def _handle_line(self, line: str) -> None:
         line = line.strip()
@@ -363,12 +358,12 @@ def _attach_click_links(app, ctx, project_root: Path) -> None:
     run resolve against project only.
     """
     try:
-        from booley.config.settings import VSCODE_EDITOR
+        from booley.config.settings import VSCODE_EDITOR, resolve_editor
 
         from .console.links import build_link_context
         from .console.widgets import MainPane
 
-        editor = VSCODE_EDITOR
+        editor = resolve_editor() or VSCODE_EDITOR
 
         link_ctx = build_link_context(
             project_root=project_root,
@@ -488,7 +483,6 @@ def _wire_console_callbacks(
     from .console.events import (
         AgentThinking,
         CriteriaChanged,
-        DutInfoChanged,
         McpToolCompleted,
         McpToolProgress,
         McpToolStarted,
@@ -511,9 +505,6 @@ def _wire_console_callbacks(
 
     def on_criteria_update(criteria: dict) -> None:
         _post(CriteriaChanged(criteria))
-
-    def on_dut_info_update(dut_info: dict) -> None:
-        _post(DutInfoChanged(dut_info))
 
     def on_endpoint_summary(
         name: str,
@@ -548,33 +539,35 @@ def _wire_console_callbacks(
     watcher.on_endpoint_progress = on_endpoint_progress
     watcher.on_specialist_thinking = on_specialist_thinking
     watcher.on_criteria_update = on_criteria_update
-    watcher.on_dut_info_update = on_dut_info_update
     watcher.on_endpoint_summary = on_endpoint_summary
 
 
 def _push_initial_criteria(state_path: Path, app: object) -> None:
     """Read booley_state.json and post initial criteria to the Console."""
     try:
-        from .console.events import CriteriaChanged, DutInfoChanged
+        from .console.events import CriteriaChanged
 
         if not state_path.exists():
             return
         state = DevelopmentState.load(state_path)
-        snapshot = {
-            k: {
-                "met": e.met,
-                "mandatory": e.mandatory,
-                "detail": e.detail or {},
-                "params": e.params or {},
+        snapshot = {}
+        for key, entry in state.criteria.items():
+            if key.startswith("_"):
+                continue
+            display_entry = {
+                "met": entry.met,
+                "mandatory": entry.mandatory,
+                "detail": entry.detail or {},
+                "params": entry.params or {},
             }
-            for k, e in state.criteria.items()
-            if not k.startswith("_")
-        }
+            if entry.stale:
+                display_entry["stale"] = True
+            if entry.ever_met:
+                display_entry["ever_met"] = True
+            if entry.ever_failed:
+                display_entry["ever_failed"] = True
+            snapshot[key] = display_entry
         if snapshot:
             app.post_message(CriteriaChanged(snapshot))
-        # Push initial dut_info even when empty so the header starts from a
-        # known state; the DUT/TB line stays hidden until it is seeded.
-        dut_info_dict = state.dut_info.to_dict() if hasattr(state, "dut_info") else {}
-        app.post_message(DutInfoChanged(dut_info_dict))
     except Exception:  # noqa: BLE001 — initial UI push is best-effort; failure must not abort startup
         logger.debug("Failed to push initial criteria", exc_info=True)

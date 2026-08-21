@@ -1,0 +1,96 @@
+name: Confidential content
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  confidential-content:
+    name: confidential-content
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # pull_request_target keeps the workflow and scanner on the trusted base
+      # revision. Do not check out or execute files from the pull request.
+      - name: Check out trusted scanner
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch pull-request commit
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/confidential-content/head"
+          test "$(git rev-parse refs/confidential-content/head)" = "${HEAD_SHA}"
+
+      - name: Scan pull-request commits
+        if: github.event_name == 'pull_request_target'
+        id: scan-pr
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BOOLEY_LEAK_GUARD_CONFIG_B64: ${{ secrets.BOOLEY_LEAK_GUARD_CONFIG_B64 }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s %s %s %s\n' \
+            refs/confidential-content/head "${HEAD_SHA}" \
+            refs/heads/main "${BASE_SHA}" \
+            | python .github/scripts/confidential_content_guard.py --repo . pre-push
+
+      - name: Scan complete main history
+        if: github.event_name != 'pull_request_target'
+        id: scan-main
+        continue-on-error: true
+        env:
+          BOOLEY_LEAK_GUARD_CONFIG_B64: ${{ secrets.BOOLEY_LEAK_GUARD_CONFIG_B64 }}
+        run: >-
+          python .github/scripts/confidential_content_guard.py
+          --repo . audit --rev HEAD
+
+      # pull_request_target runs from trusted main, so its native check run is
+      # attached to main. Publish the required status on the exact PR head.
+      - name: Publish scan status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_OUTCOME: ${{ steps.scan-pr.outcome }}
+          PUSH_OUTCOME: ${{ steps.scan-main.outcome }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = pull_request_target ]; then
+            target_sha="${PR_HEAD_SHA}"
+            outcome="${PR_OUTCOME}"
+          else
+            target_sha="${GITHUB_SHA}"
+            outcome="${PUSH_OUTCOME}"
+          fi
+          if [ "${outcome}" = success ]; then
+            state=success
+            description='No confidential content found'
+          else
+            state=failure
+            description='Confidential-content scan failed'
+          fi
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${target_sha}" \
+            -f state="${state}" \
+            -f context=confidential-content \
+            -f description="${description}" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Enforce scan result
+        if: >-
+          always() &&
+          steps.scan-pr.outcome != 'success' &&
+          steps.scan-main.outcome != 'success'
+        run: exit 1

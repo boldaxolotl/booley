@@ -31,6 +31,7 @@ from booley.specialists.mutation_tester import (
     _extract_json,
     _sanitize_json_text,
     find_forbidden_specs,
+    generate_results_markdown,
     generate_specs_markdown,
     parse_creator_output,
 )
@@ -68,23 +69,10 @@ def _env_with_state(
     return env
 
 
-def _make_state(
-    tmp_path: Path,
-    *,
-    dut_top_module: str = "design_top",
-    dut_files: tuple[str, ...] = ("rtl/design_top.sv",),
-    tb_top_module: str = "design_top_tb",
-) -> Path:
-    """Create a state file with populated dut_info so cold start can run.
-
-    ADR 0022 dec 12-13: DUT/TB file sets and tb_top_module left DutInfo; the DUT
-    files are passed to the endpoint via --dut-files (see ``_make_endpoint``).  Only
-    ``dut_top_module`` survives on state.  The ``dut_files``/``tb_top_module``
-    kwargs are retained so callers stay unchanged.
-    """
+def _make_state(tmp_path: Path) -> Path:
+    """Create the state file used by mutation endpoint tests."""
     state_file = tmp_path / "state.json"
     state = DevelopmentState.load(state_file)
-    state.dut_info.dut_top_module = dut_top_module
     state.save()
     return state_file
 
@@ -124,12 +112,7 @@ def _make_endpoint(
     When *monkeypatch* is supplied, the BOOLEY_LOGS_DIR env var is set for
     the lifetime of the test so mutation_lock writes land in tmp_path.
     """
-    state_file = _make_state(
-        tmp_path,
-        dut_top_module=dut_top_module,
-        dut_files=dut_files,
-        tb_top_module=tb_top,
-    )
+    state_file = _make_state(tmp_path)
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(exist_ok=True)
     report_dir = tmp_path / "reports"
@@ -144,6 +127,8 @@ def _make_endpoint(
         scope,
         "--tb-top",
         tb_top,
+        "--dut-top",
+        dut_top_module,
         "--count",
         str(count),
         # ADR 0022 dec 13: Ticket Mode now derives DUT files from the resolved
@@ -527,6 +512,30 @@ class TestArtifacts:
         assert "# Mutation Specifications" in md
         assert "operator_change" in md
 
+    def test_results_link_mutated_rtl_and_escape_rtl_operators(self):
+        spec = MutationSpec(
+            index=1,
+            category="operator_change",
+            file="rtl/mod (wide).sv",
+            line=12,
+            original_code="a | b",
+            mutated_code="a & b",
+        )
+        summary = MutationSummary(
+            specs=[spec],
+            results=[MutationResult(index=1, detected=False)],
+        )
+
+        md = generate_results_markdown(
+            summary,
+            1,
+            mutated_rtl_paths={spec.file: "mutated-rtl/rtl/mod (wide).sv"},
+        )
+
+        assert "[rtl/mod (wide).sv:12](mutated-rtl/rtl/mod%20%28wide%29.sv)" in md
+        assert "`a \\| b` → `a & b`" in md
+        assert "not_detected" in md
+
 
 # ---------------------------------------------------------------------------
 # Cold-start development with mocked agent + sim
@@ -637,7 +646,7 @@ def test_elab_builds_once_and_sim_runs_verilator_binary(tmp_path: Path, monkeypa
     assert "--trace" not in sim_cmd
 
 
-def test_sim_uses_first_configured_test_selector(tmp_path: Path, monkeypatch):
+def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     captured: list[list[str]] = []
 
     def _fake_run(cmd, *args, **kwargs):
@@ -662,10 +671,12 @@ def test_sim_uses_first_configured_test_selector(tmp_path: Path, monkeypatch):
     build_dir = tmp_path / "build"
     build_dir.mkdir()
     endpoint._run_elab("default", tmp_path, build_dir)
-    endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb", mut_id=1)
+    runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb", mut_id=1)
 
-    sim_cmd = captured[-1]
-    assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmd
+    sim_cmds = captured[1:]
+    assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
+    assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
+    assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
 
 
 def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch):
@@ -700,20 +711,23 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
     build_dir = tmp_path / "build"
     build_dir.mkdir()
     endpoint._run_elab("lib:ip:core#default", tmp_path, build_dir)
-    endpoint._run_sim_pinned("lib:ip:core#default", tmp_path, build_dir, "tb", mut_id=1)
+    endpoint._run_target_test_suite("lib:ip:core#default", tmp_path, build_dir, "tb", mut_id=1)
 
-    sim_cmd = captured[-1]
-    assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmd
+    sim_cmds = captured[1:]
+    assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
+    assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
 
 
-def test_selected_test_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
-    """--test validation must see the qualified Target's declared tests."""
+def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         "booley.specialists.mutation_tester.project_config.TEST_NAMES",
         {"default": ["test_a", "test_b"]},
     )
-    endpoint = _make_endpoint(tmp_path, monkeypatch, extra_args=["--test", "test_b"])
-    assert endpoint._selected_test("lib:ip:core#default") == "test_b"
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    assert endpoint._target_test_suite("lib:ip:core#default").tests == (
+        "test_a",
+        "test_b",
+    )
 
 
 def test_sim_forwards_project_verdict_sentinels(tmp_path: Path, monkeypatch):
@@ -881,6 +895,8 @@ class TestColdStart:
         _write_dut_top(tmp_path)
 
         specs = _sample_specs(2)
+        for spec in specs:
+            spec.file = f"./{scope}"
         _patch_invoke_agent(
             monkeypatch,
             [
@@ -915,6 +931,26 @@ class TestColdStart:
         assert result.detail["reused_lock"] is False
         assert result.detail["verification_rounds"] == 1
         assert "worktree not clean after sim sweep" not in result.report_text
+        mutated = result.detail["mutated_rtl_files"]
+        assert mutated == [
+            {
+                "source": scope,
+                "path": "reports/mutation_tester/1/mutated-rtl/rtl/mod_a.sv",
+            }
+        ]
+        assert (tmp_path / mutated[0]["path"]).is_file()
+        results_path = tmp_path / result.detail["artifacts"]["results"]
+        assert results_path.is_file()
+        results = results_path.read_text(encoding="utf-8")
+        assert "[rtl/mod_a.sv:41](mutated-rtl/rtl/mod_a.sv)" in results
+        assert "not_detected" in results
+        assert "mutated RTL: reports/mutation_tester/1/mutated-rtl/rtl/mod_a.sv" in (
+            result.report_text
+        )
+        assert result.criterion_key == "mutation_score_lite"
+        criterion_detail = endpoint.state.criteria[result.criterion_key].detail
+        assert criterion_detail["artifacts"]["results"] == result.detail["artifacts"]["results"]
+        assert criterion_detail["mutated_rtl_files"] == mutated
 
     def test_post_rollback_residue_still_warns(self, tmp_path: Path, monkeypatch):
         endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -1912,9 +1948,7 @@ class TestCocotbSimDispatch:
         assert not any(c.startswith("--pass-sentinel") for c in sim_cmd)
         assert "--top" not in sim_cmd
 
-    def test_cocotb_run_defaults_to_whole_module(self, tmp_path: Path, monkeypatch):
-        """No --test => run every cocotb test (one batched process), rather
-        than the classic path's 'first declared test' plusarg."""
+    def test_cocotb_run_batches_whole_target_suite(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []
         monkeypatch.setattr(
             "booley.specialists.mutation_tester.subprocess.run",
@@ -1931,31 +1965,14 @@ class TestCocotbSimDispatch:
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         endpoint._run_elab("default", tmp_path, build_dir)
-        endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb", mut_id=1)
+        endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb", mut_id=1)
 
-        assert "--test" not in captured[-1]
+        assert "--test=test_a" in captured[-1]
+        assert "--test=test_b" in captured[-1]
 
-    def test_explicit_test_is_forwarded_to_cocotb(self, tmp_path: Path, monkeypatch):
-        captured: list[list[str]] = []
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.subprocess.run",
-            lambda cmd, *a, **k: (captured.append(list(cmd)), _fake_proc(rc=0))[1],
-        )
-        _patch_resolve_target(monkeypatch)
-        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-            {"default": ["test_a", "test_b"]},
-        )
-
-        endpoint = _make_endpoint(tmp_path, monkeypatch, extra_args=["--test", "test_b"])
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        endpoint._run_elab("default", tmp_path, build_dir)
-        endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb", mut_id=1)
-
-        sim_cmd = captured[-1]
-        assert "--test=test_b" in sim_cmd  # `=` form (F-12)
+    def test_individual_test_flag_was_removed(self, tmp_path: Path, monkeypatch):
+        with pytest.raises(SystemExit):
+            _make_endpoint(tmp_path, monkeypatch, extra_args=["--test", "test_b"])
 
     def test_classic_target_still_uses_verilator_run(self, tmp_path: Path, monkeypatch):
         captured: list[list[str]] = []

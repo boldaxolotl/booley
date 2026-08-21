@@ -32,8 +32,8 @@ pip install -e ".[dev]"     # editable install + test deps (pytest, pytest-async
 pytest                      # full suite; scope to a path/-k for a fast subset
 ```
 
-Booley needs **Python 3.11+**. The full dev-install walkthrough (pipx vs venv,
-PATH gotchas, the Windows notes) is in [INSTALL.md](INSTALL.md).
+Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## The #1 priority: port commercial EDA tools
 
@@ -82,6 +82,8 @@ Booley never distributes any proprietary code. An integration drives the EDA
 tool's own CLI inside the Session Runtime. Commercial integrations additionally
 need a reviewed, fixed provisioning and licensing policy; Project configuration
 cannot supply host paths, commands, mounts, or arbitrary environment values.
+Each host-provisioned tool policy must define one canonical, read-only container
+mount target; only the administrator-registered host source may vary.
 
 ### How a port works: two moving parts
 Porting an EDA tool is **almost always these two steps**, in order:

@@ -428,8 +428,7 @@ targets:
 Rules that differ from SV Targets:
 
 - **`toplevel` is whatever the Python TB attaches to.** Usually the DUT
-  itself: no HDL wrapper, cocotb's `dut` handle IS the toplevel (decision 3),
-  and DUT Info degenerates accordingly. **But not for interface-based
+  itself: no HDL wrapper, cocotb's `dut` handle IS the toplevel. **But not for interface-based
   designs.** If the DUT carries SystemVerilog interfaces on its ports
   (`taxi_axis_if.snk s_axis_tx`), cocotb's BFMs bind to interface *instances*
   (`AxiStreamBus.from_entity(dut.s_axis_tx)`) — and an instance has to be

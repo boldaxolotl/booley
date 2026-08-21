@@ -1035,7 +1035,6 @@ def _sample_state() -> dict:
             },
             "_report_submitted": {"met": False, "mandatory": True},
         },
-        "dut_info": {"dut_top_module": "dut", "dut_hier_path": "tb.dut"},
         "timeline": [
             {"mcp_tool": "coder", "endpoint_kind": "mcp_tool", "args": {"category": "rtl"}}
         ],
@@ -1082,11 +1081,8 @@ class TestProjectStateForCategory:
         assert "pending" in rtl_detail
         assert rtl_detail["pending"][0]["file"] == "rtl/dut.v"
 
-    def test_preserves_dut_info_and_timeline(self):
-        # dut_info is the contract; timeline is the ledger. Neither is the
-        # leak channel; both must pass through.
+    def test_preserves_timeline(self):
         out = project_state_for_category(_sample_state(), "tb")
-        assert out["dut_info"] == {"dut_top_module": "dut", "dut_hier_path": "tb.dut"}
         assert out["timeline"][0]["mcp_tool"] == "coder"
 
     def test_preserves_sim_and_underscore_criteria(self):

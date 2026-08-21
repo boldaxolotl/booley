@@ -13,7 +13,6 @@ from booley.harness.console.events import (
     ActivityChanged,
     AgentThinking,
     CriteriaChanged,
-    DutInfoChanged,
     EditsChanged,
     FilesEdited,
     McpToolCompleted,
@@ -225,17 +224,6 @@ class TestPhaseGatedDispatch:
             header = app.query_one(TicketHeader)
             # Internal state untouched.
             assert header._criteria == {}
-
-    @pytest.mark.asyncio
-    async def test_dut_info_during_teardown_dropped(self):
-        app = _BareConsoleApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app.transition_to(ConsolePhase.TEARDOWN)
-            app.post_message(DutInfoChanged({"dut_top_module": "fifo"}))
-            await pilot.pause()
-            header = app.query_one(TicketHeader)
-            assert header._dut_info == {}
 
     @pytest.mark.asyncio
     async def test_agent_thinking_during_setup_routes(self):

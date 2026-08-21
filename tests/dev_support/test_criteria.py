@@ -120,13 +120,20 @@ class TestCriteriaTemplateYAML:
         yaml_section = {
             "mandatory": {"lint_clean": ["lite"]},
             "optional": {
-                "mutation_score": {"min": 0.8},
+                "mutation_score": [
+                    {
+                        "target": "lite",
+                        "scope": ["rtl/top.sv"],
+                        "min_detected": 8,
+                        "total": 10,
+                    }
+                ],
             },
         }
         t = CriteriaTemplate.from_yaml(yaml_section)
         expanded = t.expand(["lite"])
         assert expanded["lint_clean_lite"] is True
-        assert expanded["mutation_score"] is False  # optional
+        assert expanded["mutation_score_lite"] is False  # optional
 
     def test_empty_criteria_section(self):
         t = CriteriaTemplate.from_yaml({})
@@ -501,6 +508,11 @@ class TestClockScopedParamValidation:
     def test_clock_scoped_param_must_be_positive(self):
         with pytest.raises(ValueError, match="positive number"):
             _validate_criterion_params("synthesis_ok", {"clk_i.fmax_mhz_min": -1})
+
+    @pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
+    def test_numeric_param_rejects_bool_and_non_finite_values(self, value):
+        with pytest.raises(ValueError, match="positive number"):
+            _validate_criterion_params("synthesis_ok", {"clk_i.fmax_mhz_min": value})
 
 
 class TestClockScopeHelpers:

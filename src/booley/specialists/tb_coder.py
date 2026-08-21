@@ -51,9 +51,8 @@ _PLAN_FILENAME = "verification_plan.md"
 
 # Verification-planning guidance, inherited from the retired planner
 # specialist and trimmed to the plan structure only:
-# the spec-ambiguity manifest (it fed the deleted spec_arbiter) and the
-# machine-parsed DUT-info JSON block (dut_info is seeded by the developer)
-# are intentionally omitted. tb_coder plans and implements in ONE isolated,
+# the spec-ambiguity manifest (it fed the deleted spec_arbiter) is intentionally
+# omitted. tb_coder plans and implements in ONE isolated,
 # RTL-blind agent context, so this is a preamble to the implementation task —
 # not a separate specialist session.
 _VERIFICATION_PLAN_GUIDANCE = """\
@@ -241,13 +240,7 @@ def _category_dir_prefixes(work_dir: Path) -> tuple[str, ...]:
     if parsed is not None:
         _rtl_dirs, tb_dirs = parsed
         return tuple(sorted({d.rstrip("/\\") for d in tb_dirs}))
-    try:
-        from booley.runtime.shared_infra import get_tb_prefixes
-
-        # Trim posix-suffixed prefixes back to bare directory names.
-        return tuple(sorted({p.rstrip("/\\") for p in get_tb_prefixes() if "/" in p}))
-    except Exception:  # noqa: BLE001 — best-effort TB-prefix read; falls back to the default ("tb",)
-        return ("tb",)
+    return ("tb",)
 
 
 def _category_globs(work_dir: Path) -> list[str]:
@@ -270,9 +263,8 @@ def _narrowed_scope_file(work_dir: Path, narrowed: list[str]):
     """Temporarily overwrite ``<work_dir>/.scope.json`` with the narrowed list.
 
     Restores the original contents on context exit (success or exception).  When
-    no scope file exists (legacy / standalone mode) or *narrowed* is empty
-    (empty ``dut_info``, backward-compat path), the narrowing is a no-op so the
-    broader ticket scope stays in effect.
+    no scope file exists (legacy / standalone mode) or *narrowed* is empty,
+    the narrowing is a no-op so the broader ticket scope stays in effect.
     """
     scope_path = work_dir / ".scope.json"
     if not narrowed or not scope_path.exists():
@@ -373,11 +365,6 @@ class TbCoderSpecialist(Specialist):
     @property
     def display_tag(self) -> str | None:
         return _CATEGORY
-
-    def required_dut_info_halves(self) -> frozenset[str]:
-        # Planner has been removed from the codebase, so there is no DUT-info
-        # gate to enforce here.
-        return frozenset()
 
     def _disallowed_agent_capabilities(self) -> list[str] | None:
         return build_category_deny_patterns(_CATEGORY, self.args.work_dir)
@@ -741,17 +728,12 @@ class TbCoderSpecialist(Specialist):
         glob set of its own category's source directories (``rtl``/``fw`` vs
         ``tb``), letting it create or edit files anywhere under those prefixes
         without an out-of-scope rejection while the ticket **Scope** pre-commit
-        hook still bounds the commit.  The RTL/TB *file* partition is no longer
-        stored in ``dut_info`` (ADR 0022 dec 13 — it is derived from FuseSoC
-        ``tags:[tb]`` at resolve time), so narrowing reads only the category
-        dirs, not a per-half file list.
+        hook still bounds the commit. The RTL/TB file partition comes from
+        FuseSoC ``tags:[tb]``, so narrowing reads category directories rather
+        than a separate per-half file list.
         """
-        # ADR 0022 dec 13: the RTL/TB file partition is no longer stored in
-        # ``dut_info`` (the shrunk overlay carries no ``tb_files``); it is derived
-        # from the FuseSoC ``tags:[tb]`` source dirs.  tb_coder is tb-permanent,
-        # so the narrowed scope is exactly the testbench directory globs — the
-        # per-file ``_narrowed_scope_for_coder``/``_pre_save_hook`` dut_info path
-        # is retired (it auto-added new files back into the now-absent list).
+        # tb_coder is permanently TB-category, so its scope is exactly the
+        # testbench directory globs derived from FuseSoC ``tags:[tb]``.
         return _category_globs(self.args.work_dir)
 
 

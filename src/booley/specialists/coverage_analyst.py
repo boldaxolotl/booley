@@ -35,12 +35,14 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.bwave.contract import EXIT_USAGE, NO_MATCH_MARKER
+from booley.config.project_config import lookup_target_section
 from booley.core.boundary import as_int
 from booley.core.models import AgentCallParams
 from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _resolve_run_cwd
+from booley.flows.sim.target_tests import resolve_target_test_suite
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -479,8 +481,8 @@ _COVERAGE_CRITERIA_TABLE = (
 def _trace_test_plusargs(target: str, test: str | None) -> list[str]:
     """Render the test-selection plusarg for a coverage trace run (decision 16).
 
-    Resolves the coverage ``--test`` (name or substring) to its index in the
-    Target's declared test list and renders the tests.toml ``select`` template
+    Resolves one internally selected Target test to its declared index and
+    renders the tests.toml ``select`` template
     (e.g. ``+test_id=3``) via :func:`project_config.render_test_selector`.
     Returns ``[]`` when no test is named or it doesn't resolve, so the binary
     runs its default test (raw passthrough) — matching the legacy contract.
@@ -524,15 +526,12 @@ class CoverageAnalystSpecialist(Specialist):
     satisfies_args: ClassVar[dict[str, str]] = {}
     # Nested-MCP allowlist lives in booley.runtime.nested_mcp_capabilities.
 
-    def required_dut_info_halves(self) -> frozenset[str]:
-        return frozenset({"dut", "tb"})
-
     def _is_cocotb_target(self) -> bool:
         """True when the selected Target declares a ``cocotb_module`` (ADR 0034).
 
         Cheap ``.core`` read, mirroring simulate's detection: for a Cocotb
-        Target the DUT *is* the toplevel (no HDL testbench wrapper), so DUT
-        Info degenerates and the ``{tb_top}.dut`` conventions do not apply.
+        Target the DUT *is* the toplevel, so wrapper-instance hierarchy
+        conventions do not apply.
         """
         try:
             modules = fusesoc_registry.target_cocotb_modules(self.args.work_dir)
@@ -543,13 +542,11 @@ class CoverageAnalystSpecialist(Specialist):
     def _validate_interactive_args(self) -> McpToolResult | None:
         """Reject missing args in Interactive Mode with a clear message.
 
-        The hierarchy glob and sim invocation both assume ``--tb-top`` is
-        populated; the sim wrapper requires ``--target``. In Ticket Mode
-        the dut_info gate enforces these; in Interactive Mode the outer
-        agent must pass them explicitly.
+        The hierarchy discovery and sim invocation assume ``--tb-top`` is
+        populated; the sim wrapper requires ``--target``.
 
         E3 (ADR 0034): for a Cocotb Target the testbench top *is* the
-        Target's ``toplevel`` (DUT-as-toplevel — the degenerate DUT Info), so
+        Target's ``toplevel`` (DUT-as-toplevel), so
         ``--tb-top`` is not required — it defaults from the ``.core``.
         """
         if not getattr(self.args, "tb_top", None) and self._is_cocotb_target():
@@ -588,11 +585,10 @@ class CoverageAnalystSpecialist(Specialist):
             default=None,
             help="Testbench top module name. Defaults to the resolved sim Target's toplevel.",
         )
-        parser.add_argument("--test", default="", help="Test name (optional)")
         parser.add_argument(
             "--scope",
-            required=True,
-            help="Comma-separated RTL file paths in scope",
+            default=None,
+            help="Comma-separated RTL files; defaults from this Target's criteria",
         )
         # --hierarchy-scope removed: auto-derived glob always used to prevent
         # developer from narrowing scope to trivially pass coverage.
@@ -637,24 +633,11 @@ class CoverageAnalystSpecialist(Specialist):
     # --- Scope-to-hierarchy mapping (Step 2) ---
 
     def _derive_hierarchy_glob(self) -> str:
-        """Auto-derive bwave hierarchy glob scoped to the DUT instance.
-
-        Reads ``state.dut_info.dut_hier_path`` and builds a single glob
-        (e.g. ``tb.dut.*``).  Falls back to the legacy ``{tb_top}.dut.*``
-        when dut_info is unpopulated so older tickets with an unseeded
-        dut_info still work.
-        """
-        path = self.state.dut_info.dut_hier_path
-        if path:
-            return f"{path}.*"
-        if self._is_cocotb_target():
-            # ADR 0034: DUT-as-toplevel — the root instance IS the DUT, there
-            # is no `.dut` child instance to scope into.
-            return f"{self.args.tb_top}.*"
-        logger.debug(
-            "dut_info.dut_hier_path empty; falling back to legacy {tb_top}.dut.* glob",
-        )
-        return f"{self.args.tb_top}.dut.*"
+        """Build broad module-based globs; trace discovery narrows them."""
+        modules = self._scope_modules()
+        if not modules:
+            return "*"
+        return ",".join(f"*{module}.*" for module in modules)
 
     @staticmethod
     def _extract_modules_from_scope(scope: str) -> list[str]:
@@ -665,6 +648,26 @@ class CoverageAnalystSpecialist(Specialist):
             if stem not in modules:
                 modules.append(stem)
         return modules
+
+    def _scope_modules(self) -> list[str]:
+        """Read actual module declarations from scope, falling back to stems."""
+        modules: list[str] = []
+        module_re = re.compile(r"\bmodule\s+(?:automatic\s+)?([A-Za-z_]\w*)\b")
+        for raw_path in self.args.scope.split(","):
+            rel_path = raw_path.strip()
+            if not rel_path:
+                continue
+            try:
+                text = (Path(getattr(self.args, "work_dir", ".")) / rel_path).read_text(
+                    encoding="utf-8-sig",
+                    errors="replace",
+                )
+            except OSError:
+                continue
+            for module in module_re.findall(text):
+                if module not in modules:
+                    modules.append(module)
+        return modules or self._extract_modules_from_scope(self.args.scope)
 
     @staticmethod
     def _find_unrepresented_modules(
@@ -742,24 +745,15 @@ class CoverageAnalystSpecialist(Specialist):
         """Search the trace for the DUT hierarchy when the suffix-anchored
         glob missed.  Returns a bwave glob like ``tb.uu_alu.*`` or None.
 
-        Phase 8.3: when ``state.dut_info.dut_hier_path`` is populated, that
-        authoritative answer wins over the heuristic search.  The
-        heuristic remains as a fallback for tickets where dut_info is empty
-        or the trace genuinely contains unexpected scopes.
-
-        Strategy (fallback only): run ``--stats --format json -s "*"`` to
+        Strategy: run ``--stats --format json -s "*"`` to
         get every signal, extract unique instance scopes, then score each
         scope against the target module stems.
         """
-        # Authoritative source: dut_info from state.
-        dut_path = self.state.dut_info.dut_hier_path
-        if dut_path:
-            return f"{dut_path}.*"
-
         scopes = self._trace_parent_scopes(trace_file)
         if not scopes:
             return None
 
+        discovered: set[str] = set()
         for stem in modules:
             # Pass 1: scope component ends with the module stem
             # e.g. stem="aes128_encrypt" matches scope "tb.uu_aes128_encrypt"
@@ -768,11 +762,6 @@ class CoverageAnalystSpecialist(Specialist):
                 parts = scope.split(".")
                 if any(p.endswith(stem) for p in parts):
                     stem_candidates.append((scope, count))
-
-            if stem_candidates:
-                best = self._pick_dut_scope(stem_candidates)
-                if best:
-                    return f"{best}.*"
 
             # Pass 2: generic instance names (uut/dut) under a testbench
             # whose name contains the stem or is an abbreviation of it
@@ -785,12 +774,17 @@ class CoverageAnalystSpecialist(Specialist):
                 if has_stem_parent and has_generic_leaf:
                     generic_candidates.append((scope, count))
 
-            if generic_candidates:
-                best = self._pick_dut_scope(generic_candidates)
-                if best:
-                    return f"{best}.*"
+            # A generic child is stronger evidence than its matching TB parent.
+            # Keep every such child, but do not accidentally analyze the wrapper
+            # merely because its name also contains the module stem.
+            candidates = generic_candidates or stem_candidates
+            discovered.update(scope for scope, _count in candidates)
 
-        return None
+        if not discovered:
+            return None
+        # Analyze every validated matching instance. Selecting a single path
+        # would make coverage depend on arbitrary hierarchy ordering.
+        return ",".join(f"{scope}.*" for scope in sorted(discovered))
 
     @staticmethod
     def _stem_matches_component(stem: str, component: str) -> bool:
@@ -949,7 +943,7 @@ class CoverageAnalystSpecialist(Specialist):
             return stats, None, False
 
         # Stage 2: discovery fallback
-        modules = self._extract_modules_from_scope(self.args.scope)
+        modules = self._scope_modules()
         if modules:
             discovered = self._discover_dut_scope(trace_file, modules)
             if discovered:
@@ -964,14 +958,13 @@ class CoverageAnalystSpecialist(Specialist):
         msg = (
             f"No signals matched hierarchy glob '{hierarchy_glob}' "
             f"and discovery fallback found no DUT instance for "
-            f"scope '{self.args.scope}'.{scope_hint} "
-            f"Verify dut_info.dut_hier_path in the development state."
+            f"scope '{self.args.scope}'.{scope_hint}"
         )
         return [], msg, False
 
     def _fill_missing_module_stats(self, stats: list[SignalStats], trace_file: Path) -> None:
         """Discovery-fill stats for multi-module scopes where some modules had no match."""
-        modules = self._extract_modules_from_scope(self.args.scope)
+        modules = self._scope_modules()
         if len(modules) <= 1:
             return
         missing = self._find_unrepresented_modules(stats, modules)
@@ -1114,7 +1107,7 @@ class CoverageAnalystSpecialist(Specialist):
         """Determine which coverage criteria are active for this run."""
         active = set()
         for key in self.satisfies:
-            entry = self.state.criteria.get(key)
+            entry = self.state.criteria.get(self._target_criterion_key(key))
             if entry is not None:
                 active.add(key)
         # If nothing in state, assume all are active
@@ -1135,6 +1128,10 @@ class CoverageAnalystSpecialist(Specialist):
                 active = active & requested
 
         return active
+
+    def _target_criterion_key(self, base_key: str) -> str:
+        """Return the criterion key owned by this invocation's Target."""
+        return f"{base_key}_{self.args.target}"
 
     # --- RTL source cache (shared by phases 3 + 4) ---
 
@@ -1252,8 +1249,15 @@ For each branch condition, decompose into atomic sub-expressions and test each.
         scope_files = [f.strip() for f in self.args.scope.split(",") if f.strip()]
         scope_str = "\n".join(f"- `{f}`" for f in scope_files)
 
-        trace_file = self._find_trace_file(trace_dir)
-        trace_path_str = str(trace_file) if trace_file else "<trace_file>"
+        trace_dirs = getattr(self, "_trace_dirs", [trace_dir])
+        trace_files = [
+            trace_file
+            for candidate in trace_dirs
+            if (trace_file := self._find_trace_file(candidate)) is not None
+        ]
+        trace_path_str = "\n".join(f"- `{path}`" for path in trace_files)
+        if not trace_path_str:
+            trace_path_str = "- `<trace_file>`"
 
         spec_section = ""
         if hasattr(self.args, "instruction") and self.args.instruction:
@@ -1292,13 +1296,19 @@ These signals are available in the trace:
 {signal_list_str}
 
 {mode_section}
+## Target Trace Files
+
+{trace_path_str}
+
 ## Step 3: Test Each Expression
 
-For each branch/expression, use bwave to create a virtual signal and check its value_hist:
+For each branch/expression, query every Target trace above with bwave and union
+the observed values before deciding coverage:
 
-    bwave --stats --format json --virtual "br_name = *signal >= 'd16" -s br_name {trace_path_str}
+    bwave --stats --format json --virtual "br_name = *signal >= 'd16" -s br_name TRACE_FILE
 
-A branch is **met** if both 0 and 1 appear in the value_hist.
+A branch is **met** if both 0 and 1 appear across the combined value_hist of
+the complete Target test suite.
 
 **Rules:**
 - 5 attempts max per expression. If it still errors, mark as "errored" and move on.
@@ -1801,7 +1811,12 @@ abort path". Omit this field or leave empty if all criteria are already met.
         threshold = scored["min"][detail_key]
         errored_fail = scored["errored_fail"].get(detail_key, False)
         if score["pct"] is not None:
-            self.set_criterion(criterion, passed, detail={detail_key: score})
+            self.set_criterion(
+                self._target_criterion_key(criterion),
+                passed,
+                detail={detail_key: score, "target": self.args.target},
+                source_target=self.args.target,
+            )
             suffix = " (>50% errored)" if errored_fail else ""
             results_lines.append(
                 f"  {label}: {score['pct']:.0f}% (need {threshold}%) — "
@@ -1809,11 +1824,19 @@ abort path". Omit this field or leave empty if all criteria are already met.
             )
         elif criterion in self._phase_errors:
             self.set_criterion(
-                criterion, False, detail={detail_key: score, "error": "phase_failed"}
+                self._target_criterion_key(criterion),
+                False,
+                detail={detail_key: score, "error": "phase_failed", "target": self.args.target},
+                source_target=self.args.target,
             )
             results_lines.append(f"  {label}: ERROR (phase failed) — FAIL")
         else:
-            self.set_criterion(criterion, True, detail={detail_key: score})
+            self.set_criterion(
+                self._target_criterion_key(criterion),
+                True,
+                detail={detail_key: score, "target": self.args.target},
+                source_target=self.args.target,
+            )
             results_lines.append(f"  {label}: N/A ({na_reason}) — PASS")
 
     def _score_coverage_criteria(self, report: CoverageReport, active: set[str]) -> dict:
@@ -1906,6 +1929,10 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> McpToolResult:
         """Score all criteria independently and return final result."""
         report_dict = report.to_report_dict()
+        suite = resolve_target_test_suite(self.args.target)
+        report_dict["target"] = self.args.target
+        report_dict["tests"] = list(suite.display_names)
+        report_dict["trace_dirs"] = [str(path) for path in getattr(self, "_trace_dirs", [])]
         scored = self._score_coverage_criteria(report, active)
         scores = scored["scores"]
         all_pass = scored["all_pass"]
@@ -1941,10 +1968,12 @@ abort path". Omit this field or leave empty if all criteria are already met.
             if score["pct"] is not None:
                 display_parts.append(f"{label}: {score['pct']:.0f}%")
 
-        active_keys = [k for k in self.satisfies if k in active]
+        active_keys = [self._target_criterion_key(k) for k in self.satisfies if k in active]
         return McpToolResult(
             exit_code=exit_code,
-            criterion_key=active_keys[0] if active_keys else "coverage_toggle",
+            criterion_key=(
+                active_keys[0] if active_keys else self._target_criterion_key("coverage_toggle")
+            ),
             criterion_met=all_pass,
             detail=report_dict,
             report_text=report_text,
@@ -1960,7 +1989,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         whole coverage run. ``as_int`` also rejects the bool trap
         (``int(True) == 1`` would otherwise sail through silently).
         """
-        entry = self.state.criteria.get(criterion_key)
+        entry = self.state.criteria.get(self._target_criterion_key(criterion_key))
         if entry and entry.params:
             state_val = entry.params.get("min_pct")
             if state_val is not None:
@@ -2287,6 +2316,77 @@ abort path". Omit this field or leave empty if all criteria are already met.
         sim_result = self._ensure_trace(trace_dir, work_dir)
         return scope_files, sim_result
 
+    def _ensure_target_traces(
+        self,
+        work_dir: Path,
+    ) -> tuple[list[str], list[Path], McpToolResult | None]:
+        """Produce traces for every runnable test owned by the selected Target."""
+        suite = resolve_target_test_suite(self.args.target)
+        tests = (None,) if self._is_cocotb_target() else suite.tests
+        trace_dirs: list[Path] = []
+        scope_files: list[str] = []
+        for test_name in tests:
+            self._coverage_test = test_name
+            trace_dir = self._find_trace_dir(test_name)
+            scope_files, error = self._validate_scope_and_ensure_trace(trace_dir, work_dir)
+            if error is not None:
+                label = test_name or "<default>"
+                error.report_text = f"coverage test {label}: {error.report_text}"
+                return scope_files, trace_dirs, error
+            trace_dirs.append(trace_dir)
+        self._coverage_test = None
+        return scope_files, trace_dirs, None
+
+    @staticmethod
+    def _merge_signal_stats(stats_by_trace: list[list[SignalStats]]) -> list[SignalStats]:
+        """Union signal evidence across traces from the same Target."""
+        merged: dict[str, SignalStats] = {}
+        for trace_stats in stats_by_trace:
+            for signal in trace_stats:
+                current = merged.setdefault(
+                    signal.name,
+                    SignalStats(name=signal.name, width=signal.width),
+                )
+                current.width = max(current.width, signal.width)
+                current.transitions += signal.transitions
+                for value, count in signal.value_hist.items():
+                    current.value_hist[value] = current.value_hist.get(value, 0) + count
+        return list(merged.values())
+
+    def _run_phase1_measurement_for_suite(
+        self,
+        trace_dirs: list[Path],
+        scope_files: list[str],
+        output_lines: list[str],
+    ) -> tuple[list, list, list[str], list[str], McpToolResult | None]:
+        """Measure every Target trace and score their aggregate evidence."""
+        output_lines.append(
+            f"[coverage] phase 1: mechanical measurement ({len(trace_dirs)} trace(s))"
+        )
+        measured: list[list[SignalStats]] = []
+        for trace_dir in trace_dirs:
+            stats, error, is_infra = self._run_mechanical_measurement(trace_dir)
+            if not stats:
+                return (
+                    [],
+                    [],
+                    [],
+                    [],
+                    McpToolResult(
+                        exit_code=EXIT_ERROR if is_infra else EXIT_FAILURE,
+                        report_text=f"Phase 1 failed for {trace_dir}: {error or 'unknown'}",
+                    ),
+                )
+            measured.append(stats)
+        stats = self._merge_signal_stats(measured)
+        stats, structural_noise = self._filter_structural_noise(stats, scope_files)
+        toggle_failures, low_diversity = self._pre_filter_for_waiver(stats)
+        output_lines.append(f"  {len(stats)} aggregate signals measured")
+        output_lines.append(
+            f"  {len(toggle_failures)} toggle failures, {len(low_diversity)} low-diversity signals"
+        )
+        return stats, structural_noise, toggle_failures, low_diversity, None
+
     def _run_phase1_measurement(
         self,
         trace_dir: Path,
@@ -2452,17 +2552,16 @@ abort path". Omit this field or leave empty if all criteria are already met.
             reviewer_result,
         )
 
-    def _init_run_state(self) -> tuple[float, Path, Path, list[str]]:
+    def _init_run_state(self) -> tuple[float, Path, list[str]]:
         """Set up per-run state shared across all five phases.
 
-        Returns ``(t0, trace_dir, work_dir, output_lines)``.
+        Returns ``(t0, work_dir, output_lines)``.
         """
         # Per-instance lock — avoids serializing concurrent Specialist instances
         self._agent_lock = threading.Lock()
         self._phase_errors: set[str] = set()
         return (
             time.monotonic(),
-            self._find_trace_dir(),
             Path(self.args.work_dir),
             [],
         )
@@ -2472,20 +2571,20 @@ abort path". Omit this field or leave empty if all criteria are already met.
         err = self._check_prerequisites()
         if err:
             return err
+        if campaign_error := self._apply_campaign_defaults():
+            return campaign_error
 
-        t0, trace_dir, work_dir, output_lines = self._init_run_state()
+        t0, work_dir, output_lines = self._init_run_state()
 
-        # Validate --scope files early + ensure a fresh trace exists.
-        scope_files, scope_or_trace_err = self._validate_scope_and_ensure_trace(
-            trace_dir,
-            work_dir,
-        )
+        # Validate --scope files early + ensure one trace per Target test.
+        scope_files, trace_dirs, scope_or_trace_err = self._ensure_target_traces(work_dir)
         if scope_or_trace_err:
             return scope_or_trace_err
+        self._trace_dirs = trace_dirs
 
         # Phase 1: Mechanical measurement
         stats, structural_noise, toggle_failures, low_diversity, phase1_err = (
-            self._run_phase1_measurement(trace_dir, scope_files, output_lines)
+            self._run_phase1_measurement_for_suite(trace_dirs, scope_files, output_lines)
         )
         if phase1_err:
             return phase1_err
@@ -2506,7 +2605,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             reviewer_result,
         ) = self._run_phases_2_to_4(
             work_dir,
-            trace_dir,
+            trace_dirs[0],
             stats,
             toggle_failures,
             low_diversity,
@@ -2537,6 +2636,32 @@ abort path". Omit this field or leave empty if all criteria are already met.
         output_lines.append("[coverage] phase 5: scoring")
         return self._build_coverage_result(report, output_lines, active_criteria)
 
+    def _apply_campaign_defaults(self) -> McpToolResult | None:
+        """Resolve one consistent RTL scope from Target-specific criteria."""
+        if self.args.scope:
+            return None
+        scopes: set[tuple[str, ...]] = set()
+        for base_key in self.satisfies:
+            entry = self.state.criteria.get(self._target_criterion_key(base_key))
+            raw_scope = entry.params.get("scope") if entry is not None else None
+            if isinstance(raw_scope, str) and raw_scope.strip():
+                scopes.add(tuple(path.strip() for path in raw_scope.split(",") if path.strip()))
+            elif isinstance(raw_scope, list):
+                scopes.add(tuple(str(path) for path in raw_scope if str(path).strip()))
+        scopes.discard(())
+        if len(scopes) == 1:
+            self.args.scope = ",".join(next(iter(scopes)))
+            return None
+        reason = "no scope is declared" if not scopes else "criteria declare conflicting scopes"
+        return McpToolResult(
+            exit_code=EXIT_FAILURE,
+            report_text=(
+                f"coverage_analyst: {reason} for Target {self.args.target!r}. "
+                "Declare the same scope: [rtl/file.sv, ...] on its coverage "
+                "criteria or pass --scope."
+            ),
+        )
+
     def _check_prerequisites(self) -> McpToolResult | None:
         """Verify the native bwave binary is installed.
 
@@ -2550,22 +2675,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
         return None
 
     def _derive_trace_scope(self) -> str:
-        """Derive the --trace-scope hierarchy path from ``dut_info``.
-
-        Returns ``dut_hier_path`` when populated, otherwise falls back to
-        the legacy ``{tb_top}.dut`` for older tickets with an unseeded
-        dut_info.  Single-DUT invariant: always one string.
-        """
-        path = self.state.dut_info.dut_hier_path
-        if path:
-            return path
-        if self._is_cocotb_target():
-            # ADR 0034: DUT-as-toplevel — the trace scope is the root instance.
-            return str(self.args.tb_top)
-        logger.debug(
-            "dut_info.dut_hier_path empty; falling back to legacy {tb_top}.dut trace scope",
-        )
-        return f"{self.args.tb_top}.dut"
+        """Trace the full hierarchy so post-processing can discover RTL scopes."""
+        return ""
 
     # Matches unguarded $dumpfile / $dumpvars system task calls.  Word boundary
     # avoids partial hits like $dumpfileBlah.  Comments are filtered by caller.
@@ -2732,111 +2843,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
                     matches.append((relpath, lineno, inst_name, container))
         return matches
 
-    def _check_dut_instance_match(
-        self,
-        work_dir: Path,
-    ) -> McpToolResult | None:
-        """Pre-flight: verify ``dut_hier_path`` resolves to a real TB instance.
-
-        The harness elaborates with ``$dumpvars(0, <dut_hier_path>)``.  When
-        the path doesn't bind, iverilog exits in <0.3s with a generic
-        "Unable to bind" error and the developer gets a 500-char tail of
-        compiler noise.  This scan converts that into a structured fix
-        target naming the actual DUT instances found in the TB and the two
-        canonical resolutions (update dut_hier_path vs add/rename the
-        instance).
-        """
-        dut_info = self.state.dut_info
-        if not dut_info.dut_hier_path or not dut_info.dut_top_module:
-            return None
-        # ADR 0034: a Cocotb Target has no HDL testbench to scan — the DUT is
-        # the toplevel and the degenerate DUT Info (dut_hier_path = the root
-        # instance) is definitionally consistent, so this preflight is moot.
-        if self._is_cocotb_target():
-            return None
-        # ADR 0022 dec 12/14: the TB top is the resolved Target's toplevel
-        # (surfaced as ``self.args.tb_top``), not a stored ``dut_info`` field.
-        expected_parent = self.args.tb_top
-        if not expected_parent:
-            return None
-
-        leaf = dut_info.dut_hier_path.rsplit(".", 1)[-1]
-        instances = self._scan_tb_for_dut_instances(
-            work_dir,
-            dut_info.dut_top_module,
-        )
-
-        # A direct hit means the leaf name matches AND it sits inside the
-        # tb_top_module body.  Anything else mismatches the elaborated
-        # $dumpvars path.
-        direct_hits = [
-            entry for entry in instances if entry[2] == leaf and entry[3] == expected_parent
-        ]
-        if direct_hits:
-            return None
-
-        # Build a structured report.  Distinguish the two failure modes —
-        # "DUT module never instantiated" vs "instantiated elsewhere" —
-        # because the right fix differs.
-        if not instances:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    f"dut_info mismatch: dut_hier_path="
-                    f"{dut_info.dut_hier_path!r} but TB sources contain no "
-                    f"instantiation of {dut_info.dut_top_module!r}.  "
-                    f"Either dut_top_module is wrong (correct dut_info) "
-                    f"or the TB does not exercise "
-                    f"the DUT and must be rewritten to instantiate "
-                    f"{dut_info.dut_top_module!r}."
-                ),
-            )
-
-        return self._dut_instance_mismatch_result(
-            dut_info,
-            expected_parent,
-            leaf,
-            instances,
-        )
-
-    @staticmethod
-    def _dut_instance_mismatch_result(
-        dut_info: Any,
-        expected_parent: str,
-        leaf: str,
-        instances: list[tuple[str, int, str, str | None]],
-    ) -> McpToolResult:
-        """Build the "dut_hier_path resolves to no TB instance" error report.
-
-        Names the actual instances found and the two canonical resolutions
-        (update dut_hier_path vs add/rename the instance).
-        """
-        found = "\n".join(
-            f"  {relpath}:{lineno}: "
-            f"{container or '<top-level>'}.{name} ({dut_info.dut_top_module})"
-            for relpath, lineno, name, container in instances[:10]
-        )
-        more = f"\n  ... and {len(instances) - 10} more" if len(instances) > 10 else ""
-        return McpToolResult(
-            exit_code=EXIT_ERROR,
-            report_text=(
-                f"dut_info mismatch: dut_hier_path="
-                f"{dut_info.dut_hier_path!r} does not resolve to any TB "
-                f"instance.  The harness elaborates with "
-                f"$dumpvars(0, {dut_info.dut_hier_path}); iverilog will fail "
-                f"to bind and exit in <0.3s.\n"
-                f"Found {len(instances)} instance(s) of "
-                f"{dut_info.dut_top_module!r}:\n{found}{more}\n"
-                f"Fix one of:\n"
-                f"  (a) Update dut_info.dut_hier_path to match an instance "
-                f"above (prefer the one the test actually exercises).\n"
-                f"  (b) Add/rename a top-level instance in "
-                f"{expected_parent!r} so that {expected_parent}.{leaf} "
-                f"resolves, if {dut_info.dut_hier_path!r} is the intended "
-                f"canonical scope."
-            ),
-        )
-
     def _resolve_trace_target(
         self,
         fusesoc_registry: Any,
@@ -2915,11 +2921,36 @@ abort path". Omit this field or leave empty if all criteria are already met.
         rel = edam_layer.relpath_for_make(resolved.build_root, work_dir)
         build_cmd = edam_layer.make_command(rel)
         run_cwd = _resolve_run_cwd(work_dir)
+        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
+        cocotb_module = lookup_target_section(
+            cocotb_modules,
+            self.args.target,
+        )
 
         # Paths stay relative to work_dir (the shell's cwd); the run-half resolves
         # them absolute before switching to --run-cwd, so a TB that opens
         # vectors/firmware relative to cwd still finds them.
-        if is_icarus:
+        if cocotb_module:
+            suite = resolve_target_test_suite(self.args.target)
+            run_cmd = [
+                "python3",
+                "-m",
+                "booley.sim.cocotb_run",
+                "--build-dir",
+                rel,
+                "--eda-tool",
+                eda_tool,
+                "--cocotb-module",
+                str(cocotb_module),
+                "--work-dir",
+                posix_relpath(trace_dir, work_dir),
+                "--timeout",
+                str(run_timeout),
+                "--trace",
+            ]
+            run_cmd.extend(f"--test={test}" for test in suite.tests if test is not None)
+            marker = f"{eda_tool} cocotb compilation failed"
+        elif is_icarus:
             run_cmd = [
                 "python3",
                 "-m",
@@ -2953,7 +2984,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
             run_cmd += ["--trace-scope", trace_scope]
         if run_cwd:
             run_cmd += ["--run-cwd", run_cwd]
-        for pa in _trace_test_plusargs(self.args.target, self.args.test):
+        selected_test = getattr(self, "_coverage_test", None)
+        for pa in _trace_test_plusargs(self.args.target, selected_test):
             run_cmd.append(f"--plusarg={pa}")
 
         # On build failure echo the canonical marker (_ELAB_FAIL_RE / the rc!=0
@@ -2996,11 +3028,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
     def _diagnose_trace_run_failure(
         self,
         proc: subprocess.CompletedProcess,
-        eda_tool: str,
     ) -> McpToolResult:
         """Turn a non-zero traced-sim run into a structured error McpToolResult."""
-        from booley.flows.sim.flow import _detect_dut_info_diagnostic
-
         # run_sim_batch merges stderr→stdout, so check both streams
         detail = proc.stderr.strip() or proc.stdout.strip()
         # Distinguish a trace-pipeline stall (infra issue: the bwave
@@ -3016,22 +3045,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
                     f"a coverage failure. tail:\n{detail[-500:]}"
                 ),
             )
-        # Surface the backend-specific dut_info diagnostic when it
-        # matched.  Without this the developer only sees a 500-char
-        # tail of compiler noise and routes to a generic debug loop;
-        # with it the message names the stale field and the corrective
-        # path (correct dut_info vs fix the TB).
-        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        diag = _detect_dut_info_diagnostic(
-            combined,
-            eda_tool,
-            self.state.dut_info,
-        )
-        if diag:
-            return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(f"Traced simulation failed (rc={proc.returncode}): {diag}"),
-            )
         return McpToolResult(
             exit_code=EXIT_ERROR,
             report_text=f"Traced simulation failed (rc={proc.returncode}): {detail[-500:]}",
@@ -3041,14 +3054,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
         """Run traced simulation if no trace file exists. Returns error McpToolResult or None."""
         from booley.flows.execution import resolve_execution
         from booley.flows.sim.flow import SimulateFlow
-
-        # Pre-flight: dut_hier_path must bind to a real TB instance.  When
-        # dut_info carries a stale path, iverilog elab fails fast (<0.3s)
-        # with a generic "Unable to bind" — this scan converts that into a
-        # structured fix target naming the actual TB instances found.
-        err = self._check_dut_instance_match(work_dir)
-        if err is not None:
-            return err
 
         # Pre-flight: TB-level $dumpfile/$dumpvars hijack the +tracefile path
         # the harness sets up, so bwave finds nothing and the run dies with a
@@ -3062,11 +3067,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
         selection_error = SimulateFlow.validate_execution(selection)
         if selection_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=selection_error)
-        # decision 8: run-half family from the Target's EDA tool, not the backend.
-        eda_tool = sim_edam.normalize_eda_tool(
-            fusesoc_registry.target_eda_tools(Path(self.args.work_dir)).get(self.args.target)
-        )
-
         trace_scope = self._derive_trace_scope()
         trace_timeout = max(int(self.args.timeout * 0.6), 300)
         # Both simulators trace through the edalize build + their EDA-tool-specific
@@ -3102,7 +3102,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             )
 
         if proc.returncode != 0:
-            return self._diagnose_trace_run_failure(proc, eda_tool)
+            return self._diagnose_trace_run_failure(proc)
 
         # Verify trace now exists.  rc=0 + no trace is a real failure mode
         # (bwave missing/crashed, scope produced no signals, FIFO never
@@ -3121,7 +3121,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             )
         return None
 
-    def _find_trace_dir(self) -> Path:
+    def _find_trace_dir(self, test_name: str | None = None) -> Path:
         """Locate the simulation work directory containing the trace file.
 
         Must match run_sim_batch's path derivation: configs with empty test
@@ -3130,7 +3130,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         from booley.config.project_config import TEST_NAMES
 
         target = self.args.target
-        test = self.args.test
+        test = test_name
         resolved_test = None
         if test and target in TEST_NAMES and TEST_NAMES[target]:
             resolved_test = test

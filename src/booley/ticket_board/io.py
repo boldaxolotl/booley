@@ -124,7 +124,7 @@ class TicketIO:
                 lock_file.write(pid_to_stamp)
                 lock_file.flush()
                 return
-            except (BlockingIOError, OSError) as lock_err:
+            except BlockingIOError as lock_err:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"Could not acquire lock for '{slug}' within "
@@ -349,6 +349,8 @@ class TicketIO:
         transition: tuple[str, str, str, str] | None = None,
         *,
         enforce_lifecycle: bool = False,
+        expected_status: str | None = None,
+        expected_execution_id: str | None = None,
     ) -> bool:
         """Atomic move + field update under per-ticket lock.
 
@@ -362,6 +364,10 @@ class TicketIO:
                         execution (docs/PRINCIPLES §7).
             enforce_lifecycle: Derive the locked source state and reject moves
                                outside the canonical lifecycle graph.
+            expected_status: Compare-and-swap guard. When set, reject the move
+                             unless the locked filesystem state still matches.
+            expected_execution_id: Reject unless the locked execution generation
+                                   matches the caller's activation generation.
 
         Returns True on success, False if ticket not found.
         """
@@ -370,6 +376,23 @@ class TicketIO:
             file_path, source_status = find_ticket_file(self.tickets_dir, slug)
             if file_path is None:
                 print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+                return False
+            if expected_status is not None and source_status != expected_status:
+                print(
+                    f"Error: ticket '{slug}' changed concurrently: expected "
+                    f"{expected_status}, found {source_status}",
+                    file=sys.stderr,
+                )
+                return False
+
+            progress = self._load_or_bootstrap_progress(slug, file_path)
+            actual_execution_id = progress.get("execution_id", "")
+            if expected_execution_id is not None and actual_execution_id != expected_execution_id:
+                print(
+                    f"Error: ticket '{slug}' execution changed concurrently: expected "
+                    f"{expected_execution_id}, found {actual_execution_id or '<none>'}",
+                    file=sys.stderr,
+                )
                 return False
 
             resolved = self._validated_destination(
@@ -384,7 +407,6 @@ class TicketIO:
             new_path, source, destination = resolved
             transition = self._canonical_transition(transition, source, destination)
 
-            progress = self._load_or_bootstrap_progress(slug, file_path)
             spec_updates = self._apply_updates(progress, updates, append_step)
             save_progress(self.logs_dir, slug, progress)
             self._write_spec_fields(file_path, spec_updates)
@@ -400,7 +422,13 @@ class TicketIO:
 
         return True
 
-    def _init_ticket_locked(self, ticket_path: Path, slug: str) -> Path:
+    def _init_ticket_locked(
+        self,
+        ticket_path: Path,
+        slug: str,
+        execution_id: str,
+        owner_pid: int | None,
+    ) -> Path:
         """Perform the locked init work: move, copy, stamp, create progress.
 
         Returns the log_dir path.
@@ -434,6 +462,8 @@ class TicketIO:
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
         initial_progress["step"] = "init"
         initial_progress["steps_completed"] = []
+        initial_progress["execution_id"] = execution_id
+        initial_progress["execution_owner_pid"] = owner_pid
         initial_progress["last_update"] = now_iso()
         save_progress(self.logs_dir, slug, initial_progress)
 
@@ -443,7 +473,13 @@ class TicketIO:
         )
         return log_dir
 
-    def init_ticket(self, ticket_path: str | Path) -> dict[str, str] | None:
+    def init_ticket(
+        self,
+        ticket_path: str | Path,
+        *,
+        execution_id: str = "",
+        owner_pid: int | None = None,
+    ) -> dict[str, str] | None:
         """Initialize a fresh ticket: move to active/, create logs/, copy ticket.
 
         Updates frontmatter with step, steps_completed, created, last_update.
@@ -462,9 +498,31 @@ class TicketIO:
             if not ticket_path.exists():
                 print(f"Error: ticket '{slug}' claimed by another process", file=sys.stderr)
                 return None
-            log_dir = self._init_ticket_locked(ticket_path, slug)
+            log_dir = self._init_ticket_locked(ticket_path, slug, execution_id, owner_pid)
 
         return {"slug": slug, "logs_dir": str(log_dir)}
+
+    def stamp_execution(
+        self,
+        slug: str,
+        execution_id: str,
+        owner_pid: int,
+        *,
+        expected_execution_id: str,
+    ) -> bool:
+        """Replace an active ticket's execution generation under its lock."""
+        with self._ticket_lock(slug):
+            file_path, status = find_ticket_file(self.tickets_dir, slug)
+            if file_path is None or status != "running":
+                return False
+            progress = self._load_or_bootstrap_progress(slug, file_path)
+            if progress.get("execution_id", "") != expected_execution_id:
+                return False
+            progress["execution_id"] = execution_id
+            progress["execution_owner_pid"] = owner_pid
+            progress["last_update"] = now_iso()
+            save_progress(self.logs_dir, slug, progress)
+        return True
 
     @staticmethod
     def _build_ticket_fields(spec: TicketFileSpec, base_sha: str) -> dict[str, Any]:

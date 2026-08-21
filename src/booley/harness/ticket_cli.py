@@ -92,12 +92,22 @@ def collect_evidence(project_root: Path, slug: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def activate(project_root: Path, slug: str, *, owner_pid: int | None = None) -> bool:
+def activate(
+    project_root: Path,
+    slug: str,
+    *,
+    owner_pid: int | None = None,
+    execution_id: str | None = None,
+) -> bool:
     """Activate a ticket for execution (move to active/).
 
     Returns False if another live runner already owns the ticket.
     """
-    return get_ticket_ops().activate(project_root, slug, owner_pid=owner_pid)
+    if execution_id is None:
+        return get_ticket_ops().activate(project_root, slug, owner_pid=owner_pid)
+    return get_ticket_ops().activate(
+        project_root, slug, owner_pid=owner_pid, execution_id=execution_id
+    )
 
 
 def claim(project_root: Path, slug: str) -> bool:
@@ -105,9 +115,19 @@ def claim(project_root: Path, slug: str) -> bool:
     return get_ticket_ops().claim(project_root, slug)
 
 
-def init_ticket(project_root: Path, ticket_path: str) -> dict[str, Any]:
+def init_ticket(
+    project_root: Path,
+    ticket_path: str,
+    *,
+    execution_id: str = "",
+    owner_pid: int | None = None,
+) -> dict[str, Any]:
     """Initialize a fresh ticket for execution."""
-    return get_ticket_ops().init_ticket(project_root, ticket_path)
+    if not execution_id and owner_pid is None:
+        return get_ticket_ops().init_ticket(project_root, ticket_path)
+    return get_ticket_ops().init_ticket(
+        project_root, ticket_path, execution_id=execution_id, owner_pid=owner_pid
+    )
 
 
 def update_board(
@@ -152,9 +172,21 @@ def log_incident(
     )
 
 
-def block(project_root: Path, slug: str, *, reason: str, step: str) -> None:
+def block(
+    project_root: Path,
+    slug: str,
+    *,
+    reason: str,
+    step: str,
+    expected_execution_id: str | None = None,
+) -> None:
     """Block a ticket with reason and step."""
-    get_ticket_ops().block(project_root, slug, reason=reason, step=step)
+    if expected_execution_id is None:
+        get_ticket_ops().block(project_root, slug, reason=reason, step=step)
+        return
+    get_ticket_ops().block(
+        project_root, slug, reason=reason, step=step, expected_execution_id=expected_execution_id
+    )
 
 
 def fail(project_root: Path, slug: str, *, error: str, step: str) -> None:
@@ -162,9 +194,17 @@ def fail(project_root: Path, slug: str, *, error: str, step: str) -> None:
     get_ticket_ops().fail(project_root, slug, error=error, step=step)
 
 
-def handoff(project_root: Path, slug: str) -> None:
+def handoff(
+    project_root: Path,
+    slug: str,
+    *,
+    expected_execution_id: str | None = None,
+) -> None:
     """Hand off ticket to review."""
-    get_ticket_ops().handoff(project_root, slug)
+    if expected_execution_id is None:
+        get_ticket_ops().handoff(project_root, slug)
+        return
+    get_ticket_ops().handoff(project_root, slug, expected_execution_id=expected_execution_id)
 
 
 def unblock(

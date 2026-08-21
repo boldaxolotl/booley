@@ -18,7 +18,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from booley.sim.xcelium_run import (
-    _check_dut_info_diagnostics,
     evaluate_xcelium_log,
     main,
     reemit_xcelium_summary,
@@ -197,23 +196,6 @@ class TestReemitXceliumSummary:
     def test_idempotent_when_summary_present(self):
         raw = 'log\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
         assert reemit_xcelium_summary(raw, 0) == raw
-
-
-class TestDutInfoDiagnostics:
-    def test_unbound_hierarchy_names_dut_hier_path(self):
-        # Real *E,CUVUNF wording (capital H — matching is case-insensitive).
-        msg = _check_dut_info_diagnostics(_HIER_ERROR_LOG)
-        assert msg and "dut_hier_path" in msg
-        assert "u_dut_stale_name" in msg
-
-    def test_missing_top_names_tb_top_module(self):
-        # Real *E,NOUNIT wording from a stale -top unit name.
-        msg = _check_dut_info_diagnostics(_ELAB_ERROR_LOG)
-        assert msg and "tb_top_module" in msg
-
-    def test_clean_log_yields_none(self):
-        assert _check_dut_info_diagnostics(_PASS_LOG) is None
-        assert _check_dut_info_diagnostics("") is None
 
 
 class TestOfflineCli:

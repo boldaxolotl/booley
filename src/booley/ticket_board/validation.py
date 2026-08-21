@@ -165,21 +165,74 @@ STEP_META_VALIDATORS = {
 }
 
 
+_TARGET_CAMPAIGN_CRITERIA = frozenset(
+    {
+        "mutation_score",
+        "coverage_toggle",
+        "coverage_fsm",
+        "coverage_value",
+        "coverage_branch",
+        "coverage_expression",
+        "coverage_mean",
+    }
+)
+
+
+def _valid_campaign_scope(value: Any) -> bool:
+    """Whether *value* is a non-empty list of non-empty paths."""
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(path, str) and path.strip() for path in value)
+    )
+
+
+def _validate_campaign_item(prefix: str, item: dict, errors: list[str]) -> None:
+    """Validate one ``{target, scope, ...}`` campaign entry."""
+    target = item.get("target")
+    if not isinstance(target, str) or not target.strip():
+        errors.append(f"{prefix}.target must be a non-empty string")
+    if not _valid_campaign_scope(item.get("scope")):
+        errors.append(f"{prefix}.scope must be a non-empty list[str]")
+
+
+def _validate_criterion_list(section_name, key, value, errors):
+    """Validate list-valued criteria, including Target campaign entries."""
+    for i, item in enumerate(value):
+        if isinstance(item, str) and not item.strip():
+            errors.append(f"criteria.{section_name}.{key}[{i}]: empty string")
+        elif not isinstance(item, (str, dict)):
+            errors.append(
+                f"criteria.{section_name}.{key}[{i}]: "
+                f"items must be strings or dicts, got {type(item).__name__}"
+            )
+        elif key in _TARGET_CAMPAIGN_CRITERIA and isinstance(item, dict):
+            _validate_campaign_item(f"criteria.{section_name}.{key}[{i}]", item, errors)
+    if key in _TARGET_CAMPAIGN_CRITERIA and not all(isinstance(item, dict) for item in value):
+        errors.append(f"criteria.{section_name}.{key}: use a list of Target campaign dicts")
+
+
+def _validate_criterion_dict(section_name, key, value, errors):
+    """Validate parameterized and legacy multi-Target criterion dictionaries."""
+    from booley.dev_support.criteria import PER_TARGET_CRITERIA
+
+    targets = value.get("targets")
+    if targets is not None and not isinstance(targets, list):
+        errors.append(f"criteria.{section_name}.{key}.targets must be a list")
+    if key in PER_TARGET_CRITERIA and not isinstance(targets, list):
+        errors.append(
+            f"criteria.{section_name}.{key}: per-target criterion requires a targets list"
+        )
+    if key in _TARGET_CAMPAIGN_CRITERIA and not _valid_campaign_scope(value.get("scope")):
+        errors.append(f"criteria.{section_name}.{key}.scope must be a non-empty list[str]")
+
+
 def _validate_criterion_value(section_name, key, value, errors):
     """Validate a single criterion value (list, dict, or scalar)."""
     if isinstance(value, list):
-        for i, item in enumerate(value):
-            if isinstance(item, str) and not item.strip():
-                errors.append(f"criteria.{section_name}.{key}[{i}]: empty string")
-            elif not isinstance(item, (str, dict)):
-                errors.append(
-                    f"criteria.{section_name}.{key}[{i}]: "
-                    f"items must be strings or dicts, got {type(item).__name__}"
-                )
+        _validate_criterion_list(section_name, key, value, errors)
     elif isinstance(value, dict):
-        targets = value.get("targets")
-        if targets is not None and not isinstance(targets, list):
-            errors.append(f"criteria.{section_name}.{key}.targets must be a list")
+        _validate_criterion_dict(section_name, key, value, errors)
     elif isinstance(value, (str, bool, int, float, type(None))):
         from booley.dev_support.criteria import PER_TARGET_CRITERIA
 
@@ -781,22 +834,18 @@ def _validate_retired_criteria(criteria: dict[str, Any]) -> list[str]:
 def _validate_flow_coherence(criteria: dict[str, Any], project_root: str | Path) -> list[str]:
     """Check criterion prefixes against disabled Flows in booley.toml."""
     errors: list[str] = []
-    from .execution import disabled_flow_steps
+    from .execution import disabled_flows
 
-    disabled = disabled_flow_steps(Path(project_root))
+    disabled = disabled_flows(Path(project_root))
     if not disabled:
         return errors
-
-    from .constants import FLOW_STEP_MAP
-
-    disabled_flows = {flow for flow, step in FLOW_STEP_MAP.items() if step in disabled}
     for section_name in ("mandatory", "optional"):
         section = criteria.get(section_name, {})
         if not isinstance(section, dict):
             continue
         for crit_key in section:
             for prefix, flow in CRITERION_FLOW_MAP.items():
-                if crit_key.startswith(prefix) and flow in disabled_flows:
+                if crit_key.startswith(prefix) and flow in disabled:
                     errors.append(
                         f"criteria.{section_name}.{crit_key} requires "
                         f"Flow {flow} which is disabled in booley.toml"

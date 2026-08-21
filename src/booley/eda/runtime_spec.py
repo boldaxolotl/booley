@@ -116,6 +116,29 @@ def pin_image(spec: dict[str, Any]) -> str:
     return image_id
 
 
+def _vivado_requested(project_root: Path, config: EdaConfig | None) -> bool:
+    """Whether the active FPGA Flow requests a configured Vivado toolchain.
+
+    An explicit ``[flows.fpga].enabled = false`` disables the consumer of this
+    authority. Resolution is fail-closed: malformed or unreadable Flow
+    configuration defaults to enabled.
+    """
+    if config is None:
+        return False
+    from booley.flows.execution import resolve_execution
+
+    return resolve_execution("fpga", project_root).enabled
+
+
+def _host_vivado_requested(project_root: Path, config: EdaConfig | None) -> bool:
+    """Whether the active FPGA Flow requests a host Vivado installation."""
+    return bool(
+        config is not None
+        and config.provisioning == PROVISIONING_HOST
+        and _vivado_requested(project_root, config)
+    )
+
+
 def seal(project_root: Path, spec: dict[str, Any]) -> str:
     """Add host-derived networks and issuance labels to a generated spec.
 
@@ -134,7 +157,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
     )
     _pin_devcontainer_mount(spec, project)
     config = load_eda_config(project).get("vivado")
-    host_provisioning = config is not None and config.provisioning == PROVISIONING_HOST
+    host_provisioning = _host_vivado_requested(project, config)
     try:
         with authority.resolve_for_issuance(project, host_provisioning) as (
             installation,
@@ -177,14 +200,18 @@ def requested_host_installation(
 ) -> tuple[EdaConfig | None, authority.Installation | None]:
     """Resolve the grant-selected installation for a host-provisioned Project."""
     config = load_eda_config(project_root).get("vivado")
-    if config is None or config.provisioning != PROVISIONING_HOST:
+    if not _host_vivado_requested(project_root, config):
         return config, None
     return config, authority.resolve_installation(project_root)
 
 
 def requested_license(project_root: Path) -> authority.LicenseProfile | None:
     """Return the host-selected License Profile, when the Project has one."""
-    return _optional_license(project_root.resolve(strict=True))
+    project = project_root.resolve(strict=True)
+    config = load_eda_config(project).get("vivado")
+    if not _vivado_requested(project, config):
+        return None
+    return _optional_license(project)
 
 
 def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
@@ -192,7 +219,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
     project = project_root.resolve(strict=True)
     project_data_source = str(authorized_project_data_source(project))
     config = load_eda_config(project).get("vivado")
-    host_provisioning = config is not None and config.provisioning == PROVISIONING_HOST
+    host_provisioning = _host_vivado_requested(project, config)
     try:
         with authority.resolve_for_issuance(project, host_provisioning) as (
             installation,
@@ -235,7 +262,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
     ):
         raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
     config = load_eda_config(project).get("vivado")
-    host_provisioning = config is not None and config.provisioning == PROVISIONING_HOST
+    host_provisioning = _host_vivado_requested(project, config)
     try:
         with authority.resolve_for_issuance(project, host_provisioning) as (
             installation,

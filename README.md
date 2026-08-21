@@ -13,6 +13,8 @@
 
 It's 2026, and LLMs are finally good enough to do real work. The software world already accepts this: agents write more and more of the code while humans move up to architecture, specification, review, and integration. Hardware moves slower, but it moves: every major EDA vendor and a wave of startups are shipping AI systems for chip design. Those systems are closed, expensive, and out of reach if you don't work at a big company. Raw agents like Claude Code and Codex are useful, but they lack tight integration with EDA tools and still fail in predictable ways on RTL work. So I built the framework I was missing: free and open source.
 
+The mental model behind Booley is simple: treat an agent like a talented junior engineer. It can write decent RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and—if given unrestricted access—perfectly capable of force-pushing over your Git history. You don't solve that by trusting it blindly or refusing to use it. You give it the right tools, a constrained workspace, explicit specifications, automated checks, and human review. Booley is that working environment.
+
 The idea:
 
 1. Take the most capable coding agents available (Claude Code, Codex).
@@ -99,6 +101,29 @@ Support for additional commercial EDA tools is coming soon; see the
 - **The code quality is "hardware engineer writing software."** The architecture is sound, but the Python could use polish. Contributions from actual software developers are very welcome.
 - **Work in progress.** Expect occasional bugs and rough edges in the UI. I'm actively on it, and things keep getting better.
 
+## Installation
+
+Booley supports Windows and Linux (Ubuntu 24.04 tested); macOS is not
+supported. You need:
+
+- Python 3.11+
+- [Docker](https://www.docker.com/)
+- [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+- Credentials for Claude (the default) or Codex
+
+Install and verify the CLI on the host:
+
+```bash
+pipx install booley-rtl        # or: pip install booley-rtl
+booley --version
+```
+
+`pipx` is recommended because it avoids system-Python conflicts. Windows users
+should run the CLI natively, not inside WSL. See
+[Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/TROUBLESHOOTING.md)
+for first-run, PATH, and Python-environment problems, then continue to
+[Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/SETUP.md).
+
 ## Quick Start
 
 Three ways in, ordered by how much you want to invest:
@@ -122,9 +147,7 @@ I recorded all four videos myself, then replaced my narration with text-to-speec
 
 **The demo IP** is [picorv32](https://github.com/YosysHQ/picorv32), Claire Wolf's open-source RISC-V CPU core. It is a small, area-optimized design with a straightforward multi-cycle architecture. That makes the RTL easy to understand and keeps lint, simulation, and synthesis runs fast, while still exercising Booley on a real project rather than a toy example.
 
-You clone the **official upstream repo, untouched**, and drop the pre-configured Booley project ([booley-prj-picorv32](https://github.com/boldaxolotl/booley-prj-picorv32)) inside it as `.booley_project/`. Everything Booley-related (design description, tests, config, a queued ticket) ships in that one directory, and no `/booley-setup` is needed.
-
-First, follow [INSTALL.md](https://github.com/boldaxolotl/Booley/blob/main/docs/INSTALL.md) to install Booley and satisfy its platform, software, and agent-account requirements.
+First, complete the [installation](#installation) above.
 
 Then follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
 
@@ -138,7 +161,6 @@ Follow [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/SETUP.md)
 
 - [Features](https://github.com/boldaxolotl/Booley/blob/main/docs/FEATURES.md): expanded descriptions of all capabilities
 - [Architecture](https://github.com/boldaxolotl/Booley/blob/main/docs/ARCHITECTURE.md): the big-picture structure of Booley and how its parts fit together
-- [Installation](https://github.com/boldaxolotl/Booley/blob/main/docs/INSTALL.md): supported hosts, prerequisites, and CLI installation
 - [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/SETUP.md): integrating Booley with an RTL project, from initial bootstrap through configuration and validation
 - [Usage](https://github.com/boldaxolotl/Booley/blob/main/docs/USAGE.md): for learning the day-to-day Booley workflow, both interactively and through tickets
 - [Supported EDA tools](https://github.com/boldaxolotl/Booley/blob/main/docs/SUPPORTED-EDA-TOOLS.md)

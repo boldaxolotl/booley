@@ -15,7 +15,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from booley.runtime.auth_token import config_dir
-from booley.ticket_board.helpers import lock_fd, unlock_fd
+from booley.runtime.file_lock import acquire_file_lock, release_file_lock
+
+lock_fd = acquire_file_lock
+unlock_fd = release_file_lock
 
 from .config import installation_name_error
 from .vivado import KIND as VIVADO_KIND

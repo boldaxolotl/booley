@@ -455,17 +455,26 @@ def _write_gitattributes_rule(project_root: Path) -> bool:
 
 
 def _worktree_is_clean(project_root: Path) -> bool | None:
-    """Is the host-side working tree free of uncommitted changes?
+    """Is the host-side working tree free of tracked uncommitted changes?
 
     Sampled *before* init touches anything, because the CRLF fix itself moves
     this answer: with ``core.autocrlf=true`` the clean filter hides the CRLF
     from ``git status`` on the host, and flipping the knob can expose those
     same files as modified. Only the pre-fix reading tells us whether the user
-    has real work in the tree. None = git could not answer.
+    has real work in the tree. Untracked files are ignored because the repair
+    deletes and restores only paths reported by ``git ls-files``. None = git
+    could not answer.
     """
     try:
         proc = subprocess.run(
-            ["git", "-C", str(project_root), "status", "--porcelain"],
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
             capture_output=True,
             text=True,
             check=False,

@@ -178,8 +178,8 @@ Verilator/Icarus runs emit no summary, so Booley re-derives one from
 verdict comes from the JUnit `results.xml`, since the process exit code is
 untrustworthy in both directions; even so, an all-pass XML after a nonzero
 exit still folds down to FAIL. Stale artifacts never leak in: cocotb runs unlink
-`results.xml` before each run, and HDL runs flag a leftover result file with a
-"stale dut_info" diagnostic rather than reading a prior run's output.
+`results.xml` before each run, and HDL runs ignore result files older than the
+current invocation.
 
 Only a true target-level `pass` satisfies `sim_pass_{target}`; an
 `inconclusive` target skips the Criterion rather than failing it. Flow crashes

@@ -124,6 +124,20 @@ def test_manual_runtime_result_replaces_stale_automatic_status(tmp_path: Path):
     assert "clean" in auto_doctor.current_summary(tmp_path)
 
 
+def test_manual_smoke_result_does_not_replace_health_status(tmp_path: Path):
+    _project(tmp_path)
+    previous = _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
+    result = doctor.DoctorRunResult(
+        counts={"pass": 3, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 3},
+        findings=(doctor.DoctorFinding("skip", "agent credential checks skipped"),),
+        exit_code=0,
+        health_evidence=False,
+    )
+
+    assert auto_doctor.record_manual_result(tmp_path, result) is None
+    assert auto_doctor.load_report(tmp_path) == previous
+
+
 def test_changed_summary_is_consumed_once_per_channel(tmp_path: Path):
     _project(tmp_path)
     _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
