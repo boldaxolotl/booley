@@ -83,6 +83,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -100,6 +102,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push RISC-V image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -114,3 +117,115 @@ jobs:
           # repo's entire 10 GB Actions cache budget — writing it would evict
           # the per-PR sandbox cache that bwave-smoke depends on, for a build
           # that only runs on release tags anyway.
+
+  # Release-only integration check for the public PicoRV32 demo linked from
+  # Booley's README. Pull the exact digest built above rather than `latest`, so
+  # a concurrent release cannot redirect the smoke test to another image.
+  demo-smoke:
+    name: Smoke-test PicoRV32 demo
+    needs: [build-and-push, build-and-push-riscv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      # Keep this checkout at the release ref. It supplies the checksum-pinned
+      # Nangate fetcher and the expected package version for the image check.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out PicoRV32
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: YosysHQ/picorv32
+          path: demo
+          persist-credentials: false
+
+      - name: Check out Booley demo configuration
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: boldaxolotl/booley-prj-picorv32
+          path: demo/.booley_project
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install release CLI
+        run: pip install .
+
+      - name: Provision pinned Nangate45 PDK
+        id: nangate
+        shell: bash
+        run: |
+          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull exact release images
+        env:
+          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+        run: |
+          docker pull "${BASE_IMAGE}"
+          docker tag "${BASE_IMAGE}" booley-sandbox
+          docker pull "${RISCV_IMAGE}"
+          docker tag "${RISCV_IMAGE}" booley-sandbox-riscv
+
+      # Exercise the public quick start, including generated Session Runtime
+      # policy. The demo disables its FPGA Flow, so its optional host Vivado
+      # registration must not be required here.
+      - name: Initialize demo as documented
+        working-directory: demo
+        run: booley init
+
+      # actions/checkout files belong to the runner user (uid 1001), while the
+      # production image deliberately runs as `agent` (uid 1000). The demo
+      # writes generated firmware and Flow reports, so make its checkout match
+      # the same ownership a normal Linux user's bind mount has.
+      - name: Prepare demo checkout ownership
+        run: sudo chown -R 1000:1000 demo
+
+      - name: Run demo Doctor and Ticket Mode smoke
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          EXPECTED_BOOLEY_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          docker run --init --rm --network none \
+            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
+            -w /work \
+            -e BOOLEY_PROJECT_DIR=/booley-project \
+            -e BOOLEY_IN_SANDBOX=1 \
+            -e EXPECTED_BOOLEY_VERSION \
+            "${IMAGE}" bash -euo pipefail -c '
+              python -c "import booley, os; assert booley.__version__ == os.environ[\"EXPECTED_BOOLEY_VERSION\"]"
+              project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
+              ticket_slug=add-rv32-zbb-pcpi-co-processor
+              bash "${project_dir}/hooks/post-setup.sh"
+              booley doctor --deep --skip-agent-checks
+
+              ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
+              python -m booley.ticket_board parse-ticket "${ticket}" >/dev/null
+              python -m booley.ticket_board show "${ticket_slug}" >/dev/null
+              python -c "from pathlib import Path; from booley.harness.preflight import run_preflight; run_preflight(Path.cwd())"
+              booley board show
+
+              before="$(sha256sum "${ticket}")"
+              booley run --ticket "${ticket_slug}" --dry-run
+              test -f "${ticket}"
+              test ! -e "${project_dir}/tickets/board/active/${ticket_slug}.md"
+              test "${before}" = "$(sha256sum "${ticket}")"
+            '
