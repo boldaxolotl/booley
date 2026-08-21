@@ -10,11 +10,22 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from booley.core.boundary import require_dict, require_str
+from booley.harness.review_artifact import ReviewArtifactError, ReviewPackage
+from booley.harness.review_explanation import StructuredExplanation
 
-TRIAGE_PACKAGE_VERSION = 1
+TRIAGE_PACKAGE_VERSION = 2
 TRIAGE_ASSESSMENTS = frozenset({"approve", "reset", "archive", "hold"})
+_GIT_STATUS_ACTIONS = {
+    "A": "added",
+    "M": "modified",
+    "D": "deleted",
+    "R": "renamed",
+    "C": "copied",
+    "T": "type-changed",
+}
 
 
 class TriagePackageError(RuntimeError):
@@ -94,6 +105,22 @@ def _criterion_status(entry: Mapping[str, Any]) -> str:
     return "not run"
 
 
+def _criterion_outcome(entry: Mapping[str, Any]) -> str:
+    if entry.get("met") is True:
+        return "met"
+    if entry.get("ever_failed") is True:
+        return "unmet"
+    return "not_run"
+
+
+def _criterion_freshness(entry: Mapping[str, Any]) -> str:
+    if entry.get("stale") is True:
+        return "stale"
+    if entry.get("met") is True or entry.get("ever_failed") is True:
+        return "current"
+    return "unknown"
+
+
 def _short_value(value: Any) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
@@ -116,6 +143,10 @@ def _criterion_metric(entry: Mapping[str, Any]) -> str:
         "cell_count",
         "area",
         "score",
+        "detected",
+        "total_valid",
+        "not_detected",
+        "invalid",
         "mutations_detected",
         "mutations_total",
         "issues",
@@ -126,7 +157,36 @@ def _criterion_metric(entry: Mapping[str, Any]) -> str:
     return (", ".join(parts) or "persisted criterion state")[:240] + " · booley_state.json"
 
 
-def _criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _criterion_report_path(
+    name: str,
+    entry: Mapping[str, Any],
+    *,
+    worktree: Path,
+    project_root: Path,
+) -> str | None:
+    """Resolve a trusted ticket artifact that should open from a criterion."""
+    if name != "mutation_score":
+        return None
+    detail = entry.get("detail")
+    artifacts = detail.get("artifacts") if isinstance(detail, Mapping) else None
+    raw_path = artifacts.get("results") if isinstance(artifacts, Mapping) else None
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    candidate = Path(raw_path)
+    resolved = (candidate if candidate.is_absolute() else worktree / candidate).resolve()
+    try:
+        resolved.relative_to(project_root.resolve())
+    except ValueError:
+        return None
+    return str(resolved) if resolved.is_file() else None
+
+
+def _criteria(
+    state: Mapping[str, Any],
+    *,
+    worktree: Path,
+    project_root: Path,
+) -> list[dict[str, Any]]:
     raw = state.get("criteria")
     if not isinstance(raw, dict):
         return []
@@ -141,7 +201,15 @@ def _criteria(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "criterion": name,
                 "required": "mandatory" if value.get("mandatory", True) else "optional",
                 "status": _criterion_status(value),
+                "outcome": _criterion_outcome(value),
+                "freshness": _criterion_freshness(value),
                 "metric": _criterion_metric(value),
+                "report_path": _criterion_report_path(
+                    name,
+                    value,
+                    worktree=worktree,
+                    project_root=project_root,
+                ),
             }
         )
     return sorted(rows, key=lambda row: (_CATEGORY_ORDER[row["category"]], row["criterion"]))
@@ -238,7 +306,16 @@ def _repository_changed_files(
     path_prefix: str = "",
 ) -> list[dict[str, Any]]:
     revision = f"{base_sha}..{head_sha}"
-    output = _git_at(worktree, "diff", "--find-renames", "--name-status", "-z", revision, "--")
+    output = _git_at(
+        worktree,
+        "diff",
+        "--find-renames",
+        "--find-copies",
+        "--name-status",
+        "-z",
+        revision,
+        "--",
+    )
     tokens = output.split("\0")
     if tokens and not tokens[-1]:
         tokens.pop()
@@ -261,9 +338,14 @@ def _repository_changed_files(
             index += 1
         display_path = f"{path_prefix}/{path}" if path_prefix else path
         display_old = f"{path_prefix}/{old_path}" if path_prefix and old_path else old_path
+        action = _GIT_STATUS_ACTIONS.get(status[:1])
+        if action is None:
+            raise TriagePackageError(f"unsupported git change action: {status!r}")
         rows.append(
             {
                 "status": status,
+                "action": action,
+                "similarity": int(status[1:]) if status[1:].isdigit() else None,
                 "path": display_path,
                 "old_path": display_old,
                 "repository": repository,
@@ -320,6 +402,34 @@ def _revision_content(repository: Any, revision: str, path: str) -> bytes:
     return result.stdout
 
 
+def _repository_root(repository: Any) -> Path:
+    worktree = getattr(repository, "worktree", None)
+    if worktree is not None:
+        return Path(worktree)
+    if isinstance(repository, str | Path):
+        return Path(repository)
+    return Path()
+
+
+def _content_kind(repository: Any, revision: str, path: str) -> str | None:
+    worktree = _repository_root(repository)
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "ls-tree", "-z", revision, "--", path],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return None
+    header = result.stdout.split(b"\t", 1)[0].decode("ascii", errors="replace")
+    mode, object_type, _object_id = header.split(" ", 2)
+    if mode == "120000":
+        return "symlink"
+    if mode == "160000" or object_type == "commit":
+        return "submodule"
+    return "regular"
+
+
 def _write_diff_pair(
     ctx: TriageContext, root: Path, index: int, change: dict[str, Any]
 ) -> dict[str, Any]:
@@ -331,16 +441,53 @@ def _write_diff_pair(
     left.parent.mkdir(parents=True, exist_ok=True)
     right.parent.mkdir(parents=True, exist_ok=True)
     repository = change.get("_worktree", ctx)
+    repository_root = _repository_root(repository)
     local_path = change.get("_local_path", new_path)
     local_old = (
         change.get("_old_local_path") or local_path if "_old_local_path" in change else old_path
     )
     base_sha = change.get("_base_sha", ctx.base_sha)
     head_sha = change.get("_head_sha", ctx.head_sha)
-    left.write_bytes(_revision_content(repository, base_sha, local_old))
-    right.write_bytes(_revision_content(repository, head_sha, local_path))
+    left_content = _revision_content(repository, base_sha, local_old)
+    right_content = _revision_content(repository, head_sha, local_path)
+    left.write_bytes(left_content)
+    right.write_bytes(right_content)
+    old_kind = _content_kind(repository, base_sha, local_old)
+    new_kind = _content_kind(repository, head_sha, local_path)
+    content_kind = new_kind or old_kind or "regular"
+    presentation = "binary" if b"\0" in left_content or b"\0" in right_content else "text"
     public = {key: value for key, value in change.items() if not key.startswith("_")}
-    return {**public, "diff_left": str(left), "diff_right": str(right)}
+    workspace_path = None
+    action = public.get("action") or _GIT_STATUS_ACTIONS.get(
+        str(public.get("status", ""))[:1], "modified"
+    )
+    public["action"] = action
+    public.setdefault("similarity", None)
+    if action != "deleted":
+        candidate = repository_root / local_path
+        if candidate.exists() or candidate.is_symlink():
+            workspace_path = str(candidate.absolute())
+    return {
+        **public,
+        "content_kind": content_kind,
+        "presentation": presentation,
+        "diff_left": str(left),
+        "diff_right": str(right),
+        "old_endpoint": {
+            "repository_path": local_old,
+            "display_path": old_path,
+            "revision": base_sha,
+            "diff_path": str(left),
+            "workspace_path": None,
+        },
+        "new_endpoint": {
+            "repository_path": local_path,
+            "display_path": new_path,
+            "revision": head_sha,
+            "diff_path": str(right),
+            "workspace_path": workspace_path,
+        },
+    }
 
 
 def _materialize_diffs(ctx: TriageContext, changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -361,6 +508,12 @@ def _materialize_diffs(ctx: TriageContext, changes: list[dict[str, Any]]) -> lis
     for row in rows:
         row["diff_left"] = row["diff_left"].replace(str(temporary), prefix, 1)
         row["diff_right"] = row["diff_right"].replace(str(temporary), prefix, 1)
+        row["old_endpoint"]["diff_path"] = row["old_endpoint"]["diff_path"].replace(
+            str(temporary), prefix, 1
+        )
+        row["new_endpoint"]["diff_path"] = row["new_endpoint"]["diff_path"].replace(
+            str(temporary), prefix, 1
+        )
     return rows
 
 
@@ -446,6 +599,26 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         raise TriagePackageError(f"invalid state file: {state_path}")
     scope = _scope(ctx)
     changes = _materialize_diffs(ctx, _changed_files(ctx))
+    repositories = [
+        {
+            "name": "rtl",
+            "base_sha": ctx.base_sha,
+            "head_sha": ctx.head_sha,
+            "worktree": str(ctx.worktree),
+        }
+    ]
+    project = getattr(ctx, "project_repository", None)
+    if project is not None:
+        repositories.append(
+            {
+                "name": "project",
+                "base_sha": project.base_sha,
+                "head_sha": project.head_sha,
+                "worktree": str(project.worktree),
+            }
+        )
+    from booley.dev_support.review_dispositions import collect_review_dispositions
+
     return {
         "version": TRIAGE_PACKAGE_VERSION,
         "kind": "review",
@@ -454,7 +627,13 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         "base_sha": ctx.base_sha,
         "head_sha": ctx.head_sha,
         "worktree": str(ctx.worktree),
-        "criteria": _criteria(state),
+        "repositories": repositories,
+        "criteria": _criteria(
+            state,
+            worktree=ctx.worktree,
+            project_root=ctx.project_root,
+        ),
+        "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
         "scope": scope,
         "commits": _commits(ctx),
@@ -547,37 +726,53 @@ def write_triage_package(
     facts: dict[str, Any],
     assessment: dict[str, Any],
     html_path: Path | None,
+    explanation: StructuredExplanation | None = None,
 ) -> Path:
     """Persist one machine-readable package consumed by interactive triage."""
-    package = {
+    package_value = {
         **facts,
         "assessment": assessment,
         "html_path": str(html_path) if html_path is not None else None,
+        "explanation": explanation.to_dict() if explanation is not None else None,
     }
+    try:
+        package = ReviewPackage.parse(package_value)
+    except ReviewArtifactError as exc:
+        raise TriagePackageError(f"invalid review package: {exc}") from exc
     path = ctx.runtime_dir / "briefing.json"
-    path.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(package.to_dict(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
-def load_triage_package(path: Path) -> dict[str, Any]:
-    """Load and minimally validate a persisted triage package."""
+def load_triage_package(path: Path) -> ReviewPackage:
+    """Strictly parse an immutable version-2 review package."""
     value = _read_json(path, None)
-    if not isinstance(value, dict) or value.get("version") != TRIAGE_PACKAGE_VERSION:
-        raise TriagePackageError(f"invalid or unsupported triage package: {path}")
-    require_dict(value.get("assessment"), field="triage package assessment")
-    return value
+    try:
+        return ReviewPackage.parse(value)
+    except ReviewArtifactError as exc:
+        raise TriagePackageError(f"invalid or unsupported triage package {path}: {exc}") from exc
 
 
 def open_package_diffs(package: Mapping[str, Any]) -> list[str]:
     """Open every prepared diff and return paths whose launch failed."""
+    from booley.config.editor import resolve_editor
+
+    rows = package.get("changed_files", [])
+    editor = resolve_editor()
+    if editor is None or editor.diff is None:
+        return [str(row.get("path", "unknown")) for row in rows]
     failures = []
-    for row in package.get("changed_files", []):
+    for row in rows:
         left, right = row.get("diff_left"), row.get("diff_right")
         if not isinstance(left, str) or not isinstance(right, str):
             failures.append(str(row.get("path", "unknown")))
             continue
         try:
-            result = subprocess.run(["code", "--diff", left, right], timeout=15, check=False)
+            argv = [part.replace("{left}", left).replace("{right}", right) for part in editor.diff]
+            result = subprocess.run(argv, timeout=15, check=False)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             failures.append(str(row.get("path", "unknown")))
             continue
@@ -587,12 +782,24 @@ def open_package_diffs(package: Mapping[str, Any]) -> list[str]:
 
 
 def _markdown_link(label: str, path: str) -> str:
-    return f"[{label}]({path.replace(' ', '%20')})"
+    return f"[{_markdown_text(label)}]({quote(path, safe='/:')})"
+
+
+def _markdown_text(value: Any) -> str:
+    """Render untrusted text inertly in Markdown and terminal output."""
+    text = "".join(
+        f"\\x{ord(char):02x}" if ord(char) < 32 or ord(char) == 127 else char
+        for char in str(value)
+    )
+    for marker in ("\\", "`", "*", "[", "]", "<", "|"):
+        text = text.replace(marker, f"\\{marker}")
+    return text
 
 
 def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(
         [
+            "",
             "#### Criteria",
             "",
             "| Category | Criterion | Required? | Status | Metric / evidence |",
@@ -600,9 +807,40 @@ def _render_criteria(lines: list[str], package: Mapping[str, Any]) -> None:
         ]
     )
     for row in package.get("criteria", []):
+        criterion = f"`{_markdown_text(row['criterion'])}`"
+        if isinstance(row.get("report_path"), str):
+            criterion = _markdown_link(row["criterion"], row["report_path"])
         lines.append(
-            f"| {row['category']} | `{row['criterion']}` | {row['required']} | "
-            f"{row['status']} | {row['metric']} |"
+            f"| {_markdown_text(row['category'])} | {criterion} | "
+            f"{_markdown_text(row['required'])} | {_markdown_text(row['status'])} | "
+            f"{_markdown_text(row['metric'])} |"
+        )
+
+
+def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) -> None:
+    rows = package.get("review_dispositions", [])
+    if not rows:
+        return
+    lines.extend(
+        [
+            "",
+            "#### Review findings and dispositions",
+            "",
+            "| Criterion | Severity | Location | Disposition | Finding / justification |",
+            "|-----------|----------|----------|-------------|-------------------------|",
+        ]
+    )
+    for row in rows:
+        location = f"{row.get('file', '')}:{row.get('line', 0)}"
+        explanation = row.get("summary", "")
+        if row.get("disposition") == "waived":
+            explanation = f"{explanation} — Waiver: {row.get('justification', '')}"
+        lines.append(
+            f"| `{_markdown_text(row.get('criterion', ''))}` | "
+            f"{_markdown_text(row.get('severity', ''))} | "
+            f"`{_markdown_text(location)}` | "
+            f"{_markdown_text(row.get('disposition', ''))} | "
+            f"{_markdown_text(explanation)} |"
         )
 
 
@@ -648,14 +886,20 @@ def _render_scope(lines: list[str], package: Mapping[str, Any]) -> None:
     elif not rows:
         lines.append("- none")
     for row in rows:
-        lines.append(f"- `{row['path']}` — **{row['classification']}**: {row['reason']}")
+        lines.append(
+            f"- `{_markdown_text(row['path'])}` — **{_markdown_text(row['classification'])}**: "
+            f"{_markdown_text(row['reason'])}"
+        )
 
 
 def _render_commits(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(["", "#### Commit history", ""])
     commits = package.get("commits", [])
     lines.extend(
-        [f"- `{row['abbrev']}` — {row['subject']}" for row in commits]
+        [
+            f"- `{_markdown_text(row['abbrev'])}` — {_markdown_text(row['subject'])}"
+            for row in commits
+        ]
         or ["- none — no feature-branch commits"]
     )
 
@@ -664,7 +908,7 @@ def _change_description(row: Mapping[str, Any], opened: bool) -> str:
     status = str(row.get("status", ""))
     action = {"A": "added", "D": "deleted", "M": "modified"}.get(status[:1], "changed")
     if status.startswith("R"):
-        action = f"renamed from {row.get('old_path')}"
+        action = f"renamed from {_markdown_text(row.get('old_path'))}"
     return f"{action}; diff {'opened' if opened else 'unavailable'}"
 
 
@@ -678,6 +922,72 @@ def _render_changes(lines: list[str], package: Mapping[str, Any], failures: set[
             f"- {_markdown_link(path, str(link_path))} — "
             f"{_change_description(row, path not in failures)}"
         )
+
+
+def _render_explanation_highlights(lines: list[str], package: Mapping[str, Any]) -> None:
+    explanation = package.get("explanation")
+    if not isinstance(explanation, Mapping):
+        return
+    lines.extend(["", "#### Explanation highlights", ""])
+    for section in explanation.get("background", []):
+        lines.append(
+            f"- **{_markdown_text(section['title'])}:** {_markdown_text(section['body'])}"
+        )
+    for reference in explanation.get("code_references", []):
+        lines.append(
+            f"- `{_markdown_text(reference['path'])}` — {_markdown_text(reference['summary'])}"
+        )
+
+
+def _render_reports(lines: list[str], package: Mapping[str, Any]) -> None:
+    assessment = package["assessment"]
+    report = str(package["developer_report_path"])
+    lines.extend(
+        [
+            "",
+            "#### Reports",
+            "",
+            f"- {_markdown_link('Developer Agent report (REPORT.md)', report)}",
+        ]
+    )
+    html_path = package.get("html_path")
+    if isinstance(html_path, str) and html_path:
+        lines.append(
+            f"- {_markdown_link('Polished HTML report', html_path)} — "
+            "open, then select **Show Preview**"
+        )
+    else:
+        lines.append("- Polished HTML report: unavailable")
+    lines.extend(
+        [
+            "",
+            f"- **Developer summary:** {_markdown_text(assessment['developer_summary'])}",
+            f"- **Uncertainties:** {_markdown_text(assessment['uncertainties'])}",
+            f"- **Optional omissions:** {_markdown_text(assessment['optional_omissions'])}",
+        ]
+    )
+
+
+def _render_decision(lines: list[str], package: Mapping[str, Any]) -> None:
+    assessment = package["assessment"]
+    blockers = list(assessment.get("decision_blockers", []))
+    health = package.get("health", {})
+    if health.get("scope_undecidable") is True:
+        blockers.append("Scope calculation was undecidable.")
+    recommendation = (
+        "hold" if health.get("scope_undecidable") is True else assessment["recommendation"]
+    )
+    lines.extend(
+        [
+            "",
+            "#### Decision summary",
+            "",
+            f"**Recommendation:** {_markdown_text(recommendation)} — "
+            f"{_markdown_text(assessment['reason'])}",
+            f"**Decision blockers:** {'none' if not blockers else ''}",
+        ]
+    )
+    lines.extend(f"{index}. {_markdown_text(item)}" for index, item in enumerate(blockers, 1))
 
 
 def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> list[str]:
@@ -707,61 +1017,40 @@ def _health_findings(package: Mapping[str, Any], diff_failures: list[str]) -> li
     return findings
 
 
-def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
-    """Render the fixed interactive review template from a validated package."""
-    assessment = package["assessment"]
-    blockers = list(assessment.get("decision_blockers", []))
-    health = package.get("health", {})
-    if health.get("scope_undecidable") is True:
-        blockers.append("Scope calculation was undecidable.")
-    recommendation = (
-        "hold" if health.get("scope_undecidable") is True else assessment["recommendation"]
+def _render_findings(
+    lines: list[str], package: Mapping[str, Any], diff_failures: list[str]
+) -> None:
+    lines.extend(["", "#### Findings", ""])
+    findings = _health_findings(package, diff_failures)
+    lines.extend(
+        [f"- {_markdown_text(item)}" for item in findings] or ["- Health checks: all passed."]
     )
-    lines = [
-        f"### {package['slug']}",
-        "",
-        f"**Recommendation:** {recommendation} — {assessment['reason']}",
-        f"**Decision blockers:** {'none' if not blockers else ''}",
-    ]
-    lines.extend(f"{index}. {item}" for index, item in enumerate(blockers, 1))
-    _render_criteria(lines, package)
-    _render_recipe_comparisons(lines, package)
-    _render_scope(lines, package)
-    _render_commits(lines, package)
-    _render_changes(lines, package, set(diff_failures))
-    report = str(package["developer_report_path"])
-    report_lines = [
-        "",
-        "#### Developer report",
-        "",
-        f"- Summary: {assessment['developer_summary']}",
-        f"- Uncertainties: {assessment['uncertainties']}",
-        f"- Optional omissions: {assessment['optional_omissions']}",
-        "",
-        "#### Reports",
-        "",
-        f"- {_markdown_link('Run report', report)}",
-    ]
-    html_path = package.get("html_path")
-    if isinstance(html_path, str) and html_path:
-        report_lines.append(
-            f"- {_markdown_link('HTML explanation', html_path)} — open, then select **Show Preview**"
-        )
-    else:
-        report_lines.append("- HTML explanation: unavailable")
-    report_lines.extend(
+
+
+def _render_economics(lines: list[str], package: Mapping[str, Any]) -> None:
+    lines.extend(
         [
             "",
             "#### Run economics",
             "",
-            f"- {package['run_economics']}",
-            "",
-            "#### Findings",
-            "",
+            f"- {_markdown_text(package['run_economics'])}",
         ]
     )
-    lines.extend(report_lines)
-    findings = _health_findings(package, diff_failures)
-    lines.extend([f"- {item}" for item in findings] or ["- Health checks: all passed."])
+
+
+def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str]) -> str:
+    """Render the fixed interactive review template from a validated package."""
+    lines = [f"### {_markdown_text(package['slug'])}"]
+    _render_reports(lines, package)
+    _render_decision(lines, package)
+    _render_findings(lines, package, diff_failures)
+    _render_explanation_highlights(lines, package)
+    _render_scope(lines, package)
+    _render_changes(lines, package, set(diff_failures))
+    _render_criteria(lines, package)
+    _render_review_dispositions(lines, package)
+    _render_recipe_comparisons(lines, package)
+    _render_commits(lines, package)
+    _render_economics(lines, package)
     lines.extend(["", "Choose: **approve** / **archive** / **reset** / **skip**."])
     return "\n".join(lines)

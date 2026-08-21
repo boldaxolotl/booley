@@ -122,9 +122,23 @@ class TicketOps(Protocol):
     def ticket_status(self, project_root: Path, slug: str) -> str: ...
 
     # State-changing
-    def activate(self, project_root: Path, slug: str, *, owner_pid: int | None = None) -> bool: ...
+    def activate(
+        self,
+        project_root: Path,
+        slug: str,
+        *,
+        owner_pid: int | None = None,
+        execution_id: str | None = None,
+    ) -> bool: ...
     def claim(self, project_root: Path, slug: str) -> bool: ...
-    def init_ticket(self, project_root: Path, ticket_path: str) -> dict[str, Any]: ...
+    def init_ticket(
+        self,
+        project_root: Path,
+        ticket_path: str,
+        *,
+        execution_id: str = "",
+        owner_pid: int | None = None,
+    ) -> dict[str, Any]: ...
     def update_board(
         self,
         project_root: Path,
@@ -146,9 +160,23 @@ class TicketOps(Protocol):
         description: str,
         resolution: str = "unresolved",
     ) -> None: ...
-    def block(self, project_root: Path, slug: str, *, reason: str, step: str) -> None: ...
+    def block(
+        self,
+        project_root: Path,
+        slug: str,
+        *,
+        reason: str,
+        step: str,
+        expected_execution_id: str | None = None,
+    ) -> None: ...
     def fail(self, project_root: Path, slug: str, *, error: str, step: str) -> None: ...
-    def handoff(self, project_root: Path, slug: str) -> None: ...
+    def handoff(
+        self,
+        project_root: Path,
+        slug: str,
+        *,
+        expected_execution_id: str | None = None,
+    ) -> None: ...
     def unblock(
         self,
         project_root: Path,
@@ -301,16 +329,39 @@ class DirectTicketOps:
 
     # -- State-changing ----------------------------------------------------
 
-    def activate(self, project_root: Path, slug: str, *, owner_pid: int | None = None) -> bool:
-        return op_activate(self._tio(project_root), slug, owner_pid=owner_pid)
+    def activate(
+        self,
+        project_root: Path,
+        slug: str,
+        *,
+        owner_pid: int | None = None,
+        execution_id: str | None = None,
+    ) -> bool:
+        return op_activate(
+            self._tio(project_root),
+            slug,
+            owner_pid=owner_pid,
+            execution_id=execution_id,
+        )
 
     def claim(self, project_root: Path, slug: str) -> bool:
         """Atomically claim a queued ticket. Returns True on success."""
         return op_claim(self._tio(project_root), slug)
 
-    def init_ticket(self, project_root: Path, ticket_path: str) -> dict[str, Any]:
+    def init_ticket(
+        self,
+        project_root: Path,
+        ticket_path: str,
+        *,
+        execution_id: str = "",
+        owner_pid: int | None = None,
+    ) -> dict[str, Any]:
         tio = self._tio(project_root)
-        result = tio.init_ticket(ticket_path)
+        result = tio.init_ticket(
+            ticket_path,
+            execution_id=execution_id,
+            owner_pid=owner_pid,
+        )
         if not result:
             raise TicketCLIError("init", 2, f"init failed for '{ticket_path}'")
         return result
@@ -355,14 +406,46 @@ class DirectTicketOps:
         tio = self._tio(project_root)
         tio.locked_append_incident(slug, incident_type, step, description, resolution)
 
-    def block(self, project_root: Path, slug: str, *, reason: str, step: str) -> None:
-        _check(op_block(self._tio(project_root), slug, reason, step), "block", slug)
+    def block(
+        self,
+        project_root: Path,
+        slug: str,
+        *,
+        reason: str,
+        step: str,
+        expected_execution_id: str | None = None,
+    ) -> None:
+        _check(
+            op_block(
+                self._tio(project_root),
+                slug,
+                reason,
+                step,
+                expected_execution_id=expected_execution_id,
+            ),
+            "block",
+            slug,
+        )
 
     def fail(self, project_root: Path, slug: str, *, error: str, step: str) -> None:
         _check(op_fail(self._tio(project_root), slug, error, step), "fail", slug)
 
-    def handoff(self, project_root: Path, slug: str) -> None:
-        _check(op_handoff(self._tio(project_root), slug), "handoff", slug)
+    def handoff(
+        self,
+        project_root: Path,
+        slug: str,
+        *,
+        expected_execution_id: str | None = None,
+    ) -> None:
+        _check(
+            op_handoff(
+                self._tio(project_root),
+                slug,
+                expected_execution_id=expected_execution_id,
+            ),
+            "handoff",
+            slug,
+        )
 
     def unblock(
         self,

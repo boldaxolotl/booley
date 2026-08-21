@@ -50,15 +50,42 @@ The blocker is licenses, not design: the maintainer can't validate a Flow for an
 
 **In tree, hidden.** A coverage engine (the `coverage_analyst` Specialist) exists in the tree but is hidden from the MCP tool registry until it matures. It is built on bwave queries against the simulation trace: bwave measures toggle and value coverage mechanically, LLM Specialists derive branch/expression conditions and FSM states, and deterministic Python scores each goal (toggle, value, FSM state/transition, branch, expression) against configurable thresholds. No UVM covergroups, no simulator-specific coverage databases. Two things remain before it ships: maturing the Specialist itself, and making every metric fully deterministic, with no LLM in the measurement loop. This is one of the highest-impact items on this list: coverage analysis is the gate that decides whether a testbench is good enough, and testbench quality determines the correctness of Booley's output.
 
-**The determinism half is gated on a Verilog parser.** Toggle and value coverage are already mechanical: bwave reads them straight off the trace. Branch and expression coverage are not: they need the branches and sub-expressions *enumerated from the RTL* before anything can be scored, which is why an LLM Specialist derives them today, as it does the FSM state set. Getting the LLM out of that loop means parsing the source, and at expression granularity, deeper than the module-level graph the [HDL Dependency Parser](#hdl-dependency-parser-intra-target-file-pruning) item needs. A parser of that depth is a large project on its own, not a step inside this one; realistically it lands first (or leans on an existing front-end), and this item follows. Toggle and value coverage can ship deterministic ahead of it.
+**The determinism half will use slang, not a Booley-written Verilog
+front-end.** Toggle and value coverage are already mechanical: bwave reads them
+straight off the trace. Branch and expression coverage are not: they need the
+branches and sub-expressions *enumerated from the RTL* before anything can be
+scored, which is why an LLM Specialist derives them today, as it does the FSM
+state set. The slang integration will use its source-aware syntax model to
+enumerate those constructs and its elaborated semantic model where resolved
+types and names are needed, including FSM state discovery. The same integration
+backs the [HDL Dependency Graph](#hdl-dependency-graph-intra-target-file-pruning),
+so Booley does not build or maintain a second HDL parser. Toggle and value
+coverage can ship deterministic ahead of the slang-backed metrics.
 
 ## Continuous Integration (`booley ci`)
 
-**Planned.** A single command, `booley ci`, that runs every Target through every Booley Flow that can drive it and reports the result as a matrix: what lints, what elaborates, what simulates, what synthesizes. Push it to CI and the answer to "does this repo still build" stops being folklore.
+**Planned.** A single command, `booley ci`, that runs the CI-enabled Targets
+through the Booley Flows that can drive them and reports the result as a matrix:
+what lints, what elaborates, what simulates, what synthesizes. CI membership
+belongs with each Target in its `.core` design description: Booley-owned
+per-Target metadata should explicitly include or exclude that Target rather
+than making users maintain a second Target allowlist in a workflow file. Push
+it to CI and the answer to "does this repo still build" stops being folklore.
 
 On a pull request it goes further and reports what the change *cost* — area, Fmax, coverage, measured against the same design before the change rather than against a stale number from last week. Reviewers see "+2.2% area, −6 MHz" next to the diff, and a project can set limits so a regression fails the run instead of being noticed a month later.
 
-Because the sandbox image already carries the EDA stack, there is nothing to install on the runner: the workflow is a handful of lines and no simulator or synthesis setup at all. Slow flows can be kept off every push and run nightly instead. This needs [stealth mode](CONFIG.md#stealth-mode-stealth) off — a CI workflow committed to your repo announces Booley to everyone who reads it, which is the opposite of what stealth is for.
+Because the sandbox image already carries the EDA stack, there is nothing to
+install on a hosted runner: the workflow is a handful of lines and no simulator
+or synthesis setup at all. Slow Targets can be kept off every push and run
+nightly instead.
+
+The same engine should also support [stealth
+mode](CONFIG.md#stealth-mode-stealth) without committing a Booley-shaped hosted
+workflow. In that deployment the runner and scheduler are local, and structured
+run results and history live in `.booley_project/`'s own repository rather than
+appearing as hosted checks or files in the RTL repository. The Target selection,
+matrix semantics, regression limits, and baseline comparison stay the same;
+only the execution and reporting plane changes.
 
 ## Cocotb Support
 
@@ -71,15 +98,30 @@ Because the sandbox image already carries the EDA stack, there is nothing to ins
 
 **Prototype.** Provide an IP-level specification and Booley breaks it down into a dependency-ordered queue of tickets, then executes them all autonomously. Design an SPI controller, implement a complete AES core, etc. The breakdown tooling exists in prototype form but the end-to-end flow is not reliable enough for an unattended run yet.
 
-## HDL Dependency Parser (intra-Target file pruning)
+## HDL Dependency Graph (intra-Target file pruning)
 
 **Planned.** This item assumes the FuseSoC Target/fileset model: a **Target** is a named `.core` build target, and its *fileset* is the ordered list of source files that Target resolves to (see [CONTEXT.md](CONTEXT.md) for the vocabulary and [BOOLEY-FLOWS.md](BOOLEY-FLOWS.md) for how the Flow uses it).
 
-Prune a resolved Target's fileset down to the module a Booley Flow actually needs. A lightweight SystemVerilog/Verilog dependency parser (similar in spirit to Verific's front-end) builds a module-level graph from `include`, `import`, and instantiation edges, and hands a Booley Flow only the transitive closure of the top it was pointed at. That cuts the time Booley Flows spend resolving files they don't need and stops spurious syntax errors surfacing from unrelated ones. Likely shape: a standalone Rust CLI emitting a JSON dependency tree, run once per worktree setup and cached until sources change.
+Prune a resolved Target's fileset down to the module a Booley Flow actually
+needs. **The chosen front-end is slang; Booley will not implement its own
+Verilog/SystemVerilog parser.** Booley passes slang the Target's ordered files,
+defines, include directories, parameters, and top, then uses source information
+for `include` and `import` edges and the elaborated hierarchy for instantiation
+edges. A small Booley-owned adapter emits the dependency graph and hands a Flow
+only the transitive closure of its top. The result is cached until its sources
+or compilation inputs change. This cuts the time Booley Flows spend resolving
+files they do not need and stops spurious syntax errors surfacing from unrelated
+ones. The adapter is shared with the slang-backed coverage work rather than
+creating a separate front-end for each feature.
 
 The gap here is *inside* a Target, not across them. FuseSoC already answers "which files does Target X build": a `.core` Target resolves to a concrete ordered fileset and every Booley Flow selects one via `--target`. What it deliberately doesn't do is prune within that fileset: the fileset covers **that Target's top** (its top-level module), not the minimal closure for some other module you want to lint or elaborate in isolation. Filesets get shared across Targets and `depends` composition (a Target pulling in other cores it builds on) pulls in more of a dependency core than any one top instantiates, so in practice they run coarse.
 
-**Weigh the cheaper alternative first.** Most of the same benefit falls out of fileset hygiene: narrow, per-flow Targets, a pattern the FuseSoC model already expects, get the fileset close to the closure with no parser to build, cache, and invalidate. The parser earns its place only if the goal is *automatic* pruning that doesn't depend on project authors maintaining fine-grained Targets. Settle that trade-off before picking this up.
+**Fileset hygiene remains complementary.** Narrow, per-flow Targets, a pattern
+the FuseSoC model already expects, reduce the work before slang runs and keep the
+resolved fileset close to the required closure. The dependency graph provides
+automatic pruning when shared filesets and `depends` composition are still too
+coarse, without requiring project authors to maintain additional fine-grained
+Targets.
 
 ## Additional Booley Flows
 

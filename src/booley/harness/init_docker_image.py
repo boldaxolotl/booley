@@ -51,6 +51,8 @@ FLAVOR_IMAGES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 LABEL_FINGERPRINT = "booley.build-fingerprint"
 LABEL_BASE_IMAGE_ID = "booley.base-image-id"
 LABEL_VERSION = "org.opencontainers.image.version"
+DEFAULT_IMAGE_PULL_TIMEOUT_S = 7200
+DEFAULT_IMAGE_TAG_TIMEOUT_S = 30
 
 
 def _source_version(booley_root: Path) -> str | None:
@@ -332,30 +334,71 @@ def remote_tag(image: str, version: str) -> str:
     return f"{registry}/{image}:{version}"
 
 
+def _image_pull_timeout_seconds() -> int:
+    """Return the bounded registry-pull deadline, accepting a host override."""
+    raw = os.environ.get("BOOLEY_IMAGE_PULL_TIMEOUT", str(DEFAULT_IMAGE_PULL_TIMEOUT_S))
+    try:
+        timeout = int(raw)
+    except ValueError:
+        warn(
+            f"invalid BOOLEY_IMAGE_PULL_TIMEOUT={raw!r}; "
+            f"using {DEFAULT_IMAGE_PULL_TIMEOUT_S} seconds"
+        )
+        return DEFAULT_IMAGE_PULL_TIMEOUT_S
+    if timeout <= 0:
+        warn(
+            f"invalid BOOLEY_IMAGE_PULL_TIMEOUT={raw!r}; "
+            f"using {DEFAULT_IMAGE_PULL_TIMEOUT_S} seconds"
+        )
+        return DEFAULT_IMAGE_PULL_TIMEOUT_S
+    return timeout
+
+
 def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
     tag = remote_tag(image, version)
     info(f"trying to pull pre-built image: {tag}")
+    timeout = _image_pull_timeout_seconds()
     try:
         result = subprocess.run(
             ["docker", "pull", tag],
             text=True,
-            timeout=300,
+            timeout=timeout,
             check=False,
         )
-        if result.returncode != 0:
-            return False
+    except subprocess.TimeoutExpired:
+        warn(
+            f"pre-built image pull timed out after {timeout} seconds; "
+            "override with BOOLEY_IMAGE_PULL_TIMEOUT (seconds)"
+        )
+        return False
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        warn(f"pre-built image pull failed for {tag}: {exc}")
+        return False
+    if result.returncode != 0:
+        warn(f"pre-built image pull failed for {tag} (docker exited {result.returncode})")
+        return False
+
+    try:
         subprocess.run(
             ["docker", "tag", tag, image],
             capture_output=True,
-            timeout=30,
+            timeout=DEFAULT_IMAGE_TAG_TIMEOUT_S,
             check=True,
         )
-        # Mark provenance so the staleness guard leaves this pre-built image
-        # alone (its content can't match a local source fingerprint).
-        _stamp_image_fingerprint(image, f"pulled:{version}")
-        return True
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except subprocess.TimeoutExpired:
+        warn(
+            f"could not tag pulled image {tag} as {image}: "
+            f"docker tag timed out after {DEFAULT_IMAGE_TAG_TIMEOUT_S} seconds"
+        )
         return False
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        warn(f"could not tag pulled image {tag} as {image}: {exc}")
+        return False
+
+    # Mark provenance so the staleness guard leaves this pre-built image
+    # alone (its content can't match a local source fingerprint).
+    _stamp_image_fingerprint(image, f"pulled:{version}")
+    return True
 
 
 def _base_image_note(selected_image: str) -> None:

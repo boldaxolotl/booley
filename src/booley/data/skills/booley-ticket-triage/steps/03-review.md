@@ -18,6 +18,12 @@ prints the fixed review briefing. Present that output without rebuilding its
 tables or rereading its underlying evidence. Do not run `prepare-review` during
 interactive triage and do not poll the manifest.
 
+The briefing presents the reports first: the Developer Agent's `REPORT.md`, then
+the polished HTML report. It then presents the decision summary, actionable
+findings, explanation highlights, scope deviations, changed files, deterministic
+criteria, review findings and dispositions, Target recipe comparisons, commit
+history, run economics, and the decision choices.
+
 If the command reports a missing or stale package, show that as a Booley
 post-processing finding and offer **reset** / **skip**. `prepare-review --force`
 is a maintenance/recovery operation and requires an explicit user request; it
@@ -40,9 +46,10 @@ facts include every declared criterion, feature-branch commit (oldest first),
 changed path (including renames and submodules), recorded scope deviation,
 current-run usage summary, and mechanical health check. The report agent supplies
 the recommendation, scope classifications, report summary, blockers, and findings.
-The status of `review_*_done` is copied exactly from persisted criterion state;
-never infer staleness from later commits. `review_*_clean` remains explicitly
-freshness-sensitive.
+Both `review_*_done` and `review_*_clean` are freshness-sensitive to their
+recorded source fingerprint. The package also lists every review finding and
+disposition deterministically; every accepted waiver, including `MINOR`, must
+appear with its justification.
 
 ## 3. Decision
 

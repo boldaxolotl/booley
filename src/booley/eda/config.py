@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -64,6 +65,27 @@ def parse_eda_config(raw: object) -> dict[str, EdaConfig]:
     return {kind: _parse_kind(kind, section) for kind, section in raw.items()}
 
 
+def validate_host_provisioning_platform(
+    configs: dict[str, EdaConfig],
+    *,
+    platform_name: str | None = None,
+) -> None:
+    """Reject host-provisioned EDA on unsupported Windows hosts."""
+    current_platform = sys.platform if platform_name is None else platform_name
+    if current_platform != "win32":
+        return
+    host_kinds = sorted(
+        kind for kind, config in configs.items() if config.provisioning == PROVISIONING_HOST
+    )
+    if not host_kinds:
+        return
+    sections = ", ".join(f"[eda.{kind}]" for kind in host_kinds)
+    raise EdaConfigError(
+        f"host provisioning is unsupported on Windows for {sections}; "
+        'set provisioning = "image" or run Booley on a supported Linux x86-64 host'
+    )
+
+
 def _parse_kind(kind: str, section: Any) -> EdaConfig:
     if not isinstance(section, dict):
         raise EdaConfigError(f"booley.toml [eda.{kind}] must be a table")
@@ -116,4 +138,6 @@ def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:
     migration = retired_config_error(raw)
     if migration:
         raise EdaConfigError(migration)
-    return parse_eda_config(raw.get("eda"))
+    configs = parse_eda_config(raw.get("eda"))
+    validate_host_provisioning_platform(configs)
+    return configs

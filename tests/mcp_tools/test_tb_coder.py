@@ -279,11 +279,10 @@ class TestInstructionFile:
         assert result.exit_code == EXIT_ERROR
         assert "must be a file" in result.report_text
 
-    def test_no_dut_info_gate(self, state_file, instruction_file, work_dir):
-        """Planner is removed, so tb_coder has no DUT-info gate."""
+    def test_no_identity_gate(self, state_file, instruction_file, work_dir):
         endpoint = _make_endpoint(state_file, instruction_file, work_dir)
         endpoint.read_state()
-        assert endpoint.required_dut_info_halves() == frozenset()
+        assert not hasattr(endpoint, "required_dut_info_halves")
 
 
 # ---------------------------------------------------------------------------

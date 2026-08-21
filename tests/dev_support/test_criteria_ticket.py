@@ -43,7 +43,16 @@ class TestValidateCriteriaSection:
     def test_valid_with_optional(self):
         criteria = {
             "mandatory": {"lint_clean": ["lite"]},
-            "optional": {"mutation_score": {"min": 0.8}},
+            "optional": {
+                "mutation_score": [
+                    {
+                        "target": "sim_unit",
+                        "scope": ["rtl/dut.sv"],
+                        "min_detected": 8,
+                        "total": 10,
+                    }
+                ]
+            },
         }
         assert self._validate(criteria) == []
 
@@ -99,12 +108,11 @@ class TestValidateCriteriaSection:
         )
         assert any("targets must be a list" in e for e in errors)
 
-    def test_scalar_values_accepted(self):
+    def test_non_campaign_scalar_values_accepted(self):
         criteria = {
             "mandatory": {
                 "review_rtl_bugs_done": "approved",
                 "rtl_plan_done": True,
-                "mutation_score": "8/10",
             },
         }
         assert self._validate(criteria) == []
@@ -234,7 +242,14 @@ class TestInitCriteriaState:
                 "review_rtl_bugs_done": "approved",
             },
             "optional": {
-                "mutation_score": {"min": 0.8},
+                "mutation_score": [
+                    {
+                        "target": "sim_unit",
+                        "scope": ["rtl/dut.sv"],
+                        "min_detected": 8,
+                        "total": 10,
+                    }
+                ],
             },
         }
         ctx, logs_dir = self._make_ctx(tmp_path, criteria=criteria)
@@ -254,8 +269,8 @@ class TestInitCriteriaState:
         assert state.is_met("review_rtl_bugs_done") is False
         assert "lint_clean_lite" in state.criteria
         assert state.criteria["lint_clean_lite"].mandatory is True
-        assert "mutation_score" in state.criteria
-        assert state.criteria["mutation_score"].mandatory is False
+        assert "mutation_score_sim_unit" in state.criteria
+        assert state.criteria["mutation_score_sim_unit"].mandatory is False
 
     def test_init_fallback_to_default_template(self, tmp_path: Path):
         from unittest.mock import PropertyMock, patch
@@ -605,7 +620,14 @@ class TestCriteriaExpansionRoundTrip:
                 "review_rtl_bugs_done": "approved",
             },
             "optional": {
-                "mutation_score": {"min": 0.8},
+                "mutation_score": [
+                    {
+                        "target": "sim_unit",
+                        "scope": ["rtl/dut.sv"],
+                        "min_detected": 8,
+                        "total": 10,
+                    }
+                ],
             },
         }
 
@@ -630,11 +652,11 @@ class TestCriteriaExpansionRoundTrip:
         assert "sim_pass_alu_tb_lite_all" in state.criteria
         assert "synthesis_ok_lite" in state.criteria
         assert "review_rtl_bugs_done" in state.criteria
-        assert "mutation_score" in state.criteria
+        assert "mutation_score_sim_unit" in state.criteria
 
         # All mandatory except mutation_score
         assert state.criteria["lint_clean_lite"].mandatory is True
-        assert state.criteria["mutation_score"].mandatory is False
+        assert state.criteria["mutation_score_sim_unit"].mandatory is False
 
         # All start unmet
         assert state.all_mandatory_met() is False
@@ -646,7 +668,7 @@ class TestCriteriaExpansionRoundTrip:
         state.set_criterion(
             "_report_submitted",
             True,
-            detail={"unmet_optional_criteria": ["mutation_score"]},
+            detail={"unmet_optional_criteria": ["mutation_score_sim_unit"]},
         )
         state.save()
 

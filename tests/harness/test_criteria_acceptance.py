@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
@@ -17,6 +19,7 @@ from booley.ticket_board.criteria_acceptance import (
     build_criteria_summary_lines,
     check_criteria_acceptance,
     format_criteria_verdict,
+    refresh_verification_freshness,
 )
 
 _ANSI_RE = re.compile(r"\033\[[0-9;]*m")
@@ -243,6 +246,48 @@ class TestCheckCriteriaAcceptance:
         assert verdict.disposition == "failed"
         assert verdict.unmet_mandatory == ["_report_submitted"]
 
+    @pytest.mark.parametrize(
+        ("criterion", "detail"),
+        [
+            ("review_rtl_bugs_done", {"issues": 0, "issue_list": []}),
+            (
+                "review_rtl_bugs_clean",
+                {
+                    "issues": 0,
+                    "pending": [],
+                    "resolved": [
+                        {
+                            "severity": "MINOR",
+                            "file": "rtl/dut.sv",
+                            "line": 3,
+                            "summary": "intentional tradeoff",
+                            "status": "waived",
+                            "justification": "required by the ticket",
+                        }
+                    ],
+                },
+            ),
+        ],
+    )
+    def test_disabled_report_still_required_for_reportable_reviews(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        criterion: str,
+        detail: dict,
+    ):
+        from booley.config import project_config
+
+        monkeypatch.setattr(project_config, "_CONFIG_CACHE", {"RUN_REPORT": False})
+        state = _FakeState(
+            criteria={criterion: _FakeCriterion(met=True, mandatory=True, detail=detail)}
+        )
+
+        verdict = self._write_state_and_check(tmp_path, state)
+
+        assert verdict.disposition == "failed"
+        assert verdict.unmet_mandatory == ["_report_submitted"]
+
     def test_disabled_report_accepts_justified_unmet_optional(self, tmp_path: Path, monkeypatch):
         from booley.config import project_config
 
@@ -428,6 +473,76 @@ class TestCheckCriteriaAcceptance:
         state = DevelopmentState.load(state_path)
         assert state.criteria["sim_pass_default"].detail["stale_source_categories"] == ["tb"]
 
+    @pytest.mark.parametrize(
+        ("criterion", "changed_path", "category"),
+        [
+            ("review_rtl_bugs_done", "rtl/dut.sv", "rtl"),
+            ("review_tb_quality_clean", "tb/tb.sv", "tb"),
+        ],
+    )
+    def test_review_evidence_becomes_stale_after_relevant_source_edit(
+        self,
+        tmp_path: Path,
+        criterion: str,
+        changed_path: str,
+        category: str,
+    ):
+        state_path, work_dir = self._fresh_state(tmp_path)
+        state = DevelopmentState.load(state_path)
+        state.criteria.pop("sim_pass_default")
+        state.init_criteria({criterion: True})
+        state.set_criterion(
+            criterion,
+            True,
+            detail={
+                "issues": 0,
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": [category],
+                    "fingerprint": compute_source_fingerprint(work_dir),
+                },
+            },
+        )
+        state.set_criterion("_report_submitted", True)
+        state.save()
+        (work_dir / changed_path).write_text("module changed; endmodule\n", encoding="utf-8")
+
+        verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
+
+        assert verdict.disposition == "failed"
+        assert verdict.unmet_mandatory == [criterion]
+        entry = DevelopmentState.load(state_path).criteria[criterion]
+        assert entry.stale is True
+        assert entry.detail["stale_source_categories"] == [category]
+
+    def test_optional_review_evidence_becomes_stale_after_source_edit(self, tmp_path: Path):
+        state_path, work_dir = self._fresh_state(tmp_path)
+        state = DevelopmentState.load(state_path)
+        state.init_criteria({"review_rtl_bugs_done": False})
+        state.set_criterion(
+            "review_rtl_bugs_done",
+            True,
+            detail={
+                "issues": 0,
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl"],
+                    "fingerprint": compute_source_fingerprint(work_dir),
+                },
+            },
+        )
+        state.save()
+        (work_dir / "rtl" / "dut.sv").write_text(
+            "module changed; endmodule\n",
+            encoding="utf-8",
+        )
+
+        stale = refresh_verification_freshness(state, work_dir=work_dir)
+
+        assert stale == ["review_rtl_bugs_done"]
+        entry = state.criteria["review_rtl_bugs_done"]
+        assert entry.mandatory is False
+        assert entry.met is False
+        assert entry.stale is True
+
     def test_rerun_sim_refreshes_stale_criterion(self, tmp_path: Path):
         state_path, work_dir = self._fresh_state(tmp_path)
         (work_dir / "rtl" / "dut.sv").write_text(
@@ -505,7 +620,7 @@ class TestBuildCriteriaSummaryLines:
     def _strip(text: str) -> str:
         return _ANSI_RE.sub("", text)
 
-    def test_pending_criterion_shows_dot(self, tmp_path: Path):
+    def test_not_run_criterion_shows_open_circle(self, tmp_path: Path):
         lines = self._build(
             tmp_path,
             {
@@ -513,7 +628,7 @@ class TestBuildCriteriaSummaryLines:
             },
         )
         raw = self._strip(lines[0])
-        assert raw.startswith("· ")
+        assert raw.startswith("○ ")
         assert "sim_pass" in raw
 
     def test_failed_criterion_shows_cross(self, tmp_path: Path):

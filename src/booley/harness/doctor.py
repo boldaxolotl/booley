@@ -1105,14 +1105,20 @@ def _validate_booley_toml(
     _fail: Fail,
 ) -> bool:
     """Validate the project-level booley.toml schema used by doctor."""
-    from booley.eda.config import EdaConfigError, parse_eda_config, retired_config_error
+    from booley.eda.config import (
+        EdaConfigError,
+        parse_eda_config,
+        retired_config_error,
+        validate_host_provisioning_platform,
+    )
 
     migration = retired_config_error(data)
     if migration:
         _fail(f"booley.toml {migration}", "remove retired commercial-EDA authority keys")
         return False
     try:
-        parse_eda_config(data.get("eda"))
+        eda_configs = parse_eda_config(data.get("eda"))
+        validate_host_provisioning_platform(eda_configs)
     except EdaConfigError as exc:
         _fail(f"booley.toml {exc}", "fix [eda] provisioning configuration")
         return False

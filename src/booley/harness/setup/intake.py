@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -159,8 +160,22 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
         "resume" if action in {"continue", "resume_blocked"} else persisted_intent
     )
 
+    ctx.execution_id = uuid.uuid4().hex
+    try:
+        from booley.config.project_config import ENV_PREFIX as _proj_env
+
+        _orch_env = f"{_proj_env}_DEVELOPER_PID"
+    except (ImportError, AttributeError):
+        _orch_env = "BOOLEY_DEVELOPER_PID"
+    developer_pid = int(os.environ.get(_orch_env, "0")) or os.getpid()
+
     if action == "fresh":
-        ticket_cli.init_ticket(project_root, str(ctx.ticket_path))
+        ticket_cli.init_ticket(
+            project_root,
+            str(ctx.ticket_path),
+            execution_id=ctx.execution_id,
+            owner_pid=developer_pid,
+        )
         ctx.completed_steps = []
         ctx.current_step = ""
     elif action == "continue":
@@ -177,19 +192,11 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
     # actions, the ticket may be in queue/ after reset/unblock.
     # activate() checks PID ownership: if another live runner owns
     # the ticket, it returns False and we abort.
-    # Read the Runner's PID from env so the ownership check in
-    # op_activate() matches the PID stamped in ticket.lock.
-    try:
-        from booley.config.project_config import ENV_PREFIX as _proj_env
-
-        _orch_env = f"{_proj_env}_DEVELOPER_PID"
-    except (ImportError, AttributeError):
-        _orch_env = "BOOLEY_DEVELOPER_PID"
-    developer_pid = int(os.environ.get(_orch_env, "0")) or os.getpid()
     if action != "fresh" and not ticket_cli.activate(
         project_root,
         ctx.slug,
         owner_pid=developer_pid,
+        execution_id=ctx.execution_id,
     ):
         # No slug= here: the ticket belongs to another live runner, so we
         # must NOT fail/block it.  Omitting slug makes the developer's

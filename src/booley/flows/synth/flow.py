@@ -57,6 +57,11 @@ from ..clock_timing import (
 )
 from ..execution import ExecutionSelection
 from ..flow_config import resolve_flow_default_target
+from ..run_evidence import (
+    BASELINE_RUN_EVIDENCE_DETAIL,
+    RUN_EVIDENCE_DETAIL,
+    build_flow_run_evidence,
+)
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
 from ..target_parameters import vlogparam_args as _vlogparam_args
@@ -254,6 +259,7 @@ class SynthMetrics:
     #: so a baseline pass cannot be overwritten by the later current pass.
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
+    run_evidence: dict[str, Any] = field(default_factory=dict)
 
     @property
     def unexpected_latches(self) -> int:
@@ -1061,10 +1067,17 @@ class AsicSynthesizeFlow(BooleyFlow):
         )
 
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
+        recipe_fingerprint = synthesis_recipe_snapshot_fingerprint(snapshot)
+        run_evidence = build_flow_run_evidence(
+            flow=self.name,
+            target=target,
+            recipe_sha256=recipe_fingerprint,
+            work_dir=Path(self.args.work_dir),
+        )
         evidence = getattr(self, "_recipe_evidence", None)
         if evidence is None:
             evidence = self._recipe_evidence = {}
-        evidence[target] = (snapshot, synthesis_recipe_snapshot_fingerprint(snapshot))
+        evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
 
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
@@ -1200,7 +1213,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """Attach the recipe resolved before this run to its metrics."""
         evidence = getattr(self, "_recipe_evidence", {}).get(target)
         if evidence is not None:
-            metrics.recipe_snapshot, metrics.recipe_fingerprint = evidence
+            metrics.recipe_snapshot, metrics.recipe_fingerprint, metrics.run_evidence = evidence
         return metrics
 
     def _interpret_boundary_run(
@@ -1435,6 +1448,10 @@ class AsicSynthesizeFlow(BooleyFlow):
             baseline_ref,
             self._compute_delta_pct,
             eda_tool=self._eda_tool,
+        )
+        report["run_evidence"] = metrics.run_evidence or None
+        report["baseline_run_evidence"] = (
+            baseline_metrics.run_evidence if baseline_metrics else None
         )
         run_id = os.environ.get("BOOLEY_RUN_ID", "")
         if run_id:
@@ -2146,6 +2163,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             "passed": cur.passed,
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
+            RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
             "_metric_map": {
                 "area": "area_um2",
                 "area_um2": "area_um2",
@@ -2176,6 +2194,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             }
             detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
             detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
+            detail[BASELINE_RUN_EVIDENCE_DETAIL] = base.run_evidence or None
         if baseline_ref:
             detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(
