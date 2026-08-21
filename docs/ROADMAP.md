@@ -54,11 +54,28 @@ The blocker is licenses, not design: the maintainer can't validate a Flow for an
 
 ## Continuous Integration (`booley ci`)
 
-**Planned.** A single command, `booley ci`, that runs every Target through every Booley Flow that can drive it and reports the result as a matrix: what lints, what elaborates, what simulates, what synthesizes. Push it to CI and the answer to "does this repo still build" stops being folklore.
+**Planned.** A single command, `booley ci`, that runs the CI-enabled Targets
+through the Booley Flows that can drive them and reports the result as a matrix:
+what lints, what elaborates, what simulates, what synthesizes. CI membership
+belongs with each Target in its `.core` design description: Booley-owned
+per-Target metadata should explicitly include or exclude that Target rather
+than making users maintain a second Target allowlist in a workflow file. Push
+it to CI and the answer to "does this repo still build" stops being folklore.
 
 On a pull request it goes further and reports what the change *cost* — area, Fmax, coverage, measured against the same design before the change rather than against a stale number from last week. Reviewers see "+2.2% area, −6 MHz" next to the diff, and a project can set limits so a regression fails the run instead of being noticed a month later.
 
-Because the sandbox image already carries the EDA stack, there is nothing to install on the runner: the workflow is a handful of lines and no simulator or synthesis setup at all. Slow flows can be kept off every push and run nightly instead. This needs [stealth mode](CONFIG.md#stealth-mode-stealth) off — a CI workflow committed to your repo announces Booley to everyone who reads it, which is the opposite of what stealth is for.
+Because the sandbox image already carries the EDA stack, there is nothing to
+install on a hosted runner: the workflow is a handful of lines and no simulator
+or synthesis setup at all. Slow Targets can be kept off every push and run
+nightly instead.
+
+The same engine should also support [stealth
+mode](CONFIG.md#stealth-mode-stealth) without committing a Booley-shaped hosted
+workflow. In that deployment the runner and scheduler are local, and structured
+run results and history live in `.booley_project/`'s own repository rather than
+appearing as hosted checks or files in the RTL repository. The Target selection,
+matrix semantics, regression limits, and baseline comparison stay the same;
+only the execution and reporting plane changes.
 
 ## Cocotb Support
 

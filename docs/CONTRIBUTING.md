@@ -32,8 +32,8 @@ pip install -e ".[dev]"     # editable install + test deps (pytest, pytest-async
 pytest                      # full suite; scope to a path/-k for a fast subset
 ```
 
-Booley needs **Python 3.11+**. The full dev-install walkthrough (pipx vs venv,
-PATH gotchas, the Windows notes) is in [INSTALL.md](INSTALL.md).
+Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## The #1 priority: port commercial EDA tools
 

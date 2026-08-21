@@ -8,7 +8,7 @@ With an agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;
 it uses this troubleshooting guide before improvising a fix and verifies both plain and deep
 Doctor before calling the project healthy.
 
-For installation see [INSTALL.md](INSTALL.md), for project setup see
+For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
 [SETUP.md](SETUP.md), for day-to-day driving see [USAGE.md](USAGE.md), and for
 the config knobs named below see [CONFIG.md](CONFIG.md). For the Booley-specific
 terms below (Session Runtime, Target, EDA Provisioning, Specialist, Booley Flow, Developer
@@ -109,8 +109,8 @@ pipx install booley-rtl
 
 Different problem, same distributions. Debian and Ubuntu split `venv` out of the
 Python package, so a stock system has the interpreter but not the bits
-`python3 -m venv` needs, and the dev-install step from
-[INSTALL.md](INSTALL.md#development-install) dies with:
+`python3 -m venv` needs, and the development setup in
+[CONTRIBUTING.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTRIBUTING.md#getting-set-up) dies with:
 
 ```
 The virtual environment was not created successfully because ensurepip is not

@@ -51,6 +51,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from booley.harness import colors
+
 logger = logging.getLogger(__name__)
 
 #: Length of the confirmation token. Eight hex digits is far too short to be a
@@ -319,11 +321,11 @@ def preview(
         "",
         *_disclosure(route),
         "",
-        f"--- exact text that would be {'sent' if route == 'email' else 'posted'} ---",
+        f"╭── exact text that would be {'sent' if route == 'email' else 'posted'} ──",
         "",
-        body.rstrip(),
+        colors.accent(body.rstrip()),
         "",
-        "--- end ---",
+        "╰── end of exact text ──",
         "",
         "After the user approves this exact text:",
         "",
