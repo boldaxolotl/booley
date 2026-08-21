@@ -65,9 +65,7 @@ def _project(tmp_path: Path) -> Path:
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "toy.sv").write_text("module toy; endmodule\n", encoding="utf-8")
     (tmp_path / "tb").mkdir()
-    (tmp_path / "tb" / "toy_tb.sv").write_text(
-        "module toy_tb; endmodule\n", encoding="utf-8"
-    )
+    (tmp_path / "tb" / "toy_tb.sv").write_text("module toy_tb; endmodule\n", encoding="utf-8")
     (tmp_path / "constraints").mkdir()
     (tmp_path / "constraints" / "toy.sdc").write_text(
         "create_clock -period 10 [get_ports clk]\n", encoding="utf-8"
@@ -82,9 +80,7 @@ def _project(tmp_path: Path) -> Path:
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
@@ -162,7 +158,9 @@ def test_surface_ignores_rtl_but_covers_every_control_input(tmp_path: Path) -> N
     assert surface_digest(project) == original
 
     core = project / "toy.core"
-    core.write_text(core.read_text(encoding="utf-8").replace("toplevel: toy\n", "toplevel: toy_v2\n"))
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("toplevel: toy\n", "toplevel: toy_v2\n")
+    )
     after_core = surface_digest(project)
     assert after_core != original
 
@@ -208,9 +206,7 @@ def test_surface_covers_referenced_core_and_config_hooks(tmp_path: Path) -> None
         )
     )
     config = project / ".booley_project" / "booley.toml"
-    config.write_text(
-        "[flows.sim]\ndefault_target = 'sim_toy'\npre_run = 'hooks/select'\n"
-    )
+    config.write_text("[flows.sim]\ndefault_target = 'sim_toy'\npre_run = 'hooks/select'\n")
     original = surface_digest(project)
 
     core_hook.write_text("print('changed')\n")

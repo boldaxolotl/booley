@@ -85,7 +85,9 @@ class TargetContract:
         if project_sha and not _COMMIT_RE.fullmatch(project_sha.lower()):
             raise TargetContractError("target_contract.project_sha must be a full Git commit SHA")
         if not _DIGEST_RE.fullmatch(digest):
-            raise TargetContractError("target_contract.surface_digest must be a SHA-256 hex digest")
+            raise TargetContractError(
+                "target_contract.surface_digest must be a SHA-256 hex digest"
+            )
         if tuple(sorted(set(targets))) != targets:
             raise TargetContractError("target_contract.targets must be sorted and unique")
         return cls(outer_sha.lower(), project_sha.lower(), digest, targets, schema)
@@ -227,9 +229,7 @@ def _program_tokens(value: Any) -> Iterator[str]:
                 yield candidate
 
 
-def _core_referenced_files(
-    root: Path, core_file: Path, doc: Mapping[str, Any]
-) -> Iterator[Path]:
+def _core_referenced_files(root: Path, core_file: Path, doc: Mapping[str, Any]) -> Iterator[Path]:
     filesets = doc.get("filesets")
     if not isinstance(filesets, Mapping):
         return
@@ -258,9 +258,7 @@ def _core_auxiliary_paths(root: Path, core_file: Path, doc: Mapping[str, Any]) -
         if candidate.suffix.casefold() in {".sdc", ".xdc"} and candidate.is_file():
             paths.add(candidate)
     imperative = {
-        key: doc[key]
-        for key in ("generators", "generate", "scripts", "targets")
-        if key in doc
+        key: doc[key] for key in ("generators", "generate", "scripts", "targets") if key in doc
     }
     for token in _program_tokens(imperative):
         candidate = (core_file.parent / token).resolve()
@@ -332,7 +330,9 @@ def _targets_from_value(key: str, value: Any) -> list[tuple[str, bool]]:
     if isinstance(value, Mapping):
         targets = value.get("targets")
         if isinstance(targets, list):
-            return [(target, _relative_params(value)) for target in targets if isinstance(target, str)]
+            return [
+                (target, _relative_params(value)) for target in targets if isinstance(target, str)
+            ]
         return []
     if not isinstance(value, list):
         return []
@@ -438,7 +438,9 @@ def validate_targets_for_seal(
             continue
         seen.add(target)
         missing = _missing_target_sources(root, target)
-        undeclared = [path for path in missing if not _new_scope_matches(fields.get("scope"), path)]
+        undeclared = [
+            path for path in missing if not _new_scope_matches(fields.get("scope"), path)
+        ]
         if undeclared:
             errors.append(
                 f"changed Target {target!r} has missing source(s) not declared Scope [new]: "
@@ -457,9 +459,7 @@ def _safe_target_dir(target: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", target).strip("_") or "target"
 
 
-def _dry_resolve_binding(
-    binding: CriterionTarget, root: Path, build_root: Path
-) -> list[str]:
+def _dry_resolve_binding(binding: CriterionTarget, root: Path, build_root: Path) -> list[str]:
     try:
         resolved = fusesoc_registry.resolve_target(
             binding.target,

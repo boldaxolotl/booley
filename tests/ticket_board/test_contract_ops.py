@@ -23,9 +23,7 @@ def _clear_project_dir_cache(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
@@ -242,7 +240,9 @@ def test_standalone_project_repository_gets_paired_contract_commit(tmp_path: Pat
     outer = Path(opened["outer_worktree"])
     paired = Path(opened["project_worktree"])
     _write_core(outer, version="2.0")
-    (paired / "booley.toml").write_text("[flows.lint]\ndefault_target = 'lint_toy'\nstrict = true\n")
+    (paired / "booley.toml").write_text(
+        "[flows.lint]\ndefault_target = 'lint_toy'\nstrict = true\n"
+    )
     sealed = tio.contract_seal("change-target")
 
     assert sealed["project_sha"]

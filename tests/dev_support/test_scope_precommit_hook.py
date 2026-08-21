@@ -213,9 +213,7 @@ class TestMain:
     def test_manifest_selected_generator_is_rejected(self, tmp_path: Path):
         path = "scripts/build_recipe.py"
         scope_file = tmp_path / ".scope.json"
-        scope_file.write_text(
-            json.dumps({"scope": [path], "contract_control": [path]})
-        )
+        scope_file.write_text(json.dumps({"scope": [path], "contract_control": [path]}))
 
         with (
             patch("booley.dev_support.scope_precommit_hook.Path.cwd", return_value=tmp_path),

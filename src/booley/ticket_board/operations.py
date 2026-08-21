@@ -1107,9 +1107,7 @@ def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) 
     return True
 
 
-def _reset_ticket_branches(
-    project_root: Path, slug: str, entry: dict[str, Any]
-) -> bool:
+def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any]) -> bool:
     """Restore a sealed contract or remove legacy ticket branches."""
     raw_contract = entry.get("target_contract")
     if raw_contract is None:

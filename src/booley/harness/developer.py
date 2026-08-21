@@ -1232,9 +1232,7 @@ def _report_scope_deviations(ctx: TicketContext) -> None:
     from .colors import yellow
     from .scope_policy import DEVIATION_REPORT_NAME, committed_deviations, write_deviation_report
 
-    base_ref = (
-        ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
-    )
+    base_ref = ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
     result = committed_deviations(ctx.worktree_path, base_ref, ctx.scope_raw)
     write_deviation_report(
         ticket_runtime_file(ctx.logs_dir, DEVIATION_REPORT_NAME),

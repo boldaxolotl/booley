@@ -95,9 +95,7 @@ def _branch_sha(repository: Path, branch: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _attach_worktree(
-    repository: Path, destination: Path, branch: str, base_ref: str
-) -> str:
+def _attach_worktree(repository: Path, destination: Path, branch: str, base_ref: str) -> str:
     base_sha = _full_commit(repository, base_ref)
     existing_sha = _branch_sha(repository, branch)
     if existing_sha and existing_sha != base_sha:
@@ -231,9 +229,7 @@ def _validate_authoring_changes(
 ) -> list[str]:
     changed = _status_paths(repository)
     manifest = _local_manifest_paths(surface_root, project_repository)
-    invalid = [
-        path for path in changed if not _is_authoring_path(repository, path, manifest)
-    ]
+    invalid = [path for path in changed if not _is_authoring_path(repository, path, manifest)]
     if invalid:
         raise ContractOperationError(
             "contract authoring worktree contains non-control changes: " + ", ".join(invalid)
@@ -246,7 +242,9 @@ def _commit_changes(repository: Path, paths: list[str], message: str) -> str:
         _require_git(repository, "add", "--", *paths)
         staged = _git(repository, "diff", "--cached", "--quiet")
         if staged.returncode not in {0, 1}:
-            raise ContractOperationError(f"could not inspect staged contract changes in {repository}")
+            raise ContractOperationError(
+                f"could not inspect staged contract changes in {repository}"
+            )
         if staged.returncode == 1:
             _require_git(repository, "commit", "-m", message)
     return _full_commit(repository, "HEAD")
@@ -309,9 +307,7 @@ def _changed_targets(
     return selectors
 
 
-def seal_contract(
-    project_root: Path | str, ticket_path: Path | str, slug: str
-) -> TargetContract:
+def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) -> TargetContract:
     """Validate, commit all repositories, then atomically publish ticket metadata."""
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
@@ -344,9 +340,7 @@ def seal_contract(
                 project_changes,
                 f"chore({slug}): seal project Target contract",
             )
-        outer_sha = _commit_changes(
-            outer, outer_changes, f"chore({slug}): seal Target contract"
-        )
+        outer_sha = _commit_changes(outer, outer_changes, f"chore({slug}): seal Target contract")
         contract = build_contract(
             outer,
             outer_sha=outer_sha,
@@ -371,9 +365,7 @@ def _restore_unpublished_commit(repository: Path, start_sha: str, current_sha: s
         _require_git(repository, "reset", "--soft", start_sha)
 
 
-def validate_open_seal(
-    project_root: Path | str, slug: str, contract: TargetContract
-) -> list[str]:
+def validate_open_seal(project_root: Path | str, slug: str, contract: TargetContract) -> list[str]:
     """Verify sealed refs and the still-open authoring checkout before enqueue."""
     root = Path(project_root).resolve()
     errors: list[str] = []
@@ -425,9 +417,7 @@ def reset_contract_worktrees(
         raise ContractOperationError("could not restore sealed contract: " + "; ".join(errors))
 
 
-def _validate_reset_project_source(
-    source: Path | None, contract: TargetContract
-) -> None:
+def _validate_reset_project_source(source: Path | None, contract: TargetContract) -> None:
     if contract.project_sha and source is None:
         raise ContractOperationError("sealed project repository is unavailable")
     if source is not None and not contract.project_sha:
@@ -458,7 +448,9 @@ def _validate_project_seal(
     source = resolve_inner_project_repo(root)
     paired = paired_project_repository(outer)
     if not contract.project_sha:
-        return [] if source is None and paired is None else ["target_contract.project_sha is missing"]
+        return (
+            [] if source is None and paired is None else ["target_contract.project_sha is missing"]
+        )
     if source is None or paired is None:
         return ["target_contract.project_sha is set but the paired project repository is missing"]
     try:
@@ -526,9 +518,7 @@ def _remove_contract_worktrees(
     project_source: Path | None,
 ) -> None:
     if paired is not None and project_source is not None:
-        _require_git(
-            project_source, "worktree", "remove", "--force", str(paired.worktree)
-        )
+        _require_git(project_source, "worktree", "remove", "--force", str(paired.worktree))
     if outer.exists():
         _require_git(root, "worktree", "remove", "--force", str(outer))
 

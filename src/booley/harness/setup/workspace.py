@@ -111,9 +111,7 @@ def _install_scope_hook(
         _set_worktree_hooks_path(worktree_path, hooks_dir.as_posix())
 
 
-def _hook_contract_controls(
-    worktree_path: Path, surface_root: Path | None
-) -> list[str]:
+def _hook_contract_controls(worktree_path: Path, surface_root: Path | None) -> list[str]:
     """Translate sealed surface paths for the repository receiving the hook."""
     root = surface_root or worktree_path
     try:
@@ -775,9 +773,7 @@ async def run(ctx: TicketContext) -> StepResult:
             return fail
 
     worktree_path = ctx.worktree_path
-    base_ref = (
-        ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
-    )
+    base_ref = ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
     logger.info("Worktree ready")
 
     # Branch setup: ensure base, create feature branch
