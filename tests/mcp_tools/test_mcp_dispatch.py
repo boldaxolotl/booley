@@ -900,17 +900,19 @@ class TestAsyncJobDispatch:
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         endpoint_def = _poll_mcp_tool_def()
         assert endpoint_def is not None
-        poll_wait_seconds = mcp_server._RECOMMENDED_AGENT_POLL_WAIT_SECONDS
-        wrapper_wait_ms = mcp_server._CODEX_POLL_WRAPPER_WAIT_MILLISECONDS
-        assert poll_wait_seconds == mcp_server._DEFAULT_JOB_POLL_WAIT_SECONDS
-        assert f"wait_seconds={poll_wait_seconds}" in endpoint_def["description"]
-        assert "Claude:" in endpoint_def["description"]
-        assert wrapper_wait_ms == poll_wait_seconds * 1000
-        assert f"yield_time_ms={wrapper_wait_ms}" in endpoint_def["description"]
+        description = endpoint_def["description"]
+        assert "Claude and Codex:" in description
+        assert "omit 'wait_seconds'" in description
+        assert "same running cell" in description
+        assert "do not start another booley_poll call" in description
+        assert "wait_seconds=240" not in description
+        assert "yield_time_ms" not in description
         props = endpoint_def["schema"]["properties"]
         assert props["wait_seconds"]["type"] == "integer"
         assert props["wait_seconds"]["minimum"] == 0
         assert props["wait_seconds"]["maximum"] == 270
+        default_wait_seconds = mcp_server._DEFAULT_JOB_POLL_WAIT_SECONDS
+        assert f"{default_wait_seconds:g}s" in props["wait_seconds"]["description"]
         assert "wait_seconds" not in endpoint_def["schema"]["required"]
 
     def test_poll_missing_run_id(self, _report_env):

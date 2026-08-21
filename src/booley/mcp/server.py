@@ -102,8 +102,6 @@ _REPORT_MCP_TOOL_DESCRIPTION = (
     "omit it for the most recent report across all endpoints."
 )
 _POLL_MCP_TOOL_NAME = "booley_poll"
-_RECOMMENDED_AGENT_POLL_WAIT_SECONDS = 240
-_CODEX_POLL_WRAPPER_WAIT_MILLISECONDS = _RECOMMENDED_AGENT_POLL_WAIT_SECONDS * 1000
 _POLL_MCP_TOOL_DESCRIPTION = (
     "Check on a long-running endpoint (sim / fpga / synth / elab / reviewer / "
     "mutation_tester / coverage_analyst) that was "
@@ -113,11 +111,10 @@ _POLL_MCP_TOOL_DESCRIPTION = (
     "long-poll: the call blocks up to that long for the run to finish, turning "
     "a poll-loop into one blocking call; if the run is still going afterwards "
     "it returns 'RUNNING' — call again to keep waiting. Prefer few long polls "
-    "over many short ones. Claude: omit 'wait_seconds' or pass "
-    f"wait_seconds={_RECOMMENDED_AGENT_POLL_WAIT_SECONDS} so the MCP call waits "
-    "for the full default window. Codex: use the same value for its "
-    "programmatic exec and every follow-up running-cell wait: "
-    f"yield_time_ms={_CODEX_POLL_WRAPPER_WAIT_MILLISECONDS}. When the "
+    "over many short ones. Claude and Codex: omit 'wait_seconds' to use the "
+    "Session Runtime's configured poll window. Codex: if its programmatic exec "
+    "yields while this MCP call is still running, keep waiting on the same "
+    "running cell in short slices; do not start another booley_poll call. When the "
     "run finishes it returns the full result (EXIT_CODE + report), exactly as "
     "the original call would have. Safe to call across a server restart: the "
     "job is tracked on disk, so a poll always returns a definite answer."
@@ -190,7 +187,7 @@ _ASYNC_JOB_MCP_TOOLS = frozenset(
 # ~300s no matter what the MCP-tool timeout is set to — see
 # _POLL_WAIT_SECONDS_MAX.
 _DEFAULT_JOB_INLINE_WAIT_SECONDS = 240.0
-_DEFAULT_JOB_POLL_WAIT_SECONDS = float(_RECOMMENDED_AGENT_POLL_WAIT_SECONDS)
+_DEFAULT_JOB_POLL_WAIT_SECONDS = 240.0
 
 # Interactive MCP servers are Docker containers spawned by Codex/Claude tabs.
 # Clients do not always tear them down promptly, so the server exits itself
@@ -1781,7 +1778,7 @@ def _poll_mcp_tool_def() -> dict[str, Any] | None:
                         "with the current status immediately. Omit to use the "
                         "server default wait "
                         f"(BOOLEY_MCP_JOB_POLL_WAIT_SECONDS, "
-                        f"{_RECOMMENDED_AGENT_POLL_WAIT_SECONDS}s)."
+                        f"{_DEFAULT_JOB_POLL_WAIT_SECONDS:g}s)."
                     ),
                 },
             },
