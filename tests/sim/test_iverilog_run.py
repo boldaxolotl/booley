@@ -209,49 +209,6 @@ def test_run_icarus_image_writes_run_log_end_to_end(tmp_path: Path, monkeypatch,
 
 
 # ---------------------------------------------------------------------------
-# _check_dut_info_diagnostics (relocated from the retired run_iverilog_sim)
-# ---------------------------------------------------------------------------
-
-
-class TestIverilogDutInfoDiagnostics:
-    """Structured stale-dut_info messages from iverilog elab output."""
-
-    def test_unable_to_bind_flags_hier_paths(self):
-        out = "elab.sv:12: error: Unable to bind variable 'tb.dut.foo'\n"
-        msg = ir._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "dut_hier_path" in msg
-        assert "Correct dut_info." in msg
-
-    def test_unable_to_find_flags_hier_paths(self):
-        out = "Unable to find tb.dut anywhere\n"
-        msg = ir._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "dut_hier_path" in msg
-
-    def test_unknown_module_flags_tb_top(self):
-        out = "error: Unknown module 'tb_typo'\n"
-        msg = ir._check_dut_info_diagnostics(out)
-        assert msg is not None
-        assert "tb_top_module" in msg
-        # tb_top_module is a TB-side dut_info field; the fix is correcting it.
-        assert "Correct dut_info." in msg
-
-    def test_no_match_returns_none(self):
-        out = "everything looks fine\nno errors\n"
-        assert ir._check_dut_info_diagnostics(out) is None
-
-    def test_includes_expected_value_when_dut_info_provided(self):
-        from booley.dev_support.development_state import DutInfo
-
-        di = DutInfo(dut_hier_path="tb.dut_alpha")
-        out = "Unable to bind variable 'tb.dut_alpha.x'\n"
-        msg = ir._check_dut_info_diagnostics(out, di)
-        assert "tb.dut_alpha" in msg
-        assert "Expected:" in msg
-
-
-# ---------------------------------------------------------------------------
 # Per-run safety guards: missing $readmemh (SETUP-23) + disk budget (SETUP-25)
 # ---------------------------------------------------------------------------
 

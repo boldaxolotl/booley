@@ -15,7 +15,6 @@ builders only read attributes off the passed objects (duck-typed).
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -31,51 +30,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@functools.lru_cache(maxsize=64)
-def _display_tb_top(work_dir: str, target: str) -> str:
-    """TB top for the console DUT-info panel — cheap ``.core`` read, no resolve.
-
-    ADR 0022 dec 12 moved ``tb_top`` out of DUT Info: it is the resolved sim
-    Target's ``toplevel``, no longer a dut_info field. The console panel is a
-    single DUT/TB line, so it sources the TB top here — preferring the selected
-    Target when it is a sim Target, else the project's first sim Target, reading
-    ``toplevel:`` straight from the ``.core`` YAML (no ``fusesoc`` subprocess in
-    the hot display path). ``""`` → the panel shows ``<not yet planned>`` (the
-    legacy configs.toml ``tb_top`` fallback was removed). Best-effort: any failure
-    degrades to the placeholder.
-    """
-    try:
-        from booley.fusesoc.fusesoc_registry import (
-            core_target_toplevel,
-            enumerate_targets,
-            read_core,
-        )
-
-        refs = enumerate_targets(work_dir)
-    except Exception:  # noqa: BLE001 — best-effort .core read; failure degrades to placeholder TB top
-        refs = {}
-    names = sorted(refs)
-    if target in refs:  # prefer the endpoint's own Target when it is a sim Target
-        names = [target, *(n for n in names if n != target)]
-    for name in names:
-        ref = refs[name]
-        if ref.flow != "sim":  # verilator also backs lint; only sim has a TB top
-            continue
-        try:
-            top = core_target_toplevel(read_core(ref.core_file), name)
-        except Exception:  # noqa: BLE001 — skip a Target whose .core cannot be parsed; try the next one
-            continue
-        if top:
-            return top
-    return ""
-
-
-def _emit_criteria_update(state: DevelopmentState, *, tb_top: str | None = None) -> None:
-    """Emit a criteria_update event to display.jsonl after state changes.
-
-    *tb_top*, when supplied, is folded into the DUT-info snapshot as
-    ``tb_top_module`` for the console panel (it left DUT Info in ADR 0022 dec 12).
-    """
+def _emit_criteria_update(state: DevelopmentState) -> None:
+    """Emit a criteria_update event to display.jsonl after state changes."""
     criteria_snapshot = {}
     for k, e in state.criteria.items():
         if k.startswith("_"):
@@ -89,15 +45,10 @@ def _emit_criteria_update(state: DevelopmentState, *, tb_top: str | None = None)
         if e.stale:
             entry_d["stale"] = True
         criteria_snapshot[k] = entry_d
-    # DUT info rides along on the same event — same watcher, same lifecycle.
-    dut_info_snapshot = state.dut_info.to_dict() if hasattr(state, "dut_info") else {}
-    if tb_top:
-        dut_info_snapshot["tb_top_module"] = tb_top
     _write_display_event(
         {
             "type": "criteria_update",
             "criteria": criteria_snapshot,
-            "dut_info": dut_info_snapshot,
             "timestamp": utc_now_rfc3339(),
         }
     )

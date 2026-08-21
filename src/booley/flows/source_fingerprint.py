@@ -18,6 +18,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from booley.core import boundary
+from booley.fusesoc.fusesoc_registry import (
+    FuseSocError,
+    classified_sources,
+    discover_cores,
+    resolve_ref,
+    selectable_core_closure,
+    source_dirs_from_core,
+    target_source_files,
+)
+from booley.runtime.project_dir import resolve_checkout_project_dir
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +58,6 @@ def _core_source_files(
     hashing whole directories). When *target* is set, only that Target's
     dependency closure is returned.
     """
-    try:
-        from booley.fusesoc.fusesoc_registry import (
-            classified_sources,
-            discover_cores,
-            target_source_files,
-        )
-    except Exception:  # noqa: BLE001 — registry unavailable; use directory fallback
-        return None
     if not discover_cores(work_dir):
         return None
     cs = (
@@ -74,11 +76,10 @@ def _core_source_files(
 def _read_source_dirs(work_dir: Path) -> tuple[list[str], list[str]]:
     """RTL/TB source dirs from the ``.core`` filesets (legacy defaults if none)."""
     try:
-        from booley.fusesoc.fusesoc_registry import source_dirs_from_core
-
         rtl_dirs, tb_dirs, _incl = source_dirs_from_core(work_dir)
         return rtl_dirs, tb_dirs
-    except Exception:  # noqa: BLE001 — registry unavailable
+    except FuseSocError as exc:
+        logger.debug("No resolvable .core under %s; using legacy source dirs: %s", work_dir, exc)
         return ["rtl", "fw"], ["tb"]
 
 
@@ -135,6 +136,53 @@ def _hash_source_group(work_dir: Path, source_dirs: list[str]) -> dict[str, Any]
     return {"digest": digest.hexdigest(), "files": file_names}
 
 
+def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
+    """Return every authored core that can affect the selected campaign."""
+    cores = discover_cores(root)
+    if target is None or not cores:
+        return cores
+    resolve_ref(root, target)  # fail loudly for an unknown or ambiguous Target
+    closure = selectable_core_closure(root, [target])
+    if not closure:
+        raise RuntimeError(f"Target {target!r} resolved without a core dependency closure")
+    return sorted(closure)
+
+
+def _campaign_files(root: Path, target: str | None) -> list[tuple[str, Path]]:
+    """Named configuration files that define a Target campaign's recipe."""
+    files = [
+        (path.resolve().relative_to(root).as_posix(), path.resolve())
+        for path in _campaign_core_files(root, target)
+        if path.is_file()
+    ]
+    try:
+        tests_toml = resolve_checkout_project_dir(root) / "tests.toml"
+    except FileNotFoundError:
+        return files
+    if tests_toml.is_file():
+        try:
+            label = tests_toml.resolve().relative_to(root).as_posix()
+        except ValueError:
+            label = "project-dir/tests.toml"
+        files.append((label, tests_toml.resolve()))
+    return files
+
+
+def _hash_file_entries(entries: list[tuple[str, Path]]) -> dict[str, Any]:
+    """SHA-256 over named files that may live outside the checkout root."""
+    digest = hashlib.sha256()
+    unique = dict(entries)
+    for name in sorted(unique):
+        data = unique[name].read_bytes()
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(len(data)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return {"digest": digest.hexdigest(), "files": sorted(unique)}
+
+
 def compute_source_fingerprint(
     work_dir: Path,
     *,
@@ -149,6 +197,7 @@ def compute_source_fingerprint(
     the default source directories.
     """
     root = work_dir.resolve()
+    campaign = _hash_file_entries(_campaign_files(root, target))
     core = _core_source_files(root, target)
     if core is not None:
         rtl_files, tb_files = core
@@ -160,6 +209,7 @@ def compute_source_fingerprint(
             "tb_dirs": sorted({PurePosixPath(f).parent.as_posix() for f in tb_files}),
             "rtl": _hash_named_files(root, rtl_files),
             "tb": _hash_named_files(root, tb_files),
+            "campaign": campaign,
         }
     rtl_dirs, tb_dirs = _read_source_dirs(root)
     return {
@@ -170,4 +220,5 @@ def compute_source_fingerprint(
         "tb_dirs": tb_dirs,
         "rtl": _hash_source_group(root, rtl_dirs),
         "tb": _hash_source_group(root, tb_dirs),
+        "campaign": campaign,
     }

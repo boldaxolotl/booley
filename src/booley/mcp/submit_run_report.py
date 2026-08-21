@@ -260,7 +260,7 @@ class SubmitRunReportMcpTool(McpTool):
             work_dir=Path(self.args.work_dir),
         )
         if stale:
-            _emit_criteria_update(self.state, tb_top=self._console_tb_top())
+            _emit_criteria_update(self.state)
         unmet = self.state.unmet_mandatory()
         if not unmet:
             return None

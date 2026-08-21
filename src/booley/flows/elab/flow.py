@@ -253,9 +253,6 @@ class ElaborateFlow(BooleyFlow):
             self._followed = selection
         return selection
 
-    def required_dut_info_halves(self) -> frozenset[str]:
-        return frozenset({"dut", "tb"})
-
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` is its TB
         # top, sourced from the resolved Target. --no-dpi was unused by the

@@ -23,7 +23,14 @@ _COVERAGE_KEYS = {
 
 def _format_coverage_metric(key: str, d: dict, p: dict, stale: bool) -> str | None:
     """Coverage-family metric: "<pct>% (>=<thr>%)". None if not a coverage key/no pct."""
-    sub_key = _COVERAGE_KEYS.get(key)
+    sub_key = next(
+        (
+            detail_key
+            for base_key, detail_key in _COVERAGE_KEYS.items()
+            if key == base_key or key.startswith(f"{base_key}_")
+        ),
+        None,
+    )
     if sub_key is None:
         return None
     sub = as_dict(d.get(sub_key), default={})
@@ -86,7 +93,7 @@ def _format_metric(key: str, entry: object) -> str:  # noqa: PLR0911 — metric-
     if key.startswith("synthesis_ok"):
         return _format_synthesis_metric(d, stale)
 
-    if key == "mutation_score":
+    if key.startswith("mutation_score"):
         detected = as_int(d.get("detected"))
         total = as_int(d.get("total_valid"))
         if detected is not None and total:

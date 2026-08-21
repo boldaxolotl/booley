@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 # Make sure the src tree is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
+from booley.mcp.base import EXIT_ERROR
 from booley.specialists.coverage_analyst import (
     BranchResult,
     CoverageAnalystSpecialist,
@@ -55,9 +56,9 @@ def _sig(name="sig", transitions=5, value_hist=None, width=1):
     )
 
 
-def _make_endpoint_with_args(*, dut_info=None, **kwargs):
+def _make_endpoint_with_args(**kwargs):
     """Build a CoverageAnalystSpecialist with just enough state for unit tests."""
-    from booley.dev_support.development_state import DevelopmentState, DutInfo
+    from booley.dev_support.development_state import DevelopmentState
 
     endpoint = object.__new__(CoverageAnalystSpecialist)
     defaults = {
@@ -65,18 +66,11 @@ def _make_endpoint_with_args(*, dut_info=None, **kwargs):
         "work_dir": ".",
         "target": "default",
         "tb_top": "tb_top",
-        "test": "",
         "timeout": 1200,
     }
     defaults.update(kwargs)
     endpoint._args = types.SimpleNamespace(**defaults)
-    # Phase 8: coverage_analyst now reads state.dut_info — give the unit
-    # tests an empty (legacy-fallback) state by default.  Tests that need
-    # populated dut_info can pass `dut_info=DutInfo(...)`.
-    state = DevelopmentState()
-    if dut_info is not None:
-        state.dut_info = dut_info if isinstance(dut_info, DutInfo) else DutInfo(**dut_info)
-    endpoint._state = state
+    endpoint._state = DevelopmentState()
     return endpoint
 
 
@@ -670,7 +664,7 @@ class TestMechanicalMeasurementErrors:
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
         assert stats == []
         assert "No signals matched" in err
-        assert "dut_info.dut_hier_path" in err
+        assert "scope 'alu.sv'" in err
         assert infra is False
 
     def test_success_returns_none_error(self):
@@ -1277,7 +1271,7 @@ class TestResolveThreshold:
     def _endpoint_with_params(self, params):
         endpoint = _make_endpoint_with_args()
         entry = types.SimpleNamespace(params=params)
-        endpoint._state = types.SimpleNamespace(criteria={"coverage_toggle": entry})
+        endpoint._state = types.SimpleNamespace(criteria={"coverage_toggle_default": entry})
         return endpoint
 
     def test_numeric_string_param_coerced(self):
@@ -1486,38 +1480,29 @@ class TestPhaseFailsClosedOnUnparseable:
 class TestDeriveHierarchyGlob:
     """Test scope-to-hierarchy glob derivation.
 
-    Phase 8.2: dut_info.dut_hier_path is the primary source; the legacy
-    {tb_top}.dut.* fallback only kicks in when dut_info is empty.
+    Hierarchy candidates come from the RTL scope, never ticket-global state.
     """
 
     @staticmethod
-    def _make_endpoint(tb_top: str = "tb_alu", *, hier_path: str | None = None):
-        from booley.dev_support.development_state import DevelopmentState, DutInfo
+    def _make_endpoint(scope: str = "rtl/alu.sv"):
+        from booley.dev_support.development_state import DevelopmentState
 
         endpoint = object.__new__(CoverageAnalystSpecialist)
-        endpoint._args = types.SimpleNamespace(tb_top=tb_top)
-        state = DevelopmentState()
-        if hier_path is not None:
-            state.dut_info = DutInfo(dut_hier_path=hier_path)
-        endpoint._state = state
+        endpoint._args = types.SimpleNamespace(scope=scope)
+        endpoint._state = DevelopmentState()
         return endpoint
 
-    def test_legacy_fallback_when_dut_info_empty(self):
-        endpoint = self._make_endpoint("tb_alu")
-        assert endpoint._derive_hierarchy_glob() == "tb_alu.dut.*"
+    def test_single_scope_module(self):
+        endpoint = self._make_endpoint("rtl/alu.sv")
+        assert endpoint._derive_hierarchy_glob() == "*alu.*"
 
-    def test_legacy_fallback_different_tb_top(self):
-        endpoint = self._make_endpoint("tb_aes_encrypt")
-        assert endpoint._derive_hierarchy_glob() == "tb_aes_encrypt.dut.*"
+    def test_multiple_scope_modules(self):
+        endpoint = self._make_endpoint("rtl/alu.sv,rtl/fifo.sv")
+        assert endpoint._derive_hierarchy_glob() == "*alu.*,*fifo.*"
 
-    def test_legacy_fallback_always_scopes_to_dut(self):
-        endpoint = self._make_endpoint("tb_complex_design")
-        glob = endpoint._derive_hierarchy_glob()
-        assert ".dut." in glob
-
-    def test_uses_dut_info_hier_path(self):
-        endpoint = self._make_endpoint("tb_alu", hier_path="tb.uu_alu")
-        assert endpoint._derive_hierarchy_glob() == "tb.uu_alu.*"
+    def test_empty_scope_traces_all_for_discovery(self):
+        endpoint = self._make_endpoint("")
+        assert endpoint._derive_hierarchy_glob() == "*"
 
 
 # ===================================================================
@@ -1543,6 +1528,29 @@ class TestExtractModulesFromScope:
 
     def test_empty(self):
         assert CoverageAnalystSpecialist._extract_modules_from_scope("") == []
+
+    def test_reads_declared_module_name_instead_of_filename(self, tmp_path):
+        rtl = tmp_path / "implementation.sv"
+        rtl.write_text("module actual_dut; endmodule\n", encoding="utf-8")
+        endpoint = _make_endpoint_with_args(
+            work_dir=str(tmp_path),
+            scope="implementation.sv",
+        )
+        assert endpoint._scope_modules() == ["actual_dut"]
+
+    def test_ignores_module_declarations_in_comments(self, tmp_path):
+        rtl = tmp_path / "implementation.sv"
+        rtl.write_text(
+            "// module stale_line;\n"
+            "/* module stale_block; */\n"
+            "module actual_dut; endmodule\n",
+            encoding="utf-8",
+        )
+        endpoint = _make_endpoint_with_args(
+            work_dir=str(tmp_path),
+            scope="implementation.sv",
+        )
+        assert endpoint._scope_modules() == ["actual_dut"]
 
 
 # ===================================================================
@@ -1588,8 +1596,8 @@ class TestPickDutScope:
 
 class TestDiscoverDutScope:
     @staticmethod
-    def _make_endpoint(scope: str, *, hier_path: str | None = None):
-        from booley.dev_support.development_state import DevelopmentState, DutInfo
+    def _make_endpoint(scope: str):
+        from booley.dev_support.development_state import DevelopmentState
 
         endpoint = object.__new__(CoverageAnalystSpecialist)
         endpoint._args = types.SimpleNamespace(
@@ -1597,10 +1605,7 @@ class TestDiscoverDutScope:
             work_dir=None,
             tb_top="tb_top",
         )
-        state = DevelopmentState()
-        if hier_path is not None:
-            state.dut_info = DutInfo(dut_hier_path=hier_path)
-        endpoint._state = state
+        endpoint._state = DevelopmentState()
         return endpoint
 
     @staticmethod
@@ -1721,17 +1726,6 @@ class TestDiscoverDutScope:
                 stderr="",
             ),
         )
-        result = endpoint._discover_dut_scope(Path("fake.bwave"), ["aes"])
-        assert result == "tb.uu_aes.*"
-
-    def test_dut_info_short_circuits_discovery(self, monkeypatch):
-        """Phase 8.3: when dut_info.dut_hier_path is set, skip subprocess."""
-        endpoint = self._make_endpoint("aes.sv", hier_path="tb.uu_aes")
-
-        def boom(*_a, **_kw):
-            raise AssertionError("subprocess should not run when dut_info set")
-
-        monkeypatch.setattr(subprocess, "run", boom)
         result = endpoint._discover_dut_scope(Path("fake.bwave"), ["aes"])
         assert result == "tb.uu_aes.*"
 
@@ -2173,11 +2167,11 @@ class TestCriteriaFiltering:
         endpoint = _make_endpoint_with_args(criteria=criteria)
         if state_criteria is None:
             state_criteria = {
-                "coverage_toggle": True,
-                "coverage_fsm": True,
-                "coverage_value": True,
-                "coverage_branch": True,
-                "coverage_expression": True,
+                "coverage_toggle_default": True,
+                "coverage_fsm_default": True,
+                "coverage_value_default": True,
+                "coverage_branch_default": True,
+                "coverage_expression_default": True,
             }
         endpoint._state = types.SimpleNamespace(criteria=state_criteria)
         endpoint.satisfies = [
@@ -2232,8 +2226,8 @@ class TestCriteriaFiltering:
         endpoint = self._make_endpoint_with_criteria(
             criteria="toggle,branch",
             state_criteria={
-                "coverage_toggle": True,
-                "coverage_value": True,
+                "coverage_toggle_default": True,
+                "coverage_value_default": True,
             },
         )
         active = endpoint._get_active_criteria()
@@ -2692,141 +2686,6 @@ class TestScanTbForDutInstances:
 
 
 # ===================================================================
-# _check_dut_instance_match
-# ===================================================================
-
-
-class TestCheckDutInstanceMatch:
-    """Pre-flight matcher converts elab-binding failures into routable errors."""
-
-    def _make_endpoint(self, dut_info_kwargs):
-        # Bypass __init__ — we only need self.state.dut_info populated.
-        # `state` is a property backed by `_state`, so write to the
-        # underlying attribute.
-        endpoint = CoverageAnalystSpecialist.__new__(CoverageAnalystSpecialist)
-        state = types.SimpleNamespace()
-        state.dut_info = types.SimpleNamespace(
-            dut_top_module="",
-            tb_top_module="",
-            dut_hier_path="",
-        )
-        for k, v in dut_info_kwargs.items():
-            setattr(state.dut_info, k, v)
-        endpoint._state = state
-        # ADR 0022 dec 12: the TB top is the resolved Target's toplevel,
-        # surfaced as ``args.tb_top`` (no longer a dut_info field).
-        endpoint._args = types.SimpleNamespace(
-            tb_top=dut_info_kwargs.get("tb_top_module", ""),
-        )
-        return endpoint
-
-    def test_direct_hit_returns_none(self, monkeypatch, tmp_path):
-        endpoint = self._make_endpoint(
-            {
-                "dut_top_module": "cache_controller",
-                "tb_top_module": "cache_controller_tb",
-                "dut_hier_path": "cache_controller_tb.uut",
-            }
-        )
-        monkeypatch.setattr(
-            CoverageAnalystSpecialist,
-            "_scan_tb_for_dut_instances",
-            classmethod(
-                lambda cls, wd, mod: [
-                    ("verif/tb.sv", 2, "uut", "cache_controller_tb"),
-                ]
-            ),
-        )
-        assert endpoint._check_dut_instance_match(tmp_path) is None
-
-    def test_no_instance_anywhere(self, monkeypatch, tmp_path):
-        endpoint = self._make_endpoint(
-            {
-                "dut_top_module": "cache_controller",
-                "tb_top_module": "tb",
-                "dut_hier_path": "tb.dut",
-            }
-        )
-        monkeypatch.setattr(
-            CoverageAnalystSpecialist,
-            "_scan_tb_for_dut_instances",
-            classmethod(lambda cls, wd, mod: []),
-        )
-        result = endpoint._check_dut_instance_match(tmp_path)
-        assert result is not None
-        assert result.exit_code != 0
-        assert "no instantiation" in result.report_text
-        assert "cache_controller" in result.report_text
-
-    def test_wrong_name_in_expected_parent(self, monkeypatch, tmp_path):
-        # cache-controller case: TB has `dut`, dut_hier_path expects `uut`.
-        endpoint = self._make_endpoint(
-            {
-                "dut_top_module": "cache_controller",
-                "tb_top_module": "cache_controller_tb",
-                "dut_hier_path": "cache_controller_tb.uut",
-            }
-        )
-        monkeypatch.setattr(
-            CoverageAnalystSpecialist,
-            "_scan_tb_for_dut_instances",
-            classmethod(
-                lambda cls, wd, mod: [
-                    ("verif/tb.sv", 2, "dut", "cache_controller_tb"),
-                ]
-            ),
-        )
-        result = endpoint._check_dut_instance_match(tmp_path)
-        assert result is not None
-        assert "cache_controller_tb.dut" in result.report_text
-        assert "Fix one of" in result.report_text
-
-    def test_right_name_wrong_scope(self, monkeypatch, tmp_path):
-        # 16qam case: `dut` exists but in wrapper, not in tb_top_module.
-        endpoint = self._make_endpoint(
-            {
-                "dut_top_module": "qam16_mapper_interpolated",
-                "tb_top_module": "tb_16qam_mapper",
-                "dut_hier_path": "tb_16qam_mapper.dut",
-            }
-        )
-        monkeypatch.setattr(
-            CoverageAnalystSpecialist,
-            "_scan_tb_for_dut_instances",
-            classmethod(
-                lambda cls, wd, mod: [
-                    ("verif/tb.sv", 2, "dut", "tb_16qam_mapper_case"),
-                ]
-            ),
-        )
-        result = endpoint._check_dut_instance_match(tmp_path)
-        assert result is not None
-        assert "tb_16qam_mapper_case.dut" in result.report_text
-        assert "tb_16qam_mapper.dut" in result.report_text
-
-    def test_skips_when_dut_info_incomplete(self, monkeypatch, tmp_path):
-        # No dut_hier_path → nothing to check (legacy ticket fallback).
-        endpoint = self._make_endpoint(
-            {
-                "dut_top_module": "cache_controller",
-                "tb_top_module": "tb",
-                "dut_hier_path": "",
-            }
-        )
-        # Scan should not even be called; assert by raising if it is.
-        monkeypatch.setattr(
-            CoverageAnalystSpecialist,
-            "_scan_tb_for_dut_instances",
-            classmethod(
-                lambda cls, wd, mod: (_ for _ in ()).throw(
-                    AssertionError("scan should not run"),
-                )
-            ),
-        )
-        assert endpoint._check_dut_instance_match(tmp_path) is None
-
-
-# ===================================================================
 # _strip_sv_comments
 # ===================================================================
 
@@ -2917,13 +2776,14 @@ class TestBuildEdalizeTraceCmd:
         assert "exit 1" in script
         assert "&&" not in script  # uses '|| { ...; exit 1; }' + newline, not '&&'
 
-    def test_steers_bwave_to_trace_dir_and_passes_test(self, tmp_path):
+    def test_steers_bwave_to_trace_dir_and_passes_suite_test(self, tmp_path):
         work_dir = tmp_path
         build_root = tmp_path / ".edalize" / "coverage" / "config_a"
         trace_dir = work_dir / "sim" / "config_a"
         endpoint = _make_endpoint_with_args(
-            work_dir=str(work_dir), target="config_a", tb_top="tb_top", test="regress"
+            work_dir=str(work_dir), target="config_a", tb_top="tb_top"
         )
+        endpoint._coverage_test = "regress"
         with (
             patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
@@ -2939,6 +2799,70 @@ class TestBuildEdalizeTraceCmd:
         assert "--plusarg=+test_id=1" in script
         # no scope arg when none derived
         assert "--trace-scope" not in script
+
+    def test_cocotb_trace_batches_every_target_test(self, tmp_path):
+        build_root = tmp_path / ".edalize" / "coverage" / "sim_cocotb"
+        trace_dir = tmp_path / "sim" / "sim_cocotb"
+        endpoint = _make_endpoint_with_args(
+            work_dir=str(tmp_path),
+            target="sim_cocotb",
+            tb_top="dut",
+        )
+        with (
+            patch(
+                "booley.fusesoc.fusesoc_registry.resolve_target",
+                return_value=self._resolved(build_root),
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
+                return_value={"sim_cocotb": "test_dut"},
+            ),
+            patch(
+                "booley.config.project_config.TEST_NAMES",
+                {"sim_cocotb": ["smoke", "corner"]},
+            ),
+        ):
+            cmd = endpoint._build_edalize_trace_cmd(tmp_path, trace_dir, "", 600)
+
+        script = cmd[2]
+        assert "booley.sim.cocotb_run" in script
+        assert "--cocotb-module test_dut" in script
+        assert "--test=smoke" in script
+        assert "--test=corner" in script
+        assert "--trace" in script
+
+
+def test_qualified_target_uses_distinct_trace_dirs_per_test(tmp_path):
+    endpoint = _make_endpoint_with_args(
+        work_dir=str(tmp_path),
+        target="vendor:lib:core#sim",
+        tb_top="tb",
+    )
+    with patch("booley.config.project_config.TEST_NAMES", {"sim": ["smoke", "corner"]}):
+        smoke = endpoint._find_trace_dir("smoke")
+        corner = endpoint._find_trace_dir("corner")
+
+    assert smoke != corner
+    assert smoke.name.endswith(".smoke")
+    assert corner.name.endswith(".corner")
+
+
+def test_coverage_rejects_target_with_every_test_skipped(tmp_path):
+    endpoint = _make_endpoint_with_args(
+        work_dir=str(tmp_path),
+        target="sim",
+        tb_top="tb",
+    )
+    with (
+        patch("booley.config.project_config.TEST_NAMES", {"sim": ["smoke", "corner"]}),
+        patch("booley.config.project_config.TEST_SKIP", {"sim": ["smoke", "corner"]}),
+    ):
+        _scope, traces, error = endpoint._ensure_target_traces(tmp_path)
+
+    assert traces == []
+    assert error is not None
+    assert error.exit_code == EXIT_ERROR
+    assert "no runnable tests" in error.report_text
 
 
 # ---------------------------------------------------------------------------

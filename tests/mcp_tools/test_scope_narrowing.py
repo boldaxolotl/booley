@@ -9,12 +9,10 @@ cover:
 - A ``tb_coder`` ``_run`` narrows ``.scope.json`` to the tb globs and restores
   the original on both success and exception.
 
-Phase 4 (ADR 0022 dec 12-13): scope narrowing is directory-categorical — the
-RTL/TB *file* partition is no longer stored in ``dut_info`` (it is derived from
-FuseSoC ``tags:[tb]`` at resolve time), so the surviving code-modifying
+Scope narrowing is directory-categorical. The RTL/TB file partition is derived
+from FuseSoC ``tags:[tb]`` at resolve time, so the surviving code-modifying
 specialist (``TbCoderSpecialist``, tb-permanent) narrows to its own category's
-testbench source-dir globs rather than an explicit per-half file list, and the
-old ``_pre_save_hook`` / ``_narrowed_scope_for_coder`` dut_info path is retired.
+testbench source-directory globs rather than an explicit per-half file list.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState, DutInfo
+from booley.dev_support.development_state import DevelopmentState
 from booley.mcp.base import EXIT_SUCCESS, McpToolResult
 from booley.specialists.tb_coder import (
     TbCoderSpecialist,
@@ -75,19 +73,15 @@ def instruction_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def state_with_dut_info(
+def ticket_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
-    """State file pre-populated with a populated DutInfo (both halves)."""
+    """Ordinary ticket state file."""
     sf = tmp_path / "state.json"
     st = DevelopmentState.load(sf)
     st.slug = "scope-narrow-test"
     st.init_criteria({"sim_pass_default": True})
-    st.dut_info = DutInfo(
-        dut_top_module="fifo",
-        dut_hier_path="tb_fifo.dut",
-    )
     st.save()
     monkeypatch.setenv("BOOLEY_SLUG", "scope-narrow-test")
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
@@ -99,7 +93,7 @@ def empty_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
-    """State file with no dut_info populated — backward-compat scenario."""
+    """Minimal state file with no criteria evidence."""
     sf = tmp_path / "state-empty.json"
     st = DevelopmentState.load(sf)
     st.slug = "legacy-ticket"
@@ -199,7 +193,7 @@ class TestNarrowedScopeFile:
 
 
 class TestBuildNarrowedScope:
-    def test_returns_tb_category_globs(self, state_with_dut_info, instruction_file, work_dir):
+    def test_returns_tb_category_globs(self, ticket_state, instruction_file, work_dir):
         endpoint = _make_tb_coder(instruction_file, work_dir)
         endpoint.read_state()
         narrowed = endpoint._build_narrowed_scope()
@@ -217,7 +211,7 @@ class TestBuildNarrowedScope:
 class TestTbCoderRunNarrowsScope:
     def test_run_narrows_to_tb_globs_then_restores(
         self,
-        state_with_dut_info,
+        ticket_state,
         instruction_file,
         work_dir,
     ):
@@ -245,7 +239,7 @@ class TestTbCoderRunNarrowsScope:
 
     def test_restores_scope_on_exception(
         self,
-        state_with_dut_info,
+        ticket_state,
         instruction_file,
         work_dir,
     ):
@@ -265,17 +259,13 @@ class TestTbCoderRunNarrowsScope:
         # Scope file restored even though the agent invocation blew up.
         assert (work_dir / ".scope.json").read_text(encoding="utf-8") == original
 
-    def test_narrows_to_tb_dirs_when_dut_info_empty(
+    def test_narrows_to_tb_dirs_with_minimal_state(
         self,
         empty_state,
         instruction_file,
         work_dir,
     ):
-        """Narrowing is directory-categorical — it does not depend on dut_info.
-
-        Phase 4: even with empty dut_info the tb Coder is narrowed to its tb
-        source-dir globs (the ticket Scope pre-commit hook still bounds commits).
-        """
+        """Minimal state still narrows to the configured TB directory globs."""
         endpoint = _make_tb_coder(instruction_file, work_dir, scope="tb/*.sv")
         endpoint.read_state()
         original = (work_dir / ".scope.json").read_text(encoding="utf-8")

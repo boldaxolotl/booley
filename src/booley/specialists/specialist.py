@@ -382,10 +382,8 @@ class Specialist(McpTool):
     def _validate_interactive_args(self) -> McpToolResult | None:
         """Interactive-Mode argument validation hook.
 
-        Default: no-op.  Specialists that previously auto-filled args from
-        ``state.dut_info`` (debugger, coverage_analyst, mutation_tester)
-        override this to catch missing args with a useful message instead
-        of crashing deep in the prompt builder or argv assembly.
+        Default: no-op. Specialists override this to catch missing arguments
+        with a useful message before prompt construction or command assembly.
         """
         return None
 

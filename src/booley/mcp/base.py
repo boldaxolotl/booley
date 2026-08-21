@@ -34,6 +34,7 @@ from booley.dev_support.development_state import (
     compute_source_fingerprint,
 )
 from booley.flows import execution
+from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime import job_slots
 from booley.runtime.job_records import _proc_cmdline
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -48,7 +49,6 @@ from .diff_classify import (
     read_source_dirs_from_toml,  # noqa: F401 — public API re-export; base itself never calls it
 )
 from .events import (
-    _display_tb_top,
     _emit_criteria_update,
     _endpoint_end_event,
     _endpoint_progress_event,
@@ -459,7 +459,7 @@ class McpTool(ABC):
         self.state.set_criterion(key, met, detail=stamped_detail)
         if self.state._file_path is not None:
             self.state.save()
-            _emit_criteria_update(self.state, tb_top=self._console_tb_top())
+            _emit_criteria_update(self.state)
 
     def _stamp_source_fingerprint(
         self,
@@ -479,8 +479,13 @@ class McpTool(ABC):
                 Path(self.args.work_dir),
                 target=source_target,
             )
-        except OSError:
-            logger.debug("Could not compute source fingerprint", exc_info=True)
+        except (OSError, FuseSocError) as exc:
+            logger.warning(
+                "Could not stamp source fingerprint for criterion %s, target %r: %s",
+                key,
+                source_target,
+                exc,
+            )
             return stamped
         stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = {
             "categories": sorted(categories),
@@ -690,74 +695,10 @@ class McpTool(ABC):
 
     # --- Pre-run guardrails ---
 
-    def required_dut_info_halves(self) -> frozenset[str]:
-        """Per-instance DUT-info gate (ADR 0009 / Phase 4).
-
-        Returns the set of halves (``"dut"``, ``"tb"``) that must already be
-        populated in ``state.dut_info`` before this endpoint may run.  Default is
-        empty (no gating).  NOT a ClassVar — ``Coder``'s requirement varies by
-        ``--category``.
-        """
-        return frozenset()
-
-    def _check_dut_info_gate(self) -> McpToolResult | None:
-        """Reject when required ``dut_info`` halves aren't populated.
-
-        Skips when there is no state file (human / standalone mode), mirroring
-        ``_check_review_gate``.
-        """
-        if self._state is None or self._state._file_path is None:
-            return None
-        required = self.required_dut_info_halves()
-        if not required:
-            return None
-        if "dut" in required and not self._state.dut_info.has_dut_half():
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=self._dut_info_gate_message("dut", "rtl"),
-            )
-        if "tb" in required and not self._tb_half_present():
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text=self._dut_info_gate_message("tb", "tb"),
-            )
-        return None
-
-    def _tb_half_present(self) -> bool:
-        """True when ``dut_info`` has enough TB identity to run."""
-        if self._state is None:
-            return False
-        return self._state.dut_info.has_tb_half()
-
-    def _dut_info_gate_message(self, half: str, category: str) -> str:
-        """Build the dut_info gate rejection message.
-
-        There is no planner specialist: dut_info is seeded mechanically from
-        scope and sim criteria. An empty half means that seeding did not run
-        or could not resolve the DUT/TB interface.
-        """
-        return (
-            f"cannot run {self.name}: state.dut_info.{half} is empty. "
-            f"dut_info for the {category} side should have been seeded "
-            "mechanically from scope and sim criteria. Check the RTL scope, "
-            "sim_pass TB path, and module name prose."
-        )
-
-    def _default_dut_info_args(self) -> None:
-        """Default well-known CLI args from ``state.dut_info`` when omitted.
-
-        Called from ``main()`` after the dut_info gate passes, so any endpoint
-        that gates on a half can trust state is populated.  Explicit args
-        always win (only fills when the parsed value is None / empty).
-
-        ``tb_top`` is the exception: ADR 0022 dec 12 moved it out of DUT Info
-        (it is the resolved sim Target's ``toplevel``), so it is defaulted from
-        ``tb_top_for_target`` keyed on the endpoint's Target rather than from
-        a stored field.
-        """
+    def _default_target_args(self) -> None:
+        """Default well-known CLI arguments from the selected Target."""
         if self._state is None:
             return
-        info = self._state.dut_info
         if hasattr(self.args, "tb_top") and not getattr(self.args, "tb_top", None):
             target = getattr(self.args, "target", "")
             if target:
@@ -770,33 +711,6 @@ class McpTool(ABC):
                 )
                 if tb_top:
                     self.args.tb_top = tb_top
-        if (
-            info.dut_top_module
-            and hasattr(self.args, "dut_top")
-            and not getattr(self.args, "dut_top", None)
-        ):
-            self.args.dut_top = info.dut_top_module
-        if (
-            info.dut_hier_path
-            and hasattr(self.args, "trace_scope")
-            and not getattr(self.args, "trace_scope", None)
-        ):
-            self.args.trace_scope = info.dut_hier_path
-
-    def _console_tb_top(self) -> str:
-        """The TB top to ride along on this endpoint's criteria_update event.
-
-        Sourced via :func:`_display_tb_top` (cheap ``.core`` read of the sim
-        Target's ``toplevel``) so the console DUT-info panel reflects reality
-        after ADR 0022 dec 12 moved ``tb_top`` out of DUT Info. Best-effort.
-        """
-        work_dir = getattr(self.args, "work_dir", None) if self._args else None
-        if work_dir is None:
-            return ""
-        try:
-            return _display_tb_top(str(Path(work_dir).resolve()), self._selected_target)
-        except Exception:  # noqa: BLE001 — best-effort display TB top; any failure degrades to placeholder
-            return ""
 
     def steering_text(self) -> str:
         """Return steering text from repeated ``--steer`` values."""
@@ -891,11 +805,7 @@ class McpTool(ABC):
         if (early_exit := self._apply_pre_state_gate()) is not None:
             return early_exit
         self.read_state()
-        # Guardrail: dut_info gate.
-        dut_gate_result = self._check_dut_info_gate()
-        if dut_gate_result is not None:
-            return self._reject_with_gate(dut_gate_result)
-        self._default_dut_info_args()
+        self._default_target_args()
         display_target = self._resolve_display_config()
 
         _write_display_event(_endpoint_start_event(self.name, display_target))
@@ -1095,7 +1005,7 @@ class McpTool(ABC):
         )
         if self._state is not None and self._state._file_path is not None:
             self.state.save()
-            _emit_criteria_update(self.state, tb_top=self._console_tb_top())
+            _emit_criteria_update(self.state)
         if self.write_report(result) is None:
             self._warn_no_report_artifact()
         # Human / standalone mode (no state file): the actionable diagnostic lives

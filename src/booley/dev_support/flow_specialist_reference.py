@@ -230,26 +230,26 @@ def _render_mutation_tester_reference() -> list[str]:
         "",
         "Read-only, lock-based mutation testing. An LLM creator inserts "
         "output-observable single-point RTL mutations once; deterministic "
-        "baseline and mutant simulations then measure how many the selected "
-        "test detects. The creator can target operator/comparison/polarity/bit-select "
+        "baseline and mutant simulations then measure how many the Target's "
+        "complete test suite detects. The creator can target operator/comparison/polarity/bit-select "
         "changes, reset values, FSM next-state logic, and LHS/signal swaps.",
         "",
         "**Mutation campaign modes:**",
         "",
         "| Campaign | Ticket Mode (`mandatory` or `optional`) | Standalone CLI options |",
         "|----------|-----------------------------------------|------------------------|",
-        "| Default fixed | `mutation_score: true` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |",
-        '| Explicit fixed | `mutation_score: "K/N"` — generate N mutations and require K detected (for example `"8/10"`) | `--count N` requires all N; add `--min-detected K` to require K |',
-        '| Complexity-scaled | `mutation_score: "auto"` — choose 3-25 mutations from RTL complexity and the time budget, requiring all selected mutations | `--count auto` does the same; add `--min-detected K` for an explicit threshold |',
+        "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |",
+        "| Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |",
+        "| Complexity-scaled | add `auto: true` — choose 3-25 mutations from RTL complexity and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |",
         "",
         "Standalone `--dry-run` prints the complexity breakdown and proposed "
         "auto count without running mutations.",
         "",
         "Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; "
-        "`--target <sim-target>` and optional `--test <name>` choose what tries to "
-        "detect them; `--steer <context>` biases mutation selection. A valid lock "
+        "`--target <sim-target>` chooses the complete runnable Target suite; "
+        "`--steer <context>` biases mutation selection. A valid lock "
         "is reused on later runs, so new steering takes effect only with "
-        "`--regen-lock`. Standalone calls can override DUT discovery with "
+        "`--regen-lock`. Standalone calls can override module discovery with "
         "`--dut-top`, `--dut-files`, and `--tb-top`.",
     ]
 
