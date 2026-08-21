@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import as_dict, as_positive_int, as_str
 from booley.eda.vivado import POLICY_REVISION, SUPPORTED_VERSION
 
 CACHE_SCHEMA = 2
@@ -237,7 +238,7 @@ def _read_metadata(work_root: Path) -> dict[str, Any] | None:
         raw = json.loads((work_root / CACHE_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return raw if isinstance(raw, dict) else None
+    return as_dict(raw)
 
 
 def _metadata_matches(
@@ -257,10 +258,11 @@ def _metadata_matches(
 
 def _valid_producer_evidence(value: Any) -> bool:
     """Return whether cache metadata identifies its producing run."""
-    if not isinstance(value, dict) or value.get("version") != 1:
+    evidence = as_dict(value)
+    if evidence is None or as_positive_int(evidence.get("version"), 0) != 1:
         return False
     return all(
-        isinstance(value.get(key), str) and bool(value[key])
+        as_str(evidence.get(key))
         for key in ("run_id", "source_revision", "source_sha256", "recipe_sha256")
     )
 

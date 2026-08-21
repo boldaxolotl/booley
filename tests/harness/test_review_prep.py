@@ -554,7 +554,7 @@ def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path,
     assert outcome.status == "ready"
     assert "**Recommendation:** hold" in outcome.briefing
     assert "`rtl/extra.sv` — **Needs review**" in outcome.briefing
-    assert "HTML explanation: unavailable" in outcome.briefing
+    assert "Polished HTML report: unavailable" in outcome.briefing
 
 
 @pytest.mark.asyncio
@@ -605,7 +605,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
     )
     briefing_outcome = rp.review_briefing_command(tmp_path, "demo", open_diffs=False)
     assert briefing_outcome.status == "ready"
-    assert "HTML explanation: unavailable" in briefing_outcome.briefing
+    assert "Polished HTML report: unavailable" in briefing_outcome.briefing
 
 
 @pytest.mark.asyncio

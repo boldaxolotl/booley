@@ -74,11 +74,29 @@ def test_triage_review_briefing_is_fixed_compact_and_html_linked():
         "`<abbreviated SHA>` — <complete commit subject; one line per commit, oldest first>",
         "#### Changed files",
         "#### Reports",
-        "[Run report](/absolute/path/to/REPORT.md)",
-        "[HTML explanation](/absolute/runtime/path/to/report.html)",
+        "[Developer Agent report (REPORT.md)](/absolute/path/to/REPORT.md)",
+        "[Polished HTML report](/absolute/runtime/path/to/report.html)",
+        "#### Explanation highlights",
+        "#### Review findings and dispositions",
         "#### Run economics",
     ):
         assert required in template
+    ordered_sections = (
+        "#### Reports",
+        "#### Decision summary",
+        "#### Findings",
+        "#### Explanation highlights",
+        "#### Scope deviations",
+        "#### Changed files",
+        "#### Criteria",
+        "#### Review findings and dispositions",
+        "#### Commit history",
+        "#### Run economics",
+    )
+    assert [template.index(section) for section in ordered_sections] == sorted(
+        template.index(section) for section in ordered_sections
+    )
+    assert template.index("Developer Agent report") < template.index("Polished HTML report")
     assert "run-summary.md" not in template
     assert "usage.md" not in template
     assert "prepare-review $SLUG" not in review

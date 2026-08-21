@@ -509,6 +509,11 @@ class TestClockScopedParamValidation:
         with pytest.raises(ValueError, match="positive number"):
             _validate_criterion_params("synthesis_ok", {"clk_i.fmax_mhz_min": -1})
 
+    @pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
+    def test_numeric_param_rejects_bool_and_non_finite_values(self, value):
+        with pytest.raises(ValueError, match="positive number"):
+            _validate_criterion_params("synthesis_ok", {"clk_i.fmax_mhz_min": value})
+
 
 class TestClockScopeHelpers:
     def test_split_clock_scope_flat(self):
