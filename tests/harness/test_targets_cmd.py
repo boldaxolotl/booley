@@ -30,7 +30,7 @@ _CORE = textwrap.dedent(
         filesets: [rtl]
       sim:
         flow: sim
-        flow_options: {tool: verilator}
+        flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}
         filesets: [rtl, tb]
         toplevel: tb_alpha
       synth:
@@ -46,9 +46,7 @@ _CORE = textwrap.dedent(
 def project(tmp_path: Path) -> Path:
     (tmp_path / "alpha.core").write_text(_CORE, encoding="utf-8")
     (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project" / "booley.toml").write_text(
-        '[flows.sim]\ndefault_target = "sim"\n', encoding="utf-8"
-    )
+    (tmp_path / ".booley_project" / "booley.toml").write_text("[flows.sim]\n", encoding="utf-8")
     return tmp_path
 
 
@@ -59,12 +57,12 @@ def _run(project: Path, *argv: str) -> int:
 
 
 class TestTargetsListing:
-    def test_lists_grouped_with_wiring(self, project: Path, capsys):
+    def test_lists_grouped_with_doctor_selection(self, project: Path, capsys):
         assert _run(project) == 0
         out = capsys.readouterr().out
         assert "acme:ip:alpha:1.0  (alpha.core)" in out
         assert "sim" in out and "synth" in out
-        assert "← sim" in out
+        assert "Dr sim, elab" in out
 
     def test_no_cores_message(self, tmp_path: Path, capsys):
         assert _run(tmp_path) == 0
@@ -118,7 +116,7 @@ class TestTargetsDetail:
         assert _run(project, "sim") == 0
         out = capsys.readouterr().out
         assert "Target sim" in out
-        assert "wired to      sim" in out
+        assert "Doctor        sim, elab" in out
         assert "Resolved view unavailable: could not invoke fusesoc" in out
 
     def test_detail_json(self, project: Path, capsys, monkeypatch):

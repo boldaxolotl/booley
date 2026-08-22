@@ -3484,7 +3484,7 @@ class TestAggregateDetailIsSelfContained:
 
     def test_result_from_aggregate_carries_it(self, tmp_path: Path):
         flow = AsicSynthesizeFlow()
-        flow.parse_args(["--work-dir", str(tmp_path)])
+        flow.parse_args(["--work-dir", str(tmp_path), "--target", "asic_a"])
         flow.read_state()
         with patch.object(AsicSynthesizeFlow, "_set_config_criterion"):
             result = flow._aggregate_results(["asic_a"], {"asic_a": self._metrics()}, {}, None)

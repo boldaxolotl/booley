@@ -99,3 +99,18 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "booley-sandbox=docker-image://" in workflow
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
+
+
+def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
+    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    assert "repository: YosysHQ/picorv32" in workflow
+    assert "repository: boldaxolotl/booley-prj-picorv32" in workflow
+    assert "booley init" in workflow
+    assert "booley doctor --deep --skip-agent-checks" in workflow
+    assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
+    assert 'bash "${project_dir}/hooks/post-setup.sh"' in workflow
+    assert "python -m booley.ticket_board parse-ticket" in workflow
+    assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
+    assert 'booley run --ticket "${ticket_slug}" --dry-run' in workflow
+    assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow

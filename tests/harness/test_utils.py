@@ -375,7 +375,7 @@ class TestScopePrecommitHook:
         assert hook.main() == 1
 
     @patch("subprocess.run")
-    def test_stealth_cores_are_not_harness_owned(self, mock_run, tmp_path, monkeypatch):
+    def test_stealth_cores_are_immutable_contract_controls(self, mock_run, tmp_path, monkeypatch):
         hook = self._import_hook()
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".scope.json").write_text('{"scope": [".booley_project/cores/dut.core"]}')
@@ -385,4 +385,4 @@ class TestScopePrecommitHook:
             stdout=".booley_project/cores/dut.core\0",
             stderr="",
         )
-        assert hook.main() == 0
+        assert hook.main() == 1

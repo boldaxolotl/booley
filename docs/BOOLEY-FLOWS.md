@@ -510,24 +510,19 @@ Either way the failing stage's own output (a missing liberty file, a
 Yosys/sv2v error) is carried into the report, so the reason is named instead
 of a bare "no metrics".
 
-#### Ticket baselines and recipe changes
+#### Ticket baselines and sealed recipes
 
-Ticket Mode treats a Target's synthesis recipe as revision-owned by default;
-the ticket has no `same`/`different` recipe control field. Intake snapshots the
-normalized recipe of each existing Target named by `synthesis_ok`. When the
-criterion contains a baseline-relative threshold, `synth` automatically runs
-the ticket's immutable `base_sha` with the Target recipe from that revision,
-then runs the ticket head with its current Target recipe. For projects whose
-`.booley_project` is a paired Git repository, the baseline run likewise uses
-the paired repository's ticket fork point rather than copying the live Target
-definition into both runs.
+Ticket creation seals the normalized Target/control-plane surface before
+enqueue. For a baseline-relative threshold, `synth` runs both the contract's
+`base_sha` and the ticket head with that identical synthesis recipe. A paired
+`.booley_project` repository is pinned independently by the contract's
+`project_sha`, so parameters, constraints, and hooks are identical too.
 
-A recipe difference is evidence, not a failure: acceptance comes from the
-requested cell-count, area, and timing checks. The Review package shows the
-normalized recipe changes next to those QoR deltas during triage. A missing or
-mismatched baseline, baseline recipe, or metric fails closed; Booley never
-reports a relative criterion as passing when it skipped the comparison.
-The same revision-owned contract applies to `fpga_impl_ok` below.
+Intake, every Flow entry, the developer pre-commit hook, and final handoff all
+verify the seal. A missing or modified recipe blocks as
+`target-contract-change-required`; it is never accepted as part of the
+implementation or silently skipped. The same immutable contract applies to
+`fpga_impl_ok` below. See [TARGET-CONTRACT.md](TARGET-CONTRACT.md).
 
 ### Reports and Criteria detail
 
@@ -622,8 +617,7 @@ Flow configuration.
 
 Field rules:
 
-- `--target`: one or more FuseSoC Target names. When omitted, falls back to
-  `[flows.fpga].default_target`.
+- `--target`: one or more FuseSoC Target names; required on every invocation.
 - `--baseline`: compare against a git ref. The baseline is built in an
   ephemeral `git worktree`, so it works in Interactive Mode as well as Ticket
   Mode (the two execution modes; see [CONTEXT.md](CONTEXT.md)). A Ticket Mode
@@ -731,18 +725,13 @@ clock `clk_i` (see [USAGE.md](USAGE.md#synthesis--fpga-threshold-flavours)).
 Provisioning and setup failures are Flow errors. Missing metrics, timing
 violations, and critical design conditions are design failures.
 
-#### Ticket baselines and recipe changes
+#### Ticket baselines and sealed recipes
 
-As with `synthesis_ok`, Ticket Mode snapshots the normalized FPGA Target recipe
-at intake and needs no `same`/`different` control field. For a relative
-`fpga_impl_ok` threshold, the baseline pass implements `base_sha` with its
-revision's part, out-of-context choice, parameters, toplevel, and XDC contents;
-the current pass uses the ticket head's recipe. Paired `.booley_project`
-repositories use their ticket fork point for the baseline Target definition.
-
-Recipe changes are accepted and listed beside utilization and timing deltas in
-the Review package. The criterion fails closed when its pinned baseline,
-baseline recipe, or requested metrics are missing or mismatched.
+As with `synthesis_ok`, a relative `fpga_impl_ok` threshold implements
+`base_sha` and the ticket head with the same sealed part, out-of-context choice,
+parameters, toplevel, hooks, and XDC contents. Paired `.booley_project`
+repositories use the contract's exact `project_sha`. Any recipe mismatch fails
+closed and requires contract revision; it cannot become a developer change.
 
 ### Reports and Criteria detail
 

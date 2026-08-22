@@ -37,8 +37,6 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from booley.targets.flow_names import DEFAULT_TARGET_KEY
-
 logger = logging.getLogger(__name__)
 
 #: Identifiers too generic to redact: replacing them would shred unrelated prose
@@ -185,22 +183,35 @@ def _core_identifiers(project_root: Path) -> set[str]:
             names.update(
                 stripped for piece in raw.strip("\"'").split(":") if (stripped := piece.strip())
             )
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if not re.match(r"^\s*targets\s*:\s*(?:#.*)?$", line):
+                continue
+            section_indent = len(line) - len(line.lstrip())
+            target_indent: int | None = None
+            for child in lines[index + 1 :]:
+                if not child.strip() or child.lstrip().startswith("#"):
+                    continue
+                indent = len(child) - len(child.lstrip())
+                if indent <= section_indent:
+                    break
+                match = re.match(r"^\s*([^:#][^:]*)\s*:\s*", child)
+                if match is None:
+                    continue
+                if target_indent is None:
+                    target_indent = indent
+                if indent == target_indent:
+                    names.add(match.group(1).strip("\"' "))
         names.add(core.stem)
     return names
 
 
 def _config_identifiers(booley_toml: dict) -> set[str]:
-    """Project name and every configured Target name from ``booley.toml``."""
+    """Project identifiers declared in ``booley.toml``."""
     names: set[str] = set()
     project = booley_toml.get("project")
     if isinstance(project, dict) and isinstance(project.get("name"), str):
         names.add(project["name"])
-    flows = booley_toml.get("flows")
-    if isinstance(flows, dict):
-        for value in flows.values():
-            if isinstance(value, dict) and isinstance(value.get(DEFAULT_TARGET_KEY), str):
-                # Targets may be VLNV-qualified ("vendor:lib:core#target_name").
-                names.update(part for part in re.split(r"[#:]", value[DEFAULT_TARGET_KEY]) if part)
     return names
 
 

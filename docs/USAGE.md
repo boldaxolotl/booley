@@ -58,6 +58,13 @@ such as `booley cheat --commands --project`.
 that one needs the Session Runtime; both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
+Credential-free release automation can use
+`booley doctor --deep --skip-agent-checks`. Doctor reports the agent credential
+inspection, Ticket Mode backend-health check, and live Developer authorization
+probe as skipped; every non-agent project, runtime, Ticket Mode, and EDA check
+still runs. This flag is for smoke tests, not the normal setup gate before an
+agent session.
+
 If `booley` is not found, return to the [installation instructions](../README.md#installation).
 Do not continue into the
 container until plain `booley doctor` has no unresolved failures or warnings.
@@ -350,7 +357,10 @@ booley targets sim_soc          # resolved detail view: parameters, files, SDC/X
 booley targets --json             # machine-readable (composes with all of the above)
 ```
 
-The listing is a cheap `.core`-YAML read (works host-side too) and marks each Target wired via `[flows.*].default_target` with `←`; only the single-Target detail view runs `fusesoc run --setup`, so run that one inside the Session Runtime. Agents get the same listing as the `booley_targets` MCP tool.
+The listing is a cheap `.core`-YAML read (works host-side too) and marks each
+Target's `flow_options.booley.doctor` selection with `Dr`; only the single-Target
+detail view runs `fusesoc run --setup`, so run that one inside the Session Runtime.
+Agents get the same listing as the `booley_targets` MCP tool.
 
 **Qualifying an ambiguous name.** When two cores declare the same Target name (normal in a multi-core repo), pass `vlnv#target` — the core's FuseSoC coordinate, a `#`, then the Target: `--target 'lowrisc:ibex:ibex_top#lint'`. The VLNV part can be shortened to any unambiguous suffix (`ibex_top#lint` works), and `booley targets` prints the shortest form that resolves. Quote it: `#` starts a comment in most shells.
 
@@ -547,7 +557,7 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
 
-In Ticket Mode, synthesis and FPGA implementation recipes are revision-owned by default; there is no ticket field for declaring whether a recipe may change. Intake snapshots each existing Target's normalized recipe. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion then automatically runs `base_sha` with that revision's Target recipe and the ticket head with the current recipe. Recipe changes are allowed and shown with the QoR deltas in the Review package. Missing or mismatched baseline evidence fails the criterion instead of skipping its relative checks.
+In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs `base_sha` and the ticket head with the same normalized Target recipe. Developer execution cannot change contract controls; a missing or incorrect recipe blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -773,6 +783,9 @@ booley doctor
 
 # Run real smoke checks against the first applicable sim/lint/synthesis Targets
 booley doctor --deep
+
+# Release smoke only: omit credentials and the live Developer probe
+booley doctor --deep --skip-agent-checks
 ```
 
 Every manual doctor run that ends with zero FAILs and zero active WARNs records

@@ -354,7 +354,7 @@ def lookup_target_section(sections: Mapping[str, Any], target: str) -> Any:
 
     A Target is named either bare (``sim``) or VLNV-qualified
     (``booley:ibex:port#sim``), and the two forms must not diverge: a
-    multi-core repo has to qualify ``[flows.*].default_target`` to disambiguate, while
+    multi-core repo may pass a qualified ``--target`` to disambiguate, while
     the tests.toml template and the scaffold both emit a bare section. Matching
     only on the literal string silently returns "no tests declared" — the test
     runs uninitialized instead of erroring, which is the worst possible

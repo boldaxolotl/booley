@@ -27,7 +27,7 @@ class TestTiers:
 
     @pytest.mark.parametrize(
         "path",
-        ["rtl/pkg.sv", "tb/tb_dut.sv", "docs/spec.md", "dut.core", "constraints/dut.sdc"],
+        ["rtl/pkg.sv", "tb/tb_dut.sv", "docs/spec.md"],
     )
     def test_everything_else_is_advisory_not_forbidden(self, path):
         """Anything an agent might need to finish hardware work stays advisory."""
@@ -44,6 +44,10 @@ class TestTiers:
             ".booley/project/booley.toml",
             # Harness-vendored scripts synthesis actually executes.
             ".booley/src/yosys/run_yosys_syn.py",
+            # The sealed execution contract is immutable during development.
+            "dut.core",
+            "constraints/dut.sdc",
+            ".booley_project/cores/dut.core",
         ],
     )
     def test_harness_bookkeeping_is_forbidden(self, path):
@@ -53,13 +57,12 @@ class TestTiers:
     @pytest.mark.parametrize(
         "path",
         [
-            ".booley_project/cores/dut.core",
             ".booley_project/adapters/thing.py",
             ".booley_project/docs/fw/memory-map.md",
         ],
     )
     def test_authored_project_content_is_carved_out(self, path):
-        """Authored design descriptions and docs are not harness bookkeeping."""
+        """Non-contract project adapters and docs remain ordinary authored content."""
         assert classify_path(SCOPE, path) is ScopeTier.ADVISORY
 
     def test_backslashes_and_dot_prefix_normalize(self):

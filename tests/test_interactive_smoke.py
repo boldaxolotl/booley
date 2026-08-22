@@ -105,7 +105,7 @@ class TestRequiredArgsValidation:
         result = tool._run()
         assert result.exit_code == EXIT_ERROR
         assert "--target" in result.report_text
-        assert ".booley_project" in result.report_text
+        assert "booley targets" in result.report_text
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from booley.core.models import (  # noqa: F401
     AgentResult,
     OnSuccess,
 )
+from booley.ticket_board.target_contract import TargetContract
 
 
 @dataclass
@@ -56,6 +57,8 @@ class TicketContext:
     base_sha: str = ""
     # Generation stamped atomically when this harness execution activates the ticket.
     execution_id: str = ""
+    # Sealed Target/control-plane identity; appended for positional compatibility.
+    target_contract: TargetContract | None = None
 
     @property
     def work_dir(self) -> Path:

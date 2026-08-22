@@ -94,12 +94,11 @@ retry cap as permission to waive a finding silently.
 
 _BASELINE_QOR_RULE = """\
 **BASELINE QoR CRITERIA**: For baseline-relative `synthesis_ok` and \
-`fpga_impl_ok` criteria, Target recipes are revision-owned. Booley runs \
-`base_sha` with the baseline revision's recipe and the ticket head with the \
-current recipe. Recipe differences are evidence, not failures—do not alter a \
-Target merely to reproduce the baseline recipe. Acceptance is determined by \
-the requested QoR thresholds. Missing or mismatched baseline evidence is an \
-infrastructure failure, not a reason to skip comparisons.
+`fpga_impl_ok` criteria, the sealed Target recipe is immutable. Booley runs \
+both `base_sha` and the ticket head with that identical recipe. Never alter a \
+Target, constraint, parameter, or build hook during execution. A missing or \
+incorrect recipe requires a `target-contract-change-required` block and a \
+proposal in the run report; it is not a reason to skip comparisons.
 
 """
 
@@ -200,15 +199,19 @@ For verification work, read the requirements, plan the testbench approach, then 
 edit the TB sources directly. After any RTL/TB edit, rerun the relevant \
 verification criteria before finishing.
 
-7. **SCOPE**: The ticket's `scope` lists the files the work is expected to \
+7. **SCOPE AND TARGET CONTRACT**: The ticket's `scope` lists the implementation \
+files the work is expected to \
 touch. Treat it as the plan, not a fence: prefer to stay inside it, but if \
 finishing the ticket genuinely requires editing a file it does not name — a \
-shared package, a `.core` fileset, a neighbouring module — edit that file and \
+shared package or a neighbouring module — edit that file and \
 say why in your run report. Do not leave the work half-done, and do not \
-weaken a test to avoid touching something. Every file you commit outside the \
-scope is recorded and shown to a human reviewer. The exception is harness \
-bookkeeping (development state, criteria, ticket files, `booley.toml`): those \
-are never yours to edit, and commits touching them are rejected.
+weaken a test to avoid touching something. Target/control-plane files are \
+immutable even when Scope names them: this includes every `.core`, \
+`.booley_project/tests.toml`, Target-selection configuration in `booley.toml`, \
+selected SDC/XDC constraints, and generator/build hooks. If one is missing or \
+incorrect, record the required contract revision and block as \
+`target-contract-change-required`; never edit it. Harness bookkeeping \
+(development state, criteria, and ticket files) is likewise forbidden.
 
 """
 
@@ -254,7 +257,7 @@ def _build_rules_section(
 
 
 def _has_baseline_relative_qor_criteria(criteria: dict[str, Any] | None) -> bool:
-    """Return whether ticket criteria require a revision-owned QoR baseline."""
+    """Return whether ticket criteria require a sealed-recipe QoR baseline."""
     if not criteria:
         return False
     for section_name in ("mandatory", "optional"):

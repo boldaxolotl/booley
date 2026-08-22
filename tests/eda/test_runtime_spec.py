@@ -15,6 +15,7 @@ from booley.eda import authority, runtime_spec
 from booley.eda.vivado import wrapper_path
 from booley.harness import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.project_dir import reset_cache
 
 
 def _install_trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -228,6 +229,54 @@ def test_nested_definition_mount_is_final() -> None:
     assert spec["mounts"][-1] == (
         "source=/repo/.devcontainer,target=/work/.devcontainer,type=bind,readonly"
     )
+
+
+def test_disabled_fpga_does_not_request_host_vivado(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    project = tmp_path / "project"
+    project_dir = project / ".booley_project"
+    project_dir.mkdir(parents=True)
+    (project_dir / "booley.toml").write_text(
+        """\
+[flows.fpga]
+enabled = false
+
+[eda.vivado]
+provisioning = "host"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr("booley.eda.config.sys.platform", "linux")
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    requested: list[bool] = []
+
+    @contextmanager
+    def resolved(_project: Path, host_provisioning: bool):
+        requested.append(host_provisioning)
+        yield None, None
+
+    monkeypatch.setattr(runtime_spec.authority, "resolve_for_issuance", resolved)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+
+    config, installation = runtime_spec.requested_host_installation(project)
+    assert config is not None
+    assert installation is None
+    assert runtime_spec.requested_license(project) is None
+    assert requested == [False]
 
 
 def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
