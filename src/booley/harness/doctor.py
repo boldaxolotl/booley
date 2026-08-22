@@ -33,6 +33,7 @@ from booley.audit import (
     flow_schema,
     project_schema,
     resource_policy,
+    target_matrix,
 )
 from booley.config.guidance_links import (
     CANON_NAME,
@@ -1574,7 +1575,7 @@ def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMem
     return resource_policy.heavy_memory_reservation(
         raw,
         calibration,
-        _doctor_targets(project, "synth"),
+        target_matrix.doctor_targets(project.project_root, "synth"),
     )
 
 
@@ -3994,7 +3995,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
     audit = design_size.analyze_design_size(
         project.project_root,
         project.project_dir,
-        _doctor_target_seed(project),
+        _project_target_matrix(project).seed_targets,
     )
     label = (
         "Doctor Target filesets"
@@ -4192,7 +4193,7 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     unfollowable for a repo that must stay byte-identical to upstream.
     """
     owned: set[Path] = set()
-    for token in _doctor_target_seed(project):
+    for token in _project_target_matrix(project).seed_targets:
         try:
             owned.add(fusesoc_registry.resolve_ref(root, token).core_file)
         except fusesoc_registry.FuseSocError:
@@ -4215,7 +4216,7 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
     each caller.
     """
     selected: set[tuple[Path, str]] = set()
-    for token in _doctor_target_seed(project):
+    for token in _project_target_matrix(project).seed_targets:
         try:
             ref = fusesoc_registry.resolve_ref(root, token)
         except fusesoc_registry.FuseSocError:
@@ -4286,7 +4287,9 @@ def _check_core_setup_hazards(
     """Catch offline-provider and recursive-symlink failures before FuseSoC."""
     note_sink = _note or _pass
     owned_cores = _owned_core_files(project, root)
-    selected_closure = fusesoc_registry.selectable_core_closure(root, _doctor_target_seed(project))
+    selected_closure = fusesoc_registry.selectable_core_closure(
+        root, _project_target_matrix(project).seed_targets
+    )
     required_cores = owned_cores | set(selected_closure or ())
     hazards = fusesoc_registry.core_setup_hazards(root)
     if not hazards:
@@ -4436,7 +4439,7 @@ def _run_core_audit(
             _warn,
             _fail,
             _note=note_sink,
-            selected_targets=set(_doctor_target_seed(project)) or None,
+            selected_targets=set(_project_target_matrix(project).seed_targets) or None,
         )
 
         # 2b*. Verilator sim Targets built with the auto --main/--binary have no
@@ -4472,7 +4475,7 @@ def _run_core_audit(
     violations = core_security.validate_project_cores(
         root,
         scope=_project_write_scope(root),
-        seed_targets=_doctor_target_seed(project),
+        seed_targets=_project_target_matrix(project).seed_targets,
     )
     if violations:
         for v in violations:
@@ -4708,22 +4711,6 @@ def _check_legacy_core_targets(
         )
 
 
-def _doctor_axis_by_target(project: ProjectAudit) -> dict[str, str]:
-    """Bare Target name -> naming axis implied by its Doctor metadata."""
-    axes: dict[str, str] = {}
-    try:
-        declarations = fusesoc_registry.target_declarations(project.project_root)
-    except fusesoc_registry.FuseSocError:
-        return axes
-    for name, refs in declarations.items():
-        for ref in refs:
-            for flow_name in ref.doctor_flows:
-                axis = target_naming.AXIS_FOR_FLOW.get(flow_name)
-                if axis:
-                    axes.setdefault(name, axis)
-    return axes
-
-
 def _check_naming_conventions(
     project: ProjectAudit,
     root: Path,
@@ -4759,7 +4746,7 @@ def _check_target_naming(
     del refs  # qualified duplicate Target names need exact declaration scope
     state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
-    doctor_axes = _doctor_axis_by_target(project)
+    doctor_axes = _project_target_matrix(project).axes()
     try:
         declarations = fusesoc_registry.target_declarations(root)
     except fusesoc_registry.FuseSocError:
@@ -5724,7 +5711,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     Advisory by design — this is a curated header list, not a resolver, so it
     can only be a hint. It never fails the gate.
     """
-    seeds = _doctor_target_seed(project)
+    seeds = _project_target_matrix(project).seed_targets
     if not seeds:
         return
     root = project.project_root
@@ -5808,18 +5795,6 @@ def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail
         )
 
 
-def _doctor_target_matcher(project: ProjectAudit) -> Callable[[str, str], bool]:
-    """Return whether an enumerated Target belongs to Doctor's explicit matrix."""
-    selected: set[tuple[str, str]] = set()
-    for token in _doctor_target_seed(project):
-        try:
-            ref = fusesoc_registry.resolve_ref(project.project_root, token)
-        except fusesoc_registry.FuseSocError:
-            continue
-        selected.add((ref.name, ref.vlnv))
-    return lambda name, vlnv: (name, vlnv) in selected
-
-
 def _report_core_resolve(
     name: str,
     ok: bool,
@@ -5884,7 +5859,7 @@ def _run_core_resolve_checks(
     if not refs:
         return
 
-    is_configured = _doctor_target_matcher(project)
+    is_configured = _project_target_matrix(project).is_selected
 
     image = _sandbox_image(project)
     if docker_exe and _docker_image_exists_by_name(image):
@@ -6948,18 +6923,17 @@ def _is_simulate_tb_top_skip(
 
 def _doctor_targets(project: ProjectAudit, flow_name: str) -> list[str]:
     """Every ``.core`` Target that explicitly selects one Doctor Flow."""
-    try:
-        return fusesoc_registry.doctor_target_selectors(project.project_root, flow_name)
-    except fusesoc_registry.FuseSocError:
-        return []
+    return list(target_matrix.doctor_targets(project.project_root, flow_name))
 
 
 def _doctor_target_seed(project: ProjectAudit) -> list[str]:
     """The deduplicated Target surface that Doctor gates and audits."""
-    try:
-        return fusesoc_registry.doctor_target_seed(project.project_root)
-    except fusesoc_registry.FuseSocError:
-        return []
+    return list(_project_target_matrix(project).seed_targets)
+
+
+def _project_target_matrix(project: ProjectAudit) -> target_matrix.DoctorTargetMatrix:
+    """Build the domain view consumed by Doctor's target orchestration."""
+    return target_matrix.build_doctor_target_matrix(project.project_root)
 
 
 def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) -> list[str]:
