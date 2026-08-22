@@ -8,7 +8,8 @@ use crate::io::{
     write_hierarchy_scope, write_hierarchy_up_scope, write_hierarchy_var,
 };
 use crate::{
-    FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType, Result,
+    FstCompression, FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType,
+    FstWriteStats, Result,
 };
 
 pub fn open_fst<P: AsRef<std::path::Path>>(
@@ -31,7 +32,13 @@ pub struct FstHeaderWriter<W: std::io::Write + std::io::Seek> {
 impl FstHeaderWriter<std::io::BufWriter<std::fs::File>> {
     fn open<P: AsRef<std::path::Path>>(path: P, info: &FstInfo) -> Result<Self> {
         let f = std::fs::File::create(path)?;
-        let mut out = std::io::BufWriter::new(f);
+        Self::new(std::io::BufWriter::new(f), info)
+    }
+}
+
+impl<W: std::io::Write + std::io::Seek> FstHeaderWriter<W> {
+    /// Start an FST writer on any seekable output, including an in-memory cursor.
+    pub fn new(mut out: W, info: &FstInfo) -> Result<Self> {
         write_header_meta_data(&mut out, info)?;
         Ok(Self {
             out,
@@ -100,6 +107,8 @@ impl<W: std::io::Write + std::io::Seek> FstHeaderWriter<W> {
             out: self.out,
             buffer,
             finish_info,
+            compression: FstCompression::Enabled,
+            stats: None,
         };
         Ok(next)
     }
@@ -109,6 +118,8 @@ pub struct FstBodyWriter<W: std::io::Write + std::io::Seek> {
     out: W,
     buffer: SignalBuffer,
     finish_info: HeaderFinishInfo,
+    compression: FstCompression,
+    stats: Option<FstWriteStats>,
 }
 
 impl<W: std::io::Write + std::io::Seek> FstBodyWriter<W> {
@@ -117,18 +128,65 @@ impl<W: std::io::Write + std::io::Seek> FstBodyWriter<W> {
     }
 
     pub fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
+        self.signal_change_with_status(signal_id, value).map(|_| ())
+    }
+
+    /// Encode a signal value and report whether it changed the current state.
+    pub fn signal_change_with_status(
+        &mut self,
+        signal_id: FstSignalId,
+        value: &[u8],
+    ) -> Result<bool> {
         self.buffer.signal_change(signal_id, value)
     }
 
     /// Apply VCD width extension/truncation and encode a signal change in one
     /// writer operation.
     pub fn signal_change_vcd(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
+        self.signal_change_vcd_with_status(signal_id, value)
+            .map(|_| ())
+    }
+
+    /// Apply VCD normalization and report whether the current value changed.
+    pub fn signal_change_vcd_with_status(
+        &mut self,
+        signal_id: FstSignalId,
+        value: &[u8],
+    ) -> Result<bool> {
         self.buffer.signal_change_vcd(signal_id, value)
+    }
+
+    /// Select whether subsequent section flushes compress stream payloads.
+    pub fn set_compression(&mut self, compression: FstCompression) {
+        self.compression = compression;
+    }
+
+    /// Enable aggregate section statistics. Collection is disabled by default.
+    pub fn enable_stats(&mut self) {
+        self.stats.get_or_insert_with(FstWriteStats::default);
+    }
+
+    pub fn stats(&self) -> Option<&FstWriteStats> {
+        self.stats.as_ref()
+    }
+
+    fn flush_buffer(&mut self) -> Result<u64> {
+        let started = self.stats.as_ref().map(|_| std::time::Instant::now());
+        let (end_time, section_stats) = self.buffer.flush(&mut self.out, self.compression)?;
+        if let Some(stats) = self.stats.as_mut() {
+            stats.sections += 1;
+            stats.uncompressed_stream_bytes += section_stats.uncompressed_stream_bytes;
+            stats.compressed_stream_bytes += section_stats.compressed_stream_bytes;
+            stats.flush_time += started
+                .expect("timer exists when stats are enabled")
+                .elapsed();
+        }
+        Ok(end_time)
     }
 
     /// flushes all value change data to disk
     pub fn flush(&mut self) -> Result<()> {
-        self.buffer.flush(&mut self.out)?;
+        self.flush_buffer()?;
         self.finish_info.num_value_change_sections += 1;
         Ok(())
     }
@@ -138,15 +196,19 @@ impl<W: std::io::Write + std::io::Seek> FstBodyWriter<W> {
         self.buffer.size()
     }
 
-    pub fn finish(mut self) -> Result<()> {
+    pub fn finish(self) -> Result<()> {
+        self.finish_with_stats().map(|_| ())
+    }
+
+    pub fn finish_with_stats(mut self) -> Result<Option<FstWriteStats>> {
         // write value change section
-        let end_time = self.buffer.flush(&mut self.out)?;
+        let end_time = self.flush_buffer()?;
 
         // update info
         self.finish_info.num_value_change_sections += 1;
         self.finish_info.end_time = end_time;
         update_header(&mut self.out, &self.finish_info)?;
 
-        Ok(())
+        Ok(self.stats)
     }
 }

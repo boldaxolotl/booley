@@ -10,10 +10,10 @@
 // plus a 4-byte back-pointer and a length varint per change.
 
 use crate::io::{
-    write_multi_bit_signal, write_one_bit_signal, write_time_chain_update,
+    SectionWriteStats, write_multi_bit_signal, write_one_bit_signal, write_time_chain_update,
     write_value_change_section, write_variant_u64,
 };
-use crate::{FstSignalId, FstSignalType, FstWriteError, Result};
+use crate::{FstCompression, FstSignalId, FstSignalType, FstWriteError, Result};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::io::{Seek, Write};
@@ -110,7 +110,7 @@ impl SignalBuffer {
         }
     }
 
-    pub(crate) fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
+    pub(crate) fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<bool> {
         let idx = signal_id.to_array_index();
         let info = match self.signals.get(idx) {
             Some(info) => info,
@@ -137,6 +137,7 @@ impl SignalBuffer {
         let first_time_step = self.time_table.is_empty();
         if first_time_step && self.first_buffer {
             self.values[range].copy_from_slice(value);
+            return Ok(true);
         } else {
             if self.time_table.is_empty() {
                 todo!("Currently we only support flushing right before a new time step.")
@@ -144,7 +145,7 @@ impl SignalBuffer {
 
             // check to see if there actually was a change
             if &self.values[range.clone()] == value {
-                return Ok(());
+                return Ok(false);
             }
             self.values[range].copy_from_slice(value);
             // append the change to the signal's chronological stream
@@ -161,10 +162,10 @@ impl SignalBuffer {
             // remember previous time-table index
             self.prev_time_table_index[idx] = self.time_table_index;
         }
-        Ok(())
+        Ok(true)
     }
 
-    pub(crate) fn signal_change_vcd(&mut self, signal_id: FstSignalId, raw: &[u8]) -> Result<()> {
+    pub(crate) fn signal_change_vcd(&mut self, signal_id: FstSignalId, raw: &[u8]) -> Result<bool> {
         let idx = signal_id.to_array_index();
         let info = self
             .signals
@@ -175,7 +176,7 @@ impl SignalBuffer {
         let current = &mut self.values[start..start + info.len as usize];
         if self.time_table.is_empty() && self.first_buffer {
             normalized.copy_into(current);
-            return Ok(());
+            return Ok(true);
         }
         if self.time_table.is_empty() {
             todo!("Currently we only support flushing right before a new time step.")
@@ -184,11 +185,12 @@ impl SignalBuffer {
         let delta = (self.time_table_index - self.prev_time_table_index[idx]) as u64;
         let stream = &mut self.value_changes[idx];
         let before = stream.len();
-        if normalized.append_change(stream, current, delta)? {
+        let changed = normalized.append_change(stream, current, delta)?;
+        if changed {
             self.value_changes_bytes += stream.len() - before;
             self.prev_time_table_index[idx] = self.time_table_index;
         }
-        Ok(())
+        Ok(changed)
     }
 
     fn num_time_table_entries(&self) -> u64 {
@@ -199,9 +201,13 @@ impl SignalBuffer {
         }
     }
 
-    pub(crate) fn flush(&mut self, output: &mut (impl Write + Seek)) -> Result<u64> {
+    pub(crate) fn flush(
+        &mut self,
+        output: &mut (impl Write + Seek),
+        compression: FstCompression,
+    ) -> Result<(u64, SectionWriteStats)> {
         // write data
-        write_value_change_section(
+        let stats = write_value_change_section(
             output,
             self.start_time,
             self.end_time,
@@ -209,6 +215,7 @@ impl SignalBuffer {
             &self.time_table,
             self.num_time_table_entries(),
             &self.value_changes,
+            compression,
         )?;
 
         // reset data
@@ -224,7 +231,7 @@ impl SignalBuffer {
         self.value_changes_bytes = 0;
         self.first_buffer = false;
 
-        Ok(self.end_time)
+        Ok((self.end_time, stats))
     }
 
     /// Returns the estimated size of all data structures that grow over time.
@@ -333,34 +340,11 @@ impl<'a> NormalizedVcd<'a> {
     }
 
     fn append_exact_two_state(&self, stream: &mut Vec<u8>, current: &mut [u8]) {
-        let mut packed = 0u8;
-        for (index, (slot, &value)) in current.iter_mut().zip(self.source).enumerate() {
-            *slot = value;
-            packed |= (value - b'0') << (7 - (index & 7));
-            if index & 7 == 7 {
-                stream.push(packed);
-                packed = 0;
-            }
-        }
-        if current.len() & 7 != 0 {
-            stream.push(packed);
-        }
+        append_packed_two_state(stream, current, |index| self.source[index]);
     }
 
     fn append_two_state(&self, stream: &mut Vec<u8>, current: &mut [u8]) {
-        let mut packed = 0u8;
-        for (index, slot) in current.iter_mut().enumerate() {
-            let value = self.byte(index);
-            *slot = value;
-            packed |= (value - b'0') << (7 - (index & 7));
-            if index & 7 == 7 {
-                stream.push(packed);
-                packed = 0;
-            }
-        }
-        if current.len() & 7 != 0 {
-            stream.push(packed);
-        }
+        append_packed_two_state(stream, current, |index| self.byte(index));
     }
 
     fn append_four_state(&self, stream: &mut Vec<u8>, current: &mut [u8]) {
@@ -369,6 +353,28 @@ impl<'a> NormalizedVcd<'a> {
             *slot = value;
             stream.push(value);
         }
+    }
+}
+
+#[inline(always)]
+fn append_packed_two_state(
+    stream: &mut Vec<u8>,
+    current: &mut [u8],
+    mut value_at: impl FnMut(usize) -> u8,
+) {
+    let mut packed = 0u8;
+    let value_count = current.len();
+    for (index, slot) in current.iter_mut().enumerate() {
+        let value = value_at(index);
+        *slot = value;
+        packed |= (value - b'0') << (7 - (index & 7));
+        if index & 7 == 7 {
+            stream.push(packed);
+            packed = 0;
+        }
+    }
+    if value_count & 7 != 0 {
+        stream.push(packed);
     }
 }
 

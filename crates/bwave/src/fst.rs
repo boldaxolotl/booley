@@ -41,7 +41,7 @@ use crate::signal::signals_in_scope;
 /// first time step reads back as this exact bit pattern. We drop it.
 const REAL_FRAME_GARBAGE_BITS: u64 = u64::from_le_bytes([b'x'; 8]);
 
-/// Byte-oriented event boundary shared by production and attribution benches.
+/// Byte-oriented event boundary used by the production VCD scanner.
 pub trait VcdByteSink {
     fn timestamp(&mut self, tick: u64);
     fn scalar(&mut self, id: &[u8], value: u8);
@@ -54,7 +54,7 @@ pub trait VcdByteSink {
     fn ignored_line(&mut self, _line: &[u8]) {}
 }
 
-impl VcdByteSink for FstBuildHandler {
+impl<W: std::io::Write + std::io::Seek> VcdByteSink for FstBuildHandler<W> {
     fn current_tick(&self) -> u64 {
         self.current_tick
     }
@@ -80,25 +80,82 @@ impl VcdByteSink for FstBuildHandler {
         }
     }
     fn scalar(&mut self, id: &[u8], value: u8) {
-        let group = self.lookup_group(id);
-        if group != NO_GROUP {
-            let v = [value];
-            let ready =
-                self.groups[group as usize].width == 1 && !self.groups[group as usize].is_real;
-            self.emit_change(group, ready, &v);
-        }
+        self.handle_scalar(id, value);
     }
     fn vector(&mut self, id: &[u8], bits: &[u8]) {
-        let g = self.lookup_group(id);
-        if g != NO_GROUP {
-            self.emit_change(g, false, bits);
-        }
+        self.handle_vector(id, bits);
     }
     fn real(&mut self, id: &[u8], value: &[u8]) {
-        let g = self.lookup_group(id);
-        if g != NO_GROUP {
-            self.emit_change(g, false, value);
+        self.handle_real(id, value);
+    }
+}
+
+struct CountingBuildSink<'a, W: std::io::Write + std::io::Seek> {
+    handler: &'a mut FstBuildHandler<W>,
+    counters: &'a mut VcdBuildCounters,
+}
+
+impl<W: std::io::Write + std::io::Seek> CountingBuildSink<'_, W> {
+    fn record_identifier(&mut self, id: &[u8]) {
+        if id.len() == 1 {
+            self.counters.one_character_ids += 1;
+        } else {
+            self.counters.multi_character_ids += 1;
         }
+    }
+
+    fn record_outcome(&mut self, outcome: ChangeOutcome) {
+        match outcome {
+            ChangeOutcome::Ignored => self.counters.ignored_ids += 1,
+            ChangeOutcome::Duplicate => self.counters.duplicate_values += 1,
+            ChangeOutcome::Changed | ChangeOutcome::Failed => {}
+        }
+    }
+}
+
+impl<W: std::io::Write + std::io::Seek> VcdByteSink for CountingBuildSink<'_, W> {
+    fn current_tick(&self) -> u64 {
+        self.handler.current_tick
+    }
+
+    fn timestamp(&mut self, tick: u64) {
+        self.counters.timestamp_lines += 1;
+        self.handler.timestamp(tick);
+    }
+
+    fn scalar(&mut self, id: &[u8], value: u8) {
+        self.record_identifier(id);
+        self.counters.scalar_lines += 1;
+        let outcome = self.handler.handle_scalar(id, value);
+        self.record_outcome(outcome);
+    }
+
+    fn vector(&mut self, id: &[u8], bits: &[u8]) {
+        self.record_identifier(id);
+        self.counters.vector_lines += 1;
+        self.counters.vector_bytes += bits.len() as u64;
+        if bits.iter().all(|bit| matches!(bit, b'0' | b'1')) {
+            self.counters.two_state_vectors += 1;
+        } else {
+            self.counters.four_state_vectors += 1;
+        }
+        let outcome = self.handler.handle_vector(id, bits);
+        self.record_outcome(outcome);
+    }
+
+    fn real(&mut self, id: &[u8], value: &[u8]) {
+        self.record_identifier(id);
+        self.counters.real_lines += 1;
+        let outcome = self.handler.handle_real(id, value);
+        self.record_outcome(outcome);
+    }
+
+    fn directive(&mut self, _line: &[u8]) {
+        self.counters.directive_lines += 1;
+    }
+
+    fn ignored_line(&mut self, _line: &[u8]) {
+        self.counters.ignored_lines += 1;
     }
 }
 
@@ -162,13 +219,13 @@ fn scan_vcd_bytes_inner<R: std::io::BufRead, S: VcdByteSink>(
     sink: &mut S,
     heartbeat: Option<&Path>,
 ) -> u64 {
-    const SIZE: usize = 4 * 1024 * 1024;
-    const HEARTBEAT: Duration = Duration::from_secs(5);
-    let mut buf = vec![0u8; SIZE];
+    const BUFFER_SIZE: usize = 4 * 1024 * 1024;
+    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+    let mut buf = vec![0u8; BUFFER_SIZE];
     let mut leftover = 0;
     let mut dumpoff = false;
-    let mut bytes = 0u64;
-    let mut last = Instant::now();
+    let mut total_bytes_read = 0u64;
+    let mut last_heartbeat = Instant::now();
     loop {
         let n = match reader.read(&mut buf[leftover..]) {
             Ok(n) => n,
@@ -177,17 +234,17 @@ fn scan_vcd_bytes_inner<R: std::io::BufRead, S: VcdByteSink>(
                 0
             }
         };
-        bytes += n as u64;
+        total_bytes_read += n as u64;
         if let Some(path) = heartbeat {
-            if last.elapsed() >= HEARTBEAT {
+            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(path)
                 {
-                    let _ = writeln!(f, "bytes={bytes} tick={}", sink.current_tick());
+                    let _ = writeln!(f, "bytes={total_bytes_read} tick={}", sink.current_tick());
                 }
-                last = Instant::now();
+                last_heartbeat = Instant::now();
             }
         }
         if n == 0 {
@@ -204,8 +261,8 @@ fn scan_vcd_bytes_inner<R: std::io::BufRead, S: VcdByteSink>(
         }
         let total = leftover + n;
         let mut pos = 0;
-        while let Some(off) = memchr(b'\n', &buf[pos..total]) {
-            let end = pos + off;
+        while let Some(newline_offset) = memchr(b'\n', &buf[pos..total]) {
+            let end = pos + newline_offset;
             let mut line = &buf[pos..end];
             if line.last() == Some(&b'\r') {
                 line = &line[..line.len() - 1];
@@ -222,7 +279,7 @@ fn scan_vcd_bytes_inner<R: std::io::BufRead, S: VcdByteSink>(
             leftover = 0;
         }
     }
-    bytes
+    total_bytes_read
 }
 
 pub fn scan_vcd_bytes<R: std::io::BufRead, S: VcdByteSink>(reader: &mut R, sink: &mut S) -> u64 {
@@ -975,44 +1032,14 @@ fn decode_canonical_numeric_id(id: &[u8]) -> Option<usize> {
     Some(value)
 }
 
-struct BuildIdLookup {
+pub struct VcdIdLookup {
     single: [u32; 256],
     dense: Vec<u32>,
-    fallback: FxHashMap<String, u32>,
+    fallback: FxHashMap<Vec<u8>, u32>,
 }
 
-struct IdLookupAttribution<'a> {
-    lookup: &'a BuildIdLookup,
-    checksum: u64,
-}
-
-impl IdLookupAttribution<'_> {
-    #[inline(always)]
-    fn resolve(&mut self, id: &[u8]) {
-        self.checksum = self.checksum.wrapping_add(self.lookup.get(id) as u64);
-    }
-}
-
-impl VcdByteSink for IdLookupAttribution<'_> {
-    fn timestamp(&mut self, tick: u64) {
-        self.checksum = self.checksum.wrapping_add(tick);
-    }
-
-    fn scalar(&mut self, id: &[u8], _value: u8) {
-        self.resolve(id);
-    }
-
-    fn vector(&mut self, id: &[u8], _bits: &[u8]) {
-        self.resolve(id);
-    }
-
-    fn real(&mut self, id: &[u8], _value: &[u8]) {
-        self.resolve(id);
-    }
-}
-
-impl BuildIdLookup {
-    fn new<'a>(ids: impl Iterator<Item = &'a str>) -> Self {
+impl VcdIdLookup {
+    pub fn new<'a>(ids: impl Iterator<Item = &'a str>) -> Self {
         let codes: FxHashSet<usize> = ids
             .filter_map(|id| {
                 let bytes = id.as_bytes();
@@ -1039,22 +1066,22 @@ impl BuildIdLookup {
     }
 
     #[inline(always)]
-    fn get(&self, id: &[u8]) -> u32 {
+    pub fn resolve(&self, id: &[u8]) -> Option<u32> {
         if id.len() == 1 {
-            return self.single[id[0] as usize];
+            return (self.single[id[0] as usize] != NO_GROUP)
+                .then_some(self.single[id[0] as usize]);
         }
         if let Some(group) = decode_canonical_numeric_id(id)
             .and_then(|code| self.dense.get(code))
             .copied()
             .filter(|&group| group != NO_GROUP)
         {
-            return group;
+            return Some(group);
         }
-        let id = std::str::from_utf8(id).unwrap_or("");
-        self.fallback.get(id).copied().unwrap_or(NO_GROUP)
+        self.fallback.get(id).copied()
     }
 
-    fn insert(&mut self, id: &str, group: u32) {
+    pub fn insert(&mut self, id: &str, group: u32) {
         let bytes = id.as_bytes();
         if bytes.len() == 1 {
             self.single[bytes[0] as usize] = group;
@@ -1063,7 +1090,7 @@ impl BuildIdLookup {
         {
             *slot = group;
         } else {
-            self.fallback.insert(id.to_owned(), group);
+            self.fallback.insert(bytes.to_vec(), group);
         }
     }
 }
@@ -1071,19 +1098,61 @@ impl BuildIdLookup {
 /// Streaming VCD -> FST build handler (the replacement for the retired
 /// `.bwave` builder). Construct with the parsed VCD header, feed the body
 /// through `parse_bytes`, then `finalize_and_write`.
-pub struct FstBuildHandler {
-    body: fst_writer::FstBodyWriter<std::io::BufWriter<File>>,
+pub struct FstBuildHandler<W: std::io::Write + std::io::Seek = std::io::BufWriter<File>> {
+    body: fst_writer::FstBodyWriter<W>,
     output_path: std::path::PathBuf,
-    id_lookup: BuildIdLookup,
+    id_lookup: VcdIdLookup,
     groups: Vec<GroupMeta>,
     current_tick: u64,
     last_written_time: u64,
     any_time_written: bool,
     overwide_values: u64,
     write_error: Option<String>,
+    counters: Option<VcdBuildCounters>,
 }
 
-impl FstBuildHandler {
+#[derive(Clone, Copy)]
+enum ChangeOutcome {
+    Ignored,
+    Changed,
+    Duplicate,
+    Failed,
+}
+
+/// Optional aggregate VCD-build diagnostics. Collection is disabled by default.
+#[derive(Clone, Debug, Default)]
+pub struct VcdBuildCounters {
+    pub input_bytes: u64,
+    pub timestamp_lines: u64,
+    pub scalar_lines: u64,
+    pub vector_lines: u64,
+    pub real_lines: u64,
+    pub directive_lines: u64,
+    pub ignored_lines: u64,
+    pub one_character_ids: u64,
+    pub multi_character_ids: u64,
+    pub vector_bytes: u64,
+    pub two_state_vectors: u64,
+    pub four_state_vectors: u64,
+    pub ignored_ids: u64,
+    pub duplicate_values: u64,
+    pub flushes: u64,
+    pub uncompressed_stream_bytes: u64,
+    pub compressed_stream_bytes: u64,
+    pub flush_time: Duration,
+}
+
+fn fst_build_info(header: &VcdHeader) -> fst_writer::FstInfo {
+    fst_writer::FstInfo {
+        start_time: 0,
+        timescale_exponent: timescale_to_exponent(&header.timescale_str),
+        version: format!("bwave {}", env!("CARGO_PKG_VERSION")),
+        date: String::new(),
+        file_type: fst_writer::FstFileType::Verilog,
+    }
+}
+
+impl FstBuildHandler<std::io::BufWriter<File>> {
     /// Parse the header, emit the FST hierarchy, and return a handler ready
     /// to stream the VCD body. `scope` limits the store to a hierarchical
     /// subtree exactly like the .bwave builder.
@@ -1091,7 +1160,36 @@ impl FstBuildHandler {
         header: &VcdHeader,
         scope: Option<&str>,
         output_path: &Path,
-    ) -> Result<FstBuildHandler, String> {
+    ) -> Result<Self, String> {
+        let info = fst_build_info(header);
+        let writer = fst_writer::open_fst(output_path, &info)
+            .map_err(|e| format!("cannot create '{}': {e}", output_path.display()))?;
+        FstBuildHandler::from_header_writer(header, scope, output_path.to_path_buf(), writer)
+    }
+}
+
+impl FstBuildHandler<std::io::Cursor<Vec<u8>>> {
+    /// Create a build backed by an in-memory seekable output.
+    pub fn new_in_memory(header: &VcdHeader, scope: Option<&str>) -> Result<Self, String> {
+        let info = fst_build_info(header);
+        let writer = fst_writer::FstHeaderWriter::new(std::io::Cursor::new(Vec::new()), &info)
+            .map_err(|e| format!("cannot create in-memory FST: {e}"))?;
+        FstBuildHandler::from_header_writer(
+            header,
+            scope,
+            std::path::PathBuf::from("<memory>"),
+            writer,
+        )
+    }
+}
+
+impl<W: std::io::Write + std::io::Seek> FstBuildHandler<W> {
+    fn from_header_writer(
+        header: &VcdHeader,
+        scope: Option<&str>,
+        output_path: std::path::PathBuf,
+        mut writer: fst_writer::FstHeaderWriter<W>,
+    ) -> Result<Self, String> {
         let signals = match scope {
             Some(s) => {
                 let filtered = signals_in_scope(&header.signals, s);
@@ -1103,26 +1201,16 @@ impl FstBuildHandler {
             None => header.signals.clone(),
         };
 
-        let info = fst_writer::FstInfo {
-            start_time: 0,
-            timescale_exponent: timescale_to_exponent(&header.timescale_str),
-            version: format!("bwave {}", env!("CARGO_PKG_VERSION")),
-            date: String::new(),
-            file_type: fst_writer::FstFileType::Verilog,
-        };
-        let mut hw = fst_writer::open_fst(output_path, &info)
-            .map_err(|e| format!("cannot create '{}': {e}", output_path.display()))?;
-
         // Emit vars in exact VCD declaration order, streaming scope
         // transitions between consecutive signals. The first declaration of
         // a VCD id becomes the FST signal, later declarations alias it.
-        let mut id_lookup = BuildIdLookup::new(signals.iter().map(|signal| signal.id.as_str()));
+        let mut id_lookup = VcdIdLookup::new(signals.iter().map(|signal| signal.id.as_str()));
         let mut groups: Vec<GroupMeta> = Vec::new();
         let mut current_scope: Vec<String> = Vec::new();
         for sig in &signals {
             let mut parts: Vec<&str> = sig.name.split('.').collect();
             let var_name = parts.pop().unwrap_or(&sig.name);
-            transition_scopes(&mut hw, &mut current_scope, &parts)?;
+            transition_scopes(&mut writer, &mut current_scope, &parts)?;
 
             let is_real = sig.var_type == "real" || sig.var_type == "realtime";
             let signal_tpe = if is_real {
@@ -1131,13 +1219,9 @@ impl FstBuildHandler {
                 fst_writer::FstSignalType::bit_vec(sig.width)
             };
             let id_bytes = sig.id.as_bytes();
-            let existing = id_lookup.get(id_bytes);
-            let alias = if existing != NO_GROUP {
-                Some(groups[existing as usize].fst_id)
-            } else {
-                None
-            };
-            let fst_id = hw
+            let existing = id_lookup.resolve(id_bytes);
+            let alias = existing.map(|group| groups[group as usize].fst_id);
+            let fst_id = writer
                 .var(
                     var_name,
                     signal_tpe,
@@ -1146,7 +1230,7 @@ impl FstBuildHandler {
                     alias,
                 )
                 .map_err(|e| format!("fst var '{}': {e}", sig.name))?;
-            if existing == NO_GROUP {
+            if existing.is_none() {
                 groups.push(GroupMeta {
                     fst_id,
                     width: sig.width,
@@ -1156,12 +1240,14 @@ impl FstBuildHandler {
                 id_lookup.insert(&sig.id, g);
             }
         }
-        transition_scopes(&mut hw, &mut current_scope, &[])?;
+        transition_scopes(&mut writer, &mut current_scope, &[])?;
 
-        let body = hw.finish().map_err(|e| format!("fst header finish: {e}"))?;
+        let body = writer
+            .finish()
+            .map_err(|e| format!("fst header finish: {e}"))?;
         Ok(FstBuildHandler {
             body,
-            output_path: output_path.to_path_buf(),
+            output_path,
             id_lookup,
             groups,
             current_tick: 0,
@@ -1169,37 +1255,24 @@ impl FstBuildHandler {
             any_time_written: false,
             overwide_values: 0,
             write_error: None,
+            counters: None,
         })
     }
 
-    /// Exercise the production ID resolver without FST encoding.
-    ///
-    /// This is intentionally hidden from generated API documentation: it is
-    /// an attribution hook for the throughput benchmark, not application API.
-    #[doc(hidden)]
-    pub fn resolve_ids_for_attribution(
-        header: &VcdHeader,
-        reader: &mut impl std::io::BufRead,
-    ) -> u64 {
-        let mut lookup = BuildIdLookup::new(header.signals.iter().map(|signal| signal.id.as_str()));
-        let mut next_group = 0;
-        for signal in &header.signals {
-            if lookup.get(signal.id.as_bytes()) == NO_GROUP {
-                lookup.insert(&signal.id, next_group);
-                next_group += 1;
-            }
-        }
-        let mut sink = IdLookupAttribution {
-            lookup: &lookup,
-            checksum: 0,
-        };
-        scan_vcd_bytes(reader, &mut sink);
-        sink.checksum
+    /// Enable aggregate diagnostics for subsequent parsing and section flushes.
+    pub fn enable_counters(&mut self) {
+        self.counters.get_or_insert_with(VcdBuildCounters::default);
+        self.body.enable_stats();
+    }
+
+    /// Select compression for subsequent section flushes.
+    pub fn set_compression(&mut self, compression: fst_writer::FstCompression) {
+        self.body.set_compression(compression);
     }
 
     #[inline(always)]
     fn lookup_group(&self, id: &[u8]) -> u32 {
-        self.id_lookup.get(id)
+        self.id_lookup.resolve(id).unwrap_or(NO_GROUP)
     }
 
     fn record_write_error(&mut self, e: impl std::fmt::Display) {
@@ -1209,30 +1282,59 @@ impl FstBuildHandler {
     }
 
     #[inline]
-    fn emit_change(&mut self, group: u32, bytes_are_ready: bool, raw: &[u8]) {
-        let g = &self.groups[group as usize];
-        let fst_id = g.fst_id;
-        if g.is_real {
+    fn handle_scalar(&mut self, id: &[u8], value: u8) -> ChangeOutcome {
+        let group = self.lookup_group(id);
+        if group == NO_GROUP {
+            return ChangeOutcome::Ignored;
+        }
+        let value = [value];
+        let bytes_are_ready =
+            self.groups[group as usize].width == 1 && !self.groups[group as usize].is_real;
+        self.emit_change(group, bytes_are_ready, &value)
+    }
+
+    fn handle_vector(&mut self, id: &[u8], bits: &[u8]) -> ChangeOutcome {
+        let group = self.lookup_group(id);
+        if group == NO_GROUP {
+            return ChangeOutcome::Ignored;
+        }
+        self.emit_change(group, false, bits)
+    }
+
+    fn handle_real(&mut self, id: &[u8], value: &[u8]) -> ChangeOutcome {
+        let group = self.lookup_group(id);
+        if group == NO_GROUP {
+            return ChangeOutcome::Ignored;
+        }
+        self.emit_change(group, false, value)
+    }
+
+    fn emit_change(&mut self, group: u32, bytes_are_ready: bool, raw: &[u8]) -> ChangeOutcome {
+        let group_meta = &self.groups[group as usize];
+        let fst_id = group_meta.fst_id;
+        let width = group_meta.width as usize;
+        let is_real = group_meta.is_real;
+        let result = if is_real {
             let v: f64 = std::str::from_utf8(raw)
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(f64::NAN);
-            if let Err(e) = self.body.signal_change(fst_id, &v.to_le_bytes()) {
-                self.record_write_error(e);
-            }
-            return;
-        }
-        if bytes_are_ready {
-            if let Err(e) = self.body.signal_change(fst_id, raw) {
-                self.record_write_error(e);
-            }
+            self.body
+                .signal_change_with_status(fst_id, &v.to_le_bytes())
+        } else if bytes_are_ready {
+            self.body.signal_change_with_status(fst_id, raw)
         } else {
-            let width = g.width as usize;
             if raw.len() > width {
                 self.overwide_values += 1;
             }
-            if let Err(e) = self.body.signal_change_vcd(fst_id, raw) {
-                self.record_write_error(e);
+            self.body.signal_change_vcd_with_status(fst_id, raw)
+        };
+        match result {
+            Ok(false) => ChangeOutcome::Duplicate,
+            Ok(true) => ChangeOutcome::Changed,
+            Err(error) => {
+                self.record_write_error(error);
+                ChangeOutcome::Failed
             }
         }
     }
@@ -1244,57 +1346,73 @@ impl FstBuildHandler {
         reader: &mut impl std::io::BufRead,
         heartbeat_path: Option<&Path>,
     ) {
-        scan_vcd_bytes_inner(reader, self, heartbeat_path);
+        if let Some(mut counters) = self.counters.take() {
+            let mut sink = CountingBuildSink {
+                handler: self,
+                counters: &mut counters,
+            };
+            let input_bytes = scan_vcd_bytes_inner(reader, &mut sink, heartbeat_path);
+            counters.input_bytes += input_bytes;
+            self.counters = Some(counters);
+        } else {
+            scan_vcd_bytes_inner(reader, self, heartbeat_path);
+        }
     }
 
+    /// Complete the FST without process-level logging or exits.
+    pub fn finish(self) -> Result<Option<VcdBuildCounters>, String> {
+        let FstBuildHandler {
+            body,
+            write_error,
+            mut counters,
+            ..
+        } = self;
+        if let Some(error) = write_error {
+            return Err(error);
+        }
+        let writer_stats = body
+            .finish_with_stats()
+            .map_err(|error| error.to_string())?;
+        if let (Some(counters), Some(writer_stats)) = (counters.as_mut(), writer_stats) {
+            counters.flushes = writer_stats.sections;
+            counters.uncompressed_stream_bytes = writer_stats.uncompressed_stream_bytes;
+            counters.compressed_stream_bytes = writer_stats.compressed_stream_bytes;
+            counters.flush_time = writer_stats.flush_time;
+        }
+        Ok(counters)
+    }
+}
+
+impl FstBuildHandler<std::io::BufWriter<File>> {
     /// Finish the FST (writes the final value-change section and fixes up
     /// the header). Exits the process on write failure, matching the .bwave
     /// builder's behavior.
     pub fn finalize_and_write(self) {
-        if self.overwide_values > 0 {
+        let overwide_values = self.overwide_values;
+        let output_path = self.output_path.clone();
+        if overwide_values > 0 {
             eprintln!(
                 "WARNING: {} value(s) wider than their declared width were truncated",
-                self.overwide_values
+                overwide_values
             );
         }
-        if let Some(e) = &self.write_error {
-            eprintln!(
-                "ERROR: failed to write {}: {}",
-                self.output_path.display(),
-                e
-            );
-            std::process::exit(1);
-        }
-        match self.body.finish() {
+        match self.finish() {
             // Not a "cache": this is the primary build artifact. The old
             // wording cost an investigator a wrong-turn hunting a cache layer
             // that never existed.
-            Ok(()) => eprintln!("# wrote {}", self.output_path.display()),
+            Ok(_) => eprintln!("# wrote {}", output_path.display()),
             Err(e) => {
-                eprintln!(
-                    "ERROR: failed to write {}: {}",
-                    self.output_path.display(),
-                    e
-                );
+                eprintln!("ERROR: failed to write {}: {}", output_path.display(), e);
                 std::process::exit(1);
             }
         }
-    }
-
-    /// Finish a benchmark build without emitting progress output.
-    #[doc(hidden)]
-    pub fn finalize_for_attribution(self) -> Result<(), String> {
-        if let Some(e) = self.write_error {
-            return Err(e);
-        }
-        self.body.finish().map_err(|e| e.to_string())
     }
 }
 
 #[cfg(test)]
 mod byte_path_tests {
     use super::*;
-    use std::io::{BufReader, Cursor};
+    use std::io::{BufReader, Cursor, Seek};
 
     #[derive(Default)]
     struct Sink(Vec<String>);
@@ -1341,23 +1459,71 @@ mod byte_path_tests {
 
     #[test]
     fn id_lookup_bounds_sparse_codes_and_preserves_fallback() {
-        let mut lookup = BuildIdLookup::new(["~~~~", "é", "!!"].into_iter());
+        let mut lookup = VcdIdLookup::new(["~~~~", "é", "!!"].into_iter());
         assert!(lookup.dense.is_empty());
         lookup.insert("~~~~", 1);
         lookup.insert("é", 2);
         lookup.insert("!!", 3);
-        assert_eq!(lookup.get(b"~~~~"), 1);
-        assert_eq!(lookup.get("é".as_bytes()), 2);
-        assert_eq!(lookup.get(b"!!"), 3);
+        assert_eq!(lookup.resolve(b"~~~~"), Some(1));
+        assert_eq!(lookup.resolve("é".as_bytes()), Some(2));
+        assert_eq!(lookup.resolve(b"!!"), Some(3));
     }
 
     #[test]
     fn id_lookup_uses_bounded_dense_storage_for_compact_codes() {
-        let mut lookup = BuildIdLookup::new(["!\"", "~\""].into_iter());
+        let mut lookup = VcdIdLookup::new(["!\"", "~\""].into_iter());
         assert_eq!(lookup.dense.len(), 188);
         lookup.insert("!\"", 4);
         lookup.insert("~\"", 5);
-        assert_eq!(lookup.get(b"!\""), 4);
-        assert_eq!(lookup.get(b"~\""), 5);
+        assert_eq!(lookup.resolve(b"!\""), Some(4));
+        assert_eq!(lookup.resolve(b"~\""), Some(5));
+    }
+
+    #[test]
+    fn build_counters_are_opt_in_and_cover_parser_writer_stages() {
+        let vcd = b"$timescale 1ns $end\n$scope module tb $end\n\
+            $var wire 1 ! sig $end\n$upscope $end\n$enddefinitions $end\n\
+            #0\n0!\n#1\n1!\n1!\n1\"\n";
+        let mut reader = BufReader::new(Cursor::new(vcd));
+        let header = crate::parser::parse_header(&mut reader);
+        let body_start = reader.stream_position().unwrap() as usize;
+        let mut handler = FstBuildHandler::new_in_memory(&header, None).unwrap();
+        handler.enable_counters();
+        handler.set_compression(fst_writer::FstCompression::Disabled);
+        let mut body_reader = BufReader::new(Cursor::new(&vcd[body_start..]));
+        handler.parse_bytes(&mut body_reader, None);
+        let counters = handler.finish().unwrap().unwrap();
+
+        assert_eq!(counters.input_bytes, (vcd.len() - body_start) as u64);
+        assert_eq!(counters.timestamp_lines, 2);
+        assert_eq!(counters.scalar_lines, 4);
+        assert_eq!(counters.one_character_ids, 4);
+        assert_eq!(counters.ignored_ids, 1);
+        assert_eq!(counters.duplicate_values, 1);
+        assert_eq!(counters.flushes, 1);
+        assert_eq!(
+            counters.uncompressed_stream_bytes,
+            counters.compressed_stream_bytes
+        );
+    }
+
+    #[test]
+    fn compression_disabled_build_remains_queryable() {
+        let vcd = b"$timescale 1ns $end\n$scope module tb $end\n\
+            $var wire 8 ! sig $end\n$upscope $end\n$enddefinitions $end\n\
+            #0\nb00000000 !\n#1\nb10100101 !\n";
+        let mut reader = BufReader::new(Cursor::new(vcd));
+        let header = crate::parser::parse_header(&mut reader);
+        let output_path = std::env::temp_dir().join(format!(
+            "bwave_uncompressed_test_{}.fst",
+            std::process::id()
+        ));
+        let mut handler = FstBuildHandler::new(&header, None, &output_path).unwrap();
+        handler.set_compression(fst_writer::FstCompression::Disabled);
+        handler.parse_bytes(&mut reader, None);
+        assert!(handler.finish().unwrap().is_none());
+
+        assert!(load_fst(&output_path).is_some());
+        let _ = std::fs::remove_file(output_path);
     }
 }

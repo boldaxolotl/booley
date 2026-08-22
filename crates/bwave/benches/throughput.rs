@@ -16,12 +16,49 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use bwave::cache::ColumnCache;
 use bwave::format::{format_value_with_radix, Radix};
-use bwave::fst::{scan_vcd_bytes, FstBuildHandler, VcdByteSink};
+use bwave::fst::{scan_vcd_bytes, FstBuildHandler, VcdByteSink, VcdIdLookup};
 use bwave::parser::{parse_header, parse_streaming, VcdHandler};
 use bwave::virtual_signal::{build_virtual_transitions, parse_virtual_def, resolve_virtual};
 
-const REPRESENTATIVE_WORKLOADS: [(usize, usize); 2] = [(4_000, 1_000), (11_000, 400)];
 const VECTOR_WIDTHS: [usize; 6] = [1, 8, 32, 64, 256, 1_024];
+
+#[derive(Clone, Copy)]
+enum RepresentativeDialect {
+    Verilator,
+    Xcelium,
+}
+
+#[derive(Clone, Copy)]
+enum RepresentativeShape {
+    ScalarHeavy,
+    WideVectorHeavy,
+}
+
+#[derive(Clone, Copy)]
+struct RepresentativeWorkload {
+    label: &'static str,
+    signals: usize,
+    cycles: usize,
+    dialect: RepresentativeDialect,
+    shape: RepresentativeShape,
+}
+
+const REPRESENTATIVE_WORKLOADS: [RepresentativeWorkload; 2] = [
+    RepresentativeWorkload {
+        label: "verilator_4000sig_scalar",
+        signals: 4_000,
+        cycles: 1_000,
+        dialect: RepresentativeDialect::Verilator,
+        shape: RepresentativeShape::ScalarHeavy,
+    },
+    RepresentativeWorkload {
+        label: "xcelium_11000sig_wide",
+        signals: 11_000,
+        cycles: 400,
+        dialect: RepresentativeDialect::Xcelium,
+        shape: RepresentativeShape::WideVectorHeavy,
+    },
+];
 
 // -- VCD generator -----------------------------------------------------------
 
@@ -98,6 +135,123 @@ fn numeric_vcd_id(mut value: usize) -> String {
             return String::from_utf8(bytes).unwrap();
         }
     }
+}
+
+fn gen_representative_vcd(workload: RepresentativeWorkload) -> Vec<u8> {
+    let ids: Vec<String> = (0..workload.signals).map(numeric_vcd_id).collect();
+    let widths: Vec<usize> = (0..workload.signals)
+        .map(|signal| match workload.shape {
+            RepresentativeShape::ScalarHeavy => 1,
+            RepresentativeShape::WideVectorHeavy if signal == 0 || signal % 4 == 0 => 1,
+            RepresentativeShape::WideVectorHeavy => 64,
+        })
+        .collect();
+    let mut output = Vec::with_capacity(16 * 1024 * 1024);
+    match workload.dialect {
+        RepresentativeDialect::Verilator => writeln!(output, "$timescale 1ns $end").unwrap(),
+        RepresentativeDialect::Xcelium => {
+            writeln!(output, "$version\n  TOOL:\txmsim(64) synthetic\n$end").unwrap();
+            writeln!(output, "$timescale\n    1 ns\n$end").unwrap();
+        }
+    }
+    writeln!(output, "$scope module tb $end").unwrap();
+    for signal in 0..workload.signals {
+        let var_type = match (workload.dialect, signal) {
+            (RepresentativeDialect::Xcelium, 1) => "parameter",
+            (RepresentativeDialect::Xcelium, 2) => "integer",
+            _ => "wire",
+        };
+        let name = match (workload.dialect, workload.shape, signal) {
+            (_, _, 0) => "clk".to_string(),
+            (RepresentativeDialect::Xcelium, RepresentativeShape::WideVectorHeavy, signal)
+                if signal % 4 == 0 =>
+            {
+                format!("wide_bus [{signal}]")
+            }
+            _ => format!("sig_{signal}"),
+        };
+        writeln!(
+            output,
+            "$var {var_type} {} {} {name} $end",
+            widths[signal], ids[signal]
+        )
+        .unwrap();
+    }
+    writeln!(output, "$upscope $end\n$enddefinitions $end\n#0").unwrap();
+    for signal in 0..workload.signals {
+        write_representative_value(
+            &mut output,
+            widths[signal],
+            &ids[signal],
+            0,
+            signal,
+            workload.dialect,
+        );
+    }
+
+    let activity_divisor = match workload.shape {
+        RepresentativeShape::ScalarHeavy => 3,
+        RepresentativeShape::WideVectorHeavy => 32,
+    };
+    for cycle in 1..=workload.cycles {
+        writeln!(output, "#{cycle}").unwrap();
+        writeln!(
+            output,
+            "{}{id}",
+            (b'0' + (cycle & 1) as u8) as char,
+            id = ids[0]
+        )
+        .unwrap();
+        for signal in 1..workload.signals {
+            if (cycle + signal) % activity_divisor == 0 {
+                write_representative_value(
+                    &mut output,
+                    widths[signal],
+                    &ids[signal],
+                    cycle,
+                    signal,
+                    workload.dialect,
+                );
+            }
+        }
+    }
+    output
+}
+
+fn write_representative_value(
+    output: &mut Vec<u8>,
+    width: usize,
+    id: &str,
+    cycle: usize,
+    signal: usize,
+    dialect: RepresentativeDialect,
+) {
+    if width == 1 {
+        writeln!(
+            output,
+            "{}{id}",
+            (b'0' + ((cycle + signal) & 1) as u8) as char
+        )
+        .unwrap();
+        return;
+    }
+    output.push(match dialect {
+        RepresentativeDialect::Verilator => b'b',
+        RepresentativeDialect::Xcelium => b'B',
+    });
+    for bit in 0..width {
+        let mixed = cycle
+            .wrapping_mul(31)
+            .wrapping_add(signal.wrapping_mul(17))
+            .wrapping_add(bit.wrapping_mul(13));
+        output.push(b'0' + ((mixed >> (bit & 7)) & 1) as u8);
+    }
+    match dialect {
+        RepresentativeDialect::Verilator => output.push(b' '),
+        RepresentativeDialect::Xcelium => output.extend_from_slice(b"\t\t"),
+    }
+    output.extend_from_slice(id.as_bytes());
+    output.push(b'\n');
 }
 
 fn gen_width_vcd(width: usize) -> Vec<u8> {
@@ -244,6 +398,11 @@ struct LookupSink<'a> {
     checksum: u64,
 }
 
+struct ProductionLookupSink<'a> {
+    lookup: &'a VcdIdLookup,
+    checksum: u64,
+}
+
 struct NormalizeSink<'a> {
     lookup: &'a BaselineLookup,
     current: Vec<Vec<u8>>,
@@ -331,6 +490,41 @@ impl VcdByteSink for LookupSink<'_> {
     }
 }
 
+impl ProductionLookupSink<'_> {
+    fn change(&mut self, id: &[u8]) {
+        self.checksum = self
+            .checksum
+            .wrapping_add(self.lookup.resolve(id).unwrap_or(u32::MAX) as u64);
+    }
+}
+
+impl VcdByteSink for ProductionLookupSink<'_> {
+    fn timestamp(&mut self, tick: u64) {
+        self.checksum = self.checksum.wrapping_add(tick);
+    }
+    fn scalar(&mut self, id: &[u8], _value: u8) {
+        self.change(id);
+    }
+    fn vector(&mut self, id: &[u8], _bits: &[u8]) {
+        self.change(id);
+    }
+    fn real(&mut self, id: &[u8], _value: &[u8]) {
+        self.change(id);
+    }
+}
+
+fn production_lookup(header: &bwave::parser::VcdHeader) -> VcdIdLookup {
+    let mut lookup = VcdIdLookup::new(header.signals.iter().map(|signal| signal.id.as_str()));
+    let mut next_group = 0;
+    for signal in &header.signals {
+        if lookup.resolve(signal.id.as_bytes()).is_none() {
+            lookup.insert(&signal.id, next_group);
+            next_group += 1;
+        }
+    }
+    lookup
+}
+
 // -- Benchmarks --------------------------------------------------------------
 
 fn bench_parse_header(c: &mut Criterion) {
@@ -382,17 +576,18 @@ fn bench_parse_streaming(c: &mut Criterion) {
 fn bench_specialized_scanner(c: &mut Criterion) {
     let mut group = c.benchmark_group("specialized_scanner");
     group.sample_size(10);
-    for (signals, cycles) in REPRESENTATIVE_WORKLOADS {
-        let vcd = gen_vcd(signals, cycles);
+    for workload in REPRESENTATIVE_WORKLOADS {
+        let vcd = gen_representative_vcd(workload);
         let mut header_reader = BufReader::new(Cursor::new(&vcd));
         let header = parse_header(&mut header_reader);
         let lookup = BaselineLookup::from_header(&header);
+        let production_lookup = production_lookup(&header);
         let marker = b"$enddefinitions $end\n";
         let start = vcd.windows(marker.len()).position(|w| w == marker).unwrap() + marker.len();
         let body = &vcd[start..];
         group.throughput(Throughput::Bytes(body.len() as u64));
         group.bench_with_input(
-            BenchmarkId::new("null", format!("{signals}sig")),
+            BenchmarkId::new("null", workload.label),
             &body,
             |b, body| {
                 b.iter(|| {
@@ -404,7 +599,7 @@ fn bench_specialized_scanner(c: &mut Criterion) {
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("lookup", format!("{signals}sig")),
+            BenchmarkId::new("lookup", workload.label),
             &body,
             |b, body| {
                 b.iter(|| {
@@ -419,19 +614,22 @@ fn bench_specialized_scanner(c: &mut Criterion) {
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("production_lookup", format!("{signals}sig")),
+            BenchmarkId::new("production_lookup", workload.label),
             &body,
             |b, body| {
                 b.iter(|| {
                     let mut r = BufReader::new(Cursor::new(black_box(*body)));
-                    black_box(FstBuildHandler::resolve_ids_for_attribution(
-                        &header, &mut r,
-                    ))
+                    let mut sink = ProductionLookupSink {
+                        lookup: &production_lookup,
+                        checksum: 0,
+                    };
+                    scan_vcd_bytes(&mut r, &mut sink);
+                    black_box(sink.checksum)
                 });
             },
         );
         group.bench_with_input(
-            BenchmarkId::new("normalize", format!("{signals}sig")),
+            BenchmarkId::new("normalize", workload.label),
             &body,
             |b, body| {
                 b.iter(|| {
@@ -450,39 +648,81 @@ fn bench_fst_build_stages(c: &mut Criterion) {
     let mut group = c.benchmark_group("fst_build_stages");
     group.sample_size(10);
 
-    for (num_signals, num_cycles) in REPRESENTATIVE_WORKLOADS {
-        let vcd = gen_vcd(num_signals, num_cycles);
+    for workload in REPRESENTATIVE_WORKLOADS {
+        let vcd = gen_representative_vcd(workload);
         let mut header_reader = BufReader::new(Cursor::new(&vcd));
         let header = parse_header(&mut header_reader);
         let body = &vcd[header_reader.stream_position().unwrap() as usize..];
-        let label = format!("{num_signals}sig_{num_cycles}cyc");
+        let label = workload.label;
         let store_path = std::env::temp_dir().join(format!("bench_stage_{label}.fst"));
         group.throughput(Throughput::Bytes(body.len() as u64));
 
-        group.bench_with_input(BenchmarkId::new("encode", &label), &body, |b, body| {
-            b.iter_batched(
-                || FstBuildHandler::new(&header, None, &store_path).unwrap(),
-                |mut handler| {
-                    let mut reader = BufReader::new(Cursor::new(black_box(*body)));
-                    handler.parse_bytes(&mut reader, None);
-                    black_box(handler);
-                },
-                BatchSize::LargeInput,
-            );
-        });
+        group.bench_with_input(
+            BenchmarkId::new("encode_streams", label),
+            &body,
+            |b, body| {
+                b.iter_batched(
+                    || FstBuildHandler::new_in_memory(&header, None).unwrap(),
+                    |mut handler| {
+                        let mut reader = BufReader::new(Cursor::new(black_box(*body)));
+                        handler.parse_bytes(&mut reader, None);
+                        black_box(handler);
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("finalize", &label), &body, |b, body| {
-            b.iter_batched(
-                || {
+        group.bench_with_input(
+            BenchmarkId::new("encode_uncompressed_memory", label),
+            &body,
+            |b, body| {
+                b.iter_batched(
+                    || {
+                        let mut handler = FstBuildHandler::new_in_memory(&header, None).unwrap();
+                        handler.set_compression(fst_writer::FstCompression::Disabled);
+                        handler
+                    },
+                    |mut handler| {
+                        let mut reader = BufReader::new(Cursor::new(black_box(*body)));
+                        handler.parse_bytes(&mut reader, None);
+                        black_box(handler.finish().unwrap())
+                    },
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("compress_memory", label),
+            &body,
+            |b, body| {
+                b.iter_batched(
+                    || {
+                        let mut handler = FstBuildHandler::new_in_memory(&header, None).unwrap();
+                        let mut reader = BufReader::new(Cursor::new(*body));
+                        handler.parse_bytes(&mut reader, None);
+                        handler
+                    },
+                    |handler| black_box(handler.finish().unwrap()),
+                    BatchSize::LargeInput,
+                );
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("complete_counted_file", label),
+            &body,
+            |b, body| {
+                b.iter(|| {
                     let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
+                    handler.enable_counters();
                     let mut reader = BufReader::new(Cursor::new(*body));
                     handler.parse_bytes(&mut reader, None);
-                    handler
-                },
-                |handler| black_box(handler.finalize_for_attribution().unwrap()),
-                BatchSize::LargeInput,
-            );
-        });
+                    black_box(handler.finish().unwrap())
+                });
+            },
+        );
         let _ = fs::remove_file(&store_path);
     }
     group.finish();
@@ -518,18 +758,18 @@ fn bench_bwave_build_representative(c: &mut Criterion) {
     let mut group = c.benchmark_group("fst_build_representative");
     group.sample_size(10);
 
-    for (num_signals, num_cycles) in REPRESENTATIVE_WORKLOADS {
-        let vcd = gen_vcd(num_signals, num_cycles);
-        let label = format!("{num_signals}sig_{num_cycles}cyc");
+    for workload in REPRESENTATIVE_WORKLOADS {
+        let vcd = gen_representative_vcd(workload);
+        let label = workload.label;
         group.throughput(Throughput::Bytes(vcd.len() as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(&label), &vcd, |b, vcd| {
+        group.bench_with_input(BenchmarkId::from_parameter(label), &vcd, |b, vcd| {
             let store_path = std::env::temp_dir().join(format!("bench_{label}.fst"));
             b.iter(|| {
                 let mut reader = BufReader::new(Cursor::new(black_box(vcd)));
                 let header = parse_header(&mut reader);
                 let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
                 handler.parse_bytes(&mut reader, None);
-                handler.finalize_and_write();
+                handler.finish().unwrap();
             });
             let _ = fs::remove_file(&store_path);
         });
@@ -552,7 +792,7 @@ fn bench_bwave_build_widths(c: &mut Criterion) {
                 let header = parse_header(&mut reader);
                 let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
                 handler.parse_bytes(&mut reader, None);
-                handler.finalize_for_attribution().unwrap();
+                handler.finish().unwrap();
             });
             let _ = fs::remove_file(&store_path);
         });

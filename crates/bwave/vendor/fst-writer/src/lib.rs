@@ -7,6 +7,8 @@ mod io;
 mod types;
 mod writer;
 
+use std::time::Duration;
+
 type Result<T> = std::result::Result<T, FstWriteError>;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +23,24 @@ pub enum FstWriteError {
     InvalidSignalId(FstSignalId),
     #[error("Invalid bit-vector signal character: {0}")]
     InvalidCharacter(char),
+}
+
+/// Controls compression of value-change streams and time tables.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FstCompression {
+    Disabled,
+    #[default]
+    Enabled,
+}
+
+/// Optional aggregate statistics collected while value-change sections flush.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FstWriteStats {
+    pub sections: u64,
+    pub uncompressed_stream_bytes: u64,
+    /// Bytes stored after per-stream compression decisions.
+    pub compressed_stream_bytes: u64,
+    pub flush_time: Duration,
 }
 
 pub use types::*;
