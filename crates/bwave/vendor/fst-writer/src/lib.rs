@@ -21,6 +21,8 @@ pub enum FstWriteError {
     TimeDecrease(u64, u64),
     #[error("Invalid signal id: {0:?}")]
     InvalidSignalId(FstSignalId),
+    #[error("Initial frame has {actual} bytes; expected {expected}")]
+    InvalidFrameLength { expected: usize, actual: usize },
     #[error("Invalid bit-vector signal character: {0}")]
     InvalidCharacter(char),
 }
@@ -44,4 +46,7 @@ pub struct FstWriteStats {
 }
 
 pub use types::*;
-pub use writer::{FstBodyWriter, FstHeaderWriter, open_fst};
+pub use writer::{
+    EncodedFstSection, FstBodyWriter, FstHeaderWriter, FstSectionEncoder, OrderedFstWriter,
+    open_fst,
+};

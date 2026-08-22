@@ -132,6 +132,7 @@ dependencies = [
  "fst-writer",
  "globset",
  "include_dir",
+ "libc",
  "memchr",
  "proptest",
  "rayon",

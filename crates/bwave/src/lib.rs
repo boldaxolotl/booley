@@ -7,6 +7,7 @@ pub mod index;
 pub mod output;
 pub mod parser;
 pub mod signal;
+pub mod vcd_chunk;
 pub mod virtual_signal;
 
 use format::Radix;

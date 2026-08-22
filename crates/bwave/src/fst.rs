@@ -19,29 +19,33 @@
 //! like `bus[0]`/`bus[1]` into synthetic vectors with no opt-out, which
 //! breaks signal-name parity with the VCD view; see the Phase 0 report).
 
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{BufReader, Write};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fst_reader::{
     FstFilter, FstHierarchyEntry, FstReader, FstSignalHandle, FstSignalValue, FstVarType,
 };
 use memchr::{memchr, memchr2};
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::cache::{CachedSignal, ClockEntry, ColumnCache};
 use crate::format::format_value;
-use crate::parser::VcdHeader;
+use crate::parser::{TimestampError, VcdHeader, VcdParseError};
 use crate::signal::signals_in_scope;
+use crate::vcd_chunk::{VcdChunk, VcdChunkSource};
 
 /// f64 read from an FST frame slot that was never written: fst-writer fills
 /// frames with ASCII 'x' bytes, so a real signal with no change before the
 /// first time step reads back as this exact bit pattern. We drop it.
 const REAL_FRAME_GARBAGE_BITS: u64 = u64::from_le_bytes([b'x'; 8]);
 
-/// Byte-oriented event boundary used by the production VCD scanner.
+/// Byte-oriented event boundary retained for scanner attribution benchmarks.
 pub trait VcdByteSink {
     fn timestamp(&mut self, tick: u64);
     fn scalar(&mut self, id: &[u8], value: u8);
@@ -54,152 +58,49 @@ pub trait VcdByteSink {
     fn ignored_line(&mut self, _line: &[u8]) {}
 }
 
-impl<W: std::io::Write + std::io::Seek> VcdByteSink for FstBuildHandler<W> {
-    fn current_tick(&self) -> u64 {
-        self.current_tick
-    }
-
-    fn timestamp(&mut self, tick: u64) {
-        if tick > self.current_tick || !self.any_time_written {
-            self.current_tick = tick;
-        }
-        if tick <= self.last_written_time && self.any_time_written {
-            return;
-        }
-        if self.body.size() >= FST_FLUSH_THRESHOLD {
-            if let Err(e) = self.body.flush() {
-                self.record_write_error(e);
-            }
-        }
-        match self.body.time_change(tick) {
-            Ok(()) => {
-                self.last_written_time = tick;
-                self.any_time_written = true;
-            }
-            Err(e) => self.record_write_error(e),
-        }
-    }
-    fn scalar(&mut self, id: &[u8], value: u8) {
-        self.handle_scalar(id, value);
-    }
-    fn vector(&mut self, id: &[u8], bits: &[u8]) {
-        self.handle_vector(id, bits);
-    }
-    fn real(&mut self, id: &[u8], value: &[u8]) {
-        self.handle_real(id, value);
-    }
-}
-
-struct CountingBuildSink<'a, W: std::io::Write + std::io::Seek> {
-    handler: &'a mut FstBuildHandler<W>,
-    counters: &'a mut VcdBuildCounters,
-}
-
-impl<W: std::io::Write + std::io::Seek> CountingBuildSink<'_, W> {
-    fn record_identifier(&mut self, id: &[u8]) {
-        if id.len() == 1 {
-            self.counters.one_character_ids += 1;
-        } else {
-            self.counters.multi_character_ids += 1;
-        }
-    }
-
-    fn record_outcome(&mut self, outcome: ChangeOutcome) {
-        match outcome {
-            ChangeOutcome::Ignored => self.counters.ignored_ids += 1,
-            ChangeOutcome::Duplicate => self.counters.duplicate_values += 1,
-            ChangeOutcome::Changed | ChangeOutcome::Failed => {}
-        }
-    }
-}
-
-impl<W: std::io::Write + std::io::Seek> VcdByteSink for CountingBuildSink<'_, W> {
-    fn current_tick(&self) -> u64 {
-        self.handler.current_tick
-    }
-
-    fn timestamp(&mut self, tick: u64) {
-        self.counters.timestamp_lines += 1;
-        self.handler.timestamp(tick);
-    }
-
-    fn scalar(&mut self, id: &[u8], value: u8) {
-        self.record_identifier(id);
-        self.counters.scalar_lines += 1;
-        let outcome = self.handler.handle_scalar(id, value);
-        self.record_outcome(outcome);
-    }
-
-    fn vector(&mut self, id: &[u8], bits: &[u8]) {
-        self.record_identifier(id);
-        self.counters.vector_lines += 1;
-        self.counters.vector_bytes += bits.len() as u64;
-        if bits.iter().all(|bit| matches!(bit, b'0' | b'1')) {
-            self.counters.two_state_vectors += 1;
-        } else {
-            self.counters.four_state_vectors += 1;
-        }
-        let outcome = self.handler.handle_vector(id, bits);
-        self.record_outcome(outcome);
-    }
-
-    fn real(&mut self, id: &[u8], value: &[u8]) {
-        self.record_identifier(id);
-        self.counters.real_lines += 1;
-        let outcome = self.handler.handle_real(id, value);
-        self.record_outcome(outcome);
-    }
-
-    fn directive(&mut self, _line: &[u8]) {
-        self.counters.directive_lines += 1;
-    }
-
-    fn ignored_line(&mut self, _line: &[u8]) {
-        self.counters.ignored_lines += 1;
-    }
-}
-
 fn parse_byte_timestamp(line: &[u8]) -> Option<u64> {
-    let mut i = 1;
-    while i < line.len() && line[i] == b' ' {
-        i += 1;
+    let mut index = 1;
+    while index < line.len() && line[index] == b' ' {
+        index += 1;
     }
     let mut tick = 0u64;
     let mut valid = false;
-    while i < line.len() && line[i].is_ascii_digit() {
-        tick = tick.wrapping_mul(10).wrapping_add((line[i] - b'0') as u64);
+    while index < line.len() && line[index].is_ascii_digit() {
+        tick = tick
+            .wrapping_mul(10)
+            .wrapping_add((line[index] - b'0') as u64);
         valid = true;
-        i += 1;
+        index += 1;
     }
     valid.then_some(tick)
 }
 
 #[inline(always)]
 fn separated_byte_value(line: &[u8]) -> Option<(&[u8], &[u8])> {
-    let sep = memchr2(b' ', b'\t', line)?;
-    let mut id = sep + 1;
+    let separator = memchr2(b' ', b'\t', line)?;
+    let mut id = separator + 1;
     while id < line.len() && matches!(line[id], b' ' | b'\t') {
         id += 1;
     }
-    Some((&line[1..sep], &line[id..]))
+    Some((&line[1..separator], &line[id..]))
 }
 
 #[inline(always)]
 fn dispatch_byte_line<S: VcdByteSink>(sink: &mut S, line: &[u8], dumpoff: &mut bool) {
     match line[0] {
         b'#' => match parse_byte_timestamp(line) {
-            Some(t) => sink.timestamp(t),
+            Some(tick) => sink.timestamp(tick),
             None => sink.ignored_line(line),
         },
         b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' if !*dumpoff => {
             sink.scalar(&line[1..], line[0].to_ascii_lowercase())
         }
         b'b' | b'B' if !*dumpoff => match separated_byte_value(line) {
-            Some((v, id)) => sink.vector(id, v),
+            Some((value, id)) => sink.vector(id, value),
             None => sink.ignored_line(line),
         },
         b'r' | b'R' if !*dumpoff => match separated_byte_value(line) {
-            Some((v, id)) => sink.real(id, v),
+            Some((value, id)) => sink.real(id, value),
             None => sink.ignored_line(line),
         },
         b'$' => {
@@ -214,42 +115,25 @@ fn dispatch_byte_line<S: VcdByteSink>(sink: &mut S, line: &[u8], dumpoff: &mut b
     }
 }
 
-fn scan_vcd_bytes_inner<R: std::io::BufRead, S: VcdByteSink>(
-    reader: &mut R,
-    sink: &mut S,
-    heartbeat: Option<&Path>,
-) -> u64 {
+/// Scan VCD body bytes for attribution benchmarks without constructing IR.
+pub fn scan_vcd_bytes<R: std::io::BufRead, S: VcdByteSink>(reader: &mut R, sink: &mut S) -> u64 {
     const BUFFER_SIZE: usize = 4 * 1024 * 1024;
-    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-    let mut buf = vec![0u8; BUFFER_SIZE];
+    let mut buffer = vec![0u8; BUFFER_SIZE];
     let mut leftover = 0;
     let mut dumpoff = false;
     let mut total_bytes_read = 0u64;
-    let mut last_heartbeat = Instant::now();
     loop {
-        let n = match reader.read(&mut buf[leftover..]) {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("WARNING: I/O error reading VCD stream: {e}");
+        let bytes_read = match reader.read(&mut buffer[leftover..]) {
+            Ok(bytes_read) => bytes_read,
+            Err(error) => {
+                eprintln!("WARNING: I/O error reading VCD benchmark stream: {error}");
                 0
             }
         };
-        total_bytes_read += n as u64;
-        if let Some(path) = heartbeat {
-            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    let _ = writeln!(f, "bytes={total_bytes_read} tick={}", sink.current_tick());
-                }
-                last_heartbeat = Instant::now();
-            }
-        }
-        if n == 0 {
+        total_bytes_read += bytes_read as u64;
+        if bytes_read == 0 {
             if leftover > 0 {
-                let mut line = &buf[..leftover];
+                let mut line = &buffer[..leftover];
                 if line.last() == Some(&b'\r') {
                     line = &line[..line.len() - 1];
                 }
@@ -259,31 +143,27 @@ fn scan_vcd_bytes_inner<R: std::io::BufRead, S: VcdByteSink>(
             }
             break;
         }
-        let total = leftover + n;
-        let mut pos = 0;
-        while let Some(newline_offset) = memchr(b'\n', &buf[pos..total]) {
-            let end = pos + newline_offset;
-            let mut line = &buf[pos..end];
+        let total = leftover + bytes_read;
+        let mut position = 0;
+        while let Some(newline_offset) = memchr(b'\n', &buffer[position..total]) {
+            let end = position + newline_offset;
+            let mut line = &buffer[position..end];
             if line.last() == Some(&b'\r') {
                 line = &line[..line.len() - 1];
             }
             if !line.is_empty() {
                 dispatch_byte_line(sink, line, &mut dumpoff);
             }
-            pos = end + 1;
+            position = end + 1;
         }
-        if pos < total {
-            buf.copy_within(pos..total, 0);
-            leftover = total - pos;
+        if position < total {
+            buffer.copy_within(position..total, 0);
+            leftover = total - position;
         } else {
             leftover = 0;
         }
     }
     total_bytes_read
-}
-
-pub fn scan_vcd_bytes<R: std::io::BufRead, S: VcdByteSink>(reader: &mut R, sink: &mut S) -> u64 {
-    scan_vcd_bytes_inner(reader, sink, None)
 }
 
 /// Live FST backing for a `ColumnCache`.
@@ -924,95 +804,6 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
 // ---------------------------------------------------------------- writing
 
 const NO_GROUP: u32 = u32::MAX;
-/// Flush the fst-writer signal buffer to disk once it grows past this size.
-/// Bounds memory on huge streams (replaces CacheBuilder temp-file spilling);
-/// small traces stay single-section, which keeps windowed reads cheap.
-const FST_FLUSH_THRESHOLD: usize = 256 << 20;
-
-/// "10ps" -> -11. Mirrors the VCD `1|10|100 <unit>` timescale grammar.
-fn timescale_to_exponent(ts: &str) -> i8 {
-    let ts = ts.trim();
-    let digits: String = ts.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let unit = ts[digits.len()..].trim();
-    let factor_exp: i8 = match digits.as_str() {
-        "1" | "" => 0,
-        "10" => 1,
-        "100" => 2,
-        _ => 0,
-    };
-    let unit_exp: i8 = match unit {
-        "s" => 0,
-        "ms" => -3,
-        "us" => -6,
-        "ns" => -9,
-        "ps" => -12,
-        "fs" => -15,
-        _ => -9,
-    };
-    unit_exp + factor_exp
-}
-
-fn var_type_of(vt: &str) -> fst_writer::FstVarType {
-    use fst_writer::FstVarType as W;
-    match vt {
-        "reg" => W::Reg,
-        "integer" => W::Integer,
-        "parameter" => W::Parameter,
-        "real" => W::Real,
-        "realtime" => W::RealTime,
-        "time" => W::Time,
-        "logic" => W::Logic,
-        "bit" => W::Bit,
-        "supply0" => W::Supply0,
-        "supply1" => W::Supply1,
-        "tri" => W::Tri,
-        "triand" => W::TriAnd,
-        "trior" => W::TriOr,
-        "trireg" => W::TriReg,
-        "tri0" => W::Tri0,
-        "tri1" => W::Tri1,
-        "wand" => W::Wand,
-        "wor" => W::Wor,
-        "event" => W::Event,
-        "port" => W::Port,
-        "int" => W::Int,
-        _ => W::Wire,
-    }
-}
-
-/// Emit scope transitions between two hierarchical paths: pop to the common
-/// prefix, then push the new scopes. Preserving VCD declaration order means a
-/// re-entered scope becomes a duplicate FST scope entry — exactly what
-/// GTKWave's vcd2fst produces, and what keeps the signal directory order
-/// identical to the .bwave backend's.
-fn transition_scopes<W: std::io::Write + std::io::Seek>(
-    hw: &mut fst_writer::FstHeaderWriter<W>,
-    current: &mut Vec<String>,
-    target: &[&str],
-) -> Result<(), String> {
-    let common = current
-        .iter()
-        .zip(target.iter())
-        .take_while(|(a, b)| a.as_str() == **b)
-        .count();
-    while current.len() > common {
-        hw.up_scope().map_err(|e| format!("fst up_scope: {e}"))?;
-        current.pop();
-    }
-    for name in &target[common..] {
-        hw.scope(*name, "", fst_writer::FstScopeType::Module)
-            .map_err(|e| format!("fst scope '{name}': {e}"))?;
-        current.push((*name).to_string());
-    }
-    Ok(())
-}
-
-struct GroupMeta {
-    fst_id: fst_writer::FstSignalId,
-    width: u32,
-    is_real: bool,
-}
-
 const MAX_DENSE_IDS: usize = 1_000_000;
 
 fn decode_canonical_numeric_id(id: &[u8]) -> Option<usize> {
@@ -1032,6 +823,7 @@ fn decode_canonical_numeric_id(id: &[u8]) -> Option<usize> {
     Some(value)
 }
 
+/// Dense ID lookup retained for scanner attribution benchmarks.
 pub struct VcdIdLookup {
     single: [u32; 256],
     dense: Vec<u32>,
@@ -1095,64 +887,624 @@ impl VcdIdLookup {
     }
 }
 
-/// Streaming VCD -> FST build handler (the replacement for the retired
-/// `.bwave` builder). Construct with the parsed VCD header, feed the body
-/// through `parse_bytes`, then `finalize_and_write`.
-pub struct FstBuildHandler<W: std::io::Write + std::io::Seek = std::io::BufWriter<File>> {
-    body: fst_writer::FstBodyWriter<W>,
-    output_path: std::path::PathBuf,
-    id_lookup: VcdIdLookup,
-    groups: Vec<GroupMeta>,
-    current_tick: u64,
-    last_written_time: u64,
-    any_time_written: bool,
-    overwide_values: u64,
-    write_error: Option<String>,
-    counters: Option<VcdBuildCounters>,
+/// Flush the fst-writer signal buffer to disk once it grows past this size.
+/// Bounds memory on huge streams (replaces CacheBuilder temp-file spilling);
+/// small traces stay single-section, which keeps windowed reads cheap.
+const FST_FLUSH_THRESHOLD: usize = 256 << 20;
+const SERIAL_VCD_CHUNK_TARGET: usize = 4 << 20;
+pub const PARALLEL_VCD_CHUNK_TARGET: usize = 1 << 20;
+pub const PARALLEL_FST_SECTION_TARGET: usize = 34 << 20;
+
+/// "10ps" -> -11. Mirrors the VCD `1|10|100 <unit>` timescale grammar.
+fn timescale_to_exponent(ts: &str) -> i8 {
+    let ts = ts.trim();
+    let digits: String = ts.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let unit = ts[digits.len()..].trim();
+    let factor_exp: i8 = match digits.as_str() {
+        "1" | "" => 0,
+        "10" => 1,
+        "100" => 2,
+        _ => 0,
+    };
+    let unit_exp: i8 = match unit {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        _ => -9,
+    };
+    unit_exp + factor_exp
 }
 
-#[derive(Clone, Copy)]
-enum ChangeOutcome {
-    Ignored,
-    Changed,
-    Duplicate,
-    Failed,
-}
-
-/// Optional aggregate VCD-build diagnostics. Collection is disabled by default.
-#[derive(Clone, Debug, Default)]
-pub struct VcdBuildCounters {
-    pub input_bytes: u64,
-    pub timestamp_lines: u64,
-    pub scalar_lines: u64,
-    pub vector_lines: u64,
-    pub real_lines: u64,
-    pub directive_lines: u64,
-    pub ignored_lines: u64,
-    pub one_character_ids: u64,
-    pub multi_character_ids: u64,
-    pub vector_bytes: u64,
-    pub two_state_vectors: u64,
-    pub four_state_vectors: u64,
-    pub ignored_ids: u64,
-    pub duplicate_values: u64,
-    pub flushes: u64,
-    pub uncompressed_stream_bytes: u64,
-    pub compressed_stream_bytes: u64,
-    pub flush_time: Duration,
-}
-
-fn fst_build_info(header: &VcdHeader) -> fst_writer::FstInfo {
-    fst_writer::FstInfo {
-        start_time: 0,
-        timescale_exponent: timescale_to_exponent(&header.timescale_str),
-        version: format!("bwave {}", env!("CARGO_PKG_VERSION")),
-        date: String::new(),
-        file_type: fst_writer::FstFileType::Verilog,
+fn var_type_of(vt: &str) -> fst_writer::FstVarType {
+    use fst_writer::FstVarType as W;
+    match vt {
+        "reg" => W::Reg,
+        "integer" => W::Integer,
+        "parameter" => W::Parameter,
+        "real" => W::Real,
+        "realtime" => W::RealTime,
+        "time" => W::Time,
+        "logic" => W::Logic,
+        "bit" => W::Bit,
+        "supply0" => W::Supply0,
+        "supply1" => W::Supply1,
+        "tri" => W::Tri,
+        "triand" => W::TriAnd,
+        "trior" => W::TriOr,
+        "trireg" => W::TriReg,
+        "tri0" => W::Tri0,
+        "tri1" => W::Tri1,
+        "wand" => W::Wand,
+        "wor" => W::Wor,
+        "event" => W::Event,
+        "port" => W::Port,
+        "int" => W::Int,
+        _ => W::Wire,
     }
 }
 
-impl FstBuildHandler<std::io::BufWriter<File>> {
+/// Canonicalize a VCD bit-vector value to exactly `width` lowercase chars in
+/// `out` (fst-writer panics on over-wide values and self-extends short ones,
+/// but VCD extension rules for x/z need to be ours). Returns true when the
+/// value arrived wider than the declared width (simulator dialect quirk;
+/// least-significant bits are kept, matching GTKWave).
+fn canon_bits_into(bits: &[u8], width: usize, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    let len = bits.len();
+    if len < width {
+        let fill = match bits.first().copied().unwrap_or(b'0').to_ascii_lowercase() {
+            b'x' => b'x',
+            b'z' => b'z',
+            _ => b'0',
+        };
+        out.resize(width - len, fill);
+    }
+    let src = if len > width {
+        &bits[len - width..]
+    } else {
+        bits
+    };
+    out.extend(src.iter().map(|b| b.to_ascii_lowercase()));
+    len > width
+}
+
+/// Emit scope transitions between two hierarchical paths: pop to the common
+/// prefix, then push the new scopes. Preserving VCD declaration order means a
+/// re-entered scope becomes a duplicate FST scope entry — exactly what
+/// GTKWave's vcd2fst produces, and what keeps the signal directory order
+/// identical to the .bwave backend's.
+fn transition_scopes<W: std::io::Write + std::io::Seek>(
+    hw: &mut fst_writer::FstHeaderWriter<W>,
+    current: &mut Vec<String>,
+    target: &[&str],
+) -> Result<(), String> {
+    let common = current
+        .iter()
+        .zip(target.iter())
+        .take_while(|(a, b)| a.as_str() == **b)
+        .count();
+    while current.len() > common {
+        hw.up_scope().map_err(|e| format!("fst up_scope: {e}"))?;
+        current.pop();
+    }
+    for name in &target[common..] {
+        hw.scope(*name, "", fst_writer::FstScopeType::Module)
+            .map_err(|e| format!("fst scope '{name}': {e}"))?;
+        current.push((*name).to_string());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct GroupMeta {
+    fst_id: fst_writer::FstSignalId,
+    width: u32,
+    is_real: bool,
+    frame_offset: usize,
+}
+
+#[derive(Clone)]
+struct SignalSchema {
+    single_char_idx: [u32; 256],
+    two_char_idx: Option<Box<[u32]>>,
+    three_char_idx: Option<Box<[u32]>>,
+    multi_char_idx: FxHashMap<Vec<u8>, u32>,
+    groups: Vec<GroupMeta>,
+}
+
+const VCD_ID_ALPHABET: usize = 94;
+
+#[inline(always)]
+fn dense_vcd_id_index(id: &[u8], expected_len: usize) -> Option<usize> {
+    if id.len() != expected_len {
+        return None;
+    }
+    let mut index = 0usize;
+    for byte in id {
+        if !(b'!'..=b'~').contains(byte) {
+            return None;
+        }
+        index = index * VCD_ID_ALPHABET + (byte - b'!') as usize;
+    }
+    Some(index)
+}
+
+impl SignalSchema {
+    #[inline(always)]
+    fn lookup_group(&self, id: &[u8]) -> u32 {
+        match id.len() {
+            1 => self.single_char_idx[id[0] as usize],
+            2 => dense_vcd_id_index(id, 2)
+                .and_then(|index| self.two_char_idx.as_ref().map(|table| table[index]))
+                .unwrap_or_else(|| self.multi_char_idx.get(id).copied().unwrap_or(NO_GROUP)),
+            3 => dense_vcd_id_index(id, 3)
+                .and_then(|index| self.three_char_idx.as_ref().map(|table| table[index]))
+                .unwrap_or_else(|| self.multi_char_idx.get(id).copied().unwrap_or(NO_GROUP)),
+            _ => self.multi_char_idx.get(id).copied().unwrap_or(NO_GROUP),
+        }
+    }
+}
+
+struct ConversionState {
+    current_tick: u64,
+    last_written_time: u64,
+    any_time_written: bool,
+    in_dumpoff: bool,
+    val_buf: Vec<u8>,
+    overwide_values: u64,
+    write_error: Option<String>,
+    frame: Vec<u8>,
+}
+
+const IR_TIMESTAMP: u32 = u32::MAX;
+const IR_DUMP_OFF: u32 = u32::MAX - 1;
+const IR_DUMP_ON: u32 = u32::MAX - 2;
+const IR_INLINE_VALUE: u32 = 1 << 31;
+
+#[derive(Clone, Copy)]
+struct IrOp {
+    code: u32,
+    payload: u32,
+}
+
+struct IrTimestamp {
+    tick: u64,
+}
+
+struct ChunkIr {
+    sequence: u64,
+    chunk_count: u64,
+    input_bytes: usize,
+    operations: Vec<IrOp>,
+    timestamps: Vec<IrTimestamp>,
+    values: Vec<u8>,
+    prefix_overwide_values: u64,
+    enabled_overwide_values: u64,
+    prefix_last: Vec<u32>,
+    suffix_last: Vec<u32>,
+    max_timestamp: Option<u64>,
+    final_dump_enabled: Option<bool>,
+}
+
+struct EncodeChunk {
+    sequence: u64,
+    input_bytes: usize,
+    chunks: Vec<ChunkIr>,
+    incoming_frame: Vec<u8>,
+    incoming_tick: u64,
+    incoming_time_seen: bool,
+    incoming_dumpoff: bool,
+    first_file_section: bool,
+}
+
+impl EncodeChunk {
+    fn append(&mut self, other: EncodeChunk) {
+        self.input_bytes += other.input_bytes;
+        self.chunks.extend(other.chunks);
+    }
+}
+
+struct EncodedChunk {
+    sequence: u64,
+    section: fst_writer::EncodedFstSection,
+    encode_seconds: f64,
+}
+
+#[cfg(feature = "profile")]
+#[derive(Default)]
+struct ParallelProfile {
+    parse_seconds: f64,
+    reconcile_seconds: f64,
+    encode_seconds: f64,
+    write_seconds: f64,
+    input_bytes: usize,
+    ir_bytes: usize,
+    peak_batch_ir_bytes: usize,
+}
+
+#[cfg(feature = "profile")]
+fn chunk_ir_bytes(ir: &ChunkIr) -> usize {
+    ir.operations.len() * std::mem::size_of::<IrOp>()
+        + ir.timestamps.len() * std::mem::size_of::<IrTimestamp>()
+        + ir.values.len()
+}
+
+struct ChunkParser<'a> {
+    schema: &'a SignalSchema,
+    ir: ChunkIr,
+    scratch: Vec<u8>,
+    prefix_last: Vec<u32>,
+    suffix_last: Vec<u32>,
+    local_dump_enabled: Option<bool>,
+}
+
+impl<'a> ChunkParser<'a> {
+    fn new(schema: &'a SignalSchema, chunk: &VcdChunk) -> Self {
+        Self {
+            schema,
+            ir: ChunkIr {
+                sequence: chunk.sequence,
+                chunk_count: 1,
+                input_bytes: chunk.bytes.len(),
+                operations: Vec::with_capacity(chunk.bytes.len() / 12),
+                timestamps: Vec::with_capacity(chunk.bytes.len() / 256),
+                values: Vec::with_capacity(chunk.bytes.len() / 4),
+                prefix_overwide_values: 0,
+                enabled_overwide_values: 0,
+                prefix_last: Vec::new(),
+                suffix_last: Vec::new(),
+                max_timestamp: None,
+                final_dump_enabled: None,
+            },
+            scratch: Vec::with_capacity(256),
+            prefix_last: vec![u32::MAX; schema.groups.len()],
+            suffix_last: vec![u32::MAX; schema.groups.len()],
+            local_dump_enabled: None,
+        }
+    }
+
+    fn parse(mut self, chunk: &VcdChunk) -> Result<ChunkIr, VcdParseError> {
+        let mut start = 0;
+        while let Some(relative) = memchr(b'\n', &chunk.bytes[start..]) {
+            let line_end = start + relative;
+            self.parse_line_ending_at(chunk, start, line_end)?;
+            start = line_end + 1;
+        }
+        if start < chunk.bytes.len() {
+            self.parse_line_ending_at(chunk, start, chunk.bytes.len())?;
+        }
+        self.ir.prefix_last = self
+            .prefix_last
+            .into_iter()
+            .filter(|index| *index != u32::MAX)
+            .collect();
+        self.ir.suffix_last = self
+            .suffix_last
+            .into_iter()
+            .filter(|index| *index != u32::MAX)
+            .collect();
+        Ok(self.ir)
+    }
+
+    fn parse_line_ending_at(
+        &mut self,
+        chunk: &VcdChunk,
+        start: usize,
+        mut end: usize,
+    ) -> Result<(), VcdParseError> {
+        if end > start && chunk.bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
+        if end > start {
+            self.parse_line(&chunk.bytes[start..end], chunk.start_offset + start as u64)?;
+        }
+        Ok(())
+    }
+
+    fn parse_line(&mut self, line: &[u8], input_offset: u64) -> Result<(), VcdParseError> {
+        match line[0] {
+            b'#' => {
+                let tick = parse_timestamp(line, input_offset)?;
+                self.ir.max_timestamp =
+                    Some(self.ir.max_timestamp.map_or(tick, |old| old.max(tick)));
+                self.push_timestamp(tick)?;
+            }
+            b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' => {
+                let value = [line[0].to_ascii_lowercase()];
+                self.push_change(&line[1..], &value, true)?;
+            }
+            b'b' | b'B' | b'r' | b'R' => self.parse_vector(line)?,
+            b'$' if line.starts_with(b"$dumpoff") => {
+                self.local_dump_enabled = Some(false);
+                self.ir.final_dump_enabled = Some(false);
+                self.ir.operations.push(IrOp {
+                    code: IR_DUMP_OFF,
+                    payload: 0,
+                });
+            }
+            b'$' if line.starts_with(b"$dumpon") => {
+                self.local_dump_enabled = Some(true);
+                self.ir.final_dump_enabled = Some(true);
+                self.ir.operations.push(IrOp {
+                    code: IR_DUMP_ON,
+                    payload: 0,
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn push_timestamp(&mut self, tick: u64) -> Result<(), VcdParseError> {
+        let payload =
+            u32::try_from(self.ir.timestamps.len()).map_err(|_| VcdParseError::Worker {
+                message: "chunk timestamp table exceeds u32".to_string(),
+            })?;
+        self.ir.timestamps.push(IrTimestamp { tick });
+        self.ir.operations.push(IrOp {
+            code: IR_TIMESTAMP,
+            payload,
+        });
+        Ok(())
+    }
+
+    fn parse_vector(&mut self, line: &[u8]) -> Result<(), VcdParseError> {
+        let Some(separator) = memchr2(b' ', b'\t', line) else {
+            return Ok(());
+        };
+        let id_start = if separator + 1 < line.len() && matches!(line[separator + 1], b' ' | b'\t')
+        {
+            separator + 2
+        } else {
+            separator + 1
+        };
+        self.push_change(&line[id_start..], &line[1..separator], false)
+    }
+
+    fn push_change(&mut self, id: &[u8], raw: &[u8], ready: bool) -> Result<(), VcdParseError> {
+        let group = self.schema.lookup_group(id);
+        if group == NO_GROUP {
+            return Ok(());
+        }
+        let meta = self.schema.groups[group as usize];
+        if ready && meta.width == 1 && !meta.is_real {
+            self.ir.operations.push(IrOp {
+                code: group,
+                payload: IR_INLINE_VALUE | raw[0] as u32,
+            });
+            self.record_last_change(group)?;
+            return Ok(());
+        }
+        self.scratch.clear();
+        if meta.is_real {
+            let value = std::str::from_utf8(raw)
+                .ok()
+                .and_then(|text| text.parse::<f64>().ok())
+                .unwrap_or(f64::NAN);
+            self.scratch.extend_from_slice(&value.to_le_bytes());
+        } else if canon_bits_into(raw, meta.width as usize, &mut self.scratch) {
+            match self.local_dump_enabled {
+                None => self.ir.prefix_overwide_values += 1,
+                Some(true) => self.ir.enabled_overwide_values += 1,
+                Some(false) => {}
+            }
+        }
+        let start = u32::try_from(self.ir.values.len()).map_err(|_| VcdParseError::Worker {
+            message: "chunk value arena exceeds u32".to_string(),
+        })?;
+        if start >= IR_INLINE_VALUE {
+            return Err(VcdParseError::Worker {
+                message: "chunk value arena exceeds 2 GiB".to_string(),
+            });
+        }
+        self.ir.values.extend_from_slice(&self.scratch);
+        self.ir.operations.push(IrOp {
+            code: group,
+            payload: start,
+        });
+        self.record_last_change(group)?;
+        Ok(())
+    }
+
+    fn record_last_change(&mut self, group: u32) -> Result<(), VcdParseError> {
+        let operation =
+            u32::try_from(self.ir.operations.len() - 1).map_err(|_| VcdParseError::Worker {
+                message: "chunk operation table exceeds u32".to_string(),
+            })?;
+        match self.local_dump_enabled {
+            None => self.prefix_last[group as usize] = operation,
+            Some(true) => self.suffix_last[group as usize] = operation,
+            Some(false) => {}
+        }
+        Ok(())
+    }
+}
+
+impl ConversionState {
+    fn new(frame_bytes: usize) -> Self {
+        Self {
+            current_tick: 0,
+            last_written_time: 0,
+            any_time_written: false,
+            in_dumpoff: false,
+            val_buf: Vec::with_capacity(256),
+            overwide_values: 0,
+            write_error: None,
+            frame: vec![b'x'; frame_bytes],
+        }
+    }
+}
+
+fn invalid_timestamp(line: &[u8], offset: u64, reason: TimestampError) -> VcdParseError {
+    VcdParseError::InvalidTimestamp {
+        offset,
+        text: String::from_utf8_lossy(line).into_owned(),
+        reason,
+    }
+}
+
+fn parse_timestamp(line: &[u8], offset: u64) -> Result<u64, VcdParseError> {
+    let mut pos = 1;
+    while pos < line.len() && matches!(line[pos], b' ' | b'\t') {
+        pos += 1;
+    }
+
+    let digit_start = pos;
+    let mut tick = 0u64;
+    while pos < line.len() && line[pos].is_ascii_digit() {
+        tick = tick
+            .checked_mul(10)
+            .and_then(|value| value.checked_add((line[pos] - b'0') as u64))
+            .ok_or_else(|| invalid_timestamp(line, offset, TimestampError::Overflow))?;
+        pos += 1;
+    }
+    if pos == digit_start {
+        return Err(invalid_timestamp(
+            line,
+            offset,
+            TimestampError::MissingDigits,
+        ));
+    }
+    while pos < line.len() && matches!(line[pos], b' ' | b'\t') {
+        pos += 1;
+    }
+    if pos != line.len() {
+        return Err(invalid_timestamp(
+            line,
+            offset,
+            TimestampError::TrailingCharacters,
+        ));
+    }
+    Ok(tick)
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "worker panicked with a non-string payload".to_string()
+    }
+}
+
+fn write_parallel_heartbeat(
+    heartbeat_path: Option<&Path>,
+    bytes: u64,
+    tick: u64,
+    last_heartbeat: &mut Instant,
+) {
+    if last_heartbeat.elapsed() < Duration::from_secs(5) {
+        return;
+    }
+    if let Some(path) = heartbeat_path {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "bytes={bytes} tick={tick}");
+        }
+    }
+    *last_heartbeat = Instant::now();
+}
+
+fn encode_reconciled_chunk(
+    schema: &SignalSchema,
+    factory: &fst_writer::FstSectionEncoder,
+    chunk: EncodeChunk,
+) -> Result<EncodedChunk, VcdParseError> {
+    let started = Instant::now();
+    let EncodeChunk {
+        sequence,
+        chunks,
+        incoming_frame,
+        incoming_tick,
+        incoming_time_seen,
+        incoming_dumpoff,
+        first_file_section,
+        ..
+    } = chunk;
+    let mut encoder = if first_file_section {
+        factory.fresh()
+    } else {
+        factory.from_frame(&incoming_frame, incoming_tick)
+    }
+    .map_err(|error| worker_error(sequence, error))?;
+    drop(incoming_frame);
+    let mut current_tick = incoming_tick;
+    let mut time_seen = incoming_time_seen;
+    let mut in_dumpoff = incoming_dumpoff;
+    for ir in chunks {
+        for operation in &ir.operations {
+            if operation.code == IR_TIMESTAMP {
+                let timestamp = &ir.timestamps[operation.payload as usize];
+                if timestamp.tick > current_tick || !time_seen {
+                    current_tick = timestamp.tick;
+                    time_seen = true;
+                }
+                encoder
+                    .time_change(current_tick)
+                    .map_err(|error| worker_error(sequence, error))?;
+            } else if operation.code == IR_DUMP_OFF {
+                in_dumpoff = true;
+            } else if operation.code == IR_DUMP_ON {
+                in_dumpoff = false;
+            } else if !in_dumpoff {
+                encode_ir_change(schema, &ir, *operation, &mut encoder)
+                    .map_err(|error| worker_error(sequence, error))?;
+            }
+        }
+    }
+    let section = encoder
+        .encode_section()
+        .map_err(|error| worker_error(sequence, error))?;
+    Ok(EncodedChunk {
+        sequence,
+        section,
+        encode_seconds: started.elapsed().as_secs_f64(),
+    })
+}
+
+fn encode_ir_change(
+    schema: &SignalSchema,
+    ir: &ChunkIr,
+    operation: IrOp,
+    encoder: &mut fst_writer::FstSectionEncoder,
+) -> Result<(), fst_writer::FstWriteError> {
+    let meta = schema.groups[operation.code as usize];
+    if operation.payload & IR_INLINE_VALUE != 0 {
+        encoder.signal_change_exact(meta.fst_id, &[operation.payload as u8])
+    } else {
+        let start = operation.payload as usize;
+        let len = if meta.is_real { 8 } else { meta.width as usize };
+        encoder.signal_change_exact(meta.fst_id, &ir.values[start..start + len])
+    }
+}
+
+fn worker_error(sequence: u64, error: impl std::fmt::Display) -> VcdParseError {
+    VcdParseError::Worker {
+        message: format!("chunk {sequence}: {error}"),
+    }
+}
+
+/// Streaming VCD -> FST build handler (the replacement for the retired
+/// `.bwave` builder). Construct with the parsed VCD header, feed the body
+/// through `parse_bytes`, then `finalize_and_write`.
+pub struct FstBuildHandler {
+    encoder: fst_writer::FstSectionEncoder,
+    writer: fst_writer::OrderedFstWriter<std::io::BufWriter<File>>,
+    output_path: std::path::PathBuf,
+    body_offset: u64,
+    schema: SignalSchema,
+    state: ConversionState,
+    sections_encoded_externally: bool,
+}
+
+impl FstBuildHandler {
     /// Parse the header, emit the FST hierarchy, and return a handler ready
     /// to stream the VCD body. `scope` limits the store to a hierarchical
     /// subtree exactly like the .bwave builder.
@@ -1160,36 +1512,7 @@ impl FstBuildHandler<std::io::BufWriter<File>> {
         header: &VcdHeader,
         scope: Option<&str>,
         output_path: &Path,
-    ) -> Result<Self, String> {
-        let info = fst_build_info(header);
-        let writer = fst_writer::open_fst(output_path, &info)
-            .map_err(|e| format!("cannot create '{}': {e}", output_path.display()))?;
-        FstBuildHandler::from_header_writer(header, scope, output_path.to_path_buf(), writer)
-    }
-}
-
-impl FstBuildHandler<std::io::Cursor<Vec<u8>>> {
-    /// Create a build backed by an in-memory seekable output.
-    pub fn new_in_memory(header: &VcdHeader, scope: Option<&str>) -> Result<Self, String> {
-        let info = fst_build_info(header);
-        let writer = fst_writer::FstHeaderWriter::new(std::io::Cursor::new(Vec::new()), &info)
-            .map_err(|e| format!("cannot create in-memory FST: {e}"))?;
-        FstBuildHandler::from_header_writer(
-            header,
-            scope,
-            std::path::PathBuf::from("<memory>"),
-            writer,
-        )
-    }
-}
-
-impl<W: std::io::Write + std::io::Seek> FstBuildHandler<W> {
-    fn from_header_writer(
-        header: &VcdHeader,
-        scope: Option<&str>,
-        output_path: std::path::PathBuf,
-        mut writer: fst_writer::FstHeaderWriter<W>,
-    ) -> Result<Self, String> {
+    ) -> Result<FstBuildHandler, String> {
         let signals = match scope {
             Some(s) => {
                 let filtered = signals_in_scope(&header.signals, s);
@@ -1201,16 +1524,36 @@ impl<W: std::io::Write + std::io::Seek> FstBuildHandler<W> {
             None => header.signals.clone(),
         };
 
+        let info = fst_writer::FstInfo {
+            start_time: 0,
+            timescale_exponent: timescale_to_exponent(&header.timescale_str),
+            version: format!("bwave {}", env!("CARGO_PKG_VERSION")),
+            date: String::new(),
+            file_type: fst_writer::FstFileType::Verilog,
+        };
+        let mut hw = fst_writer::open_fst(output_path, &info)
+            .map_err(|e| format!("cannot create '{}': {e}", output_path.display()))?;
+
         // Emit vars in exact VCD declaration order, streaming scope
         // transitions between consecutive signals. The first declaration of
         // a VCD id becomes the FST signal, later declarations alias it.
-        let mut id_lookup = VcdIdLookup::new(signals.iter().map(|signal| signal.id.as_str()));
+        let mut single_char_idx = [NO_GROUP; 256];
+        let mut two_char_idx =
+            Some(vec![NO_GROUP; VCD_ID_ALPHABET * VCD_ID_ALPHABET].into_boxed_slice());
+        let mut three_char_idx = signals
+            .iter()
+            .any(|signal| dense_vcd_id_index(signal.id.as_bytes(), 3).is_some())
+            .then(|| {
+                vec![NO_GROUP; VCD_ID_ALPHABET * VCD_ID_ALPHABET * VCD_ID_ALPHABET]
+                    .into_boxed_slice()
+            });
+        let mut multi_char_idx = FxHashMap::<Vec<u8>, u32>::default();
         let mut groups: Vec<GroupMeta> = Vec::new();
         let mut current_scope: Vec<String> = Vec::new();
         for sig in &signals {
             let mut parts: Vec<&str> = sig.name.split('.').collect();
             let var_name = parts.pop().unwrap_or(&sig.name);
-            transition_scopes(&mut writer, &mut current_scope, &parts)?;
+            transition_scopes(&mut hw, &mut current_scope, &parts)?;
 
             let is_real = sig.var_type == "real" || sig.var_type == "realtime";
             let signal_tpe = if is_real {
@@ -1219,9 +1562,22 @@ impl<W: std::io::Write + std::io::Seek> FstBuildHandler<W> {
                 fst_writer::FstSignalType::bit_vec(sig.width)
             };
             let id_bytes = sig.id.as_bytes();
-            let existing = id_lookup.resolve(id_bytes);
-            let alias = existing.map(|group| groups[group as usize].fst_id);
-            let fst_id = writer
+            let existing = match id_bytes.len() {
+                1 => single_char_idx[id_bytes[0] as usize],
+                2 => dense_vcd_id_index(id_bytes, 2)
+                    .and_then(|index| two_char_idx.as_ref().map(|table| table[index]))
+                    .unwrap_or_else(|| multi_char_idx.get(id_bytes).copied().unwrap_or(NO_GROUP)),
+                3 => dense_vcd_id_index(id_bytes, 3)
+                    .and_then(|index| three_char_idx.as_ref().map(|table| table[index]))
+                    .unwrap_or_else(|| multi_char_idx.get(id_bytes).copied().unwrap_or(NO_GROUP)),
+                _ => multi_char_idx.get(id_bytes).copied().unwrap_or(NO_GROUP),
+            };
+            let alias = if existing != NO_GROUP {
+                Some(groups[existing as usize].fst_id)
+            } else {
+                None
+            };
+            let fst_id = hw
                 .var(
                     var_name,
                     signal_tpe,
@@ -1230,113 +1586,355 @@ impl<W: std::io::Write + std::io::Seek> FstBuildHandler<W> {
                     alias,
                 )
                 .map_err(|e| format!("fst var '{}': {e}", sig.name))?;
-            if existing.is_none() {
+            if existing == NO_GROUP {
+                let frame_offset = groups
+                    .last()
+                    .map(|group| {
+                        group.frame_offset
+                            + if group.is_real {
+                                8
+                            } else {
+                                group.width as usize
+                            }
+                    })
+                    .unwrap_or(0);
                 groups.push(GroupMeta {
                     fst_id,
                     width: sig.width,
                     is_real,
+                    frame_offset,
                 });
                 let g = (groups.len() - 1) as u32;
-                id_lookup.insert(&sig.id, g);
+                match id_bytes.len() {
+                    1 => single_char_idx[id_bytes[0] as usize] = g,
+                    2 => {
+                        if let Some(index) = dense_vcd_id_index(id_bytes, 2) {
+                            two_char_idx.as_mut().expect("two-character table")[index] = g;
+                        } else {
+                            multi_char_idx.insert(id_bytes.to_vec(), g);
+                        }
+                    }
+                    3 => {
+                        if let Some(index) = dense_vcd_id_index(id_bytes, 3) {
+                            three_char_idx.as_mut().expect("three-character table")[index] = g;
+                        } else {
+                            multi_char_idx.insert(id_bytes.to_vec(), g);
+                        }
+                    }
+                    _ => {
+                        multi_char_idx.insert(id_bytes.to_vec(), g);
+                    }
+                }
             }
         }
-        transition_scopes(&mut writer, &mut current_scope, &[])?;
+        transition_scopes(&mut hw, &mut current_scope, &[])?;
 
-        let body = writer
-            .finish()
+        let (encoder, writer) = hw
+            .finish_split()
             .map_err(|e| format!("fst header finish: {e}"))?;
+        let frame_bytes = groups
+            .last()
+            .map(|group| {
+                group.frame_offset
+                    + if group.is_real {
+                        8
+                    } else {
+                        group.width as usize
+                    }
+            })
+            .unwrap_or(0);
         Ok(FstBuildHandler {
-            body,
-            output_path,
-            id_lookup,
-            groups,
-            current_tick: 0,
-            last_written_time: 0,
-            any_time_written: false,
-            overwide_values: 0,
-            write_error: None,
-            counters: None,
+            encoder,
+            writer,
+            output_path: output_path.to_path_buf(),
+            body_offset: header.body_offset,
+            schema: SignalSchema {
+                single_char_idx,
+                two_char_idx,
+                three_char_idx,
+                multi_char_idx,
+                groups,
+            },
+            state: ConversionState::new(frame_bytes),
+            sections_encoded_externally: false,
         })
     }
 
-    /// Enable aggregate diagnostics for subsequent parsing and section flushes.
-    pub fn enable_counters(&mut self) {
-        self.counters.get_or_insert_with(VcdBuildCounters::default);
-        self.body.enable_stats();
-    }
-
-    /// Select compression for subsequent section flushes.
-    pub fn set_compression(&mut self, compression: fst_writer::FstCompression) {
-        self.body.set_compression(compression);
-    }
-
-    #[inline(always)]
-    fn lookup_group(&self, id: &[u8]) -> u32 {
-        self.id_lookup.resolve(id).unwrap_or(NO_GROUP)
-    }
-
     fn record_write_error(&mut self, e: impl std::fmt::Display) {
-        if self.write_error.is_none() {
-            self.write_error = Some(e.to_string());
+        if self.state.write_error.is_none() {
+            self.state.write_error = Some(e.to_string());
+        }
+    }
+
+    fn apply_timestamp(&mut self, tick: u64) {
+        if tick > self.state.current_tick || !self.state.any_time_written {
+            self.state.current_tick = tick;
+        }
+        if tick <= self.state.last_written_time && self.state.any_time_written {
+            return;
+        }
+        if self.encoder.size() >= FST_FLUSH_THRESHOLD {
+            self.flush_section();
+        }
+        match self.encoder.time_change(tick) {
+            Ok(()) => {
+                self.state.last_written_time = tick;
+                self.state.any_time_written = true;
+            }
+            Err(error) => self.record_write_error(error),
+        }
+    }
+
+    fn flush_section(&mut self) {
+        match self.encoder.encode_section() {
+            Ok(section) => {
+                if let Err(error) = self.writer.append_section(section) {
+                    self.record_write_error(error);
+                }
+            }
+            Err(error) => self.record_write_error(error),
+        }
+    }
+
+    fn accept_encoded(
+        &mut self,
+        result: Result<EncodedChunk, VcdParseError>,
+        submitted: &mut VecDeque<u64>,
+        completed: &mut BTreeMap<u64, fst_writer::EncodedFstSection>,
+    ) -> Result<(f64, f64), VcdParseError> {
+        let chunk = result?;
+        let encode_seconds = chunk.encode_seconds;
+        completed.insert(chunk.sequence, chunk.section);
+        let write_started = Instant::now();
+        while let Some(sequence) = submitted.front().copied() {
+            let Some(section) = completed.remove(&sequence) else {
+                break;
+            };
+            submitted.pop_front();
+            if let Err(error) = self.writer.append_section(section) {
+                self.record_write_error(error);
+            }
+            self.sections_encoded_externally = true;
+        }
+        Ok((encode_seconds, write_started.elapsed().as_secs_f64()))
+    }
+
+    fn submit_encode(
+        &mut self,
+        mut chunk: EncodeChunk,
+        sender: &mpsc::SyncSender<EncodeChunk>,
+        receiver: &mpsc::Receiver<Result<EncodedChunk, VcdParseError>>,
+        submitted: &mut VecDeque<u64>,
+        completed: &mut BTreeMap<u64, fst_writer::EncodedFstSection>,
+    ) -> Result<(f64, f64), VcdParseError> {
+        let mut timings = (0.0, 0.0);
+        loop {
+            let sequence = chunk.sequence;
+            match sender.try_send(chunk) {
+                Ok(()) => {
+                    submitted.push_back(sequence);
+                    return Ok(timings);
+                }
+                Err(mpsc::TrySendError::Full(returned)) => {
+                    chunk = returned;
+                    let encoded = receiver.recv().map_err(|_| VcdParseError::Worker {
+                        message: "encoder workers stopped before accepting all sections"
+                            .to_string(),
+                    })?;
+                    let completed_timings = self.accept_encoded(encoded, submitted, completed)?;
+                    timings.0 += completed_timings.0;
+                    timings.1 += completed_timings.1;
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    return Err(VcdParseError::Worker {
+                        message: "encoder worker queue disconnected".to_string(),
+                    });
+                }
+            }
         }
     }
 
     #[inline]
-    fn handle_scalar(&mut self, id: &[u8], value: u8) -> ChangeOutcome {
-        let group = self.lookup_group(id);
-        if group == NO_GROUP {
-            return ChangeOutcome::Ignored;
-        }
-        let value = [value];
-        let bytes_are_ready =
-            self.groups[group as usize].width == 1 && !self.groups[group as usize].is_real;
-        self.emit_change(group, bytes_are_ready, &value)
-    }
-
-    fn handle_vector(&mut self, id: &[u8], bits: &[u8]) -> ChangeOutcome {
-        let group = self.lookup_group(id);
-        if group == NO_GROUP {
-            return ChangeOutcome::Ignored;
-        }
-        self.emit_change(group, false, bits)
-    }
-
-    fn handle_real(&mut self, id: &[u8], value: &[u8]) -> ChangeOutcome {
-        let group = self.lookup_group(id);
-        if group == NO_GROUP {
-            return ChangeOutcome::Ignored;
-        }
-        self.emit_change(group, false, value)
-    }
-
-    fn emit_change(&mut self, group: u32, bytes_are_ready: bool, raw: &[u8]) -> ChangeOutcome {
-        let group_meta = &self.groups[group as usize];
-        let fst_id = group_meta.fst_id;
-        let width = group_meta.width as usize;
-        let is_real = group_meta.is_real;
-        let result = if is_real {
+    fn emit_change(&mut self, group: u32, bytes_are_ready: bool, raw: &[u8]) {
+        let g = self.schema.groups[group as usize];
+        let fst_id = g.fst_id;
+        if g.is_real {
             let v: f64 = std::str::from_utf8(raw)
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(f64::NAN);
-            self.body
-                .signal_change_with_status(fst_id, &v.to_le_bytes())
-        } else if bytes_are_ready {
-            self.body.signal_change_with_status(fst_id, raw)
-        } else {
-            if raw.len() > width {
-                self.overwide_values += 1;
+            let bytes = v.to_le_bytes();
+            self.store_frame(g, &bytes);
+            if let Err(e) = self.encoder.signal_change_exact(fst_id, &bytes) {
+                self.record_write_error(e);
             }
-            self.body.signal_change_vcd_with_status(fst_id, raw)
-        };
-        match result {
-            Ok(false) => ChangeOutcome::Duplicate,
-            Ok(true) => ChangeOutcome::Changed,
-            Err(error) => {
-                self.record_write_error(error);
-                ChangeOutcome::Failed
+            return;
+        }
+        if bytes_are_ready {
+            self.store_frame(g, raw);
+            if let Err(e) = self.encoder.signal_change_exact(fst_id, raw) {
+                self.record_write_error(e);
+            }
+        } else {
+            let width = g.width as usize;
+            let mut buf = std::mem::take(&mut self.state.val_buf);
+            if canon_bits_into(raw, width, &mut buf) {
+                self.state.overwide_values += 1;
+            }
+            self.store_frame(g, &buf);
+            if let Err(e) = self.encoder.signal_change_exact(fst_id, &buf) {
+                self.record_write_error(e);
+            }
+            self.state.val_buf = buf;
+        }
+    }
+
+    fn store_frame(&mut self, group: GroupMeta, value: &[u8]) {
+        let end = group.frame_offset + value.len();
+        self.state.frame[group.frame_offset..end].copy_from_slice(value);
+    }
+
+    #[inline(always)]
+    fn process_line(&mut self, line: &[u8], line_offset: u64) -> Result<(), VcdParseError> {
+        let end = line.len();
+        match line[0] {
+            b'#' => {
+                let tick = parse_timestamp(line, line_offset)?;
+                // tolerate non-monotonic timestamps like the .bwave path:
+                // stragglers attribute to the previous max tick
+                self.apply_timestamp(tick);
+            }
+            b'0' | b'1' | b'x' | b'z' | b'X' | b'Z' if !self.state.in_dumpoff => {
+                let group = self.schema.lookup_group(&line[1..]);
+                if group != NO_GROUP {
+                    let v = [line[0].to_ascii_lowercase()];
+                    // 1-bit fast path: value is already canonical
+                    if self.schema.groups[group as usize].width == 1
+                        && !self.schema.groups[group as usize].is_real
+                    {
+                        self.emit_change(group, true, &v);
+                    } else {
+                        self.emit_change(group, false, &v);
+                    }
+                }
+            }
+            b'b' | b'B' if !self.state.in_dumpoff => {
+                if let Some(sep) = memchr2(b' ', b'\t', line) {
+                    let bits = &line[1..sep];
+                    let id_start =
+                        if sep + 1 < end && (line[sep + 1] == b' ' || line[sep + 1] == b'\t') {
+                            sep + 2
+                        } else {
+                            sep + 1
+                        };
+                    let group = self.schema.lookup_group(&line[id_start..]);
+                    if group != NO_GROUP {
+                        self.emit_change(group, false, bits);
+                    }
+                }
+            }
+            b'r' | b'R' if !self.state.in_dumpoff => {
+                if let Some(sep) = memchr2(b' ', b'\t', line) {
+                    let bits = &line[1..sep];
+                    let id_start =
+                        if sep + 1 < end && (line[sep + 1] == b' ' || line[sep + 1] == b'\t') {
+                            sep + 2
+                        } else {
+                            sep + 1
+                        };
+                    let group = self.schema.lookup_group(&line[id_start..]);
+                    if group != NO_GROUP {
+                        self.emit_change(group, false, bits);
+                    }
+                }
+            }
+            b'$' => {
+                // Blackout sections are skipped without x-filling: the
+                // The builder holds the last value through $dumpoff, and
+                // the store keeps that behavior.
+                if end >= 8 && &line[..8] == b"$dumpoff" {
+                    self.state.in_dumpoff = true;
+                } else if end >= 7 && &line[..7] == b"$dumpon" {
+                    self.state.in_dumpoff = false;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn reconcile_chunk_ir(&mut self, ir: ChunkIr) -> EncodeChunk {
+        let incoming_frame = self.state.frame.clone();
+        let incoming_tick = self.state.current_tick;
+        let incoming_time_seen = self.state.any_time_written;
+        let incoming_dumpoff = self.state.in_dumpoff;
+        self.state.overwide_values += ir.enabled_overwide_values;
+        if !incoming_dumpoff {
+            self.state.overwide_values += ir.prefix_overwide_values;
+            self.apply_last_changes(&ir, &ir.prefix_last);
+        }
+        self.apply_last_changes(&ir, &ir.suffix_last);
+        if let Some(max_timestamp) = ir.max_timestamp {
+            if max_timestamp > self.state.current_tick || !self.state.any_time_written {
+                self.state.current_tick = max_timestamp;
+                self.state.last_written_time = max_timestamp;
+                self.state.any_time_written = true;
             }
         }
+        if let Some(enabled) = ir.final_dump_enabled {
+            self.state.in_dumpoff = !enabled;
+        }
+        let sequence = ir.sequence;
+        let input_bytes = ir.input_bytes;
+        EncodeChunk {
+            sequence,
+            input_bytes,
+            chunks: vec![ir],
+            incoming_frame,
+            incoming_tick,
+            incoming_time_seen,
+            incoming_dumpoff,
+            first_file_section: sequence == 0,
+        }
+    }
+
+    fn apply_last_changes(&mut self, ir: &ChunkIr, operations: &[u32]) {
+        for index in operations {
+            let operation = ir.operations[*index as usize];
+            let meta = self.schema.groups[operation.code as usize];
+            if operation.payload & IR_INLINE_VALUE != 0 {
+                self.store_frame(meta, &[operation.payload as u8]);
+            } else {
+                let start = operation.payload as usize;
+                let len = if meta.is_real { 8 } else { meta.width as usize };
+                self.store_frame(meta, &ir.values[start..start + len]);
+            }
+        }
+    }
+
+    fn process_chunk(&mut self, chunk: &VcdChunk) -> Result<(), VcdParseError> {
+        let mut start = 0;
+        while let Some(relative) = memchr(b'\n', &chunk.bytes[start..]) {
+            let line_end = start + relative;
+            let mut end = line_end;
+            if end > start && chunk.bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+            if end > start {
+                self.process_line(&chunk.bytes[start..end], chunk.start_offset + start as u64)?;
+            }
+            start = line_end + 1;
+        }
+        if start < chunk.bytes.len() {
+            let mut end = chunk.bytes.len();
+            if chunk.bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+            if end > start {
+                self.process_line(&chunk.bytes[start..end], chunk.start_offset + start as u64)?;
+            }
+        }
+        Ok(())
     }
 
     /// Block-based streaming parser: 4MB-chunk + memchr line scanning, with
@@ -1345,185 +1943,467 @@ impl<W: std::io::Write + std::io::Seek> FstBuildHandler<W> {
         &mut self,
         reader: &mut impl std::io::BufRead,
         heartbeat_path: Option<&Path>,
-    ) {
-        if let Some(mut counters) = self.counters.take() {
-            let mut sink = CountingBuildSink {
-                handler: self,
-                counters: &mut counters,
-            };
-            let input_bytes = scan_vcd_bytes_inner(reader, &mut sink, heartbeat_path);
-            counters.input_bytes += input_bytes;
-            self.counters = Some(counters);
-        } else {
-            scan_vcd_bytes_inner(reader, self, heartbeat_path);
+    ) -> Result<(), VcdParseError> {
+        const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+        let mut total_bytes_read: u64 = 0;
+        let mut last_heartbeat = Instant::now();
+        let mut source = VcdChunkSource::new(reader, self.body_offset, SERIAL_VCD_CHUNK_TARGET)
+            .expect("fixed VCD chunk target is positive");
+        while let Some(chunk) = source.next_chunk()? {
+            total_bytes_read += chunk.bytes.len() as u64;
+            if let Some(hb_path) = heartbeat_path {
+                if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(hb_path)
+                    {
+                        let _ = writeln!(
+                            f,
+                            "bytes={} tick={}",
+                            total_bytes_read, self.state.current_tick
+                        );
+                    }
+                    last_heartbeat = Instant::now();
+                }
+            }
+            self.process_chunk(&chunk)?;
+            source.recycle(chunk);
         }
+        Ok(())
     }
 
-    /// Complete the FST without process-level logging or exits.
-    pub fn finish(self) -> Result<Option<VcdBuildCounters>, String> {
-        let FstBuildHandler {
-            body,
-            write_error,
-            mut counters,
-            ..
-        } = self;
-        if let Some(error) = write_error {
-            return Err(error);
+    /// Parse and encode timestamp-aligned chunks on a bounded worker pool,
+    /// reconciling state and appending completed sections in input order.
+    pub fn parse_bytes_parallel(
+        &mut self,
+        reader: &mut (impl std::io::BufRead + Send),
+        heartbeat_path: Option<&Path>,
+        parse_worker_count: usize,
+        encode_worker_count: usize,
+        chunk_target: usize,
+        section_target: usize,
+    ) -> Result<(), VcdParseError> {
+        if parse_worker_count == 0
+            || encode_worker_count == 0
+            || chunk_target == 0
+            || section_target == 0
+        {
+            return Err(VcdParseError::Worker {
+                message: "parse/encode worker counts and chunk/section targets must be positive"
+                    .to_string(),
+            });
         }
-        let writer_stats = body
-            .finish_with_stats()
-            .map_err(|error| error.to_string())?;
-        if let (Some(counters), Some(writer_stats)) = (counters.as_mut(), writer_stats) {
-            counters.flushes = writer_stats.sections;
-            counters.uncompressed_stream_bytes = writer_stats.uncompressed_stream_bytes;
-            counters.compressed_stream_bytes = writer_stats.compressed_stream_bytes;
-            counters.flush_time = writer_stats.flush_time;
-        }
-        Ok(counters)
+        let parse_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(parse_worker_count)
+            .build()
+            .map_err(|error| VcdParseError::Worker {
+                message: error.to_string(),
+            })?;
+        let encode_schema = Arc::new(self.schema.clone());
+        let encoder_factories = (0..encode_worker_count)
+            .map(|_| {
+                self.encoder.fresh().map_err(|error| VcdParseError::Worker {
+                    message: error.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch_capacity = parse_worker_count.saturating_add(2);
+        let mut total_bytes = 0u64;
+        let mut next_sequence = 0u64;
+        let mut last_heartbeat = Instant::now();
+        #[cfg(feature = "profile")]
+        let mut profile = ParallelProfile::default();
+        let mut pending: Option<EncodeChunk> = None;
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let reader_cancellation = Arc::clone(&cancellation);
+        let body_offset = self.body_offset;
+        let pipeline_result = std::thread::scope(|thread_scope| {
+            let (sender, receiver) = mpsc::sync_channel(batch_capacity);
+            let (recycle_sender, recycle_receiver) = mpsc::channel();
+            thread_scope.spawn(move || {
+                let mut source = VcdChunkSource::new(reader, body_offset, chunk_target)
+                    .expect("validated VCD chunk target is positive")
+                    .with_cancellation(reader_cancellation);
+                loop {
+                    while let Ok(chunk) = recycle_receiver.try_recv() {
+                        source.recycle(chunk);
+                    }
+                    match source.next_chunk() {
+                        Ok(Some(chunk)) => {
+                            if sender.send(Ok(chunk)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(error) => {
+                            let _ = sender.send(Err(error));
+                            break;
+                        }
+                    }
+                }
+            });
+            // EncodeChunk retains expanded IR (roughly 2x input on the
+            // measured corpora), so a worker-count-sized waiting queue can
+            // exceed the 1 GiB RSS contract even though every individual
+            // channel is bounded. Workers themselves provide ample
+            // concurrency; retain only a small handoff cushion beyond them.
+            let (encode_sender, encode_receiver) = mpsc::sync_channel(1);
+            let encode_receiver = Arc::new(Mutex::new(encode_receiver));
+            let (encoded_sender, encoded_receiver) = mpsc::sync_channel(encode_worker_count + 2);
+            for factory in encoder_factories {
+                let encode_receiver = Arc::clone(&encode_receiver);
+                let encoded_sender = encoded_sender.clone();
+                let schema = Arc::clone(&encode_schema);
+                thread_scope.spawn(move || loop {
+                    let received = encode_receiver.lock().expect("encode queue lock").recv();
+                    let Ok(chunk) = received else {
+                        break;
+                    };
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        encode_reconciled_chunk(&schema, &factory, chunk)
+                    }))
+                    .unwrap_or_else(|payload| {
+                        Err(VcdParseError::Worker {
+                            message: panic_message(payload),
+                        })
+                    });
+                    if encoded_sender.send(result).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(encoded_sender);
+            let mut submitted = VecDeque::new();
+            let mut completed = BTreeMap::new();
+            let result = (|| {
+                loop {
+                    let mut chunks = Vec::with_capacity(batch_capacity);
+                    while chunks.len() < batch_capacity {
+                        match receiver.recv() {
+                            Ok(Ok(chunk)) => chunks.push(chunk),
+                            Ok(Err(error)) => return Err(error),
+                            Err(_) => break,
+                        }
+                    }
+                    if chunks.is_empty() {
+                        break;
+                    }
+                    #[cfg(feature = "profile")]
+                    let stage_started = Instant::now();
+                    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        parse_pool.install(|| {
+                            chunks
+                                .into_par_iter()
+                                .map(|chunk| {
+                                    let sequence = chunk.sequence;
+                                    let result = ChunkParser::new(&self.schema, &chunk)
+                                        .parse(&chunk)
+                                        .map_err(|source| VcdParseError::Chunk {
+                                            sequence,
+                                            source: Box::new(source),
+                                        });
+                                    let _ = recycle_sender.send(chunk);
+                                    result
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    }))
+                    .map_err(|payload| VcdParseError::Worker {
+                        message: panic_message(payload),
+                    })?;
+                    #[cfg(feature = "profile")]
+                    {
+                        profile.parse_seconds += stage_started.elapsed().as_secs_f64();
+                        let batch_ir_bytes: usize = parsed
+                            .iter()
+                            .filter_map(|result| result.as_ref().ok())
+                            .map(chunk_ir_bytes)
+                            .sum();
+                        profile.ir_bytes += batch_ir_bytes;
+                        profile.peak_batch_ir_bytes =
+                            profile.peak_batch_ir_bytes.max(batch_ir_bytes);
+                        profile.input_bytes += parsed
+                            .iter()
+                            .filter_map(|result| result.as_ref().ok())
+                            .map(|ir| ir.input_bytes)
+                            .sum::<usize>();
+                    }
+                    #[cfg(feature = "profile")]
+                    let stage_started = Instant::now();
+                    for result in parsed {
+                        let ir = result?;
+                        debug_assert_eq!(ir.sequence, next_sequence);
+                        next_sequence += ir.chunk_count;
+                        total_bytes += ir.input_bytes as u64;
+                        let reconciled = self.reconcile_chunk_ir(ir);
+                        if let Some(existing) = pending.as_mut() {
+                            existing.append(reconciled);
+                        } else {
+                            pending = Some(reconciled);
+                        }
+                        if pending
+                            .as_ref()
+                            .is_some_and(|chunk| chunk.input_bytes >= section_target)
+                        {
+                            let chunk = pending.take().expect("pending encode chunk exists");
+                            let timings = self.submit_encode(
+                                chunk,
+                                &encode_sender,
+                                &encoded_receiver,
+                                &mut submitted,
+                                &mut completed,
+                            )?;
+                            #[cfg(feature = "profile")]
+                            {
+                                profile.encode_seconds += timings.0;
+                                profile.write_seconds += timings.1;
+                            }
+                            #[cfg(not(feature = "profile"))]
+                            let _ = timings;
+                        }
+                    }
+                    #[cfg(feature = "profile")]
+                    {
+                        profile.reconcile_seconds += stage_started.elapsed().as_secs_f64();
+                    }
+                    while let Ok(encoded) = encoded_receiver.try_recv() {
+                        let timings =
+                            self.accept_encoded(encoded, &mut submitted, &mut completed)?;
+                        #[cfg(feature = "profile")]
+                        {
+                            profile.encode_seconds += timings.0;
+                            profile.write_seconds += timings.1;
+                        }
+                        #[cfg(not(feature = "profile"))]
+                        let _ = timings;
+                    }
+                    write_parallel_heartbeat(
+                        heartbeat_path,
+                        total_bytes,
+                        self.state.current_tick,
+                        &mut last_heartbeat,
+                    );
+                }
+                if let Some(chunk) = pending.take() {
+                    let timings = self.submit_encode(
+                        chunk,
+                        &encode_sender,
+                        &encoded_receiver,
+                        &mut submitted,
+                        &mut completed,
+                    )?;
+                    #[cfg(feature = "profile")]
+                    {
+                        profile.encode_seconds += timings.0;
+                        profile.write_seconds += timings.1;
+                    }
+                    #[cfg(not(feature = "profile"))]
+                    let _ = timings;
+                }
+                drop(encode_sender);
+                while let Ok(encoded) = encoded_receiver.recv() {
+                    let timings = self.accept_encoded(encoded, &mut submitted, &mut completed)?;
+                    #[cfg(feature = "profile")]
+                    {
+                        profile.encode_seconds += timings.0;
+                        profile.write_seconds += timings.1;
+                    }
+                    #[cfg(not(feature = "profile"))]
+                    let _ = timings;
+                }
+                if !submitted.is_empty() || !completed.is_empty() {
+                    return Err(VcdParseError::Worker {
+                        message: "encoder workers stopped before all sections were committed"
+                            .to_string(),
+                    });
+                }
+                Ok(())
+            })();
+            cancellation.store(true, Ordering::Relaxed);
+            drop(receiver);
+            result
+        });
+        pipeline_result?;
+        #[cfg(feature = "profile")]
+        eprintln!(
+            "# bwave_parallel_profile parse_s={:.6} reconcile_s={:.6} encode_s={:.6} \
+             write_s={:.6} input_bytes={} ir_bytes={} ir_per_input={:.4} peak_batch_ir_bytes={}",
+            profile.parse_seconds,
+            profile.reconcile_seconds,
+            profile.encode_seconds,
+            profile.write_seconds,
+            profile.input_bytes,
+            profile.ir_bytes,
+            profile.ir_bytes as f64 / profile.input_bytes.max(1) as f64,
+            profile.peak_batch_ir_bytes,
+        );
+        Ok(())
     }
-}
 
-impl FstBuildHandler<std::io::BufWriter<File>> {
-    /// Finish the FST (writes the final value-change section and fixes up
-    /// the header). Exits the process on write failure, matching the .bwave
-    /// builder's behavior.
-    pub fn finalize_and_write(self) {
-        let overwide_values = self.overwide_values;
-        let output_path = self.output_path.clone();
-        if overwide_values > 0 {
+    /// Finish the FST and patch the header after every body write succeeded.
+    pub fn finalize_and_write(mut self) -> Result<(), String> {
+        if self.state.overwide_values > 0 {
             eprintln!(
                 "WARNING: {} value(s) wider than their declared width were truncated",
-                overwide_values
+                self.state.overwide_values
             );
         }
-        match self.finish() {
-            // Not a "cache": this is the primary build artifact. The old
-            // wording cost an investigator a wrong-turn hunting a cache layer
-            // that never existed.
-            Ok(_) => eprintln!("# wrote {}", output_path.display()),
-            Err(e) => {
-                eprintln!("ERROR: failed to write {}: {}", output_path.display(), e);
-                std::process::exit(1);
-            }
+        if let Some(e) = &self.state.write_error {
+            return Err(format!(
+                "failed to write {}: {}",
+                self.output_path.display(),
+                e
+            ));
         }
+        if !self.sections_encoded_externally {
+            let section = self
+                .encoder
+                .encode_section()
+                .map_err(|e| format!("failed to encode {}: {e}", self.output_path.display()))?;
+            self.writer
+                .append_section(section)
+                .map_err(|e| format!("failed to write {}: {e}", self.output_path.display()))?;
+        }
+        self.writer
+            .finish()
+            .map_err(|e| format!("failed to write {}: {e}", self.output_path.display()))?;
+        // Not a "cache": this is the primary build artifact. The old wording
+        // cost an investigator a wrong-turn hunting a cache layer that never existed.
+        eprintln!("# wrote {}", self.output_path.display());
+        Ok(())
     }
 }
 
 #[cfg(test)]
-mod byte_path_tests {
+mod build_tests {
     use super::*;
-    use std::io::{BufReader, Cursor, Seek};
+    use crate::parser::{parse_header, TimestampError, VcdParseError};
+    use std::io::{self, BufRead, Cursor, Read};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[derive(Default)]
-    struct Sink(Vec<String>);
-    impl VcdByteSink for Sink {
-        fn timestamp(&mut self, tick: u64) {
-            self.0.push(format!("#{tick}"));
+    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    struct ErrorReader;
+
+    impl Read for ErrorReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected read error"))
         }
-        fn scalar(&mut self, id: &[u8], value: u8) {
-            self.0
-                .push(format!("{}{}", value as char, String::from_utf8_lossy(id)));
+    }
+
+    impl BufRead for ErrorReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Err(io::Error::other("injected read error"))
         }
-        fn vector(&mut self, id: &[u8], bits: &[u8]) {
-            self.0.push(format!(
-                "b{} {}",
-                String::from_utf8_lossy(bits),
-                String::from_utf8_lossy(id)
-            ));
-        }
-        fn real(&mut self, _: &[u8], _: &[u8]) {}
+
+        fn consume(&mut self, _amount: usize) {}
     }
 
-    #[test]
-    fn scanner_handles_crlf_tabs_and_dump_control() {
-        let body = b"#0\r\n1!\r\nb10\t\"\r\n$dumpoff $end\r\n0!\r\n$dumpon $end\r\n";
-        let mut reader = BufReader::new(Cursor::new(body));
-        let mut sink = Sink::default();
-        assert_eq!(scan_vcd_bytes(&mut reader, &mut sink), body.len() as u64);
-        assert_eq!(sink.0, ["#0", "1!", "b10 \""]);
-    }
-
-    #[test]
-    fn numeric_id_decoder_accepts_only_canonical_base94() {
-        for byte in b'!'..=b'~' {
-            assert_eq!(
-                decode_canonical_numeric_id(&[byte]),
-                Some((byte - b'!') as usize)
-            );
-        }
-        assert_eq!(decode_canonical_numeric_id(b"!\""), Some(94));
-        assert_eq!(decode_canonical_numeric_id(b"!!"), None);
-        assert_eq!(decode_canonical_numeric_id(b"\"!"), None);
-        assert_eq!(decode_canonical_numeric_id(&[0x7f]), None);
-    }
-
-    #[test]
-    fn id_lookup_bounds_sparse_codes_and_preserves_fallback() {
-        let mut lookup = VcdIdLookup::new(["~~~~", "é", "!!"].into_iter());
-        assert!(lookup.dense.is_empty());
-        lookup.insert("~~~~", 1);
-        lookup.insert("é", 2);
-        lookup.insert("!!", 3);
-        assert_eq!(lookup.resolve(b"~~~~"), Some(1));
-        assert_eq!(lookup.resolve("é".as_bytes()), Some(2));
-        assert_eq!(lookup.resolve(b"!!"), Some(3));
-    }
-
-    #[test]
-    fn id_lookup_uses_bounded_dense_storage_for_compact_codes() {
-        let mut lookup = VcdIdLookup::new(["!\"", "~\""].into_iter());
-        assert_eq!(lookup.dense.len(), 188);
-        lookup.insert("!\"", 4);
-        lookup.insert("~\"", 5);
-        assert_eq!(lookup.resolve(b"!\""), Some(4));
-        assert_eq!(lookup.resolve(b"~\""), Some(5));
-    }
-
-    #[test]
-    fn build_counters_are_opt_in_and_cover_parser_writer_stages() {
-        let vcd = b"$timescale 1ns $end\n$scope module tb $end\n\
-            $var wire 1 ! sig $end\n$upscope $end\n$enddefinitions $end\n\
-            #0\n0!\n#1\n1!\n1!\n1\"\n";
-        let mut reader = BufReader::new(Cursor::new(vcd));
-        let header = crate::parser::parse_header(&mut reader);
-        let body_start = reader.stream_position().unwrap() as usize;
-        let mut handler = FstBuildHandler::new_in_memory(&header, None).unwrap();
-        handler.enable_counters();
-        handler.set_compression(fst_writer::FstCompression::Disabled);
-        let mut body_reader = BufReader::new(Cursor::new(&vcd[body_start..]));
-        handler.parse_bytes(&mut body_reader, None);
-        let counters = handler.finish().unwrap().unwrap();
-
-        assert_eq!(counters.input_bytes, (vcd.len() - body_start) as u64);
-        assert_eq!(counters.timestamp_lines, 2);
-        assert_eq!(counters.scalar_lines, 4);
-        assert_eq!(counters.one_character_ids, 4);
-        assert_eq!(counters.ignored_ids, 1);
-        assert_eq!(counters.duplicate_values, 1);
-        assert_eq!(counters.flushes, 1);
-        assert_eq!(
-            counters.uncompressed_stream_bytes,
-            counters.compressed_stream_bytes
-        );
-    }
-
-    #[test]
-    fn compression_disabled_build_remains_queryable() {
-        let vcd = b"$timescale 1ns $end\n$scope module tb $end\n\
-            $var wire 8 ! sig $end\n$upscope $end\n$enddefinitions $end\n\
-            #0\nb00000000 !\n#1\nb10100101 !\n";
-        let mut reader = BufReader::new(Cursor::new(vcd));
-        let header = crate::parser::parse_header(&mut reader);
-        let output_path = std::env::temp_dir().join(format!(
-            "bwave_uncompressed_test_{}.fst",
-            std::process::id()
+    fn assert_timestamp_error(line: &[u8], expected: TimestampError) {
+        let error = parse_timestamp(line, 123).unwrap_err();
+        assert!(matches!(
+            error,
+            VcdParseError::InvalidTimestamp {
+                offset: 123,
+                reason,
+                ..
+            } if reason == expected
         ));
-        let mut handler = FstBuildHandler::new(&header, None, &output_path).unwrap();
-        handler.set_compression(fst_writer::FstCompression::Disabled);
-        handler.parse_bytes(&mut reader, None);
-        assert!(handler.finish().unwrap().is_none());
+    }
 
-        assert!(load_fst(&output_path).is_some());
-        let _ = std::fs::remove_file(output_path);
+    #[test]
+    fn timestamps_use_checked_strict_arithmetic() {
+        assert_eq!(
+            parse_timestamp(b"#18446744073709551615", 0).unwrap(),
+            u64::MAX
+        );
+        assert_eq!(parse_timestamp(b"#\t42  ", 0).unwrap(), 42);
+        assert_timestamp_error(b"#", TimestampError::MissingDigits);
+        assert_timestamp_error(b"#18446744073709551616", TimestampError::Overflow);
+        assert_timestamp_error(b"#12junk", TimestampError::TrailingCharacters);
+    }
+
+    #[test]
+    fn body_read_error_is_not_eof() {
+        let header_text = b"$scope module tb $end\n\
+$var wire 1 ! sig $end\n\
+$upscope $end\n\
+$enddefinitions $end\n";
+        let mut header_reader = Cursor::new(header_text);
+        let header = parse_header(&mut header_reader);
+        let test_number = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let output = std::env::temp_dir().join(format!(
+            "bwave_read_error_{}_{}.fst",
+            std::process::id(),
+            test_number
+        ));
+        let mut handler = FstBuildHandler::new(&header, None, &output).unwrap();
+        let error = handler.parse_bytes(&mut ErrorReader, None).unwrap_err();
+        assert!(matches!(
+            error,
+            VcdParseError::Read {
+                section: "body",
+                offset,
+                ..
+            } if offset == header.body_offset
+        ));
+        drop(handler);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn encoded_section_is_independent_of_ordered_file_writer() {
+        let test_number = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let output = std::env::temp_dir().join(format!(
+            "bwave_independent_section_{}_{}.fst",
+            std::process::id(),
+            test_number
+        ));
+        let info = fst_writer::FstInfo {
+            start_time: 0,
+            timescale_exponent: -9,
+            version: "bwave test".to_string(),
+            date: String::new(),
+            file_type: fst_writer::FstFileType::Verilog,
+        };
+        let mut header_writer = fst_writer::open_fst(&output, &info).unwrap();
+        header_writer
+            .scope("tb", "", fst_writer::FstScopeType::Module)
+            .unwrap();
+        let signal = header_writer
+            .var(
+                "sig",
+                fst_writer::FstSignalType::bit_vec(1),
+                fst_writer::FstVarType::Wire,
+                fst_writer::FstVarDirection::Implicit,
+                None,
+            )
+            .unwrap();
+        header_writer.up_scope().unwrap();
+
+        let (mut encoder, mut writer) = header_writer.finish_split().unwrap();
+        encoder.time_change(0).unwrap();
+        encoder.signal_change(signal, b"0").unwrap();
+        encoder.time_change(10).unwrap();
+        encoder.signal_change(signal, b"1").unwrap();
+        let section = encoder.encode_section().unwrap();
+        assert!(!section.is_empty());
+        assert_eq!(section.end_time(), 10);
+        writer.append_section(section).unwrap();
+        let mut second_encoder = encoder.from_frame(b"1", 10).unwrap();
+        second_encoder.time_change(20).unwrap();
+        second_encoder.signal_change(signal, b"0").unwrap();
+        writer
+            .append_section(second_encoder.encode_section().unwrap())
+            .unwrap();
+        writer.finish().unwrap();
+
+        let cache = crate::cache::ColumnCache::load_from_file(&output).unwrap();
+        assert_eq!(
+            cache.read_transitions(0),
+            vec![(0, "0".into()), (10, "1".into()), (20, "0".into())]
+        );
+        let _ = std::fs::remove_file(output);
     }
 }

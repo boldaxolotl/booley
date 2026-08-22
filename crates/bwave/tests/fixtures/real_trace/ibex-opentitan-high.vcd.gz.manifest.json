@@ -1,0 +1,83 @@
+{
+  "activity": {
+    "event_count": 3005270563,
+    "first_timestamp": 0,
+    "last_timestamp": 6475177,
+    "line_classes": {
+      "blank": 2,
+      "scalar": 421767183,
+      "timestamp": 6475178,
+      "vector": 2583503380
+    },
+    "max_events_per_timestamp": 6142,
+    "selected_event_count": 9680,
+    "tail_scan": "trusted_verilator_aggregate",
+    "timestamp_count": 6475178
+  },
+  "excerpt": {
+    "compressed_bytes": 116208,
+    "compressed_sha256": "a343570f14d75dd5d77a61e1661ef72701a538983dae6ed393efa503d0e5c62e",
+    "file": "ibex-opentitan-high.vcd.gz",
+    "raw_bytes": 903935,
+    "raw_sha256": "20da2c77bb17c51f63e09f90067e9a104942febd175d54d11acf389db2ac0652"
+  },
+  "kind": "vcd_semantic_excerpt",
+  "profile": "high",
+  "schema_version": 1,
+  "selection": {
+    "actual_end": 20,
+    "actual_start": 0,
+    "requested_end": 20,
+    "requested_start": 0
+  },
+  "signals": {
+    "declarations": 12207,
+    "unique_ids": 6142,
+    "width_distribution": {
+      "1": 2412,
+      "10": 6,
+      "12": 13,
+      "128": 3,
+      "13": 9,
+      "14": 2,
+      "15": 23,
+      "16": 123,
+      "17": 2,
+      "18": 7,
+      "19": 5,
+      "2": 440,
+      "21": 2,
+      "22": 8,
+      "24": 2,
+      "28": 61,
+      "3": 87,
+      "30": 4,
+      "31": 6,
+      "32": 1454,
+      "33": 16,
+      "34": 312,
+      "35": 2,
+      "36": 2,
+      "39": 29,
+      "4": 272,
+      "5": 126,
+      "56": 3,
+      "6": 208,
+      "639": 2,
+      "64": 257,
+      "7": 99,
+      "72": 2,
+      "76": 2,
+      "78": 54,
+      "8": 87
+    }
+  },
+  "source": {
+    "compression": "gzip",
+    "label": "ibex-opentitan-coremark-verilator-5_046",
+    "raw_bytes": 91348171298,
+    "raw_sha256": "63a001723f0e0674c3dc3c7452889d3cac5896323cbeeb5189a2ab1dc0a13a03",
+    "stored_bytes": 19937988980,
+    "stored_sha256": "97d96fe49007469d43d7a9d1818bb1e04613962befbb24b70c72494842e1be21"
+  }
+}
