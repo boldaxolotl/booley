@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from booley.dev_support.criteria import PER_TARGET_CRITERIA, TARGET_CAMPAIGN_CRITERIA
+
 from .constants import (
     CRITERION_FLOW_MAP,
     DEPRECATED_FIELDS,
@@ -165,19 +167,6 @@ STEP_META_VALIDATORS = {
 }
 
 
-_TARGET_CAMPAIGN_CRITERIA = frozenset(
-    {
-        "mutation_score",
-        "coverage_toggle",
-        "coverage_fsm",
-        "coverage_value",
-        "coverage_branch",
-        "coverage_expression",
-        "coverage_mean",
-    }
-)
-
-
 def _valid_campaign_scope(value: Any) -> bool:
     """Whether *value* is a non-empty list of non-empty paths."""
     return (
@@ -206,16 +195,14 @@ def _validate_criterion_list(section_name, key, value, errors):
                 f"criteria.{section_name}.{key}[{i}]: "
                 f"items must be strings or dicts, got {type(item).__name__}"
             )
-        elif key in _TARGET_CAMPAIGN_CRITERIA and isinstance(item, dict):
+        elif key in TARGET_CAMPAIGN_CRITERIA and isinstance(item, dict):
             _validate_campaign_item(f"criteria.{section_name}.{key}[{i}]", item, errors)
-    if key in _TARGET_CAMPAIGN_CRITERIA and not all(isinstance(item, dict) for item in value):
+    if key in TARGET_CAMPAIGN_CRITERIA and not all(isinstance(item, dict) for item in value):
         errors.append(f"criteria.{section_name}.{key}: use a list of Target campaign dicts")
 
 
 def _validate_criterion_dict(section_name, key, value, errors):
     """Validate parameterized and legacy multi-Target criterion dictionaries."""
-    from booley.dev_support.criteria import PER_TARGET_CRITERIA
-
     targets = value.get("targets")
     if targets is not None and not isinstance(targets, list):
         errors.append(f"criteria.{section_name}.{key}.targets must be a list")
@@ -223,7 +210,7 @@ def _validate_criterion_dict(section_name, key, value, errors):
         errors.append(
             f"criteria.{section_name}.{key}: per-target criterion requires a targets list"
         )
-    if key in _TARGET_CAMPAIGN_CRITERIA and not _valid_campaign_scope(value.get("scope")):
+    if key in TARGET_CAMPAIGN_CRITERIA and not _valid_campaign_scope(value.get("scope")):
         errors.append(f"criteria.{section_name}.{key}.scope must be a non-empty list[str]")
 
 
@@ -234,8 +221,6 @@ def _validate_criterion_value(section_name, key, value, errors):
     elif isinstance(value, dict):
         _validate_criterion_dict(section_name, key, value, errors)
     elif isinstance(value, (str, bool, int, float, type(None))):
-        from booley.dev_support.criteria import PER_TARGET_CRITERIA
-
         if key in PER_TARGET_CRITERIA:
             errors.append(
                 f"criteria.{section_name}.{key}: per-target criterion "

@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 # Make sure the src tree is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
+from booley.mcp.base import EXIT_ERROR
 from booley.specialists.coverage_analyst import (
     BranchResult,
     CoverageAnalystSpecialist,
@@ -1537,6 +1538,18 @@ class TestExtractModulesFromScope:
         )
         assert endpoint._scope_modules() == ["actual_dut"]
 
+    def test_ignores_module_declarations_in_comments(self, tmp_path):
+        rtl = tmp_path / "implementation.sv"
+        rtl.write_text(
+            "// module stale_line;\n/* module stale_block; */\nmodule actual_dut; endmodule\n",
+            encoding="utf-8",
+        )
+        endpoint = _make_endpoint_with_args(
+            work_dir=str(tmp_path),
+            scope="implementation.sv",
+        )
+        assert endpoint._scope_modules() == ["actual_dut"]
+
 
 # ===================================================================
 # _pick_dut_scope
@@ -2815,6 +2828,39 @@ class TestBuildEdalizeTraceCmd:
         assert "--test=smoke" in script
         assert "--test=corner" in script
         assert "--trace" in script
+
+
+def test_qualified_target_uses_distinct_trace_dirs_per_test(tmp_path):
+    endpoint = _make_endpoint_with_args(
+        work_dir=str(tmp_path),
+        target="vendor:lib:core#sim",
+        tb_top="tb",
+    )
+    with patch("booley.config.project_config.TEST_NAMES", {"sim": ["smoke", "corner"]}):
+        smoke = endpoint._find_trace_dir("smoke")
+        corner = endpoint._find_trace_dir("corner")
+
+    assert smoke != corner
+    assert smoke.name.endswith(".smoke")
+    assert corner.name.endswith(".corner")
+
+
+def test_coverage_rejects_target_with_every_test_skipped(tmp_path):
+    endpoint = _make_endpoint_with_args(
+        work_dir=str(tmp_path),
+        target="sim",
+        tb_top="tb",
+    )
+    with (
+        patch("booley.config.project_config.TEST_NAMES", {"sim": ["smoke", "corner"]}),
+        patch("booley.config.project_config.TEST_SKIP", {"sim": ["smoke", "corner"]}),
+    ):
+        _scope, traces, error = endpoint._ensure_target_traces(tmp_path)
+
+    assert traces == []
+    assert error is not None
+    assert error.exit_code == EXIT_ERROR
+    assert "no runnable tests" in error.report_text
 
 
 # ---------------------------------------------------------------------------
