@@ -35,8 +35,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.runtime import job_records as jobrec
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime, format_human_datetime_safe
-from booley.ticket_board.helpers import is_pid_alive
 
 from .base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from .events import _emit_criteria_update
