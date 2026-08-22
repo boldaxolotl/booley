@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.audit import config_common, project_schema
+from booley.audit import config_common, design_size, project_schema
 from booley.fusesoc import selftest_overlay
 from booley.harness import devcontainer as dc
 from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
@@ -4484,7 +4484,7 @@ def test_design_size_notes_a_large_design(tmp_path):
     rtl = proj / "rtl"
     rtl.mkdir(parents=True)
     # Cross the file-count threshold with small files.
-    for i in range(doctor._LARGE_DESIGN_FILES + 5):
+    for i in range(design_size.LARGE_DESIGN_FILES + 5):
         (rtl / f"mod_{i}.sv").write_text("module m; endmodule\n", encoding="utf-8")
     project = _derived_project_audit(proj)
 
@@ -4501,7 +4501,7 @@ def test_large_design_does_not_count_as_a_doctor_warning(tmp_path, capsys):
     proj = tmp_path / "big"
     rtl = proj / "rtl"
     rtl.mkdir(parents=True)
-    for i in range(doctor._LARGE_DESIGN_FILES + 5):
+    for i in range(design_size.LARGE_DESIGN_FILES + 5):
         (rtl / f"mod_{i}.sv").write_text("module m; endmodule\n", encoding="utf-8")
 
     reporter = doctor._Reporter.create()
@@ -4518,7 +4518,7 @@ def test_design_size_passes_for_small_design_and_skips_pruned_dirs(tmp_path):
     # HDL under a pruned dir (e.g. vendored build output) must NOT be counted.
     vendored = proj / "build" / "gen"
     vendored.mkdir(parents=True)
-    for i in range(doctor._LARGE_DESIGN_FILES + 50):
+    for i in range(design_size.LARGE_DESIGN_FILES + 50):
         (vendored / f"g_{i}.v").write_text("module g; endmodule\n", encoding="utf-8")
     project = _derived_project_audit(proj)
 
@@ -4528,8 +4528,8 @@ def test_design_size_passes_for_small_design_and_skips_pruned_dirs(tmp_path):
     assert passes and "design size" in passes[0]
     assert not notes
     # Exactly the one non-pruned HDL file was counted.
-    files, _loc = doctor._design_size(proj)
-    assert files == 1
+    audit = design_size.analyze_design_size(proj, project.project_dir, ())
+    assert audit.hdl_files == 1
 
 
 def test_design_size_scopes_to_configured_target_in_large_monorepo(tmp_path):
@@ -4539,7 +4539,7 @@ def test_design_size_scopes_to_configured_target_in_large_monorepo(tmp_path):
     (rtl / "selected.sv").write_text("module selected; endmodule\n", encoding="utf-8")
     unrelated = proj / "unrelated"
     unrelated.mkdir()
-    for index in range(doctor._LARGE_DESIGN_FILES + 5):
+    for index in range(design_size.LARGE_DESIGN_FILES + 5):
         (unrelated / f"large_{index}.sv").write_text("module large; endmodule\n", encoding="utf-8")
     (proj / "design.core").write_text(
         """CAPI=2:
