@@ -42,10 +42,12 @@ from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _resolve_run_cwd
-from booley.flows.sim.target_tests import (
+from booley.flows.target_campaign import (
+    CampaignScopeError,
     NoRunnableTestsError,
-    require_runnable_target_test_suite,
-    resolve_target_test_suite,
+    TargetCampaign,
+    describe_target_campaign,
+    resolve_target_campaign,
 )
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
@@ -1180,11 +1182,7 @@ class CoverageAnalystSpecialist(Specialist):
 
     def _get_active_criteria(self) -> set[str]:
         """Determine which coverage criteria are active for this run."""
-        active = set()
-        for key in self.satisfies:
-            entry = self.state.criteria.get(self._target_criterion_key(key))
-            if entry is not None:
-                active.add(key)
+        active = {criterion.base_key for criterion in self._campaign_for_tests().criteria}
         # If nothing in state, assume all are active
         active = active if active else set(self.satisfies)
 
@@ -1952,7 +1950,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> McpToolResult:
         """Score all criteria independently and return final result."""
         report_dict = report.to_report_dict()
-        suite = resolve_target_test_suite(self.args.target)
+        suite = self._campaign_for_tests().suite
         report_dict["target"] = self.args.target
         report_dict["tests"] = list(suite.display_names)
         report_dict["trace_dirs"] = [str(path) for path in getattr(self, "_trace_dirs", [])]
@@ -2012,9 +2010,9 @@ abort path". Omit this field or leave empty if all criteria are already met.
         whole coverage run. ``as_int`` also rejects the bool trap
         (``int(True) == 1`` would otherwise sail through silently).
         """
-        entry = self.state.criteria.get(self._target_criterion_key(criterion_key))
-        if entry and entry.params:
-            state_val = entry.params.get("min_pct")
+        params = self._campaign_for_tests().params_for(criterion_key)
+        if params:
+            state_val = params.get("min_pct")
             if state_val is not None:
                 coerced = as_int(state_val)
                 if coerced is not None:
@@ -2345,7 +2343,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> tuple[list[str], list[Path], McpToolResult | None]:
         """Produce traces for every runnable test owned by the selected Target."""
         try:
-            suite = require_runnable_target_test_suite(self.args.target)
+            campaign = self._campaign_for_tests()
         except NoRunnableTestsError as exc:
             return (
                 [],
@@ -2355,16 +2353,15 @@ abort path". Omit this field or leave empty if all criteria are already met.
                     report_text=f"coverage_analyst: {exc}",
                 ),
             )
-        tests = (None,) if self._is_cocotb_target() else suite.tests
+        units = campaign.execution_units(batched=self._is_cocotb_target())
         trace_dirs: list[Path] = []
         scope_files: list[str] = []
-        for test_name in tests:
-            self._coverage_test = test_name
-            trace_dir = self._find_trace_dir(test_name)
+        for unit in units:
+            self._coverage_test = unit.test_name
+            trace_dir = self._find_trace_dir(unit.test_name)
             scope_files, error = self._validate_scope_and_ensure_trace(trace_dir, work_dir)
             if error is not None:
-                label = test_name or "<default>"
-                error.report_text = f"coverage test {label}: {error.report_text}"
+                error.report_text = f"coverage test {unit.display_name}: {error.report_text}"
                 return scope_files, trace_dirs, error
             trace_dirs.append(trace_dir)
         self._coverage_test = None
@@ -2671,28 +2668,49 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     def _apply_campaign_defaults(self) -> McpToolResult | None:
         """Resolve one consistent RTL scope from Target-specific criteria."""
-        if self.args.scope:
-            return None
-        scopes: set[tuple[str, ...]] = set()
-        for base_key in self.satisfies:
-            entry = self.state.criteria.get(self._target_criterion_key(base_key))
-            raw_scope = entry.params.get("scope") if entry is not None else None
-            if isinstance(raw_scope, str) and raw_scope.strip():
-                scopes.add(tuple(path.strip() for path in raw_scope.split(",") if path.strip()))
-            elif isinstance(raw_scope, list):
-                scopes.add(tuple(str(path) for path in raw_scope if str(path).strip()))
-        scopes.discard(())
-        if len(scopes) == 1:
-            self.args.scope = ",".join(next(iter(scopes)))
-            return None
-        reason = "no scope is declared" if not scopes else "criteria declare conflicting scopes"
-        return McpToolResult(
-            exit_code=EXIT_FAILURE,
-            report_text=(
-                f"coverage_analyst: {reason} for Target {self.args.target!r}. "
-                "Declare the same scope: [rtl/file.sv, ...] on its coverage "
-                "criteria or pass --scope."
-            ),
+        try:
+            campaign = resolve_target_campaign(
+                self.args.target,
+                self.satisfies,
+                self.state.criteria,
+                explicit_scope=self.args.scope,
+            )
+        except CampaignScopeError as exc:
+            reason = (
+                "no scope is declared"
+                if exc.reason == "missing"
+                else "criteria declare conflicting scopes"
+            )
+            return McpToolResult(
+                exit_code=EXIT_FAILURE,
+                report_text=(
+                    f"coverage_analyst: {reason} for Target {self.args.target!r}. "
+                    "Declare the same scope: [rtl/file.sv, ...] on its coverage "
+                    "criteria or pass --scope."
+                ),
+            )
+        except NoRunnableTestsError as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"coverage_analyst: {exc}",
+            )
+        self._target_campaign = campaign
+        self.args.scope = campaign.scope_arg
+        return None
+
+    def _campaign_for_tests(self) -> TargetCampaign:
+        """Return the resolved campaign or a suite-only compatibility view."""
+        campaign = getattr(self, "_target_campaign", None)
+        if campaign is not None:
+            return campaign
+        try:
+            criteria = self.state.criteria
+        except RuntimeError:
+            criteria = {}
+        return describe_target_campaign(
+            self.args.target,
+            criterion_keys=self.satisfies,
+            criteria=criteria,
         )
 
     def _check_prerequisites(self) -> McpToolResult | None:
@@ -2925,7 +2943,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         cocotb_module: str,
     ) -> tuple[list[str], str]:
         """Build one traced Cocotb invocation for the Target suite."""
-        suite = resolve_target_test_suite(self.args.target)
+        suite = self._campaign_for_tests().suite
         run_cmd = [
             "python3",
             "-m",

@@ -31,9 +31,9 @@ from typing import Any, ClassVar
 from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
-    compute_source_fingerprint,
 )
 from booley.flows import execution
+from booley.flows.target_campaign import build_campaign_freshness
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime import job_slots
 from booley.runtime.job_records import _proc_cmdline
@@ -478,9 +478,10 @@ class McpTool(ABC):
             return detail
         stamped = dict(detail or {})
         try:
-            fingerprint = compute_source_fingerprint(
+            freshness = build_campaign_freshness(
                 Path(self.args.work_dir),
                 target=source_target,
+                categories=categories,
             )
         except (OSError, FuseSocError) as exc:
             logger.warning(
@@ -490,11 +491,7 @@ class McpTool(ABC):
                 exc,
             )
             return stamped
-        stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = {
-            "categories": sorted(categories),
-            "fingerprint": fingerprint,
-            "target": source_target,
-        }
+        stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = freshness.to_detail()
         return stamped
 
     def emit_progress(self, line: str) -> None:
