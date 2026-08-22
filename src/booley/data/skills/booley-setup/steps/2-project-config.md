@@ -526,19 +526,17 @@ What goes here:
   `[eda.vivado]` and requires an exact Project Grant. Never write a `backend =`
   line — the knob is retired and config validation rejects every
   spelling with the exact replacement.
-- **Every enabled Flow needs `[flows.<flow>].default_target`** — the name of the
-  `.core` Target it drives (e.g. `default_target = "sim_core"` for `sim`). An
-  enabled Flow that names no Target can never run, and `booley doctor` fails
-  on it — including `elab`, which is enabled by default; point it at an elaboration-capable Target
-  (the `lint` Target usually works) or set `enabled = false` to opt out.
-  While a Flow is disabled (the first-run default), leave `default_target` unset; set
-  it when the flow is wired up.
-- **A synthesis matrix needs a heaviest calibration Target.** When
-  `[flows.synth].default_target` contains several comma-separated Targets, write the
-  row-13 decision as `[flows.synth].calibration_target = "<target>"`. It must
-  be one member of the configured matrix. Do not infer "heaviest" from target
-  order or name; carry the evidence from the approved plan. For a singleton,
-  Doctor uses that Target implicitly.
+- **Every Flow call names its Target explicitly.** There is no target fallback
+  in `booley.toml`. Select Doctor's matrix in each `.core` Target with
+  `flow_options.booley.doctor: [sim, lint, synth, elab]`, listing only the
+  compatible Flows that should audit that Target. An enabled Flow with no
+  marked Doctor Target fails plain Doctor; either mark one or set
+  `enabled = false` to opt out. Targets omitted from the list remain available
+  for explicit CLI/MCP calls.
+- **Doctor runs the whole synthesis matrix.** Mark every synthesis Target that
+  setup must validate with `booley: {doctor: [synth]}`. Deep Doctor runs all of
+  them and retains the largest measured memory peak; there is no separately
+  configured calibration Target.
 - **Reserve memory for one HEAVY job.** Write `[jobs].heavy_memory` when row 13
   has an evidence-backed value. It is an admission/Doctor budget, not a hard
   per-process limiter; `[sandbox].memory` remains the one container cgroup
@@ -546,7 +544,7 @@ What goes here:
 - **Author fail-path self-tests now, before Step 4.** Every enabled verification
   Flow needs a conventional deliberately bad fixture that the Flow grades as a
   design failure; Doctor infers each known-good case from the Flow's configured
-  default Target. For simulation, mirror replacement build-tree files beneath
+  first Doctor Target. For simulation, mirror replacement build-tree files beneath
   `.booley_project/selftest/sim/bad-overlay/`; Doctor applies the overlay only
   to its bad run, so do not leak this internal fixture through a
   `pre_run_commands` branch. Lint uses a Target named `lint_selftest_bad` with

@@ -771,8 +771,8 @@ class TestWorkspaceRun:
         "booley.runtime.shared_infra._load_rtl_config",
         return_value={
             "flows": {
-                "sim": {"default_target": "sim"},
-                "synth": {"default_target": "synth"},
+                "sim": {},
+                "synth": {},
             },
         },
     )

@@ -43,8 +43,6 @@ from .. import artifacts, output_budget
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
 from ..flow_config import (
-    discover_target_names,
-    resolve_flow_default_target,
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
@@ -2463,24 +2461,17 @@ class SimulateFlow(BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        if not self.args.target:  # ADR 0030: fall back to [flows.sim].default_target
-            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
         targets = fusesoc_registry.resolve_target_selection(
             self.args.target,
             self.args.work_dir,
         )
         if targets:
             return targets
-        available = discover_target_names(self.args.work_dir)
-        if len(available) == 1:
-            self.args.target = available[0]
-            return available
         return McpToolResult(
             exit_code=EXIT_ERROR,
             report_text=(
-                "sim: --target is required when multiple or zero Targets "
-                "are available. Pass --target <name>; available Targets are "
-                "the .core sim Targets in .booley_project/."
+                "sim: --target is required. Pass --target <name> (or a "
+                "comma-separated list); list available Targets with `booley targets`."
             ),
         )
 

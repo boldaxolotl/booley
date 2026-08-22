@@ -205,26 +205,11 @@ def _check_ticket_board(project_root: Path) -> list[str]:
     return errors
 
 
-def _configured_core_files(project_root: Path) -> set[Path]:
-    """Core files in configured ``[flows.*].default_target`` dependency closures."""
-    from booley.config.settings import _load_booley_toml
+def _doctor_core_files(project_root: Path) -> set[Path]:
+    """Core files in Doctor-selected Target dependency closures."""
     from booley.fusesoc import fusesoc_registry
-    from booley.targets.flow_names import DEFAULT_TARGET_KEY
 
-    flows = _load_booley_toml(project_root).get("flows", {})
-    if not isinstance(flows, dict):
-        return set()
-    seeds: list[str] = []
-    for section in flows.values():
-        if not isinstance(section, dict):
-            continue
-        raw = section.get(DEFAULT_TARGET_KEY)
-        if not isinstance(raw, str):
-            continue
-        for raw_token in raw.split(","):
-            token = raw_token.strip()
-            if token and token not in seeds:
-                seeds.append(token)
+    seeds = fusesoc_registry.doctor_target_seed(project_root)
     closure = fusesoc_registry.selectable_core_closure(project_root, seeds)
     return set(closure or ())
 
@@ -233,7 +218,7 @@ def _check_core_setup_hazards(project_root: Path) -> list[str]:
     """Reject recursive links and provider-backed cores selected by the project."""
     from booley.fusesoc import fusesoc_registry
 
-    selected = _configured_core_files(project_root)
+    selected = _doctor_core_files(project_root)
     state_cores = fusesoc_registry.state_cores_dir(project_root)
     failures: list[str] = []
     for hazard in fusesoc_registry.core_setup_hazards(project_root):
@@ -252,7 +237,7 @@ def _check_core_setup_hazards(project_root: Path) -> list[str]:
             )
         else:
             logger.warning(
-                "FuseSoC core %s has a provider block, but no configured Flow selects it",
+                "FuseSoC core %s has a provider block, but no Doctor Target selects it",
                 rel,
             )
     return failures

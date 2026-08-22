@@ -4,17 +4,16 @@
 [test_lists]                 # optional shared, reusable lists
 smoke = ["reset", "basic"]
 
-# Sections are keyed by .core Target name. Use the SAME form you put in
-# `[flows.<flow>].default_target` in booley.toml. In a multi-core repo where a bare
-# name is ambiguous, that means the VLNV-qualified selector, quoted because
-# of the colons:
+# Sections are keyed by .core Target name. In a multi-core repo where a bare
+# name is ambiguous, use the VLNV-qualified selector printed by `booley targets`,
+# quoted because of the colons:
 #
 #   ["mylib:myip:port#sim"]
 #   tests = ["reset", "basic"]
 #
 # Booley matches the bare and qualified forms against each other, and doctor
 # fails a section whose key names no declared Target — but keeping the two
-# files in the same form is what makes the config readable.
+# selectors consistent is what makes the config readable.
 
 [sim]                        # keyed by .core Target name
 tests = ["reset", "basic", "stress"]
