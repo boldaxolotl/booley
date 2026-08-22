@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from booley.audit import config_common, project_schema
 from booley.fusesoc import selftest_overlay
 from booley.harness import devcontainer as dc
 from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
@@ -1508,49 +1509,40 @@ class TestValidateAgentTable:
 
 def test_validate_known_tables_warns_on_unknown_and_retired():
     """Unrecognized top-level booley.toml tables warn (typo/stale); known ones don't."""
-    warns: list[str] = []
-
-    def _warn(msg: str, fix: str = "") -> None:
-        warns.append(msg)
-
     # Every canonical table is silent (derived — a second literal list here
     # would drift exactly like the one that lost [stealth]; see F-17).
-    doctor._validate_known_tables(
-        {table: {} for table in doctor._KNOWN_BOOLEY_TOML_TABLES},
-        _warn,
+    audit = project_schema.audit_known_tables(
+        {table: {} for table in project_schema.KNOWN_BOOLEY_TOML_TABLES}
     )
-    assert warns == []
+    assert audit.findings == ()
 
     # A retired table gets the targeted migration hint...
-    warns.clear()
-    doctor._validate_known_tables({"fusesoc": {"target_cores": ["x"]}}, _warn)
-    assert any("[fusesoc]" in m and "ADR 0030" in m for m in warns)
+    audit = project_schema.audit_known_tables({"fusesoc": {"target_cores": ["x"]}})
+    assert any(
+        "[fusesoc]" in item.message and "ADR 0030" in item.message for item in audit.findings
+    )
 
     # ...and an outright typo gets the generic "ignored" warning.
-    warns.clear()
-    doctor._validate_known_tables({"toolz": {}}, _warn)
-    assert any("[toolz]" in m and "ignored" in m for m in warns)
+    audit = project_schema.audit_known_tables({"toolz": {}})
+    assert any("[toolz]" in item.message and "ignored" in item.message for item in audit.findings)
 
 
 @pytest.mark.parametrize("mode", ["ask", "email", "file-only", "off"])
 def test_validate_feedback_table_accepts_live_settings(mode):
-    passes: list[str] = []
-    fails: list[str] = []
-
-    valid = doctor._validate_feedback_table(
+    audit = project_schema.audit_feedback_table(
         {
             "feedback": {
                 "mode": mode,
                 "redact_extra": ["codename"],
                 "redact_identifiers": False,
             }
-        },
-        passes.append,
-        lambda message, fix="": fails.append(message),
+        }
     )
 
-    assert valid
-    assert passes and not fails
+    assert audit.is_valid
+    assert any(
+        item.severity is config_common.ConfigFindingSeverity.PASS for item in audit.findings
+    )
 
 
 @pytest.mark.parametrize(
@@ -1563,16 +1555,10 @@ def test_validate_feedback_table_accepts_live_settings(mode):
     ],
 )
 def test_validate_feedback_table_rejects_invalid_settings(feedback):
-    fails: list[str] = []
+    audit = project_schema.audit_feedback_table({"feedback": feedback})
 
-    valid = doctor._validate_feedback_table(
-        {"feedback": feedback},
-        lambda _message: None,
-        lambda message, fix="": fails.append(message),
-    )
-
-    assert not valid
-    assert fails
+    assert not audit.is_valid
+    assert audit.findings
 
 
 @pytest.mark.parametrize(
@@ -1585,15 +1571,10 @@ def test_validate_feedback_table_rejects_invalid_settings(feedback):
     ],
 )
 def test_validate_stealth_native_core_ignore(stealth, valid):
-    fails: list[str] = []
+    audit = project_schema.audit_stealth_table({"stealth": stealth})
 
-    result = doctor._validate_stealth_table(
-        {"stealth": stealth},
-        lambda message, fix="": fails.append(message),
-    )
-
-    assert result is valid
-    assert bool(fails) is not valid
+    assert audit.is_valid is valid
+    assert bool(audit.findings) is not valid
 
 
 # Functions that return the WHOLE parsed booley.toml (not one section), so a
@@ -1718,7 +1699,7 @@ class TestKnownTablesMatchLiveConfig:
         unknown = {
             table: where
             for table, where in tables.items()
-            if table not in doctor._KNOWN_BOOLEY_TOML_TABLES
+            if table not in project_schema.KNOWN_BOOLEY_TOML_TABLES
         }
         assert unknown == {}, f"live booley.toml tables doctor calls ignored: {unknown}"
 
@@ -1734,7 +1715,7 @@ class TestKnownTablesMatchLiveConfig:
         unknown = {
             table: where
             for table, where in tables.items()
-            if table not in doctor._KNOWN_BOOLEY_TOML_TABLES
+            if table not in project_schema.KNOWN_BOOLEY_TOML_TABLES
         }
         assert unknown == {}, f"live booley.toml tables doctor calls ignored: {unknown}"
 
@@ -1756,8 +1737,9 @@ class TestKnownTablesMatchLiveConfig:
         )
 
         emitted = set(tomllib.loads(body))
-        assert emitted <= doctor._KNOWN_BOOLEY_TOML_TABLES, (
-            f"scaffold emits unrecognized tables: {emitted - doctor._KNOWN_BOOLEY_TOML_TABLES}"
+        assert emitted <= project_schema.KNOWN_BOOLEY_TOML_TABLES, (
+            f"scaffold emits unrecognized tables: "
+            f"{emitted - project_schema.KNOWN_BOOLEY_TOML_TABLES}"
         )
 
     def test_setup_skill_template_is_fully_recognized(self):
@@ -1773,15 +1755,18 @@ class TestKnownTablesMatchLiveConfig:
         )
         tables = set(tomllib.loads(template.read_text(encoding="utf-8")))
 
-        assert tables <= doctor._KNOWN_BOOLEY_TOML_TABLES, (
+        assert tables <= project_schema.KNOWN_BOOLEY_TOML_TABLES, (
             f"setup template offers unrecognized tables: "
-            f"{tables - doctor._KNOWN_BOOLEY_TOML_TABLES}"
+            f"{tables - project_schema.KNOWN_BOOLEY_TOML_TABLES}"
         )
 
     def test_known_and_retired_tables_do_not_overlap(self):
         """A table cannot be both live and retired — the retired hint would
         never fire, or the known set would silence a real migration."""
-        assert not (doctor._KNOWN_BOOLEY_TOML_TABLES & set(doctor._RETIRED_BOOLEY_TOML_TABLES))
+        assert not (
+            project_schema.KNOWN_BOOLEY_TOML_TABLES
+            & set(project_schema.RETIRED_BOOLEY_TOML_TABLES)
+        )
 
 
 def test_doctor_targets_do_not_fall_back_to_configs_first_target(tmp_path):
