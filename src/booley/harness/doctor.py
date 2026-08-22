@@ -29,6 +29,7 @@ from booley.audit import (
     agent_schema,
     config_common,
     configs_schema,
+    design_size,
     flow_schema,
     project_schema,
 )
@@ -156,25 +157,6 @@ _TOOL_EXIT_DESIGN_FAIL = 1
 # HDL source suffixes used by Doctor's readmem scan. Design sizing owns its own
 # source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
-# Large-design advisory (F5 / scale-awareness). Tree entries pruned for the cheap
-# ``--deep`` budget heuristic below.
-_SIZE_SKIP_DIRS = frozenset(
-    {
-        ".git",
-        ".booley_project",
-        "build",
-        "dist",
-        "node_modules",
-        ".venv",
-        "__pycache__",
-        ".hg",
-        ".svn",
-    }
-)
-# Thresholds chosen to flag genuinely oversized cores (e.g. C910 ≈ 483 files /
-# 415K LOC) without faulting mid-size designs (ibex, picorv32).
-_LARGE_DESIGN_FILES = 250
-_LARGE_DESIGN_LOC = 150_000
 _CONTAINER_CLI = "doc" + "ker"
 _SKILL_DIRS = (
     Path("." + "ag" + "ents") / "skills",
@@ -4083,58 +4065,6 @@ def _check_agent_backend_health(
         )
 
 
-def _count_design_files(paths: set[Path]) -> tuple[int, int]:
-    """Return ``(file_count, total_lines)`` for readable HDL *paths*."""
-    files = 0
-    lines = 0
-    for path in paths:
-        try:
-            with path.open("rb") as handle:
-                lines += sum(
-                    chunk.count(b"\n") for chunk in iter(lambda: handle.read(1 << 20), b"")
-                )
-        except OSError:
-            continue
-        files += 1
-    return files, lines
-
-
-def _design_size(root: Path) -> tuple[int, int]:
-    """Return ``(hdl_file_count, total_lines)`` for HDL sources under *root*.
-
-    A best-effort tree scan, deliberately NOT a fusesoc resolve: it is a cheap
-    *scale signal* for the ``--deep`` advisory, not an exact resolved fileset.
-    VCS/build/booley-internal directories are pruned; unreadable files are
-    skipped rather than aborting the walk.
-    """
-    paths: set[Path] = set()
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SIZE_SKIP_DIRS]
-        for name in filenames:
-            if Path(name).suffix.lower() in _HDL_SUFFIXES:
-                paths.add(Path(dirpath) / name)
-    return _count_design_files(paths)
-
-
-def _configured_design_size(project: ProjectAudit) -> tuple[int, int] | None:
-    """Size the unique HDL files reachable from Doctor Target selections."""
-    paths: set[Path] = set()
-    for target in _doctor_target_seed(project):
-        try:
-            sources = fusesoc_registry.target_source_files(
-                project.project_root,
-                target,
-                include_dependencies=True,
-            )
-        except fusesoc_registry.FuseSocError:
-            continue
-        for relative in (*sources.rtl_source_files, *sources.tb_files):
-            path = project.project_root / relative
-            if path.suffix.lower() in _HDL_SUFFIXES:
-                paths.add(path)
-    return _count_design_files(paths) if paths else None
-
-
 def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> None:
     """Advise when the design is large enough to strain ``--deep`` budgets (F5).
 
@@ -4148,10 +4078,19 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
     Nothing here is broken and there is nothing to fix -- the size only sets
     expectations for ``--deep``.
     """
-    scoped = _configured_design_size(project)
-    files, loc = scoped or _design_size(project.project_root)
-    label = "Doctor Target filesets" if scoped is not None else "whole-repository estimate"
-    if files >= _LARGE_DESIGN_FILES or loc >= _LARGE_DESIGN_LOC:
+    audit = design_size.analyze_design_size(
+        project.project_root,
+        project.project_dir,
+        _doctor_target_seed(project),
+    )
+    label = (
+        "Doctor Target filesets"
+        if audit.scope is design_size.DesignSizeScope.CONFIGURED_TARGETS
+        else "whole-repository estimate"
+    )
+    files = audit.hdl_files
+    loc = audit.lines_of_code
+    if audit.exceeds_deep_smoke_budget:
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
