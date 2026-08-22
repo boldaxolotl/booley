@@ -8,8 +8,7 @@ use crate::io::{
     write_hierarchy_scope, write_hierarchy_up_scope, write_hierarchy_var,
 };
 use crate::{
-    FstCompression, FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType,
-    FstWriteStats, Result,
+    FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType, Result,
 };
 
 pub fn open_fst<P: AsRef<std::path::Path>>(
@@ -32,13 +31,7 @@ pub struct FstHeaderWriter<W: std::io::Write + std::io::Seek> {
 impl FstHeaderWriter<std::io::BufWriter<std::fs::File>> {
     fn open<P: AsRef<std::path::Path>>(path: P, info: &FstInfo) -> Result<Self> {
         let f = std::fs::File::create(path)?;
-        Self::new(std::io::BufWriter::new(f), info)
-    }
-}
-
-impl<W: std::io::Write + std::io::Seek> FstHeaderWriter<W> {
-    /// Start an FST writer on any seekable output, including an in-memory cursor.
-    pub fn new(mut out: W, info: &FstInfo) -> Result<Self> {
+        let mut out = std::io::BufWriter::new(f);
         write_header_meta_data(&mut out, info)?;
         Ok(Self {
             out,
@@ -88,14 +81,24 @@ impl<W: std::io::Write + std::io::Seek> FstHeaderWriter<W> {
         }
     }
 
-    pub fn finish(mut self) -> Result<FstBodyWriter<W>> {
+    pub fn finish(self) -> Result<FstBodyWriter<W>> {
+        let (encoder, writer) = self.finish_split()?;
+        Ok(FstBodyWriter { encoder, writer })
+    }
+
+    /// Finish the immutable file prefix and return independent section
+    /// encoding and ordered-output stages.
+    pub fn finish_split(mut self) -> Result<(FstSectionEncoder, OrderedFstWriter<W>)> {
         debug_assert_eq!(
             self.scope_depth, 0,
             "missing calls to up-scope to close all scopes!"
         );
         write_hierarchy_bytes(&mut self.out, &self.hierarchy_buf.into_inner())?;
         write_geometry(&mut self.out, &self.signals)?;
-        let buffer = SignalBuffer::new(&self.signals)?;
+        let encoder = FstSectionEncoder {
+            buffer: SignalBuffer::new(&self.signals)?,
+            signals: self.signals.clone(),
+        };
         let finish_info = HeaderFinishInfo {
             end_time: 0, // currently unknown
             scope_count: self.scope_count,
@@ -103,112 +106,127 @@ impl<W: std::io::Write + std::io::Seek> FstHeaderWriter<W> {
             num_signals: self.signals.len() as u64,
             num_value_change_sections: 0, // currently unknown
         };
-        let next = FstBodyWriter {
+        let writer = OrderedFstWriter {
             out: self.out,
-            buffer,
             finish_info,
-            compression: FstCompression::Enabled,
-            stats: None,
         };
-        Ok(next)
+        Ok((encoder, writer))
     }
 }
 
-pub struct FstBodyWriter<W: std::io::Write + std::io::Seek> {
-    out: W,
-    buffer: SignalBuffer,
-    finish_info: HeaderFinishInfo,
-    compression: FstCompression,
-    stats: Option<FstWriteStats>,
+/// A complete, self-contained value-change section encoded in memory.
+pub struct EncodedFstSection {
+    bytes: Vec<u8>,
+    end_time: u64,
 }
 
-impl<W: std::io::Write + std::io::Seek> FstBodyWriter<W> {
+impl EncodedFstSection {
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub fn end_time(&self) -> u64 {
+        self.end_time
+    }
+}
+
+/// Stateful value-change encoder with no ownership of the output file.
+pub struct FstSectionEncoder {
+    buffer: SignalBuffer,
+    signals: Vec<FstSignalType>,
+}
+
+impl FstSectionEncoder {
+    /// Create a fresh encoder with first-file-section initialization semantics.
+    pub fn fresh(&self) -> Result<Self> {
+        Ok(Self {
+            buffer: SignalBuffer::new(&self.signals)?,
+            signals: self.signals.clone(),
+        })
+    }
+
     pub fn time_change(&mut self, time: u64) -> Result<()> {
         self.buffer.time_change(time)
     }
 
     pub fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
-        self.signal_change_with_status(signal_id, value).map(|_| ())
-    }
-
-    /// Encode a signal value and report whether it changed the current state.
-    pub fn signal_change_with_status(
-        &mut self,
-        signal_id: FstSignalId,
-        value: &[u8],
-    ) -> Result<bool> {
         self.buffer.signal_change(signal_id, value)
     }
 
-    /// Apply VCD width extension/truncation and encode a signal change in one
-    /// writer operation.
-    pub fn signal_change_vcd(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
-        self.signal_change_vcd_with_status(signal_id, value)
-            .map(|_| ())
+    /// Record a value already normalized to the signal's exact width.
+    pub fn signal_change_exact(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
+        self.buffer.signal_change_exact(signal_id, value)
     }
 
-    /// Apply VCD normalization and report whether the current value changed.
-    pub fn signal_change_vcd_with_status(
-        &mut self,
-        signal_id: FstSignalId,
-        value: &[u8],
-    ) -> Result<bool> {
-        self.buffer.signal_change_vcd(signal_id, value)
-    }
-
-    /// Select whether subsequent section flushes compress stream payloads.
-    pub fn set_compression(&mut self, compression: FstCompression) {
-        self.compression = compression;
-    }
-
-    /// Enable aggregate section statistics. Collection is disabled by default.
-    pub fn enable_stats(&mut self) {
-        self.stats.get_or_insert_with(FstWriteStats::default);
-    }
-
-    pub fn stats(&self) -> Option<&FstWriteStats> {
-        self.stats.as_ref()
-    }
-
-    fn flush_buffer(&mut self) -> Result<u64> {
-        let started = self.stats.as_ref().map(|_| std::time::Instant::now());
-        let (end_time, section_stats) = self.buffer.flush(&mut self.out, self.compression)?;
-        if let Some(stats) = self.stats.as_mut() {
-            stats.sections += 1;
-            stats.uncompressed_stream_bytes += section_stats.uncompressed_stream_bytes;
-            stats.compressed_stream_bytes += section_stats.compressed_stream_bytes;
-            stats.flush_time += started
-                .expect("timer exists when stats are enabled")
-                .elapsed();
-        }
-        Ok(end_time)
-    }
-
-    /// flushes all value change data to disk
-    pub fn flush(&mut self) -> Result<()> {
-        self.flush_buffer()?;
-        self.finish_info.num_value_change_sections += 1;
-        Ok(())
-    }
-
-    /// Returns the estimated size of all data structures that grow over time.
     pub fn size(&self) -> usize {
         self.buffer.size()
     }
 
-    pub fn finish(self) -> Result<()> {
-        self.finish_with_stats().map(|_| ())
+    pub fn encode_section(&mut self) -> Result<EncodedFstSection> {
+        let (bytes, end_time) = self.buffer.encode()?;
+        Ok(EncodedFstSection { bytes, end_time })
     }
 
-    pub fn finish_with_stats(mut self) -> Result<Option<FstWriteStats>> {
-        // write value change section
-        let end_time = self.flush_buffer()?;
+    /// Create an independent encoder initialized from an incoming full frame.
+    pub fn from_frame(&self, frame: &[u8], start_time: u64) -> Result<Self> {
+        Ok(Self {
+            buffer: SignalBuffer::from_frame(&self.signals, frame, start_time)?,
+            signals: self.signals.clone(),
+        })
+    }
+}
 
-        // update info
+/// Owns ordered section append and the final FST header patch.
+pub struct OrderedFstWriter<W: std::io::Write + std::io::Seek> {
+    out: W,
+    finish_info: HeaderFinishInfo,
+}
+
+impl<W: std::io::Write + std::io::Seek> OrderedFstWriter<W> {
+    pub fn append_section(&mut self, section: EncodedFstSection) -> Result<()> {
+        self.out.write_all(&section.bytes)?;
         self.finish_info.num_value_change_sections += 1;
-        self.finish_info.end_time = end_time;
-        update_header(&mut self.out, &self.finish_info)?;
+        self.finish_info.end_time = section.end_time;
+        Ok(())
+    }
 
-        Ok(self.stats)
+    pub fn finish(mut self) -> Result<()> {
+        update_header(&mut self.out, &self.finish_info)
+    }
+}
+
+pub struct FstBodyWriter<W: std::io::Write + std::io::Seek> {
+    encoder: FstSectionEncoder,
+    writer: OrderedFstWriter<W>,
+}
+
+impl<W: std::io::Write + std::io::Seek> FstBodyWriter<W> {
+    pub fn time_change(&mut self, time: u64) -> Result<()> {
+        self.encoder.time_change(time)
+    }
+
+    pub fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
+        self.encoder.signal_change(signal_id, value)
+    }
+
+    /// flushes all value change data to disk
+    pub fn flush(&mut self) -> Result<()> {
+        let section = self.encoder.encode_section()?;
+        self.writer.append_section(section)
+    }
+
+    /// Returns the estimated size of all data structures that grow over time.
+    pub fn size(&self) -> usize {
+        self.encoder.size()
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        let section = self.encoder.encode_section()?;
+        self.writer.append_section(section)?;
+        self.writer.finish()
     }
 }

@@ -3562,8 +3562,8 @@ mod tests {
         let header = crate::parser::parse_header(&mut reader);
         let mut h =
             crate::fst::FstBuildHandler::new(&header, None, &path).expect("open fst for writing");
-        h.parse_bytes(&mut reader, None);
-        h.finalize_and_write();
+        h.parse_bytes(&mut reader, None).unwrap();
+        h.finalize_and_write().unwrap();
         let cache = ColumnCache::load_from_file(&path).expect("load fst");
         let _ = std::fs::remove_file(&path);
         cache

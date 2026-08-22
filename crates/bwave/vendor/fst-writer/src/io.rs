@@ -5,8 +5,8 @@
 
 use crate::FstWriteError::InvalidCharacter;
 use crate::{
-    FstCompression, FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType,
-    FstWriteError, Result,
+    FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType, FstWriteError,
+    Result,
 };
 use std::io::{Seek, SeekFrom, Write};
 
@@ -387,13 +387,7 @@ pub(crate) fn write_time_chain_update(
     Ok(())
 }
 
-const VALUE_CHANGE_PACK_TYPE_LZ4: u8 = b'4';
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SectionWriteStats {
-    pub(crate) uncompressed_stream_bytes: u64,
-    pub(crate) compressed_stream_bytes: u64,
-}
+const VALUE_CHANGE_PACK_TYPE_ZLIB: u8 = b'Z';
 
 #[inline]
 fn flush_zeros(output: &mut impl Write, zeros: &mut u32) -> Result<()> {
@@ -407,7 +401,7 @@ fn flush_zeros(output: &mut impl Write, zeros: &mut u32) -> Result<()> {
     Ok(())
 }
 
-/// For any signal change streams smaller than this size, we won't even attempt LZ4 compression
+/// For any signal change streams smaller than this size, skip compression.
 const MIN_SIZE_TO_ATTEMPT_COMPRESSION: usize = 32;
 
 fn write_value_changes(
@@ -415,15 +409,15 @@ fn write_value_changes(
     signal_data: &[Vec<u8>],
     signal_offsets: &mut impl Write,
     memory_required: &mut u64,
-    compression: FstCompression,
-) -> Result<SectionWriteStats> {
+) -> Result<()> {
     write_variant_u64(output, signal_data.len() as u64)?;
-    // This pack type permits each stream to be stored raw or LZ4-compressed.
-    write_u8(output, VALUE_CHANGE_PACK_TYPE_LZ4)?;
+    // Zlib gives independent parallel sections enough local compression to
+    // stay close to a long serial section. FST readers treat every pack marker
+    // other than `4` (LZ4) and `F` (FastLZ) as zlib.
+    write_u8(output, VALUE_CHANGE_PACK_TYPE_ZLIB)?;
 
     let mut zero_count = 0;
     let mut prev_offset = output.stream_position()? - 1;
-    let mut stats = SectionWriteStats::default();
 
     for data in signal_data {
         if data.is_empty() {
@@ -432,29 +426,23 @@ fn write_value_changes(
             flush_zeros(signal_offsets, &mut zero_count)?;
             let start = output.stream_position()?;
             *memory_required += data.len() as u64;
-            stats.uncompressed_stream_bytes += data.len() as u64;
 
             // TODO: dedup with hashmap
-            if compression == FstCompression::Disabled
-                || data.len() < MIN_SIZE_TO_ATTEMPT_COMPRESSION
-            {
+            if data.len() < MIN_SIZE_TO_ATTEMPT_COMPRESSION {
                 // it is better not to compress the data
                 write_variant_u64(output, 0)?;
                 output.write_all(data)?;
-                stats.compressed_stream_bytes += data.len() as u64;
             } else {
                 // try to compress the data
-                let compressed = lz4_flex::compress(data);
+                let compressed = miniz_oxide::deflate::compress_to_vec_zlib(data, VALUE_ZLIB_LEVEL);
                 if compressed.len() < data.len() {
                     // we use the compressed version
                     write_variant_u64(output, data.len() as u64)?;
                     output.write_all(&compressed)?;
-                    stats.compressed_stream_bytes += compressed.len() as u64;
                 } else {
                     // it is better not to compress the data
                     write_variant_u64(output, 0)?;
                     output.write_all(data)?;
-                    stats.compressed_stream_bytes += data.len() as u64;
                 };
             }
 
@@ -465,15 +453,20 @@ fn write_value_changes(
         }
     }
     flush_zeros(signal_offsets, &mut zero_count)?;
-    Ok(stats)
+    Ok(())
 }
 
 fn write_frame(output: &mut impl Write, frame: &[u8], num_signals: usize) -> Result<()> {
-    // we never compress the frame since we do not support zlib compression
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(frame, ZLIB_LEVEL);
+    let stored = if compressed.len() < frame.len() {
+        compressed.as_slice()
+    } else {
+        frame
+    };
     write_variant_u64(output, frame.len() as u64)?;
-    write_variant_u64(output, frame.len() as u64)?;
+    write_variant_u64(output, stored.len() as u64)?;
     write_variant_u64(output, num_signals as u64)?;
-    output.write_all(frame)?;
+    output.write_all(stored)?;
     Ok(())
 }
 
@@ -486,8 +479,7 @@ pub(crate) fn write_value_change_section(
     time_table: &[u8],
     time_table_entries: u64,
     signal_data: &[Vec<u8>],
-    compression: FstCompression,
-) -> Result<SectionWriteStats> {
+) -> Result<()> {
     let num_signals = signal_data.len();
     // section header
     write_u8(output, BlockType::VcDataDynamicAlias2 as u8)?;
@@ -504,12 +496,11 @@ pub(crate) fn write_value_change_section(
 
     // value change data
     let mut signal_offsets = vec![];
-    let mut stats = write_value_changes(
+    write_value_changes(
         output,
         signal_data,
         &mut signal_offsets,
         &mut memory_required,
-        compression,
     )?;
 
     // offset table
@@ -517,9 +508,7 @@ pub(crate) fn write_value_change_section(
     write_u64(output, signal_offsets.len() as u64)?;
 
     // time table at the end
-    let time_table_stats = write_time_table(output, time_table, time_table_entries, compression)?;
-    stats.uncompressed_stream_bytes += time_table_stats.uncompressed_stream_bytes;
-    stats.compressed_stream_bytes += time_table_stats.compressed_stream_bytes;
+    write_time_table(output, time_table, time_table_entries)?;
 
     // fix section length + memory requirement
     let end = output.stream_position()?;
@@ -530,44 +519,32 @@ pub(crate) fn write_value_change_section(
     // the memory required for traversal is just the uncompressed length of all signals summed up
     write_u64(output, memory_required)?;
     output.seek(SeekFrom::Start(end))?;
-    Ok(stats)
+    Ok(())
 }
 
 /// by unscientific experiment, we observed that this level might be good enough :)
 const ZLIB_LEVEL: u8 = 3;
+const VALUE_ZLIB_LEVEL: u8 = 1;
 
 fn write_time_table(
     output: &mut (impl Write + Seek),
     time_table: &[u8],
     time_table_entries: u64,
-    compression: FstCompression,
-) -> Result<SectionWriteStats> {
+) -> Result<()> {
     // zlib compress
-    let compressed = (compression == FstCompression::Enabled)
-        .then(|| miniz_oxide::deflate::compress_to_vec_zlib(time_table, ZLIB_LEVEL));
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(time_table, ZLIB_LEVEL);
 
     // is compression worth it?
-    let stored_bytes = if compressed
-        .as_ref()
-        .is_none_or(|compressed| compressed.len() > time_table.len())
-    {
+    if compressed.len() > time_table.len() {
         // it is more space efficient to stick with the uncompressed version
         output.write_all(time_table)?;
         write_u64(output, time_table.len() as u64)?;
         write_u64(output, time_table.len() as u64)?;
-        time_table.len()
     } else {
-        let compressed = compressed
-            .as_ref()
-            .expect("compression result checked above");
         output.write_all(compressed.as_slice())?;
         write_u64(output, time_table.len() as u64)?;
         write_u64(output, compressed.len() as u64)?;
-        compressed.len()
-    };
+    }
     write_u64(output, time_table_entries)?;
-    Ok(SectionWriteStats {
-        uncompressed_stream_bytes: time_table.len() as u64,
-        compressed_stream_bytes: stored_bytes as u64,
-    })
+    Ok(())
 }

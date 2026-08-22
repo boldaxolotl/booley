@@ -1,7 +1,8 @@
 //! VCD line parser: header parsing and streaming event dispatch.
 
 use std::collections::HashMap;
-use std::io::BufRead;
+use std::fmt;
+use std::io::{self, BufRead};
 use std::ops::ControlFlow;
 
 use memchr::memchr2;
@@ -10,6 +11,7 @@ use rustc_hash::FxHashSet;
 use crate::signal::SignalMeta;
 
 /// Parsed VCD header information.
+#[derive(Debug)]
 pub struct VcdHeader {
     /// All signal declarations found in VCD
     pub signals: Vec<SignalMeta>,
@@ -19,6 +21,92 @@ pub struct VcdHeader {
     pub ticks_to_ns: f64,
     /// Raw timescale string (e.g. "1ns")
     pub timescale_str: String,
+    /// Absolute input byte offset immediately after `$enddefinitions $end`.
+    pub body_offset: u64,
+}
+
+/// Why a VCD timestamp token could not be decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimestampError {
+    MissingDigits,
+    Overflow,
+    TrailingCharacters,
+}
+
+impl fmt::Display for TimestampError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            TimestampError::MissingDigits => "timestamp has no digits",
+            TimestampError::Overflow => "timestamp exceeds u64",
+            TimestampError::TrailingCharacters => "timestamp has trailing characters",
+        };
+        f.write_str(message)
+    }
+}
+
+/// A fatal error encountered while reading or validating a VCD stream.
+#[derive(Debug)]
+pub enum VcdParseError {
+    Read {
+        section: &'static str,
+        offset: u64,
+        source: io::Error,
+    },
+    InvalidTimestamp {
+        offset: u64,
+        text: String,
+        reason: TimestampError,
+    },
+    Cancelled {
+        section: &'static str,
+        offset: u64,
+    },
+    Chunk {
+        sequence: u64,
+        source: Box<VcdParseError>,
+    },
+    Worker {
+        message: String,
+    },
+}
+
+impl fmt::Display for VcdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            VcdParseError::Read {
+                section,
+                offset,
+                source,
+            } => write!(f, "VCD {section} read failed at byte {offset}: {source}"),
+            VcdParseError::InvalidTimestamp {
+                offset,
+                text,
+                reason,
+            } => write!(
+                f,
+                "invalid VCD timestamp at byte {offset} ({text:?}): {reason}"
+            ),
+            VcdParseError::Cancelled { section, offset } => {
+                write!(f, "VCD {section} processing cancelled at byte {offset}")
+            }
+            VcdParseError::Chunk { sequence, source } => {
+                write!(f, "VCD chunk {sequence} failed: {source}")
+            }
+            VcdParseError::Worker { message } => write!(f, "VCD worker failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for VcdParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            VcdParseError::Read { source, .. } => Some(source),
+            VcdParseError::Chunk { source, .. } => Some(source.as_ref()),
+            VcdParseError::InvalidTimestamp { .. }
+            | VcdParseError::Cancelled { .. }
+            | VcdParseError::Worker { .. } => None,
+        }
+    }
 }
 
 /// Callback trait for streaming VCD events.
@@ -39,8 +127,8 @@ pub trait VcdHandler {
 }
 
 /// Parse the VCD header up to $enddefinitions.
-/// Returns VcdHeader with signal metadata and timescale.
-pub fn parse_header(reader: &mut impl BufRead) -> VcdHeader {
+/// Returns VcdHeader with signal metadata, timescale, and body offset.
+pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParseError> {
     let mut signals = Vec::new();
     let mut id_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
     let mut scope_stack: Vec<String> = Vec::new();
@@ -50,17 +138,22 @@ pub fn parse_header(reader: &mut impl BufRead) -> VcdHeader {
     let mut line_buf = String::new();
     // Accumulate multi-line tokens (VCD allows tokens to span lines)
     let mut token_buf = String::new();
+    let mut byte_offset = 0u64;
 
     loop {
         line_buf.clear();
-        match reader.read_line(&mut line_buf) {
+        let bytes_read = match reader.read_line(&mut line_buf) {
             Ok(0) => break,
-            Err(e) => {
-                eprintln!("WARNING: I/O error reading VCD header: {e}");
-                break;
+            Err(source) => {
+                return Err(VcdParseError::Read {
+                    section: "header",
+                    offset: byte_offset,
+                    source,
+                });
             }
-            Ok(_) => {}
-        }
+            Ok(bytes_read) => bytes_read,
+        };
+        byte_offset += bytes_read as u64;
         let line = line_buf.trim_end_matches(|c| c == '\n' || c == '\r');
 
         // Accumulate tokens -- VCD allows multi-line $var, $timescale, etc.
@@ -80,12 +173,13 @@ pub fn parse_header(reader: &mut impl BufRead) -> VcdHeader {
 
                 if token.starts_with("$enddefinitions") {
                     // Done with header
-                    return VcdHeader {
+                    return Ok(VcdHeader {
                         signals,
                         id_to_indices,
                         ticks_to_ns,
                         timescale_str,
-                    };
+                        body_offset: byte_offset,
+                    });
                 } else if token.starts_with("$scope") {
                     // $scope module <name>
                     let parts: Vec<&str> = token.split_whitespace().collect();
@@ -139,12 +233,22 @@ pub fn parse_header(reader: &mut impl BufRead) -> VcdHeader {
     }
 
     // If we get here, $enddefinitions was never found
-    VcdHeader {
+    Ok(VcdHeader {
         signals,
         id_to_indices,
         ticks_to_ns,
         timescale_str,
-    }
+        body_offset: byte_offset,
+    })
+}
+
+/// Parse a VCD header from a trusted reader.
+///
+/// Production input paths should call [`try_parse_header`] so I/O failures can
+/// be reported to the user. This convenience wrapper keeps in-memory callers
+/// concise while still failing loudly instead of treating an error as EOF.
+pub fn parse_header(reader: &mut impl BufRead) -> VcdHeader {
+    try_parse_header(reader).expect("failed to read VCD header")
 }
 
 /// Parse timescale string to ns conversion factor.
@@ -355,6 +459,36 @@ pub fn parse_streaming(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, Read};
+
+    struct ErrorReader;
+
+    impl Read for ErrorReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("injected read error"))
+        }
+    }
+
+    impl BufRead for ErrorReader {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            Err(io::Error::other("injected read error"))
+        }
+
+        fn consume(&mut self, _amount: usize) {}
+    }
+
+    #[test]
+    fn header_read_error_is_not_eof() {
+        let error = try_parse_header(&mut ErrorReader).unwrap_err();
+        assert!(matches!(
+            error,
+            VcdParseError::Read {
+                section: "header",
+                offset: 0,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn test_parse_timescale() {

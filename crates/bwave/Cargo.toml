@@ -13,6 +13,7 @@ fst-reader = "0.17"
 fst-writer = { path = "vendor/fst-writer" }
 globset = "0.4"
 include_dir = "0.7"
+libc = "0.2"
 memchr = "2"
 rayon = "1"
 rustc-hash = "2"

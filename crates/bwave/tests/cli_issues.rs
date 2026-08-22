@@ -7,7 +7,10 @@
 //! parser, so doc drift can't ship.
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+#[cfg(unix)]
+use std::io::{Read, Write};
 
 // -- Test harness ----------------------------------------------------
 
@@ -735,8 +738,8 @@ fn build_empty_store(test_id: &str) -> PathBuf {
     let header = bwave::parser::parse_header(&mut reader);
     let mut handler = bwave::fst::FstBuildHandler::new(&header, None, &fst)
         .expect("in-process empty-store build failed");
-    handler.parse_bytes(&mut reader, None);
-    handler.finalize_and_write();
+    handler.parse_bytes(&mut reader, None).unwrap();
+    handler.finalize_and_write().unwrap();
     fst
 }
 
@@ -772,6 +775,131 @@ fn build_refuses_zero_signal_vcd() {
         stderr
     );
     assert!(!fst.exists(), "no store file may be left behind");
+}
+
+#[test]
+fn build_rejects_invalid_timestamp_without_publishing_output() {
+    let vcd = std::env::temp_dir().join("bwave_invalid_timestamp.vcd");
+    let fst = std::env::temp_dir().join("bwave_invalid_timestamp.fst");
+    let input = "$timescale 1ns $end\n\
+        $scope module tb $end\n\
+        $var wire 1 ! sig $end\n\
+        $upscope $end\n\
+        $enddefinitions $end\n\
+        #12junk\n\
+        1!\n";
+    std::fs::write(&vcd, input).expect("write malformed VCD");
+    let _ = std::fs::remove_file(&fst);
+
+    for engine in ["serial", "parallel"] {
+        let _ = std::fs::remove_file(&fst);
+        let out = Command::new(exe_path())
+            .args([
+                "build",
+                "--engine",
+                engine,
+                "--chunk-bytes",
+                "17",
+                vcd.to_str().unwrap(),
+                "-o",
+                fst.to_str().unwrap(),
+            ])
+            .output()
+            .expect("build failed to execute");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{engine} stderr: {stderr}");
+        assert!(
+            stderr.contains("invalid VCD timestamp"),
+            "{engine} stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("trailing characters"),
+            "{engine} stderr: {stderr}"
+        );
+        assert!(
+            !fst.exists(),
+            "failed {engine} build must not publish an FST"
+        );
+    }
+
+    let _ = std::fs::remove_file(&vcd);
+}
+
+#[cfg(unix)]
+#[test]
+fn parallel_failure_cancels_a_blocked_fifo_reader() {
+    let base = std::env::temp_dir().join(format!(
+        "bwave_cancel_fifo_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let fifo = base.with_extension("fifo");
+    let fst = base.with_extension("fst");
+    let _ = std::fs::remove_file(&fifo);
+    let _ = std::fs::remove_file(&fst);
+    let mkfifo = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(mkfifo.success());
+
+    let mut child = Command::new(exe_path())
+        .args([
+            "build",
+            "--engine",
+            "parallel",
+            "--parse-jobs",
+            "2",
+            "--encode-jobs",
+            "1",
+            "--chunk-bytes",
+            "8",
+            "--input",
+            fifo.to_str().unwrap(),
+            "-o",
+            fst.to_str().unwrap(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut writer = std::fs::File::create(&fifo).unwrap();
+    writer
+        .write_all(
+            b"$scope module tb $end\n\
+$var wire 1 ! sig $end\n\
+$upscope $end\n\
+$enddefinitions $end\n\
+#0\n0!\n#10\n1!\n#bad\n0!\n#30\n1!\n#40\n0!\n#50\n1!\n#60\n0!\n#70\n1!\n#80\n0!\n",
+        )
+        .unwrap();
+    writer.flush().unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!("parallel build did not cancel while its FIFO writer remained open");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+
+    let producer_error = writer.write_all(b"#90\n1!\n").unwrap_err();
+    assert_eq!(producer_error.kind(), std::io::ErrorKind::BrokenPipe);
+    drop(writer);
+    let _ = std::fs::remove_file(&fifo);
+    let output_exists = fst.exists();
+    let _ = std::fs::remove_file(&fst);
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(stderr.contains("invalid VCD timestamp"), "stderr: {stderr}");
+    assert!(!output_exists, "cancelled build must not publish an FST");
 }
 
 #[test]

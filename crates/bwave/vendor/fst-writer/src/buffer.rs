@@ -10,13 +10,13 @@
 // plus a 4-byte back-pointer and a length varint per change.
 
 use crate::io::{
-    SectionWriteStats, write_multi_bit_signal, write_one_bit_signal, write_time_chain_update,
-    write_value_change_section, write_variant_u64,
+    write_multi_bit_signal, write_one_bit_signal, write_time_chain_update,
+    write_value_change_section,
 };
-use crate::{FstCompression, FstSignalId, FstSignalType, FstWriteError, Result};
+use crate::{FstSignalId, FstSignalType, FstWriteError, Result};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::io::{Seek, Write};
+use std::io::{Cursor, Seek, Write};
 
 /// keeps track of signal values before writing them to disk
 pub(crate) struct SignalBuffer {
@@ -85,6 +85,27 @@ impl SignalBuffer {
         })
     }
 
+    pub(crate) fn from_frame(
+        signals: &[FstSignalType],
+        frame: &[u8],
+        start_time: u64,
+    ) -> Result<Self> {
+        let mut buffer = Self::new(signals)?;
+        if frame.len() != buffer.values.len() {
+            return Err(FstWriteError::InvalidFrameLength {
+                expected: buffer.values.len(),
+                actual: frame.len(),
+            });
+        }
+        buffer.values.copy_from_slice(frame);
+        buffer.frame.copy_from_slice(frame);
+        buffer.start_time = start_time;
+        buffer.end_time = start_time;
+        buffer.first_buffer = false;
+        write_time_chain_update(&mut buffer.time_table, 0, start_time)?;
+        Ok(buffer)
+    }
+
     pub(crate) fn time_change(&mut self, new_time: u64) -> Result<()> {
         match new_time.cmp(&self.end_time) {
             Ordering::Less => Err(FstWriteError::TimeDecrease(self.end_time, new_time)),
@@ -110,7 +131,7 @@ impl SignalBuffer {
         }
     }
 
-    pub(crate) fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<bool> {
+    pub(crate) fn signal_change(&mut self, signal_id: FstSignalId, value: &[u8]) -> Result<()> {
         let idx = signal_id.to_array_index();
         let info = match self.signals.get(idx) {
             Some(info) => info,
@@ -118,7 +139,6 @@ impl SignalBuffer {
         };
         let len = info.len as usize;
         let start = info.offset as usize;
-        let range = start..start + len;
         let value_cow = if value.len() == len {
             Cow::Borrowed(value)
         } else {
@@ -134,20 +154,48 @@ impl SignalBuffer {
         };
         let value = value_cow.as_ref();
         debug_assert_eq!(value.len(), len);
+        self.signal_change_exact_at(idx, start, value)
+    }
+
+    /// Record an already-normalized value whose length exactly matches the
+    /// signal declaration. The VCD converter uses this after canonicalizing
+    /// values in parser workers, avoiding the general expansion path for
+    /// every event.
+    pub(crate) fn signal_change_exact(
+        &mut self,
+        signal_id: FstSignalId,
+        value: &[u8],
+    ) -> Result<()> {
+        let idx = signal_id.to_array_index();
+        let info = match self.signals.get(idx) {
+            Some(info) => info,
+            None => return Err(FstWriteError::InvalidSignalId(signal_id)),
+        };
+        if value.len() != info.len as usize {
+            return Err(FstWriteError::InvalidFrameLength {
+                expected: info.len as usize,
+                actual: value.len(),
+            });
+        }
+        self.signal_change_exact_at(idx, info.offset as usize, value)
+    }
+
+    #[inline]
+    fn signal_change_exact_at(&mut self, idx: usize, start: usize, value: &[u8]) -> Result<()> {
+        let len = value.len();
         let first_time_step = self.time_table.is_empty();
         if first_time_step && self.first_buffer {
-            self.values[range].copy_from_slice(value);
-            return Ok(true);
+            self.values[start..start + len].copy_from_slice(value);
         } else {
             if self.time_table.is_empty() {
                 todo!("Currently we only support flushing right before a new time step.")
             }
 
             // check to see if there actually was a change
-            if &self.values[range.clone()] == value {
-                return Ok(false);
+            if &self.values[start..start + len] == value {
+                return Ok(());
             }
-            self.values[range].copy_from_slice(value);
+            self.values[start..start + len].copy_from_slice(value);
             // append the change to the signal's chronological stream
             let time_table_idx_delta =
                 (self.time_table_index - self.prev_time_table_index[idx]) as u64;
@@ -162,35 +210,7 @@ impl SignalBuffer {
             // remember previous time-table index
             self.prev_time_table_index[idx] = self.time_table_index;
         }
-        Ok(true)
-    }
-
-    pub(crate) fn signal_change_vcd(&mut self, signal_id: FstSignalId, raw: &[u8]) -> Result<bool> {
-        let idx = signal_id.to_array_index();
-        let info = self
-            .signals
-            .get(idx)
-            .ok_or(FstWriteError::InvalidSignalId(signal_id))?;
-        let start = info.offset as usize;
-        let normalized = NormalizedVcd::new(raw, info.len as usize);
-        let current = &mut self.values[start..start + info.len as usize];
-        if self.time_table.is_empty() && self.first_buffer {
-            normalized.copy_into(current);
-            return Ok(true);
-        }
-        if self.time_table.is_empty() {
-            todo!("Currently we only support flushing right before a new time step.")
-        }
-
-        let delta = (self.time_table_index - self.prev_time_table_index[idx]) as u64;
-        let stream = &mut self.value_changes[idx];
-        let before = stream.len();
-        let changed = normalized.append_change(stream, current, delta)?;
-        if changed {
-            self.value_changes_bytes += stream.len() - before;
-            self.prev_time_table_index[idx] = self.time_table_index;
-        }
-        Ok(changed)
+        Ok(())
     }
 
     fn num_time_table_entries(&self) -> u64 {
@@ -201,13 +221,16 @@ impl SignalBuffer {
         }
     }
 
-    pub(crate) fn flush(
-        &mut self,
-        output: &mut (impl Write + Seek),
-        compression: FstCompression,
-    ) -> Result<(u64, SectionWriteStats)> {
+    pub(crate) fn flush(&mut self, output: &mut (impl Write + Seek)) -> Result<u64> {
+        // A timestamp-aligned section may end before a later time change
+        // (notably when the first timestamp contains one very wide value).
+        // Ordinarily `time_change` snapshots first-step values into `frame`;
+        // do it here as well when this section contains only that step.
+        if self.first_buffer && self.time_table.is_empty() {
+            self.frame.copy_from_slice(&self.values);
+        }
         // write data
-        let stats = write_value_change_section(
+        write_value_change_section(
             output,
             self.start_time,
             self.end_time,
@@ -215,7 +238,6 @@ impl SignalBuffer {
             &self.time_table,
             self.num_time_table_entries(),
             &self.value_changes,
-            compression,
         )?;
 
         // reset data
@@ -231,150 +253,18 @@ impl SignalBuffer {
         self.value_changes_bytes = 0;
         self.first_buffer = false;
 
-        Ok((self.end_time, stats))
+        Ok(self.end_time)
+    }
+
+    pub(crate) fn encode(&mut self) -> Result<(Vec<u8>, u64)> {
+        let mut output = Cursor::new(Vec::with_capacity(self.size()));
+        let end_time = self.flush(&mut output)?;
+        Ok((output.into_inner(), end_time))
     }
 
     /// Returns the estimated size of all data structures that grow over time.
     pub(crate) fn size(&self) -> usize {
         self.time_table.len() + self.value_changes_bytes
-    }
-}
-
-struct NormalizedVcd<'a> {
-    source: &'a [u8],
-    prefix: usize,
-    fill: u8,
-}
-
-impl<'a> NormalizedVcd<'a> {
-    fn new(raw: &'a [u8], width: usize) -> Self {
-        let source = if raw.len() > width {
-            &raw[raw.len() - width..]
-        } else {
-            raw
-        };
-        let fill = match raw.first().copied().unwrap_or(b'0').to_ascii_lowercase() {
-            b'x' => b'x',
-            b'z' => b'z',
-            _ => b'0',
-        };
-        Self {
-            source,
-            prefix: width - source.len(),
-            fill,
-        }
-    }
-
-    #[inline(always)]
-    fn byte(&self, index: usize) -> u8 {
-        if index < self.prefix {
-            self.fill
-        } else {
-            self.source[index - self.prefix].to_ascii_lowercase()
-        }
-    }
-
-    fn copy_into(&self, current: &mut [u8]) {
-        for (index, slot) in current.iter_mut().enumerate() {
-            *slot = self.byte(index);
-        }
-    }
-
-    fn inspect(&self, current: &[u8]) -> (bool, bool) {
-        let mut changed = false;
-        let mut two_state = true;
-        for (index, old) in current.iter().enumerate() {
-            let value = self.byte(index);
-            changed |= *old != value;
-            two_state &= matches!(value, b'0' | b'1');
-        }
-        (changed, two_state)
-    }
-
-    fn append_change(&self, stream: &mut Vec<u8>, current: &mut [u8], delta: u64) -> Result<bool> {
-        if let Some(changed) = self.exact_two_state_changed(current) {
-            if !changed {
-                return Ok(false);
-            }
-            if current.len() == 1 {
-                current[0] = self.source[0];
-                write_one_bit_signal(stream, delta, self.source[0])?;
-            } else {
-                write_variant_u64(stream, delta << 1)?;
-                self.append_exact_two_state(stream, current);
-            }
-            return Ok(true);
-        }
-
-        let (changed, two_state) = self.inspect(current);
-        if !changed {
-            return Ok(false);
-        }
-        if current.len() == 1 {
-            let value = self.byte(0);
-            current[0] = value;
-            write_one_bit_signal(stream, delta, value)?;
-        } else {
-            write_variant_u64(stream, (delta << 1) | (!two_state as u64))?;
-            if two_state {
-                self.append_two_state(stream, current);
-            } else {
-                self.append_four_state(stream, current);
-            }
-        }
-        Ok(true)
-    }
-
-    fn exact_two_state_changed(&self, current: &[u8]) -> Option<bool> {
-        if self.prefix != 0 {
-            return None;
-        }
-        let mut changed = false;
-        for (&old, &value) in current.iter().zip(self.source) {
-            if !matches!(value, b'0' | b'1') {
-                return None;
-            }
-            changed |= old != value;
-        }
-        Some(changed)
-    }
-
-    fn append_exact_two_state(&self, stream: &mut Vec<u8>, current: &mut [u8]) {
-        append_packed_two_state(stream, current, |index| self.source[index]);
-    }
-
-    fn append_two_state(&self, stream: &mut Vec<u8>, current: &mut [u8]) {
-        append_packed_two_state(stream, current, |index| self.byte(index));
-    }
-
-    fn append_four_state(&self, stream: &mut Vec<u8>, current: &mut [u8]) {
-        for (index, slot) in current.iter_mut().enumerate() {
-            let value = self.byte(index);
-            *slot = value;
-            stream.push(value);
-        }
-    }
-}
-
-#[inline(always)]
-fn append_packed_two_state(
-    stream: &mut Vec<u8>,
-    current: &mut [u8],
-    mut value_at: impl FnMut(usize) -> u8,
-) {
-    let mut packed = 0u8;
-    let value_count = current.len();
-    for (index, slot) in current.iter_mut().enumerate() {
-        let value = value_at(index);
-        *slot = value;
-        packed |= (value - b'0') << (7 - (index & 7));
-        if index & 7 == 7 {
-            stream.push(packed);
-            packed = 0;
-        }
-    }
-    if value_count & 7 != 0 {
-        stream.push(packed);
     }
 }
 
@@ -401,49 +291,5 @@ fn expand_special_vector_cases(value: &[u8], len: usize) -> Option<Vec<u8>> {
             Some(extended)
         }
         _ => None, // failed
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::NormalizedVcd;
-    use crate::io::write_multi_bit_signal;
-
-    fn normalize(raw: &[u8], width: usize) -> Vec<u8> {
-        let mut current = vec![b'?'; width];
-        NormalizedVcd::new(raw, width).copy_into(&mut current);
-        current
-    }
-
-    #[test]
-    fn vcd_normalization_handles_width_and_four_state_values() {
-        assert_eq!(normalize(b"101", 8), b"00000101");
-        assert_eq!(normalize(b"X1", 4), b"xxx1");
-        assert_eq!(normalize(b"Z", 4), b"zzzz");
-        assert_eq!(normalize(b"101011", 4), b"1011");
-        assert_eq!(normalize(b"", 4), b"0000");
-    }
-
-    #[test]
-    fn exact_two_state_encoding_matches_generic_encoding() {
-        let value = b"10101100";
-        let delta = 7;
-        let mut current = vec![b'x'; value.len()];
-        let mut specialized = Vec::new();
-        assert!(
-            NormalizedVcd::new(value, value.len())
-                .append_change(&mut specialized, &mut current, delta)
-                .unwrap()
-        );
-
-        let mut generic = Vec::new();
-        write_multi_bit_signal(&mut generic, delta, value).unwrap();
-        assert_eq!(specialized, generic);
-        assert_eq!(current, value);
-        assert!(
-            !NormalizedVcd::new(value, value.len())
-                .append_change(&mut specialized, &mut current, delta)
-                .unwrap()
-        );
     }
 }
