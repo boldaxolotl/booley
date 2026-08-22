@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.mcp.base import read_source_dirs_from_toml
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import compact_utc_now
 
 logger = logging.getLogger(__name__)
@@ -626,15 +627,7 @@ def _pid_alive(pid: Any) -> bool:
     """True when *pid* still names a running process (unknown ⇒ assume alive)."""
     if not isinstance(pid, int) or pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        # EPERM (someone else's process) or an exotic errno: err on the side
-        # of leaving the stash alone.
-        return True
-    return True
+    return is_pid_alive(pid)
 
 
 def _manifest_is_trustworthy(manifest: Path) -> bool:

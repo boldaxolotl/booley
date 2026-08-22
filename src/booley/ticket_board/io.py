@@ -124,7 +124,7 @@ class TicketIO:
                 lock_file.write(pid_to_stamp)
                 lock_file.flush()
                 return
-            except (BlockingIOError, OSError) as lock_err:
+            except BlockingIOError as lock_err:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(
                         f"Could not acquire lock for '{slug}' within "
