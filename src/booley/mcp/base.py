@@ -33,7 +33,7 @@ from booley.dev_support.development_state import (
     DevelopmentState,
 )
 from booley.flows import execution
-from booley.flows.target_campaign import build_campaign_freshness
+from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime import job_slots
 from booley.runtime.job_records import _proc_cmdline
@@ -478,7 +478,7 @@ class McpTool(ABC):
             return detail
         stamped = dict(detail or {})
         try:
-            freshness = build_campaign_freshness(
+            freshness = build_criterion_freshness(
                 Path(self.args.work_dir),
                 target=source_target,
                 categories=categories,

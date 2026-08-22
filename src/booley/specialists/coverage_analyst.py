@@ -43,12 +43,12 @@ from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _resolve_run_cwd
 from booley.flows.target_campaign import (
-    CampaignScopeError,
-    NoRunnableTestsError,
     TargetCampaign,
     describe_target_campaign,
     resolve_target_campaign,
 )
+from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
     EXIT_ERROR,

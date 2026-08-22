@@ -1,6 +1,6 @@
 """Compatibility imports for the shared Target campaign domain."""
 
-from booley.flows.target_campaign import (
+from booley.flows.target_test_suite import (
     NoRunnableTestsError,
     TargetTestSuite,
     configured_test_names,

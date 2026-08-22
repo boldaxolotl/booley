@@ -57,14 +57,17 @@ from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
 from booley.flows.target_campaign import (
-    CampaignScopeError,
     CampaignUnit,
-    NoRunnableTestsError,
     TargetCampaign,
-    TargetTestSuite,
+    all_campaign_results_match,
     describe_target_campaign,
-    require_runnable_target_test_suite,
     resolve_target_campaign,
+)
+from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_test_suite import (
+    NoRunnableTestsError,
+    TargetTestSuite,
+    require_runnable_target_test_suite,
 )
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
@@ -2697,13 +2700,15 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     @staticmethod
     def _baseline_suite_passed(runs: list[MutationTestRun]) -> bool:
         """A baseline passes only when every Target test completes successfully."""
-        return bool(runs) and all(
-            not run.timed_out
-            and not run.error
-            and run.process is not None
-            and not _infra_failure_reason(run.process)
-            and run.process.returncode == 0
-            for run in runs
+        return all_campaign_results_match(
+            runs,
+            lambda run: (
+                not run.timed_out
+                and not run.error
+                and run.process is not None
+                and not _infra_failure_reason(run.process)
+                and run.process.returncode == 0
+            ),
         )
 
     def _persist_mutant_log(self, mut_id: int, output: str) -> str:

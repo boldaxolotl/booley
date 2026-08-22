@@ -7,13 +7,12 @@ from types import SimpleNamespace
 import pytest
 
 from booley.flows.target_campaign import (
-    CampaignResults,
-    CampaignScopeError,
-    NoRunnableTestsError,
     TargetCampaign,
-    build_campaign_freshness,
+    all_campaign_results_match,
     resolve_target_campaign,
 )
+from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_test_suite import NoRunnableTestsError
 
 
 def _entry(**params: object) -> SimpleNamespace:
@@ -85,8 +84,6 @@ def test_executes_individual_units_through_injected_behavior() -> None:
     results = campaign.execute(lambda unit: unit.display_name.upper())
 
     assert results.values == ("RESET", "CORNER")
-    assert results.all_match(lambda value: len(value) > 3)
-    assert results.any_match(lambda value: value == "CORNER")
 
 
 def test_batched_unit_describes_all_selected_tests() -> None:
@@ -116,40 +113,24 @@ def test_all_skipped_campaign_is_rejected() -> None:
         )
 
 
-def test_empty_results_cannot_pass_vacuously() -> None:
-    results: CampaignResults[str] = CampaignResults(())
-
-    assert results.all_match(lambda _value: True) is False
-    assert results.any_match(lambda _value: True) is False
-
-
-def test_builds_compatible_freshness_detail(tmp_path) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
-
-    freshness = build_campaign_freshness(
-        tmp_path,
-        target="sim",
-        categories=("tb", "rtl", "rtl"),
-    ).to_detail()
-
-    assert freshness["target"] == "sim"
-    assert freshness["categories"] == ["rtl", "tb"]
-    assert freshness["fingerprint"]["algorithm"] == "sha256"
+def test_campaign_aggregation_cannot_pass_vacuously() -> None:
+    assert all_campaign_results_match([], lambda _value: True) is False
+    assert all_campaign_results_match([1, 2], lambda value: value > 0) is True
 
 
 def test_campaign_domain_does_not_import_presentation_layers() -> None:
-    source = Path(__file__).parents[2] / "src" / "booley" / "flows" / "target_campaign.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    imports = {
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.level == 0
-    }
-
+    flows_dir = Path(__file__).parents[2] / "src" / "booley" / "flows"
     forbidden = ("booley.harness", "booley.mcp", "booley.ticket_board")
-    assert not {
-        module
-        for module in imports
-        if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
-    }
+    for filename in ("target_campaign.py", "target_criteria.py", "target_test_suite.py"):
+        source = flows_dir / filename
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        imports = {
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.level == 0
+        }
+        assert not {
+            module
+            for module in imports
+            if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
+        }
