@@ -362,8 +362,8 @@ def validate_project_cores(
     agent's write Scope) to additionally enforce script provenance; omit it for a
     structural-only audit.
 
-    When *seed_targets* names the project's declared Targets (ADR 0030: the
-    ``[flows.<flow>].default_target`` set), the audit is restricted to the cores reachable
+    When *seed_targets* names the project's Doctor-selected Targets, the audit
+    is restricted to the cores reachable
     from those Targets' dependency closures
     (:func:`fusesoc_registry.selectable_core_closure`) — on a 208-core monorepo an
     unselectable core's in-Scope generator script must not FAIL doctor (SETUP-19).

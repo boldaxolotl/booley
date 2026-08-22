@@ -1656,7 +1656,7 @@ def _build_setup_step_lines() -> tuple[tuple[str, str], ...]:
     }
     for flow in SETUP_WIRED_FLOWS:
         heads[flow] = f"Step 2 ({flow.replace('_', ' ')})"
-        what[flow] = f"wire [flows.{flow}] (enabled + default_target)"
+        what[flow] = f"configure [flows.{flow}] and its .core Target metadata"
     order = ("project", *SETUP_WIRED_FLOWS, "agents")
     width = max(len(heads[key]) for key in order)
     return tuple((key, f"{heads[key]:<{width}} - {what[key]}") for key in order)
@@ -1685,13 +1685,25 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
     if key == "agents":
         return (project_root / ".booley_project" / "AGENTS.md").is_file()
     flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
-    from booley.targets.flow_names import DEFAULT_TARGET_KEY, config_section
+    from booley.targets.flow_names import LEGACY_TO_CANONICAL, config_section
 
     section = config_section(flows, key)
-    if not section:
+    section_present = key in flows or any(
+        old in flows and new == key for old, new in LEGACY_TO_CANONICAL.items()
+    )
+    if not section_present:
         return False
-    return section.get("enabled") is False or bool(
-        str(section.get(DEFAULT_TARGET_KEY, "")).strip()
+    if section.get("enabled") is False:
+        return True
+    from booley.fusesoc import fusesoc_registry
+
+    if key != "fpga":
+        return bool(fusesoc_registry.doctor_target_selectors(project_root, key))
+    from booley.targets.target_surface import flow_can_drive
+
+    return any(
+        flow_can_drive("fpga", ref)
+        for ref in fusesoc_registry.enumerate_targets(project_root).values()
     )
 
 

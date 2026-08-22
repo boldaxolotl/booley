@@ -196,6 +196,17 @@ class TargetRef:
     **Cocotb Target** for validation/doctor menus; run-time detection reads the
     *resolved* flow options instead (:class:`ResolvedTarget.cocotb_module`)."""
 
+    doctor_flows: tuple[str, ...] = ()
+    """Booley Doctor Flows selected by ``flow_options.booley.doctor``.
+
+    The metadata stays inside CAPI2's extensible ``flow_options`` mapping:
+    FuseSoC rejects unknown keys directly on a Target definition. An empty
+    tuple means the Target is intentionally outside Doctor's smoke matrix.
+    """
+
+
+_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth", "elab"})
+
 
 def core_target_eda_tool(core_doc: Mapping[str, Any], name: str) -> str | None:
     """Return the EDA tool a Target declares, read from ``.core`` YAML.
@@ -500,6 +511,36 @@ def _check_file_attr_keys(fileset: Mapping[str, Any], fs_label: str, errors: lis
                 errors.append(f"{fs_label}.files[{path}].{key} is not a valid CAPI2 per-file key")
 
 
+def _check_booley_target_metadata(
+    target: Mapping[str, Any], target_label: str, errors: list[str]
+) -> None:
+    """Validate Booley's namespaced metadata inside one CAPI2 Target."""
+    flow_options = target.get("flow_options")
+    if not isinstance(flow_options, Mapping) or "booley" not in flow_options:
+        return
+    booley = flow_options["booley"]
+    label = f"{target_label}.flow_options.booley"
+    if not isinstance(booley, Mapping):
+        errors.append(f"{label} must be a mapping")
+        return
+    for key in sorted(set(booley) - {"doctor"}):
+        errors.append(f"{label}.{key} is not a supported Booley Target key")
+    doctor = booley.get("doctor")
+    if not isinstance(doctor, list):
+        errors.append(f"{label}.doctor must be an array")
+        return
+    invalid = [
+        flow for flow in doctor if not isinstance(flow, str) or flow not in _DOCTOR_FLOW_NAMES
+    ]
+    if invalid:
+        allowed = ", ".join(sorted(_DOCTOR_FLOW_NAMES))
+        errors.append(
+            f"{label}.doctor contains invalid Flow values {invalid!r}; choose from {allowed}"
+        )
+    if len({str(flow) for flow in doctor}) != len(doctor):
+        errors.append(f"{label}.doctor must not contain duplicates")
+
+
 def core_schema_errors(core_file: Path | str) -> list[str]:
     """Return the CAPI2 array-field schema violations in a single ``.core``.
 
@@ -545,6 +586,7 @@ def core_schema_errors(core_file: Path | str) -> list[str]:
                 errors.append(f"targets.{tg_name} must be a mapping")
                 continue
             _check_array_fields(tg, f"targets.{tg_name}", _CAPI2_TARGET_ARRAY_FIELDS)
+            _check_booley_target_metadata(tg, f"targets.{tg_name}", errors)
 
     return errors
 
@@ -566,6 +608,26 @@ def core_target_flow_option(core_doc: Mapping[str, Any], name: str, option: str)
     if isinstance(flow_options, Mapping):
         return flow_options.get(option)
     return None
+
+
+def core_target_doctor_flows(core_doc: Mapping[str, Any], name: str) -> tuple[str, ...]:
+    """Return the validated Doctor Flow list declared by one Target.
+
+    Invalid metadata is returned as no selection; :func:`core_schema_errors`
+    owns the actionable boundary error so cheap enumeration can still present
+    every healthy Target in a core containing one malformed declaration.
+    """
+    booley = core_target_flow_option(core_doc, name, "booley")
+    if not isinstance(booley, Mapping):
+        return ()
+    doctor = booley.get("doctor")
+    if not isinstance(doctor, list):
+        return ()
+    if any(not isinstance(flow, str) or flow not in _DOCTOR_FLOW_NAMES for flow in doctor):
+        return ()
+    if len(set(doctor)) != len(doctor):
+        return ()
+    return tuple(doctor)
 
 
 def core_target_names(core_doc: Mapping[str, Any]) -> list[str]:
@@ -660,6 +722,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
                     eda_tool=core_target_eda_tool(doc, name),
                     flow=core_target_flow(doc, name),
                     cocotb_module=str(cocotb_module) if cocotb_module else None,
+                    doctor_flows=core_target_doctor_flows(doc, name),
                 )
             )
     return refs
@@ -788,6 +851,26 @@ def available_targets(project_root: Path | str) -> list[str]:
     migrated to ``.core``.
     """
     return sorted(enumerate_targets(project_root))
+
+
+def doctor_target_selectors(project_root: Path | str, flow_name: str) -> list[str]:
+    """Return every unambiguous Target selector opted into one Doctor Flow."""
+    selected: list[str] = []
+    for _name, declaring in sorted(target_declarations(project_root).items()):
+        for ref in declaring:
+            if flow_name in ref.doctor_flows:
+                selected.append(minimal_selector(ref, declaring))
+    return selected
+
+
+def doctor_target_seed(project_root: Path | str) -> list[str]:
+    """Return the deduplicated selectors for Doctor's complete target matrix."""
+    seed: list[str] = []
+    for flow_name in sorted(_DOCTOR_FLOW_NAMES):
+        for selector in doctor_target_selectors(project_root, flow_name):
+            if selector not in seed:
+                seed.append(selector)
+    return seed
 
 
 def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
@@ -920,8 +1003,8 @@ def selectable_core_closure(
     audits *every* discovered ``.core`` exactly as before, so a single-core or
     unconfigured repo is unaffected.
 
-    When the project names its Targets (ADR 0030: the ``[flows.<flow>].default_target``
-    set is the project's declared surface), a 208-core monorepo would otherwise
+    When the project marks its Doctor Targets in ``flow_options.booley.doctor``,
+    a 208-core monorepo would otherwise
     fold the scripts/paths of every unselectable core into the host-side ``.core``
     audits (:func:`core_security.validate_project_cores`), producing false doctor
     FAILs on cores that can never be a selectable Target (SETUP-19). This restricts
@@ -1559,8 +1642,8 @@ def resolve_target_selection(
     :class:`AmbiguousTargetError`), and the returned token is what the caller
     passes back to the ref-taking functions (which also route through
     :func:`resolve_ref`). An empty selection returns ``[]`` — there is **no**
-    enumerate-all fallback (ADR 0030): a Booley Flow invoked with no ``--target`` and no
-    configured Target refuses rather than sweeping every core. A resolvable
+    enumerate-all fallback (ADR 0030): a Booley Flow invoked with no ``--target``
+    refuses rather than sweeping every core. A resolvable
     ``.core`` Target is a precondition for every Booley Flow (ADR 0039), so every
     token is validated unconditionally — the old zero-``.core`` transitional
     skip silently accepted any name and made mixed projects hard-fail later.

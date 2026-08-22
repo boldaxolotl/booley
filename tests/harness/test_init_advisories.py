@@ -27,13 +27,10 @@ name = "demo_cpu"
 [flows]
 
 [flows.sim]
-default_target = "sim_core"
 
 [flows.lint]
-default_target = "lint_core"
 
 [flows.synth]
-default_target = "synth_core"
 
 [flows.fpga]
 enabled = false
@@ -53,6 +50,24 @@ def project(tmp_path: Path, monkeypatch) -> Path:
 
 def _write(project: Path, toml: str, *, agents: bool = True) -> None:
     (project / ".booley_project" / "booley.toml").write_text(toml, encoding="utf-8")
+    (project / "demo.core").write_text(
+        "CAPI=2:\n"
+        "name: ::demo:0\n"
+        "targets:\n"
+        "  sim_core:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+        "  lint_core:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
+        "  synth_core:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n"
+        "  fpga_core:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: vivado}\n",
+        encoding="utf-8",
+    )
     if agents:
         (project / ".booley_project" / "AGENTS.md").write_text("# guide\n", encoding="utf-8")
 
@@ -73,7 +88,7 @@ class TestOutstandingSteps:
 
     def test_half_finished_project_lists_only_the_gaps(self, project):
         """The case a fresh-vs-configured boolean would get wrong either way."""
-        _write(project, '[project]\nname = "x"\n\n[flows.lint]\ndefault_target = "lint_core"\n')
+        _write(project, '[project]\nname = "x"\n\n[flows.lint]\n')
 
         steps = init_cmd._outstanding_setup_steps(project)
 
@@ -114,9 +129,7 @@ class TestOutstandingSteps:
         them into undoing their own decision."""
         _write(
             project,
-            CONFIGURED_TOML.replace(
-                '[flows.lint]\ndefault_target = "lint_core"', "[flows.lint]\nenabled = false"
-            ),
+            CONFIGURED_TOML.replace("[flows.lint]\n", "[flows.lint]\nenabled = false\n"),
         )
 
         assert init_cmd._outstanding_setup_steps(project) == []
