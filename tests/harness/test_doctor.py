@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.audit import config_common, design_size, project_schema
+from booley.audit import config_common, design_size, project_schema, resource_policy
 from booley.fusesoc import selftest_overlay
 from booley.harness import devcontainer as dc
 from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
@@ -4995,7 +4995,7 @@ def _adr28_project(tmp_path: Path, *, booley_toml: dict | None = None) -> doctor
 def _fake_cgroup(tmp_path: Path, monkeypatch, text: str) -> None:
     path = tmp_path / "memory.max"
     path.write_text(text, encoding="utf-8")
-    monkeypatch.setattr(doctor, "_CGROUP_MEM_LIMIT_PATHS", (path,))
+    monkeypatch.setattr(resource_policy, "CGROUP_MEMORY_LIMIT_PATHS", (path,))
 
 
 def _set_venue(monkeypatch, inside: bool) -> None:
@@ -5058,8 +5058,8 @@ class TestMemoryInvariant:
     def test_absent_cgroup_files_pass_as_unlimited(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)
         monkeypatch.setattr(
-            doctor,
-            "_CGROUP_MEM_LIMIT_PATHS",
+            resource_policy,
+            "CGROUP_MEMORY_LIMIT_PATHS",
             (tmp_path / "nope",),
         )
         rec = _Rec()

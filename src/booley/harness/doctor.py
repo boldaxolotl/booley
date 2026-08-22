@@ -32,6 +32,7 @@ from booley.audit import (
     design_size,
     flow_schema,
     project_schema,
+    resource_policy,
 )
 from booley.config.guidance_links import (
     CANON_NAME,
@@ -1532,26 +1533,6 @@ def _check_board_orphans(
 # ADR 0028 Decision 12: container memory invariant + runtime detection health
 # ---------------------------------------------------------------------------
 
-_GIB = 1024**3
-# Default budget per concurrent HEAVY EDA job and fixed headroom.  Projects may
-# raise the reservation with [jobs].heavy_memory; a successful heaviest-target
-# Doctor calibration can raise it further from measured peak RSS.
-_HEAVY_JOB_MEM_BYTES = 4 * _GIB
-_MEM_HEADROOM_BYTES = 2 * _GIB
-_SYNTH_MEMORY_MARGIN_PERCENT = 15
-
-# cgroup memory-limit files, most modern first. Module-level so tests can
-# point them at fixtures.
-_CGROUP_MEM_LIMIT_PATHS = (
-    Path("/sys/fs/cgroup/memory.max"),  # cgroup v2
-    Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),  # cgroup v1
-)
-# cgroup v1 reports "unlimited" as a huge page-rounded sentinel (~2^63)
-# rather than the literal "max"; anything this large is no real limit.
-_CGROUP_UNLIMITED_FLOOR = 1 << 60
-
-_DOCKER_MEM_SUFFIX = {"b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
-
 # Actionable fix shared by both runtime-marker failures: the marker is baked by
 # the sandbox image build, and the derived-image drift gotcha means the base
 # rebuild alone silently leaves per-project images stale.
@@ -1559,55 +1540,6 @@ _RUNTIME_MARKER_FIX = (
     "rebuild the base AND derived sandbox images (booley init --force) — "
     "the image predates the ADR 0028 runtime marker"
 )
-
-
-def _fmt_g(n: int | float) -> str:
-    """Format a byte count in GiB the way the config spells it ('6g')."""
-    gib = n / _GIB
-    if gib == int(gib):
-        return f"{int(gib)}g"
-    return f"{gib:.1f}g"
-
-
-def _parse_mem_limit(text: str) -> int | None:
-    """Parse a docker-style memory string ('6g', '512m', '2048') to bytes."""
-    match = re.fullmatch(r"(\d+)\s*([bkmg]?)", text.strip().lower())
-    if not match:
-        return None
-    return int(match.group(1)) * _DOCKER_MEM_SUFFIX[match.group(2) or "b"]
-
-
-def _cgroup_memory_limit_bytes() -> int | None:
-    """The container's effective memory limit, or None when unlimited.
-
-    Reads the real cgroup limit (v2 ``memory.max``, v1 fallback
-    ``memory.limit_in_bytes``); a literal ``max``, the v1 unlimited
-    sentinel, or absent/unreadable files all mean "no limit to check".
-    """
-    for path in _CGROUP_MEM_LIMIT_PATHS:
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if text == "max":
-            return None
-        try:
-            value = int(text)
-        except ValueError:
-            continue
-        return None if value >= _CGROUP_UNLIMITED_FLOOR else value
-    return None
-
-
-def _configured_sandbox_memory(booley_toml: dict[str, Any]) -> str:
-    """The single ``[sandbox] memory`` limit string, '' when unconfigured."""
-    section = booley_toml.get("sandbox", {})
-    if not isinstance(section, dict):
-        return ""
-    mem = section.get("memory", "")
-    if isinstance(mem, dict):  # legacy tier table — best usable remnant
-        mem = mem.get("default", "")
-    return mem.strip() if isinstance(mem, str) else ""
 
 
 def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
@@ -1624,53 +1556,25 @@ def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
     return (developer_probe.FALLBACK_BYTES, False)
 
 
-def _heavy_job_mem_bytes(project: ProjectAudit) -> tuple[int, str, str | None]:
-    """Return the HEAVY reservation, its evidence label, and a config error."""
+def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMemoryReservation:
+    """Load project evidence and apply the extracted HEAVY-memory policy."""
     jobs = project.booley_toml.get("jobs", {})
     raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
-    if raw is None:
-        configured = _HEAVY_JOB_MEM_BYTES
-        configured_label = "4g default"
-    elif not isinstance(raw, str) or (configured := _parse_mem_limit(raw)) is None:
-        return (
-            _HEAVY_JOB_MEM_BYTES,
-            "4g default",
-            f"[jobs] heavy_memory = {raw!r} is unparseable; use a value such as '8g'",
-        )
-    elif configured <= 0:
-        return (
-            _HEAVY_JOB_MEM_BYTES,
-            "4g default",
-            "[jobs] heavy_memory must be greater than zero",
-        )
-    else:
-        configured_label = f"configured {_fmt_g(configured)}"
-
     from booley.harness import synth_probe
 
     measurement = synth_probe.load_measurement(project.project_dir)
-    if measurement is None:
-        return configured, configured_label, None
-    doctor_targets = _doctor_targets(project, "synth")
-    measured_target = str(measurement["target"])
-    calibration_error = None
-    if measured_target not in doctor_targets:
-        calibration_error = (
-            f"stored synthesis memory calibration is for unselected Target "
-            f"{measured_target!r}; rerun doctor --deep over the current Doctor matrix"
+    calibration = (
+        resource_policy.SynthesisMemoryCalibration(
+            target=str(measurement["target"]),
+            peak_rss_bytes=int(measurement["peak_rss_bytes"]),
         )
-    if calibration_error:
-        return configured, configured_label, calibration_error
-    peak = int(measurement["peak_rss_bytes"])
-    with_margin = peak * (100 + _SYNTH_MEMORY_MARGIN_PERCENT) // 100
-    measured_reservation = ((with_margin + _GIB - 1) // _GIB) * _GIB
-    if measured_reservation <= configured:
-        return configured, f"{configured_label}; calibrated peak {_fmt_g(peak)}", None
-    target = str(measurement["target"])
-    return (
-        measured_reservation,
-        f"{_fmt_g(peak)} measured on {target} + {_SYNTH_MEMORY_MARGIN_PERCENT}% margin",
-        None,
+        if measurement is not None
+        else None
+    )
+    return resource_policy.heavy_memory_reservation(
+        raw,
+        calibration,
+        _doctor_targets(project, "synth"),
     )
 
 
@@ -1697,7 +1601,7 @@ def _check_memory_invariant(
         return
 
     if runtime_context.inside_session_runtime():
-        limit = _cgroup_memory_limit_bytes()
+        limit = resource_policy.cgroup_memory_limit_bytes()
         if limit is None:
             _pass(
                 "memory invariant: container memory is unlimited "
@@ -1706,11 +1610,11 @@ def _check_memory_invariant(
             return
         source = "container memory"
     else:
-        mem_str = _configured_sandbox_memory(project.booley_toml)
+        mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
         if not mem_str:
             _skip("memory invariant: no [sandbox] memory limit configured — nothing to check")
             return
-        limit = _parse_mem_limit(mem_str)
+        limit = resource_policy.parse_memory_limit(mem_str)
         if limit is None:
             _warn(
                 f"[sandbox] memory = {mem_str!r} is unparseable — "
@@ -1720,31 +1624,37 @@ def _check_memory_invariant(
         source = "[sandbox] memory"
 
     caps = job_slots.parse_caps(project.booley_toml)
-    heavy_mem, heavy_note, heavy_error = _heavy_job_mem_bytes(project)
-    if heavy_error:
-        _warn(heavy_error)
+    reservation = _heavy_memory_reservation(project)
+    if reservation.error:
+        _warn(reservation.error)
         return
     orch, measured = _developer_mem_bytes(project.project_dir)
-    required = caps.max_heavy * heavy_mem + caps.max_tickets * orch + _MEM_HEADROOM_BYTES
+    requirement = resource_policy.memory_requirement(
+        max_heavy=caps.max_heavy,
+        heavy_job_bytes=reservation.bytes,
+        max_tickets=caps.max_tickets,
+        developer_bytes=orch,
+    )
+    fmt = resource_policy.format_memory
     arithmetic = (
-        f"{caps.max_heavy}x{_fmt_g(heavy_mem)} + {caps.max_tickets}x{_fmt_g(orch)} "
-        f"+ 2g = {_fmt_g(required)}"
+        f"{caps.max_heavy}x{fmt(reservation.bytes)} + {caps.max_tickets}x{fmt(orch)} "
+        f"+ 2g = {fmt(requirement.required_bytes)}"
     )
     orch_note = (
         "measured developer RSS"
         if measured
         else "1g developer fallback — doctor --deep measures it"
     )
-    if limit >= required:
+    if limit >= requirement.required_bytes:
         _pass(
-            f"memory invariant holds: {source} {_fmt_g(limit)} ≥ {arithmetic} "
-            f"({heavy_note}; {orch_note})"
+            f"memory invariant holds: {source} {fmt(limit)} ≥ {arithmetic} "
+            f"({reservation.evidence}; {orch_note})"
         )
     else:
         _warn(
-            f"{source} {_fmt_g(limit)} < {arithmetic} — raise the "
+            f"{source} {fmt(limit)} < {arithmetic} — raise the "
             "devcontainer memory or lower [jobs] caps; set [jobs].heavy_memory "
-            f"to record the calibrated reservation ({heavy_note}; {orch_note})"
+            f"to record the calibrated reservation ({reservation.evidence}; {orch_note})"
         )
 
 
@@ -1924,7 +1834,10 @@ def _run_developer_probe(
         _skip(f"developer memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
         return
     bound = "" if exact else " (upper bound)"
-    _pass(f"developer peak RSS measured: {_fmt_g(peak)}{bound} — recorded to {path}")
+    _pass(
+        f"developer peak RSS measured: {resource_policy.format_memory(peak)}{bound} — "
+        f"recorded to {path}"
+    )
     _pass("developer backend live authorization check completed successfully")
 
 
@@ -6992,10 +6905,11 @@ def _record_synth_memory_calibration(
         float(peak),
         selected_targets=_doctor_targets(project, "synth"),
     )
-    reservation, note, _error = _heavy_job_mem_bytes(project)
+    reservation = _heavy_memory_reservation(project)
     _pass(
         f"synth memory calibrated: {target} peaked at {float(peak) / 1024:.1f}g; "
-        f"HEAVY reservation {_fmt_g(reservation)} ({note})"
+        f"HEAVY reservation {resource_policy.format_memory(reservation.bytes)} "
+        f"({reservation.evidence})"
     )
     # The runtime-phase invariant ran before the deep synthesis created this
     # measurement. Re-evaluate now so the same Doctor invocation cannot finish
@@ -7199,7 +7113,7 @@ def _flow_command(
         image,
         project.project_root,
         inner,
-        memory=_configured_sandbox_memory(project.booley_toml),
+        memory=resource_policy.configured_sandbox_memory(project.booley_toml),
         doctor_selftest_kind=doctor_selftest_kind,
     )
 
