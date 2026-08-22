@@ -57,6 +57,10 @@ Each excerpt preserves the complete source header and original event lines. At
 the first selected timestamp it emits the incoming value of every unique VCD ID
 before replaying that timestamp's events. The deterministic gzip and adjacent
 `.manifest.json` record source/output hashes, widths, line classes, and activity.
+For very large, known-monotonic Verilator traces without dump-control changes,
+`--trusted-verilator-tail` counts and hashes the post-window tail in bulk after
+the semantic excerpt is complete. The manifest records that scan mode, and the
+tool rejects a trusted tail if it encounters `$dumpoff` or `$dumpon`.
 
 Expand an excerpt locally without checking the large output into Git:
 

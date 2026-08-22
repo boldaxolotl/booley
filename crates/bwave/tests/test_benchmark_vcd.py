@@ -56,25 +56,25 @@ def _run(
     fake_time = _executable(tmp_path / "time", FAKE_TIME)
     fake_bwave = _executable(tmp_path / "bwave", FAKE_BWAVE)
     command = [
-            sys.executable,
-            str(RUNNER),
-            "--bwave",
-            str(fake_bwave),
-            "--time-bin",
-            str(fake_time),
-            "--corpus",
-            f"ordinary={corpus}",
-            "--output",
-            str(tmp_path / "result.json"),
-            "--warmups",
-            "1",
-            "--trials",
-            "2",
-            "--query-trials",
-            "1",
-            "--min-bytes-per-second",
-            threshold,
-        ]
+        sys.executable,
+        str(RUNNER),
+        "--bwave",
+        str(fake_bwave),
+        "--time-bin",
+        str(fake_time),
+        "--corpus",
+        f"ordinary={corpus}",
+        "--output",
+        str(tmp_path / "result.json"),
+        "--warmups",
+        "1",
+        "--trials",
+        "2",
+        "--query-trials",
+        "1",
+        "--min-bytes-per-second",
+        threshold,
+    ]
     if extra:
         command.extend(extra)
     return subprocess.run(
@@ -93,6 +93,7 @@ def test_benchmark_writes_complete_machine_readable_record(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     report = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert report["gate"] == {"passed": True, "violations": []}
+    assert report["kind"] == "bwave_parallel_vcd_benchmark"
     assert report["bwave_version"] == "bwave 0.test"
     assert report["settings"]["engine"] == "parallel"
     corpus = report["corpora"][0]

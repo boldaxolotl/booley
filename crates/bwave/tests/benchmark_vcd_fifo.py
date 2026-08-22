@@ -208,8 +208,7 @@ def _gate_corpus(
     peak_rss = int(converter["peak_consumer_rss_kb"])
     if peak_rss >= args.max_peak_rss_kb:
         failures.append(
-            f"{profile}: peak converter RSS {peak_rss} KiB is not below "
-            f"{args.max_peak_rss_kb} KiB"
+            f"{profile}: peak converter RSS {peak_rss} KiB is not below {args.max_peak_rss_kb} KiB"
         )
     return failures
 

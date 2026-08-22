@@ -371,7 +371,7 @@ def _report(
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
-        "kind": "bwave_serial_vcd_benchmark",
+        "kind": f"bwave_{args.engine}_vcd_benchmark",
         "bwave_version": _bwave_version(args.bwave),
         "host": {
             "system": platform.system(),

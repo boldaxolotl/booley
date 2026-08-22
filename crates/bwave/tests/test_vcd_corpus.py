@@ -137,6 +137,40 @@ def test_capture_is_deterministic_and_handles_zero_start(tmp_path: Path) -> None
     assert first_manifest["source"]["raw_sha256"] == hashlib.sha256(SOURCE_VCD).hexdigest()
 
 
+def test_trusted_verilator_tail_matches_full_source_statistics(tmp_path: Path) -> None:
+    source = tmp_path / "source.vcd"
+    full = tmp_path / "full.vcd.gz"
+    fast = tmp_path / "fast.vcd.gz"
+    source.write_bytes(SOURCE_VCD)
+    assert _capture(source, full, start=0, end=10).returncode == 0
+
+    result = _run(
+        "capture",
+        str(source),
+        "--output",
+        str(fast),
+        "--start",
+        "0",
+        "--end",
+        "10",
+        "--profile",
+        "ordinary",
+        "--source-label",
+        "synthetic-fixture",
+        "--trusted-verilator-tail",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert full.read_bytes() == fast.read_bytes()
+    full_manifest = _manifest(full)
+    fast_manifest = _manifest(fast)
+    assert fast_manifest["source"] == full_manifest["source"]
+    assert fast_manifest["activity"] == {
+        **full_manifest["activity"],
+        "tail_scan": "trusted_verilator_aggregate",
+    }
+
+
 def test_replay_offsets_complete_windows_and_records_hash(tmp_path: Path) -> None:
     source = tmp_path / "source.vcd"
     excerpt = tmp_path / "ordinary.vcd.gz"

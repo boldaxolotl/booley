@@ -19,6 +19,7 @@ from typing import BinaryIO
 
 U64_MAX = (1 << 64) - 1
 DEFAULT_MAX_EXCERPT_BYTES = 64 * 1024 * 1024
+FAST_TAIL_BLOCK_BYTES = 16 * 1024 * 1024
 PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
 LINE_CLASS_BY_PREFIX = {
     **{bytes([value]): "scalar" for value in b"01xXzZ"},
@@ -57,6 +58,7 @@ class CaptureStats:
     declaration_count: int = 0
     first_timestamp: int | None = None
     last_timestamp: int | None = None
+    tail_scan: str = "full_semantic"
 
     def timestamp(self, tick: int) -> None:
         self.max_events_per_timestamp = max(
@@ -77,6 +79,19 @@ class CaptureStats:
         self.max_events_per_timestamp = max(
             self.max_events_per_timestamp, self.events_at_timestamp
         )
+
+
+class InputFingerprint:
+    def __init__(self) -> None:
+        self.byte_count = 0
+        self._digest = hashlib.sha256()
+
+    def update(self, data: bytes) -> None:
+        self._digest.update(data)
+        self.byte_count += len(data)
+
+    def result(self) -> tuple[int, str]:
+        return self.byte_count, self._digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -113,10 +128,12 @@ def _input_fingerprint(path: Path) -> tuple[int, str]:
     return byte_count, digest.hexdigest()
 
 
-def _read_header(stream: BinaryIO) -> bytes:
+def _read_header(stream: BinaryIO, fingerprint: InputFingerprint | None = None) -> bytes:
     lines: list[bytes] = []
     saw_enddefinitions = False
     for line in stream:
+        if fingerprint is not None:
+            fingerprint.update(line)
         lines.append(line)
         for token in line.split():
             if saw_enddefinitions and token == b"$end":
@@ -229,6 +246,57 @@ def _line_class(content: bytes) -> str:
     return LINE_CLASS_BY_PREFIX.get(content[:1], "other")
 
 
+def _line_start_count(data: bytes, initials: bytes) -> int:
+    count = int(bool(data) and data[0] in initials)
+    return count + sum(data.count(b"\n" + bytes([initial])) for initial in initials)
+
+
+def _aggregate_verilator_lines(data: bytes, stats: CaptureStats) -> None:
+    if b"$dumpoff" in data or b"$dumpon" in data:
+        raise CorpusError("trusted Verilator tail contains dump-control directives")
+    counts = {
+        "scalar": _line_start_count(data, b"01xXzZ"),
+        "vector": _line_start_count(data, b"bB"),
+        "real": _line_start_count(data, b"rR"),
+        "timestamp": _line_start_count(data, b"#"),
+        "directive": _line_start_count(data, b"$"),
+    }
+    counts["blank"] = data.count(b"\n\n") + data.count(b"\n\r\n")
+    if data.startswith((b"\n", b"\r\n")):
+        counts["blank"] += 1
+    counts["other"] = data.count(b"\n") - sum(counts.values())
+    stats.line_classes.update({key: value for key, value in counts.items() if value})
+    stats.event_count += counts["scalar"] + counts["vector"] + counts["real"]
+    stats.timestamp_count += counts["timestamp"]
+    position = data.rfind(b"\n#")
+    position = 0 if position < 0 and data.startswith(b"#") else position + 1
+    if counts["timestamp"]:
+        end = data.find(b"\n", position)
+        tick = _parse_timestamp(data[position : end + 1])
+        if stats.last_timestamp is not None and tick < stats.last_timestamp:
+            raise CorpusError(f"decreasing timestamp {tick} after {stats.last_timestamp}")
+        stats.last_timestamp = tick
+
+
+def _scan_trusted_verilator_tail(
+    stream: BinaryIO, stats: CaptureStats, fingerprint: InputFingerprint | None
+) -> None:
+    pending = b""
+    for chunk in iter(lambda: stream.read(FAST_TAIL_BLOCK_BYTES), b""):
+        if fingerprint is not None:
+            fingerprint.update(chunk)
+        data = pending + chunk
+        boundary = data.rfind(b"\n")
+        if boundary < 0:
+            pending = data
+            continue
+        _aggregate_verilator_lines(data[: boundary + 1], stats)
+        pending = data[boundary + 1 :]
+    if pending:
+        _aggregate_verilator_lines(pending + b"\n", stats)
+    stats.tail_scan = "trusted_verilator_aggregate"
+
+
 def _scan_capture(
     stream: BinaryIO,
     output: BinaryIO,
@@ -236,6 +304,8 @@ def _scan_capture(
     start: int,
     end: int,
     newline: bytes,
+    fingerprint: InputFingerprint | None = None,
+    trusted_verilator_tail: bool = False,
 ) -> tuple[CaptureStats, int, int]:
     known_ids = {signal.identifier for signal in signals}
     state = BodyState()
@@ -244,6 +314,8 @@ def _scan_capture(
     selected_start: int | None = None
     selected_end: int | None = None
     for line in stream:
+        if fingerprint is not None:
+            fingerprint.update(line)
         content = line.rstrip(b"\r\n")
         stats.line_classes[_line_class(content)] += 1
         if content.startswith(b"#"):
@@ -252,6 +324,9 @@ def _scan_capture(
                 raise CorpusError(f"decreasing timestamp {tick} after {current_tick}")
             current_tick = tick
             stats.timestamp(tick)
+            if trusted_verilator_tail and selected_end is not None and tick > end:
+                _scan_trusted_verilator_tail(stream, stats, fingerprint)
+                break
             if selected_start is None and start <= tick <= end:
                 selected_start = tick
                 _write_initial_state(output, tick, signals, state, newline)
@@ -313,7 +388,8 @@ def capture(args: argparse.Namespace) -> dict[str, object]:
     temp_path: Path | None = None
     try:
         with _open_input(source) as stream:
-            header = _read_header(stream)
+            fingerprint = InputFingerprint()
+            header = _read_header(stream, fingerprint)
             signals, declaration_count = _signals_from_header(header)
             newline = _newline_for(header)
             with tempfile.NamedTemporaryFile(dir=output.parent, delete=False) as raw_output:
@@ -322,14 +398,29 @@ def capture(args: argparse.Namespace) -> dict[str, object]:
                 if header and not header.endswith((b"\n", b"\r")):
                     raw_output.write(newline)
                 stats, selected_start, selected_end = _scan_capture(
-                    stream, raw_output, signals, args.start, args.end, newline
+                    stream,
+                    raw_output,
+                    signals,
+                    args.start,
+                    args.end,
+                    newline,
+                    fingerprint,
+                    args.trusted_verilator_tail,
                 )
                 stats.declaration_count = declaration_count
                 if raw_output.tell() > args.max_excerpt_bytes:
                     raise CorpusError("excerpt exceeds --max-excerpt-bytes")
         _compress_deterministically(temp_path, output)
         manifest = _capture_manifest(
-            args, source, output, temp_path, signals, stats, selected_start, selected_end
+            args,
+            source,
+            output,
+            temp_path,
+            signals,
+            stats,
+            selected_start,
+            selected_end,
+            fingerprint.result(),
         )
         _write_json(_sidecar(output), manifest)
         return manifest
@@ -347,12 +438,13 @@ def _capture_manifest(
     stats: CaptureStats,
     selected_start: int,
     selected_end: int,
+    raw_fingerprint: tuple[int, str],
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
         "kind": "vcd_semantic_excerpt",
         "profile": args.profile,
-        "source": _source_manifest(source, args.source_label),
+        "source": _source_manifest(source, args.source_label, raw_fingerprint),
         "selection": {
             "requested_start": args.start,
             "requested_end": args.end,
@@ -375,8 +467,10 @@ def _capture_manifest(
     }
 
 
-def _source_manifest(source: Path, label: str) -> dict[str, object]:
-    raw_bytes, raw_sha256 = _input_fingerprint(source)
+def _source_manifest(
+    source: Path, label: str, raw_fingerprint: tuple[int, str] | None = None
+) -> dict[str, object]:
+    raw_bytes, raw_sha256 = raw_fingerprint or _input_fingerprint(source)
     return {
         "label": label,
         "compression": "gzip" if source.name.endswith(".gz") else "none",
@@ -396,6 +490,7 @@ def _activity_manifest(stats: CaptureStats) -> dict[str, object]:
         "max_events_per_timestamp": stats.max_events_per_timestamp,
         "first_timestamp": stats.first_timestamp,
         "last_timestamp": stats.last_timestamp,
+        "tail_scan": stats.tail_scan,
     }
 
 
@@ -584,6 +679,11 @@ def _parser() -> argparse.ArgumentParser:
         "--max-excerpt-bytes", type=_positive_int, default=DEFAULT_MAX_EXCERPT_BYTES
     )
     capture_parser.add_argument("--force", action="store_true")
+    capture_parser.add_argument(
+        "--trusted-verilator-tail",
+        action="store_true",
+        help="aggregate post-window Verilator activity without per-event state tracking",
+    )
     capture_parser.set_defaults(action=capture)
     replay_parser = commands.add_parser("replay", help="replay an excerpt to a byte target")
     replay_parser.add_argument("excerpt", type=Path)
