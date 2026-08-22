@@ -56,7 +56,11 @@ from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
-from booley.flows.sim.target_tests import TargetTestSuite, resolve_target_test_suite
+from booley.flows.sim.target_tests import (
+    NoRunnableTestsError,
+    TargetTestSuite,
+    require_runnable_target_test_suite,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
@@ -2396,13 +2400,10 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     @staticmethod
     def _target_test_suite(target: str) -> TargetTestSuite:
         """Return every runnable test declared for *target*."""
-        suite = resolve_target_test_suite(target)
-        if suite.all_skipped:
-            raise UnsupportedSimTargetError(
-                f"mutation_tester: Target {target!r} has no runnable tests; "
-                f"every declared test is skipped: {', '.join(suite.skipped)}"
-            )
-        return suite
+        try:
+            return require_runnable_target_test_suite(target)
+        except NoRunnableTestsError as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
 
     def _cocotb_sim_cmd(
         self,

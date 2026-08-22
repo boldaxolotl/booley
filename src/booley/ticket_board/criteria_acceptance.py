@@ -26,6 +26,7 @@ from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     compute_source_fingerprint,
 )
+from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,46 @@ def _find_unverified_transitions(criteria: dict) -> list[str]:
     return unverified
 
 
+def _refresh_verification_entry(
+    key: str,
+    entry,
+    *,
+    work_dir: Path,
+    fingerprints: dict[str | None, dict],
+    now: str,
+) -> bool:
+    """Refresh one passing criterion; unresolved Target config is stale evidence."""
+    categories = _verification_fingerprint_categories(key)
+    stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
+    target = stamp.get("target") if isinstance(stamp, dict) else None
+    target = target if isinstance(target, str) and target else None
+    try:
+        if target not in fingerprints:
+            fingerprints[target] = compute_source_fingerprint(work_dir, target=target)
+        current = fingerprints[target]
+    except FuseSocError as exc:
+        _mark_verification_stale(
+            entry,
+            now=now,
+            reason=(
+                f"Target-specific source fingerprint can no longer be resolved: {exc}. "
+                "Re-run the relevant Flow or Specialist with a valid Target."
+            ),
+            changed_categories=categories,
+            current={},
+        )
+        return True
+    except OSError:
+        logger.debug("Could not compute final source fingerprint", exc_info=True)
+        return False
+    return _stale_verification_entry(
+        entry,
+        categories=categories,
+        current=current,
+        now=now,
+    )
+
+
 def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]:
     """Persistently invalidate passing checks whose source fingerprint drifted."""
     resolved_work_dir = work_dir
@@ -149,26 +190,13 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
         is_review = key.startswith(("review_rtl_", "review_tb_"))
         if not entry.mandatory and not is_review:
             continue
-        categories = _verification_fingerprint_categories(key)
-        if not categories:
+        if not _verification_fingerprint_categories(key):
             continue
-        stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
-        target = stamp.get("target") if isinstance(stamp, dict) else None
-        target = target if isinstance(target, str) and target else None
-        try:
-            if target not in fingerprints:
-                fingerprints[target] = compute_source_fingerprint(
-                    resolved_work_dir,
-                    target=target,
-                )
-            current = fingerprints[target]
-        except OSError:
-            logger.debug("Could not compute final source fingerprint", exc_info=True)
-            continue
-        if _stale_verification_entry(
+        if _refresh_verification_entry(
+            key,
             entry,
-            categories=categories,
-            current=current,
+            work_dir=resolved_work_dir,
+            fingerprints=fingerprints,
             now=now,
         ):
             stale_keys.append(key)

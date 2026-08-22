@@ -430,6 +430,56 @@ class TestCheckCriteriaAcceptance:
         assert verdict.disposition == "review"
         assert DevelopmentState.load(state_path).criteria["sim_pass_sim"].met is True
 
+    def test_removed_campaign_target_marks_criterion_stale(self, tmp_path: Path):
+        work_dir = tmp_path / "work"
+        (work_dir / ".booley_project").mkdir(parents=True)
+        (work_dir / "rtl").mkdir()
+        (work_dir / "tb").mkdir()
+        (work_dir / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+        (work_dir / "tb" / "tb.sv").write_text("module tb; endmodule\n")
+        core = work_dir / "design.core"
+        core.write_text(
+            "CAPI=2:\n"
+            "name: ::design:0\n"
+            "filesets:\n"
+            "  rtl: {files: [rtl/dut.sv]}\n"
+            "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+            "targets:\n"
+            "  sim: {filesets: [rtl, tb], toplevel: tb}\n",
+            encoding="utf-8",
+        )
+
+        state_path = tmp_path / "logs" / "booley_state.json"
+        state = DevelopmentState.load(state_path)
+        state.slug = "removed-target"
+        state.work_dir = str(work_dir)
+        state.init_criteria({"coverage_toggle_sim": True, "_report_submitted": True})
+        state.set_criterion(
+            "coverage_toggle_sim",
+            True,
+            detail={
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl", "tb", "campaign"],
+                    "target": "sim",
+                    "fingerprint": compute_source_fingerprint(work_dir, target="sim"),
+                }
+            },
+        )
+        state.set_criterion("_report_submitted", True)
+        state.save()
+        core.write_text(core.read_text().replace("  sim:", "  renamed:"), encoding="utf-8")
+
+        verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
+
+        assert verdict.disposition == "failed"
+        assert verdict.unmet_mandatory == ["coverage_toggle_sim"]
+        state = DevelopmentState.load(state_path)
+        entry = state.criteria["coverage_toggle_sim"]
+        assert entry.stale is True
+        assert "can no longer be resolved" in entry.detail["stale_reason"]
+        assert entry.detail["stale_source_categories"] == ["campaign", "rtl", "tb"]
+        assert state.criteria["_report_submitted"].met is False
+
     def test_missing_verification_fingerprint_is_stale_unmet(self, tmp_path: Path):
         state_path, work_dir = self._fresh_state(tmp_path)
         state = DevelopmentState.load(state_path)

@@ -49,7 +49,11 @@ from ..flow_config import (
 )
 from ..human_display import cap_target_items
 from . import edam as sim_edam
-from .target_tests import resolve_target_test_suite
+from .target_tests import (
+    NoRunnableTestsError,
+    require_runnable_target_test_suite,
+    resolve_target_test_suite,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3268,12 +3272,18 @@ class SimulateFlow(BooleyFlow):
             return None  # an explicit selector deliberately overrides skips
         for target in targets:
             available = list(lookup_target_section(test_names_map, target) or [])
-            if available and all(test in self._effective_skips(target) for test in available):
+            try:
+                require_runnable_target_test_suite(
+                    target,
+                    test_names={target: available},
+                    test_skips={target: list(self._effective_skips(target))},
+                )
+            except NoRunnableTestsError as exc:
                 return McpToolResult(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: target {target!r} has no runnable tests; every declared "
-                        "test is excluded by tests.toml `skip` or --skip. Remove a skip "
+                        f"sim: {exc}. Tests are excluded by tests.toml `skip` or "
+                        "--skip. Remove a skip "
                         "or explicitly select one test with --test."
                     ),
                 )

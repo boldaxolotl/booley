@@ -144,7 +144,7 @@ def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
     resolve_ref(root, target)  # fail loudly for an unknown or ambiguous Target
     closure = selectable_core_closure(root, [target])
     if not closure:
-        raise RuntimeError(f"Target {target!r} resolved without a core dependency closure")
+        raise FuseSocError(f"Target {target!r} resolved without a core dependency closure")
     return sorted(closure)
 
 

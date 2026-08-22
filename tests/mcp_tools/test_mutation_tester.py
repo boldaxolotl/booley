@@ -20,7 +20,7 @@ import pytest
 
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.development_state import DevelopmentState
-from booley.flows.sim.target_tests import TargetTestSuite
+from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
@@ -192,12 +192,14 @@ def _sample_specs(n: int = 3, category: str = "operator_change") -> list[Mutatio
 
 def test_run_rejects_target_with_every_test_skipped(tmp_path: Path, monkeypatch) -> None:
     endpoint = _make_endpoint(tmp_path, monkeypatch)
-    suite = TargetTestSuite((), ("smoke", "corner"))
     with (
         patch.object(endpoint, "_validate_scope_against_target", return_value=None),
         patch.object(endpoint, "_validate_target_runner"),
         patch.object(endpoint, "cocotb_target", return_value=None),
-        patch("booley.specialists.mutation_tester.resolve_target_test_suite", return_value=suite),
+        patch(
+            "booley.specialists.mutation_tester.require_runnable_target_test_suite",
+            side_effect=NoRunnableTestsError("sim", ("smoke", "corner")),
+        ),
     ):
         result = endpoint._run()
 

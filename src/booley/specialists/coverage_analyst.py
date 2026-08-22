@@ -42,7 +42,11 @@ from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _resolve_run_cwd
-from booley.flows.sim.target_tests import resolve_target_test_suite
+from booley.flows.sim.target_tests import (
+    NoRunnableTestsError,
+    require_runnable_target_test_suite,
+    resolve_target_test_suite,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -476,6 +480,19 @@ _COVERAGE_CRITERIA_TABLE = (
     ("coverage_branch", "BRANCH", "branch", "no branch conditions found"),
     ("coverage_expression", "EXPRESSION", "expression", "no expression conditions found"),
 )
+
+
+@dataclass(frozen=True)
+class _TraceRunContext:
+    """Resolved paths and runtime settings shared by trace-command builders."""
+
+    eda_tool: str
+    resolved: fusesoc_registry.ResolvedTarget
+    build_dir: str
+    trace_dir: Path
+    work_dir: Path
+    run_timeout: int
+
 
 _VSC_PROMPT_TEMPLATE = """You are a virtual signal creator. Your job is to define virtual signals
 for RTL branch conditions and test them interactively using bwave.
@@ -2327,18 +2344,15 @@ abort path". Omit this field or leave empty if all criteria are already met.
         work_dir: Path,
     ) -> tuple[list[str], list[Path], McpToolResult | None]:
         """Produce traces for every runnable test owned by the selected Target."""
-        suite = resolve_target_test_suite(self.args.target)
-        if suite.all_skipped:
-            skipped = ", ".join(suite.skipped)
+        try:
+            suite = require_runnable_target_test_suite(self.args.target)
+        except NoRunnableTestsError as exc:
             return (
                 [],
                 [],
                 McpToolResult(
                     exit_code=EXIT_ERROR,
-                    report_text=(
-                        f"coverage_analyst: Target {self.args.target!r} has no runnable "
-                        f"tests; every declared test is skipped: {skipped}"
-                    ),
+                    report_text=f"coverage_analyst: {exc}",
                 ),
             )
         tests = (None,) if self._is_cocotb_target() else suite.tests
@@ -2907,11 +2921,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     def _cocotb_trace_run_cmd(
         self,
-        eda_tool: str,
-        build_dir: str,
-        trace_dir: Path,
-        work_dir: Path,
-        run_timeout: int,
+        context: _TraceRunContext,
         cocotb_module: str,
     ) -> tuple[list[str], str]:
         """Build one traced Cocotb invocation for the Target suite."""
@@ -2921,30 +2931,26 @@ abort path". Omit this field or leave empty if all criteria are already met.
             "-m",
             "booley.sim.cocotb_run",
             "--build-dir",
-            build_dir,
+            context.build_dir,
             "--eda-tool",
-            eda_tool,
+            context.eda_tool,
             "--cocotb-module",
             cocotb_module,
             "--work-dir",
-            posix_relpath(trace_dir, work_dir),
+            posix_relpath(context.trace_dir, context.work_dir),
             "--timeout",
-            str(run_timeout),
+            str(context.run_timeout),
             "--trace",
         ]
         run_cmd.extend(f"--test={test}" for test in suite.tests if test is not None)
-        return run_cmd, f"{eda_tool} cocotb compilation failed"
+        return run_cmd, f"{context.eda_tool} cocotb compilation failed"
 
     @staticmethod
     def _hdl_trace_run_cmd(
-        is_icarus: bool,
-        resolved: Any,
-        build_dir: str,
-        trace_dir: Path,
-        work_dir: Path,
-        run_timeout: int,
+        context: _TraceRunContext,
     ) -> tuple[list[str], str]:
         """Build one traced native-HDL simulator invocation."""
+        is_icarus = context.eda_tool == "icarus"
         module = "booley.sim.iverilog_run" if is_icarus else "booley.sim.verilator_run"
         build_option = "--build-dir" if is_icarus else "--bin-dir"
         run_cmd = [
@@ -2952,16 +2958,16 @@ abort path". Omit this field or leave empty if all criteria are already met.
             "-m",
             module,
             build_option,
-            build_dir,
+            context.build_dir,
         ]
         if not is_icarus:
-            run_cmd.extend(("--top", resolved.toplevel))
+            run_cmd.extend(("--top", context.resolved.toplevel))
         run_cmd.extend(
             (
                 "--work-dir",
-                posix_relpath(trace_dir, work_dir),
+                posix_relpath(context.trace_dir, context.work_dir),
                 "--timeout",
-                str(run_timeout),
+                str(context.run_timeout),
                 "--trace",
             )
         )
@@ -2970,33 +2976,17 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     def _trace_run_cmd(
         self,
-        eda_tool: str,
-        resolved: Any,
-        build_dir: str,
-        trace_dir: Path,
-        work_dir: Path,
-        run_timeout: int,
+        context: _TraceRunContext,
     ) -> tuple[list[str], str]:
         """Select the traced run-half for the Target's simulator family."""
-        cocotb_modules = fusesoc_registry.target_cocotb_modules(work_dir)
+        cocotb_modules = fusesoc_registry.target_cocotb_modules(context.work_dir)
         cocotb_module = lookup_target_section(cocotb_modules, self.args.target)
         if cocotb_module:
             return self._cocotb_trace_run_cmd(
-                eda_tool,
-                build_dir,
-                trace_dir,
-                work_dir,
-                run_timeout,
+                context,
                 str(cocotb_module),
             )
-        return self._hdl_trace_run_cmd(
-            eda_tool == "icarus",
-            resolved,
-            build_dir,
-            trace_dir,
-            work_dir,
-            run_timeout,
-        )
+        return self._hdl_trace_run_cmd(context)
 
     def _add_trace_run_options(
         self,
@@ -3036,14 +3026,15 @@ abort path". Omit this field or leave empty if all criteria are already met.
         build_dir = edam_layer.relpath_for_make(resolved.build_root, work_dir)
         build_cmd = edam_layer.make_command(build_dir)
         run_cwd = _resolve_run_cwd(work_dir)
-        run_cmd, marker = self._trace_run_cmd(
-            eda_tool,
-            resolved,
-            build_dir,
-            trace_dir,
-            work_dir,
-            run_timeout,
+        context = _TraceRunContext(
+            eda_tool=eda_tool,
+            resolved=resolved,
+            build_dir=build_dir,
+            trace_dir=trace_dir,
+            work_dir=work_dir,
+            run_timeout=run_timeout,
         )
+        run_cmd, marker = self._trace_run_cmd(context)
         self._add_trace_run_options(run_cmd, trace_scope, run_cwd)
         script = (
             f"{shlex.join(build_cmd)} "

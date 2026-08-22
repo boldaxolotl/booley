@@ -8,6 +8,21 @@ from dataclasses import dataclass
 from booley.config.project_config import lookup_target_section
 
 
+class NoRunnableTestsError(ValueError):
+    """A Target's configured skip policy excludes every declared test."""
+
+    target: str
+    skipped: tuple[str, ...]
+
+    def __init__(self, target: str, skipped: tuple[str, ...]) -> None:
+        self.target = target
+        self.skipped = skipped
+        super().__init__(
+            f"Target {target!r} has no runnable tests; "
+            f"every declared test is skipped: {', '.join(skipped)}"
+        )
+
+
 @dataclass(frozen=True)
 class TargetTestSuite:
     """Tests one Target will run and durable skips excluded from the suite."""
@@ -72,3 +87,20 @@ def resolve_target_test_suite(
         return TargetTestSuite((), tuple(available))
     skipped = tuple(test for test in available if test in durable_skips)
     return TargetTestSuite(tuple(runnable), skipped)
+
+
+def require_runnable_target_test_suite(
+    target: str,
+    *,
+    test_names: Mapping[str, list[str]] | None = None,
+    test_skips: Mapping[str, list[str]] | None = None,
+) -> TargetTestSuite:
+    """Resolve *target*'s suite and reject a vacuous all-skipped campaign."""
+    suite = resolve_target_test_suite(
+        target,
+        test_names=test_names,
+        test_skips=test_skips,
+    )
+    if suite.all_skipped:
+        raise NoRunnableTestsError(target, suite.skipped)
+    return suite
