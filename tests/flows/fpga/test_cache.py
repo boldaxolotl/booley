@@ -9,6 +9,7 @@ from unittest.mock import patch
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga import cache as fpga_cache
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
+from booley.flows.run_evidence import FlowRunEvidence
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 
@@ -34,6 +35,15 @@ def _parsed_pass() -> dict:
         "wns_ns": 0.2,
         "whs_ns": 0.1,
     }
+
+
+def _run_evidence(run_id: str = "producer-1") -> FlowRunEvidence:
+    return FlowRunEvidence(
+        run_id=run_id,
+        source_revision="a" * 40,
+        source_sha256="b" * 64,
+        recipe_sha256="c" * 64,
+    )
 
 
 def _flow(root: Path) -> FpgaImplFlow:
@@ -80,7 +90,12 @@ def test_input_fingerprint_changes_with_source_and_resolved_parameters(tmp_path:
 
 def test_cache_hit_requires_exact_artifact_bytes(tmp_path: Path) -> None:
     _artifacts(tmp_path)
-    assert fpga_cache.store(tmp_path, "a" * 64, require_bitstream=True)
+    assert fpga_cache.store(
+        tmp_path,
+        "a" * 64,
+        require_bitstream=True,
+        producer_evidence=_run_evidence(),
+    )
     assert fpga_cache.load(tmp_path, "a" * 64, require_bitstream=True) is not None
     assert fpga_cache.load(tmp_path, "b" * 64, require_bitstream=True) is None
 
@@ -91,8 +106,18 @@ def test_cache_hit_requires_exact_artifact_bytes(tmp_path: Path) -> None:
 
 def test_cache_store_requires_bitstream_when_target_is_not_ooc(tmp_path: Path) -> None:
     _artifacts(tmp_path, bitstream=False)
-    assert not fpga_cache.store(tmp_path, "a" * 64, require_bitstream=True)
-    assert fpga_cache.store(tmp_path, "a" * 64, require_bitstream=False)
+    assert not fpga_cache.store(
+        tmp_path,
+        "a" * 64,
+        require_bitstream=True,
+        producer_evidence=_run_evidence(),
+    )
+    assert fpga_cache.store(
+        tmp_path,
+        "a" * 64,
+        require_bitstream=False,
+        producer_evidence=_run_evidence(),
+    )
 
 
 def test_store_rejects_artifacts_predating_dispatch(tmp_path: Path) -> None:
@@ -105,6 +130,7 @@ def test_store_rejects_artifacts_predating_dispatch(tmp_path: Path) -> None:
         tmp_path,
         "a" * 64,
         require_bitstream=True,
+        producer_evidence=_run_evidence(),
         min_mtime=time.time(),
     )
 
@@ -118,13 +144,14 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
         require_bitstream=True,
         recipe_snapshot={"flow": "fpga", "target": "fpga_demo"},
         recipe_fingerprint="recipe-a",
+        run_evidence=_run_evidence("consumer-2"),
     )
     with (
         patch.object(flow, "_prepare_fpga_command", return_value=prepared),
         patch.object(
             fpga_cache,
             "load",
-            return_value=fpga_cache.CacheHit("a" * 64, "reports"),
+            return_value=fpga_cache.CacheHit("a" * 64, "reports", _run_evidence()),
         ),
         patch("booley.flows.fpga.edam.parse_fpga_reports", return_value=_parsed_pass()),
         patch.object(flow, "_execute_boundary") as execute,
@@ -135,6 +162,8 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
     assert metrics.cached
     assert metrics.cache_fingerprint == "a" * 64
     assert metrics.recipe_fingerprint == "recipe-a"
+    assert metrics.run_evidence and metrics.run_evidence.run_id == "producer-1"
+    assert metrics.cache_consumer_run_id == "consumer-2"
 
 
 def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:

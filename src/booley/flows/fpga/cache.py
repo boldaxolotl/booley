@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import as_dict
 from booley.eda.vivado import POLICY_REVISION, SUPPORTED_VERSION
+from booley.flows.run_evidence import FlowRunEvidence
 
-CACHE_SCHEMA = 1
+CACHE_SCHEMA = 2
 CACHE_FILE = ".booley-fpga-cache.json"
 _IMPLEMENTATION_REVISION = 1
 _REPORT_PATTERNS = (
@@ -30,6 +32,7 @@ class CacheHit:
 
     fingerprint: str
     report_text: str
+    producer_evidence: FlowRunEvidence
 
 
 def _package_version(name: str) -> str:
@@ -156,6 +159,7 @@ def store(
     fingerprint: str,
     *,
     require_bitstream: bool,
+    producer_evidence: FlowRunEvidence,
     min_mtime: float | None = None,
 ) -> bool:
     """Atomically record validated artifact digests after a successful route."""
@@ -166,11 +170,26 @@ def store(
     )
     if paths is None:
         return False
-    artifacts: list[dict[str, Any]] = []
+    artifacts = _artifact_records(paths, work_root)
+    if artifacts is None:
+        return False
+    payload = {
+        "schema": CACHE_SCHEMA,
+        "fingerprint": fingerprint,
+        "require_bitstream": require_bitstream,
+        "producer_evidence": producer_evidence.as_dict(),
+        "artifacts": artifacts,
+    }
+    return _write_metadata(work_root, payload)
+
+
+def _artifact_records(paths: list[Path], work_root: Path) -> list[dict[str, Any]] | None:
+    """Build cache records for an already validated artifact set."""
+    records: list[dict[str, Any]] = []
     try:
         for path in paths:
             digest, size = _hash_file(path)
-            artifacts.append(
+            records.append(
                 {
                     "path": path.relative_to(work_root).as_posix(),
                     "sha256": digest,
@@ -178,13 +197,12 @@ def store(
                 }
             )
     except (OSError, ValueError):
-        return False
-    payload = {
-        "schema": CACHE_SCHEMA,
-        "fingerprint": fingerprint,
-        "require_bitstream": require_bitstream,
-        "artifacts": artifacts,
-    }
+        return None
+    return records
+
+
+def _write_metadata(work_root: Path, payload: dict[str, Any]) -> bool:
+    """Atomically replace the cache metadata file."""
     work_root.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".fpga-cache.", dir=work_root)
     temp_path = Path(temporary)
@@ -220,7 +238,13 @@ def load(
     parts = _read_report_text(expected_paths)
     if parts is None:
         return None
-    return CacheHit(fingerprint=fingerprint, report_text="\n".join(parts))
+    producer_evidence = FlowRunEvidence.from_dict(raw.get("producer_evidence"))
+    assert producer_evidence is not None
+    return CacheHit(
+        fingerprint=fingerprint,
+        report_text="\n".join(parts),
+        producer_evidence=producer_evidence,
+    )
 
 
 def _read_metadata(work_root: Path) -> dict[str, Any] | None:
@@ -228,7 +252,7 @@ def _read_metadata(work_root: Path) -> dict[str, Any] | None:
         raw = json.loads((work_root / CACHE_FILE).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return raw if isinstance(raw, dict) else None
+    return as_dict(raw)
 
 
 def _metadata_matches(
@@ -241,6 +265,7 @@ def _metadata_matches(
         and raw.get("schema") == CACHE_SCHEMA
         and raw.get("fingerprint") == fingerprint
         and raw.get("require_bitstream") is require_bitstream
+        and FlowRunEvidence.from_dict(raw.get("producer_evidence")) is not None
         and isinstance(raw.get("artifacts"), list)
     )
 

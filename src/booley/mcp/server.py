@@ -28,9 +28,7 @@ import contextlib
 import json
 import logging
 import os
-import signal
 import socket
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -55,6 +53,16 @@ from booley.runtime.mcp_config import (
     HTTP_ENDPOINT_PATH,
     HTTP_PORT_ENV,
     http_port,
+)
+from booley.runtime.pid import is_pid_alive
+from booley.runtime.process_group import (
+    ProcessGroup,
+    capture_process_group,
+    force_async_process_group,
+    force_async_process_group_now,
+    new_group_kwargs,
+    terminate_adopted_process_group,
+    terminate_async_process_group,
 )
 from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
 from booley.ticket_board.paths import existing_ticket_runtime_file, ticket_runtime_dir
@@ -434,8 +442,6 @@ def _reconcile_orphaned_jobs() -> None:
 
     if not should_run_outer_bookkeeping():
         return
-    from booley.ticket_board.helpers import is_pid_alive
-
     for rec in jobrec.list_records():
         if rec.status != jobrec.STATUS_RUNNING:
             continue
@@ -1158,20 +1164,9 @@ async def _run_subprocess(
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
 ) -> tuple[int, str, str, bool]:
-    """Run a subprocess with bounded output buffering, off the event loop.
+    """Run asynchronously with bounded output tails and supervised timeout.
 
-    Uses asyncio subprocess so the MCP server stays protocol-responsive
-    during long MCP tool calls (otherwise a blocking subprocess.run pegs the
-    loop for the entire endpoint duration). Stdout/stderr are streamed through
-    a tail-only ring buffer (see ``_read_tail``) so a 30-min nested-agent
-    run can't blow the MCP server's RSS.
-
-    With ``is_queued`` set (async-job dispatch), *timeout* bounds ACTIVE time
-    only — see ``_wait_with_queue_credit``. Without it, the plain
-    wall-clock-since-spawn watchdog applies (synchronous endpoints are unclassed and
-    never queue).
-
-    Returns (exit_code, stdout, stderr, timed_out).
+    Queued jobs charge only active time; unclassed jobs charge wall-clock time.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1183,6 +1178,7 @@ async def _run_subprocess(
         )
     except OSError as e:
         return 2, "", f"Subprocess launch failed for {cmd[0]!r}: {e}", False
+    group = capture_process_group(proc)
 
     if on_spawn is not None:
         # Hand the child PID to the caller (the JobManager stamps it into the
@@ -1193,6 +1189,28 @@ async def _run_subprocess(
     assert proc.stdout is not None and proc.stderr is not None
     stdout_task = asyncio.create_task(_read_tail(proc.stdout, _stdout_cap_bytes()))
     stderr_task = asyncio.create_task(_read_tail(proc.stderr, _stderr_cap_bytes()))
+    return await _supervise_started_subprocess(
+        proc,
+        group,
+        timeout,
+        stdout_task,
+        stderr_task,
+        is_queued=is_queued,
+        on_first_active=on_first_active,
+    )
+
+
+async def _supervise_started_subprocess(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+    timeout: int,
+    stdout_task: asyncio.Task[bytes],
+    stderr_task: asyncio.Task[bytes],
+    *,
+    is_queued: Callable[[], bool] | None,
+    on_first_active: Callable[[], None] | None,
+) -> tuple[int, str, str, bool]:
+    """Supervise and collect output from an already started subprocess."""
 
     try:
         try:
@@ -1203,12 +1221,12 @@ async def _run_subprocess(
                 on_first_active=on_first_active,
             )
         except TimeoutError:
-            return await _timeout_subprocess_result(proc, timeout, stdout_task, stderr_task)
+            return await _timeout_subprocess_result(proc, group, timeout, stdout_task, stderr_task)
         except asyncio.CancelledError:
             # User cancellation is cooperative first: give the endpoint process
             # group a bounded opportunity to release locks and clean up, then
             # force down descendants that ignored SIGTERM.
-            await _cancel_async_process_tree(proc)
+            await _cancel_async_process_tree(proc, group)
             await _cancel_stream_tasks(stdout_task, stderr_task)
             raise
 
@@ -1221,18 +1239,21 @@ async def _run_subprocess(
             False,
         )
     finally:
-        # If we're unwinding while the child is still alive, reap it. The common
-        # case is the MCP client interrupting the MCP tool call, which cancels this
-        # coroutine (CancelledError) at the ``await`` above. Without this, an
-        # interrupted `simulate` would leave an orphaned simulator running under
-        # its own session — still holding the sim lock and able to write a late
-        # report long after Claude has moved on. Kill is signal-only/synchronous
-        # because awaiting is unreliable during cancellation unwinding.
-        if proc.returncode is None:
-            _signal_kill_process_group(proc)
-            for t in (stdout_task, stderr_task):
-                if not t.done():
-                    t.cancel()
+        _reap_unfinished_subprocess(proc, group, stdout_task, stderr_task)
+
+
+def _reap_unfinished_subprocess(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+    *stream_tasks: asyncio.Task[bytes],
+) -> None:
+    """Synchronously stop an unreaped tree while cancellation unwinds."""
+    if proc.returncode is not None:
+        return
+    _signal_kill_process_group(proc, group)
+    for task in stream_tasks:
+        if not task.done():
+            task.cancel()
 
 
 async def _await_supervised_process(
@@ -1261,13 +1282,14 @@ async def _cancel_stream_tasks(*tasks: asyncio.Task[bytes]) -> None:
 
 async def _timeout_subprocess_result(
     proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
     timeout: int,
     stdout_task: asyncio.Task[bytes],
     stderr_task: asyncio.Task[bytes],
 ) -> tuple[int, str, str, bool]:
     """Kill a timed-out subprocess and construct its bounded diagnostic."""
     snapshot = await _async_process_snapshot(proc.pid)
-    await _kill_async_process_tree(proc)
+    await _kill_async_process_tree(proc, group)
     await _cancel_stream_tasks(stdout_task, stderr_task)
     stderr = f"Subprocess timed out after {timeout}s"
     if snapshot:
@@ -1277,9 +1299,7 @@ async def _timeout_subprocess_result(
 
 def _async_process_group_kwargs() -> dict[str, Any]:
     """Popen kwargs for an asyncio child process group/session."""
-    if sys.platform == "win32":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-    return {"start_new_session": True}
+    return new_group_kwargs()
 
 
 async def _async_process_snapshot(pid: int) -> str:
@@ -1333,7 +1353,10 @@ async def _async_process_snapshot(pid: int) -> str:
     return "\n".join(selected[:80])
 
 
-def _signal_kill_process_group(proc: asyncio.subprocess.Process) -> None:
+def _signal_kill_process_group(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+) -> None:
     """Best-effort SIGKILL of the child's process group, no awaits.
 
     Safe to call while this coroutine is being cancelled (unlike
@@ -1343,83 +1366,26 @@ def _signal_kill_process_group(proc: asyncio.subprocess.Process) -> None:
     group reaps the whole endpoint subprocess tree — e.g. the Python runner *and* the
     simulator binary it spawned.
     """
-    if proc.returncode is not None:
-        return
-    import signal
-
-    try:
-        if sys.platform == "win32":
-            proc.kill()
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError) as e:
-        logger.debug("process-group kill failed for pid %s: %s", proc.pid, e)
+    force_async_process_group_now(proc, group)
 
 
-async def _kill_async_process_tree(proc: asyncio.subprocess.Process) -> None:
+async def _kill_async_process_tree(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+) -> None:
     """Terminate an asyncio subprocess and its process group."""
-    if proc.returncode is not None:
-        return
-    if sys.platform == "win32":
-        with contextlib.suppress(Exception):
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/F",
-                "/T",
-                "/PID",
-                str(proc.pid),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(killer.wait(), timeout=10)
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-    else:
-        import signal
-
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2)
-            return
-        except TimeoutError:
-            pass
-        with contextlib.suppress(ProcessLookupError, OSError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    with contextlib.suppress(Exception):
-        await asyncio.wait_for(proc.wait(), timeout=5)
+    await force_async_process_group(proc, group)
 
 
 _CANCEL_GRACE_SECONDS = 5.0
 
 
-async def _cancel_async_process_tree(proc: asyncio.subprocess.Process) -> None:
+async def _cancel_async_process_tree(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+) -> None:
     """SIGTERM a endpoint process group, then SIGKILL it after a bounded grace."""
-    if proc.returncode is not None:
-        return
-    if sys.platform == "win32":
-        # Windows has no Unix-style group SIGTERM. A non-forced taskkill is
-        # the closest cooperative tree request; /F remains the fallback.
-        with contextlib.suppress(Exception):
-            terminator = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/T",
-                "/PID",
-                str(proc.pid),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(terminator.wait(), timeout=2)
-    else:
-        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            # The child starts a new session, so its PID is the stable PGID.
-            os.killpg(proc.pid, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=_CANCEL_GRACE_SECONDS)
-        return
-    except TimeoutError:
-        pass
-    await _kill_async_process_tree(proc)
+    await terminate_async_process_group(proc, group, grace_seconds=_CANCEL_GRACE_SECONDS)
 
 
 def _write_synthetic_endpoint_end(mcp_tool_name: str, timeout_s: int) -> None:
@@ -2438,8 +2404,6 @@ class _JobManager:
         if rec is None:
             return None
 
-        from booley.ticket_board.helpers import is_pid_alive
-
         if jobrec.derive_status(rec, is_pid_alive) != jobrec.STATUS_RUNNING:
             return "finished"
 
@@ -2541,8 +2505,6 @@ async def _poll_from_disk(run_id: str, jobs: _JobManager, wait_seconds: float = 
     each tick until terminal or out of budget.
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
-    from booley.ticket_board.helpers import is_pid_alive
-
     while True:
         rec = jobrec.read_record(run_id)
         if rec is None:
@@ -2658,25 +2620,10 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
 
 async def _cancel_adopted_process_group(pid: int) -> None:
     """Cancel a disk-only job by its session-leader PID."""
-    from booley.ticket_board.helpers import is_pid_alive
-
-    try:
-        if sys.platform == "win32":
-            os.kill(pid, signal.SIGTERM)
-        else:
-            os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        return
-    deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
-    while is_pid_alive(pid) and time.monotonic() < deadline:
-        await asyncio.sleep(0.1)
-    if not is_pid_alive(pid):
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        if sys.platform == "win32":
-            os.kill(pid, signal.SIGTERM)
-        else:
-            os.killpg(pid, signal.SIGKILL)
+    await terminate_adopted_process_group(
+        ProcessGroup(pid),
+        grace_seconds=_CANCEL_GRACE_SECONDS,
+    )
 
 
 async def _dispatch_cancel(
@@ -2691,8 +2638,6 @@ async def _dispatch_cancel(
     rec = jobrec.read_record(run_id)
     if rec is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
-
-    from booley.ticket_board.helpers import is_pid_alive
 
     if jobrec.derive_status(rec, is_pid_alive) != jobrec.STATUS_RUNNING:
         return [
@@ -2790,8 +2735,6 @@ def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
     record cannot capture the new submit. Argv is compared modulo the
     per-call ``--transcript-dir`` (see ``_strip_transcript_dir``).
     """
-    from booley.ticket_board.helpers import is_pid_alive
-
     wanted = _strip_transcript_dir(cmd)
     newest: jobrec.JobRecord | None = None
     for rec in jobrec.list_records():

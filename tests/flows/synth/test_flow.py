@@ -233,7 +233,28 @@ def _fake_synth_resolved(
         / "syn_demo_0"
         / "syn"
     )
-    files = (
+    files = _fake_synth_files()
+    _stage_synth_fixture_files(work_dir, build_root, files)
+    params = {
+        "WIDTH": {"datatype": "int", "paramtype": "vlogparam", "default": 8},
+        "SYNTHESIS": {"datatype": "bool", "paramtype": "vlogdefine", "default": True},
+    }
+    return fusesoc_registry.ResolvedTarget(
+        name=config,
+        vlnv="::syn_demo:0",
+        toplevel=toplevel,
+        eda_tool="yosys",
+        flow_options=_fake_synth_recipe(work_dir),
+        files=files,
+        parameters=params,
+        build_root=build_root,
+        edam_path=build_root / "syn_demo_0.eda.yml",
+    )
+
+
+def _fake_synth_files() -> tuple[fusesoc_registry.ResolvedFile, ...]:
+    """Return the files a normal synth fixture resolver would stage."""
+    return (
         fusesoc_registry.ResolvedFile(
             name="src/syn_demo_0/rtl/include/defs.svh",
             file_type="systemVerilogSource",
@@ -260,10 +281,10 @@ def _fake_synth_resolved(
             tags=("tb",),
         ),
     )
-    params = {
-        "WIDTH": {"datatype": "int", "paramtype": "vlogparam", "default": 8},
-        "SYNTHESIS": {"datatype": "bool", "paramtype": "vlogdefine", "default": True},
-    }
+
+
+def _fake_synth_recipe(work_dir: Path) -> dict:
+    """Load compact test-only recipe overrides from booley.toml."""
     # Many boundary tests use booley.toml as a compact way to author the fake
     # Target recipe. Production never reads these keys there; Doctor has
     # separate migration tests that reject them in booley.toml.
@@ -283,17 +304,33 @@ def _fake_synth_resolved(
         ):
             if key in flow_cfg:
                 recipe[key] = flow_cfg[key]
-    return fusesoc_registry.ResolvedTarget(
-        name=config,
-        vlnv="::syn_demo:0",
-        toplevel=toplevel,
-        eda_tool="yosys",
-        flow_options=recipe,
-        files=files,
-        parameters=params,
-        build_root=build_root,
-        edam_path=build_root / "syn_demo_0.eda.yml",
-    )
+    return recipe
+
+
+def _stage_synth_fixture_files(
+    work_dir: Path,
+    build_root: Path,
+    files: tuple[fusesoc_registry.ResolvedFile, ...],
+) -> None:
+    """Materialize the staged tree promised by a fake ResolvedTarget."""
+    for item in files:
+        relative_source = Path(item.name).relative_to("src/syn_demo_0")
+        source = Path(work_dir) / relative_source
+        staged = item.absolute(build_root)
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_file():
+            shutil.copy2(source, staged)
+        else:
+            staged.write_text(f"// staged fixture: {item.name}\n", encoding="utf-8")
+
+
+def _restage_synth_resolved(
+    work_dir: Path,
+    resolved: fusesoc_registry.ResolvedTarget,
+) -> fusesoc_registry.ResolvedTarget:
+    """Restore a preconstructed fake after the flow clears its build root."""
+    _stage_synth_fixture_files(work_dir, resolved.build_root, resolved.files)
+    return resolved
 
 
 def _write_syn_demo_project(work_dir: Path) -> None:
@@ -2269,7 +2306,7 @@ class TestBuildSynthCmd:
             patch.object(
                 fusesoc_registry,
                 "resolve_target",
-                side_effect=lambda *a, **k: no_sdc,
+                side_effect=lambda *a, **k: _restage_synth_resolved(tmp_path, no_sdc),
             ),
             pytest.raises(BoundaryError, match=r"no timing constraints"),
         ):
@@ -2298,7 +2335,7 @@ class TestBuildSynthCmd:
         with patch.object(
             fusesoc_registry,
             "resolve_target",
-            side_effect=lambda *a, **k: no_sdc,
+            side_effect=lambda *a, **k: _restage_synth_resolved(tmp_path, no_sdc),
         ):
             cmd = flow._build_synth_cmd("lite")
         assert cmd[cmd.index("--default-clock") + 1] == "5000.0"
@@ -2521,7 +2558,7 @@ class TestBuildSynthCmd:
         with patch.object(
             fusesoc_registry,
             "resolve_target",
-            side_effect=lambda *a, **k: resolved,
+            side_effect=lambda *a, **k: _restage_synth_resolved(tmp_path, resolved),
         ):
             cmd = flow._build_synth_cmd("lite")
         sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]

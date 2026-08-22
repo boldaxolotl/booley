@@ -118,6 +118,16 @@ def _fake_synth_resolved(
     )
 
 
+def _resolve_staged_synth_fixture(
+    work_dir: Path,
+    config: str,
+) -> fusesoc_registry.ResolvedTarget:
+    """Return a fake resolution with the staged files it promises."""
+    resolved = _fake_synth_resolved(work_dir, config=config)
+    _materialize_resolved_target(resolved)
+    return resolved
+
+
 @pytest.fixture(autouse=True)
 def _stub_fusesoc_resolution(tmp_path: Path):
     """Default every test's FuseSoC resolution to a fake synth EDAM.
@@ -128,7 +138,7 @@ def _stub_fusesoc_resolution(tmp_path: Path):
     with patch.object(
         fusesoc_registry,
         "resolve_target",
-        side_effect=lambda target="lite", **k: _fake_synth_resolved(tmp_path, config=target),
+        side_effect=lambda target="lite", **k: _resolve_staged_synth_fixture(tmp_path, target),
     ):
         yield
 
@@ -206,7 +216,13 @@ def _materialize_resolved_sources(tmp_path: Path, config: str = "lite") -> None:
     ``resolve_spec`` (unlike the argv builder) validates that sources exist —
     they are workspace files that must be present at configure time.
     """
-    resolved = _fake_synth_resolved(tmp_path, config=config)
+    _materialize_resolved_target(_fake_synth_resolved(tmp_path, config=config))
+
+
+def _materialize_resolved_target(
+    resolved: fusesoc_registry.ResolvedTarget,
+) -> None:
+    """Create all staged files declared by a canned resolution."""
     for f in resolved.files:
         path = resolved.build_root / f.name
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -1303,6 +1303,36 @@ class TestOpHandoff:
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "review"
 
+    def test_rejects_stale_execution_generation(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+        progress = load_progress(tio.logs_dir, "t1") or dict(PROGRESS_DEFAULTS)
+        progress["step"] = "summary"
+        progress["steps_completed"] = ["setup", "planning", "summary"]
+        progress["execution_id"] = "current-run"
+        save_progress(tio.logs_dir, "t1", progress)
+
+        assert not op_handoff(tio, "t1", expected_execution_id="stale-run")
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
+        assert "execution changed concurrently" in capsys.readouterr().err
+
+    def test_review_guard_runs_inside_transition_before_move(self, tmp_path):
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+
+        def reject_changed_package() -> None:
+            _path, status = find_ticket_file(tio.tickets_dir, "t1")
+            assert status == "running"
+            raise RuntimeError("review package changed")
+
+        with pytest.raises(RuntimeError, match="review package changed"):
+            op_handoff(tio, "t1", locked_guard=reject_changed_package)
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
+
     def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys):
         """cleanup:true + destination:review keeps the worktree — say so (F-55)."""
         tio = make_tio(tmp_path)
@@ -2530,6 +2560,52 @@ class TestMoveAndUpdate:
     def test_not_found(self, tmp_path):
         tio = make_tio(tmp_path)
         assert tio.move_and_update("nope", "queue", {}) is False
+
+    def test_expected_status_rejects_concurrent_state_change(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "active", "t1")
+        make_progress(tio, "t1", {"step": "planning"})
+
+        assert (
+            tio.move_and_update(
+                "t1",
+                "blocked",
+                {"blocked_reason": "stale writer"},
+                expected_status="queued",
+            )
+            is False
+        )
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
+        assert load_progress(tio.logs_dir, "t1")["blocked_reason"] is None
+        assert "changed concurrently" in capsys.readouterr().err
+
+    def test_expected_execution_rejects_running_aba(self, tmp_path, capsys):
+        from booley.ticket_board.operations import op_activate, op_requeue
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "active", "t1")
+        make_progress(
+            tio,
+            "t1",
+            {"step": "planning", "execution_id": "old-run"},
+        )
+
+        assert op_requeue(tio, "t1")
+        assert op_activate(tio, "t1", owner_pid=123, execution_id="new-run")
+        assert not op_block(
+            tio,
+            "t1",
+            "stale writer",
+            "planning",
+            expected_execution_id="old-run",
+        )
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
+        assert load_progress(tio.logs_dir, "t1")["execution_id"] == "new-run"
+        assert "execution changed concurrently" in capsys.readouterr().err
 
 
 class TestClassifyWithReview:

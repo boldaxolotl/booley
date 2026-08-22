@@ -16,7 +16,10 @@ import time
 from pathlib import Path
 
 # Reuse platform-specific locking from ticket_board
-from booley.ticket_board.helpers import lock_fd, unlock_fd
+from booley.runtime.file_lock import acquire_file_lock, release_file_lock
+
+lock_fd = acquire_file_lock
+unlock_fd = release_file_lock
 
 
 def _find_locks_dir() -> Path:
@@ -89,7 +92,7 @@ def _acquire_lock_fd(lock_file, name: str, timeout_s: int) -> None:
             lock_file.write(str(os.getpid()))
             lock_file.flush()
             break
-        except (BlockingIOError, OSError) as err:
+        except BlockingIOError as err:
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"Could not acquire {name} lock within {timeout_s}s. "

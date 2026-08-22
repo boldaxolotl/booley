@@ -59,6 +59,13 @@ from ..recipe_evidence import (
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_SNAPSHOT_DETAIL,
 )
+from ..run_evidence import (
+    BASELINE_RUN_EVIDENCE_DETAIL,
+    RUN_EVIDENCE_DETAIL,
+    FlowRunEvidence,
+    build_flow_run_evidence,
+    digest_resolved_inputs,
+)
 from . import cache as fpga_cache
 from . import edam as fpga_edam
 from .metrics import (
@@ -86,11 +93,22 @@ class _PreparedFpgaCommand:
     require_bitstream: bool
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
+    run_evidence: FlowRunEvidence | None = None
 
     def __iter__(self):
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
         yield self.run_cmd
         yield self.work_root
+
+
+@dataclass(frozen=True)
+class _FpgaMaterialization:
+    """Resolved Target and generated Vivado project for one dispatch."""
+
+    resolved: fusesoc_registry.ResolvedTarget
+    edam: dict[str, Any]
+    work_root: Path
+    out_of_context: bool
 
 
 _FPGA_METRIC_MAP: dict[str, str] = {
@@ -309,33 +327,38 @@ class FpgaImplFlow(BooleyFlow):
         self,
         target: str,
     ) -> _PreparedFpgaCommand:
-        """Materialize the Edalize vivado project and return (run_cmd, work_root).
-
-        The single seam between EDAM generation / in-process ``configure()`` and
-        execution (mirrors ``simulate._prepare_sim_command``). Per ADR 0022
-        (decision 4) FuseSoC owns *design-description*: ``resolve_target`` runs
-        ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing the RTL
-        sources, top module, and typed parameters. Only this **resolution half**
-        is swapped — the vivado boundary crossing (ADR 0019/0037) and the
-        EDAM-builder command-gen exception are preserved: the resolved
-        sources/top/defines are
-        fed *into* ``build_fpga_edam`` (whose ``configure()`` materializes the
-        vivado project) instead of the legacy-registry-derived ones.
-
-        The Target owns Vivado's part, constraints, defines, and out-of-context
-        setting. A ``--baseline`` re-resolve runs against a throwaway worktree
-        (``self.args.work_dir``
-        points at it), so its build dir is physically separate from the current
-        run's and cannot clobber it.
-
-        Raises ``ValueError`` / ``EdamSecurityError`` on bad inputs and
-        ``TargetResolutionError`` on FuseSoC setup failure (the caller records
-        all three as infra errors).
-        """
+        """Materialize one Vivado command with typed provenance for its staged inputs."""
         work_dir = Path(self.args.work_dir)
-        # Resolve the FPGA Target through FuseSoC (decision 4). The build dir is
-        # kept distinct from the vivado configure() work_root below so the two
-        # trees never collide.
+        materialized = self._materialize_fpga_target(target, work_dir)
+        resolved = materialized.resolved
+        recipe_snapshot = fpga_recipe_snapshot(resolved, target=target)
+        recipe_fingerprint = fpga_recipe_snapshot_fingerprint(recipe_snapshot)
+        dispatched_files = tuple(
+            item for item in resolved.rtl_files if item.is_hdl or item.file_type.lower() == "xdc"
+        )
+        run_evidence = build_flow_run_evidence(
+            flow=self.name,
+            target=target,
+            recipe_sha256=recipe_fingerprint,
+            source_sha256=digest_resolved_inputs(dispatched_files, resolved.build_root),
+            work_dir=work_dir,
+        )
+        return _PreparedFpgaCommand(
+            run_cmd=fpga_edam.fpga_run_command(materialized.work_root, work_dir),
+            work_root=materialized.work_root,
+            fingerprint=fpga_cache.input_fingerprint(
+                resolved,
+                materialized.edam,
+                out_of_context=materialized.out_of_context,
+            ),
+            require_bitstream=not materialized.out_of_context,
+            recipe_snapshot=recipe_snapshot,
+            recipe_fingerprint=recipe_fingerprint,
+            run_evidence=run_evidence,
+        )
+
+    def _materialize_fpga_target(self, target: str, work_dir: Path) -> _FpgaMaterialization:
+        """Resolve a Target and generate the Vivado project it describes."""
         fusesoc_build_root = edam_layer.work_root_for(
             work_dir, self.name, target, variant="fusesoc"
         )
@@ -344,23 +367,11 @@ class FpgaImplFlow(BooleyFlow):
         )
         validate_top_parameter_intent(resolved, flow="fpga")
         part = self._resolve_part(resolved.flow_options)
-        # XDC constraints from the Target's file_type:xdc fileset (ADR 0031),
-        # with a deprecation fallback to the legacy global key. Resolved after
-        # the Target so the fileset can be read.
         xdc_files = self._resolve_xdc_files(resolved, target)
-
-        # Top comes from the resolved Target (decision 12).
-        top = resolved.toplevel
-        if not top:
-            raise ValueError(
-                f"fpga: top module not found for target {target!r} (set the Target toplevel)"
-            )
-
+        top = self._resolve_top(resolved, target)
         sv_files, v_files, include_dirs = _split_resolved_sources(resolved)
 
-        defines = _vlogdefine_args(resolved.parameters)
         vlogparams = vlogparam_values(resolved.parameters)
-
         work_root = edam_layer.work_root_for(work_dir, "fpga", target)
         edam = fpga_edam.build_fpga_edam(
             name=f"fpga_{target}",
@@ -370,7 +381,7 @@ class FpgaImplFlow(BooleyFlow):
             v_files=v_files,
             include_dirs=include_dirs,
             xdc_files=xdc_files,
-            defines=_unique_strings(defines),
+            defines=_unique_strings(_vlogdefine_args(resolved.parameters)),
             vlogparams=vlogparams,
             workspace_root=self.args.work_dir,
             work_root=work_root,
@@ -382,11 +393,6 @@ class FpgaImplFlow(BooleyFlow):
             project_name,
             vlogparams,
         )
-        # QoR-gate targets whose bare toplevel out-ports the package (e.g. an
-        # engine block never meant for pin mapping) opt into OOC synthesis so
-        # placement does not fail on IO-buffer overutilization. Strictly typed:
-        # a string ``"false"`` is truthy and would silently enable OOC, so a
-        # non-bool raises (BoundaryError is a ValueError → infra error upstream).
         out_of_context = require_bool(
             resolved.flow_options,
             "out_of_context",
@@ -394,21 +400,21 @@ class FpgaImplFlow(BooleyFlow):
         )
         if out_of_context:
             fpga_edam.enable_out_of_context(work_root, project_name)
-        run_cmd = fpga_edam.fpga_run_command(work_root, Path(self.args.work_dir))
-        recipe_snapshot = fpga_recipe_snapshot(resolved, target=target)
-        fingerprint = fpga_cache.input_fingerprint(
-            resolved,
-            edam,
+        return _FpgaMaterialization(
+            resolved=resolved,
+            edam=edam,
+            work_root=work_root,
             out_of_context=out_of_context,
         )
-        return _PreparedFpgaCommand(
-            run_cmd=run_cmd,
-            work_root=work_root,
-            fingerprint=fingerprint,
-            require_bitstream=not out_of_context,
-            recipe_snapshot=recipe_snapshot,
-            recipe_fingerprint=fpga_recipe_snapshot_fingerprint(recipe_snapshot),
-        )
+
+    @staticmethod
+    def _resolve_top(resolved: Any, target: str) -> str:
+        """Require a top module on the resolved FPGA Target."""
+        if not resolved.toplevel:
+            raise ValueError(
+                f"fpga: top module not found for target {target!r} (set the Target toplevel)"
+            )
+        return str(resolved.toplevel)
 
     def _resolve_part(self, flow_options: Any) -> str:
         """Validate and resolve the FPGA part from Target ``flow_options``."""
@@ -447,99 +453,98 @@ class FpgaImplFlow(BooleyFlow):
     def _run_single_target(self, target: str) -> FpgaMetrics:
         """Configure, run, and interpret Vivado inside the Session Runtime."""
         try:
-            prepared = self._prepare_fpga_command(target)
-            run_cmd, work_root = prepared
+            prepared = self._normalize_prepared_command(self._prepare_fpga_command(target))
         except Exception as exc:  # noqa: BLE001 — isolate EDAM/configure failure; surfaced as returncode-2 infra_error
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")
 
-        fingerprint = getattr(prepared, "fingerprint", "")
-        require_bitstream = getattr(prepared, "require_bitstream", False)
-        if fingerprint and not getattr(self.args, "no_cache", False):
-            cached = self._load_cached_metrics(
-                target,
-                work_root,
-                fingerprint,
-                require_bitstream=require_bitstream,
-            )
-            if cached is not None:
-                return self._attach_recipe_evidence(cached, prepared)
+        cached = self._cached_target_metrics(target, prepared)
+        return cached if cached is not None else self._execute_fpga_target(target, prepared)
 
-        # A cache miss must execute the recipe even if Make's timestamps claim
-        # it is current. Otherwise a no-op leaves only old reports, and there is
-        # no evidence that those artifacts correspond to this fingerprint.
-        if fingerprint and "-B" not in run_cmd and "--always-make" not in run_cmd:
-            run_cmd = [*run_cmd, "-B"]
+    @staticmethod
+    def _normalize_prepared_command(
+        prepared: _PreparedFpgaCommand | tuple[list[str], Path],
+    ) -> _PreparedFpgaCommand:
+        """Accept the historical two-item command shape used by integrations."""
+        if isinstance(prepared, _PreparedFpgaCommand):
+            return prepared
+        run_cmd, work_root = prepared
+        return _PreparedFpgaCommand(run_cmd, work_root, "", False)
 
-        # F-26: _persist_fpga_log only lands at the END of a long P&R run, so
-        # claim the log now — a tail during the wait must not read the
-        # previous run's utilization/timing tail as this run's progress.
-        self._open_run_log(target, work_root)
-        # The command is not path-remapped: ``make -C <rel>`` resolves from the
-        # shared Session Runtime workspace.
-        result = self._execute_boundary(run_cmd, timeout=self._get_timeout())
-        # The edalize project-mode vivado flow (launch_runs/wait_on_run) writes
-        # its utilization/timing/DRC reports to *files*, not stdout — unlike the
-        # legacy non-project tcl that printed report_* to the console. So the
-        # log alone has no metrics; concatenate the Vivado-generated route
-        # report files (read off the shared workspace — interpretation stays in
-        # Booley, ADR 0019) before the post-processor parses them.
-        log_text = result.stdout
-        # make's real error lands on stderr, not stdout, so a failed `make`
-        # leaves stdout with only the "Entering/Leaving directory" chatter.
-        # Keep stderr for the failure tail.
-        stderr_text = result.stderr
-        # Age-gate the on-disk reports against the dispatch instant: only reports
-        # written by THIS run count. Otherwise a run that did nothing (e.g. an
-        # empty/detached workspace bind-mount) lets the previous run's stale
-        # *_routed.rpt files parse into a bogus "cached" pass with old metrics,
-        # masking the real infra failure.
-        report_text = self._collect_route_reports(work_root, min_mtime=result.dispatched_unix)
-        metric_dict = fpga_edam.parse_fpga_reports(
-            log_text + "\n" + report_text if report_text else log_text
+    def _cached_target_metrics(
+        self, target: str, prepared: _PreparedFpgaCommand
+    ) -> FpgaMetrics | None:
+        """Return validated cached metrics when cache reuse is enabled."""
+        if not prepared.fingerprint or getattr(self.args, "no_cache", False):
+            return None
+        cached = self._load_cached_metrics(
+            target,
+            prepared.work_root,
+            prepared.fingerprint,
+            require_bitstream=prepared.require_bitstream,
         )
+        return self._attach_recipe_evidence(cached, prepared) if cached is not None else None
 
-        # QoR flow stops at route_design: a boardless soft IP cannot write a
-        # bitstream (write_bitstream's NSTD-1/UCIO-1 DRC precondition fails with
-        # no pinout), so ``make`` exits non-zero even when synth+place+route fully
-        # succeed. fpga_impl is a QoR Flow — route completion (the report files +
-        # the route-done marker parse_fpga_reports keys ``status`` on) defines
-        # success, NOT the bitstream/make exit code. Only when route did *not*
-        # complete do we surface the boundary command's exit code as the failure.
+    def _execute_fpga_target(self, target: str, prepared: _PreparedFpgaCommand) -> FpgaMetrics:
+        """Execute a cache miss and persist its reports and provenance."""
+        run_cmd = prepared.run_cmd
+        if prepared.fingerprint and "-B" not in run_cmd and "--always-make" not in run_cmd:
+            run_cmd = [*run_cmd, "-B"]
+        self._open_run_log(target, prepared.work_root)
+        result = self._execute_boundary(run_cmd, timeout=self._get_timeout())
+        metrics, report_text = self._interpret_fpga_execution(prepared, result)
+        self._record_fpga_artifacts(target, prepared, result, metrics, report_text)
+        return self._attach_recipe_evidence(metrics, prepared)
+
+    def _interpret_fpga_execution(
+        self, prepared: _PreparedFpgaCommand, result: SubprocessResult
+    ) -> tuple[FpgaMetrics, str]:
+        """Interpret one Vivado boundary result without persisting side effects."""
+        report_text = self._collect_route_reports(
+            prepared.work_root, min_mtime=result.dispatched_unix
+        )
+        metric_dict = fpga_edam.parse_fpga_reports(
+            result.stdout + "\n" + report_text if report_text else result.stdout
+        )
         route_completed = metric_dict.get("status") in ("pass", "success")
         metric_dict["exit_code"] = 0 if route_completed else result.returncode
         metrics = self._metrics_from_parsed_reports(metric_dict, result.duration_s)
-        metrics.cache_fingerprint = fingerprint
+        metrics.cache_fingerprint = prepared.fingerprint
         if result.timed_out:
             metrics.timed_out = True
         if metrics.returncode != 0 and not metrics.infra_error:
-            # infra_error stays the concise reason; the bulky log/stderr tail
-            # goes into failure_output (mirrors asic), so the report can surface
-            # it separately from the one-line criterion reason.
             metrics.infra_error = (
                 f"Vivado (edalize) did not reach route_design (exit {metrics.returncode})."
             )
-            metrics.failure_output = self._failure_tail(log_text, stderr_text).strip()
-        # Where this run's artifacts live, for the reader to list.
-        metrics.dirs = self._artifact_dirs(work_root)
-        # Persist the combined run log (route reports + make log/stderr) on pass
-        # AND fail, but only for the PRIMARY run: a baseline run lives in a
-        # throwaway worktree (self.args.work_dir swapped to it in
-        # _run_baseline_configs) that is deleted on context exit, so a log path
-        # under it would dangle — leave log_path="" there.
+            metrics.failure_output = self._failure_tail(result.stdout, result.stderr).strip()
+        return metrics, report_text
+
+    def _record_fpga_artifacts(
+        self,
+        target: str,
+        prepared: _PreparedFpgaCommand,
+        result: SubprocessResult,
+        metrics: FpgaMetrics,
+        report_text: str,
+    ) -> None:
+        """Persist logs/cache metadata for one interpreted execution."""
+        metrics.dirs = self._artifact_dirs(prepared.work_root)
         if Path(self.args.work_dir) == getattr(self, "_project_root", None):
             combined = (
-                log_text + "\n" + stderr_text + (("\n" + report_text) if report_text else "")
+                result.stdout
+                + "\n"
+                + result.stderr
+                + (("\n" + report_text) if report_text else "")
             )
             metrics.log_path = self._persist_fpga_log(target, combined)
-        if metrics.passed and fingerprint:
+        if metrics.passed and prepared.fingerprint and prepared.run_evidence is not None:
             fpga_cache.store(
-                work_root,
-                fingerprint,
-                require_bitstream=require_bitstream,
+                prepared.work_root,
+                prepared.fingerprint,
+                require_bitstream=prepared.require_bitstream,
                 min_mtime=result.dispatched_unix,
+                producer_evidence=prepared.run_evidence,
             )
-        return self._attach_recipe_evidence(metrics, prepared)
 
     @staticmethod
     def _attach_recipe_evidence(
@@ -549,6 +554,11 @@ class FpgaImplFlow(BooleyFlow):
         """Attach the recipe materialized for this run to its metrics."""
         metrics.recipe_snapshot = getattr(prepared, "recipe_snapshot", {})
         metrics.recipe_fingerprint = getattr(prepared, "recipe_fingerprint", "")
+        current_evidence = getattr(prepared, "run_evidence", None)
+        if metrics.cached:
+            metrics.cache_consumer_run_id = current_evidence.run_id if current_evidence else ""
+        else:
+            metrics.run_evidence = current_evidence
         return metrics
 
     def _load_cached_metrics(
@@ -574,6 +584,7 @@ class FpgaImplFlow(BooleyFlow):
             return None
         metrics.cached = True
         metrics.cache_fingerprint = hit.fingerprint
+        metrics.run_evidence = hit.producer_evidence
         metrics.dirs = self._artifact_dirs(work_root)
         self._attach_existing_log(target, metrics)
         return metrics
@@ -956,10 +967,15 @@ class FpgaImplFlow(BooleyFlow):
             "metrics": _metrics_detail(cur),
             "recipe_fingerprint": cur.recipe_fingerprint or None,
             "recipe_snapshot": cur.recipe_snapshot or None,
+            "run_evidence": cur.run_evidence.as_dict() if cur.run_evidence else None,
+            "cache_consumer_run_id": cur.cache_consumer_run_id or None,
             "baseline_ref": baseline_ref,
             "baseline_metrics": _metrics_detail(base, baseline=True) if base else None,
             "baseline_recipe_fingerprint": base.recipe_fingerprint if base else None,
             "baseline_recipe_snapshot": base.recipe_snapshot if base else None,
+            "baseline_run_evidence": (
+                base.run_evidence.as_dict() if base and base.run_evidence else None
+            ),
         }
         report_path = report_dir / f"fpga_{cfg}.json"
         # Top-level ``artifacts`` mirrors the block inside ``metrics`` and adds
@@ -992,6 +1008,8 @@ class FpgaImplFlow(BooleyFlow):
             "passed": cur.passed,
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
+            RUN_EVIDENCE_DETAIL: cur.run_evidence.as_dict() if cur.run_evidence else None,
+            "_cache_consumer_run_id": cur.cache_consumer_run_id or None,
             "_metric_map": dict(_FPGA_METRIC_MAP),
             "_min_allowed": ["fmax_mhz", "wns_ns", "whs_ns"],
         }
@@ -999,6 +1017,9 @@ class FpgaImplFlow(BooleyFlow):
             detail["baseline_metrics"] = _metrics_detail(base, baseline=True)
             detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
             detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
+            detail[BASELINE_RUN_EVIDENCE_DETAIL] = (
+                base.run_evidence.as_dict() if base.run_evidence else None
+            )
         if baseline_ref:
             detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(

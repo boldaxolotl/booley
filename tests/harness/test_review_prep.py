@@ -383,6 +383,38 @@ async def test_stable_context_reresolves_after_ticket_jobs_drain(tmp_path: Path,
     wait.assert_awaited_once_with(before.log_dir)
 
 
+def _assert_ready_manifest(ctx, outcome) -> dict:
+    """Validate and return the ready review manifest."""
+    assert outcome.status == "ready"
+    assert outcome.html_path and outcome.html_path.is_file()
+    manifest = json.loads((ctx.runtime_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "ready"
+    assert manifest["head_sha"] == ctx.head_sha
+    assert manifest["source_sha256"] == "source"
+    assert manifest["html_sha256"] == rp._file_sha256(outcome.html_path)
+    assert Path(manifest["briefing_path"]).is_file()
+    assert manifest["briefing_sha256"] == rp._file_sha256(Path(manifest["briefing_path"]))
+    assert manifest["cost_usd"] == 0.125
+    return manifest
+
+
+def _assert_evidence_manifest(ctx) -> None:
+    """Validate the immutable evidence package manifest."""
+    evidence_manifest = json.loads(
+        (ctx.runtime_dir / "evidence-manifest.json").read_text(encoding="utf-8")
+    )
+    assert evidence_manifest["version"] == 1
+    assert evidence_manifest["head_sha"] == ctx.head_sha
+    assert {item["name"] for item in evidence_manifest["items"]} == {
+        "commits",
+        "diff",
+        "files",
+        "status",
+        "ticket",
+        "triage_facts",
+    }
+
+
 @pytest.mark.asyncio
 async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkeypatch):
     ctx = _ctx(tmp_path)
@@ -402,7 +434,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
     def workspace(_ctx, _evidence):
         yield rp.ReviewAgentWorkspace(ctx.worktree, {"diff": evidence})
 
-    monkeypatch.setattr(rp, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
     monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
@@ -415,29 +447,13 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
 
     outcome = await rp.prepare_review(tmp_path, "demo")
 
-    assert outcome.status == "ready"
-    assert outcome.html_path and outcome.html_path.is_file()
-    manifest = json.loads((ctx.runtime_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["status"] == "ready"
-    assert manifest["head_sha"] == ctx.head_sha
-    assert manifest["source_sha256"] == "source"
-    assert manifest["html_sha256"] == rp._file_sha256(outcome.html_path)
-    assert Path(manifest["briefing_path"]).is_file()
-    assert manifest["briefing_sha256"] == rp._file_sha256(Path(manifest["briefing_path"]))
-    assert manifest["cost_usd"] == 0.125
-    evidence_manifest = json.loads(
-        (ctx.runtime_dir / "evidence-manifest.json").read_text(encoding="utf-8")
-    )
-    assert evidence_manifest["version"] == 1
-    assert evidence_manifest["head_sha"] == ctx.head_sha
-    assert {item["name"] for item in evidence_manifest["items"]} == {
-        "commits",
-        "diff",
-        "files",
-        "status",
-        "ticket",
-        "triage_facts",
-    }
+    manifest = _assert_ready_manifest(ctx, outcome)
+    _assert_evidence_manifest(ctx)
+    assert rp.verify_review_handoff(tmp_path, "demo").ready
+    briefing_path = Path(manifest["briefing_path"])
+    briefing_path.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(rp.ReviewPrepError, match="no current"):
+        rp.verify_review_handoff(tmp_path, "demo")
 
 
 def test_source_fingerprint_survives_ticket_handoff(tmp_path: Path, monkeypatch):

@@ -1467,37 +1467,22 @@ async def _resolve_ticket_disposition(
         check_criteria_acceptance,
     )
 
-    from .colors import bold_red, dim, green, yellow
+    from .colors import bold_red, yellow
 
     verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir)
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
 
-    # Print per-criterion summary table before the verdict line
     crit_lines, totals_line = build_criteria_summary_lines(state_path)
     if crit_lines:
         terminal.criteria_summary(crit_lines, totals_line)
-
-    # A fail->pass criterion met without a recorded failure proved less than it
-    # promised. Not a blocker, but the reviewer must not have to infer it (F-53).
     transition_note = verdict.unverified_transitions_note()
     if transition_note:
         terminal.raw(f"  {yellow('[WARN]')} {transition_note}")
-
-    # The harness MUST NOT auto-archive (delete) tickets. Failed-criteria
-    # tickets land in blocked/ for human triage; archive is a human-only
-    # operation (see booley.ticket_board.archive.op_archive).
     if verdict.disposition == "blocked":
         block_ticket(ctx, verdict.blocked_reason, "developer", run_index=run_index)
         terminal.raw(f"  {yellow('[BLOCK]')} {verdict.blocked_reason}")
     elif verdict.disposition == "review":
-        logger.info("All mandatory criteria met for %s", ctx.slug)
-        if ctx.on_success.destination == "review" and ctx.on_success.triage_report:
-            if not await _prepare_review_handoff(ctx, project_root, run_index):
-                return
-            terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
-        else:
-            terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
-        ticket_cli.handoff(project_root, ctx.slug)
+        await _handoff_review_disposition(ctx, project_root, run_index)
     elif verdict.disposition == "failed":
         fail_ticket(
             ctx,
@@ -1512,6 +1497,30 @@ async def _resolve_ticket_disposition(
             f"Unknown criteria verdict disposition {verdict.disposition!r} for "
             f"{ctx.slug} — expected one of: review, blocked, failed"
         )
+
+
+async def _handoff_review_disposition(
+    ctx: TicketContext, project_root: Path, run_index: int
+) -> None:
+    """Prepare and atomically validate review evidence while handing off."""
+    from .colors import dim, green, yellow
+    from .review_prep import ReviewPrepError, verify_review_handoff
+
+    logger.info("All mandatory criteria met for %s", ctx.slug)
+    needs_package = ctx.on_success.destination == "review" and ctx.on_success.triage_report
+    if needs_package and not await _prepare_review_handoff(ctx, project_root, run_index):
+        return
+    message = "post-processing complete" if needs_package else "all criteria met"
+    terminal.raw(f"  {green(message)} {dim('→ review')}")
+    ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
+    guard = partial(verify_review_handoff, project_root, ctx.slug) if needs_package else None
+    try:
+        ticket_cli.handoff(project_root, ctx.slug, locked_guard=guard, **ownership)
+    except ReviewPrepError as exc:
+        reason = f"Review package changed before handoff: {exc}"
+        logger.warning("Review handoff verification failed for %s: %s", ctx.slug, exc)
+        block_ticket(ctx, reason, "post-processing", run_index=run_index)
+        terminal.raw(f"  {yellow('[BLOCK]')} review package verification failed")
 
 
 def _build_prompt_context(
