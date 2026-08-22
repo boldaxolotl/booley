@@ -109,6 +109,29 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
+### Ticket Target contracts
+
+Ticket Mode treats the Target recipe as acceptance input, not implementation
+work. Before enqueue, ticket creation records schema 1 with exact outer and
+optional project-data commits, the criterion Targets, and a normalized SHA-256
+digest; compatibility `base_sha` equals the outer commit.
+
+The digest covers every `.core`, the test registry, Target-selecting Flow
+configuration, selected SDC/XDC, and referenced generators or hooks. Paths are
+part of the identity. RTL and testbench contents remain editable.
+
+Contract metadata is published only after every repository validates and
+commits. Execution starts from those commits, and intake, each Flow, the commit
+guard, and review handoff reject drift as `target-contract-change-required`.
+Relative synth/FPGA Targets must fully resolve at the seal so baseline and final
+use one recipe; a future non-relative Target may omit only sources declared
+Scope `[new]`.
+
+Revision archives the old identity, clears execution evidence, and restarts
+from the destination baseline without transplanting implementation commits.
+Legacy running/review tickets may finish, but a new or reset execution requires
+a valid seal.
+
 ### Shared run logs and artifacts
 
 Every built-in Flow that keeps a `run.log` (`sim`, `elab`, `lint`, `synth`,
@@ -512,17 +535,8 @@ of a bare "no metrics".
 
 #### Ticket baselines and sealed recipes
 
-Ticket creation seals the normalized Target/control-plane surface before
-enqueue. For a baseline-relative threshold, `synth` runs both the contract's
-`base_sha` and the ticket head with that identical synthesis recipe. A paired
-`.booley_project` repository is pinned independently by the contract's
-`project_sha`, so parameters, constraints, and hooks are identical too.
-
-Intake, every Flow entry, the developer pre-commit hook, and final handoff all
-verify the seal. A missing or modified recipe blocks as
-`target-contract-change-required`; it is never accepted as part of the
-implementation or silently skipped. The same immutable contract applies to
-`fpga_impl_ok` below. See [TARGET-CONTRACT.md](TARGET-CONTRACT.md).
+Ticket Mode's shared baseline and recipe invariants are defined in
+[Ticket Target contracts](#ticket-target-contracts).
 
 ### Reports and Criteria detail
 
@@ -727,11 +741,8 @@ violations, and critical design conditions are design failures.
 
 #### Ticket baselines and sealed recipes
 
-As with `synthesis_ok`, a relative `fpga_impl_ok` threshold implements
-`base_sha` and the ticket head with the same sealed part, out-of-context choice,
-parameters, toplevel, hooks, and XDC contents. Paired `.booley_project`
-repositories use the contract's exact `project_sha`. Any recipe mismatch fails
-closed and requires contract revision; it cannot become a developer change.
+Ticket Mode's shared baseline and recipe invariants are defined in
+[Ticket Target contracts](#ticket-target-contracts).
 
 ### Reports and Criteria detail
 

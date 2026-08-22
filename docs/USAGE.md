@@ -453,28 +453,19 @@ unstructured, and let the skill turn it into a precise contract:
    `## Implementation Plan` into the ticket body. That plan is what the Developer Agent
    builds against, so the back-and-forth is the point, not a formality.
 4. **Review the draft, and read the criteria hardest.** It shows the inferred fields (flagging anything missing or uncertain), then a numbered **Mandatory / Optional** criteria menu. Criteria are the entire contract: they are what the harness gates on, and prose in the ticket body gates nothing. Toggle by number, adjust thresholds, add your own. Give `scope` the same scrutiny; it's what keeps the agent out of unrelated files.
-5. **Approve.** It shows the complete ticket and asks. Nothing is written until you say yes.
-6. **It writes and queues it.** The draft lands in `board/drafts/`, gets validated, and then `booley board move <slug> queue` stamps it and moves it to `board/queue/` — or `board/waiting/` if it declares dependencies on other tickets.
+5. **Approve.** The skill writes the draft, prepares any required Target recipe,
+   validates the final ticket and diff, and queues it after your confirmation.
+   These mechanics are automatic; review what the skill shows you rather than
+   managing its worktrees or metadata.
 
 Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start Ticket Mode with `booley run` in a container terminal; that loop then pulls tickets off the queue one after another without further input. Use `/booley-ticket-triage` to work through blocked, failed, and finished ones.
 
-**Writing a ticket by hand** works too. The template ships inside the installed
-package at `booley/data/skills/booley-ticket-create/TICKET_TEMPLATE.md`; print
-its path with
-
-```bash
-python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent / 'data/skills/booley-ticket-create/TICKET_TEMPLATE.md')"
-```
-
-Copy that file to `board/drafts/<slug>.md` and fill it in (or run `booley board create <slug>`, which writes a stub there for you). Then validate and queue it:
-
-```bash
-python -m booley.ticket_board validate-ticket <path>   # a path, not a slug
-booley board move <slug> queue                         # draft -> queue, stamps created/last_update
-booley board show                                      # where everything stands
-```
-
-`booley run --ticket <slug> --dry-run` additionally checks the setup without executing anything. Note that a draft is never picked up: `booley board move` is what puts it in front of the run loop, and it is the only verb that changes a ticket's state by hand (targets: `queue` or `done` — the rest of the transitions belong to the run loop).
+**Writing a ticket by hand** is an advanced path because executable tickets
+require the same preparation and validation that the skill automates. Follow
+the complete CLI workflow in the packaged
+`booley-ticket-create/SKILL.md` and its `TICKET_TEMPLATE.md`; moving a raw draft
+straight to the queue cannot bypass those checks. `booley run --ticket <slug>
+--dry-run` checks the resulting setup without executing it.
 
 **Directory names and status names are not the same word.** `booley board show` prints the ticket's *status*, while the file lives in a same-meaning but differently-named directory. Two of the eight differ:
 
@@ -692,15 +683,13 @@ works through it.
 
 Each ticket declares the files it's expected to touch. That's a plan, not a
 fence: if finishing the job genuinely needs a file the ticket didn't name — a
-shared package, a `.core` fileset, a neighbouring module — the agent edits it
-and the change lands on the branch like any other. Booley records every such
-file in `.runtime/scope_deviations.json`, and ticket triage shows you the list
-so you decide whether each one was justified. Nothing is silently thrown away,
-and nothing is blocked on your behalf.
+shared package or neighbouring module — the agent edits it and the change lands
+on the branch like any other. Booley records every such file in
+`.runtime/scope_deviations.json` for ticket triage.
 
-The one hard line is Booley's own bookkeeping — development state, criteria,
-ticket files, `booley.toml`. Those are the record your run is graded against,
-so a commit touching them is rejected outright.
+The hard lines are Booley bookkeeping and the Target/control inputs prepared by
+the ticket-creation agent. Developer commits touching either are rejected; if a
+Target recipe is wrong, the ticket blocks so creation or triage can revise it.
 
 If the same file keeps showing up as a deviation across tickets, that's a hint
 your ticket scopes are drawn too narrowly, not that the agent is misbehaving.
