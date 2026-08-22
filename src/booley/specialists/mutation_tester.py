@@ -56,7 +56,15 @@ from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
-from booley.flows.sim.target_tests import (
+from booley.flows.target_campaign import (
+    CampaignUnit,
+    TargetCampaign,
+    all_campaign_results_match,
+    describe_target_campaign,
+    resolve_target_campaign,
+)
+from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_test_suite import (
     NoRunnableTestsError,
     TargetTestSuite,
     require_runnable_target_test_suite,
@@ -1087,15 +1095,14 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     def _apply_campaign_defaults(self) -> McpToolResult | None:
         """Default mutation controls from this Target's criterion parameters."""
         key = f"mutation_score_{self.args.target}"
-        entry = self.state.criteria.get(key)
-        params = entry.params if entry is not None else {}
-        if not self.args.scope:
-            raw_scope = params.get("scope", [])
-            if isinstance(raw_scope, str):
-                self.args.scope = raw_scope
-            elif isinstance(raw_scope, list):
-                self.args.scope = ",".join(str(path) for path in raw_scope)
-        if not self.args.scope:
+        try:
+            campaign = resolve_target_campaign(
+                self.args.target,
+                self.satisfies,
+                self.state.criteria,
+                explicit_scope=self.args.scope,
+            )
+        except CampaignScopeError:
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
@@ -1103,6 +1110,14 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     "or the invocation must pass --scope."
                 ),
             )
+        except NoRunnableTestsError as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"mutation_tester: {exc}",
+            )
+        self._target_campaign = campaign
+        self.args.scope = campaign.scope_arg
+        params = campaign.params_for("mutation_score")
         if self.args.count is None:
             if params.get("auto") is True:
                 self.args.count = "auto"
@@ -2405,6 +2420,21 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         except NoRunnableTestsError as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
 
+    def _campaign_for_target(self, target: str) -> TargetCampaign:
+        """Return the resolved campaign or a suite-only compatibility view."""
+        campaign = getattr(self, "_target_campaign", None)
+        if campaign is not None and campaign.target == target:
+            return campaign
+        try:
+            criteria = self.state.criteria
+        except RuntimeError:
+            criteria = {}
+        return describe_target_campaign(
+            target,
+            criterion_keys=self.satisfies,
+            criteria=criteria,
+        )
+
     def _cocotb_sim_cmd(
         self,
         *,
@@ -2619,15 +2649,10 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         timeout: int = 300,
     ) -> list[MutationTestRun]:
         """Run one mutation selector against the Target's complete test suite."""
-        suite = self._target_test_suite(target)
-        if self.cocotb_target(target, work_dir) is not None:
-            selected = tuple(test for test in suite.tests if test is not None)
-            invocations = [("<cocotb-suite>", None, selected)]
-        else:
-            invocations = [(test or "<default>", test, ()) for test in suite.tests]
+        campaign = self._campaign_for_target(target)
+        batched = self.cocotb_target(target, work_dir) is not None
 
-        runs: list[MutationTestRun] = []
-        for display_name, test_name, cocotb_tests in invocations:
+        def _run_unit(unit: CampaignUnit) -> MutationTestRun:
             try:
                 proc = self._run_sim_pinned(
                     target,
@@ -2636,27 +2661,24 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     tb_top,
                     mut_id=mut_id,
                     timeout=timeout,
-                    test_name=test_name,
-                    cocotb_tests=cocotb_tests,
+                    test_name=unit.test_name,
+                    cocotb_tests=unit.selected_tests,
                 )
-                runs.append(
-                    MutationTestRun(
-                        test_name=display_name,
-                        process=proc,
-                        output=(proc.stdout or "") + (proc.stderr or ""),
-                    )
+                return MutationTestRun(
+                    test_name=unit.display_name,
+                    process=proc,
+                    output=(proc.stdout or "") + (proc.stderr or ""),
                 )
             except subprocess.TimeoutExpired as exc:
-                runs.append(
-                    MutationTestRun(
-                        test_name=display_name,
-                        timed_out=True,
-                        output=_timeout_output(exc),
-                    )
+                return MutationTestRun(
+                    test_name=unit.display_name,
+                    timed_out=True,
+                    output=_timeout_output(exc),
                 )
             except (OSError, subprocess.SubprocessError) as exc:
-                runs.append(MutationTestRun(test_name=display_name, error=str(exc)))
-        return runs
+                return MutationTestRun(test_name=unit.display_name, error=str(exc))
+
+        return list(campaign.execute(_run_unit, batched=batched).values)
 
     @staticmethod
     def _suite_output(runs: list[MutationTestRun]) -> str:
@@ -2678,13 +2700,15 @@ Return a fresh JSON mutation spec list matching the updated muxes.
     @staticmethod
     def _baseline_suite_passed(runs: list[MutationTestRun]) -> bool:
         """A baseline passes only when every Target test completes successfully."""
-        return bool(runs) and all(
-            not run.timed_out
-            and not run.error
-            and run.process is not None
-            and not _infra_failure_reason(run.process)
-            and run.process.returncode == 0
-            for run in runs
+        return all_campaign_results_match(
+            runs,
+            lambda run: (
+                not run.timed_out
+                and not run.error
+                and run.process is not None
+                and not _infra_failure_reason(run.process)
+                and run.process.returncode == 0
+            ),
         )
 
     def _persist_mutant_log(self, mut_id: int, output: str) -> str:
@@ -3075,7 +3099,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         detail.update(
             {
                 "target": target,
-                "tests": list(self._target_test_suite(target).display_names),
+                "tests": list(self._campaign_for_target(target).suite.display_names),
                 "reused_lock": reused_lock,
                 "lock_created_at": lock_created_at,
                 "verification_rounds": verification_rounds,
