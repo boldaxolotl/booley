@@ -8,6 +8,7 @@ injected via :func:`set_ticket_ops`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -199,12 +200,18 @@ def handoff(
     slug: str,
     *,
     expected_execution_id: str | None = None,
+    locked_guard: Callable[[], None] | None = None,
 ) -> None:
-    """Hand off ticket to review."""
-    if expected_execution_id is None:
+    """Hand off a ticket after evaluating the optional guard under its lock."""
+    if expected_execution_id is None and locked_guard is None:
         get_ticket_ops().handoff(project_root, slug)
         return
-    get_ticket_ops().handoff(project_root, slug, expected_execution_id=expected_execution_id)
+    get_ticket_ops().handoff(
+        project_root,
+        slug,
+        expected_execution_id=expected_execution_id,
+        locked_guard=locked_guard,
+    )
 
 
 def unblock(

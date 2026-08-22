@@ -1164,20 +1164,9 @@ async def _run_subprocess(
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
 ) -> tuple[int, str, str, bool]:
-    """Run a subprocess with bounded output buffering, off the event loop.
+    """Run asynchronously with bounded output tails and supervised timeout.
 
-    Uses asyncio subprocess so the MCP server stays protocol-responsive
-    during long MCP tool calls (otherwise a blocking subprocess.run pegs the
-    loop for the entire endpoint duration). Stdout/stderr are streamed through
-    a tail-only ring buffer (see ``_read_tail``) so a 30-min nested-agent
-    run can't blow the MCP server's RSS.
-
-    With ``is_queued`` set (async-job dispatch), *timeout* bounds ACTIVE time
-    only — see ``_wait_with_queue_credit``. Without it, the plain
-    wall-clock-since-spawn watchdog applies (synchronous endpoints are unclassed and
-    never queue).
-
-    Returns (exit_code, stdout, stderr, timed_out).
+    Queued jobs charge only active time; unclassed jobs charge wall-clock time.
     """
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1200,6 +1189,28 @@ async def _run_subprocess(
     assert proc.stdout is not None and proc.stderr is not None
     stdout_task = asyncio.create_task(_read_tail(proc.stdout, _stdout_cap_bytes()))
     stderr_task = asyncio.create_task(_read_tail(proc.stderr, _stderr_cap_bytes()))
+    return await _supervise_started_subprocess(
+        proc,
+        group,
+        timeout,
+        stdout_task,
+        stderr_task,
+        is_queued=is_queued,
+        on_first_active=on_first_active,
+    )
+
+
+async def _supervise_started_subprocess(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+    timeout: int,
+    stdout_task: asyncio.Task[bytes],
+    stderr_task: asyncio.Task[bytes],
+    *,
+    is_queued: Callable[[], bool] | None,
+    on_first_active: Callable[[], None] | None,
+) -> tuple[int, str, str, bool]:
+    """Supervise and collect output from an already started subprocess."""
 
     try:
         try:
@@ -1228,18 +1239,21 @@ async def _run_subprocess(
             False,
         )
     finally:
-        # If we're unwinding while the child is still alive, reap it. The common
-        # case is the MCP client interrupting the MCP tool call, which cancels this
-        # coroutine (CancelledError) at the ``await`` above. Without this, an
-        # interrupted `simulate` would leave an orphaned simulator running under
-        # its own session — still holding the sim lock and able to write a late
-        # report long after Claude has moved on. Kill is signal-only/synchronous
-        # because awaiting is unreliable during cancellation unwinding.
-        if proc.returncode is None:
-            _signal_kill_process_group(proc, group)
-            for t in (stdout_task, stderr_task):
-                if not t.done():
-                    t.cancel()
+        _reap_unfinished_subprocess(proc, group, stdout_task, stderr_task)
+
+
+def _reap_unfinished_subprocess(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+    *stream_tasks: asyncio.Task[bytes],
+) -> None:
+    """Synchronously stop an unreaped tree while cancellation unwinds."""
+    if proc.returncode is not None:
+        return
+    _signal_kill_process_group(proc, group)
+    for task in stream_tasks:
+        if not task.done():
+            task.cancel()
 
 
 async def _await_supervised_process(

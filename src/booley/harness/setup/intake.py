@@ -139,39 +139,58 @@ def _check_dependencies(ctx: TicketContext) -> None:
 
 def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
     """Detect resume state, update ctx stages, activate ticket. Returns action."""
-    project_root = ctx.project_root
-    resume_info = ticket_cli.resume(project_root, ctx.slug)
+    resume_info = ticket_cli.resume(ctx.project_root, ctx.slug)
     action = resume_info.get("action", "fresh")
-    resume_stage = resume_info.get("stage", "")
-    logger.debug("Resume action for %s: %s (stage=%s)", ctx.slug, action, resume_stage)
+    logger.debug(
+        "Resume action for %s: %s (stage=%s)", ctx.slug, action, resume_info.get("stage", "")
+    )
+    progress = _load_progress(ctx.project_root, ctx.slug)
+    ctx.workspace_intent = _workspace_intent(action, progress, ctx.slug)
+    ctx.execution_id = uuid.uuid4().hex
+    developer_pid = _developer_pid()
+    _apply_resume_action(ctx, fields, progress, action, developer_pid)
+    _ensure_ticket_snapshot(ctx.project_root, ctx.slug, ctx.ticket_path)
+    if action != "fresh" and not ticket_cli.activate(
+        ctx.project_root,
+        ctx.slug,
+        owner_pid=developer_pid,
+        execution_id=ctx.execution_id,
+    ):
+        raise FatalError(f"Ticket '{ctx.slug}' is already being executed by another runner")
+    return action
 
-    # Load progress.json for steps_completed and blocked_reason
-    # (resume_detect doesn't return these -- they live in progress.json)
-    progress = _load_progress(project_root, ctx.slug)
+
+def _workspace_intent(action: str, progress: dict, slug: str) -> str:
+    """Resolve and validate the execution workspace intent."""
     persisted_intent = progress.get("workspace_intent", "fresh")
     if persisted_intent not in {"fresh", "resume"}:
-        logger.warning(
-            "Ignoring invalid workspace_intent %r for %s",
-            persisted_intent,
-            ctx.slug,
-        )
+        logger.warning("Ignoring invalid workspace_intent %r for %s", persisted_intent, slug)
         persisted_intent = "fresh"
-    ctx.workspace_intent = (
-        "resume" if action in {"continue", "resume_blocked"} else persisted_intent
-    )
+    return "resume" if action in {"continue", "resume_blocked"} else persisted_intent
 
-    ctx.execution_id = uuid.uuid4().hex
+
+def _developer_pid() -> int:
+    """Return the outer developer process ID used for ownership checks."""
     try:
         from booley.config.project_config import ENV_PREFIX as _proj_env
 
         _orch_env = f"{_proj_env}_DEVELOPER_PID"
     except (ImportError, AttributeError):
         _orch_env = "BOOLEY_DEVELOPER_PID"
-    developer_pid = int(os.environ.get(_orch_env, "0")) or os.getpid()
+    return int(os.environ.get(_orch_env, "0")) or os.getpid()
 
+
+def _apply_resume_action(
+    ctx: TicketContext,
+    fields: dict,
+    progress: dict,
+    action: str,
+    developer_pid: int,
+) -> None:
+    """Apply stage state and initialize a fresh ticket when needed."""
     if action == "fresh":
         ticket_cli.init_ticket(
-            project_root,
+            ctx.project_root,
             str(ctx.ticket_path),
             execution_id=ctx.execution_id,
             owner_pid=developer_pid,
@@ -182,34 +201,6 @@ def _detect_and_apply_resume(ctx: TicketContext, fields: dict) -> str:
         _apply_continue(ctx, progress, fields)
     elif action == "resume_blocked":
         _apply_resume_blocked(ctx, progress, fields)
-
-    # Ensure ticket.md exists in logs dir — it may be missing if a prior
-    # run failed at validation before init_ticket() had a chance to copy it.
-    _ensure_ticket_snapshot(project_root, ctx.slug, ctx.ticket_path)
-
-    # Activate ticket for non-fresh resume.
-    # init_ticket (fresh path) moves to active/. For all other resume
-    # actions, the ticket may be in queue/ after reset/unblock.
-    # activate() checks PID ownership: if another live runner owns
-    # the ticket, it returns False and we abort.
-    if action != "fresh" and not ticket_cli.activate(
-        project_root,
-        ctx.slug,
-        owner_pid=developer_pid,
-        execution_id=ctx.execution_id,
-    ):
-        # No slug= here: the ticket belongs to another live runner, so we
-        # must NOT fail/block it.  Omitting slug makes the developer's
-        # FatalError handler skip ticket_cli.fail(), leaving the ticket
-        # untouched in active/.
-        raise FatalError(
-            f"Ticket '{ctx.slug}' is already being executed by another runner",
-        )
-
-    # PID stamp for orphan detection: _ticket_lock() (called by both
-    # init_ticket and activate) already stamps the developer PID
-    # from the *_DEVELOPER_PID env var.  No separate write needed.
-    return action
 
 
 def _ensure_ticket_snapshot(project_root: Path, slug: str, ticket_path: Path) -> None:

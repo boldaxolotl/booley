@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -176,6 +177,7 @@ class TicketOps(Protocol):
         slug: str,
         *,
         expected_execution_id: str | None = None,
+        locked_guard: Callable[[], None] | None = None,
     ) -> None: ...
     def unblock(
         self,
@@ -436,12 +438,14 @@ class DirectTicketOps:
         slug: str,
         *,
         expected_execution_id: str | None = None,
+        locked_guard: Callable[[], None] | None = None,
     ) -> None:
         _check(
             op_handoff(
                 self._tio(project_root),
                 slug,
                 expected_execution_id=expected_execution_id,
+                locked_guard=locked_guard,
             ),
             "handoff",
             slug,

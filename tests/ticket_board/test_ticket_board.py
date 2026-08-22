@@ -1318,6 +1318,21 @@ class TestOpHandoff:
         assert status == "running"
         assert "execution changed concurrently" in capsys.readouterr().err
 
+    def test_review_guard_runs_inside_transition_before_move(self, tmp_path):
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+
+        def reject_changed_package() -> None:
+            _path, status = find_ticket_file(tio.tickets_dir, "t1")
+            assert status == "running"
+            raise RuntimeError("review package changed")
+
+        with pytest.raises(RuntimeError, match="review package changed"):
+            op_handoff(tio, "t1", locked_guard=reject_changed_package)
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
+
     def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys):
         """cleanup:true + destination:review keeps the worktree — say so (F-55)."""
         tio = make_tio(tmp_path)

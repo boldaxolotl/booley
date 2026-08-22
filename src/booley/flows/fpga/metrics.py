@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.clock_timing import ClockTiming, per_clock_to_json
+from booley.flows.run_evidence import FlowRunEvidence
 
 
 @dataclass
@@ -54,7 +55,7 @@ class FpgaMetrics:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     #: Provenance for the run that produced these artifacts.
-    run_evidence: dict[str, Any] = field(default_factory=dict)
+    run_evidence: FlowRunEvidence | None = None
     #: Current run consuming a prior producer's cached artifacts.
     cache_consumer_run_id: str = ""
 

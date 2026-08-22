@@ -98,6 +98,9 @@ class TestResolveTicketDisposition:
             await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
             assert mocks["handoff"].call_count == 1
             assert mocks["prepare_review"].await_count == 1
+            mocks["verify_review"].assert_not_called()
+            mocks["handoff"].call_args.kwargs["locked_guard"]()
+            mocks["verify_review"].assert_called_once_with(tmp_path, ctx.slug)
             assert mocks["block"].call_count == 0
             assert mocks["fail"].call_count == 0
             assert mocks["archive"].call_count == 0

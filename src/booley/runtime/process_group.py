@@ -64,7 +64,9 @@ async def _async_taskkill(group: ProcessGroup, *, force: bool) -> None:
         try:
             killer.kill()
         except (ProcessLookupError, OSError) as exc:
-            logger.debug("could not stop timed-out taskkill for process group %s: %s", group.id, exc)
+            logger.debug(
+                "could not stop timed-out taskkill for process group %s: %s", group.id, exc
+            )
         with contextlib.suppress(ProcessLookupError, TimeoutError, OSError):
             await asyncio.wait_for(killer.wait(), timeout=1)
         return

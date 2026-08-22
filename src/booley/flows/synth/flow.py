@@ -60,7 +60,9 @@ from ..flow_config import resolve_flow_default_target
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
+    FlowRunEvidence,
     build_flow_run_evidence,
+    digest_resolved_inputs,
 )
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
@@ -78,6 +80,21 @@ from .recipe import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SYNTH_METRIC_MAP = {
+    "area": "area_um2",
+    "area_um2": "area_um2",
+    "area_kge": "area_kge",
+    "cell_count": "cells",
+    "wire_count": "wire_count",
+    "critical_path_ps": "critical_path_ps",
+    "fmax_mhz": "fmax_mhz",
+    "wns_ns": "wns_ns",
+    "whs_ns": "whs_ns",
+    "period_ns": "period_ns",
+    "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
+    "reg2reg_slack_ns": "reg2reg_slack_ns",
+}
 
 
 def synth_target_report_slug(target: str) -> str:
@@ -259,7 +276,7 @@ class SynthMetrics:
     #: so a baseline pass cannot be overwritten by the later current pass.
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
-    run_evidence: dict[str, Any] = field(default_factory=dict)
+    run_evidence: FlowRunEvidence | None = None
 
     @property
     def unexpected_latches(self) -> int:
@@ -1019,81 +1036,50 @@ class AsicSynthesizeFlow(BooleyFlow):
         cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
 
     def _build_synth_cmd(self, target: str) -> list[str]:
-        """Resolve the synth Target through FuseSoC, then build the run_yosys_syn command.
-
-        ADR 0022 (decision 4): FuseSoC owns design-description. ``resolve_target``
-        runs ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing
-        the RTL sources, top module, and typed parameters. Synthesis is the
-        documented **command-gen exception**: Booley does *not* ``make``-drive
-        FuseSoC's flow — it reruns yosys its own way (sv2v + ABC recipes +
-        OpenSTA), feeding the resolved RTL filelist to ``run_yosys_syn`` in
-        standalone mode (``--extra-rtl`` + ``-t``, no ``-c``). That leaves the
-        legacy ``read_file_list`` / ``get_config_defines`` config-mode path
-        intact for non-FuseSoC callers (the Step-3 purge removes it later).
-
-        Sources are passed as paths relative to the worktree
-        (resolved against the Session Runtime project root), exactly
-        like ``make -C <relpath>`` for the make-driven EDA tools. A ``--baseline``
-        re-resolve runs against a throwaway worktree with ``self.args.work_dir``
-        pointed at it, so its build dir is physically separate from the current
-        run's and cannot clobber it. Raises ``TargetResolutionError`` on setup
-        failure (caller records it as an infra error).
-
-        ADR 0037 §8: this argv is no longer executed as a subprocess — it is
-        the validated, golden-snapshotted *spec* that ``_configure_synth``
-        parses back in-process (via run_yosys_syn's own parser, so flag-shape
-        drift still fails loudly) to render the make-driven build dir. It
-        remains a genuinely runnable legacy command for dry-run display.
-        """
-        from ..edam import work_root_for
-
-        build_root = work_root_for(self.args.work_dir, self.name, target)
-        # Force a clean FuseSoC re-stage. Synthesis is the command-gen exception:
-        # it reruns yosys standalone over the resolved filelist rather than
-        # make-driving the build dir, so — unlike simulate/lint/elaborate — it
-        # gains nothing from a persisted build_root. Worse, a stale staged `src/`
-        # left by an earlier resolution silently feeds yosys OUTDATED RTL: a
-        # working-tree edit that never reached the staged copy yields wrong
-        # metrics or a phantom failure against code the author already changed
-        # (the same silently-wrong-RTL hazard as the worktree `.core` shadow bug).
-        # Removing build_root guarantees `fusesoc run --setup` copies the current
-        # sources. Best-effort: a removal failure is non-fatal — resolution still
-        # runs and will surface any real problem loudly.
-        shutil.rmtree(build_root, ignore_errors=True)
-        resolved = fusesoc_registry.resolve_target(
-            target,
-            project_root=self.args.work_dir,
-            build_root=build_root,
-        )
-
-        snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
-        recipe_fingerprint = synthesis_recipe_snapshot_fingerprint(snapshot)
-        run_evidence = build_flow_run_evidence(
-            flow=self.name,
-            target=target,
-            recipe_sha256=recipe_fingerprint,
-            work_dir=Path(self.args.work_dir),
-        )
-        evidence = getattr(self, "_recipe_evidence", None)
-        if evidence is None:
-            evidence = self._recipe_evidence = {}
-        evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
-
+        """Resolve staged inputs and build the validated run_yosys_syn command spec."""
+        resolved = self._resolve_synth_target(target)
+        self._record_synth_evidence(target, resolved)
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
         top = self._append_rtl_source_args(cmd, resolved, work_dir)
         self._append_sta_constraint_args(cmd, resolved, target, work_dir)
         self._append_typed_param_args(cmd, resolved, target, top)
         self._append_synth_recipe_args(cmd, resolved, target)
-        # Key run_yosys_syn's result dir on the *target name*, not the resolved
-        # toplevel module. Without ``-w`` the run falls back to run_yosys_syn's
-        # default ``syn_result/standalone.<toplevel>/`` — so two targets that
-        # share a toplevel (e.g. a scalar and a parallel config of the same DUT)
-        # silently overwrite each other's reports. ``-w`` gives each target its
-        # own ``syn_result/<target>/`` (a ``--baseline`` re-run is isolated by
-        # its separate worktree, so no per-run suffix is needed here).
         cmd.extend(["-w", target])
         return cmd
+
+    def _resolve_synth_target(self, target: str) -> fusesoc_registry.ResolvedTarget:
+        """Clean and restage one Target so command generation cannot reuse stale RTL."""
+        from ..edam import work_root_for
+
+        build_root = work_root_for(self.args.work_dir, self.name, target)
+        shutil.rmtree(build_root, ignore_errors=True)
+        return fusesoc_registry.resolve_target(
+            target,
+            project_root=self.args.work_dir,
+            build_root=build_root,
+        )
+
+    def _record_synth_evidence(
+        self, target: str, resolved: fusesoc_registry.ResolvedTarget
+    ) -> None:
+        """Keep typed recipe/provenance evidence for the exact staged synthesis inputs."""
+        snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
+        recipe_fingerprint = synthesis_recipe_snapshot_fingerprint(snapshot)
+        dispatched_files = tuple(
+            item for item in resolved.rtl_files if item.is_hdl or item.file_type == "SDC"
+        )
+        run_evidence = build_flow_run_evidence(
+            flow=self.name,
+            target=target,
+            recipe_sha256=recipe_fingerprint,
+            source_sha256=digest_resolved_inputs(dispatched_files, resolved.build_root),
+            work_dir=Path(self.args.work_dir),
+        )
+        evidence = getattr(self, "_recipe_evidence", None)
+        if evidence is None:
+            evidence = self._recipe_evidence = {}
+        evidence[target] = (snapshot, recipe_fingerprint, run_evidence)
 
     def _synth_build_dir(self, target: str) -> Path:
         """The make-driven synth build dir for *target* (under its work root).
@@ -1449,9 +1435,11 @@ class AsicSynthesizeFlow(BooleyFlow):
             self._compute_delta_pct,
             eda_tool=self._eda_tool,
         )
-        report["run_evidence"] = metrics.run_evidence or None
+        report["run_evidence"] = metrics.run_evidence.as_dict() if metrics.run_evidence else None
         report["baseline_run_evidence"] = (
-            baseline_metrics.run_evidence if baseline_metrics else None
+            baseline_metrics.run_evidence.as_dict()
+            if baseline_metrics and baseline_metrics.run_evidence
+            else None
         )
         run_id = os.environ.get("BOOLEY_RUN_ID", "")
         if run_id:
@@ -2128,7 +2116,22 @@ class AsicSynthesizeFlow(BooleyFlow):
         baseline_ref: str | None,
     ) -> None:
         """Set the synthesis_ok criterion for one target."""
-        detail: dict[str, Any] = {
+        detail = self._synth_criterion_detail(cur)
+        if base:
+            detail["baseline_metrics"] = self._synth_baseline_detail(base)
+            detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
+            detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
+            detail[BASELINE_RUN_EVIDENCE_DETAIL] = (
+                base.run_evidence.as_dict() if base.run_evidence else None
+            )
+        if baseline_ref:
+            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
+        self.set_criterion(f"synthesis_ok_{tgt}", cur.passed, detail=detail, source_target=tgt)
+
+    @staticmethod
+    def _synth_criterion_detail(cur: SynthMetrics) -> dict[str, Any]:
+        """Build current-run synthesis evidence for one criterion."""
+        return {
             "area_um2": cur.area_um2,
             "area_kge": cur.area_kge,
             "cells": cur.cells,
@@ -2163,46 +2166,23 @@ class AsicSynthesizeFlow(BooleyFlow):
             "passed": cur.passed,
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
-            RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            "_metric_map": {
-                "area": "area_um2",
-                "area_um2": "area_um2",
-                "area_kge": "area_kge",
-                "cell_count": "cells",
-                "wire_count": "wire_count",
-                # Per-clock sub-metrics (identity spelling; resolved inside
-                # per_clock[clock]) plus the aggregate/internal scalars.
-                "critical_path_ps": "critical_path_ps",
-                "fmax_mhz": "fmax_mhz",
-                "wns_ns": "wns_ns",
-                "whs_ns": "whs_ns",
-                "period_ns": "period_ns",
-                "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
-                "reg2reg_slack_ns": "reg2reg_slack_ns",
-            },
+            RUN_EVIDENCE_DETAIL: cur.run_evidence.as_dict() if cur.run_evidence else None,
+            "_metric_map": _SYNTH_METRIC_MAP,
             # wns_ns/whs_ns are min-threshold (more slack = better), matching
             # fpga_impl's _min_allowed so a shared threshold behaves the same way.
             "_min_allowed": ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"],
         }
-        if base:
-            detail["baseline_metrics"] = {
-                "area_um2": base.area_um2,
-                "area_kge": base.area_kge,
-                "cells": base.cells,
-                "wire_count": base.wire_count,
-                "per_clock": per_clock_to_json(base.per_clock),
-            }
-            detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
-            detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
-            detail[BASELINE_RUN_EVIDENCE_DETAIL] = base.run_evidence or None
-        if baseline_ref:
-            detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
-        self.set_criterion(
-            f"synthesis_ok_{tgt}",
-            cur.passed,
-            detail=detail,
-            source_target=tgt,
-        )
+
+    @staticmethod
+    def _synth_baseline_detail(base: SynthMetrics) -> dict[str, Any]:
+        """Build compact baseline synthesis metrics for comparison."""
+        return {
+            "area_um2": base.area_um2,
+            "area_kge": base.area_kge,
+            "cells": base.cells,
+            "wire_count": base.wire_count,
+            "per_clock": per_clock_to_json(base.per_clock),
+        }
 
 
 def _synth_target_warnings(top: str, defines: list[str]) -> list[str]:

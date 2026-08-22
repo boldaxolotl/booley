@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,21 @@ class TicketFileSpec:
     criteria: dict[str, Any] | None = None
     body: str = ""
     base_sha: str = ""
+
+
+@dataclass(frozen=True)
+class _MoveRequest:
+    """One guarded ticket transition evaluated under the per-ticket lock."""
+
+    slug: str
+    to_dir: str
+    updates: dict[str, Any]
+    append_step: str | None
+    transition: tuple[str, str, str, str] | None
+    enforce_lifecycle: bool
+    expected_status: str | None
+    expected_execution_id: str | None
+    locked_guard: Callable[[], None] | None
 
 
 from .constants import RUNTIME_FIELDS, normalize_dir
@@ -351,75 +367,78 @@ class TicketIO:
         enforce_lifecycle: bool = False,
         expected_status: str | None = None,
         expected_execution_id: str | None = None,
+        locked_guard: Callable[[], None] | None = None,
     ) -> bool:
-        """Atomic move + field update under per-ticket lock.
-
-        Runtime fields are routed to .runtime/progress.json.
-        Spec fields are written to frontmatter before the file move.
-
-        Args:
-            transition: Optional (from_state, to_state, actor, detail) tuple.
-                        If provided, the transition is logged inside the lock
-                        to prevent interleaved writes under concurrent
-                        execution (docs/PRINCIPLES §7).
-            enforce_lifecycle: Derive the locked source state and reject moves
-                               outside the canonical lifecycle graph.
-            expected_status: Compare-and-swap guard. When set, reject the move
-                             unless the locked filesystem state still matches.
-            expected_execution_id: Reject unless the locked execution generation
-                                   matches the caller's activation generation.
-
-        Returns True on success, False if ticket not found.
-        """
+        """Move and update atomically after evaluating all supplied guards."""
+        request = _MoveRequest(
+            slug=slug,
+            to_dir=to_dir,
+            updates=updates,
+            append_step=append_step,
+            transition=transition,
+            enforce_lifecycle=enforce_lifecycle,
+            expected_status=expected_status,
+            expected_execution_id=expected_execution_id,
+            locked_guard=locked_guard,
+        )
         with self._ticket_lock(slug):
-            # Find ticket inside lock to avoid TOCTOU race
-            file_path, source_status = find_ticket_file(self.tickets_dir, slug)
-            if file_path is None:
-                print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
-                return False
-            if expected_status is not None and source_status != expected_status:
-                print(
-                    f"Error: ticket '{slug}' changed concurrently: expected "
-                    f"{expected_status}, found {source_status}",
-                    file=sys.stderr,
-                )
-                return False
+            return self._move_and_update_locked(request)
 
-            progress = self._load_or_bootstrap_progress(slug, file_path)
-            actual_execution_id = progress.get("execution_id", "")
-            if expected_execution_id is not None and actual_execution_id != expected_execution_id:
-                print(
-                    f"Error: ticket '{slug}' execution changed concurrently: expected "
-                    f"{expected_execution_id}, found {actual_execution_id or '<none>'}",
-                    file=sys.stderr,
-                )
-                return False
+    def _move_and_update_locked(self, request: _MoveRequest) -> bool:
+        """Evaluate a move request while its ticket lock is held."""
+        file_path, source_status = find_ticket_file(self.tickets_dir, request.slug)
+        if file_path is None:
+            print(f"Error: ticket '{request.slug}' not found after lock", file=sys.stderr)
+            return False
+        progress = self._load_or_bootstrap_progress(request.slug, file_path)
+        if not self._move_guards_match(request, source_status, progress):
+            return False
+        if request.locked_guard is not None:
+            request.locked_guard()
+        resolved = self._validated_destination(
+            request.slug,
+            file_path,
+            source_status,
+            request.to_dir,
+            enforce_lifecycle=request.enforce_lifecycle,
+        )
+        if resolved is None:
+            return False
+        new_path, source, destination = resolved
+        transition = self._canonical_transition(request.transition, source, destination)
+        spec_updates = self._apply_updates(progress, request.updates, request.append_step)
+        save_progress(self.logs_dir, request.slug, progress)
+        self._write_spec_fields(file_path, spec_updates)
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_path.exists():
+            shutil.move(str(file_path), str(new_path))
+        if transition:
+            self._append_transition_unlocked(request.slug, *transition)
+        return True
 
-            resolved = self._validated_destination(
-                slug,
-                file_path,
-                source_status,
-                to_dir,
-                enforce_lifecycle=enforce_lifecycle,
+    @staticmethod
+    def _move_guards_match(
+        request: _MoveRequest, source_status: str | None, progress: dict[str, Any]
+    ) -> bool:
+        """Check status and execution-generation compare-and-swap guards."""
+        if request.expected_status is not None and source_status != request.expected_status:
+            print(
+                f"Error: ticket '{request.slug}' changed concurrently: expected "
+                f"{request.expected_status}, found {source_status}",
+                file=sys.stderr,
             )
-            if resolved is None:
-                return False
-            new_path, source, destination = resolved
-            transition = self._canonical_transition(transition, source, destination)
-
-            spec_updates = self._apply_updates(progress, updates, append_step)
-            save_progress(self.logs_dir, slug, progress)
-            self._write_spec_fields(file_path, spec_updates)
-
-            # Move file (.runtime/progress.json stays in logs/<slug>/.runtime/)
-            new_dir = new_path.parent
-            new_dir.mkdir(parents=True, exist_ok=True)
-            if file_path.exists():
-                shutil.move(str(file_path), str(new_path))
-
-            if transition:
-                self._append_transition_unlocked(slug, *transition)
-
+            return False
+        actual_execution_id = progress.get("execution_id", "")
+        if (
+            request.expected_execution_id is not None
+            and actual_execution_id != request.expected_execution_id
+        ):
+            print(
+                f"Error: ticket '{request.slug}' execution changed concurrently: expected "
+                f"{request.expected_execution_id}, found {actual_execution_id or '<none>'}",
+                file=sys.stderr,
+            )
+            return False
         return True
 
     def _init_ticket_locked(

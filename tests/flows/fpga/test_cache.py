@@ -9,6 +9,7 @@ from unittest.mock import patch
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga import cache as fpga_cache
 from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand
+from booley.flows.run_evidence import FlowRunEvidence
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 
@@ -36,14 +37,13 @@ def _parsed_pass() -> dict:
     }
 
 
-def _run_evidence(run_id: str = "producer-1") -> dict:
-    return {
-        "version": 1,
-        "run_id": run_id,
-        "source_revision": "a" * 40,
-        "source_sha256": "b" * 64,
-        "recipe_sha256": "c" * 64,
-    }
+def _run_evidence(run_id: str = "producer-1") -> FlowRunEvidence:
+    return FlowRunEvidence(
+        run_id=run_id,
+        source_revision="a" * 40,
+        source_sha256="b" * 64,
+        recipe_sha256="c" * 64,
+    )
 
 
 def _flow(root: Path) -> FpgaImplFlow:
@@ -162,7 +162,7 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
     assert metrics.cached
     assert metrics.cache_fingerprint == "a" * 64
     assert metrics.recipe_fingerprint == "recipe-a"
-    assert metrics.run_evidence["run_id"] == "producer-1"
+    assert metrics.run_evidence and metrics.run_evidence.run_id == "producer-1"
     assert metrics.cache_consumer_run_id == "consumer-2"
 
 
