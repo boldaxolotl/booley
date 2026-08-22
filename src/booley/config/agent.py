@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,7 +40,8 @@ _VALID_AUTH_MODES = ("auto", "subscription", "api_key")
 _DEFAULT_AUTH = "auto"
 
 # The three capability tiers every provider maps to concrete models.
-_MODEL_TIERS = ("heavy", "standard", "light")
+MODEL_TIERS = ("heavy", "standard", "light")
+_MODEL_TIERS = MODEL_TIERS
 
 # [models.roles] vocabulary: the agents whose model may be pinned by name.
 # Two kinds of role live here and they resolve through different call paths:
@@ -55,7 +57,7 @@ _MODEL_TIERS = ("heavy", "standard", "light")
 # which bare specialist subprocesses import at startup. A registry cross-check
 # test (tests/harness/test_role_models.py) fails if a new specialist is added
 # without extending this set, so it cannot drift silently.
-_KNOWN_ROLES = frozenset(
+KNOWN_ROLES = frozenset(
     {
         "developer",
         "recovery",
@@ -66,6 +68,7 @@ _KNOWN_ROLES = frozenset(
         "tb_coder",
     }
 )
+_KNOWN_ROLES = KNOWN_ROLES
 
 
 class BackendConfigError(RuntimeError):
@@ -571,7 +574,7 @@ def _load_toml_agent_config(
     return (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg)
 
 
-def _parse_provider(agent_section: dict) -> str | None:
+def parse_provider(agent_section: Mapping[str, Any]) -> str | None:
     """Resolve the declared agent provider, or ``None`` when [agent] omits it.
 
     ``provider`` is the sole spelling. An explicitly invalid value raises
@@ -588,7 +591,10 @@ def _parse_provider(agent_section: dict) -> str | None:
     return raw
 
 
-def _parse_auth(agent_section: dict) -> str | None:
+_parse_provider = parse_provider
+
+
+def parse_auth(agent_section: Mapping[str, Any]) -> str | None:
     """Resolve the declared auth mode, or ``None`` when [agent] omits it.
 
     ``auth`` is the sole spelling. An explicitly invalid value raises
@@ -605,6 +611,9 @@ def _parse_auth(agent_section: dict) -> str | None:
             f"use one of {', '.join(repr(m) for m in _VALID_AUTH_MODES)}."
         )
     return raw
+
+
+_parse_auth = parse_auth
 
 
 def _env_auth() -> str:
@@ -676,7 +685,7 @@ def _parse_tier_models(models_section: dict) -> dict[str, str] | None:
     return tiers or None
 
 
-def _parse_role_models(models_section: dict) -> dict[str, str]:
+def parse_role_models(models_section: Mapping[str, Any]) -> dict[str, str]:
     """Parse ``[models.roles]`` — per-agent model pins.
 
     Each value is either a tier name or a literal model id; the distinction is
@@ -710,6 +719,9 @@ def _parse_role_models(models_section: dict) -> dict[str, str]:
             )
         role_models[role] = value.strip()
     return role_models
+
+
+_parse_role_models = parse_role_models
 
 
 def _parse_agent_and_models(
