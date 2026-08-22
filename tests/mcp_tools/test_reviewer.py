@@ -1341,9 +1341,32 @@ class TestPromptConstruction:
 
         system = endpoint._build_system_prompt("optimization")
 
-        assert "Compile/elaboration-time computation left in runtime hardware" in system
-        assert "Flag elaboration-invariant work implemented as runtime hardware" in system
+        assert "Runtime hardware driven only by elaboration constants" in system
+        assert "registers always driven by constants or a MUX with constant select" in system
         assert "constant function evaluated into a `localparam`" in system
+        assert "Specialize supported configurations at elaboration" in system
+        assert "reject unsupported geometries at elaboration" in system
+
+    def test_rtl_optimization_prompt_prefers_static_hardware_topology(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--scope",
+                "rtl/mod_a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "optimization",
+            ]
+        )
+
+        system = endpoint._build_system_prompt("optimization")
+
+        assert "Prefer static wiring over runtime steering" in system
+        assert "variable part-selects, wide dynamic shifts" in system
+        assert "Priority encoders" in system
+        assert "is it REALLY necessary" in system
+        assert "Size operands and intermediate expressions deliberately" in system
 
     def test_rtl_user_prompt_includes_scope(self, state_file: Path):
         endpoint = ReviewerSpecialist()
