@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import getpass
 import hashlib
 import json
 import os
@@ -31,6 +30,7 @@ from booley.audit import (
     configs_schema,
     design_size,
     flow_schema,
+    host_environment,
     project_schema,
     resource_policy,
     target_matrix,
@@ -224,6 +224,25 @@ def _warning_sink(
             sink(finding)
 
     return emit
+
+
+def _render_environment_finding(
+    finding: host_environment.EnvironmentFinding,
+    _pass: Check,
+    _warn: Warn,
+    _skip: Check,
+    _fail: Fail,
+) -> None:
+    """Translate a typed host finding into Doctor presentation callbacks."""
+    if finding.severity is host_environment.EnvironmentSeverity.PASS:
+        _pass(finding.message)
+    elif finding.severity is host_environment.EnvironmentSeverity.SKIP:
+        _skip(finding.message)
+    elif finding.severity is host_environment.EnvironmentSeverity.FAIL:
+        _fail(finding.message, finding.fix)
+    else:
+        assert finding.check_id is not None
+        _warning_sink(_warn, finding.check_id)(finding.message, finding.fix)
 
 
 @dataclass(frozen=True)
@@ -656,13 +675,13 @@ def _run_deep_phase(
 def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> str | None:
     """Run host environment checks. Returns the container CLI path."""
     py_ver = sys.version_info
-    if (py_ver.major, py_ver.minor) >= MIN_PY:
-        _pass(f"Python {py_ver.major}.{py_ver.minor}")
-    else:
-        _fail(
-            f"Python {py_ver.major}.{py_ver.minor} (need >= {MIN_PY[0]}.{MIN_PY[1]})",
-            f"install python{MIN_PY[0]}.{MIN_PY[1]}+",
-        )
+    _render_environment_finding(
+        host_environment.audit_python_version((py_ver.major, py_ver.minor), MIN_PY),
+        _pass,
+        _warn,
+        _skip,
+        _fail,
+    )
 
     try:
         import booley
@@ -686,47 +705,15 @@ def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> s
 
 
 def _check_legacy_distribution(_pass: Check, _fail: Fail) -> None:
-    """Fail when the pre-rename ``booley`` distribution is still installed.
-
-    The PyPI distribution was renamed ``booley`` -> ``booley-rtl``. Because the
-    *import* package kept the name ``booley``, a leftover editable install of
-    the old distribution drops a ``__editable__.booley-*.pth`` on sys.path that
-    silently wins over a freshly installed ``booley-rtl`` checkout: `pip show
-    booley-rtl` points at the new tree while `import booley` and `booley
-    --version` still resolve the old one. Nothing about that is visible unless
-    you look for it, so name both the conflict and the exact cleanup.
-    """
-    from importlib.metadata import PackageNotFoundError, distribution
-
-    try:
-        legacy = distribution("booley")
-    except PackageNotFoundError:
-        _pass("no legacy `booley` distribution shadowing `booley-rtl`")
-        return
-
-    import booley
-
-    resolved = Path(booley.__file__ or "?").resolve().parent
-    legacy_ver = legacy.metadata["Version"] or "?"
-    if booley.__dist_name__ == "booley":
-        _fail(
-            f"the pre-rename `booley` distribution ({legacy_ver}) is installed "
-            f"and is the one supplying `import booley` (from {resolved}); "
-            "`booley-rtl` is not installed at all",
-            "pip uninstall -y booley && pip install -e '.[dev]'  # or: pip install booley-rtl",
-        )
-        return
-    _fail(
-        f"both `booley` ({legacy_ver}) and `booley-rtl` are installed; the "
-        f"legacy distribution can shadow the newer one on sys.path "
-        f"(`import booley` currently resolves to {resolved})",
-        "pip uninstall -y booley  # then re-run doctor to confirm the path moved",
+    """Render the extracted legacy-distribution audit."""
+    _render_environment_finding(
+        host_environment.audit_legacy_distribution(),
+        _pass,
+        lambda _message: None,
+        lambda _message: None,
+        _fail,
     )
 
-
-# Skew beyond this is enough to make apt reject a freshly published Release
-# file ("not valid yet") during a sandbox image build.
-_CLOCK_SKEW_WARN_S = 120
 
 #: ``.core`` security violations whose verdict depends on the agent's write
 #: Scope. doctor only has a synthetic project-wide Scope, so these are
@@ -737,115 +724,29 @@ _SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script
 
 
 def _check_host_clock(_pass: Check, _warn: Check, _skip: Check) -> None:
-    """Warn when the host clock is skewed from true UTC (F-5).
-
-    Dual-boot Windows machines commonly read the RTC as *local* time, leaving
-    the host — and the Docker Desktop/WSL2 VM, which inherits its clock —
-    hours off true UTC. apt inside a sandbox image build then rejects
-    freshly published Ubuntu Release files as "not valid yet" and the build
-    dies confusingly in an early layer. The Dockerfile relaxes apt's
-    date-window check as a backstop, but the skewed clock also breaks TLS
-    edge cases and timestamps, so surface it. Reference time comes from an
-    HTTP ``Date:`` header (second-granularity — plenty for a >2 min
-    threshold); fail-soft offline.
-    """
-    _warn = _warning_sink(_warn, "host.clock-skew")
-
-    import email.utils
-    import urllib.error
-    import urllib.request
-
-    for url in ("https://www.google.com", "https://one.one.one.one"):
-        try:
-            req = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                date_header = resp.headers.get("Date", "")
-            remote = email.utils.parsedate_to_datetime(date_header)
-        except (urllib.error.URLError, OSError, TypeError, ValueError):
-            continue
-        if remote.tzinfo is None:
-            continue
-        skew = (datetime.now(UTC) - remote).total_seconds()
-        if abs(skew) <= _CLOCK_SKEW_WARN_S:
-            _pass(f"host clock agrees with true UTC (skew {skew:+.0f}s)")
-            return
-        direction = "behind" if skew < 0 else "ahead of"
-        hours = abs(skew) / 3600
-        _warn(
-            f"host clock is {hours:.1f}h {direction} true UTC (vs HTTP Date "
-            f"from {url}) — sandbox image builds and TLS can fail on this; "
-            "dual-boot machines often read the RTC as local time. Fix: "
-            "elevated `w32tm /resync` (Windows) or enable NTP time sync"
-        )
-        return
-    _skip("host clock check skipped - no reference time reachable (offline?)")
+    """Render the extracted host clock probe."""
+    _render_environment_finding(
+        host_environment.probe_host_clock(), _pass, _warn, _skip, lambda *_args: None
+    )
 
 
 def _check_docker(_pass: Check, _skip: Check, _fail: Fail) -> str | None:
-    """Check the container runtime.
-
-    Inside the Session Runtime container (``BOOLEY_CONTAINER=1``) there is no
-    nested container runtime — Booley Flows run directly in-container —
-    so a missing runtime is expected, not a failure. SKIP the whole check there
-    rather than emit a scary FAIL for a healthy in-container setup (QA-3).
-    """
+    """Render the extracted container-runtime probe."""
     from booley.runtime import runtime_context
 
-    if runtime_context.inside_session_runtime():
-        _skip("container runtime check skipped (inside Session Runtime; Booley Flows run here)")
-        return None
-    docker_exe = shutil.which(_CONTAINER_CLI)
-    if not docker_exe:
-        _fail("container runtime not on PATH", "install a supported container runtime")
-        return None
-    try:
-        result = subprocess.run(
-            [docker_exe, "info"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError) as exc:
-        _fail(f"container runtime probe failed: {exc}", "start the container runtime service")
-        return None
-    if result.returncode == 0:
-        _pass("container runtime running")
-        return docker_exe
-    combined = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
-    if "permission denied" in combined:
-        _fail("container runtime permission denied", _docker_permission_denied_fix())
-    else:
-        _fail("container runtime not running", "start the container runtime service")
-    return None
+    audit = host_environment.probe_container_runtime(
+        _CONTAINER_CLI,
+        inside_session_runtime=runtime_context.inside_session_runtime(),
+        which=shutil.which,
+        run=subprocess.run,
+    )
+    _render_environment_finding(audit.finding, _pass, lambda _message: None, _skip, _fail)
+    return audit.executable
 
 
 def _docker_permission_denied_fix() -> str:
-    """Tailor the docker permission-denied remedy to the user's group state.
-
-    On native Linux the most common cause is that the user was added to the
-    ``docker`` group but the current login session still carries the old group
-    set; ``sg``/re-login refreshes it. Distinguish that from "never added".
-    """
-    try:
-        import grp
-
-        group = grp.getgrnam("docker")
-    except (ImportError, KeyError):
-        return "add your user to the 'docker' group (sudo usermod -aG docker $USER) and log out/in"
-    in_group_static = getpass.getuser() in group.gr_mem
-    try:
-        in_group_live = group.gr_gid in os.getgroups()
-    except (AttributeError, OSError):
-        in_group_live = False
-    if in_group_static and not in_group_live:
-        return (
-            "you are in the 'docker' group but this shell predates it; "
-            "log out/in, or run via: sg docker -c '<command>'"
-        )
-    if not in_group_static:
-        return "add your user to the 'docker' group (sudo usermod -aG docker $USER) and log out/in"
-    return "ensure the docker daemon is running and the socket is accessible"
+    """Compatibility facade for the extracted runtime permission guidance."""
+    return host_environment.docker_permission_denied_fix()
 
 
 def _sandbox_image(project: ProjectAudit | None) -> str:
