@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -32,17 +33,22 @@ def load_measurement(project_dir: Path) -> dict[str, Any] | None:
     return data
 
 
-def record_measurement(project_dir: Path, target: str, peak_rss_mb: float) -> Path:
-    """Atomically retain the largest successful heavy-target measurement."""
+def record_measurement(
+    project_dir: Path,
+    target: str,
+    peak_rss_mb: float,
+    *,
+    selected_targets: Collection[str] | None = None,
+) -> Path:
+    """Atomically retain the largest selected synthesis measurement."""
     path = probe_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     peak_bytes = max(1, int(peak_rss_mb * 1024 * 1024))
     previous = load_measurement(project_dir)
-    if (
-        previous
-        and previous.get("target") == target
-        and int(previous["peak_rss_bytes"]) > peak_bytes
-    ):
+    previous_is_selected = selected_targets is None or (
+        previous is not None and previous.get("target") in selected_targets
+    )
+    if previous and previous_is_selected and int(previous["peak_rss_bytes"]) > peak_bytes:
         peak_bytes = int(previous["peak_rss_bytes"])
         target = str(previous["target"])
     payload = {

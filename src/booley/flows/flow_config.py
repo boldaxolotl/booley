@@ -1,7 +1,7 @@
 """Project-config readers shared by deterministic Booley Flows.
 
 The generic ``[flows.<name>]`` / ``.core`` / ``tests.toml`` reads that every
-Flow leans on: the declared Target selection, declared test lists, Target
+Flow leans on: Flow policy, declared test lists, Target
 enumeration, and the cheap TB-top read. These lived in
 the former project-native adapter module for historical reasons; when the
 project-native adapters were dropped (ADR 0039) the generic readers moved
@@ -14,40 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from booley.fusesoc import fusesoc_registry
-from booley.targets.flow_names import DEFAULT_TARGET_KEY, config_section
+from booley.targets.flow_names import config_section
 
 _UNSET = object()
-
-
-def resolve_flow_default_target(flow_name: str, work_dir: Path) -> str:
-    """Read ``[flows.<flow_name>].default_target`` from project config.
-
-    The project's declared Target selection for *flow_name* — a bare Target name,
-    a ``vlnv#name`` qualifier, or a comma-separated list of either. This is the
-    single source of truth for "which Targets are mine" (ADR 0030 dec 3): a Flow
-    invoked with no ``--target`` falls back to this, and refuses when it too is
-    empty rather than sweeping every core. Returns ``""`` when unset.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-    except Exception:  # noqa: BLE001 — best-effort config read; empty → caller refuses
-        cfg = {}
-    if not cfg:
-        return ""
-    flows = cfg.get("flows", {})
-    if not isinstance(flows, dict):
-        return ""
-    return str(config_section(flows, flow_name).get(DEFAULT_TARGET_KEY, "")).strip()
-
-
-def discover_target_names(work_dir: Path | None = None) -> list[str]:
-    """Return selectable config names — the project's ``.core`` Target names."""
-    try:
-        return list(fusesoc_registry.available_targets(work_dir)) if work_dir else []
-    except Exception:  # noqa: BLE001 — best-effort Target enumeration; degrades to an empty list
-        return []
 
 
 def tb_top_for_target(target: str, work_dir: Path | None = None, *, resolved: Any = _UNSET) -> str:

@@ -23,14 +23,20 @@ targets:
     flow: lint
     flow_options:
       tool: verible
+      booley: {doctor: [lint]}
     filesets: [rtl]
     toplevel: dut
-  lint_optional: *lint_target
+  lint_optional:
+    flow: lint
+    flow_options: {tool: verible}
+    filesets: [rtl]
+    toplevel: dut
   sim_smoke: &sim_target
     flow: sim
     flow_options:
       tool: icarus
       iverilog_options: [-g2012]
+      booley: {doctor: [sim, elab]}
     filesets: [rtl, tb_pass]
     toplevel: tb_dut
   sim_fail:
@@ -45,6 +51,7 @@ targets:
     flow: generic
     flow_options:
       tool: yosys
+      booley: {doctor: [synth]}
       arch: xilinx
       frontend: sv2v
       ppa_profile: compact

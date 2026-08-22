@@ -35,6 +35,9 @@ targets:
     flow: sim
     flow_options:
       tool: verilator        # verilator | icarus
+      # Doctor runs this Target for each listed Flow. Omit `booley.doctor` to
+      # keep a Target available for explicit runs without adding it to Doctor.
+      booley: {doctor: [sim, elab]}
       # REQUIRED for verilator: an event-driven TB (delays, @(...) waits — the
       # normal case) fails Verilator 5 elaboration with %Error-NEEDTIMINGOPT
       # without --timing; --main/--exe generate + build the C++ main wrapper.
@@ -54,6 +57,7 @@ targets:
   #   flow: sim
   #   flow_options:
   #     tool: icarus         # icarus | verilator
+  #     booley: {doctor: [sim, elab]}
   #     cocotb_module: test_dut   # the Python module — makes this a Cocotb Target
   #     iverilog_options: [-g2012]  # SV sources need -g2012; drop for verilator
   #     timescale: 1ns/1ps
@@ -67,7 +71,7 @@ targets:
 
   lint:
     flow: lint
-    flow_options: {tool: verilator}
+    flow_options: {tool: verilator, booley: {doctor: [lint]}}
                              # NB: with `tool: icarus` on ANY target (lint /
                              # elaborate / sim), SystemVerilog sources need
                              # iverilog_options: [-g2012] — iverilog defaults to
@@ -83,7 +87,9 @@ targets:
                              # parameters. `booley doctor` flags this.
   synth:                     # asic_synthesize (an fpga_impl target would be `fpga`)
     flow: generic
-    flow_options: {tool: yosys, arch: xilinx}  # arch is REQUIRED: edalize's yosys
+    flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
+                             # Every Doctor-marked synth Target is deep-run;
+                             # memory calibration retains the largest peak.
                              # backend selects synth_<arch> and refuses to
                              # configure without it (external error: "yosys requires tool option
                              # 'arch'"). Booley's synth script overrides the pass,

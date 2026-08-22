@@ -33,7 +33,6 @@ from booley.targets.flow_names import config_section
 from .. import artifacts
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
-from ..flow_config import resolve_flow_default_target
 
 logger = logging.getLogger(__name__)
 
@@ -427,11 +426,8 @@ class LintFlow(BooleyFlow):
         disambiguates; unknown/ambiguous names raise). An empty ``--target``
         returns ``[]`` — there is **no** enumerate-all sweep (ADR 0030): to lint
         several Targets, name them (``--target a,b``). An empty ``--target``
-        first falls back to ``[flows.lint].default_target``; the caller refuses only when
-        that too is empty, rather than linting every core.
+        returns no selection rather than linting every core.
         """
-        if not self.args.target:
-            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
         return fusesoc_registry.resolve_target_selection(
             self.args.target,
             self.args.work_dir,
@@ -529,7 +525,7 @@ class LintFlow(BooleyFlow):
         """Warn when a selected Target isn't a lint-flow Target.
 
         Lint inherits the EDA tool from whatever Target it resolves; when
-        ``[flows.lint].default_target`` (or ``--target``) names e.g. a sim Target, the
+        ``--target`` names e.g. a sim Target, the
         run silently lints with that Target's eda_tool. Best-effort — a Target
         with no declared flow (legacy authoring) stays silent.
         """
@@ -542,7 +538,7 @@ class LintFlow(BooleyFlow):
                 print(
                     f"[lint] WARN: Target '{tgt}' declares flow '{ref.flow}', not "
                     f"'lint' — linting anyway with its eda_tool "
-                    f"({ref.eda_tool or 'verilator'}). Check [flows.lint].default_target / --target."
+                    f"({ref.eda_tool or 'verilator'}). Check --target."
                 )
 
     def _run_lint_target(
@@ -798,10 +794,8 @@ class LintFlow(BooleyFlow):
 
     def _run(self) -> McpToolResult:
         """Run lint across configured build Targets."""
-        if not self.args.target:  # ADR 0030: fall back to [flows.lint].default_target
-            self.args.target = resolve_flow_default_target(self.name, self.args.work_dir)
-        err = self._validate_interactive_args()  # after the fallback, or it
-        if err is not None:  # refuses a target-less call the config satisfies
+        err = self._validate_interactive_args()
+        if err is not None:
             return err
         targets = self._get_targets()
         if not targets:

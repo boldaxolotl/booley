@@ -86,10 +86,10 @@ class TestSuggestName:
         assert target_naming.suggest_name("synth") == "synth"
 
     def test_explicit_axis_overrides_the_suffix(self):
-        """`[flows.*].default_target` wiring is stronger evidence than a trailing word.
+        """Doctor metadata is stronger evidence than a trailing word.
 
         A project may declare its synth Targets as `flow: lint` resolution
-        vehicles named `*_synth`; one wired to fpga_impl means fpga, not asic.
+        vehicles named `*_synth`; explicit fpga intent means fpga, not asic.
         """
         assert target_naming.suggest_name("soc_synth", "fpga") == "fpga_soc"
 

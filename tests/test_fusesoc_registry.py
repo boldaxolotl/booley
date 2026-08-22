@@ -28,12 +28,15 @@ from booley.fusesoc.fusesoc_registry import (
     available_targets,
     core_schema_errors,
     core_setup_hazards,
+    core_target_doctor_flows,
     core_target_eda_tool,
     core_target_flow,
     core_target_flow_option,
     core_target_names,
     core_target_uses_legacy_fusesoc_api,
     discover_cores,
+    doctor_target_seed,
+    doctor_target_selectors,
     enumerate_targets,
     missing_target_sources,
     parse_edam,
@@ -491,6 +494,49 @@ class TestAvailableTargets:
     def test_target_eda_tools_maps_name_to_eda_tool(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
         assert target_eda_tools(tmp_path) == {"sim": "verilator"}
+
+
+class TestDoctorTargetMetadata:
+    def test_selects_only_explicitly_marked_targets(self, tmp_path: Path):
+        core = tmp_path / "doctor.core"
+        core.write_text(
+            "CAPI=2:\nname: ::doctor:0\ntargets:\n"
+            "  sim_fast:\n"
+            "    flow: sim\n"
+            "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+            "  sim_manual: {flow: sim, flow_options: {tool: verilator}}\n"
+            "  synth_full:\n"
+            "    flow: generic\n"
+            "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n",
+            encoding="utf-8",
+        )
+
+        doc = read_core(core)
+        assert core_target_doctor_flows(doc, "sim_fast") == ("sim", "elab")
+        assert core_target_doctor_flows(doc, "sim_manual") == ()
+        assert doctor_target_selectors(tmp_path, "sim") == ["sim_fast"]
+        assert doctor_target_selectors(tmp_path, "elab") == ["sim_fast"]
+        assert doctor_target_seed(tmp_path) == ["sim_fast", "synth_full"]
+
+    @pytest.mark.parametrize(
+        "metadata,needle",
+        [
+            ("booley: sim", "booley must be a mapping"),
+            ("booley: {doctor: sim}", "doctor must be an array"),
+            ("booley: {doctor: [fpga]}", "invalid Flow values"),
+            ("booley: {doctor: [sim, sim]}", "must not contain duplicates"),
+            ("booley: {doctor: [sim], mystery: true}", "mystery is not a supported"),
+        ],
+    )
+    def test_schema_rejects_invalid_metadata(self, tmp_path: Path, metadata: str, needle: str):
+        core = tmp_path / "invalid.core"
+        core.write_text(
+            "CAPI=2:\nname: ::invalid:0\ntargets:\n"
+            "  sim:\n    flow: sim\n    flow_options:\n"
+            f"      {metadata}\n",
+            encoding="utf-8",
+        )
+        assert any(needle in error for error in core_schema_errors(core))
 
 
 class TestResolveConfigSelection:

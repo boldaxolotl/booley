@@ -38,11 +38,14 @@ def project(tmp_path):
     ):
         subprocess.run(["git", *args], cwd=root, check=True)
     (root / ".booley_project" / "booley.toml").write_text(
-        '[project]\nname = "rocketwidget"\n\n[flows.sim]\ndefault_target = "sim_rocketwidget"\n',
+        '[project]\nname = "rocketwidget"\n\n[flows.sim]\n',
         encoding="utf-8",
     )
     (root / "rocketwidget.core").write_text(
-        "name: acme:ip:rocketwidget:1.0\ntargets:\n  sim_rocketwidget:\n    toplevel: rocketwidget_top\n",
+        "CAPI=2:\nname: acme:ip:rocketwidget:1.0\ntargets:\n"
+        "  sim_rocketwidget:\n    flow: sim\n"
+        "    flow_options: {booley: {doctor: [sim]}}\n"
+        "    toplevel: rocketwidget_top\n",
         encoding="utf-8",
     )
     return root

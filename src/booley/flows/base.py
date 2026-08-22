@@ -145,6 +145,7 @@ class BooleyFlow(McpTool):
     """
 
     endpoint_kind = "flow"
+    target_required = True
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""

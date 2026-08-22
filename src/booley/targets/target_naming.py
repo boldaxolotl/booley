@@ -1,7 +1,7 @@
 """target_naming.py — the Target naming convention: ``<axis>_<subject>``.
 
 A **Target** name is the only handle a human or an agent gets on a design-description: it
-appears in ``--target``, in ``[flows.<flow>].default_target``, as the ``{target}`` suffix of
+appears in ``--target``, in Doctor metadata, as the ``{target}`` suffix of
 per-target Criteria (``sim_pass_<target>``), and as a ``tests.toml`` section key.
 The convention makes it say which Booley Flow drives it, up front:
 
@@ -138,8 +138,8 @@ def _strip_leading_legacy_axis(subject: str, axis: str) -> str:
 def suggest_name(name: str, axis: str | None = None) -> str | None:
     """A conformant rename for *name*, or ``None`` when none can be inferred.
 
-    *axis* pins the answer when the caller knows it (from ``[flows.*].default_target``
-    wiring, say); otherwise the trailing legacy axis word decides. Returns
+    *axis* pins the answer when the caller knows it (from Doctor metadata,
+    say); otherwise the trailing legacy axis word decides. Returns
     ``None`` rather than guessing when neither source names an axis — a bad
     suggestion costs more than no suggestion.
     """

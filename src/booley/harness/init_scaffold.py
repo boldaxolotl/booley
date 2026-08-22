@@ -493,6 +493,7 @@ def _core_file(c: ScaffoldChoices) -> str:
 
     # Sim target: one shape per (EDA tool, tb_style) cell of the wizard matrix.
     sim_opts = [f"      tool: {c.sim_eda_tool}"]
+    sim_opts.extend(["      booley:", "        doctor: [sim, elab]"])
     if c.tb_style == "cocotb":
         sim_opts.append(f"      cocotb_module: test_{c.name}")
         sim_opts.append("      timescale: 1ns/1ps")
@@ -533,7 +534,7 @@ def _core_file(c: ScaffoldChoices) -> str:
     # exactly where this flag got forgotten, so the rule lives here (keyed on
     # the EDA tool, like the sim branch) rather than trusting the EDA-tool wizard menu.
     sv_lang_flag = ", iverilog_options: [-g2012]" if c.lint_eda_tool == "icarus" else ""
-    lint_flow_options = f"{{tool: {c.lint_eda_tool}{sv_lang_flag}}}"
+    lint_flow_options = f"{{tool: {c.lint_eda_tool}{sv_lang_flag}, booley: {{doctor: [lint]}}}}"
 
     targets = f"""\
   sim:
@@ -555,7 +556,7 @@ def _core_file(c: ScaffoldChoices) -> str:
     flow: generic
     # arch is REQUIRED: edalize's yosys backend refuses to configure without
     # it. Booley's synth script overrides the pass, but keep the field.
-    flow_options: {{tool: yosys, arch: xilinx}}
+    flow_options: {{tool: yosys, arch: xilinx, booley: {{doctor: [synth]}}}}
     filesets: [rtl, constraints]
     toplevel: {c.name}
     parameters: [WIDTH]
@@ -610,34 +611,22 @@ def _booley_toml(c: ScaffoldChoices) -> str:
         "[flows.sim]",
     ]
     lines += [
-        'default_target = "sim"',
         "# A per-test non-RTL build step (e.g. compiling a firmware image before",
         "# each run) goes here — shell lines run inside the Session Runtime, per test:",
         '#   pre_run_commands = ["make -C tests build CASE=$BOOLEY_TEST_NAME"]',
         "",
         "[flows.lint]",
-        'default_target = "lint"',
         "",
         "[flows.elab]",
     ]
 
-    # Elaborate reuses an elaboration-capable Target (build make, no run step).
-    # The Verilator lint Target is the cheapest; otherwise use the sim Target.
-    if c.lint_eda_tool == "verilator":
-        lines += ['default_target = "lint"']
-    else:
-        lines += ['default_target = "sim"']
-
     lines += ["", "[flows.synth]"]
-    if c.asic:
-        lines += ['default_target = "synth"']
-    else:
+    if not c.asic:
         lines += [
             "# Disabled at scaffold time. To enable: add a `synth` Target plus an SDC",
-            "# fileset to the .core (ADR 0031 — no SDC is a hard error), then drop the",
-            "# `enabled` line and set:",
+            "# fileset and doctor: [synth] metadata to the .core (ADR 0031 — no SDC",
+            "# is a hard error), then drop the `enabled` line:",
             "enabled = false",
-            '# default_target = "synth"',
         ]
 
     if c.fpga_part:
@@ -647,7 +636,6 @@ def _booley_toml(c: ScaffoldChoices) -> str:
             "# Register and grant the built-in Vivado policy with `booley eda` before",
             "# running this Flow. The Target uses out_of_context because the scaffolded",
             "# XDC has no board pins yet — drop it once you add LOCs.",
-            'default_target = "fpga"',
         ]
 
     return "\n".join(lines) + "\n"
