@@ -23,6 +23,7 @@ from booley.core.boundary import (
     require_bool,
     require_dict,
     require_finite_number,
+    require_int,
     require_opt_str,
     require_str,
 )
@@ -248,6 +249,20 @@ class TestAsInt:
         assert as_int(None) is None
         assert as_int([1], default=0) == 0
         assert as_int({}, default=0) == 0
+
+
+class TestRequireInt:
+    def test_int_passes_without_coercion(self):
+        assert require_int(7) == 7
+
+    @pytest.mark.parametrize("value", [True, 1.0, "1", None])
+    def test_non_int_values_are_rejected(self, value):
+        with pytest.raises(BoundaryError):
+            require_int(value, field="parameter")
+
+    def test_field_is_named_in_error(self):
+        with pytest.raises(BoundaryError, match="parameter"):
+            require_int("1", field="parameter")
 
 
 # ---------------------------------------------------------------------------

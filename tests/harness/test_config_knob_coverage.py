@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from booley.harness.doctor import _KNOWN_BOOLEY_TOML_TABLES
+from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_MD = REPO_ROOT / "docs" / "CONFIG.md"
@@ -67,7 +67,7 @@ def _documented_knobs() -> dict[tuple[str, str], str]:
         section = _SECTION_RE.match(line)
         if section:
             root = section.group(1).split(".")[0]
-            section_root = root if root in _KNOWN_BOOLEY_TOML_TABLES else None
+            section_root = root if root in KNOWN_BOOLEY_TOML_TABLES else None
             continue
         if section_root is None:
             continue

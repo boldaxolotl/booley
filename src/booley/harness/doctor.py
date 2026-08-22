@@ -25,13 +25,20 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from booley.audit import (
+    agent_schema,
+    config_common,
+    configs_schema,
+    flow_schema,
+    project_schema,
+)
 from booley.config.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     ensure_guidance_links,
     guidance_entry_current,
 )
-from booley.config.project_config import normalize_configs_toml, normalize_tests_toml
+from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
 from booley.dev_support.workspace_isolation import get_category_dirs
 from booley.flows import execution
@@ -84,13 +91,7 @@ from booley.runtime.project_dir import (
 )
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
-from booley.targets.flow_names import (
-    DEFAULT_TARGET_KEY,
-    LEGACY_TO_CANONICAL,
-    RETIRED_TARGET_KEY,
-    canonical,
-    config_section,
-)
+from booley.targets.flow_names import config_section
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
@@ -152,28 +153,8 @@ _SELFTEST_FOOTPRINT_NOTE = {
 # 0 = pass, 1 = graded design failure (fail/elab_error), 2 = infra/contract error.
 _TOOL_EXIT_PASS = 0
 _TOOL_EXIT_DESIGN_FAIL = 1
-# Knobs that only some Flows honor. Maps a knob to the Flows that read it from
-# ``[flows.<flow>]``. A knob set under a Flow outside its reader set is silently
-# ignored; Doctor warns so a setting copied from another Flow (e.g.
-# lint borrowing simulate/asic's ``timeout_ms``) that *looks* active is flagged
-# instead of quietly doing nothing.
-_SELECTIVE_FLOW_KNOBS = {
-    "timeout_ms": frozenset({"sim", "synth", "fpga"}),
-    "pre_run_commands": frozenset({"sim"}),
-    "sim_time_grace_s": frozenset({"sim"}),
-    "keep_build_dir": frozenset({"elab"}),
-    "fail_on_timing_violation": frozenset({"synth"}),
-    "warnings_as_errors": frozenset({"lint"}),
-    # Single-reader knobs surfaced by the 2026-07 hotspot sweep: each was
-    # documented but absent here, so a copy under the wrong Flow was silently
-    # inert with no warning.
-    "run_cwd": frozenset({"sim"}),
-    "trace_args": frozenset({"sim"}),
-    "trace_files": frozenset({"sim"}),
-    "output_dir": frozenset({"sim", "synth"}),
-    "expected_latches": frozenset({"synth"}),
-}
-# HDL source suffixes — used by the readmemh scan and the large-design advisory.
+# HDL source suffixes used by Doctor's readmem scan. Design sizing owns its own
+# source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 # Large-design advisory (F5 / scale-awareness). Tree entries pruned for the cheap
 # ``--deep`` budget heuristic below.
@@ -1032,67 +1013,6 @@ def _load_toml(path: Path, _pass: Check, _fail: Fail) -> dict[str, Any] | None:
     return data
 
 
-# Canonical top-level booley.toml tables. An unrecognized table is almost always
-# a typo or a stale/removed section — every consumer silently ignores it, so a
-# setting the user believes is active does nothing. Doctor surfaces these.
-_KNOWN_BOOLEY_TOML_TABLES = frozenset(
-    {
-        "project",
-        "flows",
-        "mcp_tools",
-        "sandbox",
-        "agent",
-        "models",
-        "jobs",
-        "interactive",
-        "notifications",
-        "feedback",
-        "sources",
-        "developer",
-        "eda",
-        # Honored by the commit-msg hook (dev_support.commit_msg_utils.stealth_enabled)
-        # and emitted by `booley init --scaffold` — omitting it made doctor warn
-        # that a live knob Booley itself wrote was "ignored".
-        "stealth",
-        # [submodules].paths picks which submodule dirs a ticket worktree copies
-        # (dev_support/worktree_create.sh, tomllib heredoc; falls back to .gitmodules
-        # discovery when absent). Read from shell, not Python, which is exactly
-        # how it slipped past the first audit of this list.
-        "submodules",
-    }
-)
-# Removed tables get a targeted migration hint instead of the generic warning.
-_RETIRED_BOOLEY_TOML_TABLES = {
-    "tools": (
-        "retired — move deterministic settings to [flows.*] and Specialist or "
-        "other non-Flow endpoint settings to [mcp_tools.*]"
-    ),
-    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
-}
-
-
-def _validate_known_tables(data: dict[str, Any], _warn: Check) -> None:
-    """Warn on unrecognized top-level booley.toml tables (typo / stale config).
-
-    A misspelled or removed table is silently ignored by every consumer, so a
-    setting the user believes is active quietly does nothing. Only *top-level*
-    tables are checked — per-table key schemas vary per Flow and are not
-    enumerated here (a follow-up could allowlist the well-defined ones).
-    """
-    for key in data:
-        if key in _KNOWN_BOOLEY_TOML_TABLES:
-            continue
-        hint = _RETIRED_BOOLEY_TOML_TABLES.get(key)
-        table_warn = _warning_sink(_warn, "config.unknown-table", subject=key)
-        if hint:
-            table_warn(f"booley.toml [{key}] is no longer used — {hint}")
-        else:
-            table_warn(
-                f"booley.toml has an unrecognized top-level table/key [{key}] — "
-                "likely a typo or stale config; its settings are ignored"
-            )
-
-
 def _validate_booley_toml(
     data: dict[str, Any],
     project_dir: Path,
@@ -1101,33 +1021,22 @@ def _validate_booley_toml(
     _fail: Fail,
 ) -> bool:
     """Validate the project-level booley.toml schema used by doctor."""
-    from booley.eda.config import (
-        EdaConfigError,
-        parse_eda_config,
-        retired_config_error,
-        validate_host_provisioning_platform,
+    if not _render_config_audit(project_schema.audit_eda_config(data), _pass, _warn, _fail):
+        return False
+    valid = _render_config_audit(project_schema.audit_project_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(agent_schema.audit_agent_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(agent_schema.audit_models_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(project_schema.audit_feedback_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(project_schema.audit_stealth_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(
+        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS), _pass, _warn, _fail
     )
-
-    migration = retired_config_error(data)
-    if migration:
-        _fail(f"booley.toml {migration}", "remove retired commercial-EDA authority keys")
-        return False
-    try:
-        eda_configs = parse_eda_config(data.get("eda"))
-        validate_host_provisioning_platform(eda_configs)
-    except EdaConfigError as exc:
-        _fail(f"booley.toml {exc}", "fix [eda] provisioning configuration")
-        return False
-    valid = _validate_project_table(data, _pass, _warn)
-    valid &= _validate_agent_table(data, _pass, _fail)
-    valid &= _validate_models_table(data, _pass, _warn, _fail)
-    valid &= _validate_feedback_table(data, _pass, _fail)
-    valid &= _validate_stealth_table(data, _fail)
-    valid &= _validate_flow_tables(data, _warn, _fail)
-    valid &= _validate_sandbox_table(data, _fail)
-    valid &= _validate_interactive_table(data, _fail)
-    valid &= _validate_developer_table(data, _fail)
-    _validate_known_tables(data, _warn)
+    valid &= _render_config_audit(project_schema.audit_sandbox_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(
+        project_schema.audit_interactive_table(data), _pass, _warn, _fail
+    )
+    valid &= _render_config_audit(project_schema.audit_developer_table(data), _pass, _warn, _fail)
+    _render_config_audit(project_schema.audit_known_tables(data), _pass, _warn, _fail)
     # Source RTL/TB layout is validated from the .core tags:[tb] partition (see
     # _run_core_checks → sim_target_has_untagged_tb), not a booley.toml
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).
@@ -1138,227 +1047,46 @@ def _validate_booley_toml(
     return valid
 
 
-def _validate_stealth_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Validate native-core isolation's explicit stealth-only contract."""
-    stealth = data.get("stealth")
-    if stealth is None:
-        return True
-    if not isinstance(stealth, dict):
-        _fail("booley.toml [stealth] must be a table", "rewrite [stealth] as a TOML table")
-        return False
-    ignore_native = stealth.get("ignore_native_cores")
-    if ignore_native is None:
-        return True
-    if not isinstance(ignore_native, bool):
-        _fail(
-            "booley.toml [stealth].ignore_native_cores must be a boolean",
-            "use true or false",
-        )
-        return False
-    if ignore_native and stealth.get("enabled") is not True:
-        _fail(
-            "booley.toml cannot ignore native .core files while stealth mode is disabled",
-            "set [stealth] enabled = true or ignore_native_cores = false",
-        )
-        return False
-    return True
-
-
-def _validate_feedback_table(data: dict[str, Any], _pass: Check, _fail: Fail) -> bool:
-    """Validate the live ``[feedback]`` disclosure and redaction settings."""
-    feedback = data.get("feedback")
-    if feedback is None:
-        return True
-    if not isinstance(feedback, dict):
-        _fail("booley.toml [feedback] must be a table", "rewrite [feedback] as a TOML table")
-        return False
-
-    valid = True
-    mode = feedback.get("mode", "ask")
-    if not isinstance(mode, str) or mode not in {"ask", "email", "file-only", "off"}:
-        _fail(
-            f"booley.toml [feedback].mode is invalid: {mode!r}",
-            "use one of: ask, email, file-only, off",
-        )
-        valid = False
-    extra = feedback.get("redact_extra")
-    if extra is not None and not is_str_list(extra):
-        _fail(
-            "booley.toml [feedback].redact_extra must be a list of strings",
-            'use e.g. redact_extra = ["codename"]',
-        )
-        valid = False
-    redact_identifiers = feedback.get("redact_identifiers")
-    if redact_identifiers is not None and not isinstance(redact_identifiers, bool):
-        _fail(
-            "booley.toml [feedback].redact_identifiers must be a boolean",
-            "use true or false",
-        )
-        valid = False
-    if valid:
-        _pass(f"booley.toml [feedback] settings valid (mode={mode})")
-    return valid
-
-
-def _validate_project_table(data: dict[str, Any], _pass: Check, _warn: Check) -> bool:
-    _warn = _warning_sink(_warn, "config.project-metadata")
-    project = data.get("project")
-    if not isinstance(project, dict):
-        _warn("booley.toml missing [project] table")
-        return True
-    name = project.get("name")
-    if isinstance(name, str) and name.strip():
-        _pass("booley.toml [project].name set")
-    else:
-        _warn("booley.toml [project].name missing or empty")
-    if "description" in project:
-        _warn(
-            "booley.toml [project].description is unused; keep the description "
-            "in the .core and delete this duplicate"
-        )
-    return True
+def _render_config_audit(
+    audit: config_common.ConfigTableAudit,
+    _pass: Check,
+    _warn: Warn,
+    _fail: Fail,
+) -> bool:
+    """Translate domain findings into Doctor's presentation callbacks."""
+    for finding in audit.findings:
+        if finding.severity is config_common.ConfigFindingSeverity.PASS:
+            _pass(finding.message)
+        elif finding.severity is config_common.ConfigFindingSeverity.FAIL:
+            _fail(finding.message, finding.fix)
+        else:
+            assert finding.check_id is not None
+            _warning_sink(_warn, finding.check_id, subject=finding.subject)(
+                finding.message, finding.fix
+            )
+    return audit.is_valid
 
 
 def _validate_agent_table(data: dict[str, Any], _pass: Check, _fail: Fail) -> bool:
-    """FAIL on an ``[agent] provider`` the backend layer will reject at run time.
-
-    ``_backend_config._parse_provider`` raises on an unknown value rather than
-    quietly run a backend the project never chose — so a typo here does not
-    degrade, it kills every agent run with a ``BackendConfigError``. Doctor is
-    where that should surface, not the first ticket.
-
-    An absent ``[agent]`` is not an error: the provider may come from
-    ``BOOLEY_PRIMARY_PROVIDER`` or the container's ``BOOLEY_AGENT_APP``, and the
-    host falls back to a default. Only a *present and wrong* value fails.
-    """
-    from booley.config.agent import BackendConfigError, _parse_auth, _parse_provider
-
-    agent = data.get("agent")
-    if agent is None:
-        return True
-    if not isinstance(agent, dict):
-        _fail("booley.toml [agent] must be a table", "rewrite [agent] as a TOML table")
-        return False
-    retired = sorted(set(agent) & {"primary", "primary_auth", "secondary", "secondary_auth"})
-    if retired:
-        replacements = "provider/auth"
-        _fail(
-            f"booley.toml [agent] uses retired key(s): {', '.join(retired)}",
-            f"use only [agent].{replacements}",
-        )
-        return False
-    try:
-        provider = _parse_provider(agent)
-    except BackendConfigError as exc:
-        _fail(str(exc), 'set [agent] provider = "claude" or "codex"')
-        return False
-    try:
-        auth = _parse_auth(agent)
-    except BackendConfigError as exc:
-        _fail(str(exc), 'set [agent] auth = "auto", "subscription", or "api_key"')
-        return False
-    if provider:
-        detail = f" (auth: {auth})" if auth else ""
-        _pass(f"booley.toml [agent] provider: {provider}{detail}")
-    return True
+    """Compatibility facade for the extracted agent configuration audit."""
+    return _render_config_audit(
+        agent_schema.audit_agent_table(data), _pass, lambda _message: None, _fail
+    )
 
 
 def _validate_models_table(data: dict[str, Any], _pass: Check, _warn: Check, _fail: Fail) -> bool:
-    """Validate ``[models]`` tier overrides and ``[models.roles]`` pins.
-
-    Same contract as ``_validate_agent_table``: a bad role name or value makes
-    ``_parse_role_models`` raise at config-load time, killing every agent run,
-    so doctor surfaces it here rather than at the first ticket. Stray keys only
-    warn — they are inert, not fatal.
-    """
-    from booley.config.agent import (
-        _KNOWN_ROLES,
-        _MODEL_TIERS,
-        BackendConfigError,
-        _parse_role_models,
-    )
-
-    models = data.get("models")
-    if models is None:
-        return True
-    if not isinstance(models, dict):
-        _fail("booley.toml [models] must be a table", "rewrite [models] as a TOML table")
-        return False
-
-    for key in models:
-        if key not in _MODEL_TIERS and key != "roles":
-            _warning_sink(_warn, "config.models-unknown-key", subject=key)(
-                f"booley.toml [models] has an unrecognized key {key!r} — expected a tier "
-                f"({'/'.join(_MODEL_TIERS)}) or the [models.roles] table; it is ignored"
-            )
-
-    try:
-        role_models = _parse_role_models(models)
-    except BackendConfigError as exc:
-        _fail(str(exc), f"use one of: {', '.join(sorted(_KNOWN_ROLES))}")
-        return False
-
-    tiers = [t for t in _MODEL_TIERS if isinstance(models.get(t), str)]
-    if tiers:
-        _pass(f"booley.toml [models] tier overrides: {', '.join(tiers)}")
-    if role_models:
-        pins = ", ".join(f"{role}={model}" for role, model in sorted(role_models.items()))
-        _pass(f"booley.toml [models.roles] pins: {pins}")
-    return True
+    """Compatibility facade for the extracted models configuration audit."""
+    return _render_config_audit(agent_schema.audit_models_table(data), _pass, _warn, _fail)
 
 
 def _validate_flow_tables(data: dict[str, Any], _warn: Check, _fail: Fail) -> bool:
-    legacy_tools = data.get("tools")
-    if legacy_tools is not None:
-        _fail(
-            "booley.toml [tools] is retired",
-            "move deterministic settings to [flows.*], move Specialist or other "
-            "non-Flow endpoint settings to [mcp_tools.*], and use enabled = false "
-            "for opt-outs",
-        )
-        return False
-
-    flows = data.get("flows", {})
-    if not isinstance(flows, dict):
-        _fail("booley.toml [flows] must be a table", "rewrite [flows] as a TOML table")
-        return False
-
-    valid = True
-    for retired in ("builtin", "custom"):
-        if retired in flows:
-            _fail(
-                f"booley.toml [flows].{retired} is retired",
-                "delete the allowlist and use [flows.<name>].enabled = false for opt-outs",
-            )
-            valid = False
-    for old, new in LEGACY_TO_CANONICAL.items():
-        if old in flows:
-            _fail(
-                f"booley.toml [flows.{old}] is retired",
-                f"rename it to [flows.{new}]",
-            )
-            valid = False
-    for flow_name in _AUDITED_FLOWS:
-        section = config_section(flows, flow_name)
-        section_present = flow_name in flows or any(
-            old in flows and new == flow_name for old, new in LEGACY_TO_CANONICAL.items()
-        )
-        if not section_present:
-            _warning_sink(_warn, "config.flow-section-missing", subject=flow_name)(
-                f"booley.toml [flows.{flow_name}] missing; using built-in defaults"
-            )
-            continue
-        valid &= _validate_one_flow_table(flow_name, section, _warn, _fail)
-    validated = set(_AUDITED_FLOWS)
-    for raw_name, section in flows.items():
-        if raw_name in {"builtin", "custom"} or raw_name in LEGACY_TO_CANONICAL:
-            continue
-        flow_name = canonical(raw_name)
-        if flow_name in validated:
-            continue
-        valid &= _validate_one_flow_table(flow_name, section, _warn, _fail)
-        validated.add(flow_name)
-    return valid
+    """Compatibility facade for the extracted Flow configuration audit."""
+    return _render_config_audit(
+        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS),
+        lambda _message: None,
+        _warn,
+        _fail,
+    )
 
 
 def _validate_one_flow_table(
@@ -1367,134 +1095,13 @@ def _validate_one_flow_table(
     _warn: Check,
     _fail: Fail,
 ) -> bool:
-    if not isinstance(section, dict):
-        _fail(f"booley.toml [flows.{flow_name}] must be a table", f"fix [flows.{flow_name}]")
-        return False
-    valid = True
-    if "selftest" in section:
-        _fail(
-            f"booley.toml [flows.{flow_name}.selftest] is retired",
-            "delete the table; Doctor now discovers simulation's bad-overlay "
-            "and lint's lint_selftest_bad Target by convention",
-        )
-        valid = False
-    if "sandbox" in section:
-        _fail(
-            f"booley.toml [flows.{flow_name}].sandbox is retired",
-            "delete sandbox; all Flows run in the Session Runtime",
-        )
-        valid = False
-    moved_recipe_keys = {
-        "base_defines",
-        "flatten",
-        "frontend",
-        "openroad",
-        "out_of_context",
-        "part",
-        "ppa_profile",
-        "sdc",
-        "slang_options",
-        "strategy",
-        "timing",
-        "timing_engine",
-        "yosys",
-    }
-    if flow_name in {"synth", "fpga"}:
-        moved = sorted(set(section) & moved_recipe_keys)
-        if moved:
-            _fail(
-                f"booley.toml [flows.{flow_name}] contains Target build input(s): "
-                f"{', '.join(moved)}",
-                "move them to the selected .core Target's flow_options "
-                "(and express defines as vlogdefine parameters)",
-            )
-            valid = False
-    enabled = section.get("enabled")
-    if enabled is not None and not isinstance(enabled, bool):
-        _fail(
-            f"booley.toml [flows.{flow_name}].enabled must be a bool (true/false, no quotes)",
-            f"fix [flows.{flow_name}].enabled",
-        )
-        valid = False
-    for retired in (RETIRED_TARGET_KEY, DEFAULT_TARGET_KEY, "calibration_target"):
-        if retired not in section:
-            continue
-        _fail(
-            f"booley.toml [flows.{flow_name}].{retired} is retired",
-            "delete it; Flow calls require an explicit target, and Doctor selection "
-            "lives in each .core Target's flow_options.booley.doctor list",
-        )
-        valid = False
-    # Pre-Run Commands (ADR 0039): shell lines run before each sim run. A
-    # non-list (or non-string entry) would be silently coerced/ignored at run
-    # time, so the shape fails here.
-    pre_run = section.get("pre_run_commands")
-    if pre_run is not None and not is_str_list(pre_run):
-        _fail(
-            f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
-            "list of strings (shell lines run before each sim run)",
-            f"fix [flows.{flow_name}].pre_run_commands",
-        )
-        valid = False
-    # Set-but-ignored knobs: a value recognized by *another* Flow but not read
-    # by this one looks active yet quietly does nothing (F4). Warn, don't fail —
-    # the config is well-typed, just inert.
-    for knob, readers in _SELECTIVE_FLOW_KNOBS.items():
-        if knob in section and flow_name not in readers:
-            _warning_sink(
-                _warn,
-                "config.flow-knob-ignored",
-                subject=f"{flow_name}.{knob}",
-            )(
-                f"booley.toml [flows.{flow_name}].{knob} is set but {flow_name} "
-                f"ignores it (only {', '.join(sorted(readers))} read {knob}); "
-                "it has no effect"
-            )
-    return valid
-
-
-def _validate_sandbox_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Validate the surviving Session Runtime sandbox table."""
-    sandbox = data.get("sandbox")
-    if sandbox is None:
-        return True
-    if not isinstance(sandbox, dict):
-        _fail("booley.toml [sandbox] must be a table", "rewrite [sandbox] as a TOML table")
-        return False
-    if "mode" in sandbox:
-        _fail(
-            "booley.toml [sandbox].mode is retired; the Session Runtime is always Docker",
-            "delete [sandbox].mode",
-        )
-        return False
-    return True
-
-
-def _validate_interactive_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Reject the retired provider duplicate from ``[interactive]``."""
-    section = data.get("interactive")
-    if not isinstance(section, dict) or "app" not in section:
-        return True
-    _fail(
-        "booley.toml [interactive].app is retired",
-        "delete it and select the runtime with [agent].provider",
+    """Compatibility facade for one extracted Flow-table audit."""
+    return _render_config_audit(
+        flow_schema.audit_flow_table(flow_name, section),
+        lambda _message: None,
+        _warn,
+        _fail,
     )
-    return False
-
-
-def _validate_developer_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Keep auto-retry's disable control single-valued."""
-    developer = data.get("developer")
-    if not isinstance(developer, dict):
-        return True
-    auto_retry = developer.get("auto_retry")
-    if not isinstance(auto_retry, dict) or "enabled" not in auto_retry:
-        return True
-    _fail(
-        "booley.toml [developer.auto_retry].enabled is retired",
-        "delete enabled and use max_attempts = 0 to disable",
-    )
-    return False
 
 
 def _validate_configs_toml(
@@ -1502,101 +1109,13 @@ def _validate_configs_toml(
     _pass: Check,
     _fail: Fail,
 ) -> dict[str, dict[str, Any]] | None:
-    try:
-        normalized = normalize_configs_toml(raw)
-    except ValueError as exc:
-        _fail(str(exc), "fix configs.toml")
+    audit = configs_schema.audit_configs_toml(raw)
+    for issue in audit.issues:
+        _fail(issue.message, issue.fix)
+    if audit.configs is None:
         return None
-
-    if not normalized:
-        _fail("configs.toml has no config sections", "add [default] with defines = []")
-        return None
-
-    valid = True
-    configs: dict[str, dict[str, Any]] = {}
-    for name, section in normalized.items():
-        if not isinstance(section, dict):
-            _fail(f"configs.toml [{name}] must be a table", f"fix [{name}]")
-            valid = False
-            continue
-        configs[name] = section
-        if not is_str_list(section.get("defines")):
-            _fail(
-                f"configs.toml [{name}].defines must be present as list[str]",
-                f"add defines = [] to [{name}]",
-            )
-            valid = False
-        for key in ("top_module", "tb_top"):
-            value = section.get(key)
-            if value is not None and not isinstance(value, str):
-                _fail(f"configs.toml [{name}].{key} must be a string", f"fix [{name}].{key}")
-                valid = False
-        tests = section.get("tests")
-        if tests is not None and not is_str_list(tests):
-            _fail(f"configs.toml [{name}].tests must be list[str]", f"fix [{name}].tests")
-            valid = False
-        valid &= _validate_parameters_table(name, section.get("parameters"), _fail)
-
-    if not valid:
-        return None
-    _pass(f"configs.toml contains {len(configs)} valid config(s)")
-    return configs
-
-
-def _validate_parameters_table(name: str, value: Any, _fail: Fail) -> bool:
-    if value is None:
-        return True
-    if not isinstance(value, dict):
-        _fail(
-            f"configs.toml [{name}].parameters must be a table",
-            f"fix [{name}.parameters]",
-        )
-        return False
-    valid = True
-    for param_name, param_value in value.items():
-        label = f"configs.toml [{name}.parameters].{param_name}"
-        if not isinstance(param_name, str) or not param_name.strip():
-            _fail(f"{label} name must be non-empty", f"fix [{name}.parameters]")
-            valid = False
-            continue
-        error = _parameter_value_error(label, param_value)
-        if error is not None:
-            _fail(*error)
-            valid = False
-    return valid
-
-
-def _parameter_value_error(label: str, value: Any) -> tuple[str, str] | None:
-    if isinstance(value, (bool, int)):
-        return None
-    if isinstance(value, str):
-        return (
-            f"{label} plain strings are not allowed",
-            'use { expr = "..." } or { string = "..." }',
-        )
-    if isinstance(value, dict):
-        return _parameter_table_error(label, value)
-    return (
-        f'{label} must be bool, int, {{ expr = "..." }}, or {{ string = "..." }}',
-        f"fix {label}",
-    )
-
-
-def _parameter_table_error(label: str, value: dict[str, Any]) -> tuple[str, str] | None:
-    keys = set(value)
-    if keys == {"expr"}:
-        expr = value["expr"]
-        if isinstance(expr, str) and expr.strip():
-            return None
-        return f"{label}.expr must be a non-empty string", f"fix {label}"
-    if keys == {"string"}:
-        if isinstance(value["string"], str):
-            return None
-        return f"{label}.string must be a string", f"fix {label}"
-    return (
-        f"{label} table must contain exactly one key: expr or string",
-        f"fix {label}",
-    )
+    _pass(f"configs.toml contains {len(audit.configs)} valid config(s)")
+    return audit.configs
 
 
 def _check_agents_md(
