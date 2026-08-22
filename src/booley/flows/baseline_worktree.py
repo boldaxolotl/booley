@@ -201,6 +201,18 @@ def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path |
 
 def _paired_project_base_sha(project_worktree: Path) -> str:
     """Resolve the immutable fork point of a paired ticket project branch."""
+    ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
+    if ticket_file:
+        from booley.ticket_board.target_contract import load_ticket_contract, resolve_commit
+
+        contract = load_ticket_contract(ticket_file)
+        if contract is not None and contract.project_sha:
+            try:
+                return resolve_commit(project_worktree, contract.project_sha)
+            except ValueError as exc:
+                raise BaselineWorktreeError(
+                    f"recorded paired project contract cannot be resolved: {exc}"
+                ) from exc
     upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
     if upstream.returncode != 0:
         raise BaselineWorktreeError("paired project ticket branch has no baseline upstream")

@@ -172,7 +172,6 @@ _SELECTIVE_FLOW_KNOBS = {
     "trace_files": frozenset({"sim"}),
     "output_dir": frozenset({"sim", "synth"}),
     "expected_latches": frozenset({"synth"}),
-    "calibration_target": frozenset({"synth"}),
 }
 # HDL source suffixes — used by the readmemh scan and the large-design advisory.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
@@ -285,12 +284,30 @@ class DoctorFinding:
 
 
 @dataclass(frozen=True)
+class _DoctorProfile:
+    """Policy for one Doctor invocation."""
+
+    agent_checks: bool = True
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> _DoctorProfile:
+        """Resolve CLI policy once at Doctor's boundary."""
+        return cls(agent_checks=not getattr(args, "skip_agent_checks", False))
+
+    @property
+    def records_health_evidence(self) -> bool:
+        """Whether this complete profile may bless normal runtime health."""
+        return self.agent_checks
+
+
+@dataclass(frozen=True)
 class DoctorRunResult:
     """Machine-readable outcome of one Doctor invocation."""
 
     counts: dict[str, int]
     findings: tuple[DoctorFinding, ...]
     exit_code: int
+    health_evidence: bool = True
 
     @property
     def clean(self) -> bool:
@@ -313,6 +330,7 @@ class _Reporter:
 
     counts: dict[str, int]
     waivers: DoctorWaivers
+    profile: _DoctorProfile
     verbose: bool = False
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
     findings: list[DoctorFinding] | None = None
@@ -322,12 +340,14 @@ class _Reporter:
         cls,
         waivers: DoctorWaivers | None = None,
         *,
+        profile: _DoctorProfile | None = None,
         verbose: bool = False,
     ) -> _Reporter:
         waiver_set = waivers or DoctorWaivers.empty(Path(WAIVER_FILENAME))
         return cls(
             counts={"pass": 0, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
             waivers=waiver_set,
+            profile=profile or _DoctorProfile(),
             verbose=verbose,
             _reported_warning_keys=set(),
             findings=[],
@@ -379,6 +399,13 @@ class _Reporter:
         skip(f"SKIP  {msg}")
         self.counts["skip"] += 1
 
+    def agent_check_enabled(self, description: str) -> bool:
+        """Report a profile-disabled agent check and return whether to run it."""
+        if self.profile.agent_checks:
+            return True
+        self.skip_(f"{description} skipped by --skip-agent-checks")
+        return False
+
     def fail_(self, msg: str, fix: str = "") -> None:
         assert self.findings is not None
         self.findings.append(DoctorFinding("fail", str(msg), fix))
@@ -419,7 +446,12 @@ class _Reporter:
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
         assert self.findings is not None
-        return DoctorRunResult(dict(self.counts), tuple(self.findings), exit_code)
+        return DoctorRunResult(
+            dict(self.counts),
+            tuple(self.findings),
+            exit_code,
+            health_evidence=self.profile.records_health_evidence,
+        )
 
 
 def _warning_identity(finding: DoctorWarning) -> str:
@@ -440,9 +472,14 @@ def _load_waivers(project_root: Path) -> tuple[DoctorWaivers, str | None]:
         return DoctorWaivers.empty(project_dir / WAIVER_FILENAME), str(exc)
 
 
-def _create_reporter(project_root: Path, *, verbose: bool) -> _Reporter:
+def _create_reporter(
+    project_root: Path,
+    *,
+    profile: _DoctorProfile,
+    verbose: bool,
+) -> _Reporter:
     waivers, waiver_error = _load_waivers(project_root)
-    reporter = _Reporter.create(waivers, verbose=verbose)
+    reporter = _Reporter.create(waivers, profile=profile, verbose=verbose)
     if waiver_error:
         reporter.fail_(
             f"Doctor waiver file invalid: {waiver_error}",
@@ -483,7 +520,8 @@ def run_doctor_result(
 
     verbose = getattr(args, "verbose", False)
     deep = getattr(args, "deep", False)
-    reporter = _create_reporter(project_root, verbose=verbose)
+    profile = _DoctorProfile.from_args(args)
+    reporter = _create_reporter(project_root, profile=profile, verbose=verbose)
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
     _run_runtime_phase(project, docker_exe, verbose, reporter)
     _run_flow_and_core_phase(project, docker_exe, verbose, reporter)
@@ -491,18 +529,10 @@ def run_doctor_result(
     if deep:
         _run_deep_phase(project, docker_exe, verbose, reporter)
 
-    # Only a fully clean run refreshes the freshness stamp that session start
-    # and the ticket sweep nag against (fail-soft; never changes Doctor's rc).
-    if (
-        project is not None
-        and reporter.counts["fail"] == 0
-        and reporter.counts["warn"] == 0
-        and record_clean
-    ):
+    result = reporter.result(reporter.finish())
+    if project is not None and result.clean and result.health_evidence and record_clean:
         doctor_stamp.record_clean_run(project.project_dir, project_root, deep=deep)
-
-    exit_code = reporter.finish()
-    return reporter.result(exit_code)
+    return result
 
 
 def _run_project_phase(
@@ -583,20 +613,9 @@ def _run_runtime_phase(
         docker_exe,
         sandbox_image,
         verbose,
-        reporter.pass_,
-        reporter.note_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
+        reporter,
     )
-    _run_preflight_parity_checks(
-        project,
-        reporter.pass_,
-        reporter.note_,
-        reporter.warn_,
-        reporter.skip_,
-        reporter.fail_,
-    )
+    _run_preflight_parity_checks(project, reporter)
 
 
 def _run_flow_and_core_phase(
@@ -647,7 +666,8 @@ def _run_deep_phase(
     # First, before the EDA smoke checks: the probe's RUSAGE_CHILDREN reading
     # is exact only while no bigger child (a real sim/synth run) has been
     # reaped yet.
-    _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
+    if reporter.agent_check_enabled("developer authorization probe"):
+        _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
     _run_deep_checks(
         project,
         docker_exe,
@@ -1047,10 +1067,7 @@ _RETIRED_BOOLEY_TOML_TABLES = {
         "retired — move deterministic settings to [flows.*] and Specialist or "
         "other non-Flow endpoint settings to [mcp_tools.*]"
     ),
-    "fusesoc": (
-        "removed in ADR 0030 — Target scoping is now vlnv#name selection plus "
-        "[flows.<flow>].default_target; delete this table"
-    ),
+    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
 }
 
 
@@ -1323,7 +1340,10 @@ def _validate_flow_tables(data: dict[str, Any], _warn: Check, _fail: Fail) -> bo
             valid = False
     for flow_name in _AUDITED_FLOWS:
         section = config_section(flows, flow_name)
-        if section == {}:
+        section_present = flow_name in flows or any(
+            old in flows and new == flow_name for old, new in LEGACY_TO_CANONICAL.items()
+        )
+        if not section_present:
             _warning_sink(_warn, "config.flow-section-missing", subject=flow_name)(
                 f"booley.toml [flows.{flow_name}] missing; using built-in defaults"
             )
@@ -1396,18 +1416,13 @@ def _validate_one_flow_table(
             f"fix [flows.{flow_name}].enabled",
         )
         valid = False
-    if RETIRED_TARGET_KEY in section:
+    for retired in (RETIRED_TARGET_KEY, DEFAULT_TARGET_KEY, "calibration_target"):
+        if retired not in section:
+            continue
         _fail(
-            f"booley.toml [flows.{flow_name}].target is retired",
-            f"rename it to [flows.{flow_name}].default_target",
-        )
-        valid = False
-    default_target = section.get(DEFAULT_TARGET_KEY)
-    if default_target is not None and not isinstance(default_target, str):
-        _fail(
-            f"booley.toml [flows.{flow_name}].default_target must be a string "
-            "(a Target name or vlnv#name; comma-separate several)",
-            f"fix [flows.{flow_name}].default_target",
+            f"booley.toml [flows.{flow_name}].{retired} is retired",
+            "delete it; Flow calls require an explicit target, and Doctor selection "
+            "lives in each .core Target's flow_options.booley.doctor list",
         )
         valid = False
     # Pre-Run Commands (ADR 0039): shell lines run before each sim run. A
@@ -2135,19 +2150,13 @@ def _heavy_job_mem_bytes(project: ProjectAudit) -> tuple[int, str, str | None]:
     measurement = synth_probe.load_measurement(project.project_dir)
     if measurement is None:
         return configured, configured_label, None
-    calibration_target = _synth_calibration_target(project)
-    configured_targets = _configured_targets(project, "synth")
+    doctor_targets = _doctor_targets(project, "synth")
     measured_target = str(measurement["target"])
-    calibration_error: str | None = None
-    if len(configured_targets) > 1 and not calibration_target:
+    calibration_error = None
+    if measured_target not in doctor_targets:
         calibration_error = (
-            "stored synthesis memory calibration cannot be trusted until "
-            "[flows.synth].calibration_target names the reviewed heaviest Target"
-        )
-    elif calibration_target and measured_target != calibration_target:
-        calibration_error = (
-            f"stored synthesis memory calibration is for {measured_target!r}, not "
-            f"the current heaviest Target {calibration_target!r}; rerun doctor --deep"
+            f"stored synthesis memory calibration is for unselected Target "
+            f"{measured_target!r}; rerun doctor --deep over the current Doctor matrix"
         )
     if calibration_error:
         return configured, configured_label, calibration_error
@@ -3001,49 +3010,69 @@ def _run_mcp_checks(
     docker_exe: str | None,
     image: str,
     verbose: bool,
-    _pass: Check,
-    _note: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
+    reporter: _Reporter,
 ) -> None:
     """Validate Interactive Mode: devcontainer spec, excludes, Docker objects,
     auth token, and in-container MCP server discovery (ADR 0018)."""
     banner("Interactive Mode checks")
     if project is None:
-        _skip("Interactive Mode checks skipped - project config invalid")
+        reporter.skip_("Interactive Mode checks skipped - project config invalid")
         return
 
     _check_devcontainer_spec(
         project.project_root,
         image,
         _declared_provider(project),
-        _pass,
-        _warn,
-        _fail,
-        _note=_note,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.fail_,
+        _note=reporter.note_,
     )
-    _check_issued_session_runtime(project, docker_exe, _pass, _skip, _fail)
-    _check_devcontainer_excludes(project.project_root, _pass, _warn)
-    _check_interactive_logs_gitignore(project.project_dir, _pass, _warn)
-    _check_interactive_logs_tracked(project.project_dir, _pass, _fail)
-    provider = _configured_provider(project)
-    auth_policy = _configured_auth_policy(project)
-    _check_agent_auth_token(provider, _pass, _warn, _skip, policy=auth_policy)
-    _check_oauth_token(provider, _pass, _warn, _skip, policy=auth_policy, _note=_note)
-    _check_subscription_creds_health(provider, _pass, _warn, policy=auth_policy)
-    _check_interactive_docker_objects(docker_exe, _pass, _warn, _skip)
-    _check_wcp_server(project, docker_exe, _pass, _skip, _fail)
-    _check_interactive_state_volumes(project, docker_exe, verbose, _pass, _note, _skip)
-    _check_issued_image_keepers(project, docker_exe, verbose, _pass, _note, _skip)
+    _check_issued_session_runtime(
+        project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_
+    )
+    _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
+    _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
+    _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
+    _run_agent_credential_checks(project, reporter)
+    _check_interactive_docker_objects(docker_exe, reporter.pass_, reporter.warn_, reporter.skip_)
+    _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
+    _check_interactive_state_volumes(
+        project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
+    )
+    _check_issued_image_keepers(
+        project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
+    )
 
     if not docker_exe:
-        _skip("MCP server probe skipped - container runtime unavailable")
+        reporter.skip_("MCP server probe skipped - container runtime unavailable")
         return
     if not _docker_image_exists_by_name(image):
-        _skip("MCP server probe skipped - sandbox image unavailable")
+        reporter.skip_("MCP server probe skipped - sandbox image unavailable")
         return
-    _run_mcp_probe(project, docker_exe, image, verbose, _pass, _warn, _fail)
+    _run_mcp_probe(
+        project, docker_exe, image, verbose, reporter.pass_, reporter.warn_, reporter.fail_
+    )
+
+
+def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> None:
+    """Run credential checks when the invocation profile includes agents."""
+    if not reporter.agent_check_enabled("agent credential checks"):
+        return
+    provider = _configured_provider(project)
+    auth_policy = _configured_auth_policy(project)
+    _check_agent_auth_token(
+        provider, reporter.pass_, reporter.warn_, reporter.skip_, policy=auth_policy
+    )
+    _check_oauth_token(
+        provider,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        policy=auth_policy,
+        _note=reporter.note_,
+    )
+    _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
 
 
 def _check_interactive_logs_gitignore(
@@ -3318,7 +3347,12 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if not _check_runtime_isolation(_pass, _fail):
             return
         mounted = Path("/opt/booley-eda/vivado").is_dir()
-        if vivado is not None and vivado.provisioning == PROVISIONING_HOST and not mounted:
+        if (
+            vivado is not None
+            and vivado.provisioning == PROVISIONING_HOST
+            and _flow_selection(project, "fpga").enabled
+            and not mounted
+        ):
             _fail(
                 "host-provisioned Vivado is absent from the Session Runtime",
                 "reissue the spec on the host and recreate the Session Runtime",
@@ -3327,7 +3361,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if mounted:
             _check_mounted_vivado_runtime(_pass, _fail)
         else:
-            _pass("Session Runtime has no host-mounted commercial EDA request")
+            _pass("Session Runtime has no active host-mounted commercial EDA request")
         return
 
     from booley.eda import runtime_spec
@@ -4310,24 +4344,26 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
 
 def _run_preflight_parity_checks(
     project: ProjectAudit | None,
-    _pass: Check,
-    _note: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
+    reporter: _Reporter,
 ) -> None:
     """Mirror cheap run preflight checks in doctor output."""
     banner("Run checks")
     if project is None:
-        _skip("run checks skipped - project config invalid")
+        reporter.skip_("run checks skipped - project config invalid")
         return
 
-    _check_tickets_tree(project.project_dir, _pass, _fail)
-    _check_git_state(project.project_root, _pass, _note, _fail)
-    _check_repo_footprint(project.project_root, _pass, _warn)
-    _check_ticket_board_import(project.project_root, _pass, _fail)
-    _check_custom_endpoints_and_criteria(project.project_root, _pass, _fail)
-    _check_agent_backend_health(project.project_root, _pass, _warn, _note=_note)
+    _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
+    _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
+    _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
+    _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
+    if reporter.agent_check_enabled("worker backend health check"):
+        _check_agent_backend_health(
+            project.project_root,
+            reporter.pass_,
+            reporter.warn_,
+            _note=reporter.note_,
+        )
 
 
 def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
@@ -4562,9 +4598,9 @@ def _design_size(root: Path) -> tuple[int, int]:
 
 
 def _configured_design_size(project: ProjectAudit) -> tuple[int, int] | None:
-    """Size the unique HDL files reachable from configured Target selections."""
+    """Size the unique HDL files reachable from Doctor Target selections."""
     paths: set[Path] = set()
-    for target in _configured_target_seed(project):
+    for target in _doctor_target_seed(project):
         try:
             sources = fusesoc_registry.target_source_files(
                 project.project_root,
@@ -4595,7 +4631,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
     """
     scoped = _configured_design_size(project)
     files, loc = scoped or _design_size(project.project_root)
-    label = "configured Target filesets" if scoped is not None else "whole-repository estimate"
+    label = "Doctor Target filesets" if scoped is not None else "whole-repository estimate"
     if files >= _LARGE_DESIGN_FILES or loc >= _LARGE_DESIGN_LOC:
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
@@ -4646,40 +4682,34 @@ def _run_flow_audit(
                     f"line(s)); they run in the Session Runtime before "
                     "each sim run (BOOLEY_* env contract, ADR 0039)"
                 )
+        targets = _check_doctor_targets(project, flow_name, _fail)
+        if not targets:
+            continue
         _check_flow_runtime_reality(
             project,
             flow_name,
+            targets,
             docker_exe=docker_exe,
             _pass=_pass,
             _skip=_skip,
             _fail=_fail,
         )
-
-        # A Flow with no Target can never run. Report that here rather than
-        # letting the dry-run below fail with the same reason one line later.
-        if not _check_flow_target(project, flow_name, _fail):
-            continue
-        if flow_name == "synth" and not _check_synth_calibration_target(
-            project, _pass, _warn, _fail
-        ):
-            continue
-
-        _run_flow_check(
-            project,
-            flow_name,
-            selection,
-            dry_run=True,
-            docker_exe=docker_exe,
-            # honor a raised [flows.<flow>].timeout_ms like the deep checks do:
-            # the fusesoc cores-root scan alone can exceed 60s on large repos
-            # mounted from a Windows host
-            timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
-            verbose=verbose,
-            _pass=_pass,
-            _warn=_warn,
-            _skip=_skip,
-            _fail=_fail,
-        )
+        for target in targets:
+            _run_flow_check(
+                project,
+                flow_name,
+                selection,
+                target=target,
+                dry_run=True,
+                docker_exe=docker_exe,
+                # The fusesoc roots scan alone can exceed 60s on large repos.
+                timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
+                verbose=verbose,
+                _pass=_pass,
+                _warn=_warn,
+                _skip=_skip,
+                _fail=_fail,
+            )
 
     _check_elaborate_setup(project, _pass, _skip, _fail)
 
@@ -4687,25 +4717,24 @@ def _run_flow_audit(
 def _check_flow_runtime_reality(
     project: ProjectAudit,
     flow_name: str,
+    targets: list[str],
     *,
     docker_exe: str | None,
     _pass: Check,
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Probe the configured Flow's EDA binary in the Session Runtime."""
-    binary = _runtime_probe_binary(project, flow_name)
-    if binary is None:
-        return
-    _check_sandbox_binary(
-        flow_name,
-        binary,
-        docker_exe=docker_exe,
-        image=_sandbox_image(project),
-        _pass=_pass,
-        _skip=_skip,
-        _fail=_fail,
-    )
+    """Probe every selected Target's EDA binary in the Session Runtime."""
+    for binary in _runtime_probe_binaries(project, targets):
+        _check_sandbox_binary(
+            flow_name,
+            binary,
+            docker_exe=docker_exe,
+            image=_sandbox_image(project),
+            _pass=_pass,
+            _skip=_skip,
+            _fail=_fail,
+        )
 
 
 _EDA_TOOL_BINARIES = {
@@ -4717,16 +4746,18 @@ _EDA_TOOL_BINARIES = {
 }
 
 
-def _runtime_probe_binary(project: ProjectAudit, flow_name: str) -> str | None:
-    """Return the Session Runtime executable for a Flow's selected Target."""
-    target = _probe_target(project, flow_name)
-    if not target:
-        return None
-    try:
-        ref = fusesoc_registry.resolve_ref(project.project_root, target)
-    except fusesoc_registry.FuseSocError:
-        return None  # unresolvable Targets are their own doctor finding
-    return _EDA_TOOL_BINARIES.get((ref.eda_tool or "").lower())
+def _runtime_probe_binaries(project: ProjectAudit, targets: list[str]) -> list[str]:
+    """Return the distinct runtime executables required by selected Targets."""
+    binaries: list[str] = []
+    for target in targets:
+        try:
+            ref = fusesoc_registry.resolve_ref(project.project_root, target)
+        except fusesoc_registry.FuseSocError:
+            continue
+        binary = _EDA_TOOL_BINARIES.get((ref.eda_tool or "").lower())
+        if binary and binary not in binaries:
+            binaries.append(binary)
+    return binaries
 
 
 def _check_sandbox_binary(
@@ -4783,14 +4814,14 @@ def _check_sandbox_binary(
 def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     """The ``.core`` files whose findings the project can act on (ADR 0036).
 
-    A core is "owned" when it hosts a configured ``[flows.*].default_target`` (the
+    A core is "owned" when it hosts a Target selected by Doctor metadata (the
     project drives it, so its defects are the project's problem) or lives in the
     state zone (``.booley_project/cores/`` is always Booley-authored). Everything
     else is vendored upstream content — advice like "fix the .core" is
     unfollowable for a repo that must stay byte-identical to upstream.
     """
     owned: set[Path] = set()
-    for token in _configured_target_seed(project):
+    for token in _doctor_target_seed(project):
         try:
             owned.add(fusesoc_registry.resolve_ref(root, token).core_file)
         except fusesoc_registry.FuseSocError:
@@ -4803,7 +4834,7 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
 
 
 def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path, str]]:
-    """Return the exact ``(core_file, Target)`` pairs selected by Flow config.
+    """Return the exact ``(core_file, Target)`` pairs selected by Doctor metadata.
 
     A native core can contain dozens of historical board and example Targets
     while Booley selects only one newly modernized Target from it.  Core-level
@@ -4813,7 +4844,7 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
     each caller.
     """
     selected: set[tuple[Path, str]] = set()
-    for token in _configured_target_seed(project):
+    for token in _doctor_target_seed(project):
         try:
             ref = fusesoc_registry.resolve_ref(root, token)
         except fusesoc_registry.FuseSocError:
@@ -4839,7 +4870,7 @@ def _check_core_schema(
     ``... must be array``. Reproduce that verdict host-side (no subprocess).
 
     Severity follows ownership. A violation FAILs when the core is one the
-    project actually drives — it hosts a configured ``[flows.*].default_target`` — or
+    project actually drives — it hosts a Doctor-selected Target — or
     lives in the state zone (``.booley_project/cores/``, always Booley-authored,
     ADR 0036). A vendored upstream core the project never selects (the pristine
     YosysHQ ``picorv32.core`` ships a bare ``depend:``) is a WARN instead:
@@ -4866,7 +4897,7 @@ def _check_core_schema(
             else:
                 note_sink(
                     f".core schema {core_file.name}: {msg} — vendored core, no "
-                    "configured Target selects it; FuseSoC skips it at resolve, "
+                    "Doctor Target selects it; FuseSoC skips it at resolve, "
                     "so only that core's own Targets are unusable"
                 )
     if schema_clean:
@@ -4884,9 +4915,7 @@ def _check_core_setup_hazards(
     """Catch offline-provider and recursive-symlink failures before FuseSoC."""
     note_sink = _note or _pass
     owned_cores = _owned_core_files(project, root)
-    selected_closure = fusesoc_registry.selectable_core_closure(
-        root, _configured_target_seed(project)
-    )
+    selected_closure = fusesoc_registry.selectable_core_closure(root, _doctor_target_seed(project))
     required_cores = owned_cores | set(selected_closure or ())
     hazards = fusesoc_registry.core_setup_hazards(root)
     if not hazards:
@@ -4906,8 +4935,43 @@ def _check_core_setup_hazards(
             )
         else:
             note_sink(
-                f"vendored .core {rel} has a provider block, but no configured Target selects it"
+                f"vendored .core {rel} has a provider block, but no Doctor Target selects it"
             )
+
+
+def _doctor_target_incompatibility(
+    target: str,
+    flow_name: str,
+    ref: fusesoc_registry.TargetRef,
+) -> tuple[str, str] | None:
+    """Return the diagnostic for an invalid Doctor Target/Flow pairing."""
+    from booley.targets.target_surface import flow_can_drive
+
+    if flow_can_drive(flow_name, ref):
+        return None
+    return (
+        f"Target {target!r} selects incompatible Doctor Flow {flow_name!r} "
+        f"(CAPI2 flow={ref.flow or '?'}, EDA tool={ref.eda_tool or '?'})",
+        f"remove {flow_name!r} from flow_options.booley.doctor or fix the "
+        "Target's `flow` and `flow_options.tool` fields",
+    )
+
+
+def _check_doctor_target_compatibility(root: Path, _pass: Check, _fail: Fail) -> None:
+    """Validate every explicit Doctor Target/Flow pairing."""
+    declarations = fusesoc_registry.target_declarations(root)
+    selected = 0
+    for name, refs in declarations.items():
+        for ref in refs:
+            for flow_name in ref.doctor_flows:
+                selected += 1
+                failure = _doctor_target_incompatibility(name, flow_name, ref)
+                if failure:
+                    _fail(*failure)
+    if selected:
+        _pass(f"Doctor Target matrix valid: {selected} Target/Flow pair(s)")
+    else:
+        _pass("Doctor Target matrix is empty")
 
 
 def _run_core_audit(
@@ -4936,7 +5000,7 @@ def _run_core_audit(
 
     # 0b. CAPI2 array-field schema — caught host-side so a malformed .core fails
     # the cheap pass with FuseSoC's real reason, not only under --deep (WARN
-    # instead for a vendored core no configured Target selects).
+    # instead for a vendored core no Doctor Target selects).
     _check_core_schema(project, root, _pass, _warn, _fail, _note=note_sink)
 
     # 1. Enumerate Targets (ADR 0030: first-wins view; duplicate bare names
@@ -4959,6 +5023,8 @@ def _run_core_audit(
         )
     else:
         _pass(f".core Targets enumerated: {', '.join(sorted(refs))}")
+
+        _check_doctor_target_compatibility(root, _pass, _fail)
 
         # 1b. Legacy FuseSoC default_tool/tools fields: enumerable but unclassifiable.
         _check_legacy_core_targets(project, root, refs, _pass, _warn, _note=note_sink)
@@ -4999,7 +5065,7 @@ def _run_core_audit(
             _warn,
             _fail,
             _note=note_sink,
-            selected_targets=set(_configured_target_seed(project)) or None,
+            selected_targets=set(_doctor_target_seed(project)) or None,
         )
 
         # 2b*. Verilator sim Targets built with the auto --main/--binary have no
@@ -5030,12 +5096,12 @@ def _run_core_audit(
         _check_committed_build_artifacts(root, _pass, _warn)
 
     # 3. .core security — provenance + confinement, NOT a content scan (dec 21).
-    # Seed the audit scope with the project's declared Targets ([flows.*].default_target,
-    # ADR 0030) so a vendored monorepo audits only reachable cores (SETUP-19).
+    # Seed the audit scope with Doctor-selected Targets so a vendored monorepo
+    # audits only reachable cores (SETUP-19).
     violations = core_security.validate_project_cores(
         root,
         scope=_project_write_scope(root),
-        seed_targets=_configured_target_seed(project),
+        seed_targets=_doctor_target_seed(project),
     )
     if violations:
         for v in violations:
@@ -5271,27 +5337,20 @@ def _check_legacy_core_targets(
         )
 
 
-def _wired_axis_by_target(project: ProjectAudit) -> dict[str, str]:
-    """Bare Target name -> the naming axis its ``[flows.*].default_target`` wiring implies.
-
-    The most reliable axis evidence there is: the project has *said* which Booley Flow
-    drives the Target. Beats the declared ``flow:``, which a project may set to
-    ``lint`` purely as a resolution vehicle for a synth Target. Qualified tokens
-    (``vlnv#name``) key on the bare name — a rename suggestion is per-name.
-    """
-    flows = project.booley_toml.get("flows", {})
-    if not isinstance(flows, dict):
-        return {}
-    wired: dict[str, str] = {}
-    for flow_name, section in flows.items():
-        axis = target_naming.AXIS_FOR_FLOW.get(flow_name)
-        if axis is None or not isinstance(section, dict):
-            continue
-        for raw_tok in str(section.get(DEFAULT_TARGET_KEY, "")).split(","):
-            tok = raw_tok.strip().rsplit("#", 1)[-1]
-            if tok:
-                wired.setdefault(tok, axis)
-    return wired
+def _doctor_axis_by_target(project: ProjectAudit) -> dict[str, str]:
+    """Bare Target name -> naming axis implied by its Doctor metadata."""
+    axes: dict[str, str] = {}
+    try:
+        declarations = fusesoc_registry.target_declarations(project.project_root)
+    except fusesoc_registry.FuseSocError:
+        return axes
+    for name, refs in declarations.items():
+        for ref in refs:
+            for flow_name in ref.doctor_flows:
+                axis = target_naming.AXIS_FOR_FLOW.get(flow_name)
+                if axis:
+                    axes.setdefault(name, axis)
+    return axes
 
 
 def _check_naming_conventions(
@@ -5329,7 +5388,7 @@ def _check_target_naming(
     del refs  # qualified duplicate Target names need exact declaration scope
     state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
-    wired = _wired_axis_by_target(project)
+    doctor_axes = _doctor_axis_by_target(project)
     try:
         declarations = fusesoc_registry.target_declarations(root)
     except fusesoc_registry.FuseSocError:
@@ -5345,7 +5404,7 @@ def _check_target_naming(
         _pass("Target names follow the <axis>_<subject> convention")
         return
     for name, ref in offenders:
-        suggestion = target_naming.suggest_name(name, wired.get(name))
+        suggestion = target_naming.suggest_name(name, doctor_axes.get(name))
         fix = (
             f"rename it '{suggestion}'"
             if suggestion
@@ -5353,8 +5412,8 @@ def _check_target_naming(
         )
         _note(
             f"Target '{name}' in {ref.core_file.name}: {target_naming.violation(name)} "
-            f"— {fix} (renaming also touches tests.toml keys, [flows.*].default_target, "
-            f"and any ticket criteria naming it)"
+            f"— {fix} (renaming also touches tests.toml keys and any ticket "
+            "criteria naming it)"
         )
 
 
@@ -6294,7 +6353,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     Advisory by design — this is a curated header list, not a resolver, so it
     can only be a hint. It never fails the gate.
     """
-    seeds = _configured_target_seed(project)
+    seeds = _doctor_target_seed(project)
     if not seeds:
         return
     root = project.project_root
@@ -6378,53 +6437,49 @@ def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail
         )
 
 
-def _configured_target_matcher(project: ProjectAudit) -> Callable[[str, str], bool]:
-    """Return a predicate telling whether an enumerated Target is configured.
-
-    ``[flows.*].default_target`` entries may be bare (``sim``) or VLNV-qualified
-    (``booley:ibex:port#sim``); enumeration yields the bare name plus its VLNV
-    separately. Accept a match on either form. An empty seed means the project
-    configured no Targets explicitly, in which case every Target is treated as
-    in scope — that is the small single-core project, where resolving
-    everything is exactly what you want.
-    """
-    seed = {tok.strip() for tok in _configured_target_seed(project) if tok.strip()}
-    if not seed:
-        return lambda name, vlnv: True
-    return lambda name, vlnv: name in seed or f"{vlnv}#{name}" in seed
+def _doctor_target_matcher(project: ProjectAudit) -> Callable[[str, str], bool]:
+    """Return whether an enumerated Target belongs to Doctor's explicit matrix."""
+    selected: set[tuple[str, str]] = set()
+    for token in _doctor_target_seed(project):
+        try:
+            ref = fusesoc_registry.resolve_ref(project.project_root, token)
+        except fusesoc_registry.FuseSocError:
+            continue
+        selected.add((ref.name, ref.vlnv))
+    return lambda name, vlnv: (name, vlnv) in selected
 
 
 def _report_core_resolve(
     name: str,
     ok: bool,
     err: str,
-    configured: bool,
+    selected: bool,
     _pass: Check,
     _warn: Check,
     _fail: Fail,
     *,
     _note: Check | None = None,
 ) -> None:
-    """Grade one Target resolution by whether the project actually selected it.
+    """Grade one Target resolution by whether Doctor explicitly selected it.
 
     A vendored monorepo carries Targets Booley was never pointed at — ibex has
     208 cores, whose formal/vendor Targets need EDA tools this project does not
     configure. Failing the setup gate on those makes a green doctor
     unreachable for reasons the port cannot fix, and contradicts plain doctor,
     which already calls the same Targets harmless advisories. Only the
-    configured Targets are a gate; their dependency closure is covered
+    Doctor Targets are a gate; their dependency closure is covered
     transitively, since a broken dependency fails the Target that needs it.
     """
     if ok:
         _pass(f".core Target '{name}' resolves")
         return
-    if configured:
+    if selected:
         _fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
         _print_text_excerpt(err)
         return
     (_note or _pass)(
-        f".core Target '{name}' fails to resolve, but no configured Flow "
-        "selects it - advisory only (unselected vendored/upstream Target)"
+        f".core Target '{name}' fails to resolve, but Doctor does not "
+        "select it - advisory only (unselected vendored/upstream Target)"
     )
 
 
@@ -6446,7 +6501,7 @@ def _run_core_resolve_checks(
     image is unavailable do we fall back to a host ``fusesoc`` if one happens to
     be installed; failing that, the check skips rather than failing.
 
-    Only Targets named by ``[flows.*].default_target`` gate the run; see
+    Only Targets selected by ``flow_options.booley.doctor`` gate the run; see
     ``_report_core_resolve``.
     """
     # Enumerating Targets is a pure ``.core`` YAML read (no fusesoc needed) and
@@ -6458,7 +6513,7 @@ def _run_core_resolve_checks(
     if not refs:
         return
 
-    is_configured = _configured_target_matcher(project)
+    is_configured = _doctor_target_matcher(project)
 
     image = _sandbox_image(project)
     if docker_exe and _docker_image_exists_by_name(image):
@@ -6605,7 +6660,7 @@ def _run_deep_checks(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Run real first-config EDA smoke checks."""
+    """Run the real EDA smoke matrix selected by ``.core`` metadata."""
     for flow_name in _AUDITED_FLOWS:
         selection = _flow_selection(project, flow_name)
         if not selection.enabled:
@@ -6614,24 +6669,25 @@ def _run_deep_checks(
         if _execution_error(flow_name, selection):
             _skip(f"{flow_name} deep check skipped - execution selection invalid")
             continue
-        if flow_name == "synth" and not _synth_calibration_target(project):
-            _skip(
-                "synth deep check skipped - no reviewed heaviest [flows.synth].calibration_target"
-            )
+        targets = _doctor_targets(project, flow_name)
+        if not targets:
+            _skip(f"{flow_name} deep check skipped - no Doctor Target selected")
             continue
-        _run_flow_check(
-            project,
-            flow_name,
-            selection,
-            dry_run=False,
-            docker_exe=docker_exe,
-            timeout_s=_deep_timeout_s(project, flow_name),
-            verbose=verbose,
-            _pass=_pass,
-            _warn=_warn,
-            _skip=_skip,
-            _fail=_fail,
-        )
+        for target in targets:
+            _run_flow_check(
+                project,
+                flow_name,
+                selection,
+                target=target,
+                dry_run=False,
+                docker_exe=docker_exe,
+                timeout_s=_deep_timeout_s(project, flow_name),
+                verbose=verbose,
+                _pass=_pass,
+                _warn=_warn,
+                _skip=_skip,
+                _fail=_fail,
+            )
     _run_elaborate_deep_check(
         project,
         docker_exe,
@@ -6700,19 +6756,25 @@ def _run_elaborate_deep_check(
     if _execution_error("elab", selection):
         _skip("elab deep check skipped - the followed sim selection is invalid")
         return
-    _run_flow_check(
-        project,
-        "elab",
-        selection,
-        dry_run=False,
-        docker_exe=docker_exe,
-        timeout_s=_deep_timeout_s(project, "elab"),
-        verbose=verbose,
-        _pass=_pass,
-        _warn=_warn,
-        _skip=_skip,
-        _fail=_fail,
-    )
+    targets = _doctor_targets(project, "elab")
+    if not targets:
+        _skip("elab deep check skipped - no Doctor Target selected")
+        return
+    for target in targets:
+        _run_flow_check(
+            project,
+            "elab",
+            selection,
+            target=target,
+            dry_run=False,
+            docker_exe=docker_exe,
+            timeout_s=_deep_timeout_s(project, "elab"),
+            verbose=verbose,
+            _pass=_pass,
+            _warn=_warn,
+            _skip=_skip,
+            _fail=_fail,
+        )
 
 
 @dataclass(frozen=True)
@@ -6751,9 +6813,10 @@ def _selftest_plan(
     _warn: Check,
 ) -> _SelftestPlan | None:
     """Resolve conventional good/bad cases, or warn when the fixture is absent."""
-    target = _probe_target(project, flow_name)
-    if target is None:
+    targets = _doctor_targets(project, flow_name)
+    if not targets:
         return None  # The ordinary Flow target check owns this configuration failure.
+    target = targets[0]
     if flow_name == "sim":
         if not selftest_overlay.has_bad_overlay(project.project_dir, flow_name):
             _warn_unvalidated_selftest(flow_name, _warn)
@@ -6792,7 +6855,7 @@ def _run_selftest_checks(
     manufacture a project-specific failing design, so the project (its setup
     agent) supplies conventional fixtures: a simulation bad-overlay and/or a
     lint Target named ``lint_selftest_bad``. Doctor infers the good cases from
-    each Flow's configured default Target.
+    each Flow's first Doctor-selected Target.
 
     Asserted purely by the Flow exit-code contract: ``good`` => 0. ``bad`` => 1
     (fail/elab_error). A ``bad`` that exits 0 is a FALSE PASS (QA-4: stale
@@ -7148,28 +7211,6 @@ def _guard_docker_availability(
     return True
 
 
-def _guard_target_resolved(
-    project: ProjectAudit,
-    flow_name: str,
-    label: str,
-    _fail: Fail,
-) -> str | None:
-    """Return the resolved Target for *flow_name*, or ``None`` after a FAIL."""
-    target = _probe_target(project, flow_name)
-    if target is None:
-        # A backend is wired (we already PASSed "backend selected"), yet the
-        # migrated project configures no Target for this Flow (ADR 0030 dec 3).
-        # The Flow can NEVER run in this state, and a template-following setup
-        # hits exactly this (F-11) — a mere WARN read as "fine", so it is a
-        # hard FAIL naming the missing [flows.<flow>].default_target.
-        _fail(
-            f"{label} cannot run - {_no_target_match_detail(project, flow_name)}",
-            f"set [flows.{flow_name}].default_target in booley.toml (or set the "
-            f'backend to "none" to disable {flow_name})',
-        )
-    return target
-
-
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """Render *report_dir* so the hint is valid where it is READ, not where run.
 
@@ -7231,6 +7272,7 @@ def _interpret_flow_check_result(
     selection: execution.ExecutionSelection,
     result: subprocess.CompletedProcess,
     *,
+    target: str,
     dry_run: bool,
     verbose: bool,
     label: str,
@@ -7262,6 +7304,7 @@ def _interpret_flow_check_result(
         flow_name,
         selection,
         result,
+        target=target,
         dry_run=dry_run,
         label=label,
         report_dir=report_dir,
@@ -7279,6 +7322,7 @@ def _report_flow_check_result(
     selection: execution.ExecutionSelection,
     result: subprocess.CompletedProcess[str],
     *,
+    target: str,
     dry_run: bool,
     label: str,
     report_dir: Path,
@@ -7294,7 +7338,7 @@ def _report_flow_check_result(
     against this project at all" — so a *graded* nonzero exit is not
     automatically a setup defect (see :func:`_is_lint_findings_exit`).
     """
-    synth_error = _synth_deep_report_error(project, flow_name, dry_run, report_dir)
+    synth_error = _synth_deep_report_error(flow_name, target, dry_run, report_dir)
     if result.returncode == 0 and synth_error:
         _fail(
             f"{label} produced incomplete synthesis evidence: {synth_error}",
@@ -7330,15 +7374,12 @@ def _report_flow_check_result(
         _print_output_excerpt(result)
 
 
-def _synth_deep_report_error(
-    project: ProjectAudit, flow_name: str, dry_run: bool, report_dir: Path
-) -> str:
+def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_dir: Path) -> str:
     """Return why a successful deep synth lacks terminal PPA/timing evidence."""
     if flow_name != "synth" or dry_run:
         return ""
     from booley.flows.synth.flow import synth_target_report_slug
 
-    target = _probe_target(project, flow_name)
     path = report_dir / f"synth_{synth_target_report_slug(target)}.json"
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
@@ -7375,6 +7416,7 @@ def _run_flow_check(
     flow_name: str,
     selection: execution.ExecutionSelection,
     *,
+    target: str,
     dry_run: bool,
     docker_exe: str | None,
     timeout_s: int,
@@ -7390,6 +7432,7 @@ def _run_flow_check(
         selection,
         dry_run=dry_run,
     )
+    label = f"{label} [{target}]"
     if not _guard_docker_availability(
         use_docker=use_docker,
         docker_exe=docker_exe,
@@ -7398,10 +7441,6 @@ def _run_flow_check(
         _skip=_skip,
         _fail=_fail,
     ):
-        return
-
-    target = _guard_target_resolved(project, flow_name, label, _fail)
-    if target is None:
         return
 
     report_dir = project.project_dir / _DOCTOR_TMP / "flow-reports"
@@ -7440,6 +7479,7 @@ def _run_flow_check(
         flow_name,
         selection,
         result,
+        target=target,
         dry_run=dry_run,
         verbose=verbose,
         label=label,
@@ -7468,7 +7508,7 @@ def _record_synth_memory_calibration(
     _pass: Check,
     _warn: Check,
 ) -> None:
-    """Record boundary-process peak RSS from a completed heaviest synthesis."""
+    """Record boundary-process peak RSS from a completed Doctor synthesis."""
     from booley.flows.synth.flow import synth_target_report_slug
 
     safe_target = synth_target_report_slug(target)
@@ -7482,13 +7522,18 @@ def _record_synth_memory_calibration(
     peak = report.get("peak_rss_mb")
     if isinstance(peak, bool) or not isinstance(peak, (int, float)) or peak <= 0:
         _warning_sink(_warn, "synth.memory-calibration-unavailable", subject=target)(
-            f"heaviest synthesis Target {target} completed, but its process-tree "
+            f"synthesis Target {target} completed, but its process-tree "
             "peak RSS could not be measured; [jobs].heavy_memory remains uncalibrated"
         )
         return
     from booley.harness import synth_probe
 
-    synth_probe.record_measurement(project.project_dir, target, float(peak))
+    synth_probe.record_measurement(
+        project.project_dir,
+        target,
+        float(peak),
+        selected_targets=_doctor_targets(project, "synth"),
+    )
     reservation, note, _error = _heavy_job_mem_bytes(project)
     _pass(
         f"synth memory calibrated: {target} peaked at {float(peak) / 1024:.1f}g; "
@@ -7529,48 +7574,50 @@ def _is_simulate_tb_top_skip(
     return needle in str(payload.get("report_text", ""))
 
 
-def _no_target_match_detail(project: ProjectAudit, flow_name: str) -> str:
-    """Explain why *flow_name* has no Target to smoke-check (ADR 0030 dec 3).
-
-    Doctor drives off the CONFIGURED Target, not a flow scan, so the gap is a
-    missing ``[flows.<flow>].default_target`` on a migrated project. Name the authored
-    Targets so the user can copy one straight into the config.
-    """
+def _doctor_targets(project: ProjectAudit, flow_name: str) -> list[str]:
+    """Every ``.core`` Target that explicitly selects one Doctor Flow."""
     try:
-        refs = fusesoc_registry.enumerate_targets(project.project_root)
-    except fusesoc_registry.FuseSocError as exc:
-        return f"could not enumerate .core Targets ({exc})"
-    if not refs:
-        return "project has no .core (a resolvable .core Target is a precondition, ADR 0039)"
-    available = ", ".join(
-        f"'{name}' (flow={ref.flow or '?'}, EDA tool={ref.eda_tool or '?'})"
-        for name, ref in sorted(refs.items())
-    )
-    return (
-        f"no Target configured for {flow_name}; set [flows.{flow_name}].default_target "
-        f"to one of the authored Targets: {available} — else {flow_name} can "
-        f"never run"
-    )
+        return fusesoc_registry.doctor_target_selectors(project.project_root, flow_name)
+    except fusesoc_registry.FuseSocError:
+        return []
 
 
-def _check_flow_target(project: ProjectAudit, flow_name: str, _fail: Fail) -> bool:
-    """FAIL when an enabled *flow_name* names no ``.core`` Target it can drive.
+def _doctor_target_seed(project: ProjectAudit) -> list[str]:
+    """The deduplicated Target surface that Doctor gates and audits."""
+    try:
+        return fusesoc_registry.doctor_target_seed(project.project_root)
+    except fusesoc_registry.FuseSocError:
+        return []
 
-    Runs in the cheap pass. The condition is terminal — a Flow with a real
-    backend and no Target can never run — but it used to surface only under
-    ``--deep``, where :func:`_run_flow_check` hits it on the way to the smoke.
-    That made a latent, guaranteed deep FAIL invisible to plain ``doctor``, and
-    ``BOOLEY_TEMPLATE.toml`` ships every project into exactly that state for
-    ``elaborate`` (F-9). Check it where the backend is validated instead.
-    """
-    if _probe_target(project, flow_name) is not None:
-        return True
-    _fail(
-        f"{flow_name} has no Target - {_no_target_match_detail(project, flow_name)}",
-        f"set [flows.{flow_name}].default_target in booley.toml (or set "
-        f"[flows.{flow_name}].enabled = false to disable it)",
-    )
-    return False
+
+def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) -> list[str]:
+    """Validate and return the Target matrix selected for *flow_name*."""
+    targets = _doctor_targets(project, flow_name)
+    if not targets:
+        try:
+            available = fusesoc_registry.available_targets(project.project_root)
+        except fusesoc_registry.FuseSocError:
+            available = []
+        candidates = f"; available Targets: {', '.join(available)}" if available else ""
+        _fail(
+            f"{flow_name} has no Doctor Target{candidates}",
+            "add the Flow name to a compatible .core Target's "
+            "flow_options.booley.doctor list (or disable the Flow in booley.toml)",
+        )
+        return []
+    valid: list[str] = []
+    for target in targets:
+        try:
+            ref = fusesoc_registry.resolve_ref(project.project_root, target)
+        except fusesoc_registry.FuseSocError as exc:
+            _fail(f"{flow_name} Doctor Target {target!r} does not resolve: {exc}", "fix the .core")
+            continue
+        failure = _doctor_target_incompatibility(target, flow_name, ref)
+        if failure:
+            _fail(*failure)
+            continue
+        valid.append(target)
+    return valid
 
 
 def _check_elaborate_setup(
@@ -7591,128 +7638,9 @@ def _check_elaborate_setup(
     if not _elaborate_active(project):
         _skip("elab disabled in booley.toml (opt-out; lint/sim cover elaboration)")
         return
-    if _check_flow_target(project, "elab", _fail):
-        _pass(f"elab Target configured: {_probe_target(project, 'elab')}")
-
-
-def _configured_target(project: ProjectAudit, flow_name: str) -> str:
-    """The Target *flow_name* is configured to drive (``[flows.<flow>].default_target``).
-
-    ADR 0030 dec 3: the project's target surface is the set named in ``[flows.*]``
-    config — that config is the single source of truth for "mine". Mirrors how
-    the Flow itself resolves an empty ``--target`` (``[flows.<flow>].default_target``);
-    doctor's smoke check probes just the first of a comma-separated list. Returns
-    ``""`` when nothing is configured.
-    """
-    flows = project.booley_toml.get("flows", {})
-    section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
-    if not isinstance(section, dict):
-        return ""
-    targets = _configured_targets(project, flow_name)
-    return targets[0] if targets else ""
-
-
-def _configured_targets(project: ProjectAudit, flow_name: str) -> list[str]:
-    """All comma-separated Targets explicitly assigned to one Booley Flow."""
-    flows = project.booley_toml.get("flows", {})
-    section = config_section(flows, flow_name) if isinstance(flows, dict) else {}
-    if not isinstance(section, dict):
-        return []
-    raw = section.get(DEFAULT_TARGET_KEY, "")
-    if not isinstance(raw, str):
-        return []
-    return [token.strip() for token in raw.split(",") if token.strip()]
-
-
-def _synth_calibration_target(project: ProjectAudit) -> str:
-    """The setup-reviewed heaviest synthesis Target, or an implicit singleton."""
-    targets = _configured_targets(project, "synth")
-    flows = project.booley_toml.get("flows", {})
-    section = config_section(flows, "synth") if isinstance(flows, dict) else {}
-    raw = section.get("calibration_target", "") if isinstance(section, dict) else ""
-    explicit = raw.strip() if isinstance(raw, str) else ""
-    if explicit:
-        return explicit
-    return targets[0] if len(targets) == 1 else ""
-
-
-def _check_synth_calibration_target(
-    project: ProjectAudit,
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
-) -> bool:
-    """Require a reviewable heaviest target for multi-target setup smokes."""
-    targets = _configured_targets(project, "synth")
-    calibration = _synth_calibration_target(project)
-    flows = project.booley_toml.get("flows", {})
-    section = config_section(flows, "synth") if isinstance(flows, dict) else {}
-    raw = section.get("calibration_target") if isinstance(section, dict) else None
-    if raw is not None and not isinstance(raw, str):
-        _fail(
-            "[flows.synth].calibration_target must be a Target name string",
-            "set it to the reviewed heaviest Target from [flows.synth].default_target",
-        )
-        return False
-    if len(targets) > 1 and not (isinstance(raw, str) and raw.strip()):
-        _warning_sink(_warn, "synth.calibration-target-unset")(
-            "multiple synthesis Targets are configured but no heaviest calibration "
-            "Target is named; Doctor would otherwise smoke only an arbitrary first "
-            "entry. Set [flows.synth].calibration_target after reviewing the matrix."
-        )
-        return False
-    if calibration and calibration not in targets:
-        _fail(
-            f"synth calibration Target {calibration!r} is not in [flows.synth].default_target",
-            "add it to the synthesis matrix or choose the heaviest configured Target",
-        )
-        return False
-    if calibration:
-        _pass(f"synth heaviest calibration Target: {calibration}")
-    return True
-
-
-def _configured_target_seed(project: ProjectAudit) -> list[str]:
-    """Every Target named across ``[flows.*].default_target`` — the project's declared
-    surface (ADR 0030). Seeds the ``.core`` audit's dependency-closure scope so a
-    vendored monorepo audits only reachable cores (SETUP-19). Empty (→ audit all)
-    when no Flow configures a Target."""
-    flows = project.booley_toml.get("flows", {})
-    if not isinstance(flows, dict):
-        return []
-    seed: list[str] = []
-    for section in flows.values():
-        if not isinstance(section, dict):
-            continue
-        for raw_tok in str(section.get(DEFAULT_TARGET_KEY, "")).split(","):
-            tok = raw_tok.strip()
-            if tok and tok not in seed:
-                seed.append(tok)
-    return seed
-
-
-def _probe_target(project: ProjectAudit, flow_name: str) -> str | None:
-    """Pick the ``.core`` Target for *flow_name* to smoke-check (ADR 0030 dec 3).
-
-    Doctor drives off the Target the project CONFIGURED for the Flow
-    (``[flows.<flow>].default_target``), not a heuristic "first Target whose flow matches"
-    scan of everything enumerated — on a vendored repo that guess would pick an
-    arbitrary upstream core's Target. Precedence:
-
-    - the configured ``[flows.<flow>].default_target`` when set;
-    - else ``None`` — the project names no Target for this Flow, so the
-      caller skips the smoke check rather than guessing. (The pre-migration
-      configs.toml ``first_target`` escape died with ADR 0039: a resolvable
-      ``.core`` Target is a precondition for every Booley Flow.)
-    """
-    configured = (
-        _synth_calibration_target(project)
-        if flow_name == "synth"
-        else _configured_target(project, flow_name)
-    )
-    if configured:
-        return configured
-    return None
+    targets = _check_doctor_targets(project, "elab", _fail)
+    if targets:
+        _pass(f"elab Doctor Targets: {', '.join(targets)}")
 
 
 def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:

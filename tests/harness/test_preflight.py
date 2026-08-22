@@ -151,7 +151,7 @@ class TestCoreSetupHazards:
             lambda _root: [CoreSetupHazard("provider", core, "remote fetch")],
         )
         monkeypatch.setattr(
-            "booley.harness.preflight._configured_core_files",
+            "booley.harness.preflight._doctor_core_files",
             lambda _root: {core},
         )
         errors = _check_core_setup_hazards(tmp_path)
@@ -165,11 +165,11 @@ class TestCoreSetupHazards:
             lambda _root: [CoreSetupHazard("provider", core, "remote fetch")],
         )
         monkeypatch.setattr(
-            "booley.harness.preflight._configured_core_files",
+            "booley.harness.preflight._doctor_core_files",
             lambda _root: set(),
         )
         assert _check_core_setup_hazards(tmp_path) == []
-        assert "no configured Flow selects it" in caplog.text
+        assert "no Doctor Target selects it" in caplog.text
 
     def test_provider_core_in_configured_dependency_closure_is_fatal(self, tmp_path: Path):
         (tmp_path / "top.core").write_text(
@@ -180,7 +180,10 @@ filesets:
   rtl:
     depend: [acme:demo:dep]
 targets:
-  sim: {flow: sim, flow_options: {tool: verilator}, filesets: [rtl]}
+  sim:
+    flow: sim
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
+    filesets: [rtl]
 """,
             encoding="utf-8",
         )
@@ -197,9 +200,7 @@ targets:
         )
         state = tmp_path / ".booley_project"
         state.mkdir()
-        (state / "booley.toml").write_text(
-            '[flows.sim]\ndefault_target = "sim"\n', encoding="utf-8"
-        )
+        (state / "booley.toml").write_text("[flows.sim]\n", encoding="utf-8")
 
         errors = _check_core_setup_hazards(tmp_path)
         assert len(errors) == 1

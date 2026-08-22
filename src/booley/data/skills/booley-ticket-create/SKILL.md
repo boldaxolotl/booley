@@ -85,7 +85,9 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 
 ### 2f: Confirm and write
 
-**MANDATORY GATE.** Show complete final ticket (frontmatter + body). Ask: *"Write this ticket? (yes / edit / cancel)"*
+**MANDATORY DRAFT GATE.** Show the complete proposed ticket (frontmatter + body,
+excluding seal fields). Ask: *"Create this draft and author its Target contract?
+(yes / edit / cancel)"*
 
 **Never write the ticket file until the user explicitly approves** — including agent-invoked creation from other skills.
 
@@ -98,9 +100,13 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 5. **No grilling** — the calling agent must provide all details upfront
 6. Approval gate (2f) applies unless the caller passed `--no-confirm`
 
-## Step 4: Write Ticket
+## Step 4: Author and Seal
 
-Follow §C: slug → body temp file → `create-file --criteria` → validate → enqueue.
+Follow §C: create the approved draft, open its contract worktrees, author every
+needed Target/control file there, validate, and show one combined ticket + Target
+diff. Get explicit approval to seal, then seal and enqueue. Target authoring is part
+of ticket creation, never deferred to the developer. The combined ticket + Target
+diff is the separate seal gate.
 
 ## Step 5: Report
 
@@ -138,15 +144,15 @@ only how to *infer* a value from the conversation and the repo.
 
 **Bugfix, not yet reproducible?** Recommend a split: feature ticket (create the failing test) + bugfix ticket (fix the RTL, depends on the feature).
 
-Runtime fields are *not* inferred — the ticket-board commands stamp them: `feature_branch` by `init`,
-`created` by `enqueue`, `base_sha` by `create-file` (auto-resolved from branch if
-omitted), `integration_base` by `enqueue --integration-base` (a relationship field,
-typically supplied by `/tickets-from-spec`).
+Runtime and seal fields are *not* inferred: `target_contract` and `base_sha` are
+stamped from Git by `contract-seal`, `created` by `enqueue`, `feature_branch` by
+`init`, and `integration_base` by `enqueue --integration-base`.
 
 ## §C. CLI Workflow
 
 `create-file` generates the frontmatter (including `criteria`) from its flags — do **not**
-hand-write the YAML. `on_success` and `created` are stamped later by `enqueue`.
+hand-write the YAML or any SHA. `contract-seal` stamps `target_contract` and
+`base_sha`; `on_success` and `created` are stamped later by `enqueue`.
 
 ```bash
 # E1. Generate slug
@@ -164,11 +170,23 @@ python -m booley.ticket_board create-file "$SLUG" \
   --criteria "$CRITERIA_JSON" \          # JSON: {"mandatory":{...},"optional":{...}}
   --body-file "$BODY"
 
-# E4. Validate — a path, not a slug. Fix and re-run until clean
+# E4. Open isolated outer and paired project-data authoring worktrees.
+python -m booley.ticket_board contract-open "$SLUG"
+
+# E5. Create or edit all required .core files, constraints, Target-selection
+#     configuration, and build hooks in the returned worktree(s). RTL/TB sources
+#     may remain absent only when Scope declares each path [new]; relative-QoR
+#     Targets must already be fully executable.
+
+# E6. Validate — a path, not a slug. Fix and re-run until clean.
 python -m booley.ticket_board validate-ticket \
   .booley_project/tickets/board/drafts/$SLUG.md [--check-git]
 
-# E5. Enqueue (stamps on_success + created)
+# E7. Show the complete ticket plus outer/paired Target diffs and ask for
+#     explicit seal approval. Then commit and publish the immutable seal.
+python -m booley.ticket_board contract-seal "$SLUG"
+
+# E8. Enqueue (refuses an absent/stale seal; stamps on_success + created)
 python -m booley.ticket_board enqueue $SLUG \
   [--destination done] [--no-merge] [--cleanup] [--integration-base "$INT_BASE"]
 ```
@@ -242,8 +260,13 @@ mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" tabl
   review is mandatory. Every `_clean` waiver must include a justification and is
   shown to the user regardless of severity.
 - Custom criterion types allowed beyond the catalog
-- A criterion may name a Target that this ticket will create. In that case,
-  include the affected `.core` file in `scope` and state the Target creation
-  explicitly in the description or implementation plan. Do not create or edit
-  the Target while drafting the ticket; the ticket runner defers validation of
-  an unknown Target until the developer has had a chance to author it.
+- A criterion may name a new Target only when ticket creation authors it in the
+  contract worktree before sealing. Do not put contract controls in developer
+  Scope merely to permit later edits: every `.core`, tests/Target-selection
+  configuration, selected constraint, generator, and build hook is immutable
+  after sealing.
+- A future non-relative Target may reference missing RTL/TB paths only when every
+  path is declared Scope `[new]`. A relative-QoR Target must resolve and dry-run
+  completely at the sealed baseline.
+- If a blocked ticket needs a different Target recipe, use `revise-contract`; it
+  archives the old identity, discards execution evidence, and restarts authoring.

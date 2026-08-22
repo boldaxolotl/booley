@@ -57,7 +57,7 @@ class TestBooleyFlowExecution:
         env = _env_with_state(state_file)
         flow = EchoFlow()
         with patch.dict(os.environ, env):
-            flow.parse_args(["--message", "hello world"])
+            flow.parse_args(["--target", "test", "--message", "hello world"])
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -89,10 +89,40 @@ class TestBooleyFlowExecution:
         env = _env_with_state(state_file)
         flow = MissingCmdFlow()
         with patch.dict(os.environ, env):
-            flow.parse_args([])
+            flow.parse_args(["--target", "test"])
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
+
+    def test_target_contract_is_checked_before_flow_entry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.ticket_board.frontmatter import format_frontmatter
+        from booley.ticket_board.target_contract import build_contract
+
+        contract = build_contract(tmp_path, outer_sha="a" * 40)
+        ticket = tmp_path / "ticket.md"
+        ticket.write_text(
+            format_frontmatter(
+                {
+                    "base_sha": contract.outer_sha,
+                    "target_contract": contract.as_dict(),
+                },
+                "ticket",
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
+        flow = EchoFlow()
+        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
+        assert flow._pre_state_gate() is None
+
+        (tmp_path / "changed.core").write_text("CAPI=2:\nname: ::changed:0\n")
+        rejected = flow._pre_state_gate()
+
+        assert rejected is not None
+        assert rejected.exit_code == EXIT_ERROR
+        assert "target-contract-change-required" in rejected.report_text
 
     def test_empty_command(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
@@ -116,7 +146,7 @@ class TestBooleyFlowExecution:
         env = _env_with_state(state_file)
         flow = EmptyFlow()
         with patch.dict(os.environ, env):
-            flow.parse_args([])
+            flow.parse_args(["--target", "test"])
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -140,7 +170,7 @@ class TestResourceEvidence:
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         result = flow._execute_local(
             [
                 sys.executable,
@@ -171,7 +201,7 @@ class TestBoundaryExecutor:
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         with patch.object(flow, "_execute") as execute:
             execute.return_value = SubprocessResult(returncode=0, stdout="ok")
             result = flow._execute_boundary(["make", "-C", "b/r"])
@@ -201,7 +231,7 @@ class TestOpenRunLog:
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         return flow
 
     def test_truncates_to_a_header_naming_this_run(self, tmp_path: Path):
@@ -286,7 +316,7 @@ class TestTimeoutKillsTheWholeTree:
         DevelopmentState.load(state_file).save()
         flow = HangFlow()
         with patch.dict(os.environ, _env_with_state(state_file)):
-            flow.parse_args(["--work-dir", str(tmp_path)])
+            flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         flow.read_state()
         return flow
 

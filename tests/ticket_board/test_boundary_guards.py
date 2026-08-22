@@ -260,6 +260,23 @@ class TestExecutionTomlGuards:
         _write_toml(tmp_path, 'tools = "oops"\n')
         assert execution.disabled_flow_steps(tmp_path) == set()
 
+    def test_disabled_fpga_does_not_disable_synth_criteria(self, tmp_path):
+        _write_toml(
+            tmp_path,
+            "[flows.synth]\nenabled = true\n\n[flows.fpga]\nenabled = false\n",
+        )
+        criteria = {
+            "mandatory": {
+                "synthesis_ok": {"targets": ["synth_core"]},
+                "fpga_impl_ok": {"targets": ["fpga_core"]},
+            }
+        }
+
+        errors = validation._validate_flow_coherence(criteria, tmp_path)
+
+        assert not any("synthesis_ok" in error for error in errors)
+        assert any("fpga_impl_ok" in error for error in errors)
+
 
 class TestValidationSourcePrefixes:
     def test_flat_repo_scope_uses_exact_file_prefixes(self, tmp_path):

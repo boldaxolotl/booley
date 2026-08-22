@@ -351,8 +351,8 @@ script lines) as you go.
   links that make the tree infinitely recursive for any walker that follows
   them — run `find . -type l` early. *FuseSoC multi-core repos*: count the
   `.core` files and duplicate target names (Ibex: 208 cores declaring `lint`
-  54 times) — you'll be qualifying targets as `vlnv#target` and setting
-  `[flows.<flow>].default_target` explicitly, and the colliding vendored cores are
+  54 times) — you'll be qualifying explicit Flow targets as `vlnv#target` and
+  marking Doctor selections in the intended declarations, and colliding vendored cores are
   usually required dependencies, so `FUSESOC_IGNORE` can't hide them.
   *Upstream targets aren't automatically trustworthy*: CAPI2's YAML-anchor
   idiom (`<<: *default_target` with a `filesets:` override) **replaces** the
@@ -372,7 +372,7 @@ script lines) as you go.
   ```
 
   The `<vlnv>#<target>` qualifier is a **Booley-surface spelling only** (it is
-  how `[flows.<flow>].default_target` and the Booley Flows name a Target); raw fusesoc
+  how explicit Booley Flow calls name a Target); raw fusesoc
   rejects it with `Illegal character in core name`. `--cores-root` is a
   *global* flag and must come **before** `run` — after it, fusesoc 2.4.6 exits
   with `unrecognized arguments: --cores-root`. For a stealth authored core the
@@ -468,7 +468,7 @@ separate columns (see "How a row resolves"). The standard checklist:
      distinct-VLNV core under `.booley_project/cores/` with repository-root-relative
      fileset paths. Booley projects ignored root-level copies for FuseSoC; do
      not create source-resolution symlinks. Native-core modernization findings
-     outside the configured Target surface are notes, not setup work.
+     outside the Doctor-selected Target surface are notes, not setup work.
    - **Hybrid integration footprint:** use only when the user or an enclosing
      port workflow explicitly requires it. Keep operational `.booley_project/`
      state local and ignored, while tracking the minimal repository-native
@@ -495,7 +495,8 @@ separate columns (see "How a row resolves"). The standard checklist:
 
    **Matrix scaling.** Config variants *multiply* the module count (8 cocotb
    modules × 3 define flavors = 24 sim Targets), and every one of them is a
-   `.core` target, a `tests.toml` section, and a `doctor --deep` resolution.
+   `.core` target and a `tests.toml` section. Only targets explicitly marked in
+   `flow_options.booley.doctor` join the `doctor --deep` matrix.
    Do not author the full matrix at setup: pick the **one baseline flavor** the
    project actually verifies today, author that row of the matrix, and record
    the rest as a deferred follow-up (adding a flavor later = duplicating the
@@ -505,8 +506,8 @@ separate columns (see "How a row resolves"). The standard checklist:
    generating them.
 
    Where the set is under-determined (which configs matter, which toplevel is
-   the real one), it's a **grill question**. Add `vlnv#target` qualifiers and
-   `[flows.<flow>].default_target` entries for multi-core repos.
+   the real one), it's a **grill question**. Record `vlnv#target` qualifiers for
+   explicit callers and mark the intended per-core Doctor targets.
    **Lint each planned Target name against the axis convention before
    approval.** Every Booley-authored Target name must be `<axis>_<subject>`,
    lowercase snake_case, where `<axis>` is one of the four fixed tokens
@@ -591,17 +592,13 @@ separate columns (see "How a row resolves"). The standard checklist:
     `enabled = false`.
 13. **Timeouts, synthesis calibration & memory** —
     `[flows.<flow>].timeout_ms` where evidence (CI runtimes, log stamps)
-    suggests the defaults will not fit. When synthesis has several Targets,
-    identify the **heaviest credible configuration** and record it as
-    `[flows.synth].calibration_target`; this is a reviewed project decision,
-    not a filename/LOC guess. Use parameter widths, enabled engines, replicated
-    lanes/cores, prior native-synthesis evidence, and maintainer knowledge.
-    Step 4 must synthesize that exact Target end-to-end and use its measured
-    boundary-command process-tree peak RSS to settle `[jobs].heavy_memory` and
-    `[sandbox].memory`. Record an
-    execution-time check for it. If the candidates cannot be ordered from
-    evidence, flag the row for review and ask which represents the maximum
-    supported build rather than choosing an arbitrary first Target.
+    suggests the defaults will not fit. Mark every supported synthesis
+    configuration that Doctor must validate with `booley: {doctor: [synth]}`.
+    Step 4 synthesizes the complete marked matrix end-to-end and retains the
+    largest measured boundary-command process-tree peak RSS to settle
+    `[jobs].heavy_memory` and `[sandbox].memory`. Record an execution-time check
+    that every intended matrix member ran; do not guess one representative from
+    filename or LOC.
 14. **Commercial EDA authority** — for host-provisioned Vivado: the registered
     installation, optional License Profile, exact Project Grant, approved test
     window, and who confirms the policy works. Never plan a host command path.

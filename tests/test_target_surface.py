@@ -28,7 +28,7 @@ from booley.targets.target_surface import (
 
 # ---------------------------------------------------------------------------
 # Fixture project: two cores, one ambiguous target name, one legacy target,
-# and [flows.*].default_target wiring including a broken token.
+# and explicit per-Target Doctor membership.
 # ---------------------------------------------------------------------------
 
 _ALPHA_CORE = textwrap.dedent(
@@ -50,17 +50,20 @@ _ALPHA_CORE = textwrap.dedent(
         filesets: [rtl]
       sim:
         flow: sim
-        flow_options: {tool: verilator, cocotb_module: tb_alpha_tests}
+        flow_options:
+          tool: verilator
+          cocotb_module: tb_alpha_tests
+          booley: {doctor: [sim, elab]}
         filesets: [rtl, tb]
         toplevel: tb_alpha
       lint:
         flow: lint
-        flow_options: {tool: verible}
+        flow_options: {tool: verible, booley: {doctor: [lint]}}
         filesets: [rtl]
         toplevel: alpha
       synth:
         flow: generic
-        flow_options: {tool: yosys, arch: xilinx}
+        flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
         filesets: [rtl]
         toplevel: alpha
     """
@@ -97,18 +100,7 @@ _BETA_CORE = textwrap.dedent(
     """
 )
 
-_BOOLEY_TOML = textwrap.dedent(
-    """\
-    [flows.sim]
-    default_target = "sim"
-
-    [flows.lint]
-    default_target = "alpha#lint"
-
-    [flows.synth]
-    default_target = "ghost"
-    """
-)
+_BOOLEY_TOML = "[flows]\n"
 
 
 @pytest.fixture
@@ -243,16 +235,14 @@ class TestCollectSurface:
         assert _entry(surface, "sim").toplevel == "tb_alpha"
         assert _entry(surface, "beta#lint").toplevel == ""  # undeclared
 
-    def test_wiring_marks_configured_targets(self, project: Path):
+    def test_doctor_membership_comes_from_target_metadata(self, project: Path):
         surface = collect_surface(project)
-        assert _entry(surface, "sim").wired_to == ("sim",)
-        assert _entry(surface, "alpha#lint").wired_to == ("lint",)
-        assert _entry(surface, "beta#lint").wired_to == ()
+        assert _entry(surface, "sim").doctor_flows == ("sim", "elab")
+        assert _entry(surface, "alpha#lint").doctor_flows == ("lint",)
+        assert _entry(surface, "beta#lint").doctor_flows == ()
 
-    def test_unresolvable_config_token_becomes_warning(self, project: Path):
-        surface = collect_surface(project)
-        assert len(surface.warnings) == 1
-        assert "[flows.synth].default_target 'ghost'" in surface.warnings[0]
+    def test_surface_has_no_separate_target_wiring_warnings(self, project: Path):
+        assert collect_surface(project).warnings == ()
 
     def test_cocotb_module_enumerated(self, project: Path):
         assert _entry(collect_surface(project), "sim").ref.cocotb_module == "tb_alpha_tests"
@@ -297,10 +287,12 @@ class TestFilterSurface:
         surface = filter_surface(collect_surface(project), for_flow="lint", glob="alpha*")
         assert [e.selector for e in surface.entries()] == ["alpha#lint"]
 
-    def test_warnings_survive_filtering(self, project: Path):
-        surface = filter_surface(collect_surface(project), glob="no-such-target-*")
+    def test_observations_survive_filtering(self, project: Path):
+        original = collect_surface(project)
+        original = target_surface.TargetSurface(original.groups, ("observation",))
+        surface = filter_surface(original, glob="no-such-target-*")
         assert not surface.groups
-        assert surface.warnings
+        assert surface.warnings == ("observation",)
 
 
 # ---------------------------------------------------------------------------
@@ -355,7 +347,7 @@ class TestToplevelDisplay:
             ref=entry.ref,
             selector=entry.selector,
             toplevel=long_top,
-            wired_to=entry.wired_to,
+            doctor_flows=entry.doctor_flows,
             drivable_by=entry.drivable_by,
         )
         group = target_surface.CoreGroup(
@@ -389,19 +381,18 @@ class TestSurfacePayload:
             "eda_tool": "verilator",
             "cocotb_module": "tb_alpha_tests",
             "toplevel": "tb_alpha",
-            "wired_to": ["sim"],
+            "doctor_flows": ["sim", "elab"],
             "drivable_by": ["elab", "sim"],
         }
-        assert payload["warnings"] and "ghost" in payload["warnings"][0]
+        assert payload["warnings"] == []
 
 
 class TestRenderListing:
-    def test_listing_groups_marks_wiring_and_warns(self, project: Path):
+    def test_listing_groups_and_marks_doctor_membership(self, project: Path):
         text = render_listing(collect_surface(project), project)
         assert "acme:ip:alpha:1.0  (alpha/alpha.core)" in text
-        assert "← sim" in text
+        assert "Dr sim, elab" in text
         assert "cocotb=tb_alpha_tests" in text
-        assert "WARNING: [flows.synth].default_target 'ghost'" in text
         assert "booley targets <name>" in text  # legend/hint line
 
     def test_empty_filter_result(self, project: Path):
@@ -419,7 +410,7 @@ class TestDetail:
         payload = detail_payload(project, "sim", resolve=False)
         assert payload["selector"] == "sim"
         assert payload["vlnv"] == "acme:ip:alpha:1.0"
-        assert payload["wired_to"] == ["sim"]
+        assert payload["doctor_flows"] == ["sim", "elab"]
         assert payload["drivable_by"] == ["elab", "sim"]
         assert "resolved" not in payload and "resolved_error" not in payload
 

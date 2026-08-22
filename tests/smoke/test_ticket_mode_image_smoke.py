@@ -23,6 +23,7 @@ from booley.dev_support.development_state import DevelopmentState
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
+from booley.ticket_board.contract_ops import open_contract, seal_contract
 from booley.ticket_board.frontmatter import format_frontmatter
 
 pytestmark = pytest.mark.skipif(
@@ -58,6 +59,7 @@ def _initialize_project(tmp_path: Path) -> Path:
         stream.write("\n/.booley_project/\n")
     _run_git(project, "add", ".")
     _run_git(project, "commit", "-m", "Initialize Ticket Mode smoke fixture")
+    reset_cache()
     return project
 
 
@@ -78,7 +80,10 @@ def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: lis
     }
     content = format_frontmatter(fields, "## Description\nExercise real Ticket Mode boundaries.\n")
     queue = project / ".booley_project" / "tickets" / "board" / "queue"
-    (queue / f"{slug}.md").write_text(content, encoding="utf-8")
+    ticket = queue / f"{slug}.md"
+    ticket.write_text(content, encoding="utf-8")
+    open_contract(project, ticket, slug)
+    seal_contract(project, ticket, slug)
 
 
 def _success_criteria() -> dict[str, Any]:

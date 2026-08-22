@@ -109,6 +109,29 @@ timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
 Criteria. The stricter the evidence contract, the less the caller has to infer
 from unstructured output.
 
+### Ticket Target contracts
+
+Ticket Mode treats the Target recipe as acceptance input, not implementation
+work. Before enqueue, ticket creation records schema 1 with exact outer and
+optional project-data commits, the criterion Targets, and a normalized SHA-256
+digest; compatibility `base_sha` equals the outer commit.
+
+The digest covers every `.core`, the test registry, Target-selecting Flow
+configuration, selected SDC/XDC, and referenced generators or hooks. Paths are
+part of the identity. RTL and testbench contents remain editable.
+
+Contract metadata is published only after every repository validates and
+commits. Execution starts from those commits, and intake, each Flow, the commit
+guard, and review handoff reject drift as `target-contract-change-required`.
+Relative synth/FPGA Targets must fully resolve at the seal so baseline and final
+use one recipe; a future non-relative Target may omit only sources declared
+Scope `[new]`.
+
+Revision archives the old identity, clears execution evidence, and restarts
+from the destination baseline without transplanting implementation commits.
+Legacy running/review tickets may finish, but a new or reset execution requires
+a valid seal.
+
 ### Shared run logs and artifacts
 
 Every built-in Flow that keeps a `run.log` (`sim`, `elab`, `lint`, `synth`,
@@ -510,24 +533,10 @@ Either way the failing stage's own output (a missing liberty file, a
 Yosys/sv2v error) is carried into the report, so the reason is named instead
 of a bare "no metrics".
 
-#### Ticket baselines and recipe changes
+#### Ticket baselines and sealed recipes
 
-Ticket Mode treats a Target's synthesis recipe as revision-owned by default;
-the ticket has no `same`/`different` recipe control field. Intake snapshots the
-normalized recipe of each existing Target named by `synthesis_ok`. When the
-criterion contains a baseline-relative threshold, `synth` automatically runs
-the ticket's immutable `base_sha` with the Target recipe from that revision,
-then runs the ticket head with its current Target recipe. For projects whose
-`.booley_project` is a paired Git repository, the baseline run likewise uses
-the paired repository's ticket fork point rather than copying the live Target
-definition into both runs.
-
-A recipe difference is evidence, not a failure: acceptance comes from the
-requested cell-count, area, and timing checks. The Review package shows the
-normalized recipe changes next to those QoR deltas during triage. A missing or
-mismatched baseline, baseline recipe, or metric fails closed; Booley never
-reports a relative criterion as passing when it skipped the comparison.
-The same revision-owned contract applies to `fpga_impl_ok` below.
+Ticket Mode's shared baseline and recipe invariants are defined in
+[Ticket Target contracts](#ticket-target-contracts).
 
 ### Reports and Criteria detail
 
@@ -622,8 +631,7 @@ Flow configuration.
 
 Field rules:
 
-- `--target`: one or more FuseSoC Target names. When omitted, falls back to
-  `[flows.fpga].default_target`.
+- `--target`: one or more FuseSoC Target names; required on every invocation.
 - `--baseline`: compare against a git ref. The baseline is built in an
   ephemeral `git worktree`, so it works in Interactive Mode as well as Ticket
   Mode (the two execution modes; see [CONTEXT.md](CONTEXT.md)). A Ticket Mode
@@ -731,18 +739,10 @@ clock `clk_i` (see [USAGE.md](USAGE.md#synthesis--fpga-threshold-flavours)).
 Provisioning and setup failures are Flow errors. Missing metrics, timing
 violations, and critical design conditions are design failures.
 
-#### Ticket baselines and recipe changes
+#### Ticket baselines and sealed recipes
 
-As with `synthesis_ok`, Ticket Mode snapshots the normalized FPGA Target recipe
-at intake and needs no `same`/`different` control field. For a relative
-`fpga_impl_ok` threshold, the baseline pass implements `base_sha` with its
-revision's part, out-of-context choice, parameters, toplevel, and XDC contents;
-the current pass uses the ticket head's recipe. Paired `.booley_project`
-repositories use their ticket fork point for the baseline Target definition.
-
-Recipe changes are accepted and listed beside utilization and timing deltas in
-the Review package. The criterion fails closed when its pinned baseline,
-baseline recipe, or requested metrics are missing or mismatched.
+Ticket Mode's shared baseline and recipe invariants are defined in
+[Ticket Target contracts](#ticket-target-contracts).
 
 ### Reports and Criteria detail
 

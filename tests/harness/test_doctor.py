@@ -11,7 +11,6 @@ import re
 import subprocess
 import sys
 import tomllib
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -45,16 +44,12 @@ def _write_project(
 name = "unit"
 
 [flows.sim]
-default_target = "sim_fast"
 
 [flows.lint]
-default_target = "lint_fast"
 
 [flows.elab]
-default_target = "sim_fast"
 
 [flows.synth]
-default_target = "synth_fast"
 
 [sources.rtl]
 source_dirs = ["rtl"]
@@ -104,17 +99,17 @@ tests = ["full"]
         "targets:\n"
         "  sim_fast:\n"
         "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
         "    filesets: [rtl, tb]\n"
         "    toplevel: tb\n"
         "  lint_fast:\n"
         "    flow: lint\n"
-        "    flow_options: {tool: verilator}\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
         "    filesets: [rtl]\n"
         "    toplevel: dut\n"
         "  synth_fast:\n"
         "    flow: generic\n"
-        "    flow_options: {tool: yosys, arch: xilinx}\n"
+        "    flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}\n"
         "    filesets: [rtl]\n"
         "    toplevel: dut\n",
         encoding="utf-8",
@@ -593,6 +588,37 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     assert deep_call[deep_call.index("--target") + 1] == "sim_fast"
 
 
+def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+
+    def unexpected_agent_check(*_args, **_kwargs):
+        raise AssertionError("agent check should have been skipped")
+
+    monkeypatch.setattr(doctor, "_check_agent_auth_token", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_check_oauth_token", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_check_subscription_creds_health", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_check_agent_backend_health", unexpected_agent_check)
+    monkeypatch.setattr(doctor, "_run_developer_probe", unexpected_agent_check)
+
+    rc = doctor.run_doctor(
+        argparse.Namespace(verbose=False, deep=True, skip_agent_checks=True),
+        tmp_path,
+    )
+
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert "agent credential checks skipped by --skip-agent-checks" in output
+    assert "worker backend health check skipped by --skip-agent-checks" in output
+    assert "developer authorization probe skipped by --skip-agent-checks" in output
+    assert doctor_stamp.load_stamp(project_dir) is None
+
+
 # ---------------------------------------------------------------------------
 # Sandbox routing + in-container self-assertion (b5e8681 regression class):
 # sandbox-semantics checks must run IN the sandbox, and a check that cannot
@@ -611,9 +637,7 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
     project = doctor.ProjectAudit(
         project_root=tmp_path,
         project_dir=tmp_path / ".booley_project",
-        # ADR 0039: the configs.toml first_target probe escape is gone —
-        # the probed Target must be configured explicitly.
-        booley_toml={"flows": {"sim": {"default_target": "fast"}}},
+        booley_toml={"flows": {"sim": {}}},
         configs_toml={"fast": {"defines": [], "tb_top": "tb", "tests": ["smoke"]}},
         first_target="fast",
     )
@@ -645,6 +669,7 @@ def _run_flow_check(project, rec: _Rec, *, backend: str, dry_run: bool) -> None:
         project,
         "sim",
         _selection(backend),
+        target="fast",
         dry_run=dry_run,
         docker_exe="doc" + "ker",
         timeout_s=10,
@@ -855,6 +880,7 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
         project,
         "sim",
         _selection("builtin"),
+        target="fast",
         dry_run=False,
         docker_exe=None,
         timeout_s=10,
@@ -887,6 +913,7 @@ def test_deep_check_fails_when_runtime_present_but_image_missing(tmp_path, monke
         project,
         "sim",
         _selection("builtin"),
+        target="fast",
         dry_run=False,
         docker_exe="doc" + "ker",
         timeout_s=10,
@@ -1141,59 +1168,35 @@ def test_flow_command_deep_smoke_all_skipped_falls_back_to_head(tmp_path):
     assert cmd[cmd.index("--test") + 1] == "hello_world"
 
 
-def test_probe_target_uses_configured_tool_target(tmp_path, monkeypatch):
-    """ADR 0030: Doctor drives off [flows.<flow>].default_target, not a Flow scan — on a
-    vendored repo a flow-match guess would pick an arbitrary upstream Target."""
-    from booley.fusesoc import fusesoc_registry
-
-    project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
-        booley_toml={
-            "flows": {
-                "lint": {"default_target": "ibex_top#lint"},
-                # A comma list: doctor smoke-checks just the first token.
-                "sim": {"default_target": "foo_sim, bar_sim"},
-            }
-        },
-        configs_toml={"foo": {"defines": []}},
-        first_target="foo",
+def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path):
+    """Doctor runs every Target that opts into a Flow; it never picks a first one."""
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\n"
+        "name: ::design:0\n"
+        "targets:\n"
+        "  sim_fast:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+        "  sim_full:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: icarus, booley: {doctor: [sim]}}\n"
+        "  lint_unselected:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
     )
-    core = tmp_path / ".booley_project" / "design.core"
-    # .core Targets exist, but the CONFIGURED target is authoritative.
-    refs = {
-        "foo_sim": fusesoc_registry.TargetRef(
-            name="foo_sim",
-            vlnv="::design:0",
-            core_file=core,
-            eda_tool="verilator",
-            flow="sim",
-        ),
-    }
-    monkeypatch.setattr(fusesoc_registry, "enumerate_targets", lambda _root: refs)
-
-    assert doctor._probe_target(project, "lint") == "ibex_top#lint"
-    assert doctor._probe_target(project, "sim") == "foo_sim"
-    # No [flows.synth].default_target and .core authored -> None (skip, no guess).
-    assert doctor._probe_target(project, "synth") is None
-
-
-def test_configured_target_reads_tools_table(tmp_path):
-    """_configured_target reads [flows.<flow>].default_target, first of a comma list."""
     project = doctor.ProjectAudit(
         project_root=tmp_path,
         project_dir=tmp_path / ".booley_project",
-        booley_toml={
-            "flows": {
-                "lint": {"default_target": "lowrisc:ibex:ibex_top#lint, spare"},
-            }
-        },
+        booley_toml={"flows": {}},
         configs_toml={},
         first_target="",
     )
-    assert doctor._configured_target(project, "lint") == "lowrisc:ibex:ibex_top#lint"
-    # A Flow with no [flows.<flow>].default_target configured -> "".
-    assert doctor._configured_target(project, "sim") == ""
+
+    assert doctor._doctor_targets(project, "sim") == ["sim_fast", "sim_full"]
+    assert doctor._doctor_targets(project, "elab") == ["sim_fast"]
+    assert doctor._doctor_targets(project, "lint") == []
+    assert doctor._doctor_target_seed(project) == ["sim_fast", "sim_full"]
 
 
 def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
@@ -1237,8 +1240,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     )
 
 
-def test_validate_one_flow_table_rejects_non_string_target():
-    """[flows.<flow>].default_target must be a string (a Target name / vlnv#name / list)."""
+def test_validate_one_flow_table_rejects_retired_default_target():
     fails: list[str] = []
     warns: list[str] = []
 
@@ -1248,26 +1250,14 @@ def test_validate_one_flow_table_rejects_non_string_target():
     def _warn(msg: str) -> None:
         warns.append(msg)
 
-    # A non-string target (e.g. a TOML array) fails validation.
     ok = doctor._validate_one_flow_table(
         "lint",
-        {"default_target": ["a", "b"]},
+        {"default_target": "lint_core"},
         _warn,
         _fail,
     )
     assert ok is False
-    assert any("[flows.lint].default_target must be a string" in m for m in fails)
-
-    # A well-formed string target passes.
-    fails.clear()
-    ok = doctor._validate_one_flow_table(
-        "lint",
-        {"default_target": "ibex_top#lint"},
-        _warn,
-        _fail,
-    )
-    assert ok is True
-    assert fails == []
+    assert any("[flows.lint].default_target is retired" in m for m in fails)
 
 
 def test_validate_one_flow_table_rejects_retired_target_key():
@@ -1282,7 +1272,7 @@ def test_validate_one_flow_table_rejects_retired_target_key():
 
     assert ok is False
     assert any("[flows.lint].target is retired" in message for message in fails)
-    assert any("[flows.lint].default_target" in message for message in fails)
+    assert any("Flow calls require an explicit target" in message for message in fails)
 
 
 def test_validate_one_flow_table_rejects_retired_selftest_table():
@@ -1794,10 +1784,7 @@ class TestKnownTablesMatchLiveConfig:
         assert not (doctor._KNOWN_BOOLEY_TOML_TABLES & set(doctor._RETIRED_BOOLEY_TOML_TABLES))
 
 
-def test_probe_target_declines_without_configured_target(tmp_path, monkeypatch):
-    """No .core Targets yet -> probe the configs.toml first_target."""
-    from booley.fusesoc import fusesoc_registry
-
+def test_doctor_targets_do_not_fall_back_to_configs_first_target(tmp_path):
     project = doctor.ProjectAudit(
         project_root=tmp_path,
         project_dir=tmp_path / ".booley_project",
@@ -1805,10 +1792,7 @@ def test_probe_target_declines_without_configured_target(tmp_path, monkeypatch):
         configs_toml={"fast": {"defines": []}},
         first_target="fast",
     )
-    monkeypatch.setattr(fusesoc_registry, "enumerate_targets", lambda _root: {})
-    # ADR 0039: the configs.toml first_target escape is gone — with no
-    # configured [flows.lint].default_target the probe declines rather than guessing.
-    assert doctor._probe_target(project, "lint") is None
+    assert doctor._doctor_targets(project, "lint") == []
 
 
 def test_doctor_uses_configured_sandbox_image(tmp_path, monkeypatch):
@@ -1949,7 +1933,7 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "sim dry-run skipped - tb_top is resolved at runtime" in output
+    assert "sim dry-run [sim_fast] skipped - tb_top is resolved at runtime" in output
 
 
 # ---------------------------------------------------------------------------
@@ -2306,6 +2290,36 @@ def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monke
     )
 
 
+def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(doctor, "_check_runtime_isolation", lambda *_args: True)
+    project = doctor.ProjectAudit(
+        tmp_path,
+        project_dir,
+        {
+            "eda": {"vivado": {"provisioning": "host"}},
+            "flows": {"fpga": {"enabled": False}},
+        },
+        {},
+        "sim",
+    )
+    rec = _Rec()
+
+    doctor._check_issued_session_runtime(project, None, rec.p, rec.s, rec.f)
+
+    assert not rec.fails()
+    assert any(
+        "no active host-mounted commercial EDA request" in message
+        for level, message in rec.events
+        if level == "pass"
+    )
+
+
 def _audit(root: Path) -> _Rec:
     pd = root / ".booley_project"
     pd.mkdir(exist_ok=True)
@@ -2330,7 +2344,9 @@ filesets:
 targets:
   sim:
     flow: sim
-    flow_options: {tool: verilator}
+    flow_options:
+      tool: verilator
+      booley: {doctor: [sim]}
     filesets: [rtl, tb]
     toplevel: tb_dut
 """
@@ -2401,7 +2417,7 @@ filesets:
 targets:
   sim:
     flow: sim
-    flow_options: {tool: verilator}
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
     filesets: [rtl, tb, cpp]
     toplevel: tb_dut
 """,
@@ -2414,7 +2430,7 @@ targets:
         return doctor.ProjectAudit(
             project_root=tmp_path,
             project_dir=pd,
-            booley_toml={"flows": {"sim": {"default_target": "sim"}}},
+            booley_toml={"flows": {"sim": {}}},
             configs_toml={"sim": {}},
             first_target="sim",
         )
@@ -2491,7 +2507,7 @@ targets:
         project = doctor.ProjectAudit(
             project_root=tmp_path,
             project_dir=pd,
-            booley_toml={"flows": {"sim": {"default_target": "sim"}}},
+            booley_toml={"flows": {"sim": {}}},
             configs_toml={"sim": {}},
             first_target="sim",
         )
@@ -2607,8 +2623,10 @@ targets:
     def test_icarus_sim_core_with_g2012_full_audit_clean(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(
             _CLEAN_SIM_CORE.replace(
-                "flow_options: {tool: verilator}",
-                "flow_options: {tool: icarus, iverilog_options: [-g2012]}",
+                "      tool: verilator\n      booley: {doctor: [sim]}",
+                "      tool: icarus\n"
+                "      iverilog_options: [-g2012]\n"
+                "      booley: {doctor: [sim]}",
             ),
             encoding="utf-8",
         )
@@ -3743,7 +3761,10 @@ filesets:
     files: [tb/tb.sv: {file_type: systemVerilogSource}]
     depend: not_a_list
 targets:
-  sim: {flow: sim, filesets: [tb]}
+  sim:
+    flow: sim
+    flow_options: {booley: {doctor: [sim]}}
+    filesets: [tb]
 """
 
 
@@ -3760,7 +3781,7 @@ def _schema_audit(tmp_path, booley_toml=None) -> doctor.ProjectAudit:
 def test_check_core_schema_flags_scalar_depend(tmp_path):
     """A schema violation in a core the project drives is a FAIL."""
     _write_core(tmp_path, _BAD_DEPEND_CORE)
-    project = _schema_audit(tmp_path, {"flows": {"sim": {"default_target": "sim"}}})
+    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
     c = _Collector()
     doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail)
     assert any("depend must be array" in msg for msg, _ in c.failed)
@@ -3774,10 +3795,12 @@ CAPI=2:
 name: ::demo:0
 provider: {name: github, user: acme, repo: demo}
 targets:
-  sim: {flow: sim, flow_options: {tool: verilator}}
+  sim:
+    flow: sim
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
 """,
     )
-    project = _schema_audit(tmp_path, {"flows": {"sim": {"default_target": "sim"}}})
+    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
     rec = _Rec()
     doctor._check_core_setup_hazards(project, tmp_path, rec.p, rec.f, _note=rec.n)
     assert len(rec.fails()) == 1
@@ -3800,7 +3823,7 @@ targets:
     doctor._check_core_setup_hazards(_schema_audit(tmp_path), tmp_path, rec.p, rec.f, _note=rec.n)
     assert not rec.fails()
     assert any(
-        "no configured Target selects it" in msg for level, msg in rec.events if level == "note"
+        "no Doctor Target selects it" in msg for level, msg in rec.events if level == "note"
     )
 
 
@@ -3814,7 +3837,10 @@ filesets:
   rtl:
     depend: [acme:demo:dep]
 targets:
-  sim: {flow: sim, flow_options: {tool: verilator}, filesets: [rtl]}
+  sim:
+    flow: sim
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
+    filesets: [rtl]
 """,
         name="top.core",
     )
@@ -3829,7 +3855,7 @@ targets:
 """,
         name="dep.core",
     )
-    project = _schema_audit(tmp_path, {"flows": {"sim": {"default_target": "sim"}}})
+    project = _schema_audit(tmp_path, {"flows": {"sim": {}}})
     rec = _Rec()
     doctor._check_core_setup_hazards(project, tmp_path, rec.p, rec.f, _note=rec.n)
     assert len(rec.fails()) == 1
@@ -3841,8 +3867,11 @@ def test_check_core_schema_vendored_core_is_a_note(tmp_path):
     FuseSoC skips the core at resolve, the configured flows are unaffected, and
     'fix the .core' is unfollowable for a pristine upstream checkout (the
     YosysHQ picorv32.core ships a bare ``depend:``)."""
-    _write_core(tmp_path, _BAD_DEPEND_CORE)
-    project = _schema_audit(tmp_path)  # no [flows.*].default_target selects ::demo
+    _write_core(
+        tmp_path,
+        _BAD_DEPEND_CORE.replace("    flow_options: {booley: {doctor: [sim]}}\n", ""),
+    )
+    project = _schema_audit(tmp_path)
     c = _Collector()
     doctor._check_core_schema(project, tmp_path, c._pass, c._warn, c._fail, _note=c._note)
     assert not c.failed
@@ -4234,9 +4263,7 @@ def test_repo_footprint_clean_passes(tmp_path):
     assert any("no Booley scaffolding" in m for m in c.passed)
 
 
-def test_no_target_match_detail_names_near_miss(tmp_path, monkeypatch):
-    from booley.fusesoc import fusesoc_registry as fr
-
+def test_check_doctor_targets_names_available_targets_when_none_selected(tmp_path):
     project = doctor.ProjectAudit(
         project_root=tmp_path,
         project_dir=tmp_path / ".booley_project",
@@ -4244,22 +4271,16 @@ def test_no_target_match_detail_names_near_miss(tmp_path, monkeypatch):
         configs_toml={},
         first_target="",
     )
-    refs = {
-        "foo_sim": fr.TargetRef(
-            name="foo_sim",
-            vlnv="::d:0",
-            core_file=tmp_path / "d.core",
-            eda_tool="verilator",
-            flow="sim",
-        )
-    }
-    monkeypatch.setattr(fr, "enumerate_targets", lambda _root: refs)
-    detail = doctor._no_target_match_detail(project, "synth")
-    # ADR 0030: the gap is a missing [flows.<flow>].default_target; name the authored
-    # Targets (with Flow/EDA tool) so the user can copy one into the config.
-    assert "foo_sim" in detail
-    assert "[flows.synth].default_target" in detail
-    assert "can never run" in detail
+    (tmp_path / "d.core").write_text(
+        "CAPI=2:\nname: ::d:0\ntargets:\n  foo_sim: {flow: sim}\n",
+        encoding="utf-8",
+    )
+    fails: list[tuple[str, str]] = []
+    assert not doctor._check_doctor_targets(
+        project, "synth", lambda msg, fix="": fails.append((msg, fix))
+    )
+    assert "foo_sim" in fails[0][0]
+    assert "flow_options.booley.doctor" in fails[0][1]
 
 
 def test_print_text_excerpt_keeps_reason_line(capsys):
@@ -4543,22 +4564,21 @@ filesets:
     files: [rtl/selected.sv]
 targets:
   sim_small:
+    flow: sim
+    flow_options: {booley: {doctor: [sim]}}
     filesets: [rtl]
     toplevel: selected
 """,
         encoding="utf-8",
     )
-    project = replace(
-        _derived_project_audit(proj),
-        booley_toml={"flows": {"sim": {"default_target": "sim_small"}}},
-    )
+    project = _derived_project_audit(proj)
 
     passes: list[str] = []
     notes: list[str] = []
     doctor._check_design_size(project, passes.append, notes.append)
 
     assert not notes
-    assert passes and "configured Target filesets: ~1 HDL files" in passes[0]
+    assert passes and "Doctor Target filesets: ~1 HDL files" in passes[0]
 
 
 # ---------------------------------------------------------------------------
@@ -5540,12 +5560,21 @@ class TestFailPathSelfTest:
             overlay = pd / "selftest" / "sim" / "bad-overlay" / "firmware.hex"
             overlay.parent.mkdir(parents=True)
             overlay.write_text("broken\n", encoding="utf-8")
+        (tmp_path / "selftest.core").write_text(
+            "CAPI=2:\n"
+            "name: ::selftest:0\n"
+            "targets:\n"
+            "  sim_core:\n"
+            "    flow: sim\n"
+            "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+            encoding="utf-8",
+        )
         return doctor.ProjectAudit(
             project_root=tmp_path,
             project_dir=pd,
             booley_toml={
                 "flows": {
-                    "sim": {"default_target": "sim_core"},
+                    "sim": {},
                     "lint": {"enabled": False},
                 }
             },
@@ -5648,12 +5677,21 @@ class TestFailPathSelfTest:
         # test_doctor_selftest_builtin.py.
         pd = tmp_path / ".booley_project"
         pd.mkdir(exist_ok=True)
+        (tmp_path / "builtin.core").write_text(
+            "CAPI=2:\n"
+            "name: ::builtin:0\n"
+            "targets:\n"
+            "  x:\n"
+            "    flow: sim\n"
+            "    flow_options: {booley: {doctor: [sim]}}\n",
+            encoding="utf-8",
+        )
         p = doctor.ProjectAudit(
             project_root=tmp_path,
             project_dir=pd,
             booley_toml={
                 "flows": {
-                    "sim": {"default_target": "x"},
+                    "sim": {},
                     "lint": {"enabled": False},
                 }
             },
@@ -5901,41 +5939,37 @@ def _audit_with_flows(tmp_path: Path, flows: dict) -> doctor.ProjectAudit:
     )
 
 
-class TestCheckFlowTarget:
-    """An enabled Flow with no Target can never run. That used to
-    surface only under --deep, and BOOLEY_TEMPLATE shipped every project into
-    exactly that state for elaborate."""
+class TestCheckDoctorTargets:
+    """Every enabled Flow needs at least one explicitly marked .core Target."""
 
-    def _fails(self, project, flow_name) -> list[tuple[str, str]]:
+    def test_marked_target_passes(self, tmp_path):
+        project = _audit_with_flows(tmp_path, {"lint": {}})
+        rec = _Rec()
+        assert doctor._check_doctor_targets(project, "lint", rec.f) == ["lint_fast"]
+        assert not rec.fails()
+
+    def test_unmarked_target_fails_and_names_metadata(self, tmp_path):
+        (tmp_path / "x.core").write_text(
+            "CAPI=2:\nname: ::x:0\ntargets:\n"
+            "  lint: {flow: lint, flow_options: {tool: verilator}}\n",
+            encoding="utf-8",
+        )
+        project = doctor.ProjectAudit(
+            project_root=tmp_path,
+            project_dir=tmp_path / ".booley_project",
+            booley_toml={"flows": {"elab": {}}},
+            configs_toml={},
+            first_target="",
+        )
         fails: list[tuple[str, str]] = []
-        doctor._check_flow_target(project, flow_name, lambda m, f="": fails.append((m, f)))
-        return fails
-
-    def test_configured_target_passes(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(doctor.fusesoc_registry, "enumerate_targets", lambda _r: {})
-        project = _audit_with_flows(tmp_path, {"lint": {"default_target": "lint"}})
-        assert self._fails(project, "lint") == []
-
-    def test_missing_target_fails_and_names_the_key(self, tmp_path, monkeypatch):
-        refs = {
-            "lint": doctor.fusesoc_registry.TargetRef(
-                name="lint",
-                vlnv="::x:0",
-                core_file=tmp_path / "x.core",
-                eda_tool="verilator",
-                flow="lint",
+        assert (
+            doctor._check_doctor_targets(
+                project, "elab", lambda msg, fix="": fails.append((msg, fix))
             )
-        }
-        monkeypatch.setattr(doctor.fusesoc_registry, "enumerate_targets", lambda _r: refs)
-        project = _audit_with_flows(tmp_path, {"elab": {}})
-
-        fails = self._fails(project, "elab")
-        assert len(fails) == 1
-        msg, fix = fails[0]
-        assert "no Target" in msg
-        assert "'lint' (flow=lint, EDA tool=verilator)" in msg  # copyable candidate
-        assert "[flows.elab].default_target" in fix
-        assert "enabled = false" in fix
+            == []
+        )
+        assert "no Doctor Target" in fails[0][0]
+        assert "flow_options.booley.doctor" in fails[0][1]
 
 
 class TestCheckElaborateSetup:
@@ -5949,17 +5983,18 @@ class TestCheckElaborateSetup:
         )
         return passes, skips, fails
 
-    def test_exposed_without_target_fails_in_the_cheap_pass(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            doctor.fusesoc_registry,
-            "enumerate_targets",
-            lambda _r: {
-                "lint": doctor.fusesoc_registry.TargetRef(
-                    name="lint", vlnv="::x:0", core_file=tmp_path / "x.core"
-                )
-            },
+    def test_exposed_without_target_fails_in_the_cheap_pass(self, tmp_path):
+        (tmp_path / "x.core").write_text(
+            "CAPI=2:\nname: ::x:0\ntargets:\n  lint: {flow: lint}\n",
+            encoding="utf-8",
         )
-        project = _audit_with_flows(tmp_path, {"elab": {}})
+        project = doctor.ProjectAudit(
+            project_root=tmp_path,
+            project_dir=tmp_path / ".booley_project",
+            booley_toml={"flows": {"elab": {}}},
+            configs_toml={},
+            first_target="",
+        )
         _passes, _skips, fails = self._run(project)
         assert fails and "elab" in fails[0]
 
@@ -5972,15 +6007,11 @@ class TestCheckElaborateSetup:
         assert not fails
         assert skips and "opt-out" in skips[0]
 
-    def test_configured_target_passes(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(doctor.fusesoc_registry, "enumerate_targets", lambda _r: {})
-        project = _audit_with_flows(
-            tmp_path,
-            {"elab": {"default_target": "lint"}},
-        )
+    def test_marked_target_passes(self, tmp_path):
+        project = _audit_with_flows(tmp_path, {"elab": {}})
         passes, _skips, fails = self._run(project)
         assert not fails
-        assert passes and "lint" in passes[0]
+        assert passes and "sim_fast" in passes[0]
 
 
 # ===========================================================================
@@ -6020,9 +6051,11 @@ targets:
     def test_legacy_target_warns_with_the_rewrite(self, tmp_path):
         # The core hosts a configured Target → it's the project's own; the
         # warning names the rewrite.
-        passes, warns, notes = self._run(
-            tmp_path, self._LEGACY_CORE, {"flows": {"sim": {"default_target": "sim"}}}
+        selected = self._LEGACY_CORE.replace(
+            "    default_tool: icarus",
+            "    flow_options: {booley: {doctor: [sim]}}\n    default_tool: icarus",
         )
+        passes, warns, notes = self._run(tmp_path, selected, {"flows": {"sim": {}}})
         assert not passes
         assert not notes
         assert len(warns) == 1
@@ -6093,7 +6126,12 @@ targets:
     tools: {verilator: {verilator_options: []}}
 """
         _passes, warns, notes = self._run(
-            tmp_path, multi, {"flows": {"sim": {"default_target": "sim_old"}}}
+            tmp_path,
+            multi.replace(
+                "  sim_old:\n    filesets: [rtl]",
+                "  sim_old:\n    flow_options: {booley: {doctor: [sim]}}\n    filesets: [rtl]",
+            ),
+            {"flows": {"sim": {}}},
         )
         assert len(warns) == 1
         assert "Target 'sim_old'" in warns[0]
@@ -6158,9 +6196,11 @@ soc_sim:
 """
 
     def test_owned_core_with_legacy_suffix_warns_and_names_the_rename(self, tmp_path):
-        passes, warns = self._run(
-            tmp_path, self._MISNAMED, {"flows": {"sim": {"default_target": "soc_sim"}}}
+        selected = self._MISNAMED.replace(
+            "flow_options: {tool: verilator}",
+            "flow_options: {tool: verilator, booley: {doctor: [sim]}}",
         )
+        passes, warns = self._run(tmp_path, selected, {"flows": {"sim": {}}})
         assert not passes
         assert len(warns) == 1
         assert "no axis prefix" in warns[0]
@@ -6180,42 +6220,34 @@ soc_sim:
 sim_soc:
     filesets: [rtl]
     flow: sim
-    flow_options: {tool: verilator}
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
     toplevel: tb
 """
-        passes, warns = self._run(
-            tmp_path, block, {"flows": {"sim": {"default_target": "sim_soc"}}}
-        )
+        passes, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
         assert warns == []
         assert any("<axis>_<subject>" in m for m in passes)
 
-    def test_wiring_beats_the_legacy_suffix(self, tmp_path):
-        """A `*_synth` Target wired to fpga_impl means fpga, whatever it is called.
-
-        Some projects declare synth Targets as `flow: lint` resolution vehicles, so
-        the declared flow is no evidence at all — the wiring is.
-        """
+    def test_doctor_metadata_beats_the_legacy_suffix(self, tmp_path):
+        """Doctor metadata owns the naming axis, whatever the Target is called."""
         block = """\
-soc_synth:
+soc_sim:
     filesets: [rtl]
-    flow: lint
-    flow_options: {tool: verilator}
+    flow: generic
+    flow_options: {tool: yosys, booley: {doctor: [synth]}}
     toplevel: dut
 """
-        _, warns = self._run(tmp_path, block, {"flows": {"fpga": {"default_target": "soc_synth"}}})
-        assert "rename it 'fpga_soc'" in warns[0]
+        _, warns = self._run(tmp_path, block, {"flows": {"synth": {}}})
+        assert "rename it 'synth_soc'" in warns[0]
 
     def test_legacy_asic_prefix_is_renamed_to_synth(self, tmp_path):
         block = """\
 asic_core:
     filesets: [rtl]
     flow: generic
-    flow_options: {tool: yosys, arch: xilinx}
+    flow_options: {tool: yosys, arch: xilinx, booley: {doctor: [synth]}}
     toplevel: dut
 """
-        _, warns = self._run(
-            tmp_path, block, {"flows": {"synth": {"default_target": "asic_core"}}}
-        )
+        _, warns = self._run(tmp_path, block, {"flows": {"synth": {}}})
         assert "rename it 'synth_core'" in warns[0]
 
     def test_selected_bare_name_uses_flow_wiring_for_rename(self, tmp_path):
@@ -6228,10 +6260,10 @@ sim_ok:
   soc:
     filesets: [rtl]
     flow: sim
-    flow_options: {tool: verilator}
+    flow_options: {tool: verilator, booley: {doctor: [sim]}}
     toplevel: tb
 """
-        _, warns = self._run(tmp_path, block, {"flows": {"sim": {"default_target": "soc"}}})
+        _, warns = self._run(tmp_path, block, {"flows": {"sim": {}}})
         assert len(warns) == 1
         assert "Target 'soc'" in warns[0]
         assert "rename it 'sim_soc'" in warns[0]
@@ -6787,6 +6819,17 @@ class TestNoDockerSkipReason:
 
 
 class TestSynthHeavyTargetCalibration:
+    def _project(self, tmp_path, *, marked=("asic_small", "asic_full"), booley_toml=None):
+        def target(name: str) -> str:
+            metadata = ", booley: {doctor: [synth]}" if name in marked else ""
+            return f"  {name}:\n    flow: generic\n    flow_options: {{tool: yosys{metadata}}}\n"
+
+        (tmp_path / "synth.core").write_text(
+            "CAPI=2:\nname: ::synth:0\ntargets:\n" + target("asic_small") + target("asic_full"),
+            encoding="utf-8",
+        )
+        return _adr28_project(tmp_path, booley_toml=booley_toml)
+
     def test_host_deep_container_uses_configured_memory_limit(self, tmp_path):
         project = _adr28_project(
             tmp_path,
@@ -6803,39 +6846,21 @@ class TestSynthHeavyTargetCalibration:
         )
         assert cmd[cmd.index("--memory") + 1] == "24g"
 
-    def test_multi_target_matrix_uses_explicit_heaviest_target(self, tmp_path):
-        project = _adr28_project(
-            tmp_path,
-            booley_toml={
-                "flows": {
-                    "synth": {
-                        "default_target": "asic_small,asic_full",
-                        "calibration_target": "asic_full",
-                    }
-                }
-            },
-        )
-        rec = _Rec()
-        assert doctor._check_synth_calibration_target(project, rec.p, rec.w, rec.f)
-        assert doctor._probe_target(project, "synth") == "asic_full"
-        assert rec.kinds() == {"pass"}
+    def test_multi_target_matrix_uses_every_marked_target(self, tmp_path):
+        project = self._project(tmp_path)
+        assert doctor._doctor_targets(project, "synth") == ["asic_full", "asic_small"]
 
-    def test_multi_target_matrix_warns_when_heaviest_is_unreviewed(self, tmp_path):
-        project = _adr28_project(
-            tmp_path,
-            booley_toml={"flows": {"synth": {"default_target": "asic_small,asic_full"}}},
-        )
+    def test_unmarked_synth_targets_fail_selection(self, tmp_path):
+        project = self._project(tmp_path, marked=())
         rec = _Rec()
-        assert not doctor._check_synth_calibration_target(project, rec.p, rec.w, rec.f)
-        assert doctor._probe_target(project, "synth") is None
-        assert rec.kinds() == {"warn"}
-        assert "no heaviest calibration Target" in rec.events[0][1]
+        assert doctor._check_doctor_targets(project, "synth", rec.f) == []
+        assert rec.kinds() == {"fail"}
 
     def test_measured_heavy_peak_overrides_undersized_reservation(self, tmp_path, monkeypatch):
         from booley.harness import synth_probe
 
         _set_venue(monkeypatch, False)
-        project = _adr28_project(
+        project = self._project(
             tmp_path,
             booley_toml={
                 "sandbox": {"memory": "22g"},
@@ -6855,16 +6880,11 @@ class TestSynthHeavyTargetCalibration:
         from booley.harness import synth_probe
 
         _set_venue(monkeypatch, False)
-        project = _adr28_project(
+        project = self._project(
             tmp_path,
+            marked=("asic_full",),
             booley_toml={
                 "sandbox": {"memory": "32g"},
-                "flows": {
-                    "synth": {
-                        "default_target": "asic_small,asic_full",
-                        "calibration_target": "asic_full",
-                    }
-                },
             },
         )
         synth_probe.record_measurement(project.project_dir, "asic_small", 7 * 1024)
@@ -6873,4 +6893,4 @@ class TestSynthHeavyTargetCalibration:
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
 
         assert rec.kinds() == {"warn"}
-        assert "not the current heaviest Target 'asic_full'" in rec.events[0][1]
+        assert "unselected Target 'asic_small'" in rec.events[0][1]

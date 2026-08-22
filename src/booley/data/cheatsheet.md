@@ -148,7 +148,7 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
 
-In Ticket Mode, synthesis and FPGA implementation recipes are revision-owned by default; there is no ticket field for declaring whether a recipe may change. Intake snapshots each existing Target's normalized recipe. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion then automatically runs `base_sha` with that revision's Target recipe and the ticket head with the current recipe. Recipe changes are allowed and shown with the QoR deltas in the Review package. Missing or mismatched baseline evidence fails the criterion instead of skipping its relative checks.
+In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs `base_sha` and the ticket head with the same normalized Target recipe. Developer execution cannot change contract controls; a missing or incorrect recipe blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -199,7 +199,7 @@ Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400, clk_2x.cr
 
 | Command | What it does |
 |---------|-------------|
-| `booley targets` | List every `.core` Target: flow, EDA tool, toplevel, `←` marks `[flows.*].default_target` wiring |
+| `booley targets` | List every `.core` Target: flow, EDA tool, toplevel, and `Dr` Doctor selection |
 | `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
 | `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |

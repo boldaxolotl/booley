@@ -56,21 +56,25 @@ The Target selects the concrete EDA tool. For an approved commercial tool, the
 Project can request only a provisioning source; the host owns the installation,
 mount, wrapper, environment, and any License Profile.
 
-### Default Flow Target: `default_target`
+### Explicit Flow Targets and Doctor selection
 
-Every enabled Target-aware Flow needs a default `.core` Target:
+Every Target-aware CLI and MCP Flow call requires a `target`; there is no
+project-wide fallback. Select Doctor's audit matrix beside each `.core` Target:
 
-```toml
-[flows.lint]
-enabled = true
-default_target = "lint_core"
+```yaml
+targets:
+  lint_core:
+    flow: lint
+    flow_options:
+      tool: verilator
+      booley: {doctor: [lint, elab]}
 ```
 
-`default_target` is used by `booley flow <name>` when that invocation does not
-pass `--target`; Doctor uses the same default for its dry-run and deep smoke.
-An explicit CLI or MCP `target` argument still selects that one invocation and
-takes precedence. The former Flow key `target` is retired because it obscured
-this fallback behavior; Doctor reports the exact rename when it encounters it.
+Doctor dry-runs and deep-smokes every compatible Target whose `doctor` list
+contains that Flow. Omit `booley.doctor` to keep a Target available only for
+explicit calls. The allowed Doctor names are `sim`, `lint`, `synth`, and
+`elab`; FPGA remains an explicit-only implementation Flow. The former
+`target`, `default_target`, and `calibration_target` Flow keys are retired.
 
 ### Commercial EDA provisioning
 
@@ -305,13 +309,12 @@ Linux host-provisioned policy obtains a read-only registered Vivado 2025.2 relea
 through `[eda.vivado]`; it does not require Vivado on the runtime `PATH` from
 the host.
 
-`[flows.fpga]` contains execution policy and the default Target selection. Build
-inputs belong to the selected `.core` Target: put `part` and `out_of_context`
+`[flows.fpga]` contains execution policy. Build inputs and target selection
+belong to the invocation and `.core` Target: put `part` and `out_of_context`
 under its `flow_options`, and XDC constraints in a `file_type: xdc` fileset.
 
 ```toml
 [flows.fpga]
-default_target = "fpga"
 timeout_ms = 7200000
 ```
 
@@ -349,8 +352,6 @@ turn old reports into either a false pass or a false failure.
 
 ```toml
 [flows.synth]
-default_target = "synth_small,synth_full"
-calibration_target = "synth_full" # reviewed heaviest target; Doctor --deep runs it
 timeout_ms = 5400000       # per-config cap in ms (default 1800000 = 30 min)
 expected_latches = 0       # intentional latches to allow
 # fail_on_timing_violation = true    # negative slack becomes a design FAIL (exit 1)
@@ -492,11 +493,10 @@ max_tickets = 2   # concurrent `booley run` Developer Agents
 queue_max   = 8   # per-class queue depth; a full queue is the only BLOCKED response
 ```
 
-When `[flows.synth].default_target` names more than one Target, setup must select the
-reviewed heaviest one as `calibration_target`. `booley doctor --deep` performs a
-real end-to-end synthesis of that Target, records the synthesis boundary's EDA
-process-tree peak RSS, and applies 15% rounded-up headroom to the HEAVY
-reservation. A later plain
+`booley doctor --deep` performs a real end-to-end synthesis of every Target
+whose `flow_options.booley.doctor` includes `synth`. It records each synthesis
+boundary's EDA process-tree peak RSS, retains the largest selected-target
+measurement, and applies 15% rounded-up headroom to the HEAVY reservation. A later plain
 Doctor run warns when `[sandbox].memory` cannot admit the calibrated peak plus
 Developer-Agent memory and fixed session headroom. An OOM or timeout is an
 incomplete calibration, never a successful PPA result.
@@ -799,7 +799,7 @@ first runnable test. Ordinary simulation never applies or reuses it, and no
 Doctor-only shell command belongs in `[flows.sim].pre_run_commands`.
 
 Lint's corresponding convention is a `.core` Target named
-`lint_selftest_bad`. Doctor uses `[flows.lint].default_target` as the good case
+`lint_selftest_bad`. Doctor uses the first lint Doctor Target as the good case
 and that conventional Target as the bad case. There is no
 `[flows.<flow>.selftest]` configuration table; legacy tables must be deleted.
 
@@ -1100,8 +1100,8 @@ runs, but `booley doctor` recommends `synth_`.
 
 Use `default:` only when another core depends on this one; Booley does not show
 it as a selectable Target. Vendored upstream cores keep their original names.
-Renaming a Target also requires updating its `tests.toml` section,
-`[flows.*].default_target` pins, and ticket criteria. For Python testbenches, see
+Renaming a Target also requires updating its `tests.toml` section, Doctor
+metadata references, explicit callers, and ticket criteria. For Python testbenches, see
 [Cocotb Targets](#cocotb-targets-python-testbenches).
 
 ### Tests (`tests.toml`)

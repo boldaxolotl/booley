@@ -1,14 +1,14 @@
 """target_surface.py — the project's runnable-Target surface (``booley targets``).
 
 A read-only presentation layer over :mod:`booley.fusesoc.fusesoc_registry`: the cheap
-YAML-only enumeration (never ``fusesoc run``) joined with the ``[flows.*].default_target``
-wiring from booley.toml. Shared by the ``booley targets`` CLI verb and the
+YAML-only enumeration (never ``fusesoc run``) joined with per-Target Doctor
+membership from the same ``.core``. Shared by the ``booley targets`` CLI verb and the
 ``booley_targets`` MCP tool so both render the same facts.
 
 Vocabulary (docs/CONTEXT.md): a **Target** is a named FuseSoC ``.core`` build
-target, identified by ``(VLNV, name)`` (ADR 0030). "Wired" means a Booley Flow's
-``[flows.<flow>].default_target`` selection names it; "drivable" means the Booley Flow
-*could* run it (Flow/EDA-tool compatibility), wired or not. Health auditing
+target, identified by ``(VLNV, name)`` (ADR 0030). "Doctor" means the Target
+selects a smoke Flow in ``flow_options.booley.doctor``; "drivable" means the
+Booley Flow *could* run it (Flow/EDA-tool compatibility), selected or not. Health auditing
 (legacy upstream FuseSoC ``tools:`` authoring, missing ``tags:[tb]``, …) stays in doctor —
 this module only describes, it never judges.
 """
@@ -51,7 +51,7 @@ def is_glob(token: str) -> bool:
 
 
 def flow_can_drive(flow: str, ref: TargetRef) -> bool:
-    """Could *flow* drive *ref*? Compatibility, not ``[flows.*].default_target`` wiring.
+    """Could *flow* drive *ref*? Compatibility, not Doctor selection.
 
     simulate and elaborate want a sim-flow Target (elaborate builds the sim
     executable without running it); lint wants a lint-flow Target; the two
@@ -97,8 +97,8 @@ class TargetEntry:
     """Statically-declared ``toplevel`` from the ``.core`` (``""`` when absent
     or parameter-derived — the resolved detail view has the authority)."""
 
-    wired_to: tuple[str, ...]
-    """Booley Flows whose ``[flows.<flow>].default_target`` selection names this Target."""
+    doctor_flows: tuple[str, ...]
+    """Booley Flows selected by this Target's Doctor metadata."""
 
     drivable_by: tuple[str, ...]
     """Booley Flows that could drive this Target (:func:`flow_can_drive`)."""
@@ -115,48 +115,21 @@ class CoreGroup:
 
 @dataclass(frozen=True)
 class TargetSurface:
-    """The whole surface: per-core groups plus wiring warnings."""
+    """The whole surface: per-core groups plus non-fatal observations."""
 
     groups: tuple[CoreGroup, ...]
     warnings: tuple[str, ...]
-    """Config tokens that do not resolve — a ``[flows.*].default_target`` naming a
-    missing or ambiguous Target is broken wiring worth surfacing here (doctor
-    FAILs it too, with more context)."""
+    """Non-fatal observations produced while building the surface."""
 
     def entries(self) -> Iterator[TargetEntry]:
         for group in self.groups:
             yield from group.entries
 
 
-def _wired_map(project_root: Path) -> tuple[dict[TargetRef, list[str]], list[str]]:
-    """Resolve every ``[flows.*].default_target`` token to (ref → wiring, warnings).
-
-    Tokens route through :func:`fusesoc_registry.resolve_ref` — the same rules
-    the Flows apply — so a resolved ref compares equal to the enumerated one.
-    """
-    from booley.flows.flow_config import resolve_flow_default_target
-
-    wired: dict[TargetRef, list[str]] = {}
-    warnings: list[str] = []
-    for flow in TARGET_AWARE_FLOWS:
-        for raw_token in resolve_flow_default_target(flow, project_root).split(","):
-            token = raw_token.strip()
-            if not token:
-                continue
-            try:
-                ref = fusesoc_registry.resolve_ref(project_root, token)
-            except fusesoc_registry.FuseSocError as exc:
-                warnings.append(f"[flows.{flow}].default_target {token!r} does not resolve: {exc}")
-                continue
-            wired.setdefault(ref, []).append(flow)
-    return wired, warnings
-
-
 def collect_surface(project_root: Path | str) -> TargetSurface:
     """Build the full Target surface for *project_root* — YAML reads only."""
     root = Path(project_root)
     declarations = fusesoc_registry.target_declarations(root)
-    wired, warnings = _wired_map(root)
 
     core_docs: dict[Path, Mapping[str, Any]] = {}
 
@@ -174,7 +147,7 @@ def collect_surface(project_root: Path | str) -> TargetSurface:
                 ref=ref,
                 selector=fusesoc_registry.minimal_selector(ref, bucket),
                 toplevel=declared_toplevel(ref),
-                wired_to=tuple(wired.get(ref, ())),
+                doctor_flows=ref.doctor_flows,
                 drivable_by=tuple(b for b in TARGET_AWARE_FLOWS if flow_can_drive(b, ref)),
             )
             grouped.setdefault((ref.vlnv, ref.core_file), []).append(entry)
@@ -187,7 +160,7 @@ def collect_surface(project_root: Path | str) -> TargetSurface:
         )
         for (vlnv, core_file), entries in sorted(grouped.items(), key=lambda kv: kv[0])
     )
-    return TargetSurface(groups=groups, warnings=tuple(warnings))
+    return TargetSurface(groups=groups, warnings=())
 
 
 def filter_surface(
@@ -270,7 +243,7 @@ def surface_payload(surface: TargetSurface, project_root: Path | str) -> dict[st
                         "eda_tool": e.ref.eda_tool,
                         "cocotb_module": e.ref.cocotb_module,
                         "toplevel": e.toplevel or None,
-                        "wired_to": list(e.wired_to),
+                        "doctor_flows": list(e.doctor_flows),
                         "drivable_by": list(e.drivable_by),
                     }
                     for e in group.entries
@@ -291,7 +264,7 @@ def detail_payload(
 ) -> dict[str, Any]:
     """Everything ``booley targets <name>`` shows for one Target.
 
-    The cheap half always fills in (enumeration + wiring); the resolved half
+    The cheap half always fills in (enumeration + Doctor metadata); the resolved half
     runs ``fusesoc run --setup`` and lands under ``"resolved"``, or —
     resolution being genuinely unavailable outside the Session Runtime — its
     failure lands under ``"resolved_error"`` instead of raising. Unknown and
@@ -314,7 +287,7 @@ def detail_payload(
         "eda_tool": ref.eda_tool,
         "cocotb_module": ref.cocotb_module,
         "toplevel": entry.toplevel or None,
-        "wired_to": list(entry.wired_to),
+        "doctor_flows": list(entry.doctor_flows),
         "drivable_by": list(entry.drivable_by),
         "warnings": list(surface.warnings),
     }
@@ -350,7 +323,7 @@ def detail_payload(
 # Terminal rendering — `booley targets` without --json
 # ---------------------------------------------------------------------------
 
-_WIRED_MARK = "←"  # ← reads "this Booley Flow's [flows.*].default_target points here"
+_DOCTOR_MARK = "Dr"
 
 # A declared toplevel is normally one module name; upstream cores occasionally
 # declare CAPI2 conditional expressions ("tool_verilator? (wrapper)" …) that
@@ -386,12 +359,12 @@ def render_listing(surface: TargetSurface, project_root: Path | str) -> str:
                 )
                 if e.ref.cocotb_module:
                     row += f"  cocotb={e.ref.cocotb_module}"
-                if e.wired_to:
-                    row += f"  {_WIRED_MARK} {', '.join(e.wired_to)}"
+                if e.doctor_flows:
+                    row += f"  {_DOCTOR_MARK} {', '.join(e.doctor_flows)}"
                 lines.append(row.rstrip())
             lines.append("")
         lines.append(
-            f"{_WIRED_MARK} = wired via [flows.<flow>].default_target · "
+            f"{_DOCTOR_MARK} = selected by flow_options.booley.doctor · "
             "`booley targets <name>` resolves parameters/files/SDC/XDC"
         )
     else:
@@ -414,9 +387,7 @@ def render_detail(payload: dict[str, Any]) -> str:
     if payload["cocotb_module"]:
         lines.append(row("cocotb", payload["cocotb_module"]))
     lines.append(row("toplevel", (payload["toplevel"] or "-") + "  (declared in .core)"))
-    lines.append(
-        row("wired to", ", ".join(payload["wired_to"]) or "(no [flows.*].default_target names it)")
-    )
+    lines.append(row("Doctor", ", ".join(payload["doctor_flows"]) or "(not selected)"))
     lines.append(row("drivable by", ", ".join(payload["drivable_by"]) or "-"))
 
     resolved = payload.get("resolved")

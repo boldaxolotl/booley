@@ -152,6 +152,8 @@ def test_ticket_create_grills_one_dependency_frontier_per_round():
         "defer it to a later round",
         "After each response, record the settled decisions and recompute the frontier",
         "ask the user to confirm it",
+        "MANDATORY DRAFT GATE",
+        "combined ticket + Target diff is the separate seal gate",
     ):
         assert required in contract
     assert "one question at a time" not in contract.lower()

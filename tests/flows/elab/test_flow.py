@@ -574,30 +574,11 @@ class TestFollowedSelection:
         assert _make_flow(tmp_path)._resolve_job_class() == job_slots.CLASS_HEAVY
 
 
-def test_run_consults_config_fallback_before_refusing(tmp_path, monkeypatch):
-    """Interactive Mode, no --target, [flows.elab].default_target configured: _run
-    must apply the config fallback BEFORE _validate_interactive_args, or the
-    documented fallback is unreachable from the CLI ('elaborate: --target is
-    required' despite a configured Target)."""
-    import pytest
-
-    from booley.flows.elab import flow as elab_mod
-
-    monkeypatch.setattr(elab_mod, "resolve_flow_default_target", lambda _flow, _wd: "cfg_lint")
+def test_run_refuses_an_explicit_empty_target(tmp_path):
     flow = _make_flow(tmp_path, target="")
-
-    class _PastValidationError(Exception):
-        pass
-
-    # resolve_target_selection runs only after the validation gate — reaching
-    # it proves the fallback satisfied the gate.
-    monkeypatch.setattr(
-        elab_mod.fusesoc_registry,
-        "resolve_target_selection",
-        lambda *_a, **_k: (_ for _ in ()).throw(_PastValidationError()),
-    )
-    with pytest.raises(_PastValidationError):
-        flow._run()
+    result = flow._run()
+    assert result.exit_code == EXIT_ERROR
+    assert "--target is required" in result.report_text
 
 
 # ---------------------------------------------------------------------------

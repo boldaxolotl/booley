@@ -270,6 +270,8 @@ def _persist_report(
 
 def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[str, Any] | None:
     """Make a manual in-runtime Doctor result current for interactive reporting."""
+    if not result.health_evidence:
+        return None
     try:
         project_dir = resolve_project_dir(project_root)
         findings = [asdict(finding) for finding in result.findings]

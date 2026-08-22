@@ -286,6 +286,9 @@ class McpTool(ABC):
     modifies_category: str | None = None
     # Does this endpoint operate per Target? False suppresses the Target in display headers.
     config_aware: bool = True
+    # Target-aware deterministic Flows override this so both argparse and the
+    # generated MCP schema require an explicit selection.
+    target_required: bool = False
     # F-14: on a human/standalone (no-state-file) run, ``report_text`` is only
     # surfaced on *failure* — the PASS verdict lives in ``display_lines``, which
     # the harness UI renders but a bare CLI run drops. For an endpoint whose success
@@ -381,7 +384,7 @@ class McpTool(ABC):
         # produce specific guidance and discovery can represent no selection.
         self._parser.add_argument(
             "--target",
-            default="",
+            required=self.target_required,
             help=self.target_help,
         )
 

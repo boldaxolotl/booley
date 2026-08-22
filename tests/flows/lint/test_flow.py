@@ -1123,12 +1123,8 @@ class TestConfigDiscovery:
         )
         assert flow._get_targets() == ["lite"]
 
-    def test_empty_target_returns_nothing(self, state_file: Path, monkeypatch):
-        """ADR 0030: empty --target no longer sweeps every Target — with no
-        [flows.lint].default_target configured it returns [] and the caller refuses."""
-        from booley.flows.lint import flow as lint_mod
-
-        monkeypatch.setattr(lint_mod, "resolve_flow_default_target", lambda _flow, _wd: "")
+    def test_empty_target_returns_nothing(self, state_file: Path):
+        """An explicit empty target never sweeps every declared Target."""
         flow = LintFlow()
         flow.parse_args(
             [
@@ -1138,41 +1134,17 @@ class TestConfigDiscovery:
         )
         assert flow._get_targets() == []
 
-    def test_empty_target_falls_back_to_configured(self, state_file: Path, monkeypatch):
-        """ADR 0030: empty --target falls back to [flows.lint].default_target."""
-        from booley.flows.lint import flow as lint_mod
-
-        monkeypatch.setattr(lint_mod, "resolve_flow_default_target", lambda _flow, _wd: "cfg_lint")
+    def test_target_is_required_by_parser(self, state_file: Path):
         flow = LintFlow()
-        flow.parse_args(
-            [
-                "--target",
-                "",
-            ]
-        )
-        assert flow._get_targets() == ["cfg_lint"]
+        with pytest.raises(SystemExit):
+            flow.parse_args([])
 
-    def test_run_consults_config_fallback_before_refusing(self, monkeypatch, tmp_path):
-        """Interactive Mode, no --target, [flows.lint].default_target configured: _run
-        must apply the config fallback BEFORE _validate_interactive_args, or the
-        documented fallback is unreachable from the CLI ('lint: --target is
-        required' despite a configured Target)."""
-        from booley.flows.lint import flow as lint_mod
-
-        monkeypatch.setattr(lint_mod, "resolve_flow_default_target", lambda _flow, _wd: "cfg_lint")
+    def test_run_refuses_an_explicit_empty_target(self, tmp_path):
         flow = LintFlow()
         flow.parse_args(["--target", "", "--work-dir", str(tmp_path)])
-
-        class _PastValidationError(Exception):
-            pass
-
-        # _get_targets runs only after the validation gate — reaching it proves
-        # the fallback satisfied the gate.
-        monkeypatch.setattr(
-            flow, "_get_targets", lambda: (_ for _ in ()).throw(_PastValidationError())
-        )
-        with pytest.raises(_PastValidationError):
-            flow._run()
+        result = flow._run()
+        assert result.exit_code == EXIT_ERROR
+        assert "--target is required" in result.report_text
 
 
 # ---------------------------------------------------------------------------
@@ -1706,7 +1678,7 @@ class TestLintObservability:
         tmp_path: Path,
         capsys,
     ):
-        """[flows.lint].default_target naming a sim Target must not lint silently."""
+        """An explicit sim Target passed to lint must not lint silently."""
         (tmp_path / "sim_demo.core").write_text(
             "CAPI=2:\n"
             "name: ::sim_demo:0\n"
