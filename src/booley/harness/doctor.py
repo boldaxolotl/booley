@@ -29,6 +29,7 @@ from booley.audit import (
     config_common,
     configs_schema,
     design_size,
+    eda_environment,
     flow_schema,
     host_environment,
     project_schema,
@@ -2250,14 +2251,8 @@ def _run_container_checks(
 # RISC-V variant checks fire only when the image bakes this flavour marker
 # (Dockerfile.riscv), so the vanilla base sandbox is never faulted for lacking a
 # cross-toolchain it was never meant to carry.
-_RISCV_IMAGE_FIX = "rebuild the RISC-V image: ./src/booley/data/docker/build-riscv.sh"
-_RISCV_DOC_FILES = (
-    "INDEX.md",
-    "riscv-abi.pdf",
-    "riscv-debug-specification.pdf",
-    "riscv-isa-manual.html",
-    "riscv-isa-manual.pdf",
-)
+_RISCV_IMAGE_FIX = eda_environment.RISCV_IMAGE_FIX
+_RISCV_DOC_FILES = eda_environment.RISCV_DOC_FILES
 
 
 def _check_riscv_toolchain(
@@ -2267,58 +2262,19 @@ def _check_riscv_toolchain(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Verify the RISC-V toolchain when the sandbox is the RISC-V variant.
-
-    Detection keys off ``BOOLEY_SANDBOX_FLAVOR=riscv`` baked into
-    ``booley-sandbox-riscv`` (see ``data/docker/Dockerfile.riscv``), so it fires
-    for any image built from that variant regardless of its tag, and is silently
-    skipped for every other image. A project that points ``[sandbox].image`` at
-    the RISC-V image but hasn't (re)built it then gets a clear failure here
-    instead of a confusing ``riscv32-unknown-elf-gcc: not found`` at Flow runtime.
-    """
-    if _image_env_value(docker_exe, image, "BOOLEY_SANDBOX_FLAVOR") != "riscv":
-        return
-
-    def _probe(description: str, cmd: list[str]) -> None:
-        try:
-            result = subprocess.run(
-                [docker_exe, "run", "--rm", image, *cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError):
-            _fail(f"{description} (timeout/error)", _RISCV_IMAGE_FIX)
-            return
-        if result.returncode == 0:
-            _pass(description)
-        else:
-            _fail(description, _RISCV_IMAGE_FIX)
-
-    # Both triple aliases the target cores invoke (ibex/picorv32 default to the
-    # rv32 prefix; picorv32's Booley recipe uses the rv64 one) must resolve.
-    _probe("riscv32-unknown-elf-gcc", ["riscv32-unknown-elf-gcc", "--version"])
-    _probe("riscv64-unknown-elf-gcc", ["riscv64-unknown-elf-gcc", "--version"])
-    # srec_cat: ibex .vmem generation hard-depends on it; spike: reference ISS;
-    # pdftotext: keeps the baked manuals searchable in an offline agent session.
-    _probe("srec_cat (srecord)", ["sh", "-c", "command -v srec_cat"])
-    _probe("spike (riscv-isa-sim)", ["sh", "-c", "command -v spike"])
-    _probe("pdftotext (poppler-utils)", ["pdftotext", "-v"])
-    # Every advertised offline document must exist and be non-empty. Pass the
-    # fixed names as positional parameters rather than interpolating them into
-    # shell source, keeping one cheap container probe without weakening quoting.
-    _probe(
-        "RISC-V offline specs complete at $BOOLEY_RISCV_DOCS",
-        [
-            "sh",
-            "-c",
-            'test -n "$BOOLEY_RISCV_DOCS" || exit 1; '
-            'for name in "$@"; do test -s "$BOOLEY_RISCV_DOCS/$name" || exit 1; done',
-            "sh",
-            *_RISCV_DOC_FILES,
-        ],
+    """Render the extracted RISC-V image toolchain audit."""
+    flavor = _image_env_value(docker_exe, image, "BOOLEY_SANDBOX_FLAVOR")
+    findings = eda_environment.audit_riscv_toolchain(
+        docker_exe,
+        image,
+        flavor,
+        run=subprocess.run,
     )
+    for finding in findings:
+        if finding.severity is eda_environment.EdaFindingSeverity.PASS:
+            _pass(finding.message)
+        else:
+            _fail(finding.message, finding.fix)
 
 
 def _run_mcp_checks(
