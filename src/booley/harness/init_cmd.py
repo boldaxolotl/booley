@@ -625,9 +625,7 @@ def _step_eda_tool_detection(ctx: InitContext) -> bool:
     """Check host tools and report whether Docker is ready for initialization."""
     ctx.step_banner("host bootstrap tool detection")
     git = _report_required_tool("git", "--version", "version control")
-    docker = _report_required_tool(
-        "docker", "--version", "container runtime for all EDA tools"
-    )
+    docker = _report_required_tool("docker", "--version", "container runtime for all EDA tools")
     daemon_error = _docker_daemon_error(docker) if docker else None
     if daemon_error:
         err(daemon_error)
@@ -1945,14 +1943,30 @@ def _run_seed(ctx: InitContext) -> int:
     return _print_summary(ctx)
 
 
-def run_init(args: argparse.Namespace, project_root: Path) -> int:
-    """Run the project initialization wizard."""
+def _configure_progress_output() -> None:
+    """Make redirected initialization progress visible without delay."""
     # Line-buffer stdout so progress (esp. the multi-minute docker build) streams
     # when piped/redirected. Python block-buffers a non-TTY stdout, which made
     # init look hung for minutes with no output (SETUP-2).
     with contextlib.suppress(AttributeError, ValueError):
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
+
+def _print_init_banner(ctx: InitContext) -> None:
+    """Print the interactive initialization heading."""
+    if ctx.check_only or not sys.stdout.isatty():
+        return
+    print(BOOLEY_MASCOT)
+    print(bold_chrome("  Booley project setup"))
+    print()
+    info(f"project root  : {ctx.project_root}")
+    info(f"version       : {__version__}")
+    info(f"platform      : {'Windows' if IS_WINDOWS else 'POSIX'}")
+
+
+def run_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Run the project initialization wizard."""
+    _configure_progress_output()
     ctx = InitContext(
         project_root=project_root,
         check_only=getattr(args, "check_only", False),
@@ -1960,14 +1974,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         verbose=getattr(args, "verbose", False),
         fix_line_endings=getattr(args, "fix_line_endings", False),
     )
-
-    if not ctx.check_only and sys.stdout.isatty():
-        print(BOOLEY_MASCOT)
-        print(bold_chrome("  Booley project setup"))
-        print()
-        info(f"project root  : {project_root}")
-        info(f"version       : {__version__}")
-        info(f"platform      : {'Windows' if IS_WINDOWS else 'POSIX'}")
+    _print_init_banner(ctx)
 
     # Docker is the execution substrate for every supported EDA flow. Fail
     # before creating or changing project files when its daemon is unavailable;

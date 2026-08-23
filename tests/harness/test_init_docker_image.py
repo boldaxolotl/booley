@@ -7,6 +7,7 @@ container run an image predating the container-side skill deployment.
 
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 import sys
@@ -39,11 +40,12 @@ def test_init_aborts_before_writing_when_docker_is_unavailable(tmp_path, monkeyp
         return False
 
     monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", unavailable)
-    args = type(
-        "Args",
-        (),
-        {"seed": False, "check_only": False, "force": False, "verbose": False},
-    )()
+    args = argparse.Namespace(
+        seed=False,
+        check_only=False,
+        force=False,
+        verbose=False,
+    )
 
     assert init_cmd.run_init(args, tmp_path) == 2
     assert not (tmp_path / ".booley_project").exists()
