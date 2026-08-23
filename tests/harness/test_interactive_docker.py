@@ -162,6 +162,26 @@ class TestEgressNetwork:
         )
         assert idk.network_is_host_isolated() is True
 
+    def test_host_isolated_probe_allows_unrelated_docker_options(self, fake_docker):
+        fake_docker(
+            [
+                (
+                    lambda a: a[:2] == ["network", "inspect"],
+                    _cp(
+                        0,
+                        stdout=json.dumps(
+                            {
+                                idk.GATEWAY_MODE_OPTION: idk.GATEWAY_MODE_ISOLATED,
+                                "com.docker.network.enable_ipv4": "true",
+                                "com.docker.network.enable_ipv6": "false",
+                            }
+                        ),
+                    ),
+                ),
+            ]
+        )
+        assert idk.network_is_host_isolated() is True
+
 
 # ===========================================================================
 # Egress proxy image

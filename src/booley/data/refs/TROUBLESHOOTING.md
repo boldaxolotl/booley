@@ -158,14 +158,16 @@ first-run traps:
   `winget install Python.Python.3.13`.
 - **`docker` isn't found even though Docker Desktop is installed.** Its CLI
   joins `PATH` only after the app has started: launch Docker Desktop, then open
-  a **new** terminal before `booley init`.
+  a **new** terminal before `booley init`. Init treats a missing CLI or stopped
+  daemon as fatal and exits before creating or changing project files.
 - **The container sees a fully modified tree / phantom diffs.** Git for
   Windows' `core.autocrlf=true` default checks files out with CRLF, which the
   Linux container reads as every file modified. `booley init` handles it: it
-  sets `core.autocrlf=false` on the repo and adds `* text eol=lf` as the first
-  line of your `.gitattributes` (first line, so any `-text` exemption below it
-  still wins). **Commit the `.gitattributes`**: the rule only reaches your team
-  through git.
+  sets `core.autocrlf=false` on the repo and adds `* text=auto eol=lf` as the
+  first line of your `.gitattributes`. `text=auto` preserves Git's binary-file
+  detection, while the first-line position lets any more-specific rule below
+  it still win. **Commit the `.gitattributes`**: the rule only reaches your
+  team through git.
 
   Files already on disk with CRLF are a separate matter: rewriting them means
   deleting and restoring every tracked file, so init leaves them alone unless

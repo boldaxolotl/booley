@@ -108,7 +108,7 @@ def network_is_host_isolated(name: str = EGRESS_NETWORK) -> bool:
         options = json.loads(result.stdout.strip())
     except json.JSONDecodeError:
         return False
-    return isinstance(options, dict) and options == {GATEWAY_MODE_OPTION: GATEWAY_MODE_ISOLATED}
+    return isinstance(options, dict) and options.get(GATEWAY_MODE_OPTION) == GATEWAY_MODE_ISOLATED
 
 
 def container_exists(name: str) -> bool:
