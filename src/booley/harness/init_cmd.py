@@ -11,11 +11,11 @@ Steps, in the order :func:`run_init` runs them. The number the user sees is
 allocated at print time by :meth:`InitContext.step_banner`, so it is always
 contiguous; identity lives in the ``record`` key, not the number.
 
+    - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Project directory (.booley_project/ with config skeletons)
     - Tickets directory tree (board states + logs)
     - Agent authentication setup
-    - External dependency detection (git, Docker)
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
     - Docker image build
@@ -560,66 +560,83 @@ def _step_auth(ctx: InitContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _step_eda_tool_detection(ctx: InitContext) -> None:
-    ctx.step_banner("host bootstrap tool detection")
+def _docker_daemon_error(executable: str) -> str | None:
+    """Return a fatal Docker availability error, or ``None`` when ready."""
+    try:
+        result = subprocess.run(
+            [executable, "info"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "docker daemon did not respond within 10 seconds"
+    except (subprocess.SubprocessError, OSError) as exc:
+        return f"could not contact docker daemon: {exc}"
+    if result.returncode == 0:
+        return None
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    suffix = f": {detail[0][:200]}" if detail else ""
+    return f"docker daemon is not running or not accessible{suffix}"
 
-    eda_tools = [
-        ("git", "--version", "version control (worktrees, branches, commits)"),
-        ("docker", "--version", "container runtime (all EDA tools run inside)"),
-    ]
-    any_missing = False
-    for name, version_arg, purpose in eda_tools:
-        found = shutil.which(name)
-        if not found:
-            err(f"{name:<8} missing  (REQUIRED — {purpose})")
-            any_missing = True
-            continue
-        try:
-            out = subprocess.run(
-                [found, version_arg],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-            version = (out.stdout or out.stderr).strip().splitlines()[0][:60]
-        except (subprocess.SubprocessError, IndexError):
-            version = "(version probe failed)"
-        ok(f"{name:<8} {version}")
 
-        if name == "docker":
-            try:
-                subprocess.run(
-                    [found, "info"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    check=True,
-                )
-            except (subprocess.SubprocessError, FileNotFoundError):
-                warn("docker daemon is not running")
-                any_missing = True
+def _report_required_tool(name: str, version_arg: str, purpose: str) -> str | None:
+    """Report one required executable and return its resolved path."""
+    found = shutil.which(name)
+    if not found:
+        err(f"{name:<8} missing  (REQUIRED — {purpose})")
+        return None
+    try:
+        out = subprocess.run(
+            [found, version_arg],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        version = (out.stdout or out.stderr).strip().splitlines()[0][:60]
+    except (subprocess.SubprocessError, IndexError):
+        version = "(version probe failed)"
+    ok(f"{name:<8} {version}")
+    return found
 
-    # VS Code is REQUIRED: Interactive Mode's "Reopen in Container" workflow
-    # (ADR 0018) depends on it. A GUI install without the `code` CLI shim on
-    # PATH still satisfies the requirement (the "Reopen in Container" action is
-    # a GUI feature), so only a fully missing editor fails init.
+
+def _report_vscode() -> bool:
+    """Report VS Code availability and return whether a usable install exists."""
     state, detail = _detect_vscode()
     if state == "cli":
         ok(f"{'vscode':<8} {detail}  (Interactive Mode: Reopen in Container)")
-    elif state == "gui":
+        return True
+    if state == "gui":
         warn(
             f"vscode found ({detail}) but the 'code' CLI is not on PATH — "
             "run 'Shell Command: Install code command in PATH' from VS Code"
         )
-    else:
-        err(
-            "vscode  missing  (REQUIRED — Interactive Mode uses "
-            "'Reopen in Container'; https://code.visualstudio.com)"
-        )
-        any_missing = True
+        return True
+    err(
+        "vscode  missing  (REQUIRED — Interactive Mode uses "
+        "'Reopen in Container'; https://code.visualstudio.com)"
+    )
+    return False
 
-    ctx.record("eda_tools", "err" if any_missing else "ok", "")
+
+def _step_eda_tool_detection(ctx: InitContext) -> bool:
+    """Check host tools and report whether Docker is ready for initialization."""
+    ctx.step_banner("host bootstrap tool detection")
+    git = _report_required_tool("git", "--version", "version control")
+    docker = _report_required_tool(
+        "docker", "--version", "container runtime for all EDA tools"
+    )
+    daemon_error = _docker_daemon_error(docker) if docker else None
+    if daemon_error:
+        err(daemon_error)
+    docker_ready = docker is not None and daemon_error is None
+    vscode_ready = _report_vscode()
+    any_missing = git is None or not docker_ready or not vscode_ready
+    detail = "docker unavailable" if not docker_ready else ""
+    ctx.record("eda_tools", "err" if any_missing else "ok", detail)
+    return docker_ready
 
 
 # ---------------------------------------------------------------------------
@@ -1749,9 +1766,10 @@ def _failed_step_names(ctx: InitContext) -> list[str]:
 def _print_incomplete_advisory(failed: list[str]) -> None:
     """Send-off for a run where a required step failed (fpu F-2).
 
-    Later steps deliberately keep running after a failure — every init step is
-    idempotent, so finishing the pass leaves the project as far along as it can
-    get and a re-run picks up the rest. What must NOT happen is the normal
+    After the mandatory Docker preflight, later steps deliberately keep running
+    after a failure — every init step is idempotent, so finishing the pass
+    leaves the project as far along as it can get and a re-run picks up the
+    rest. What must NOT happen is the normal
     "now run booley-setup" send-off: the project is not ready, and the summary
     above it is mostly green, so the only signal was the final one-line rc=2.
     """
@@ -1943,9 +1961,6 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         fix_line_endings=getattr(args, "fix_line_endings", False),
     )
 
-    if getattr(args, "seed", False):
-        return _run_seed(ctx)
-
     if not ctx.check_only and sys.stdout.isatty():
         print(BOOLEY_MASCOT)
         print(bold_chrome("  Booley project setup"))
@@ -1953,6 +1968,15 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         info(f"project root  : {project_root}")
         info(f"version       : {__version__}")
         info(f"platform      : {'Windows' if IS_WINDOWS else 'POSIX'}")
+
+    # Docker is the execution substrate for every supported EDA flow. Fail
+    # before creating or changing project files when its daemon is unavailable;
+    # a half-initialized tree cannot be used and obscures the real prerequisite.
+    if not _step_eda_tool_detection(ctx):
+        return _print_summary(ctx)
+
+    if getattr(args, "seed", False):
+        return _run_seed(ctx)
 
     # --scaffold: emit a runnable starter IP (RTL + TB + .core + populated
     # config) before the regular steps, which then backfill around it. A
@@ -1965,7 +1989,6 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     _step_core_projections(ctx)
     _step_tickets(ctx)
     _step_auth(ctx)
-    _step_eda_tool_detection(ctx)
     _deploy_skills(ctx)
     pdk_root = _step_nangate_pdk(ctx)
     # The base is always built; the project's own image is only passed

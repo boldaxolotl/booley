@@ -430,8 +430,8 @@ class TestLineEndingsStep:
         # B5, the shape that actually bit taxi: upstream marks CRLF-native
         # payloads carried as text (`*.bat`, vendor register dumps) `-text`, so
         # git never converts them — `i/crlf w/crlf attr/-text`, byte-identical
-        # to the index. init flagged 8 such files with a fix (`* text eol=lf`,
-        # delete + re-checkout) that would have corrupted them.
+        # to the index. init flagged 8 such files with a blanket text rule plus
+        # a delete + re-checkout, which would have corrupted them.
         from booley.harness.init_git_hooks import _step_line_endings
 
         _git_init(tmp_path)
@@ -510,8 +510,8 @@ class TestLineEndingsAutoFix:
 
     def test_gitattributes_rule_is_prepended_not_appended(self, tmp_path: Path):
         # The ordering guard. git resolves attributes last-match-wins, so
-        # appending `* text eol=lf` would override the `-text` exemptions that
-        # keep CRLF-native payloads intact. First line loses to every rule
+        # appending the whole-tree LF default would override `-text` exemptions
+        # that keep CRLF-native payloads intact. First line loses to every rule
         # below it — which is what a default should do.
         from booley.harness.init_git_hooks import GITATTRIBUTES_RULE, _step_line_endings
 
@@ -522,6 +522,31 @@ class TestLineEndingsAutoFix:
 
         lines = (tmp_path / ".gitattributes").read_text().splitlines()
         assert lines == [GITATTRIBUTES_RULE, "*.bat -text"]
+
+    def test_gitattributes_rule_preserves_binary_detection(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
+            capture_output=True,
+            check=True,
+        )
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00binary\r\npayload\x00"
+        TestLineEndingsStep._add_file(tmp_path, "image.png", png_bytes)
+        _git_commit(tmp_path)
+
+        _step_line_endings(_ctx(tmp_path))
+
+        assert (tmp_path / "image.png").read_bytes() == png_bytes
+        diff = subprocess.run(
+            ["git", "-C", str(tmp_path), "diff", "--name-only", "--", "image.png"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert diff.stdout == ""
+        assert (tmp_path / ".gitattributes").read_text().splitlines() == [GITATTRIBUTES_RULE]
 
     def test_existing_whole_tree_policy_is_left_alone(self, tmp_path: Path):
         # `* text=auto` is the project stating its own policy. Deliberate

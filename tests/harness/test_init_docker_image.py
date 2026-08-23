@@ -16,6 +16,39 @@ from booley.harness import init_cmd, init_docker_image
 from booley.harness.init_common import InitContext
 
 
+def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch):
+    def fake_run(args, **_kwargs):
+        if args[-1] == "info":
+            return subprocess.CompletedProcess(args, 1, "", "daemon unavailable")
+        return subprocess.CompletedProcess(args, 0, "version 1\n", "")
+
+    monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(init_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(init_cmd, "_detect_vscode", lambda: ("cli", "code 1"))
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_eda_tool_detection(ctx) is False
+    assert ctx.results[-1].status == "err"
+    assert ctx.results[-1].detail == "docker unavailable"
+
+
+def test_init_aborts_before_writing_when_docker_is_unavailable(tmp_path, monkeypatch):
+    def unavailable(ctx):
+        ctx.step_banner("host bootstrap tool detection")
+        ctx.record("eda_tools", "err", "docker unavailable")
+        return False
+
+    monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", unavailable)
+    args = type(
+        "Args",
+        (),
+        {"seed": False, "check_only": False, "force": False, "verbose": False},
+    )()
+
+    assert init_cmd.run_init(args, tmp_path) == 2
+    assert not (tmp_path / ".booley_project").exists()
+
+
 def _seed_source(root: Path) -> None:
     """Minimal repo layout that :func:`_image_build_fingerprint` hashes."""
     pkg = root / "src" / "booley"

@@ -183,12 +183,28 @@ jobs:
           docker pull "${RISCV_IMAGE}"
           docker tag "${RISCV_IMAGE}" booley-sandbox-riscv
 
-      # Exercise the public quick start, including generated Session Runtime
-      # policy. The demo disables its FPGA Flow, so its optional host Vivado
-      # registration must not be required here.
-      - name: Initialize demo as documented
+      # Hosted runners have no desktop editor. Supply only the `code --version`
+      # probe that init requires; the smoke never attempts to launch an editor.
+      - name: Provide headless editor probe
+        run: |
+          mkdir -p "${RUNNER_TEMP}/booley-ci-bin"
+          ln -s "$(command -v git)" "${RUNNER_TEMP}/booley-ci-bin/code"
+          echo "${RUNNER_TEMP}/booley-ci-bin" >> "${GITHUB_PATH}"
+
+      # Exercise the public quick start and reject warnings as well as errors.
+      # A placeholder credential satisfies init's presence-only auth check; the
+      # release smoke never sends an agent request.
+      - name: Initialize demo cleanly as documented
         working-directory: demo
-        run: booley init
+        env:
+          OPENAI_API_KEY: ci-presence-check-only
+        run: |
+          init_log="$(mktemp)"
+          booley init | tee "${init_log}"
+          if grep -Fq "[!!]" "${init_log}" || grep -Fq "[XX]" "${init_log}"; then
+            echo "booley init did not finish cleanly" >&2
+            exit 1
+          fi
 
       # actions/checkout files belong to the runner user (uid 1001), while the
       # production image deliberately runs as `agent` (uid 1000). The demo
@@ -215,7 +231,10 @@ jobs:
               project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
               ticket_slug=add-rv32-zbb-pcpi-co-processor
               bash "${project_dir}/hooks/post-setup.sh"
-              booley doctor --deep --skip-agent-checks
+              doctor_log="$(mktemp)"
+              booley doctor --deep --skip-agent-checks | tee "${doctor_log}"
+              grep -Fq "0 warning(s)" "${doctor_log}"
+              grep -Fq "0 failed." "${doctor_log}"
 
               ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
               python -m booley.ticket_board parse-ticket "${ticket}" >/dev/null

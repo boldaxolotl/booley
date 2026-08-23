@@ -402,7 +402,7 @@ def _count_crlf_worktree_files(project_root: Path) -> int | None:
     return count
 
 
-GITATTRIBUTES_RULE = "* text eol=lf"
+GITATTRIBUTES_RULE = "* text=auto eol=lf"
 
 
 def _eol_policy_is_user_owned(project_root: Path) -> bool:
@@ -428,14 +428,13 @@ def _eol_policy_is_user_owned(project_root: Path) -> bool:
 
 
 def _write_gitattributes_rule(project_root: Path) -> bool:
-    """Put ``* text eol=lf`` at the TOP of the root ``.gitattributes``.
+    """Put ``* text=auto eol=lf`` at the TOP of root ``.gitattributes``.
 
-    Prepended, never appended. git resolves attributes last-match-wins, so a
-    rule appended at the end would override every specific rule above it —
-    including the ``*.bat -text`` / vendor-dump exemptions upstreams write to
-    keep CRLF-native payloads intact (see :func:`_count_crlf_worktree_files`).
-    First line is the one position where our blanket default loses to every
-    later rule, which is exactly the precedence a default wants.
+    ``text=auto`` keeps Git's binary detection intact while applying LF to
+    detected text. Prepended, never appended: git resolves attributes
+    last-match-wins, so the first line lets every specific rule below it —
+    including ``*.bat -text`` / vendor-dump exemptions — override this default
+    (see :func:`_count_crlf_worktree_files`).
 
     Returns True if the file was created or changed.
     """
@@ -556,9 +555,11 @@ def _step_line_endings(ctx: InitContext) -> None:
 
     - ``core.autocrlf=false`` — repo-local, reversible, touches no file. Done
       automatically; it is what stops CRLF coming back on the next checkout.
-    - ``* text eol=lf`` in ``.gitattributes`` — an added (never appended) line,
-      only when the project has not stated its own policy. Left uncommitted:
-      it is the user's tracked source, and only they should commit to it.
+    - ``* text=auto eol=lf`` in ``.gitattributes`` — an added (never appended)
+      line that normalizes detected text without forcing binary files through
+      text conversion, only when the project has not stated its own policy.
+      Left uncommitted: it is the user's tracked source, and only they should
+      commit to it.
     - the re-checkout — deletes every tracked file. Opt-in via
       ``--fix-line-endings`` and refused on a dirty tree; init will not be the
       thing that eats uncommitted work.
