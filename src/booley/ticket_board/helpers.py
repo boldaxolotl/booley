@@ -9,13 +9,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
+from booley.runtime import pid as runtime_pid
 from booley.runtime.file_lock import acquire_file_lock, release_file_lock
-from booley.runtime.pid import is_pid_alive as runtime_pid_alive
 from booley.runtime.timefmt import format_human_datetime, parse_timestamp, utc_now_rfc3339
 
 # ---------------------------------------------------------------------------
 # Platform-specific file locking
 # ---------------------------------------------------------------------------
+
+is_pid_alive = runtime_pid.is_pid_alive
 
 
 def lock_fd(f: IO) -> None:
@@ -26,11 +28,6 @@ def lock_fd(f: IO) -> None:
 def unlock_fd(f: IO) -> None:
     """Compatibility wrapper for the runtime-owned lock primitive."""
     release_file_lock(f)
-
-
-def is_pid_alive(pid: int) -> bool:
-    """Compatibility wrapper for the runtime-owned PID probe."""
-    return runtime_pid_alive(pid)
 
 
 def read_lock_pid(lock_path: str | Path) -> int | None:

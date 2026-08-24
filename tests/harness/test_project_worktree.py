@@ -11,7 +11,14 @@ from booley.harness.developer import _check_ticket_dirty_statuses, _commit_ticke
 from booley.harness.models import TicketContext
 from booley.harness.setup.project_worktree import ProjectWorktreeError, prepare_project_worktree
 from booley.runtime.project_dir import reset_cache
-from booley.runtime.ticket_repositories import project_repository_scope, project_ticket_branch
+from booley.runtime.ticket_repositories import (
+    TicketWorkspace,
+    TicketWorkspaceRequest,
+    WorkspaceDisposition,
+    WorkspaceMode,
+    project_repository_scope,
+    project_ticket_branch,
+)
 from booley.ticket_board.project_git_ops import (
     cleanup_project_ticket_branch,
     merge_project_ticket_branch,
@@ -98,12 +105,26 @@ def _make_ticket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TicketConte
     )
 
 
+def _workspace(ctx: TicketContext) -> TicketWorkspace:
+    assert ctx.worktree_path is not None
+    return TicketWorkspace.open(
+        TicketWorkspaceRequest(
+            project_root=ctx.project_root,
+            worktree=ctx.worktree_path,
+            ticket_slug=ctx.slug,
+            base=ctx.branch,
+            ticket_scope=tuple(ctx.scope_raw),
+            mode=WorkspaceMode(ctx.workspace_intent),
+        )
+    )
+
+
 def test_scoped_stealth_project_gets_paired_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _make_ticket(tmp_path, monkeypatch)
 
-    nested = prepare_project_worktree(ctx)
+    nested = _workspace(ctx).prepare()
 
     assert nested == ctx.worktree_path / ".booley_project"
     assert (nested / ".git").is_file()
@@ -133,7 +154,7 @@ def test_inner_repo_is_observable_even_without_project_scope(
     assert nested is not None
     (nested / "cores" / "dut.core").write_text("accidental edit\n", encoding="utf-8")
 
-    assert [entry.path for entry in _check_ticket_dirty_statuses(ctx.worktree_path)] == [
+    assert [entry.path for entry in _check_ticket_dirty_statuses(ctx)] == [
         ".booley_project/cores/dut.core"
     ]
 
@@ -149,15 +170,75 @@ def test_outer_and_project_edits_commit_to_separate_repositories(
     )
     (nested / "cores" / "dut.core").write_text("CAPI=2:\nname: ::dut:1\n", encoding="utf-8")
 
-    dirty = _check_ticket_dirty_statuses(ctx.worktree_path)
+    workspace = _workspace(ctx)
+    assert workspace.authored_project_dir == nested
+    dirty = workspace.pending_changes()
     paths = [entry.path for entry in dirty]
     assert paths == ["rtl/dut.sv", ".booley_project/cores/dut.core"]
 
-    _commit_ticket_paths(ctx, paths, "fix: route project edits")
+    workspace.commit(paths, "fix: route project edits")
 
     assert _git(ctx.worktree_path, "show", "--format=", "--name-only", "HEAD") == "rtl/dut.sv"
     assert _git(nested, "show", "--format=", "--name-only", "HEAD") == "cores/dut.core"
-    assert _check_ticket_dirty_statuses(ctx.worktree_path) == []
+    assert workspace.pending_changes() == ()
+
+    ok, error = workspace.finish(
+        WorkspaceDisposition.MERGE,
+        "merge(change-core): project content",
+    )
+
+    assert ok, error
+    source_core = ctx.project_root / ".booley_project" / "cores" / "dut.core"
+    assert "::dut:1" in source_core.read_text(encoding="utf-8")
+    assert not nested.exists()
+    branches = _git(ctx.project_root / ".booley_project", "branch", "--format=%(refname:short)")
+    assert project_ticket_branch(ctx.slug) not in branches.splitlines()
+
+
+def test_workspace_resumes_existing_project_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    nested = workspace.prepare()
+    assert nested is not None
+    (nested / "cores" / "dut.core").write_text("interrupted\n", encoding="utf-8")
+    workspace.commit([".booley_project/cores/dut.core"], "fix: preserve interruption")
+    head = _git(nested, "rev-parse", "HEAD")
+
+    request = workspace.request
+    resumed = TicketWorkspace.open(
+        TicketWorkspaceRequest(
+            project_root=request.project_root,
+            worktree=request.worktree,
+            ticket_slug=request.ticket_slug,
+            base=request.base,
+            ticket_scope=request.ticket_scope,
+            mode=WorkspaceMode.RESUME,
+            expected_sha=head,
+        )
+    )
+
+    assert resumed.prepare() == nested
+    assert _git(nested, "rev-parse", "HEAD") == head
+
+
+def test_workspace_discard_removes_project_recovery_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    nested = workspace.prepare()
+    assert nested is not None
+    (nested / "cores" / "dut.core").write_text("discard me\n", encoding="utf-8")
+    workspace.commit([".booley_project/cores/dut.core"], "fix: discarded work")
+
+    ok, error = workspace.finish(WorkspaceDisposition.DISCARD)
+
+    assert ok, error
+    assert not nested.exists()
+    branches = _git(ctx.project_root / ".booley_project", "branch", "--format=%(refname:short)")
+    assert project_ticket_branch(ctx.slug) not in branches.splitlines()
 
 
 def test_dirty_project_repo_is_not_silently_snapshotted(
@@ -228,6 +309,35 @@ def test_project_branch_merges_and_cleans_up_with_ticket(
     assert project_ticket_branch(ctx.slug) not in branches.splitlines()
 
 
+def test_workspace_merge_can_preserve_paired_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    nested = workspace.prepare()
+    assert nested is not None
+    (nested / "cores" / "dut.core").write_text(
+        "CAPI=2:\nname: ::dut:preserved\n",
+        encoding="utf-8",
+    )
+    workspace.commit([".booley_project/cores/dut.core"], "fix: preserve paired checkout")
+
+    ok, error = workspace.finish(
+        WorkspaceDisposition.MERGE,
+        "merge project content without cleanup",
+        cleanup=False,
+    )
+
+    assert ok, error
+    assert nested.exists()
+    assert "::dut:preserved" in (
+        ctx.project_root / ".booley_project" / "cores" / "dut.core"
+    ).read_text(encoding="utf-8")
+    assert workspace.finish(WorkspaceDisposition.DISCARD) == (True, "")
+    assert not nested.exists()
+
+
 def test_project_branch_merges_with_unstaged_board_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -276,7 +386,8 @@ def test_project_merge_conflict_is_aborted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ctx = _make_ticket(tmp_path, monkeypatch)
-    nested = prepare_project_worktree(ctx)
+    workspace = _workspace(ctx)
+    nested = workspace.prepare()
     assert nested is not None
     (nested / "cores" / "dut.core").write_text("ticket version\n", encoding="utf-8")
     _commit_ticket_paths(ctx, [".booley_project/cores/dut.core"], "fix: branch version")
@@ -285,7 +396,7 @@ def test_project_merge_conflict_is_aborted(
     (source / "cores" / "dut.core").write_text("base version\n", encoding="utf-8")
     _commit_all(source, "fix: conflicting base version")
 
-    ok, error = merge_project_ticket_branch(ctx.project_root, ctx.slug, "merge conflict")
+    ok, error = workspace.finish(WorkspaceDisposition.MERGE, "merge conflict")
 
     assert not ok
     assert "CONFLICT" in error
@@ -297,3 +408,5 @@ def test_project_merge_conflict_is_aborted(
     )
     assert merge_head.returncode != 0
     assert _git(source, "status", "--porcelain") == ""
+    assert nested.exists()
+    assert _git(nested, "branch", "--show-current") == project_ticket_branch(ctx.slug)

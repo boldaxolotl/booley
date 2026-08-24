@@ -105,15 +105,32 @@ class TestEnsureGuidanceLinks:
         ensure_guidance_links(project_root, project_dir)
         assert link.read_text(encoding="utf-8") == "# AGENTS\n"
 
-    def test_replaces_a_stale_copy(self, tmp_path: Path):
-        """A copy silently goes stale; it must not be mistaken for a live link."""
+    def test_preserves_an_unrelated_dangling_link(self, tmp_path: Path):
+        project_root, project_dir, _canon = _make_project(tmp_path)
+        link = project_root / "AGENTS.md"
+        try:
+            link.symlink_to(Path("..") / "temporarily-unmounted" / CANON_NAME)
+        except OSError:
+            pytest.skip("symlink creation not permitted on this host")
+        original = link.readlink()
+
+        with pytest.raises(OSError, match="foreign untracked guidance entry"):
+            ensure_guidance_links(project_root, project_dir)
+
+        assert link.is_symlink()
+        assert link.readlink() == original
+        assert not (project_root / "CLAUDE.md").exists()
+
+    def test_refuses_a_foreign_stale_copy(self, tmp_path: Path):
+        """An untracked regular file is user-owned unless positively recognized."""
         project_root, project_dir, canon = _make_project(tmp_path)
         link = project_root / "AGENTS.md"
         link.write_text("# STALE\n", encoding="utf-8")
 
         assert not _points_to(link, canon.resolve())
-        ensure_guidance_links(project_root, project_dir)
-        assert link.read_text(encoding="utf-8") == "# AGENTS\n"
+        with pytest.raises(OSError, match="foreign untracked guidance entry"):
+            ensure_guidance_links(project_root, project_dir)
+        assert link.read_text(encoding="utf-8") == "# STALE\n"
 
     def test_missing_canon_raises(self, tmp_path: Path):
         project_root = tmp_path / "repo"

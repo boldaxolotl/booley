@@ -17,11 +17,16 @@ from booley.harness.developer import (
 )
 from booley.harness.developer_guardrails import (
     DirtyFile,
-    GitStatusError,
     check_uncommitted_code_statuses,
 )
 from booley.harness.models import TicketContext
-from booley.runtime.ticket_repositories import TicketRepository
+from booley.runtime.ticket_repositories import (
+    TicketRepository,
+    TicketWorkspace,
+    TicketWorkspaceError,
+    TicketWorkspaceRequest,
+    WorkspaceMode,
+)
 
 
 def _make_ctx(tmp_path: Path) -> TicketContext:
@@ -105,7 +110,7 @@ def test_leftover_edits_are_committed_before_handoff(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[[DirtyFile("rtl/dut.sv", " M")], []],
         ),
         patch("booley.runtime.git.commit_scope", side_effect=commit),
@@ -133,7 +138,21 @@ def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
         TicketRepository(ctx.worktree_path),
         TicketRepository(project_worktree, ".booley_project"),
     )
+    workspace = TicketWorkspace(
+        TicketWorkspaceRequest(
+            project_root=ctx.project_root,
+            worktree=ctx.worktree_path,
+            ticket_slug=ctx.slug,
+            base=ctx.branch,
+            ticket_scope=tuple(ctx.scope_raw),
+            mode=WorkspaceMode.FRESH,
+        )
+    )
     with (
+        patch(
+            "booley.harness.setup.project_worktree.ticket_workspace",
+            return_value=workspace,
+        ),
         patch(
             "booley.runtime.ticket_repositories.ticket_repositories",
             return_value=repositories,
@@ -161,7 +180,7 @@ def test_in_scope_file_still_dirty_after_commit_blocks(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[
                 [DirtyFile("rtl/dut.sv", " M")],
                 [DirtyFile("rtl/dut.sv", " M")],
@@ -185,7 +204,7 @@ def test_out_of_scope_files_are_left_for_triage(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[
                 [DirtyFile("rtl/dut.sv", " M"), DirtyFile("rtl/other.sv", " M")],
                 [DirtyFile("rtl/other.sv", " M")],
@@ -214,7 +233,7 @@ def test_out_of_scope_file_still_dirty_after_commit_does_not_block(tmp_path: Pat
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[
                 [DirtyFile("rtl/dut.sv", " M"), DirtyFile("README.md", " M")],
                 [DirtyFile("README.md", " M")],
@@ -238,7 +257,7 @@ def test_harness_owned_dirty_files_are_left_uncommitted(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[
                 [
                     DirtyFile("rtl/dut.sv", " M"),
@@ -266,7 +285,7 @@ def test_stealth_cores_are_ordinary_work_not_harness_owned(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[[DirtyFile(".booley_project/cores/dut.core", " M")], []],
         ),
         patch("booley.runtime.git.commit_scope", return_value=None) as commit,
@@ -290,7 +309,7 @@ def test_scoped_project_doc_is_committed_not_rejected(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[[DirtyFile(path, "M ")], []],
         ),
         patch("booley.runtime.git.commit_scope", return_value=None) as commit,
@@ -312,7 +331,7 @@ def test_out_of_scope_scorer_file_is_left_for_triage(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             return_value=[DirtyFile("rtl/other.sv", " M")],
         ),
         patch("booley.runtime.git.commit_scope") as commit,
@@ -341,7 +360,7 @@ def test_duplicated_source_root_dirty_files_get_malformed_report(tmp_path: Path)
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             return_value=[DirtyFile("rtl/rtl/other.sv", "??")],
         ),
         patch("booley.runtime.git.commit_scope") as commit,
@@ -370,7 +389,7 @@ def test_nested_rtl_is_caught_even_when_scope_names_no_rtl(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[[], []],
         ),
         patch("booley.runtime.git.commit_scope"),
@@ -392,7 +411,7 @@ def test_scorer_file_deleted_under_a_new_glob_blocks(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             return_value=[DirtyFile("rtl/legacy_fifo.sv", " D")],
         ),
         patch("booley.runtime.git.commit_scope") as commit,
@@ -412,7 +431,7 @@ def test_done_ticket_with_out_of_scope_scorer_file_still_handoffs(tmp_path: Path
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             return_value=[DirtyFile("rtl/other.sv", " M")],
         ),
         patch("booley.runtime.git.commit_scope") as commit,
@@ -435,7 +454,7 @@ def test_deleted_files_under_new_scope_glob_do_not_block(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             side_effect=[
                 [
                     DirtyFile("rtl/dut.sv", " M"),
@@ -468,8 +487,8 @@ def test_git_status_error_blocks_handoff(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
-            side_effect=GitStatusError("boom"),
+            "booley.harness.developer._check_ticket_dirty_statuses",
+            side_effect=TicketWorkspaceError("boom"),
         ),
         patch("booley.runtime.git.commit_scope") as commit,
         patch("booley.harness.developer.block_ticket") as block,
@@ -489,7 +508,7 @@ def test_missing_live_rtl_blocks_handoff(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             return_value=[],
         ),
         patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
@@ -511,7 +530,7 @@ def test_committed_nested_rtl_output_blocks_handoff(tmp_path: Path):
 
     with (
         patch(
-            "booley.harness.developer_guardrails.check_uncommitted_code_statuses",
+            "booley.harness.developer._check_ticket_dirty_statuses",
             return_value=[],
         ),
         patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),

@@ -186,6 +186,27 @@ def test_launch_restores_control_plane_project_dir_after_ticket_local_call(tmp_p
     assert cfg.active_backend.captured["env"]["BOOLEY_PROJECT_DIR"] == str(ticket_project_dir)
 
 
+def test_launch_restores_every_overridden_environment_key(tmp_path, monkeypatch):
+    cfg = _DummyConfig()
+    monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
+    monkeypatch.setenv("BOOLEY_SLUG", "outer-session")
+    monkeypatch.delenv("BOOLEY_AGENT_ROLE", raising=False)
+
+    asyncio.run(
+        developer._launch_developer_agent(
+            "prompt",
+            system_prompt="system",
+            cwd=tmp_path,
+            slug="ticket-session",
+            state_path=tmp_path / "booley_state.json",
+            logs_dir=tmp_path / "logs",
+        )
+    )
+
+    assert os.environ["BOOLEY_SLUG"] == "outer-session"
+    assert "BOOLEY_AGENT_ROLE" not in os.environ
+
+
 def test_launch_passes_developer_budget_to_backend(tmp_path, monkeypatch):
     cfg = _DummyConfig()
     monkeypatch.setattr(harness_config, "get_backend_config", lambda: cfg)
