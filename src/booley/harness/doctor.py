@@ -492,6 +492,7 @@ def run_doctor_result(
     *,
     read_only: bool = False,
     record_clean: bool = True,
+    progress: Check | None = None,
 ) -> DoctorRunResult:
     """Run Doctor and return its structured result.
 
@@ -507,9 +508,11 @@ def run_doctor_result(
     deep = getattr(args, "deep", False)
     profile = _DoctorProfile.from_args(args)
     reporter = _create_reporter(project_root, profile=profile, verbose=verbose)
+    report_progress = progress or (lambda _message: None)
+    report_progress("host/project checks")
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
-    _run_runtime_phase(project, docker_exe, verbose, reporter)
-    _run_flow_and_core_phase(project, docker_exe, verbose, reporter)
+    _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
+    _run_flow_and_core_phase(project, docker_exe, verbose, reporter, report_progress)
 
     if deep:
         _run_deep_phase(project, docker_exe, verbose, reporter)
@@ -571,8 +574,10 @@ def _run_runtime_phase(
     docker_exe: str | None,
     verbose: bool,
     reporter: _Reporter,
+    progress: Check,
 ) -> None:
     """Run runtime-location, container, MCP, and preflight-parity checks."""
+    progress("Session Runtime/auth checks")
     sandbox_image = _sandbox_image(project)
     _check_runtime_location(
         docker_exe,
@@ -600,6 +605,7 @@ def _run_runtime_phase(
         verbose,
         reporter,
     )
+    progress("run/preflight checks")
     _run_preflight_parity_checks(project, reporter)
 
 
@@ -608,8 +614,10 @@ def _run_flow_and_core_phase(
     docker_exe: str | None,
     verbose: bool,
     reporter: _Reporter,
+    progress: Check,
 ) -> None:
     """Run Flow dry-runs and the authored FuseSoC core audit."""
+    progress("Flow dry-runs")
     banner("Booley Flow setup checks")
     if project is None:
         reporter.skip_("Flow dry-runs skipped - project config invalid")
@@ -624,6 +632,7 @@ def _run_flow_and_core_phase(
             reporter.skip_,
             reporter.fail_,
         )
+    progress("FuseSoC .core audit")
     banner("FuseSoC .core checks")
     if project is None:
         reporter.skip_(".core audit skipped - project config invalid")
