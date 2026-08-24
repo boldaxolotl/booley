@@ -729,6 +729,11 @@ cannot be caught there. Push time is the first point where both identities are
 readable, and it also covers identities that arrive via rebase, cherry-pick, or
 `--no-verify`.
 
+The hook also inspects changed tracked paths and committed symlink targets. A
+push is rejected when either carries a banned term or resolves into the hidden
+project-state directory; changing the worktree link after committing does not
+bypass the check.
+
 Both the **author and the committer** of every outgoing commit must match at
 least one entry. Each entry is an fnmatch glob, matched case-insensitively
 against the bare email, the bare name, and the full `Name <email>` ident:
