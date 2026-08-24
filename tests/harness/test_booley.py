@@ -125,6 +125,27 @@ def test_rebuild_does_not_report_pre_rebuild_doctor_findings(tmp_path, monkeypat
     assert "Pre-rebuild Doctor findings were retired" in capsys.readouterr().err
 
 
+def test_console_startup_logs_automatic_doctor_progress(tmp_path, monkeypatch):
+    from booley.harness import auto_doctor
+
+    def run_if_due(_root, *, trigger, progress):
+        assert trigger == "booley-run"
+        progress("starting (automatic Doctor result expired)")
+        progress("FuseSoC .core audit")
+        return {}
+
+    monkeypatch.setattr(auto_doctor, "run_if_due", run_if_due)
+    monkeypatch.setattr(auto_doctor, "consume_changed_summary", lambda *_a, **_kw: None)
+    monkeypatch.setattr(auto_doctor, "load_report", lambda _root: {})
+
+    with patch.object(tlr.logger, "info") as log_info:
+        tlr._run_automatic_doctor(tmp_path)
+
+    assert ("Automatic Doctor — %s", "starting (automatic Doctor result expired)") in [
+        call.args for call in log_info.call_args_list
+    ]
+
+
 def test_version_flag_prints_and_exits(capsys):
     # SETUP-1: `booley --version` should print a real version and exit 0.
     parser = tlr._build_parser()
