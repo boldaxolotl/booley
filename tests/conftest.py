@@ -6,7 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -50,6 +50,21 @@ _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
 
+def _xdist_worker_temp_base() -> Path:
+    """Return the parent directory for worker-specific temporary roots."""
+    base = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir())
+    if sys.platform != "win32":
+        return base
+
+    workspace = Path.cwd()
+    if PureWindowsPath(base).drive.casefold() != PureWindowsPath(workspace).drive.casefold():
+        # FuseSoC's Edalizer relativizes core files against its workspace and
+        # Windows refuses to relativize across volumes. Keep tmp_path fixtures
+        # on the checkout's drive when the system temp directory is elsewhere.
+        return workspace
+    return base
+
+
 def _isolate_xdist_worker_temp() -> None:
     """Give each xdist worker a subprocess-visible temporary directory.
 
@@ -67,7 +82,7 @@ def _isolate_xdist_worker_temp() -> None:
     if not worker_id or not run_id:
         return
 
-    base = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir())
+    base = _xdist_worker_temp_base()
     worker_temp = base / f"booley-pytest-{run_id}-{worker_id}"
     worker_temp.mkdir(parents=True, exist_ok=True)
     for variable in ("TMPDIR", "TEMP", "TMP"):
