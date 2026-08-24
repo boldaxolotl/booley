@@ -208,6 +208,28 @@ Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
 
 
+class _CoreAuditInputs:
+    """Reuse Target source partitions within one core-audit run."""
+
+    def __init__(
+        self,
+        root: Path,
+        refs: dict[str, fusesoc_registry.TargetRef],
+    ) -> None:
+        self.refs = refs
+        self._root = root
+        self._sources: dict[str, fusesoc_registry.CoreSources] = {}
+
+    def sources_for(self, name: str) -> fusesoc_registry.CoreSources:
+        """Return one Target partition, reading it once per audit."""
+        if name not in self._sources:
+            self._sources[name] = fusesoc_registry.target_source_files_for_ref(
+                self._root,
+                self.refs[name],
+            )
+        return self._sources[name]
+
+
 def _warning_sink(
     sink: Warn,
     check_id: str,
@@ -4205,6 +4227,32 @@ def _check_doctor_target_compatibility(root: Path, _pass: Check, _fail: Fail) ->
         _pass("Doctor Target matrix is empty")
 
 
+def _check_sim_target_setup(
+    project: ProjectAudit,
+    inputs: _CoreAuditInputs,
+    _pass: Check,
+    _warn: Check,
+    _fail: Fail,
+    note_sink: Check,
+) -> None:
+    """Run source-backed setup checks for every simulation Target."""
+    for name, ref in sorted(inputs.refs.items()):
+        if ref.flow != "sim":
+            continue
+        sources = inputs.sources_for(name)
+        _check_sim_target_tb_staging(name, sources, _pass, _fail)
+        _check_sim_verdict_setup(
+            project,
+            project.project_root,
+            name,
+            ref,
+            _pass,
+            _warn,
+            sources=sources,
+            _note=note_sink,
+        )
+
+
 def _run_core_audit(
     project: ProjectAudit,
     _pass: Check,
@@ -4254,6 +4302,7 @@ def _run_core_audit(
         )
     else:
         _pass(f".core Targets enumerated: {', '.join(sorted(refs))}")
+        inputs = _CoreAuditInputs(root, refs)
 
         _check_doctor_target_compatibility(root, _pass, _fail)
 
@@ -4264,22 +4313,8 @@ def _run_core_audit(
         # 'default:' Targets. Advisory — a badly named Target still runs.
         _check_naming_conventions(project, root, refs, _pass, _warn, _note=note_sink)
 
-        # 2. Tagged TB filesets for sim Targets (decision 13). Gate on flow ==
-        # 'sim', not the EDA tool: Verilator backs both simulation and lint Flows, and a
-        # lint Target legitimately has no TB.
-        for name, ref in sorted(refs.items()):
-            if ref.flow != "sim":
-                continue  # lint/synth/fpga Targets legitimately have no TB
-            _check_sim_target_tb_staging(root, name, ref, _pass, _fail)
-            _check_sim_verdict_setup(
-                project,
-                root,
-                name,
-                ref,
-                _pass,
-                _warn,
-                _note=note_sink,
-            )
+        # 2. Tagged TB filesets and verdict readiness for sim Targets.
+        _check_sim_target_setup(project, inputs, _pass, _warn, _fail, note_sink)
 
         # 2b. Yosys synth Targets need flow_options.arch — mandatory edalize
         # plumbing that reads like droppable boilerplate and fails only at --deep.
@@ -4297,6 +4332,7 @@ def _run_core_audit(
             _fail,
             _note=note_sink,
             selected_targets=set(_project_target_matrix(project).seed_targets) or None,
+            _inputs=inputs,
         )
 
         # 2b*. Verilator sim Targets built with the auto --main/--binary have no
@@ -4307,7 +4343,7 @@ def _run_core_audit(
         # 2b". A lint/synth toplevel carrying SV interface ports cannot elaborate
         # standalone (F-7). Statically detectable from the toplevel's port list,
         # and otherwise invisible until the flow dies on a parameter mismatch.
-        _check_toplevel_interface_ports(root, refs, _pass, _warn)
+        _check_toplevel_interface_ports(root, refs, _pass, _warn, _inputs=inputs)
 
         # 2b'. Cocotb Targets (ADR 0034 / F1) — conditional: fires only when a
         # Target declares flow_options.cocotb_module.
@@ -4369,9 +4405,8 @@ def _run_core_audit(
 
 
 def _check_sim_target_tb_staging(
-    root: Path,
     name: str,
-    ref: fusesoc_registry.TargetRef,
+    sources: fusesoc_registry.CoreSources,
     _pass: Check,
     _fail: Fail,
 ) -> None:
@@ -4389,17 +4424,13 @@ def _check_sim_target_tb_staging(
       fileset dropped from ``filesets:``) slipped past it and died at run
       time with a toplevel-not-found error pointing at the design.
     """
-    # ADR 0030: a bare sim-target name can be declared by several vendored
-    # cores; qualify with this enumerated core's VLNV so the resolution-
-    # backed audits check *this* core and never raise AmbiguousTargetError.
-    token = f"{ref.vlnv}#{name}"
-    if fusesoc_registry.sim_target_has_untagged_tb(root, token):
+    if sources.rtl_source_files and not sources.tb_files:
         _fail(
             f"sim Target '{name}' has files but none tagged tags:[tb]",
             "tag the testbench fileset tags:[tb] so Source Isolation can "
             "partition RTL vs TB (ADR 0022 dec 13)",
         )
-    elif not fusesoc_registry.target_source_files(root, token).tb_files:
+    elif not sources.tb_files:
         _fail(
             f"sim Target '{name}' stages zero files — no testbench "
             "(or design) ever reaches the simulator",
@@ -4418,6 +4449,7 @@ def _check_sim_verdict_setup(
     _pass: Check,
     _warn: Check,
     *,
+    sources: fusesoc_registry.CoreSources | None = None,
     _note: Check | None = None,
 ) -> None:
     """Setup-time verdict/trace readiness for a sim Target.
@@ -4454,10 +4486,12 @@ def _check_sim_verdict_setup(
     pass_sentinels = [str(s) for s in (sim_cfg.get("pass_sentinels") or [])] or [
         "[SIM_RESULT] PASSED"
     ]
-    try:
-        tb_files = fusesoc_registry.target_source_files(root, name).tb_files
-    except fusesoc_registry.FuseSocError:
-        return
+    if sources is None:
+        try:
+            sources = fusesoc_registry.target_source_files(root, name)
+        except fusesoc_registry.FuseSocError:
+            return
+    tb_files = sources.tb_files
     if not tb_files:
         return  # the untagged-TB check already covered "sim Target has no TB"
 
@@ -4744,6 +4778,7 @@ def _check_icarus_sv_language_mode(
     *,
     _note: Check | None = None,
     selected_targets: set[str] | None = None,
+    _inputs: _CoreAuditInputs | None = None,
 ) -> None:
     """Flag Icarus Targets whose SystemVerilog sources lack an SV language flag.
 
@@ -4765,11 +4800,10 @@ def _check_icarus_sv_language_mode(
     ]
     if not icarus_targets:
         return
+    inputs = _inputs or _CoreAuditInputs(root, refs)
     for name, ref in icarus_targets:
-        # ADR 0030: qualify with the core's VLNV so an ambiguous bare name
-        # resolves to this core (never raises AmbiguousTargetError).
         try:
-            src = fusesoc_registry.target_source_files(root, f"{ref.vlnv}#{name}")
+            src = inputs.sources_for(name)
         except fusesoc_registry.FuseSocError:
             continue  # an unresolvable Target is enumeration's to report
         has_sv = any(
@@ -4909,16 +4943,16 @@ def _module_header(text: str, module: str) -> str:
     return stripped[m.start() : end if end != -1 else len(stripped)]
 
 
-def _interface_ports(root: Path, target: str, toplevel: str) -> list[str] | None:
+def _interface_ports(
+    root: Path,
+    sources: fusesoc_registry.CoreSources,
+    toplevel: str,
+) -> list[str] | None:
     """Interface ports on *toplevel*, or ``None`` if its source can't be read.
 
     ``None`` (source not found / unreadable) and ``[]`` (found, no interface
     ports) are deliberately distinct: only the latter is worth a PASS.
     """
-    try:
-        sources = fusesoc_registry.target_source_files(root, target)
-    except (fusesoc_registry.FuseSocError, OSError):
-        return None
     for rel in sources.rtl_source_files:
         path = root / rel
         if path.suffix.lower() not in _HDL_SUFFIXES:
@@ -4941,6 +4975,8 @@ def _check_toplevel_interface_ports(
     refs: dict,
     _pass: Check,
     _warn: Check,
+    *,
+    _inputs: _CoreAuditInputs | None = None,
 ) -> None:
     """Warn when a lint/synth Target's toplevel carries SystemVerilog interface ports.
 
@@ -4962,6 +4998,7 @@ def _check_toplevel_interface_ports(
     A warn, not a fail — the ``.core`` is structurally sound, and the flow may
     simply not have been run yet.
     """
+    inputs = _inputs or _CoreAuditInputs(root, refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
             continue  # the TB supplies the interfaces; see docstring
@@ -4972,9 +5009,11 @@ def _check_toplevel_interface_ports(
         toplevel = fusesoc_registry.core_target_toplevel(doc, name)
         if not toplevel:
             continue
-        # ADR 0030: qualify with this core's VLNV so a bare name shared by
-        # several vendored cores resolves to *this* one.
-        ports = _interface_ports(root, f"{ref.vlnv}#{name}", toplevel)
+        try:
+            sources = inputs.sources_for(name)
+        except (fusesoc_registry.FuseSocError, OSError):
+            continue
+        ports = _interface_ports(root, sources, toplevel)
         if ports is None:
             continue  # toplevel source not among the Target's files — say nothing
         if not ports:

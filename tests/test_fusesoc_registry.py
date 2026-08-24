@@ -50,6 +50,7 @@ from booley.fusesoc.fusesoc_registry import (
     state_cores_dir,
     target_eda_tools,
     target_source_files,
+    target_source_files_for_ref,
     trace_overlay_vlnv,
     try_resolve_target,
     vendored_files,
@@ -1247,6 +1248,28 @@ class TestTargetSourceFiles:
         _write_core(tmp_path)
         with pytest.raises(UnknownTargetError):
             target_source_files(tmp_path, "nope")
+
+    def test_ref_partition_bypasses_selector_rescan(self, tmp_path: Path, monkeypatch):
+        from booley.fusesoc import fusesoc_registry
+
+        _write_core(tmp_path / "a")
+        _write_core(
+            tmp_path / "b",
+            _CORE_TEXT.replace("::demo_core:0", "::other_core:0"),
+        )
+        refs = _enumerate_all(tmp_path)["sim"]
+
+        with pytest.raises(AmbiguousTargetError):
+            target_source_files(tmp_path, "sim")
+        qualified = target_source_files(tmp_path, "other_core#sim")
+
+        monkeypatch.setattr(
+            fusesoc_registry,
+            "_enumerate_all",
+            lambda _root: pytest.fail("ref-based partition rescanned the registry"),
+        )
+
+        assert target_source_files_for_ref(tmp_path, refs[1]) == qualified
 
 
 class TestTargetSourceFilesDependencyClosure:
