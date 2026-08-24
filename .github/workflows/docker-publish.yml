@@ -158,7 +158,9 @@ jobs:
           python-version: "3.13"
 
       - name: Install release CLI
-        run: pip install .
+        run: |
+          python -m pip install --user .
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Provision pinned Nangate45 PDK
         id: nangate
