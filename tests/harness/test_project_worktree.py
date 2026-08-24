@@ -154,7 +154,7 @@ def test_inner_repo_is_observable_even_without_project_scope(
     assert nested is not None
     (nested / "cores" / "dut.core").write_text("accidental edit\n", encoding="utf-8")
 
-    assert [entry.path for entry in _check_ticket_dirty_statuses(ctx.worktree_path)] == [
+    assert [entry.path for entry in _check_ticket_dirty_statuses(ctx)] == [
         ".booley_project/cores/dut.core"
     ]
 
@@ -307,6 +307,35 @@ def test_project_branch_merges_and_cleans_up_with_ticket(
     assert not nested.exists()
     branches = _git(ctx.project_root / ".booley_project", "branch", "--format=%(refname:short)")
     assert project_ticket_branch(ctx.slug) not in branches.splitlines()
+
+
+def test_workspace_merge_can_preserve_paired_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    nested = workspace.prepare()
+    assert nested is not None
+    (nested / "cores" / "dut.core").write_text(
+        "CAPI=2:\nname: ::dut:preserved\n",
+        encoding="utf-8",
+    )
+    workspace.commit([".booley_project/cores/dut.core"], "fix: preserve paired checkout")
+
+    ok, error = workspace.finish(
+        WorkspaceDisposition.MERGE,
+        "merge project content without cleanup",
+        cleanup=False,
+    )
+
+    assert ok, error
+    assert nested.exists()
+    assert "::dut:preserved" in (
+        ctx.project_root / ".booley_project" / "cores" / "dut.core"
+    ).read_text(encoding="utf-8")
+    assert workspace.finish(WorkspaceDisposition.DISCARD) == (True, "")
+    assert not nested.exists()
 
 
 def test_project_branch_merges_with_unstaged_board_state(

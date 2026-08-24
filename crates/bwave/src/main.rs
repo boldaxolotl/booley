@@ -748,24 +748,6 @@ fn parallel_worker_counts(
     Ok((parse, encode, pack))
 }
 
-#[cfg(test)]
-mod build_worker_tests {
-    use super::parallel_worker_counts;
-
-    #[test]
-    fn six_job_default_matches_promoted_topology() {
-        assert_eq!(parallel_worker_counts(6, None, None, None), Ok((4, 1, 2)));
-    }
-
-    #[test]
-    fn explicit_encoder_override_keeps_single_packer_default() {
-        assert_eq!(
-            parallel_worker_counts(6, None, Some(2), None),
-            Ok((4, 2, 1))
-        );
-    }
-}
-
 #[cfg(unix)]
 fn fifo_descriptor(file: &File) -> io::Result<Option<i32>> {
     if !file.metadata()?.file_type().is_fifo() {
@@ -1323,5 +1305,23 @@ fn main() {
     // (CI, scripts) need a reliable signal that input was bad.
     if virtual_def_error_seen() {
         process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod build_worker_tests {
+    use super::parallel_worker_counts;
+
+    #[test]
+    fn six_job_default_matches_promoted_topology() {
+        assert_eq!(parallel_worker_counts(6, None, None, None), Ok((4, 1, 2)));
+    }
+
+    #[test]
+    fn explicit_encoder_override_keeps_single_packer_default() {
+        assert_eq!(
+            parallel_worker_counts(6, None, Some(2), None),
+            Ok((4, 2, 1))
+        );
     }
 }

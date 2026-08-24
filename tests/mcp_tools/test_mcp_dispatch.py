@@ -1351,11 +1351,13 @@ class TestCancel:
             text = _text(out)
             assert "CANCELLED" in text
             assert "withdrawn" in text
-            # The SIGTERM really reached the queued child. POSIX reports a
-            # signal death as a negative returncode (-SIGTERM); on Windows
-            # os.kill(pid, SIGTERM) calls TerminateProcess with the signal as
-            # the exit code, so wait() returns SIGTERM (positive).
-            assert child.wait(timeout=10) in (-_signal.SIGTERM, _signal.SIGTERM)
+            # The queued child really stopped. POSIX exposes the terminating
+            # signal; Windows taskkill uses its own non-zero exit status.
+            returncode = child.wait(timeout=10)
+            if sys.platform == "win32":
+                assert returncode != 0
+            else:
+                assert returncode == -_signal.SIGTERM
             got = jobrec.read_record("simulate-c-3")
             assert got is not None
             assert got.status == jobrec.STATUS_CANCELLED

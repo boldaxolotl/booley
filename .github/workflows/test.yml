@@ -45,7 +45,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python: ["3.11", "3.13"]
+        python: ["3.11", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -81,7 +81,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
-          components: rustfmt
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -93,8 +93,127 @@ jobs:
       - name: Run all Rust tests and benchmark targets
         run: cargo test --all-targets --locked --manifest-path crates/bwave/Cargo.toml
 
+      - name: Run Clippy
+        # Existing findings are baselined by category after `-D warnings` so
+        # every other Rust/Clippy warning is fatal. Remove these narrow allows
+        # as the corresponding first-party lint debt is cleaned up.
+        run: >
+          cargo clippy --all-targets --all-features --locked
+          --manifest-path crates/bwave/Cargo.toml -- -D warnings
+          -A clippy::cloned-ref-to-slice-refs
+          -A clippy::collapsible-if
+          -A clippy::comparison-to-empty
+          -A clippy::double-ended-iterator-last
+          -A clippy::large-enum-variant
+          -A clippy::map-identity
+          -A clippy::manual-checked-ops
+          -A clippy::manual-contains
+          -A clippy::manual-div-ceil
+          -A clippy::manual-is-multiple-of
+          -A clippy::manual-pattern-char-comparison
+          -A clippy::manual-range-contains
+          -A clippy::needless-borrows-for-generic-args
+          -A clippy::needless-range-loop
+          -A clippy::same-item-push
+          -A clippy::too-many-arguments
+          -A clippy::type-complexity
+          -A clippy::unnecessary-cast
+          -A clippy::unnecessary-map-or
+          -A clippy::unnecessary-unwrap
+          -A clippy::unwrap-or-default
+          -A clippy::useless-borrows-in-formatting
+          -A clippy::while-let-loop
+          -A clippy::write-with-newline
+          -A clippy::writeln-empty-string
+          -A clippy::wrong-self-convention
+
+  bwave-python-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: crates/bwave
+
+      # The Xcelium suite resolves this exact debug path at collection time;
+      # building it up front makes a missing binary a failure, not a skip.
+      - name: Build bwave (debug)
+        run: cargo build --locked --manifest-path crates/bwave/Cargo.toml
+
+      - name: Install Python test dependency
+        run: pip install pytest==8.4.2
+
+      - name: Run all BWave Python tests
+        shell: bash
+        run: |
+          test -x crates/bwave/target/debug/bwave
+          pytest crates/bwave/tests/test_*.py -q --tb=short -rs
+
+  package-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Build wheel and source distribution
+        run: |
+          pip install build==1.3.0 twine==6.1.0
+          python -m build
+          twine check dist/*
+
+      - name: Reject redistributed native and Nangate payloads
+        run: bash .github/scripts/validate_distribution_payloads.sh dist
+
+      - name: Validate direct wheel from a clean environment
+        shell: bash
+        run: |
+          python -m venv "${RUNNER_TEMP}/direct-wheel-venv"
+          "${RUNNER_TEMP}/direct-wheel-venv/bin/pip" install dist/*.whl
+          cd "${RUNNER_TEMP}"
+          BOOLEY_CONTAINER=1 "${RUNNER_TEMP}/direct-wheel-venv/bin/python" \
+            "${GITHUB_WORKSPACE}/.github/scripts/validate_installed_artifact.py" \
+            --inventory "${RUNNER_TEMP}/direct-wheel-files.txt" \
+            --forbid-root "${GITHUB_WORKSPACE}"
+
+      - name: Build and validate wheel from source distribution
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/sdist-wheel"
+          python -m pip wheel --no-deps --wheel-dir "${RUNNER_TEMP}/sdist-wheel" dist/*.tar.gz
+          python -m venv "${RUNNER_TEMP}/sdist-wheel-venv"
+          "${RUNNER_TEMP}/sdist-wheel-venv/bin/pip" install "${RUNNER_TEMP}"/sdist-wheel/*.whl
+          cd "${RUNNER_TEMP}"
+          BOOLEY_CONTAINER=1 "${RUNNER_TEMP}/sdist-wheel-venv/bin/python" \
+            "${GITHUB_WORKSPACE}/.github/scripts/validate_installed_artifact.py" \
+            --inventory "${RUNNER_TEMP}/sdist-wheel-files.txt" \
+            --forbid-root "${GITHUB_WORKSPACE}"
+          diff -u "${RUNNER_TEMP}/direct-wheel-files.txt" \
+            "${RUNNER_TEMP}/sdist-wheel-files.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-dist
+          path: dist/
+          if-no-files-found: error
+
+
   bwave-smoke:
     runs-on: ubuntu-latest
+    needs: package-artifacts
     # An uncached image build compiles the EDA stack from source (~57 min
     # measured), then loads a ~6 GB image and uploads the layer cache — a
     # 60-minute budget killed the first run mid-flight. Cached rebuilds
@@ -108,10 +227,13 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Build wheel
-        run: |
-          pip install build
-          python -m build --wheel --outdir dist/
+      - name: Install host-side test dependency
+        run: pip install pytest==8.4.2
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-dist
+          path: dist/
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -128,6 +250,22 @@ jobs:
           # ignore-error: a failed cache upload must not fail the job — the
           # image is already built and the smoke test can still run.
           cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+
+      - name: Prepare and verify sandbox image test prerequisites
+        shell: bash
+        run: |
+          docker tag booley-test booley-sandbox
+          docker image inspect booley-sandbox >/dev/null
+          docker run --rm booley-sandbox sh -c 'command -v verible-verilog-lint'
+          docker run --rm booley-sandbox python3 -c 'import edalize.tools.verible'
+
+      - name: Run Verible production-image end-to-end test
+        run: >-
+          pytest tests/docker/test_sandbox_verible_e2e.py
+          -q --tb=short -rs
+
+      - name: Run sandbox isolation suite
+        run: python tests/docker/isolation/run_isolation_tests.py
 
       # Use the same checksum-pinned fetcher as `booley init`. The payload is
       # deliberately not cached or baked into the image; it includes the

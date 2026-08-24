@@ -107,7 +107,7 @@ from booley.harness.init_git_hooks import (
     _step_project_git_hooks,
     _step_worktree_prune_guard,
 )
-from booley.harness.init_plan import InitPlan
+from booley.harness.init_plan import InitPlan, InitPreconditionError
 from booley.harness.init_scaffold import step_scaffold
 from booley.harness.init_skills import (
     _deploy_skills,
@@ -1929,6 +1929,10 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
 
     try:
         links = ensure_guidance_links(ctx.project_root, project_dir, plan=plan)
+    except InitPreconditionError as exc:
+        err(f"guidance filesystem changed before apply: {exc}")
+        ctx.record("guidance_links", "err", "filesystem precondition changed")
+        return
     except (OSError, FileNotFoundError) as exc:
         warn(f"could not create guidance links: {exc}")
         ctx.record("guidance_links", "warn", "link failed")

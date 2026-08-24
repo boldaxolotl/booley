@@ -139,3 +139,27 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
                     offenders.append(_relative(path, node.lineno))
 
     assert offenders == []
+
+
+def test_ticket_workspace_consumers_do_not_bypass_the_runtime_boundary() -> None:
+    consumers = (
+        _SOURCE_ROOT / "harness" / "developer.py",
+        _SOURCE_ROOT / "ticket_board" / "operations.py",
+        _SOURCE_ROOT / "ticket_board" / "archive.py",
+    )
+    bypass_names = {
+        "ticket_repositories",
+        "merge_project_ticket_branch",
+        "cleanup_project_ticket_branch",
+    }
+    offenders = []
+    for path in consumers:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            imported = bypass_names.intersection(alias.name for alias in node.names)
+            if imported:
+                offenders.append(f"{_relative(path, node.lineno)}: {', '.join(sorted(imported))}")
+
+    assert offenders == []

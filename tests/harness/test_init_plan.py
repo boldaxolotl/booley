@@ -131,6 +131,28 @@ def test_precondition_change_aborts_before_any_write(tmp_path: Path) -> None:
     assert second.read_text(encoding="utf-8") == "changed after planning\n"
 
 
+def test_unreadable_existing_target_aborts_planning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "managed.txt"
+    target.write_text("managed old\n", encoding="utf-8")
+    read_bytes = Path.read_bytes
+
+    def fail_for_target(path: Path) -> bytes:
+        if path == target:
+            raise PermissionError("denied")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_for_target)
+
+    with pytest.raises(PermissionError, match="denied"):
+        plan_init_filesystem(
+            InitFilesystemRequest(root=tmp_path, targets=(_write_target(target),)),
+            _Probe(),
+        )
+
+
 def test_tracked_matching_and_conflicting_files_are_explicit(tmp_path: Path) -> None:
     matching = tmp_path / "matching.txt"
     conflicting = tmp_path / "conflicting.txt"

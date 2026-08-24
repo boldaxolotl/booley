@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -115,6 +116,11 @@ def _write_fixture(root: Path, *, waived: bool) -> None:
 
 
 def _lint_in_sandbox(project: Path):
+    # The production image intentionally runs as UID 1000, while hosted CI
+    # runners may own pytest's temporary directory with another UID. Grant the
+    # image user access only to this disposable mount root so it can create its
+    # FuseSoC work and report directories without changing the image identity.
+    project.chmod(project.stat().st_mode | stat.S_IRWXO)
     return _run_in_sandbox(
         [
             "python3",

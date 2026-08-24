@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+# Benchmark scripts are also exercised by the standalone B-Wave CI job, where
+# Booley is not installed. Keep using the framework boundary adapters by making
+# this checkout's src layout importable in that mode.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
 
 from booley.core.boundary import as_float, as_int, as_positive_int
 

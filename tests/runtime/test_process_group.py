@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-import signal
 import subprocess
 import sys
 
 import pytest
 
 from booley.runtime import process_group
+
+
+def _install_posix_process_apis(monkeypatch: pytest.MonkeyPatch) -> tuple[int, int]:
+    """Install POSIX-only seams even when this test suite runs on Windows."""
+    sigterm = 15
+    sigkill = 9
+    monkeypatch.setattr(process_group.signal, "SIGTERM", sigterm, raising=False)
+    monkeypatch.setattr(process_group.signal, "SIGKILL", sigkill, raising=False)
+    return sigterm, sigkill
 
 
 def test_group_identity_is_captured_from_spawn_not_rediscovered() -> None:
@@ -74,6 +82,7 @@ def test_force_signal_uses_captured_group_after_direct_child_exit(
 def test_uncertain_posix_group_liveness_is_treated_as_alive(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    sigterm, sigkill = _install_posix_process_apis(monkeypatch)
     process = type("Process", (), {"poll": lambda self: 0})()
     calls: list[tuple[int, int]] = []
 
@@ -82,7 +91,7 @@ def test_uncertain_posix_group_liveness_is_treated_as_alive(
         if sig == 0:
             raise PermissionError
 
-    monkeypatch.setattr(process_group.os, "killpg", killpg)
+    monkeypatch.setattr(process_group.os, "killpg", killpg, raising=False)
 
     process_group.terminate_process_group(
         process,
@@ -91,15 +100,17 @@ def test_uncertain_posix_group_liveness_is_treated_as_alive(
     )
 
     assert calls == [
-        (417, signal.SIGTERM),
+        (417, sigterm),
         (417, 0),
-        (417, signal.SIGKILL),
+        (417, sigkill),
     ]
 
 
 def test_sync_timeout_forces_group_and_reaps_direct_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    sigterm, sigkill = _install_posix_process_apis(monkeypatch)
+
     class Process:
         def __init__(self) -> None:
             self.waits: list[float] = []
@@ -118,6 +129,7 @@ def test_sync_timeout_forces_group_and_reaps_direct_child(
         process_group.os,
         "killpg",
         lambda pgid, sig: calls.append((pgid, sig)),
+        raising=False,
     )
     process = Process()
 
@@ -130,9 +142,9 @@ def test_sync_timeout_forces_group_and_reaps_direct_child(
 
     assert process.waits == [0.25, 5]
     assert calls == [
-        (417, signal.SIGTERM),
+        (417, sigterm),
         (417, 0),
-        (417, signal.SIGKILL),
+        (417, sigkill),
     ]
 
 
@@ -140,6 +152,8 @@ def test_sync_timeout_forces_group_and_reaps_direct_child(
 async def test_async_graceful_termination_uses_captured_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    sigterm, sigkill = _install_posix_process_apis(monkeypatch)
+
     class Process:
         pid = 999
         returncode = None
@@ -160,9 +174,9 @@ async def test_async_graceful_termination_uses_captured_group(
     await process_group.terminate_async_process_group(Process(), process_group.ProcessGroup(417))
 
     assert calls == [
-        (417, signal.SIGTERM),
+        (417, sigterm),
         (417, 0),
-        (417, signal.SIGKILL),
+        (417, sigkill),
     ]
 
 
@@ -239,6 +253,7 @@ async def test_adopted_group_termination_kills_descendant_after_leader_exit(tmp_
 async def test_adopted_group_termination_escalates_by_group_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    sigterm, sigkill = _install_posix_process_apis(monkeypatch)
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(process_group.sys, "platform", "linux")
     monkeypatch.setattr(
@@ -254,10 +269,39 @@ async def test_adopted_group_termination_escalates_by_group_identity(
     )
 
     assert calls == [
-        (417, signal.SIGTERM),
+        (417, sigterm),
         (417, 0),
         (417, 0),
-        (417, signal.SIGKILL),
+        (417, sigkill),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_windows_taskkill_failure_still_escalates_to_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    class TaskkillProcess:
+        async def wait(self) -> int:
+            return 255
+
+    async def create_taskkill(*command, **_kwargs):
+        commands.append(command)
+        return TaskkillProcess()
+
+    leader = type("Process", (), {"returncode": 0})()
+    monkeypatch.setattr(process_group.sys, "platform", "win32")
+    monkeypatch.setattr(process_group.asyncio, "create_subprocess_exec", create_taskkill)
+
+    await process_group.terminate_async_process_group(
+        leader,
+        process_group.ProcessGroup(417),
+    )
+
+    assert commands == [
+        ("taskkill", "/T", "/PID", "417"),
+        ("taskkill", "/F", "/T", "/PID", "417"),
     ]
 
 
