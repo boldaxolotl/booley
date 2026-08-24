@@ -79,8 +79,7 @@ jobs:
         if: env.COVERAGE_LEG != 'true'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
-          PYTEST_ADDOPTS: --basetemp=${{ runner.temp }}/pytest
-        run: pytest tests/ -q --tb=short -n 4 --dist=loadscope
+        run: pytest tests/ -q --tb=short -n 4 --dist=loadscope --basetemp "${{ runner.temp }}/pytest"
 
       # Fold the former standalone coverage job into the existing Linux/3.13
       # compatibility leg. This preserves its full suite and fail-under gate

@@ -40,4 +40,5 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     test_steps = workflow["jobs"]["test"]["steps"]
     parallel_step = next(step for step in test_steps if step.get("name") == "Run tests (parallel)")
     assert parallel_step["env"]["RUNNER_TEMP"] == "${{ runner.temp }}"
-    assert parallel_step["env"]["PYTEST_ADDOPTS"] == "--basetemp=${{ runner.temp }}/pytest"
+    assert "PYTEST_ADDOPTS" not in parallel_step["env"]
+    assert '--basetemp "${{ runner.temp }}/pytest"' in parallel_step["run"]
