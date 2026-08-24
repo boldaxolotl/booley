@@ -176,21 +176,7 @@ jobs:
           twine check dist/*
 
       - name: Reject redistributed native and Nangate payloads
-        shell: bash
-        run: |
-          if tar -tzf dist/*.tar.gz | grep -E '/src/booley/data/docker/pdk/'; then
-            echo "Nangate payload found in source distribution" >&2
-            exit 1
-          fi
-          if unzip -Z1 dist/*.whl | grep -E '^booley/data/docker/pdk/'; then
-            echo "Nangate payload found in wheel" >&2
-            exit 1
-          fi
-          if unzip -Z1 dist/*.whl | grep -E '^booley/data/bin/bwave(\.exe)?$'; then
-            echo "Native bwave payload found in platform-neutral wheel" >&2
-            exit 1
-          fi
-          unzip -p dist/*.whl '*/METADATA' | grep -Fx 'License-Expression: Apache-2.0'
+        run: bash .github/scripts/validate_distribution_payloads.sh dist
 
       - name: Validate direct wheel from a clean environment
         shell: bash
