@@ -37,6 +37,9 @@ file is high leverage: do not auto-write, pad, or invent facts.
 - When `booley.toml` selects `booley-sandbox-riscv`, keep the template's RISC-V
   reference-docs bullet verbatim so agents can find the image's offline manuals.
   Remove that conditional bullet for every other sandbox image.
+- When `booley.toml` has `[stealth].enabled = true`, keep the template's stealth
+  mode bullet verbatim so agents do not expose `.booley_project/` changes in the
+  main repository. Remove that conditional bullet when stealth mode is disabled.
 - Do not read RTL, testbench, or test contents by default. Stable docs and
   config are enough for this task.
 - Bad content — omit all of it: repo maps and large directory listings;

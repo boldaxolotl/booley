@@ -163,6 +163,21 @@ class TestDiscoverSkills:
         assert "booley doctor --deep" in doctor_step
         assert 'default_prompt: "Use $booley-setup' in metadata_text
 
+    def test_setup_agents_guidance_conditions_stealth_rule(self):
+        skills = {skill.name: skill for skill in discover_skills(skills_dir())}
+        skill_root = skills["booley-setup"].source_path.parent
+
+        agents_step = (skill_root / "steps" / "3-agents-md.md").read_text(encoding="utf-8")
+        agents_template = (skill_root / "AGENTS_TEMPLATE.md").read_text(encoding="utf-8")
+
+        assert "[stealth].enabled = true" in agents_step
+        assert "Remove that conditional bullet when stealth mode is disabled" in agents_step
+        rule = (
+            "This repo is operating in stealth mode. No changes to "
+            "`.booley_project/` may be visible in the main repo."
+        )
+        assert rule in agents_template
+
     def test_adapter_steps_are_gone(self):
         # ADR 0039: the per-tool adapter steps died with the adapter path;
         # the skill runs Steps 0-4 with pre_run_commands declared in Step 2,
