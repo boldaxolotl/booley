@@ -20,6 +20,7 @@ porting job, and ``docs/SETUP.md`` owns that path.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import tomllib
 from dataclasses import dataclass
@@ -31,6 +32,16 @@ from booley.harness.init_common import (
     info,
     ok,
     warn,
+)
+from booley.harness.init_plan import (
+    FilesystemMutation,
+    InitFilesystemRequest,
+    InitPlan,
+    InitPlanBlockedError,
+    InitPreconditionError,
+    InitTarget,
+    apply_init_plan,
+    plan_init_filesystem,
 )
 from booley.runtime.project_dir import reset_cache
 
@@ -54,6 +65,70 @@ class ScaffoldChoices:
     lint_eda_tool: str  # one of LINT_EDA_TOOLS
     asic: bool  # emit asic_synthesize Target + SDC
     fpga_part: str | None  # Vivado part → emit fpga Target + XDC; None = skip
+
+
+class _ScaffoldHostProbe:
+    def is_tracked(self, _root: Path, _path: Path) -> bool:
+        return False
+
+
+def _plan_scaffold_files(ctx: InitContext, files: dict[str, str]) -> InitPlan:
+    targets: list[InitTarget] = []
+    config_paths = frozenset({".booley_project/booley.toml", ".booley_project/tests.toml"})
+    for rel, content in sorted(files.items()):
+        target = ctx.project_root / rel
+        recognized: tuple[str, ...] = ()
+        if rel in config_paths and target.is_file():
+            recognized = (hashlib.sha256(target.read_bytes()).hexdigest(),)
+        targets.append(
+            InitTarget.write_file(
+                target,
+                content.encode(),
+                owner_marker=None,
+                reason="write the selected starter project",
+                recognized_legacy_digests=recognized,
+            )
+        )
+    return plan_init_filesystem(
+        InitFilesystemRequest(root=ctx.project_root, targets=tuple(targets)),
+        _ScaffoldHostProbe(),
+    )
+
+
+def _apply_scaffold_files(ctx: InitContext, plan: InitPlan) -> bool:
+    try:
+        apply_init_plan(plan)
+    except (InitPlanBlockedError, InitPreconditionError) as exc:
+        err(f"scaffold filesystem changed before apply: {exc}")
+        ctx.record("scaffold", "err", "filesystem precondition changed")
+        return False
+    for action in plan.actions:
+        if action.mutation is not FilesystemMutation.NONE:
+            ok(f"wrote {action.path.relative_to(ctx.project_root).as_posix()}")
+    return True
+
+
+def _scaffold_inputs_available(ctx: InitContext) -> bool:
+    design_files = existing_design_files(ctx.project_root)
+    if design_files:
+        listing = ", ".join(str(path) for path in design_files)
+        err(
+            f"repo already contains design files ({listing}) — scaffold only runs in "
+            "a fresh repo. To onboard an existing project, run plain `booley init` "
+            "and follow docs/SETUP.md."
+        )
+        ctx.record("scaffold", "err", "existing design files")
+        return False
+    for cfg_name in ("booley.toml", "tests.toml"):
+        cfg = ctx.project_root / ".booley_project" / cfg_name
+        if _config_is_populated(cfg):
+            err(
+                f"{cfg} is already populated — scaffold would overwrite deliberate "
+                "config. Remove it first if you really want a fresh start."
+            )
+            ctx.record("scaffold", "err", f"{cfg_name} already populated")
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -722,41 +797,29 @@ def step_scaffold(ctx: InitContext, args) -> bool:
         return False
 
     # Refusal gate: an existing design means this is a *porting* job.
-    design_files = existing_design_files(ctx.project_root)
-    if design_files:
-        listing = ", ".join(str(p) for p in design_files)
-        err(
-            f"repo already contains design files ({listing}) — scaffold only runs in "
-            "a fresh repo. To onboard an existing project, run plain `booley init` "
-            "and follow docs/SETUP.md."
-        )
-        ctx.record("scaffold", "err", "existing design files")
+    if not _scaffold_inputs_available(ctx):
         return False
-    for cfg_name in ("booley.toml", "tests.toml"):
-        cfg = ctx.project_root / ".booley_project" / cfg_name
-        if _config_is_populated(cfg):
-            err(
-                f"{cfg} is already populated — scaffold would overwrite deliberate "
-                "config. Remove it first if you really want a fresh start."
-            )
-            ctx.record("scaffold", "err", f"{cfg_name} already populated")
-            return False
 
     files = scaffold_files(choices)
 
+    plan = _plan_scaffold_files(ctx, files)
+    if plan.blockers:
+        for action in plan.blockers:
+            err(f"scaffold would replace user-owned path {action.path}")
+        ctx.record("scaffold", "err", "filesystem ownership conflict")
+        return False
+
     if ctx.check_only:
-        for rel in sorted(files):
-            warn(f"would write {rel}")
-        ctx.record("scaffold", "warn", f"would write {len(files)} file(s)")
+        pending = [
+            action for action in plan.actions if action.mutation is not FilesystemMutation.NONE
+        ]
+        for action in pending:
+            warn(f"would write {action.path.relative_to(ctx.project_root).as_posix()}")
+        ctx.record("scaffold", "warn", f"would write {len(pending)} file(s)")
         return True
 
-    for rel, content in sorted(files.items()):
-        target = ctx.project_root / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # Plain writes are safe here: the refusal gate guarantees no design
-        # files exist and both config files are absent-or-skeleton.
-        target.write_text(content, encoding="utf-8")
-        ok(f"wrote {rel}")
+    if not _apply_scaffold_files(ctx, plan):
+        return False
     reset_cache()  # .booley_project may have just come into existence
 
     summary = (

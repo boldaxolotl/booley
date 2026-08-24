@@ -45,7 +45,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from booley import __version__
-from booley.config.guidance_links import ensure_guidance_links
+from booley.config.guidance_links import ensure_guidance_links, plan_guidance_links
 from booley.config.settings import load_interactive_config
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
@@ -107,6 +107,7 @@ from booley.harness.init_git_hooks import (
     _step_project_git_hooks,
     _step_worktree_prune_guard,
 )
+from booley.harness.init_plan import InitPlan
 from booley.harness.init_scaffold import step_scaffold
 from booley.harness.init_skills import (
     _deploy_skills,
@@ -1884,7 +1885,7 @@ BOOLEY_MASCOT = r"""
 """
 
 
-def _step_guidance_links(ctx: InitContext) -> None:
+def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> None:
     """Create/repair the root AGENTS.md & CLAUDE.md links, host-side (F-13).
 
     The project dir lives at ``/booley-project`` inside the Session Runtime, so
@@ -1903,13 +1904,31 @@ def _step_guidance_links(ctx: InitContext) -> None:
         ctx.record("guidance_links", "skip", "no guidance file")
         return
 
+    try:
+        plan = planned or plan_guidance_links(ctx.project_root, project_dir)
+    except (OSError, FileNotFoundError) as exc:
+        warn(f"could not inspect guidance links: {exc}")
+        ctx.record("guidance_links", "warn", "inspection failed")
+        return
+
+    if plan.blockers:
+        detail = "; ".join(f"{action.path.name}: {action.blocker}" for action in plan.blockers)
+        warn(f"guidance links blocked: {detail}")
+        ctx.record("guidance_links", "warn", detail)
+        return
+
+    pending = [action for action in plan.actions if action.mutation.value != "none"]
     if ctx.check_only:
-        warn("would create/repair root AGENTS.md and CLAUDE.md links")
-        ctx.record("guidance_links", "warn", "would link")
+        if pending:
+            warn("would create/repair root AGENTS.md and CLAUDE.md links")
+            ctx.record("guidance_links", "warn", "would link")
+        else:
+            ok("root guidance links are current")
+            ctx.record("guidance_links", "ok", "current")
         return
 
     try:
-        links = ensure_guidance_links(ctx.project_root, project_dir)
+        links = ensure_guidance_links(ctx.project_root, project_dir, plan=plan)
     except (OSError, FileNotFoundError) as exc:
         warn(f"could not create guidance links: {exc}")
         ctx.record("guidance_links", "warn", "link failed")
@@ -1982,6 +2001,24 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     if not _step_eda_tool_detection(ctx):
         return _print_summary(ctx)
 
+    guidance_plan = None
+    canon = ctx.project_root / ".booley_project" / "AGENTS.md"
+    if canon.is_file():
+        try:
+            guidance_plan = plan_guidance_links(
+                ctx.project_root,
+                ctx.project_root / ".booley_project",
+            )
+        except (OSError, FileNotFoundError, ValueError) as exc:
+            err(f"initialization filesystem inspection failed: {exc}")
+            ctx.record("filesystem_plan", "err", "inspection failed")
+            return _print_summary(ctx)
+        if guidance_plan.blockers:
+            for action in guidance_plan.blockers:
+                err(f"initialization blocked by {action.path}: {action.blocker}")
+            ctx.record("filesystem_plan", "err", "guidance ownership conflict")
+            return _print_summary(ctx)
+
     if getattr(args, "seed", False):
         return _run_seed(ctx)
 
@@ -2006,7 +2043,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
     _step_line_endings(ctx)
-    _step_guidance_links(ctx)
+    _step_guidance_links(ctx, guidance_plan)
     _step_interactive(ctx, nangate_pdk_root=pdk_root)
     _step_advisories(ctx)
 

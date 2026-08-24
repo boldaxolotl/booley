@@ -13,6 +13,7 @@ from booley.config.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     ensure_guidance_links,
+    plan_guidance_links,
 )
 
 
@@ -27,12 +28,13 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     return project_root, project_dir, canon
 
 
-pytestmark = pytest.mark.skipif(
+_posix_symlinks = pytest.mark.skipif(
     sys.platform == "win32",
     reason="symlink assertions assume POSIX symlinks",
 )
 
 
+@_posix_symlinks
 def test_creates_both_root_links(tmp_path: Path):
     project_root, project_dir, canon = _make_project(tmp_path)
 
@@ -45,6 +47,7 @@ def test_creates_both_root_links(tmp_path: Path):
         assert link.resolve() == canon.resolve()
 
 
+@_posix_symlinks
 def test_relative_symlink_target(tmp_path: Path):
     project_root, project_dir, _ = _make_project(tmp_path)
 
@@ -56,6 +59,7 @@ def test_relative_symlink_target(tmp_path: Path):
     assert target == Path(".booley_project") / CANON_NAME
 
 
+@_posix_symlinks
 def test_idempotent(tmp_path: Path):
     project_root, project_dir, _ = _make_project(tmp_path)
 
@@ -67,16 +71,31 @@ def test_idempotent(tmp_path: Path):
     assert before == after
 
 
-def test_replaces_legacy_real_file(tmp_path: Path):
+def test_refuses_foreign_untracked_root_file(tmp_path: Path):
     project_root, project_dir, canon = _make_project(tmp_path)
-    # A pre-existing real AGENTS.md at the root (the old layout) is replaced.
-    legacy = project_root / "AGENTS.md"
-    legacy.write_text("stale root copy\n", encoding="utf-8")
+    foreign = project_root / "AGENTS.md"
+    foreign.write_text("project-specific instructions\n", encoding="utf-8")
 
-    ensure_guidance_links(project_root, project_dir)
+    with pytest.raises(OSError, match="foreign untracked guidance entry"):
+        ensure_guidance_links(project_root, project_dir)
 
-    assert legacy.is_symlink()
-    assert legacy.resolve() == canon.resolve()
+    assert foreign.read_text(encoding="utf-8") == "project-specific instructions\n"
+    assert not foreign.is_symlink()
+    assert canon.read_text(encoding="utf-8") == "# AGENTS\n"
+
+
+def test_blocker_prevents_partial_guidance_link_creation(tmp_path: Path):
+    project_root, project_dir, _canon = _make_project(tmp_path)
+    claude = project_root / "CLAUDE.md"
+    claude.write_text("mine\n", encoding="utf-8")
+
+    plan = plan_guidance_links(project_root, project_dir)
+
+    assert [action.path.name for action in plan.blockers] == ["CLAUDE.md"]
+    with pytest.raises(OSError, match="foreign untracked guidance entry"):
+        ensure_guidance_links(project_root, project_dir, plan=plan)
+    assert not (project_root / "AGENTS.md").exists()
+    assert claude.read_text(encoding="utf-8") == "mine\n"
 
 
 def test_preserves_matching_tracked_root_file(tmp_path: Path):
@@ -91,7 +110,7 @@ def test_preserves_matching_tracked_root_file(tmp_path: Path):
     assert root_agents.is_file()
     assert not root_agents.is_symlink()
     assert root_agents.read_bytes() == canon.read_bytes()
-    assert (project_root / "CLAUDE.md").is_symlink()
+    assert (project_root / "CLAUDE.md").read_bytes() == canon.read_bytes()
 
 
 def test_refuses_to_overwrite_stale_tracked_root_file(tmp_path: Path):

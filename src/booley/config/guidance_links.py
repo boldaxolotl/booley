@@ -13,6 +13,7 @@ This module creates and repairs those root links cross-platform.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -21,6 +22,16 @@ import sys
 from pathlib import Path
 
 from booley.runtime.git import add_git_excludes
+from booley.runtime.init_plan import (
+    InitAction,
+    InitFilesystemRequest,
+    InitPlan,
+    InitPlanBlockedError,
+    InitTarget,
+    Ownership,
+    apply_init_plan,
+    plan_init_filesystem,
+)
 from booley.runtime.project_dir import PROJECT_DIR_NAME
 
 logger = logging.getLogger(__name__)
@@ -34,7 +45,12 @@ LINK_NAMES = ("AGENTS.md", "CLAUDE.md")
 _EXCLUDE_HEADER = "# Booley guidance links (generated; canonical file in project dir)"
 
 
-def ensure_guidance_links(project_root: Path, project_dir: Path) -> list[Path]:
+def ensure_guidance_links(
+    project_root: Path,
+    project_dir: Path,
+    *,
+    plan: InitPlan | None = None,
+) -> list[Path]:
     """Point ``<project_root>/{AGENTS,CLAUDE}.md`` at ``<project_dir>/AGENTS.md``.
 
     Idempotent: a link already resolving to the canonical file is left
@@ -46,21 +62,62 @@ def ensure_guidance_links(project_root: Path, project_dir: Path) -> list[Path]:
     Returns the link paths that now exist. Raises ``FileNotFoundError`` when
     the canonical guidance file is missing.
     """
+    selected_plan = plan or plan_guidance_links(project_root, project_dir)
+    if selected_plan.request.root.resolve() != project_root.resolve():
+        raise ValueError("guidance plan belongs to a different project root")
+    conflicts = [
+        action for action in selected_plan.blockers if action.ownership is Ownership.CONFLICT
+    ]
+    if conflicts:
+        raise OSError(
+            f"tracked root guidance file differs from canonical copy: {conflicts[0].path}"
+        )
+    try:
+        apply_init_plan(selected_plan, _apply_guidance_action)
+    except InitPlanBlockedError as exc:
+        raise OSError(str(exc)) from exc
+    add_git_excludes(project_root, LINK_NAMES, header=_EXCLUDE_HEADER)
+    return [project_root / name for name in LINK_NAMES]
+
+
+class _GuidanceHostProbe:
+    def is_tracked(self, root: Path, path: Path) -> bool:
+        return _is_git_tracked(root, path)
+
+
+def plan_guidance_links(project_root: Path, project_dir: Path) -> InitPlan:
+    """Inspect every root guidance entry without changing any of them."""
     canon = (project_dir / CANON_NAME).resolve()
     if not canon.is_file():
         raise FileNotFoundError(f"canonical guidance file not found: {canon}")
-
-    target = _portable_target(project_root, canon)
-    links: list[Path] = []
+    portable_target = _portable_target(project_root, canon)
+    legacy_digest = hashlib.sha256(canon.read_bytes()).hexdigest()
+    targets = []
     for name in LINK_NAMES:
         link = project_root / name
-        if not guidance_entry_current(project_root, link, canon):
-            if _is_git_tracked(project_root, link):
-                raise OSError(f"tracked root guidance file differs from canonical copy: {link}")
-            _link_file(link, canon, target)
-        links.append(link)
-    add_git_excludes(project_root, LINK_NAMES, header=_EXCLUDE_HEADER)
-    return links
+        expected_relative = os.path.relpath(portable_target, link.parent)
+        container_relative = str(Path("..") / "booley-project" / CANON_NAME)
+        targets.append(
+            InitTarget.link_file(
+                link,
+                canon,
+                portable_target,
+                reason="point root guidance at the canonical project guidance",
+                recognized_legacy_digests=(legacy_digest,),
+                recognized_legacy_link_targets=(expected_relative, container_relative),
+            )
+        )
+    return plan_init_filesystem(
+        InitFilesystemRequest(root=project_root, targets=tuple(targets)),
+        _GuidanceHostProbe(),
+    )
+
+
+def _apply_guidance_action(action: InitAction) -> None:
+    target = action.target
+    assert target.desired_identity is not None
+    assert target.link_target is not None
+    _link_file(target.path, target.desired_identity, target.link_target)
 
 
 def guidance_entry_current(project_root: Path, entry: Path, canon: Path) -> bool:

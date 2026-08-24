@@ -85,6 +85,29 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
 
 
 class TestFullInitRerun:
+    def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):
+        project_dir = repo / ".booley_project"
+        project_dir.mkdir()
+        canon = project_dir / "AGENTS.md"
+        canon.write_text("# canonical\n", encoding="utf-8")
+        foreign = repo / "AGENTS.md"
+        foreign.write_text("# user-owned\n", encoding="utf-8")
+        before = {
+            path.relative_to(repo).as_posix(): path.read_bytes()
+            for path in repo.rglob("*")
+            if path.is_file() and ".git" not in path.parts
+        }
+
+        assert _run_full_init(repo) == 2
+
+        after = {
+            path.relative_to(repo).as_posix(): path.read_bytes()
+            for path in repo.rglob("*")
+            if path.is_file() and ".git" not in path.parts
+        }
+        assert after == before
+        assert not (repo / "CLAUDE.md").exists()
+
     def test_second_run_preserves_user_edits_and_regenerates_managed_files(self, repo: Path):
         rc1 = _run_full_init(repo)
         assert rc1 in (0, 2)  # 2: docker/vscode absent -> dependency-detection step errs
