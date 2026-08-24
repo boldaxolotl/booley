@@ -41,6 +41,8 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    env:
+      COVERAGE_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,21 +76,21 @@ jobs:
       # collection/combining under xdist. Every other compatibility leg runs
       # the same tests across four workers with module/class affinity.
       - name: Run tests (parallel)
-        if: matrix.os != 'ubuntu-latest' || matrix.python != '3.13'
+        if: env.COVERAGE_LEG != 'true'
         run: pytest tests/ -q --tb=short -n 4 --dist=loadscope
 
       # Fold the former standalone coverage job into the existing Linux/3.13
       # compatibility leg. This preserves its full suite and fail-under gate
       # without serializing a seventh full-suite run after the matrix.
       - name: Run tests with coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        if: env.COVERAGE_LEG == 'true'
         run: |
           coverage run -m pytest tests/ -q --tb=short
           coverage report
           coverage xml -o coverage.xml
 
       - name: Upload coverage artifact
-        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        if: env.COVERAGE_LEG == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report

@@ -95,7 +95,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     global _XDIST_WORKER_TEMP
 
     if _XDIST_WORKER_TEMP is not None:
-        shutil.rmtree(_XDIST_WORKER_TEMP, ignore_errors=True)
+        shutil.rmtree(_XDIST_WORKER_TEMP)
         _XDIST_WORKER_TEMP = None
         tempfile.tempdir = None
 
