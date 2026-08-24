@@ -45,24 +45,29 @@ Run the dependency scan (§A) and infer fields (§B). Two judgement calls §B ca
 - **scope**: don't list generated/compiled artifacts. For bugfix tickets using the top-level TB, suggest including firmware source files. Before accepting `scope: ["*"]`, push back once: *"Are you sure you can't narrow it down to at least a directory (e.g., `rtl/*.sv`)?"*
 - **bugfix reproducibility**: if the bug isn't visible in current tests, confirm the feature+bugfix split (§B) with the user before drafting two tickets.
 
-### 2c: Grilling & plan (detailed mode only)
+### 2c: Grilling & full draft (detailed mode only)
 
 1. Read `grilling.md` and run the dependency-aware grilling session: map the design as
    a decision tree, ask the entire currently unblocked frontier in each round, recommend
    an answer for every question, and defer decisions whose prerequisites remain open.
    Investigate codebase facts instead of asking for them, and keep the depth proportional.
-2. When the frontier is empty, summarize the resulting shared understanding and ask the
-   user to confirm it. Do not advance to ticket drafting while a decision branch remains
-   silently assumed or before the user confirms the summary.
-3. After confirmation, synthesize the **detailed implementation plan** and write it into
-   the ticket body (skeleton and placement: `TICKET_TEMPLATE.md`). This is the payload the
-   developer plans against.
+2. Use the grilling rounds to settle material ticket fields and acceptance criteria as well
+   as the design. Apply clear §B/§D defaults without creating a separate review step; the
+   user can edit them in the complete ticket.
+3. When the frontier is empty, synthesize the **detailed implementation plan** and complete
+   ticket (skeleton and placement: `TICKET_TEMPLATE.md`), then continue directly to the
+   draft gate in 2f. The complete ticket is the one post-grill review artifact and the
+   payload the developer plans against.
 
-### 2d: Draft and iterate
+Detailed mode skips 2d and 2e because those decisions were folded into grilling.
 
-Show inferred values, mark **missing** (`???`) and **uncertain** fields. Ask all questions in one message. **All fields required** — no silent defaults. Iterate until complete, validating each round (§C, E4).
+### 2d: Complete lightweight fields (lightweight mode only)
 
-### 2e: Criteria selection
+Ask only about **missing** (`???`) and **uncertain** fields, with all questions in one
+message. **All fields required** — no silent defaults. Iterate until complete. Continue
+directly to 2e without showing an intermediate ticket preview.
+
+### 2e: Criteria selection (lightweight mode only)
 
 Build defaults from ticket type + configs (from `@config` segments in sim entries) — catalog and per-type defaults in §D. Present as a structured menu:
 
@@ -88,6 +93,11 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 **MANDATORY DRAFT GATE.** Show the complete proposed ticket (frontmatter + body,
 excluding seal fields). Ask: *"Create this draft and author its Target contract?
 (yes / edit / cancel)"*
+
+For detailed mode, this is the first review artifact shown after grilling. If the user
+chooses `edit`, revise the complete ticket and show it again; keep the review at this gate
+rather than falling back to summaries or partial previews. Step 4's combined ticket +
+Target diff remains the separate seal gate because it reviews newly authored contract data.
 
 **Never write the ticket file until the user explicitly approves** — including agent-invoked creation from other skills.
 

@@ -449,13 +449,16 @@ unstructured, and let the skill turn it into a precise contract:
    every currently unblocked question arrives in the same round, each with a suggested
    answer, while downstream questions wait for their prerequisites. It investigates
    codebase facts instead of asking you for them. Once no branch remains silently assumed,
-   it summarizes the shared understanding for confirmation and synthesises an
-   `## Implementation Plan` into the ticket body. That plan is what the Developer Agent
-   builds against, so the back-and-forth is the point, not a formality.
-4. **Review the draft, and read the criteria hardest.** It shows the inferred fields (flagging anything missing or uncertain), then a numbered **Mandatory / Optional** criteria menu. Criteria are the entire contract: they are what the harness gates on, and prose in the ticket body gates nothing. Toggle by number, adjust thresholds, add your own. Give `scope` the same scrutiny; it's what keeps the agent out of unrelated files.
-5. **Approve.** The skill writes the draft, prepares any required Target recipe,
-   validates the final ticket and diff, and queues it after your confirmation.
-   These mechanics are automatic; review what the skill shows you rather than
+   it synthesises the `## Implementation Plan` and complete ticket directly.
+4. **Review and approve the complete ticket.** This is the single draft-review artifact
+   after grilling: there is no intermediate shared-understanding summary, short-form
+   preview, or separate criteria menu. Read the criteria hardest. They are the entire
+   contract: they are what the harness gates on, and prose in the ticket body gates
+   nothing. Ask to edit criteria, fields, plan, or scope in place; `scope` is what keeps
+   the agent out of unrelated files.
+5. **Author and seal the Target contract.** After draft approval, the skill prepares any
+   required Target recipe and shows the combined ticket + Target diff at the separate seal
+   gate. These mechanics are automatic; review what the skill shows you rather than
    managing its worktrees or metadata.
 
 Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start Ticket Mode with `booley run` in a container terminal; that loop then pulls tickets off the queue one after another without further input. Use `/booley-ticket-triage` to work through blocked, failed, and finished ones.
