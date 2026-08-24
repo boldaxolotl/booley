@@ -236,6 +236,7 @@ docstring-code-format = true
 testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = [
+    "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
 ]
 filterwarnings = [

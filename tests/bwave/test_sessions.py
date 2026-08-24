@@ -37,23 +37,9 @@ def _native_bwave_binary() -> Path:
         return release
     if debug.exists():
         return debug
-    # Build it on demand — but a stock host may have neither the binary nor a
-    # cargo toolchain (FileNotFoundError) to build one. bwave is container-only
-    # in production, so skipping here loses no real coverage.
-    try:
-        subprocess.run(
-            [
-                "cargo",
-                "build",
-                "--manifest-path",
-                str(BOOLEY_ROOT / "crates" / "bwave" / "Cargo.toml"),
-            ],
-            check=True,
-            timeout=300,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        pytest.skip(f"native bwave binary not built and cargo unavailable: {exc}")
-    return debug
+    pytest.skip(
+        "native bwave binary not built; run cargo build --manifest-path crates/bwave/Cargo.toml"
+    )
 
 
 def _ensure_bwave_fixture() -> None:
@@ -223,6 +209,7 @@ def test_register_multiple_aliases():
 # ── query via session ────────────────────────────────────────────────
 
 
+@pytest.mark.native_bwave
 def test_query_uses_default_session():
     _ensure_bwave_fixture()
     _write_sessions({"_last": _make_entry(str(BWAVE.resolve()))})
@@ -231,6 +218,7 @@ def test_query_uses_default_session():
     assert "req" in r.stdout
 
 
+@pytest.mark.native_bwave
 def test_query_uses_named_alias():
     _ensure_bwave_fixture()
     _write_sessions(
@@ -244,6 +232,7 @@ def test_query_uses_named_alias():
     assert "req" in r.stdout
 
 
+@pytest.mark.native_bwave
 def test_query_explicit_overrides_session():
     _ensure_bwave_fixture()
     _write_sessions({"_last": _make_entry("/nonexistent/path.fst")})
@@ -252,6 +241,7 @@ def test_query_explicit_overrides_session():
     assert "ack" in r.stdout
 
 
+@pytest.mark.native_bwave
 def test_stale_session_warning(tmp_path):
     """Staleness keys on the trace file's mtime, not the registration time."""
     import shutil
@@ -269,6 +259,7 @@ def test_stale_session_warning(tmp_path):
     assert "older than 24h" in r.stderr
 
 
+@pytest.mark.native_bwave
 def test_fresh_trace_with_old_registration_does_not_warn():
     """Re-simulating in place refreshes the data — no false staleness warning.
 
@@ -886,6 +877,7 @@ def test_warn_if_trace_stale_falls_back_to_registered_at(capsys):
     assert "older than 24h" in capsys.readouterr().err
 
 
+@pytest.mark.native_bwave
 def test_register_reports_trace_identity_and_age(tmp_path, monkeypatch, capsys):
     """`register` must say which design it just bound, and how old it is.
 
