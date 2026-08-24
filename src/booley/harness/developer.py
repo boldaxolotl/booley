@@ -2045,18 +2045,6 @@ async def _launch_developer_agent(
             os.environ["BOOLEY_PROJECT_DIR"] = previous_project_dir
 
 
-def _is_pid_alive(pid: int) -> bool:
-    """Check if a process with given PID is alive.
-
-    Thin wrapper around the canonical implementation in
-    ``ticket_board.helpers`` so lock-liveness behavior stays consistent
-    across the codebase (worktree locks, MCP endpoint mutex, orphan detection).
-    """
-    from booley.ticket_board.helpers import is_pid_alive
-
-    return is_pid_alive(pid)
-
-
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:
     """Load the ``[mcp_tools]`` and ``[flows]`` config namespaces."""
     from booley.config.settings import _load_booley_toml

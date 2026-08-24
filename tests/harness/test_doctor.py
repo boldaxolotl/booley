@@ -4920,7 +4920,7 @@ class TestBoardOrphanSelfHeal:
         _seed_active_ticket(tickets)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
         monkeypatch.setattr(
-            "booley.ticket_board.helpers.is_pid_alive",
+            "booley.harness.orphan_handler.is_pid_alive",
             lambda _pid: False,
         )
         board_calls: list[list[str]] = []
@@ -4945,7 +4945,7 @@ class TestBoardOrphanSelfHeal:
         _seed_active_ticket(tickets)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
         monkeypatch.setattr(
-            "booley.ticket_board.helpers.is_pid_alive",
+            "booley.harness.orphan_handler.is_pid_alive",
             lambda _pid: True,
         )
         rec = _Rec()
@@ -4958,7 +4958,7 @@ class TestBoardOrphanSelfHeal:
         tickets = _seed_board(tmp_path)
         _seed_active_ticket(tickets)
         monkeypatch.setenv("TICKETS_DIR", str(tickets))
-        monkeypatch.setattr("booley.ticket_board.helpers.is_pid_alive", lambda _pid: False)
+        monkeypatch.setattr("booley.harness.orphan_handler.is_pid_alive", lambda _pid: False)
         board_calls: list[list[str]] = []
         monkeypatch.setattr(
             "booley.harness.booley._run_board",

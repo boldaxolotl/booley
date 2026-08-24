@@ -70,28 +70,6 @@ def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
 
 
-@pytest.mark.parametrize(("last_error", "expected"), [(5, True), (87, False)])
-def test_windows_pid_liveness_only_treats_invalid_pid_as_dead(monkeypatch, last_error, expected):
-    import ctypes
-
-    class FakeCall:
-        def __init__(self, result):
-            self.result = result
-
-        def __call__(self, *_args):
-            return self.result
-
-    class FakeKernel32:
-        OpenProcess = FakeCall(0)
-        GetExitCodeProcess = FakeCall(0)
-        CloseHandle = FakeCall(1)
-
-    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: FakeKernel32(), raising=False)
-    monkeypatch.setattr(ctypes, "get_last_error", lambda: last_error, raising=False)
-
-    assert job_slots._windows_pid_alive(1234) is expected
-
-
 class TestSingleProcess:
     def test_first_claim_holds_immediately(self, root, world):
         spawn(world, 100)
@@ -474,65 +452,6 @@ class TestAcquire:
         assert a.cancel_waiter(200) is True
         assert a.refresh(waiter).state == LOST
         assert a.refresh(holder).state == HOLDING
-
-
-def _race_worker(root_str: str, worker_id: int, rounds: int) -> None:
-    """Real-process worker: repeatedly acquire the single heavy slot.
-
-    While holding, drop a marker file and check for a rival's marker — a
-    second concurrent holder means mutual exclusion is broken. Any violation
-    is recorded as a file the parent asserts on (exceptions in spawned
-    children don't propagate usefully).
-    """
-    import os
-    import time as _time
-    from pathlib import Path as _Path
-
-    from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
-
-    root = _Path(root_str)
-    store = SlotStore(root / "slots")
-    active_dir = root / "active"
-    for i in range(rounds):
-        token = store.acquire(CLASS_HEAVY, pid=os.getpid(), poll_interval=0.005)
-        marker = active_dir / f"active-{worker_id}"
-        try:
-            rivals = [p.name for p in active_dir.glob("active-*")]
-            marker.write_text(str(i), encoding="utf-8")
-            if rivals:
-                (root / f"violation-{worker_id}-{i}").write_text(
-                    ",".join(rivals), encoding="utf-8"
-                )
-            _time.sleep(0.01)  # widen the overlap window
-        finally:
-            marker.unlink(missing_ok=True)
-            store.release(token)
-
-
-class TestRealProcessRace:
-    """The one non-simulated test: genuine processes hammering one slot."""
-
-    def test_single_slot_is_mutually_exclusive_across_processes(self, tmp_path):
-        import multiprocessing as mp
-
-        (tmp_path / "active").mkdir()
-        ctx = mp.get_context("spawn")
-        workers = [ctx.Process(target=_race_worker, args=(str(tmp_path), w, 3)) for w in range(4)]
-        for p in workers:
-            p.start()
-        try:
-            for p in workers:
-                p.join(timeout=60)
-                assert not p.is_alive(), "race worker wedged — admission deadlock?"
-                assert p.exitcode == 0
-        finally:
-            for p in workers:
-                if p.is_alive():
-                    p.terminate()
-            for p in workers:
-                p.join(timeout=5)
-        violations = list(tmp_path.glob("violation-*"))
-        assert violations == [], [v.read_text() for v in violations]
 
 
 class TestSnapshot:

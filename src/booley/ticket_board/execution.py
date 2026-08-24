@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.pid import is_pid_alive
+
 from .constants import (
     FLOW_STEP_MAP,
     PRIORITY_ORDER,
@@ -18,7 +20,6 @@ from .constants import (
 from .helpers import (
     compute_done_slugs,
     detect_tickets_dir,
-    is_pid_alive,
     parse_iso,
     read_lock_pid,
     slug_from_file,

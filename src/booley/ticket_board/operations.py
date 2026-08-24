@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.runtime.filesystem_utils import safe_rmtree
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import format_human_datetime
 
 logger = logging.getLogger(__name__)
@@ -228,7 +229,7 @@ def op_activate(
         owner_pid: PID claiming ownership (default: current process).
                    Written to ticket.lock atomically under the lock.
     """
-    from .helpers import is_pid_alive, read_lock_pid
+    from .helpers import read_lock_pid
 
     if owner_pid is None:
         owner_pid = os.getpid()
@@ -1000,7 +1001,7 @@ def _append_reset_boundary(logs_dir: Path, slug: str) -> None:
 
 def _live_owner_pid(tio: Any, slug: str) -> int | None:
     """PID of a *running* process that currently owns *slug*, if any."""
-    from .helpers import is_pid_alive, read_lock_pid
+    from .helpers import read_lock_pid
 
     lock_path = existing_runtime_file(tio.tickets_dir / "logs", slug, "ticket.lock")
     pid = read_lock_pid(lock_path)
