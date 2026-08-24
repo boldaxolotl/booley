@@ -178,6 +178,9 @@ jobs:
           pip install build
           python -m build --wheel --outdir dist/
 
+      - name: Install host-side test dependency
+        run: pip install pytest==8.4.2
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # Load into the local docker store (not push) so `docker run` below works;
@@ -193,6 +196,22 @@ jobs:
           # ignore-error: a failed cache upload must not fail the job — the
           # image is already built and the smoke test can still run.
           cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+
+      - name: Prepare and verify sandbox image test prerequisites
+        shell: bash
+        run: |
+          docker tag booley-test booley-sandbox
+          docker image inspect booley-sandbox >/dev/null
+          docker run --rm booley-sandbox sh -c 'command -v verible-verilog-lint'
+          docker run --rm booley-sandbox python3 -c 'import edalize.tools.verible'
+
+      - name: Run Verible production-image end-to-end test
+        run: >-
+          pytest tests/docker/test_sandbox_verible_e2e.py
+          -q --tb=short -rs
+
+      - name: Run sandbox isolation suite
+        run: python tests/docker/isolation/run_isolation_tests.py
 
       # Use the same checksum-pinned fetcher as `booley init`. The payload is
       # deliberately not cached or baked into the image; it includes the
