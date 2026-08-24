@@ -10,7 +10,7 @@ Booley runs LLM agents that execute real EDA flows against your RTL, exactly wha
 
 The container earns its keep a second time as a unified development environment: the entire open-source stack (Verilator, Icarus, Yosys, OpenSTA, sv2v, `bwave`, Python) ships pre-installed in the image. You provision nothing on your machine, and everyone runs the same pinned stack, so "works on my machine" stops being a category of bug.
 
-The cost is real: containerization taxes the heavy EDA tools. Simulators and synthesizers are I/O- and CPU-bound, and long runs pay a measurable penalty versus bare metal. We accept that because isolation is non-negotiable and the reproducibility dividend is large: a genuine trade, not a free lunch.
+The expected performance cost did not materialize in measurement. On a 16-core, 24-thread Intel Core i7-14650HX workstation with 32.8 GB of RAM, a controlled Ibex campaign found no measurable Docker overhead. It covered all four supported Ibex configurations with clean, warm, direct-runtime, and traced Verilator simulation, plus the three configurations that completed the Yosys/OpenROAD synthesis flow. Each workload used one excluded warmup and five alternating, CPU-pinned container/host pairs: 190 measured legs and 228 successful legs including warmups. Pooled median paired differences ranged from -0.13% to +0.20%, and every per-configuration median stayed between -0.45% and +0.98%—within ordinary run-to-run variability. On this system, the container provided isolation and reproducibility without a demonstrated EDA runtime penalty.
 
 ## Why one container
 
