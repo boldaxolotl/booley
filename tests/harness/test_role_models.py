@@ -24,11 +24,13 @@ from booley.config.agent import (
     _resolve_tier_models,
     load_models_config,
 )
+from booley.config.settings import MODEL_MAP
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Isolate from ambient harness hand-offs and any installed global config."""
+    saved_model_map = dict(MODEL_MAP)
     for var in (
         "BOOLEY_PRIMARY_PROVIDER",
         "BOOLEY_PRIMARY_AUTH",
@@ -38,6 +40,9 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(bc, "_backend_config", None)
     monkeypatch.setattr(bc, "_inside_container", lambda: False)
+    yield
+    MODEL_MAP.clear()
+    MODEL_MAP.update(saved_model_map)
 
 
 def _write_toml(root: Path, body: str) -> Path:
@@ -147,16 +152,9 @@ class TestLoadModelsConfig:
         assert cfg.model_for_role("mutation_tester", "heavy") == cfg.model_for_tier("light")
 
     def test_developer_pin_reaches_model_map(self, tmp_path):
-        from booley.config.settings import MODEL_MAP
-
-        saved = dict(MODEL_MAP)
-        try:
-            _write_toml(tmp_path, '[models.roles]\ndeveloper = "claude-sonnet-4-6"\n')
-            load_models_config(tmp_path)
-            assert MODEL_MAP["developer"] == "claude-sonnet-4-6"
-        finally:
-            MODEL_MAP.clear()
-            MODEL_MAP.update(saved)
+        _write_toml(tmp_path, '[models.roles]\ndeveloper = "claude-sonnet-4-6"\n')
+        load_models_config(tmp_path)
+        assert MODEL_MAP["developer"] == "claude-sonnet-4-6"
 
     def test_models_honored_without_an_agent_table(self, tmp_path):
         # Regression: [models] used to be read only when [agent] existed, so

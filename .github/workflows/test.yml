@@ -70,8 +70,29 @@ jobs:
       - name: Install package with dev deps
         run: pip install -e ".[dev]"
 
-      - name: Run tests
-        run: pytest tests/ -q --tb=short
+      # Keep the coverage leg serial: coverage.py needs explicit worker data
+      # collection/combining under xdist. Every other compatibility leg runs
+      # the same tests across four workers with module/class affinity.
+      - name: Run tests (parallel)
+        if: matrix.os != 'ubuntu-latest' || matrix.python != '3.13'
+        run: pytest tests/ -q --tb=short -n 4 --dist=loadscope
+
+      # Fold the former standalone coverage job into the existing Linux/3.13
+      # compatibility leg. This preserves its full suite and fail-under gate
+      # without serializing a seventh full-suite run after the matrix.
+      - name: Run tests with coverage
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        run: |
+          coverage run -m pytest tests/ -q --tb=short
+          coverage report
+          coverage xml -o coverage.xml
+
+      - name: Upload coverage artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-report
+          path: coverage.xml
 
   rust-test:
     runs-on: ubuntu-latest
@@ -302,38 +323,3 @@ jobs:
           booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
           python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
           -v --tb=short -o cache_dir=/tmp/pytest-cache"
-
-  coverage:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: test
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.13"
-          cache: pip
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: crates/bwave
-
-      - name: Build bwave (release)
-        run: cargo build --release --manifest-path crates/bwave/Cargo.toml
-
-      - name: Install package with dev deps
-        run: pip install -e ".[dev]"
-
-      # `coverage report` enforces pyproject's fail_under gate.
-      - name: Run coverage
-        run: |
-          coverage run -m pytest tests/ -q --tb=short
-          coverage report
-          coverage xml -o coverage.xml
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-report
-          path: coverage.xml
