@@ -891,7 +891,7 @@ impl VcdIdLookup {
 /// small traces stay single-section, which keeps windowed reads cheap.
 const FST_FLUSH_THRESHOLD: usize = 256 << 20;
 const SERIAL_VCD_CHUNK_TARGET: usize = 4 << 20;
-pub const PARALLEL_VCD_CHUNK_TARGET: usize = 8 << 20;
+pub const PARALLEL_VCD_CHUNK_TARGET: usize = 4 << 20;
 pub const PARALLEL_FST_SECTION_TARGET: usize = 128 << 20;
 
 /// "10ps" -> -11. Mirrors the VCD `1|10|100 <unit>` timescale grammar.
@@ -2648,28 +2648,34 @@ impl FstBuildHandler {
             }
             drop(encoded_sender);
             let (parsed_sender, parsed_receiver) = mpsc::sync_channel(batch_capacity);
+            let (ready_sender, ready_receiver) = mpsc::channel();
             let mut parse_senders = Vec::with_capacity(parse_worker_count);
-            for _ in 0..parse_worker_count {
+            for worker in 0..parse_worker_count {
                 let (parse_sender, parse_receiver) =
-                    mpsc::sync_channel::<(VcdChunk, Option<ChunkBuffers>)>(1);
+                    mpsc::sync_channel::<(VcdChunk, Option<ChunkBuffers>)>(0);
                 parse_senders.push(parse_sender);
                 let parsed_sender = parsed_sender.clone();
                 let recycle_sender = recycle_sender.clone();
                 let schema = Arc::clone(&encode_schema);
+                let ready_sender = ready_sender.clone();
                 thread_scope.spawn(move || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        while let Ok((chunk, recycled)) = parse_receiver.recv() {
-                            let sequence = chunk.sequence;
-                            let result = ChunkParser::new(&schema, &chunk, recycled)
-                                .parse(&chunk)
-                                .map_err(|source| VcdParseError::Chunk {
-                                    sequence,
-                                    source: Box::new(source),
-                                });
-                            let _ = recycle_sender.send(chunk);
-                            if parsed_sender.send(result).is_err() {
-                                break;
-                            }
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
+                        if ready_sender.send(worker).is_err() {
+                            break;
+                        }
+                        let Ok((chunk, recycled)) = parse_receiver.recv() else {
+                            break;
+                        };
+                        let sequence = chunk.sequence;
+                        let result = ChunkParser::new(&schema, &chunk, recycled)
+                            .parse(&chunk)
+                            .map_err(|source| VcdParseError::Chunk {
+                                sequence,
+                                source: Box::new(source),
+                            });
+                        let _ = recycle_sender.send(chunk);
+                        if parsed_sender.send(result).is_err() {
+                            break;
                         }
                     }));
                     if let Err(payload) = result {
@@ -2679,21 +2685,23 @@ impl FstBuildHandler {
                     }
                 });
             }
+            drop(ready_sender);
             let dispatcher_sender = parsed_sender.clone();
             #[cfg(feature = "profile")]
             let dispatcher_cpu_worker = Arc::clone(&dispatcher_cpu);
             thread_scope.spawn(move || {
                 #[cfg(feature = "profile")]
                 let cpu_started = thread_cpu_seconds();
-                let mut worker = 0usize;
                 while let Ok(message) = receiver.recv() {
                     match message {
                         Ok(chunk) => {
+                            let Ok(worker) = ready_receiver.recv() else {
+                                break;
+                            };
                             let recycled = event_recycle_receiver.try_recv().ok();
                             if parse_senders[worker].send((chunk, recycled)).is_err() {
                                 break;
                             }
-                            worker = (worker + 1) % parse_senders.len();
                         }
                         Err(error) => {
                             let _ = dispatcher_sender.send(Err(error));

@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "kind": "bwave_vcd_streaming_acceptance",
+  "date": "2026-08-24",
+  "status": "passed",
+  "candidate": {
+    "binary_sha256": "3b752e95e523b6474c2893dd06c4b7dedcb0f45b323459e301a641227eb65f48",
+    "engine": "parallel",
+    "jobs": 6,
+    "parse_jobs": 4,
+    "encode_jobs": 1,
+    "pack_jobs": 2,
+    "vcd_chunk_bytes": 4194304,
+    "fst_stream_section_bytes": 134217728
+  },
+  "host": {
+    "cpu": "Intel Core i7-14650HX",
+    "logical_cpu_count": 24,
+    "effective_cpu_affinity": [0, 1, 2, 3, 4, 5, 6, 7],
+    "physical_cores_in_affinity": 4,
+    "scratch_filesystem": "tmpfs"
+  },
+  "corpora": {
+    "ordinary": {
+      "one_gib_bytes": 1082616034,
+      "one_gib_sha256": "fc2169d91115ac6c1e15ae8f997570e1b76c2145dfec202a63d0b5a74b11347a",
+      "four_gib_bytes": 4307637044,
+      "four_gib_sha256": "a0178e65943c9670dfa46cf80cfd4b06ba38602bb8fb7f8aa25c70d216efd9d2"
+    },
+    "high": {
+      "source_excerpt_sha256": "a343570f14d75dd5d77a61e1661ef72701a538983dae6ed393efa503d0e5c62e",
+      "one_gib_bytes": 1073748019,
+      "one_gib_sha256": "ed08ec19f0f7871a860c0f8256358acdda20be052c0c1197884921fcc7db51df",
+      "four_gib_bytes": 4295175559,
+      "four_gib_sha256": "b144ab829a3c5b98f8016c8e58cdf6d6f4347d4e4b3d0aeadc83be1329d33d76"
+    }
+  },
+  "regular_file_one_gib": {
+    "warmups": 1,
+    "trials": 5,
+    "ordinary": {
+      "median_bytes_per_second": 1223561843.6177535,
+      "slowest_bytes_per_second": 1178555834.2669868,
+      "median_to_slowest_ratio": 1.0381874223029566,
+      "median_cpu_seconds": 3.62,
+      "median_cpu_seconds_per_gb": 3.343752435131586,
+      "median_cpu_percent": 412.0,
+      "peak_rss_kb": 259604,
+      "serial_median_bytes_per_second": 352387123.4088739,
+      "median_speedup": 3.4722092901165906,
+      "output_bytes": 19589936,
+      "serial_output_bytes": 19262680,
+      "output_size_ratio": 1.0169891209322899,
+      "query_time_ratio": 1.0508421504263654,
+      "output_sha256": "7d37bc915d2805c0e59b0e0dfde6a4c3aa2519bda3b9bdcdaa8dbc450218ccff",
+      "serial_output_sha256": "fb88dc2b24788a9243ad4826d74b6cb68f2b8397c2b326e8e93b50a18755ca6d"
+    },
+    "high": {
+      "median_bytes_per_second": 1640947332.5099366,
+      "slowest_bytes_per_second": 1619225155.5333025,
+      "median_to_slowest_ratio": 1.0134151676821497,
+      "median_cpu_seconds": 3.03,
+      "median_cpu_seconds_per_gb": 2.8218911200617542,
+      "median_cpu_percent": 466.0,
+      "peak_rss_kb": 214936,
+      "serial_median_bytes_per_second": 448218417.8328315,
+      "median_speedup": 3.6610439625485176,
+      "output_bytes": 1022258,
+      "serial_output_bytes": 1022258,
+      "output_size_ratio": 1.0,
+      "query_time_ratio": 0.9864797821089031,
+      "serial_parallel_fst_sha256": "493e1b2b586090163948c71d50377295f717837f5f34f60215b625166e2c96bc"
+    }
+  },
+  "fifo_one_gib": {
+    "warmups": 1,
+    "trials": 5,
+    "ordinary": {
+      "median_consumer_bytes_per_second": 1152153417.0209403,
+      "slowest_consumer_bytes_per_second": 1130653003.8794217,
+      "median_to_slowest_ratio": 1.0190159253703372,
+      "median_producer_bytes_per_second": 1251256165.8410835,
+      "slowest_producer_bytes_per_second": 1182593742.4299686,
+      "trivial_reader_slowest_producer_bytes_per_second": 16941256710.347036,
+      "peak_rss_kb": 259604
+    },
+    "high": {
+      "median_consumer_bytes_per_second": 1557794742.0291746,
+      "slowest_consumer_bytes_per_second": 1516073124.8841357,
+      "median_to_slowest_ratio": 1.0275195282207956,
+      "median_producer_bytes_per_second": 1746535173.2134948,
+      "slowest_producer_bytes_per_second": 1612130396.5412185,
+      "trivial_reader_slowest_producer_bytes_per_second": 33905664714.664364,
+      "peak_rss_kb": 205908
+    }
+  },
+  "regular_file_four_gib": {
+    "trials": 1,
+    "ordinary": {
+      "wall_seconds": 3.34,
+      "bytes_per_second": 1289711689.8203592,
+      "user_seconds": 13.01,
+      "system_seconds": 0.97,
+      "cpu_seconds_per_gb": 3.2453987783098843,
+      "average_process_cores": 4.185628742514971,
+      "peak_rss_kb": 308804,
+      "output_bytes": 76891219,
+      "fst_section_count": 5,
+      "output_sha256": "43630d50e01295611cfaafc796b6e76d131bf65cf56e252393d163ebc11dfb54"
+    },
+    "high": {
+      "wall_seconds": 2.49,
+      "bytes_per_second": 1724970104.0160642,
+      "user_seconds": 11.19,
+      "system_seconds": 1.01,
+      "cpu_seconds_per_gb": 2.840396121745579,
+      "average_process_cores": 4.899598393574297,
+      "peak_rss_kb": 278060,
+      "output_bytes": 3759816,
+      "fst_section_count": 3,
+      "output_sha256": "a06e302aa302df2b3d535e1600a786b22f08d7e9ee8dfbec030be5da6b178f10"
+    }
+  },
+  "acceptance": {
+    "passed": true,
+    "checks": [
+      "regular-file median throughput is at least 1.2 GB/s",
+      "FIFO median converter throughput is at least 1.0 GB/s",
+      "FIFO independent-producer slowest throughput is at least 1.2 GB/s",
+      "median-to-slowest ratios are at most 1.10",
+      "regular-file CPU work is at most approximately 3.4 CPU-s/GB",
+      "peak RSS remains below 1 GiB and stays bounded at 4 GiB input",
+      "parallel output size and query time are at most 1.10x serial",
+      "both regular-file and FIFO harnesses pass for ordinary and high profiles"
+    ]
+  }
+}

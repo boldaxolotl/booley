@@ -9,7 +9,11 @@ use memchr::memchr;
 
 use crate::parser::VcdParseError;
 
-const READ_BLOCK_BYTES: usize = 1024 * 1024;
+// Once the target is full, read only a narrow suffix while searching for the
+// next timestamp. A 1 MiB suffix made every chunk copy a large remainder
+// twice (split + recycled-buffer activation), which was visible reader work
+// on dense simulator traces. Initial reads still request the whole target.
+const READ_BLOCK_BYTES: usize = 64 * 1024;
 // One reader can consume only one buffer at a time. A small cushion absorbs
 // bursts of parser completions without retaining tens of chunk-sized
 // allocations (64 x 32 MiB would violate the process RSS contract alone).

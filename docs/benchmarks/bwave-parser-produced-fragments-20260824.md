@@ -1,5 +1,10 @@
 # B-Wave parser-produced chunk fragments — 24 AUG 2026
 
+> **Superseded:** dynamic parser dispatch, narrower boundary reads, and a
+> corrected four-physical-core affinity pass the sustained acceptance gates.
+> See
+> [B-Wave VCD streaming acceptance](bwave-vcd-streaming-acceptance-20260824.md).
+
 ## Decision
 
 Retain the parser-produced fragment implementation in the draft parallel
