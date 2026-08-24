@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.config.project_config import lookup_target_section, render_test_selector
+from booley.core.boundary import as_str_list
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -43,6 +44,7 @@ from .. import artifacts, output_budget
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
 from ..flow_config import (
+    _load_flow_config,
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
@@ -55,8 +57,8 @@ from .target_tests import (
 
 logger = logging.getLogger(__name__)
 
-# Regex for cycle count extraction from sim output
-_CYCLES_RE = re.compile(r"\[SIM_CYCLES\]\s+(\d+)")
+# Default literal prefix for cycle count extraction from sim output.
+_DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
 # Emitted by the sandbox build+run shell between the make half and the run
 # half (see _prepare_sim_command): the whole-second wall time the edalize
 # build took. Lets the per-test report say how much of the first test's
@@ -301,10 +303,38 @@ def _artifact_path_component(value: str) -> str:
     return f"~sha256-{digest}"
 
 
-def parse_cycles(output: str) -> int | None:
-    """Extract cycle count from sim output via [SIM_CYCLES] sentinel."""
-    m = _CYCLES_RE.search(output)
-    return int(m.group(1)) if m else None
+def parse_cycles(
+    output: str,
+    test_name: str,
+    cycle_sentinels: list[str] | None = None,
+    *,
+    allow_legacy: bool = True,
+) -> int | None:
+    """Extract the cycle count attributed to *test_name*.
+
+    The preferred record is ``<sentinel> <test-name> <cycles>`` with the count
+    as the line's final field. A single legacy ``<sentinel> <cycles>`` record
+    remains readable when unambiguous.
+    """
+    sentinels = [s for s in (cycle_sentinels or [_DEFAULT_CYCLE_SENTINEL]) if s]
+    sentinels.sort(key=len, reverse=True)
+    alternatives = "|".join(re.escape(sentinel) for sentinel in sentinels)
+    named_re = re.compile(
+        rf"(?:{alternatives})[ \t]+(.+?)[ \t]+(\d+)[ \t]*$",
+        re.MULTILINE,
+    )
+    named_records = named_re.findall(output)
+    for record_name, cycles in named_records:
+        if record_name == test_name:
+            return int(cycles)
+    if named_records:
+        return None
+
+    if not allow_legacy:
+        return None
+    legacy_re = re.compile(rf"(?:{alternatives})[ \t]+(\d+)\b")
+    legacy_records = legacy_re.findall(output)
+    return int(legacy_records[0]) if len(legacy_records) == 1 else None
 
 
 def parse_build_seconds(output: str) -> float:
@@ -514,6 +544,18 @@ def _resolve_sim_sentinels(
     except ImportError:
         pass
     return [], []
+
+
+def _resolve_cycle_sentinels(work_dir: Path | None = None) -> list[str]:
+    """Cycle-count prefixes from ``booley.toml [flows.sim]``.
+
+    Each configured literal must be followed by a test name and a decimal
+    integer as the line's final field. An empty list means the parser uses the
+    built-in ``[SIM_CYCLES]`` prefix.
+    """
+    root = work_dir if work_dir is not None else Path.cwd()
+    raw = _load_flow_config("sim", root).get("cycle_sentinels")
+    return [sentinel for sentinel in as_str_list(raw) if sentinel]
 
 
 def _resolve_trace_args(work_dir: Path | None = None) -> list[str]:
@@ -2202,7 +2244,11 @@ class SimulateFlow(BooleyFlow):
             passed=passed,
             elapsed_s=proc.duration_s,
             build_s=parse_build_seconds(combined),
-            cycles=parse_cycles(combined),
+            cycles=parse_cycles(
+                combined,
+                test_name or target,
+                _resolve_cycle_sentinels(self.args.work_dir),
+            ),
             sva_errors=parse_sva_errors(combined),
             error_tail=error_tail,
             timed_out=proc.timed_out,
@@ -2991,6 +3037,7 @@ class SimulateFlow(BooleyFlow):
         trace_path, trace_bytes = (
             _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
         )
+        cycle_sentinels = _resolve_cycle_sentinels(self.args.work_dir)
         test_results: list[TestResult] = []
         for i, (name, verdict, detail) in enumerate(verdicts):
             passed = verdict == cocotb_results_mod.VERDICT_PASS
@@ -3017,7 +3064,12 @@ class SimulateFlow(BooleyFlow):
                     # Like the SVA count: the batch has exactly one build, so
                     # its wall time rides the first entry only.
                     build_s=parse_build_seconds(combined) if i == 0 else 0.0,
-                    cycles=None,
+                    cycles=parse_cycles(
+                        combined,
+                        name,
+                        cycle_sentinels,
+                        allow_legacy=len(verdicts) == 1,
+                    ),
                     sva_errors=sva_errors if i == 0 else 0,
                     error_tail=error_tail,
                     timed_out=test_timed_out,
