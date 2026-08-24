@@ -1100,8 +1100,7 @@ class TestReportGeneration:
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()
         (project_dir / "booley.toml").write_text(
-            "[flows.sim]\n"
-            'cycle_sentinels = ["CoreMark completed in:"]\n',
+            '[flows.sim]\ncycle_sentinels = ["CoreMark completed in:"]\n',
             encoding="utf-8",
         )
 
@@ -1487,8 +1486,7 @@ class TestEdalizeSimPath:
         proj = tmp_path / ".booley_project"
         proj.mkdir()
         (proj / "booley.toml").write_text(
-            "[flows.sim]\n"
-            'cycle_sentinels = ["CoreMark completed in:", "EXECUTED_CYCLES"]\n',
+            '[flows.sim]\ncycle_sentinels = ["CoreMark completed in:", "EXECUTED_CYCLES"]\n',
             encoding="utf-8",
         )
         assert _resolve_cycle_sentinels(tmp_path) == [
