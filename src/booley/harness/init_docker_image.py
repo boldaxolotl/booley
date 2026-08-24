@@ -53,6 +53,7 @@ LABEL_BASE_IMAGE_ID = "booley.base-image-id"
 LABEL_VERSION = "org.opencontainers.image.version"
 DEFAULT_IMAGE_PULL_TIMEOUT_S = 7200
 DEFAULT_IMAGE_TAG_TIMEOUT_S = 30
+_WHEEL_GLOB = "booley_rtl-*.whl"
 
 
 def _source_version(booley_root: Path) -> str | None:
@@ -595,6 +596,11 @@ def _docker_build_wheel(ctx: InitContext, booley_root: Path) -> bool:
             # setuptools incrementally reuses build/lib. Package moves otherwise
             # leave deleted modules in the next wheel after a package move.
             shutil.rmtree(build_dir, ignore_errors=True)
+            # Docker COPY and pip both expand this glob. A wheel from an older
+            # Booley version would therefore make pip resolve two explicit
+            # versions of the same package and fail with ResolutionImpossible.
+            for wheel in dist_dir.glob(_WHEEL_GLOB):
+                wheel.unlink()
             # -P keeps the repo-root ``build/`` setuptools artifact dir from
             # shadowing the pypa ``build`` module (cwd is prepended to sys.path
             # for ``-m`` otherwise, and the failure mode is a stale wheel being
@@ -608,6 +614,16 @@ def _docker_build_wheel(ctx: InitContext, booley_root: Path) -> bool:
                 errors="replace",
                 capture_output=not ctx.verbose,
                 timeout=120,
+            )
+        wheels = sorted(dist_dir.glob(_WHEEL_GLOB))
+        if len(wheels) != 1:
+            names = ", ".join(wheel.name for wheel in wheels) or "none"
+            return _report_wheel_failure(
+                ctx,
+                RuntimeError(
+                    f"wheel build produced {len(wheels)} matching wheels ({names}); "
+                    "expected exactly one"
+                ),
             )
         return True
     except (subprocess.SubprocessError, OSError) as e:
