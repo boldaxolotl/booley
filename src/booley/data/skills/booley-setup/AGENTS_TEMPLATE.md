@@ -19,6 +19,7 @@ tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3)
 ## Booley-Specific Instructions
 
 - Project-specific Booley data lives in `.booley_project/`.
+- This repo is operating in stealth mode. No changes to `.booley_project/` may be visible in the main repo. (Keep only for `[stealth].enabled = true`.)
 - Keep `booley doctor` green. After changing project configuration, EDA-tool Targets, dependencies, or the Session Runtime, fix every finding or add a narrow, reviewed `doctor-waivers.toml` entry for a deliberate constraint. Before handoff, run plain Doctor on the host and plain plus `--deep` in the Session Runtime; leave no active warnings or errors.
 - Keep handoffs and plans under `.booley_project/` (e.g. `.booley_project/plans/`, `.booley_project/handoffs/`), never in the RTL repo. They are agent working notes, not project source, and do not belong in source history.
 - In Interactive Mode, the editor extension uses the user's shared VS Code window attached to this Project's Session Runtime (devcontainer). Use it as the human-facing surface: when useful, open files with `code --goto <path>[:<line>]` and side-by-side diffs with `code --diff <left> <right>` instead of only printing paths.
