@@ -4253,6 +4253,98 @@ def _check_sim_target_setup(
         )
 
 
+def _enumerate_core_audit_targets(
+    root: Path,
+    _pass: Check,
+    _fail: Fail,
+) -> dict[str, fusesoc_registry.TargetRef] | None:
+    """Enumerate selectable Targets, reporting structural failures."""
+    try:
+        refs = fusesoc_registry.enumerate_targets(root)
+    except fusesoc_registry.FuseSocError as exc:
+        _fail(f".core enumeration failed: {exc}", "fix the malformed .core")
+        return None
+    if not refs:
+        _fail(
+            "project has no .core: a resolvable FuseSoC .core Target is a "
+            "precondition for every Booley Flow (ADR 0039)",
+            "author a .core (the booley-setup skill's project-config step walks through it)",
+        )
+    else:
+        _pass(f".core Targets enumerated: {', '.join(sorted(refs))}")
+    return refs
+
+
+def _run_target_core_audit(
+    project: ProjectAudit,
+    refs: dict[str, fusesoc_registry.TargetRef],
+    _pass: Check,
+    _warn: Check,
+    _skip: Check,
+    _fail: Fail,
+    note_sink: Check,
+) -> None:
+    """Run checks that require at least one enumerated Target."""
+    root = project.project_root
+    inputs = _CoreAuditInputs(root, refs)
+    _check_doctor_target_compatibility(root, _pass, _fail)
+    _check_legacy_core_targets(project, root, refs, _pass, _warn, _note=note_sink)
+    _check_naming_conventions(project, root, refs, _pass, _warn, _note=note_sink)
+    _check_sim_target_setup(project, inputs, _pass, _warn, _fail, note_sink)
+    _check_yosys_targets_have_arch(root, refs, _pass, _warn)
+    _check_icarus_sv_language_mode(
+        root,
+        refs,
+        _pass,
+        _warn,
+        _fail,
+        _note=note_sink,
+        selected_targets=set(_project_target_matrix(project).seed_targets) or None,
+        _inputs=inputs,
+    )
+    _check_sim_traceable(root, refs, _pass, _warn)
+    _check_toplevel_interface_ports(root, refs, _pass, _warn, _inputs=inputs)
+    _check_cocotb_targets(project, refs, _pass, _warn, _skip, _fail)
+    _check_core_files_tracked(root, _pass, _warn)
+    _check_readmemh_targets_tracked(root, _pass, _warn)
+    _check_committed_build_artifacts(root, _pass, _warn)
+
+
+def _run_core_security_audit(
+    project: ProjectAudit,
+    refs: dict[str, fusesoc_registry.TargetRef],
+    _pass: Check,
+    _warn: Check,
+    _fail: Fail,
+) -> None:
+    """Report authored-core provenance and confinement violations."""
+    violations = core_security.validate_project_cores(
+        project.project_root,
+        scope=_project_write_scope(project.project_root),
+        seed_targets=_project_target_matrix(project).seed_targets,
+    )
+    for violation in violations:
+        target = f" target '{violation.target}'" if violation.target else ""
+        line = (
+            f".core security [{violation.kind}] {violation.core_file.name}"
+            f"{target}: {violation.message}"
+        )
+        if violation.kind in _SCOPE_DEPENDENT_VIOLATIONS:
+            _warning_sink(
+                _warn,
+                "core.security-scope-advisory",
+                subject=f"{violation.core_file.name}:{violation.target or '-'}",
+            )(
+                f"{line} (advisory: doctor audits the union of writable "
+                "category dirs, not a real ticket Scope — the binding "
+                "check runs per-ticket at commit time)"
+            )
+        else:
+            _fail(line, "ADR 0022 decision 21")
+    if not violations and refs:
+        _pass(".core security validation passed (no fpga hooks / expr-params / in-scope scripts)")
+
+
 def _run_core_audit(
     project: ProjectAudit,
     _pass: Check,
@@ -4262,145 +4354,18 @@ def _run_core_audit(
     *,
     _note: Check | None = None,
 ) -> None:
-    """Audit authored ``.core`` files + ``tests.toml`` (ADR 0022 Phases 6-7).
-
-    Structural, host-side, no ``fusesoc`` subprocess: Target enumeration
-    (ADR 0030 first-wins view), tagged-TB filesets for sim Targets (dec 13),
-    ``.core`` security —
-    provenance + confinement (dec 21, Phase 6), and well-formed ``tests.toml``
-    plusarg ``select`` templates (dec 16). The subprocess "resolvable ``.core``"
-    check runs under ``--deep`` (:func:`_run_core_resolve_checks`).
-    """
+    """Coordinate the structural, security, and metadata core audits."""
     note_sink = _note or _pass
     root = project.project_root
-
-    # 0. Tree hazards that make FuseSoC recurse forever or fetch remote sources.
     _check_core_setup_hazards(project, root, _pass, _fail, _note=note_sink)
-
-    # 0b. CAPI2 array-field schema — caught host-side so a malformed .core fails
-    # the cheap pass with FuseSoC's real reason, not only under --deep (WARN
-    # instead for a vendored core no Doctor Target selects).
     _check_core_schema(project, root, _pass, _warn, _fail, _note=note_sink)
-
-    # 1. Enumerate Targets (ADR 0030: first-wins view; duplicate bare names
-    # across cores are legal — identity is per-(VLNV, name), never a collision).
-    try:
-        refs = fusesoc_registry.enumerate_targets(root)
-    except fusesoc_registry.FuseSocError as exc:
-        _fail(f".core enumeration failed: {exc}", "fix the malformed .core")
+    refs = _enumerate_core_audit_targets(root, _pass, _fail)
+    if refs is None:
         return
-
-    if not refs:
-        # ADR 0039: a resolvable .core Target is a precondition for every
-        # Booley Flow — a project without one cannot run anything, and the old
-        # transitional escapes (hardcoded source partition, first_target
-        # probe) are gone, so this is a hard setup failure, never a guess.
-        _fail(
-            "project has no .core: a resolvable FuseSoC .core Target is a "
-            "precondition for every Booley Flow (ADR 0039)",
-            "author a .core (the booley-setup skill's project-config step walks through it)",
-        )
-    else:
-        _pass(f".core Targets enumerated: {', '.join(sorted(refs))}")
-        inputs = _CoreAuditInputs(root, refs)
-
-        _check_doctor_target_compatibility(root, _pass, _fail)
-
-        # 1b. Legacy FuseSoC default_tool/tools fields: enumerable but unclassifiable.
-        _check_legacy_core_targets(project, root, refs, _pass, _warn, _note=note_sink)
-
-        # 1c. Target-name conventions: the <axis>_<subject> rule, and dead
-        # 'default:' Targets. Advisory — a badly named Target still runs.
-        _check_naming_conventions(project, root, refs, _pass, _warn, _note=note_sink)
-
-        # 2. Tagged TB filesets and verdict readiness for sim Targets.
-        _check_sim_target_setup(project, inputs, _pass, _warn, _fail, note_sink)
-
-        # 2b. Yosys synth Targets need flow_options.arch — mandatory edalize
-        # plumbing that reads like droppable boilerplate and fails only at --deep.
-        _check_yosys_targets_have_arch(root, refs, _pass, _warn)
-
-        # 2b+. Icarus Targets with .sv sources need an SV language flag
-        # (-g2012): iverilog defaults to Verilog-2005, and the resulting
-        # syntax error points at healthy RTL. FAIL for sim Targets (every run
-        # is dead on compile), WARN for lint/elaborate shapes.
-        _check_icarus_sv_language_mode(
-            root,
-            refs,
-            _pass,
-            _warn,
-            _fail,
-            _note=note_sink,
-            selected_targets=set(_project_target_matrix(project).seed_targets) or None,
-            _inputs=inputs,
-        )
-
-        # 2b*. Verilator sim Targets built with the auto --main/--binary have no
-        # tracer, so `simulate --trace` silently yields an empty 0-signal store —
-        # a trap that surfaces only on the first trace run.
-        _check_sim_traceable(root, refs, _pass, _warn)
-
-        # 2b". A lint/synth toplevel carrying SV interface ports cannot elaborate
-        # standalone (F-7). Statically detectable from the toplevel's port list,
-        # and otherwise invisible until the flow dies on a parameter mismatch.
-        _check_toplevel_interface_ports(root, refs, _pass, _warn, _inputs=inputs)
-
-        # 2b'. Cocotb Targets (ADR 0034 / F1) — conditional: fires only when a
-        # Target declares flow_options.cocotb_module.
-        _check_cocotb_targets(project, refs, _pass, _warn, _skip, _fail)
-
-        # 2c. .core files that exist on disk but are untracked by git (the silent
-        # vendored-data trap: firmware hex gitignored upstream, git add no-ops).
-        _check_core_files_tracked(root, _pass, _warn)
-
-        # 2c'. Memory images named by a literal $readmemh/$readmemb in the HDL but
-        # NOT listed in any .core fileset — the residual gap 2c misses.
-        _check_readmemh_targets_tracked(root, _pass, _warn)
-
-        # 2d. Committed compiled artifacts (firmware hex/mem) whose source lives
-        # in-repo — should be rebuilt on demand, not frozen into git (footprint /
-        # "ship the toolchain, not the artifact" rule).
-        _check_committed_build_artifacts(root, _pass, _warn)
-
-    # 3. .core security — provenance + confinement, NOT a content scan (dec 21).
-    # Seed the audit scope with Doctor-selected Targets so a vendored monorepo
-    # audits only reachable cores (SETUP-19).
-    violations = core_security.validate_project_cores(
-        root,
-        scope=_project_write_scope(root),
-        seed_targets=_project_target_matrix(project).seed_targets,
-    )
-    if violations:
-        for v in violations:
-            tgt = f" target '{v.target}'" if v.target else ""
-            line = f".core security [{v.kind}] {v.core_file.name}{tgt}: {v.message}"
-            if v.kind in _SCOPE_DEPENDENT_VIOLATIONS:
-                # doctor has no ticket Scope, so it audits against the union of
-                # every writable category dir — far wider than any real ticket
-                # Scope, which names specific files. Hard-failing on that
-                # synthetic scope makes a green doctor unreachable for an
-                # upstream generator the project never invokes (F-10), while
-                # asserting something doctor cannot actually know. The real
-                # gate is the per-ticket Scope check at commit time, which
-                # still hard-fails; here it is advisory.
-                _warning_sink(
-                    _warn,
-                    "core.security-scope-advisory",
-                    subject=f"{v.core_file.name}:{v.target or '-'}",
-                )(
-                    f"{line} (advisory: doctor audits the union of writable "
-                    "category dirs, not a real ticket Scope — the binding "
-                    "check runs per-ticket at commit time)"
-                )
-            else:
-                _fail(line, "ADR 0022 decision 21")
-    elif refs:
-        _pass(".core security validation passed (no fpga hooks / expr-params / in-scope scripts)")
-
-    # 4. tests.toml single-token select templates (decision 16).
+    if refs:
+        _run_target_core_audit(project, refs, _pass, _warn, _skip, _fail, note_sink)
+    _run_core_security_audit(project, refs, _pass, _warn, _fail)
     _audit_tests_toml(project, _pass, _skip, _fail)
-
-    # 5. Native build dependencies of C/C++ simulation sources (advisory).
     _audit_native_dependencies(project, _pass, _warn)
 
 
@@ -4441,6 +4406,50 @@ def _check_sim_target_tb_staging(
         _pass(f"sim Target '{name}' TB fileset tagged")
 
 
+def _sim_pass_sentinels(project: ProjectAudit) -> tuple[list[str], bool]:
+    """Return configured verdict sentinels and whether they were explicit."""
+    flows = project.booley_toml.get("flows", {})
+    sim_cfg = flows.get("sim", {}) if isinstance(flows, dict) else {}
+    sentinels = [str(s) for s in (sim_cfg.get("pass_sentinels") or [])] or ["[SIM_RESULT] PASSED"]
+    configured = isinstance(sim_cfg, dict) and bool(sim_cfg.get("pass_sentinels"))
+    return sentinels, configured
+
+
+def _tb_emits_sentinel(root: Path, tb_files: tuple[str, ...], sentinels: list[str]) -> bool:
+    """Return whether any readable TB source contains a verdict sentinel."""
+    for rel in tb_files:
+        try:
+            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if any(sentinel in text for sentinel in sentinels):
+            return True
+    return False
+
+
+def _warn_missing_sim_sentinel(
+    name: str,
+    tb_files: tuple[str, ...],
+    shown: str,
+    _warn: Check,
+) -> None:
+    """Explain the correct sentinel remedy for HDL and Python testbenches."""
+    emit = _warning_sink(_warn, "sim.pass-sentinel-missing", subject=name)
+    if any(Path(rel).suffix == ".py" for rel in tb_files):
+        emit(
+            f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
+            "and its TB fileset is Python — for a cocotb TB declare "
+            "flow_options.cocotb_module on the Target (ADR 0034) so the verdict "
+            "comes from results.xml; $display sentinels only apply to SV TBs"
+        )
+        return
+    emit(
+        f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
+        "— a passing run will read as INCONCLUSIVE; add a $display sentinel "
+        "(refs/sim_result_sentinel.sv) or set [flows.sim].pass_sentinels"
+    )
+
+
 def _check_sim_verdict_setup(
     project: ProjectAudit,
     root: Path,
@@ -4452,40 +4461,10 @@ def _check_sim_verdict_setup(
     sources: fusesoc_registry.CoreSources | None = None,
     _note: Check | None = None,
 ) -> None:
-    """Setup-time verdict/trace readiness for a sim Target.
-
-    Catches at setup time a failure that otherwise only surfaces at runtime: a TB
-    that emits no recognized pass sentinel — a passing run then reads as
-    INCONCLUSIVE (rc=0, no sentinel). A warning: the ``.core`` is valid and
-    non-trace runs are unaffected. The pass sentinel is the project-configured one
-    (``[flows.sim].pass_sentinels``) or Booley's built-in ``[SIM_RESULT]
-    PASSED`` marker when unset (mirrors parse_sim_verdict).
-
-    The ``booley_vcd_dump`` trace module is deliberately *not* audited here: the
-    trace overlay supplies it from Booley's ``refs/`` when the design omits it
-    (Stealth Mode keeps it out of the tracked repo), so its absence from a fileset
-    is expected, not a defect.
-
-    Skipped for a Cocotb Target for the same reason (ADR 0034 decision 6): the
-    verdict comes from the parsed ``results.xml``, sentinel scanning is bypassed
-    outright, and a cocotb TB is Python — it *cannot* carry a `$display`
-    sentinel. Warning here would be advisory noise whose fix hint
-    ("add a $display sentinel") is actively wrong for the Target it fires on.
-
-    When the warning DOES fire on a Target whose TB fileset contains Python
-    files, the TB is almost certainly a cocotb TB that merely has not declared
-    ``cocotb_module`` yet — so the hint names that declaration as the remedy
-    (F-8): an SV ``$display`` sentinel is unfollowable advice for a ``.py``
-    testbench.
-    """
-    note_sink = _note or _pass
+    """Check that a non-cocotb simulation TB can emit a pass verdict."""
     if ref.cocotb_module:
         return
-    flows = project.booley_toml.get("flows", {})
-    sim_cfg = flows.get("sim", {}) if isinstance(flows, dict) else {}
-    pass_sentinels = [str(s) for s in (sim_cfg.get("pass_sentinels") or [])] or [
-        "[SIM_RESULT] PASSED"
-    ]
+    sentinels, configured = _sim_pass_sentinels(project)
     if sources is None:
         try:
             sources = fusesoc_registry.target_source_files(root, name)
@@ -4494,46 +4473,18 @@ def _check_sim_verdict_setup(
     tb_files = sources.tb_files
     if not tb_files:
         return  # the untagged-TB check already covered "sim Target has no TB"
-
-    emits_sentinel = False
-    for rel in tb_files:
-        try:
-            text = (root / rel).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        if any(s in text for s in pass_sentinels):
-            emits_sentinel = True
-            break
-    if emits_sentinel:
+    if _tb_emits_sentinel(root, tb_files, sentinels):
         _pass(f"sim Target '{name}' TB emits a recognized pass sentinel")
         return
-    shown = ", ".join(repr(s) for s in pass_sentinels)
-    configured = isinstance(sim_cfg, dict) and bool(sim_cfg.get("pass_sentinels"))
+    shown = ", ".join(repr(sentinel) for sentinel in sentinels)
     if configured:
-        note_sink(
+        (_note or _pass)(
             f"sim Target '{name}' uses explicitly configured pass sentinel(s) ({shown}); "
             "none appears literally in its tagged TB sources, so validate the runtime "
             "producer with this Target's simulation"
         )
         return
-    _warn = _warning_sink(_warn, "sim.pass-sentinel-missing", subject=name)
-    if any(Path(rel).suffix == ".py" for rel in tb_files):
-        # A Python TB fileset is cocotb-shaped: the right fix is declaring
-        # cocotb_module on the Target (which also exempts it from this check
-        # entirely, see above), not an SV $display sentinel a .py file cannot
-        # carry (F-8).
-        _warn(
-            f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
-            "and its TB fileset is Python — for a cocotb TB declare "
-            "flow_options.cocotb_module on the Target (ADR 0034) so the verdict "
-            "comes from results.xml; $display sentinels only apply to SV TBs"
-        )
-    else:
-        _warn(
-            f"sim Target '{name}' TB emits no configured pass sentinel ({shown}) "
-            "— a passing run will read as INCONCLUSIVE; add a $display sentinel "
-            "(refs/sim_result_sentinel.sv) or set [flows.sim].pass_sentinels"
-        )
+    _warn_missing_sim_sentinel(name, tb_files, shown, _warn)
 
 
 def _check_legacy_core_targets(
@@ -4769,6 +4720,56 @@ def _check_yosys_targets_have_arch(
 _ICARUS_SV_FLAGS = frozenset({"-g2005-sv", "-g2009", "-g2012"})
 
 
+def _icarus_sv_flag_state(
+    name: str,
+    ref: fusesoc_registry.TargetRef,
+    sources: fusesoc_registry.CoreSources,
+) -> bool | None:
+    """Return SV-flag presence, or ``None`` when the check does not apply."""
+    has_sv = any(
+        str(path).lower().endswith(".sv")
+        for path in (*sources.rtl_source_files, *sources.tb_files)
+    )
+    if not has_sv:
+        return None
+    try:
+        doc = fusesoc_registry.read_core(ref.core_file)
+    except fusesoc_registry.FuseSocError:
+        return None
+    options = fusesoc_registry.core_target_flow_option(doc, name, "iverilog_options")
+    flags = {str(option) for option in options} if isinstance(options, list) else set()
+    return bool(flags & _ICARUS_SV_FLAGS)
+
+
+def _report_missing_icarus_sv_flag(
+    name: str,
+    ref: fusesoc_registry.TargetRef,
+    selected_targets: set[str] | None,
+    _note: Check,
+    _warn: Check,
+    _fail: Fail,
+) -> None:
+    """Report a missing Icarus SV flag at Target-appropriate severity."""
+    message = (
+        f"Target '{name}': SV sources with Icarus but iverilog_options "
+        "missing -g2012 — iverilog defaults to Verilog-2005 and rejects "
+        "SystemVerilog syntax (`logic`, `always_ff`) at compile"
+    )
+    fix = f"add iverilog_options: [-g2012] to the Target's flow_options in {ref.core_file.name}"
+    qualified = f"{ref.vlnv}#{name}"
+    selected = (
+        selected_targets is None or name in selected_targets or qualified in selected_targets
+    )
+    if not selected:
+        _note(
+            f"{message} — this Target is not selected by the project, so modernizing it is optional"
+        )
+    elif ref.flow == "sim":
+        _fail(message, fix)
+    else:
+        _warning_sink(_warn, "core.icarus-sv-mode-missing", subject=name)(f"{message}; fix: {fix}")
+
+
 def _check_icarus_sv_language_mode(
     root: Path,
     refs: dict,
@@ -4780,19 +4781,7 @@ def _check_icarus_sv_language_mode(
     selected_targets: set[str] | None = None,
     _inputs: _CoreAuditInputs | None = None,
 ) -> None:
-    """Flag Icarus Targets whose SystemVerilog sources lack an SV language flag.
-
-    For every enumerated Target with ``flow_options.tool: icarus`` whose
-    staged fileset contains ``.sv`` sources, require one of
-    :data:`_ICARUS_SV_FLAGS` in ``iverilog_options``. Severity follows the
-    blast radius: a **sim** Target FAILs — every run is guaranteed dead on
-    compile, and the resulting syntax error points at the RTL rather than the
-    ``.core``, so agents burn a whole ticket "fixing" healthy design code. A
-    lint/elaborate-shaped Target WARNs instead: the same defect, but those
-    flows are advisory gates rather than the verdict source. Host-side YAML
-    reads only (:func:`fusesoc_registry.target_source_files` walks the
-    ``.core`` directly) — no resolve subprocess.
-    """
+    """Flag Icarus Targets whose SystemVerilog sources lack an SV flag."""
     icarus_targets = [
         (name, ref)
         for name, ref in sorted(refs.items())
@@ -4803,45 +4792,23 @@ def _check_icarus_sv_language_mode(
     inputs = _inputs or _CoreAuditInputs(root, refs)
     for name, ref in icarus_targets:
         try:
-            src = inputs.sources_for(name)
+            sources = inputs.sources_for(name)
         except fusesoc_registry.FuseSocError:
             continue  # an unresolvable Target is enumeration's to report
-        has_sv = any(
-            str(f).lower().endswith(".sv") for f in (*src.rtl_source_files, *src.tb_files)
-        )
-        if not has_sv:
-            continue  # plain-Verilog Target: iverilog's default generation is fine
-        try:
-            doc = fusesoc_registry.read_core(ref.core_file)
-        except fusesoc_registry.FuseSocError:
-            continue  # a malformed .core is the .core-schema check's to report
-        opts = fusesoc_registry.core_target_flow_option(doc, name, "iverilog_options")
-        flags = {str(o) for o in opts} if isinstance(opts, list) else set()
-        if flags & _ICARUS_SV_FLAGS:
+        flag_state = _icarus_sv_flag_state(name, ref, sources)
+        if flag_state is None:
+            continue
+        if flag_state:
             _pass(f"Target '{name}' (icarus) declares an SV language flag for its .sv sources")
             continue
-        msg = (
-            f"Target '{name}': SV sources with Icarus but iverilog_options "
-            f"missing -g2012 — iverilog defaults to Verilog-2005 and rejects "
-            f"SystemVerilog syntax (`logic`, `always_ff`) at compile"
+        _report_missing_icarus_sv_flag(
+            name,
+            ref,
+            selected_targets,
+            _note or _pass,
+            _warn,
+            _fail,
         )
-        fix = (
-            f"add iverilog_options: [-g2012] to the Target's flow_options in {ref.core_file.name}"
-        )
-        qualified = f"{ref.vlnv}#{name}"
-        selected = (
-            selected_targets is None or name in selected_targets or qualified in selected_targets
-        )
-        if not selected:
-            (_note or _pass)(
-                f"{msg} — this Target is not selected by the project, so modernizing it is optional"
-            )
-        elif ref.flow == "sim":
-            _fail(msg, fix)
-        else:
-            # Advisory for lint/elaborate shapes: same defect, smaller blast
-            # radius — those flows gate, they don't produce the sim verdict.
-            _warning_sink(_warn, "core.icarus-sv-mode-missing", subject=name)(f"{msg}; fix: {fix}")
 
 
 # Verilator's own build-a-binary entry points: both generate the vanilla auto
@@ -4970,6 +4937,28 @@ def _interface_ports(
     return None
 
 
+def _target_interface_ports(
+    root: Path,
+    inputs: _CoreAuditInputs,
+    name: str,
+    ref: fusesoc_registry.TargetRef,
+) -> tuple[str, list[str]] | None:
+    """Return an auditable Target's toplevel and interface ports."""
+    try:
+        doc = fusesoc_registry.read_core(ref.core_file)
+    except fusesoc_registry.FuseSocError:
+        return None
+    toplevel = fusesoc_registry.core_target_toplevel(doc, name)
+    if not toplevel:
+        return None
+    try:
+        sources = inputs.sources_for(name)
+    except (fusesoc_registry.FuseSocError, OSError):
+        return None
+    ports = _interface_ports(root, sources, toplevel)
+    return None if ports is None else (toplevel, ports)
+
+
 def _check_toplevel_interface_ports(
     root: Path,
     refs: dict,
@@ -4978,44 +4967,15 @@ def _check_toplevel_interface_ports(
     *,
     _inputs: _CoreAuditInputs | None = None,
 ) -> None:
-    """Warn when a lint/synth Target's toplevel carries SystemVerilog interface ports.
-
-    Such a module **cannot be elaborated standalone**. With no interface bound,
-    its ports take the interface's *default* parameters, the design's own
-    elaboration checks catch the mismatch, and the run dies on something like
-    ``%Warning-USERFATAL: Error: Interface DATA_W parameter mismatch`` plus a
-    cascade of width warnings. Both flows elaborate the toplevel on its own, so
-    both are dead until a flat-port wrapper supplies the interfaces.
-
-    This is invisible until you hit it, and the error reads like a bug in the IP
-    rather than "write a wrapper" — it was the single biggest obstacle in the
-    taxi port (F-7). Upstream IP rarely ships such a wrapper, because in-tree
-    the module is only ever instantiated inside a board design or a testbench,
-    both of which provide the interfaces.
-
-    Sim Targets are exempt: a cocotb TB brings its own wrapper (its BFMs must
-    bind to interface *instances* anyway), and an HDL TB instantiates the DUT.
-    A warn, not a fail — the ``.core`` is structurally sound, and the flow may
-    simply not have been run yet.
-    """
+    """Warn when a lint/synth toplevel cannot elaborate without interfaces."""
     inputs = _inputs or _CoreAuditInputs(root, refs)
     for name, ref in sorted(refs.items()):
         if ref.flow == "sim":
-            continue  # the TB supplies the interfaces; see docstring
-        try:
-            doc = fusesoc_registry.read_core(ref.core_file)
-        except fusesoc_registry.FuseSocError:
             continue
-        toplevel = fusesoc_registry.core_target_toplevel(doc, name)
-        if not toplevel:
+        target_ports = _target_interface_ports(root, inputs, name, ref)
+        if target_ports is None:
             continue
-        try:
-            sources = inputs.sources_for(name)
-        except (fusesoc_registry.FuseSocError, OSError):
-            continue
-        ports = _interface_ports(root, sources, toplevel)
-        if ports is None:
-            continue  # toplevel source not among the Target's files — say nothing
+        toplevel, ports = target_ports
         if not ports:
             _pass(f"{ref.flow} Target '{name}' toplevel '{toplevel}' elaborates standalone")
             continue
