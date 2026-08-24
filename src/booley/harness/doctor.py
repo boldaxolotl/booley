@@ -4275,53 +4275,76 @@ def _enumerate_core_audit_targets(
     return refs
 
 
-def _run_target_core_audit(
-    project: ProjectAudit,
+@dataclass(frozen=True)
+class _CoreAuditContext:
+    """Project and reporting sinks shared by one authored-core audit."""
+
+    project: ProjectAudit
+    pass_: Check
+    warn: Check
+    skip: Check
+    fail: Fail
+    note: Check
+
+    @property
+    def root(self) -> Path:
+        """Return the audited project root."""
+        return self.project.project_root
+
+
+def _check_target_metadata(
+    audit: _CoreAuditContext,
     refs: dict[str, fusesoc_registry.TargetRef],
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-    note_sink: Check,
 ) -> None:
-    """Run checks that require at least one enumerated Target."""
-    root = project.project_root
-    inputs = _CoreAuditInputs(root, refs)
-    _check_doctor_target_compatibility(root, _pass, _fail)
-    _check_legacy_core_targets(project, root, refs, _pass, _warn, _note=note_sink)
-    _check_naming_conventions(project, root, refs, _pass, _warn, _note=note_sink)
-    _check_sim_target_setup(project, inputs, _pass, _warn, _fail, note_sink)
-    _check_yosys_targets_have_arch(root, refs, _pass, _warn)
+    """Check Target declarations that do not need source partitions."""
+    _check_doctor_target_compatibility(audit.root, audit.pass_, audit.fail)
+    _check_legacy_core_targets(
+        audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
+    )
+    _check_naming_conventions(
+        audit.project, audit.root, refs, audit.pass_, audit.warn, _note=audit.note
+    )
+    _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
+    _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
+    _check_cocotb_targets(audit.project, refs, audit.pass_, audit.warn, audit.skip, audit.fail)
+
+
+def _check_target_sources(
+    audit: _CoreAuditContext,
+    refs: dict[str, fusesoc_registry.TargetRef],
+    inputs: _CoreAuditInputs,
+) -> None:
+    """Run Target checks that share source partitions."""
+    _check_sim_target_setup(audit.project, inputs, audit.pass_, audit.warn, audit.fail, audit.note)
     _check_icarus_sv_language_mode(
-        root,
+        audit.root,
         refs,
-        _pass,
-        _warn,
-        _fail,
-        _note=note_sink,
-        selected_targets=set(_project_target_matrix(project).seed_targets) or None,
+        audit.pass_,
+        audit.warn,
+        audit.fail,
+        _note=audit.note,
+        selected_targets=set(_project_target_matrix(audit.project).seed_targets) or None,
         _inputs=inputs,
     )
-    _check_sim_traceable(root, refs, _pass, _warn)
-    _check_toplevel_interface_ports(root, refs, _pass, _warn, _inputs=inputs)
-    _check_cocotb_targets(project, refs, _pass, _warn, _skip, _fail)
-    _check_core_files_tracked(root, _pass, _warn)
-    _check_readmemh_targets_tracked(root, _pass, _warn)
-    _check_committed_build_artifacts(root, _pass, _warn)
+    _check_toplevel_interface_ports(audit.root, refs, audit.pass_, audit.warn, _inputs=inputs)
+
+
+def _check_core_repository_hygiene(audit: _CoreAuditContext) -> None:
+    """Check that authored core inputs are represented safely in Git."""
+    _check_core_files_tracked(audit.root, audit.pass_, audit.warn)
+    _check_readmemh_targets_tracked(audit.root, audit.pass_, audit.warn)
+    _check_committed_build_artifacts(audit.root, audit.pass_, audit.warn)
 
 
 def _run_core_security_audit(
-    project: ProjectAudit,
+    audit: _CoreAuditContext,
     refs: dict[str, fusesoc_registry.TargetRef],
-    _pass: Check,
-    _warn: Check,
-    _fail: Fail,
 ) -> None:
     """Report authored-core provenance and confinement violations."""
     violations = core_security.validate_project_cores(
-        project.project_root,
-        scope=_project_write_scope(project.project_root),
-        seed_targets=_project_target_matrix(project).seed_targets,
+        audit.root,
+        scope=_project_write_scope(audit.root),
+        seed_targets=_project_target_matrix(audit.project).seed_targets,
     )
     for violation in violations:
         target = f" target '{violation.target}'" if violation.target else ""
@@ -4331,7 +4354,7 @@ def _run_core_security_audit(
         )
         if violation.kind in _SCOPE_DEPENDENT_VIOLATIONS:
             _warning_sink(
-                _warn,
+                audit.warn,
                 "core.security-scope-advisory",
                 subject=f"{violation.core_file.name}:{violation.target or '-'}",
             )(
@@ -4340,9 +4363,11 @@ def _run_core_security_audit(
                 "check runs per-ticket at commit time)"
             )
         else:
-            _fail(line, "ADR 0022 decision 21")
+            audit.fail(line, "ADR 0022 decision 21")
     if not violations and refs:
-        _pass(".core security validation passed (no fpga hooks / expr-params / in-scope scripts)")
+        audit.pass_(
+            ".core security validation passed (no fpga hooks / expr-params / in-scope scripts)"
+        )
 
 
 def _run_core_audit(
@@ -4355,16 +4380,18 @@ def _run_core_audit(
     _note: Check | None = None,
 ) -> None:
     """Coordinate the structural, security, and metadata core audits."""
-    note_sink = _note or _pass
-    root = project.project_root
-    _check_core_setup_hazards(project, root, _pass, _fail, _note=note_sink)
-    _check_core_schema(project, root, _pass, _warn, _fail, _note=note_sink)
-    refs = _enumerate_core_audit_targets(root, _pass, _fail)
+    audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
+    _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note)
+    _check_core_schema(project, audit.root, _pass, _warn, _fail, _note=audit.note)
+    refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
     if refs is None:
         return
     if refs:
-        _run_target_core_audit(project, refs, _pass, _warn, _skip, _fail, note_sink)
-    _run_core_security_audit(project, refs, _pass, _warn, _fail)
+        inputs = _CoreAuditInputs(audit.root, refs)
+        _check_target_metadata(audit, refs)
+        _check_target_sources(audit, refs, inputs)
+        _check_core_repository_hygiene(audit)
+    _run_core_security_audit(audit, refs)
     _audit_tests_toml(project, _pass, _skip, _fail)
     _audit_native_dependencies(project, _pass, _warn)
 
