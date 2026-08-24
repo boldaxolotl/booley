@@ -126,6 +126,7 @@ options, and you never have to rewrite a testbench you don't own:
   [flows.sim]
   pass_sentinels = ["ALL TESTS PASSED."]
   fail_sentinels = ["ERROR!", "TIMEOUT"]
+  cycle_sentinels = ["CoreMark completed in:"]
   ```
 
   These are honored end-to-end in the built-in Icarus/Verilator flow (a fail
@@ -135,8 +136,21 @@ options, and you never have to rewrite a testbench you don't own:
   it dynamically; the simulation smoke remains authoritative. Otherwise a
   passing run reads as INCONCLUSIVE only when you finally run it.
 
+Cycle counts use the same literal-prefix model. By default Booley recognizes
+`[SIM_CYCLES] smoke 12345`; `cycle_sentinels` lets an existing HDL testbench
+keep its own prefix instead. The prefix must be followed by a
+test name and a decimal integer as the line's final field, such as
+`CoreMark completed in: coremark 12345`. Booley selects the record matching the
+test it invoked, then puts the count in the MCP tool's per-test output and the
+JSON report's `tests[].cycles`. Configuring `cycle_sentinels` replaces the
+built-in cycle prefix; it does not affect the pass/fail verdict. For backward
+compatibility, a count-only record remains readable when it is the only cycle
+record in the log.
+
 Cocotb Targets are the exception: they score from cocotb's `results.xml`, so
-these knobs don't apply; see [Cocotb Targets](#cocotb-targets-python-testbenches).
+pass/fail sentinel knobs don't apply. Named cycle records are still collected
+from their batched output and attributed to the matching tests; see
+[Cocotb Targets](#cocotb-targets-python-testbenches).
 
 ### Frozen-clock watchdog (`[flows.sim].sim_time_grace_s`)
 
