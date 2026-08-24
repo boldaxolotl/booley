@@ -1,10 +1,10 @@
 # RTL optimization review
 
-Review SystemVerilog only for timing, area, and power. Other agents cover functional correctness, style, naming, comments, assertions, security, and conditional compilation.
+Review SystemVerilog only for timing, area, power, and provably unused or dead RTL. Other agents cover functional correctness, style, naming, comments, assertions, security, and conditional-compilation defects.
 
-Report only clear PPA wins with small, justified costs. Each finding needs a timing path, width calculation, liveness diagram, or equivalent proof. Judge synthesized hardware, not RTL spelling. If both forms synthesize to the same circuit, there is no finding.
+Report only clear PPA wins with small, justified costs, or dead-code removals that cannot change observable behavior. Each finding needs a timing path, width calculation, liveness diagram, fanout trace, or equivalent proof. For PPA findings, judge synthesized hardware, not RTL spelling: if both forms synthesize to the same circuit, there is no PPA finding. Source that synthesis already removes may still be a MINOR dead-code finding for maintainability, simulation cost, and lint cleanliness, but do not claim silicon savings.
 
-MAJOR means a likely critical-path or Fmax improvement, or a large area saving. MINOR means a small saving or a possible future improvement. Return only the strict JSON schema appended by the reviewer prompt.
+MAJOR means a likely critical-path or Fmax improvement, a large area saving, or substantial dead logic demonstrably retained in hardware. MINOR means a small saving, a possible future improvement, or dead source already pruned by synthesis. Return only the strict JSON schema appended by the reviewer prompt.
 
 ## Patterns
 
@@ -19,6 +19,8 @@ MAJOR means a likely critical-path or Fmax improvement, or a large area saving. 
 - Registers wider than their range. Size operands and intermediate expressions deliberately for the required mathematical range, signedness, overflow, saturation, and rounding. A counter bounded by `max` generally needs only `$clog2(max)+1` bits. `[area, timing, often power]`
 
 - Priority encoders. Each priority encoder needs to be verified - is it REALLY necessary? `[timing, sometimes area and power]`
+
+- Unused and dead RTL: internal signals or registers written but never read, unused declarations, calculations with no observable fanout, and unreachable states or branches. Require proof across all legal configurations; ignore reserved/debug/formal/coverage hooks and interface items without complete context. Missing-functionality defects belong to Bugs, Spec, or Protocol. `[maintainability, simulation/lint cost; area/power only if retained]`
 
 - Repeated expressions, duplicate decoders, copies of the same function in mutually exclusive modes, and muxes with constant, unreachable, or equivalent branches. Share or remove them only when the replacement does not add material delay to a critical path. `[area, power, sometimes timing]`
 
