@@ -97,15 +97,31 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
         ),
         exit_code=0,
     )
-    monkeypatch.setattr(doctor, "run_doctor_result", lambda *_a, **_kw: result)
 
-    payload = auto_doctor._execute(tmp_path, project_dir, "test")
+    def run_doctor(*_args, progress=None, **_kwargs):
+        print("captured Doctor finding")
+        progress("host/project checks")
+        return result
+
+    monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
+    progress = []
+
+    payload = auto_doctor._execute(
+        tmp_path,
+        project_dir,
+        "test",
+        progress=progress.append,
+    )
 
     assert payload["clean"] is False
     assert payload["trigger"] == "test"
     assert payload["findings"][0]["check_id"] == "agent.credential"
     assert auto_doctor.load_report(tmp_path) == payload
     assert auto_doctor.transcript_path(project_dir).is_file()
+    assert "captured Doctor finding" in auto_doctor.transcript_path(project_dir).read_text()
+    assert progress[0] == "host/project checks"
+    assert progress[-1].startswith("completed in ")
+    assert "transcript:" in progress[-1]
 
 
 def test_manual_runtime_result_replaces_stale_automatic_status(tmp_path: Path):
@@ -175,13 +191,22 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     _project(tmp_path)
     calls = []
 
-    def execute(root, _project_dir, trigger):
+    def execute(root, _project_dir, trigger, **_kwargs):
         calls.append(trigger)
         return _report(root, clean=True, checked_at=datetime.now(tz=UTC))
 
     monkeypatch.setattr(auto_doctor, "_execute", execute)
     monkeypatch.setattr(auto_doctor, "_notify_if_changed", lambda *_a: None)
 
-    assert auto_doctor.run_if_due(tmp_path, trigger="test") is not None
+    progress = []
+    assert (
+        auto_doctor.run_if_due(
+            tmp_path,
+            trigger="test",
+            progress=progress.append,
+        )
+        is not None
+    )
     assert auto_doctor.run_if_due(tmp_path, trigger="test") is None
     assert calls == ["test"]
+    assert progress == ["starting (no automatic Doctor result)"]

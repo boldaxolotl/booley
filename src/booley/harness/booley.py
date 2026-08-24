@@ -1895,18 +1895,18 @@ def _sleep_until_next_ticket(args: argparse.Namespace, project_root: Path) -> bo
     return interruptible_sleep(args.wait)
 
 
-def _ticket_loop(
-    args: argparse.Namespace,
-    project_root: Path,
-    venv_py: str,
-) -> int:
-    """Run the main ticket-processing loop; returns exit code."""
+def _run_automatic_doctor(project_root: Path) -> None:
+    """Run and report the stale startup Doctor without hiding its progress."""
     # Once per sweep (not per ticket): a stale automatic Doctor runs before
     # unattended work begins. It is advisory and fail-soft; the normal
     # preflight remains the blocking gate for ticket execution.
     from booley.harness import auto_doctor
 
-    auto_doctor.run_if_due(project_root, trigger="booley-run")
+    auto_doctor.run_if_due(
+        project_root,
+        trigger="booley-run",
+        progress=lambda message: logger.info("Automatic Doctor — %s", message),
+    )
     health_summary = auto_doctor.consume_changed_summary(project_root, channel="booley-run")
     if health_summary:
         report = auto_doctor.load_report(project_root) or {}
@@ -1914,6 +1914,15 @@ def _ticket_loop(
         emit(health_summary)
     elif auto_doctor.load_report(project_root) is None:
         doctor_stamp.warn_if_stale(project_root, logger.warning)
+
+
+def _ticket_loop(
+    args: argparse.Namespace,
+    project_root: Path,
+    venv_py: str,
+) -> int:
+    """Run the main ticket-processing loop; returns exit code."""
+    _run_automatic_doctor(project_root)
     handle_startup_orphans(project_root)
     os.chdir(str(project_root))
     attempt = 0
