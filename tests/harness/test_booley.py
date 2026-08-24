@@ -887,7 +887,7 @@ class TestGetTicketSummary:
 
 
 class TestHandleStartupOrphans:
-    @patch("booley.ticket_board.helpers.is_pid_alive", return_value=False)
+    @patch("booley.harness.orphan_handler.is_pid_alive", return_value=False)
     @patch("booley.harness.booley._run_board")
     def test_blocks_active_tickets(self, mock_board, _mock_alive, project_root: Path):
         mock_board.return_value = subprocess.CompletedProcess(

@@ -28,7 +28,6 @@ import contextlib
 import json
 import logging
 import os
-import signal
 import socket
 import sys
 import time
@@ -62,6 +61,7 @@ from booley.runtime.process_group import (
     force_async_process_group,
     force_async_process_group_now,
     new_group_kwargs,
+    terminate_adopted_process_group,
     terminate_async_process_group,
 )
 from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
@@ -445,8 +445,6 @@ def _reconcile_orphaned_jobs() -> None:
 
     if not should_run_outer_bookkeeping():
         return
-    from booley.ticket_board.helpers import is_pid_alive
-
     for rec in jobrec.list_records():
         if rec.status != jobrec.STATUS_RUNNING:
             continue
@@ -2396,8 +2394,6 @@ class _JobManager:
         if rec is None:
             return None
 
-        from booley.ticket_board.helpers import is_pid_alive
-
         if jobrec.derive_status(rec, is_pid_alive) != jobrec.STATUS_RUNNING:
             return "finished"
 
@@ -2499,8 +2495,6 @@ async def _poll_from_disk(run_id: str, jobs: _JobManager, wait_seconds: float = 
     each tick until terminal or out of budget.
     """
     deadline = time.monotonic() + max(0.0, wait_seconds)
-    from booley.ticket_board.helpers import is_pid_alive
-
     while True:
         rec = jobrec.read_record(run_id)
         if rec is None:
@@ -2616,25 +2610,10 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
 
 async def _cancel_adopted_process_group(pid: int) -> None:
     """Cancel a disk-only job by its session-leader PID."""
-    from booley.ticket_board.helpers import is_pid_alive
-
-    try:
-        if sys.platform == "win32":
-            os.kill(pid, signal.SIGTERM)
-        else:
-            os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        return
-    deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
-    while is_pid_alive(pid) and time.monotonic() < deadline:
-        await asyncio.sleep(0.1)
-    if not is_pid_alive(pid):
-        return
-    with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-        if sys.platform == "win32":
-            os.kill(pid, signal.SIGTERM)
-        else:
-            os.killpg(pid, signal.SIGKILL)
+    await terminate_adopted_process_group(
+        ProcessGroup(pid),
+        grace_seconds=_CANCEL_GRACE_SECONDS,
+    )
 
 
 async def _dispatch_cancel(
@@ -2746,8 +2725,6 @@ def _find_attachable_job(name: str, cmd: list[str]) -> str | None:
     record cannot capture the new submit. Argv is compared modulo the
     per-call ``--transcript-dir`` (see ``_strip_transcript_dir``).
     """
-    from booley.ticket_board.helpers import is_pid_alive
-
     wanted = _strip_transcript_dir(cmd)
     newest: jobrec.JobRecord | None = None
     for rec in jobrec.list_records():

@@ -55,7 +55,6 @@ from booley.runtime.job_records import (
     _proc_cmdline,
     parse_stamp,
 )
-from booley.runtime.pid import _windows_pid_alive as windows_pid_alive
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import rfc3339_from_epoch
 
@@ -273,10 +272,6 @@ def _describe_holder(tok: SlotToken, now: float) -> str:
         return f"pid {tok.pid} ({label})"
     held = max(0, int(now - started))
     return f"pid {tok.pid} ({label}), held {held // 60}m{held % 60:02d}s"
-
-
-def _windows_pid_alive(pid: int) -> bool:
-    return windows_pid_alive(pid)
 
 
 _default_pid_alive = is_pid_alive

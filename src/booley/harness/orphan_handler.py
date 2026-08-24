@@ -17,6 +17,7 @@ from pathlib import Path
 
 from booley.harness.colors import bold, red, yellow
 from booley.harness.terminal import status_indent
+from booley.runtime.pid import is_pid_alive
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import existing_runtime_file
 
@@ -40,7 +41,7 @@ def handle_startup_orphans(project_root: Path) -> int:
     """
     # Lazy imports to break circular dependency with booley.harness.booley
     from booley.harness.booley import _run_board, get_active_slugs, get_ticket_summary
-    from booley.ticket_board.helpers import is_pid_alive, read_lock_pid
+    from booley.ticket_board.helpers import read_lock_pid
 
     orphans = get_active_slugs(project_root)
     if not orphans:
@@ -96,7 +97,7 @@ def find_startup_orphans(project_root: Path) -> list[str]:
     automatic Doctor runs that must report state without moving tickets.
     """
     from booley.harness.booley import get_active_slugs
-    from booley.ticket_board.helpers import is_pid_alive, read_lock_pid
+    from booley.ticket_board.helpers import read_lock_pid
 
     active = get_active_slugs(project_root)
     if active:
@@ -162,7 +163,7 @@ def handle_post_run_orphans(project_root: Path, exit_code: int, limit_wait: int)
     """
     # Lazy imports to break circular dependency with booley.harness.booley
     from booley.harness.booley import get_active_slugs
-    from booley.ticket_board.helpers import is_pid_alive, read_lock_pid
+    from booley.ticket_board.helpers import read_lock_pid
 
     orphans = get_active_slugs(project_root)
     if not orphans:
