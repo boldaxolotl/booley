@@ -158,8 +158,62 @@ jobs:
           test -x crates/bwave/target/debug/bwave
           pytest crates/bwave/tests/test_*.py -q --tb=short -rs
 
+  package-artifacts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Build wheel and source distribution
+        run: |
+          pip install build==1.3.0 twine==6.1.0
+          python -m build
+          twine check dist/*
+
+      - name: Reject redistributed native and Nangate payloads
+        run: bash .github/scripts/validate_distribution_payloads.sh dist
+
+      - name: Validate direct wheel from a clean environment
+        shell: bash
+        run: |
+          python -m venv "${RUNNER_TEMP}/direct-wheel-venv"
+          "${RUNNER_TEMP}/direct-wheel-venv/bin/pip" install dist/*.whl
+          cd "${RUNNER_TEMP}"
+          BOOLEY_CONTAINER=1 "${RUNNER_TEMP}/direct-wheel-venv/bin/python" \
+            "${GITHUB_WORKSPACE}/.github/scripts/validate_installed_artifact.py" \
+            --inventory "${RUNNER_TEMP}/direct-wheel-files.txt" \
+            --forbid-root "${GITHUB_WORKSPACE}"
+
+      - name: Build and validate wheel from source distribution
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/sdist-wheel"
+          python -m pip wheel --no-deps --wheel-dir "${RUNNER_TEMP}/sdist-wheel" dist/*.tar.gz
+          python -m venv "${RUNNER_TEMP}/sdist-wheel-venv"
+          "${RUNNER_TEMP}/sdist-wheel-venv/bin/pip" install "${RUNNER_TEMP}"/sdist-wheel/*.whl
+          cd "${RUNNER_TEMP}"
+          BOOLEY_CONTAINER=1 "${RUNNER_TEMP}/sdist-wheel-venv/bin/python" \
+            "${GITHUB_WORKSPACE}/.github/scripts/validate_installed_artifact.py" \
+            --inventory "${RUNNER_TEMP}/sdist-wheel-files.txt" \
+            --forbid-root "${GITHUB_WORKSPACE}"
+          diff -u "${RUNNER_TEMP}/direct-wheel-files.txt" \
+            "${RUNNER_TEMP}/sdist-wheel-files.txt"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-dist
+          path: dist/
+          if-no-files-found: error
+
+
   bwave-smoke:
     runs-on: ubuntu-latest
+    needs: package-artifacts
     # An uncached image build compiles the EDA stack from source (~57 min
     # measured), then loads a ~6 GB image and uploads the layer cache — a
     # 60-minute budget killed the first run mid-flight. Cached rebuilds
@@ -173,13 +227,13 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Build wheel
-        run: |
-          pip install build
-          python -m build --wheel --outdir dist/
-
       - name: Install host-side test dependency
         run: pip install pytest==8.4.2
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-dist
+          path: dist/
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
