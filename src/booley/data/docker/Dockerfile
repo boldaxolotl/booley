@@ -242,9 +242,12 @@ RUN userdel -r ubuntu 2>/dev/null || true \
     && groupadd -g 1000 agent \
     && useradd -m -s /bin/bash -u 1000 -g 1000 agent
 
-# Install Booley package as root into system site-packages so it survives
-# the booley-pip-local named volume mounting over /home/agent/.local.
-# Dependencies also go system-wide to avoid the same masking problem.
+# Install the candidate's declared dependencies behind a cache boundary that
+# changes only when pyproject.toml changes. The exporter preserves every PEP
+# 508 string verbatim, including environment markers, and pip remains the one
+# resolver for both this stable layer and ordinary wheel installation.
+# Dependencies go system-wide so the booley-pip-local named volume cannot mask
+# them at runtime.
 #
 # claude-agent-sdk ships a private, full-size Claude CLI even though this
 # image already installs the normal npm CLI above.  Booley resolves that
@@ -252,18 +255,20 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 # copy wastes ~324 MB and is not a fallback in this runtime.  Remove it in
 # the SAME layer that pip creates it; a later-layer deletion would hide the
 # file from the merged filesystem without reclaiming any image storage.
-RUN echo ">>> Installing Booley Python package (system-wide)..."
-# Wheel filename uses the PEP 427-normalized distribution name (booley-rtl -> booley_rtl).
-COPY dist/booley_rtl-*.whl /tmp/
+COPY pyproject.toml /tmp/booley-build/pyproject.toml
+COPY src/booley/data/docker/export_project_dependencies.py /tmp/booley-build/export_project_dependencies.py
 RUN python -m ensurepip --default-pip \
-    && python -m pip install --break-system-packages --no-cache-dir --ignore-installed /tmp/booley_rtl-*.whl \
-    && rm -f /tmp/booley_rtl-*.whl \
+    && python /tmp/booley-build/export_project_dependencies.py \
+        /tmp/booley-build/pyproject.toml \
+        /tmp/booley-build/project-dependencies.txt \
+    && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
+        --requirement /tmp/booley-build/project-dependencies.txt \
+    && rm -f /tmp/booley-build/project-dependencies.txt \
     && CLAUDE_SDK_BUNDLED_CLI="$(python -c 'from pathlib import Path; import claude_agent_sdk; print(Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude")')" \
     && test -x "$(command -v claude)" \
     && test -x "$CLAUDE_SDK_BUNDLED_CLI" \
     && rm -f "$CLAUDE_SDK_BUNDLED_CLI" \
-    && test ! -e "$CLAUDE_SDK_BUNDLED_CLI" \
-    && python -c 'from booley.runtime._claude_backend import ClaudeSDKBackend; backend = ClaudeSDKBackend(); backend._resolve_cli_shim_once(); assert backend._cli_path and "_bundled" not in backend._cli_path'
+    && test ! -e "$CLAUDE_SDK_BUNDLED_CLI"
 
 # EDA invocation/registry layer (ADR 0019 + 0022) — pinned EXACTLY to the
 # flow-API-stable pair. These also arrive transitively via the wheel's
@@ -297,16 +302,33 @@ RUN cocotb-config --version \
 # comment); its Generic flow needs no FLOW_DEFINED_TOOL_OPTIONS entry, so only
 # Edalize's tools/verible.py is patched in. DELETE THIS LAYER once the upstream
 # Edalize PR (tools/verible.py) is merged and the pin above advances past it.
-RUN python - <<'PYEOF'
-import pathlib, shutil
-import booley, edalize.tools
-src = pathlib.Path(booley.__file__).parent / "data" / "edalize" / "verible.py"
-# edalize.tools is a namespace package (no __init__.py): __file__ is None,
-# only __path__ names the directory.
-dst = pathlib.Path(list(edalize.tools.__path__)[0]) / "verible.py"
-shutil.copyfile(src, dst)
-print(f"patched {dst}")
-PYEOF
+COPY src/booley/data/edalize/verible.py /tmp/booley-build/verible.py
+RUN python -c 'import pathlib, shutil, edalize.tools; src = pathlib.Path("/tmp/booley-build/verible.py"); dst = pathlib.Path(list(edalize.tools.__path__)[0]) / "verible.py"; shutil.copyfile(src, dst); print(f"patched {dst}")' \
+    && rm -f /tmp/booley-build/verible.py
+
+# Candidate seam. The wheel arrives only after invariant Python/EDA layers and
+# is installed without dependency resolution because the unchanged PEP 508
+# requirements were already resolved above. Validate its version and complete
+# package inventory against the installed distribution before discarding it.
+# Wheel filename uses the PEP 427-normalized distribution name (booley-rtl -> booley_rtl).
+COPY .github/scripts/validate_installed_artifact.py /tmp/booley-build/validate_installed_artifact.py
+COPY dist/booley_rtl-*.whl /tmp/booley-build/
+RUN WHEEL="$(find /tmp/booley-build -maxdepth 1 -name 'booley_rtl-*.whl' -print -quit)" \
+    && test -n "$WHEEL" \
+    && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
+        --no-deps "$WHEEL" \
+    && cd /tmp \
+    && BOOLEY_CONTAINER=1 python /tmp/booley-build/validate_installed_artifact.py \
+        --inventory /tmp/booley-installed-files.txt \
+        --forbid-root /work \
+        --wheel "$WHEEL" \
+    && rm -f "$WHEEL" /tmp/booley-installed-files.txt
+
+# Candidate-aware runtime sanity stays after installation: the normal npm CLI
+# must win over the SDK's removed private copy, and invariant integrations must
+# remain importable alongside the installed application.
+RUN python -c 'from booley.runtime._claude_backend import ClaudeSDKBackend; backend = ClaudeSDKBackend(); backend._resolve_cli_shim_once(); assert backend._cli_path and "_bundled" not in backend._cli_path' \
+    && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
 
 USER agent
 
