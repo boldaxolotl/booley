@@ -2388,6 +2388,44 @@ class TestCoreAudit:
         assert any("TB fileset tagged" in m for lvl, m in rec.events if lvl == "pass")
         assert any("security validation passed" in m for lvl, m in rec.events)
 
+    def test_each_root_target_partition_is_read_once(self, tmp_path: Path, monkeypatch):
+        from booley.fusesoc import fusesoc_registry
+
+        core = _CLEAN_SIM_CORE.replace(
+            "targets:\n",
+            "targets:\n"
+            "  lint:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator}\n"
+            "    filesets: [rtl]\n"
+            "    toplevel: dut\n",
+        )
+        (tmp_path / "design.core").write_text(core, encoding="utf-8")
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "tb").mkdir()
+        (tmp_path / "rtl" / "dut.sv").write_text(
+            "module dut; endmodule\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "tb" / "tb_dut.sv").write_text(
+            '$display("[SIM_RESULT] PASSED");\n',
+            encoding="utf-8",
+        )
+        original = fusesoc_registry.target_source_files_for_ref
+        calls = []
+
+        def partition(root, ref, *args, **kwargs):
+            if not kwargs.get("include_dependencies", False):
+                calls.append(ref.name)
+            return original(root, ref, *args, **kwargs)
+
+        monkeypatch.setattr(fusesoc_registry, "target_source_files_for_ref", partition)
+
+        rec = _audit(tmp_path)
+
+        assert rec.fails() == []
+        assert sorted(calls) == ["lint", "sim"]
+
     def _cpp_target_project(self, tmp_path: Path, include_line: str) -> doctor.ProjectAudit:
         (tmp_path / "design.core").write_text(
             """\

@@ -1304,6 +1304,22 @@ def target_source_files(
     *target* is not a single selectable Target (ADR 0030).
     """
     ref = resolve_ref(project_root, target)
+    return target_source_files_for_ref(
+        project_root,
+        ref,
+        include_dependencies=include_dependencies,
+        include_headers=include_headers,
+    )
+
+
+def target_source_files_for_ref(
+    project_root: Path | str,
+    ref: TargetRef,
+    include_dependencies: bool = False,
+    *,
+    include_headers: bool = False,
+) -> CoreSources:
+    """Partition sources for a Target reference already resolved by the caller."""
     doc = read_core(ref.core_file)
     targets = doc.get("targets") or {}
     target_def = targets.get(ref.name) if isinstance(targets, Mapping) else None
@@ -1320,7 +1336,8 @@ def target_source_files(
     )
 
     if include_dependencies:
-        closure = selectable_core_closure(project_root, [target]) or frozenset()
+        token = f"{ref.vlnv}#{ref.name}"
+        closure = selectable_core_closure(project_root, [token]) or frozenset()
         for core_file in sorted(closure):
             if core_file == ref.core_file:
                 continue  # already partitioned above, per the selected Target
