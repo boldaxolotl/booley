@@ -29,6 +29,14 @@ from booley.harness.build_stamp import (
 from booley.harness.init_common import InitContext
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
+WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"
+
+
+def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
+    wheel = root / "dist" / name
+    wheel.parent.mkdir(parents=True, exist_ok=True)
+    wheel.write_bytes(b"wheel")
+    return wheel
 
 
 def _git(root: Path, *args: str) -> None:
@@ -111,6 +119,7 @@ class TestInitStampsItsWheel:
             if cmd[0] == "git":
                 return real_run(cmd, **kwargs)
             seen.append(stamp_path(repo).is_file())
+            _write_wheel(repo)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -129,11 +138,51 @@ class TestInitStampsItsWheel:
             if cmd[0] == "git":
                 return real_run(cmd, **kwargs)
             assert not stale_module.exists()
+            _write_wheel(repo)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
         assert init_docker_image._docker_build_wheel(InitContext(), repo) is True
+
+    def test_wheel_build_replaces_older_distribution_wheels(self, repo: Path, monkeypatch):
+        old_wheel = _write_wheel(repo, "booley_rtl-0.1.0-py3-none-any.whl")
+        real_run = subprocess.run
+
+        def _fake_run(cmd, **kwargs):
+            if cmd[0] == "git":
+                return real_run(cmd, **kwargs)
+            assert not old_wheel.exists()
+            _write_wheel(repo)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        assert init_docker_image._docker_build_wheel(InitContext(), repo) is True
+        assert [path.name for path in (repo / "dist").glob("booley_rtl-*.whl")] == [WHEEL_NAME]
+
+    @pytest.mark.parametrize(
+        "outputs",
+        [[], [WHEEL_NAME, "booley_rtl-0.2.4-py3-none-any.whl"]],
+        ids=["missing", "multiple"],
+    )
+    def test_wheel_build_requires_exactly_one_output(
+        self, repo: Path, monkeypatch, outputs: list[str]
+    ):
+        real_run = subprocess.run
+
+        def _fake_run(cmd, **kwargs):
+            if cmd[0] == "git":
+                return real_run(cmd, **kwargs)
+            for name in outputs:
+                _write_wheel(repo, name)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        ctx = InitContext()
+
+        assert init_docker_image._docker_build_wheel(ctx, repo) is False
+        assert ctx.results[-1].status == "err"
 
     def test_failed_wheel_build_still_cleans_up_and_reports(self, repo: Path, monkeypatch):
         def _boom(cmd, **kwargs):
@@ -152,6 +201,14 @@ class TestInitStampsItsWheel:
 
         assert "write_build_stamp" in text
         assert "rev-parse --short HEAD" not in text
+
+    def test_build_sh_removes_old_distribution_wheels_before_build(self):
+        text = BUILD_SH.read_text(encoding="utf-8")
+        cleanup = 'rm -f "$BOOLEY_ROOT"/dist/booley_rtl-*.whl'
+        build = '"$PYBUILD" -P -m build --wheel --outdir dist/'
+
+        assert cleanup in text
+        assert text.index(cleanup) < text.index(build)
 
 
 class TestStampIsNotFingerprinted:
