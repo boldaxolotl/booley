@@ -21,7 +21,12 @@ from booley.harness.developer_guardrails import (
     check_uncommitted_code_statuses,
 )
 from booley.harness.models import TicketContext
-from booley.runtime.ticket_repositories import TicketRepository
+from booley.runtime.ticket_repositories import (
+    TicketRepository,
+    TicketWorkspace,
+    TicketWorkspaceRequest,
+    WorkspaceMode,
+)
 
 
 def _make_ctx(tmp_path: Path) -> TicketContext:
@@ -133,7 +138,21 @@ def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
         TicketRepository(ctx.worktree_path),
         TicketRepository(project_worktree, ".booley_project"),
     )
+    workspace = TicketWorkspace(
+        TicketWorkspaceRequest(
+            project_root=ctx.project_root,
+            worktree=ctx.worktree_path,
+            ticket_slug=ctx.slug,
+            base=ctx.branch,
+            ticket_scope=tuple(ctx.scope_raw),
+            mode=WorkspaceMode.FRESH,
+        )
+    )
     with (
+        patch(
+            "booley.harness.setup.project_worktree.ticket_workspace",
+            return_value=workspace,
+        ),
         patch(
             "booley.runtime.ticket_repositories.ticket_repositories",
             return_value=repositories,

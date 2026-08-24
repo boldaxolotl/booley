@@ -31,6 +31,7 @@ from booley.dev_support.development_state import (
     DevelopmentState,
 )
 from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_budget
+from booley.runtime.environment import scoped_environment
 from booley.runtime.git import git_run
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
@@ -1095,35 +1096,16 @@ def _check_ticket_dirty_statuses(worktree: Path) -> list[DirtyFile]:
 
 
 def _commit_ticket_paths(ctx: TicketContext, paths: list[str], message: str) -> None:
-    """Commit authorized paths in each repository, attempting every repository."""
-    from booley.runtime.git import commit_scope
-    from booley.runtime.ticket_repositories import ticket_repositories
+    """Commit authorized paths through the Ticket Workspace."""
+    from booley.runtime.ticket_repositories import TicketWorkspaceError
 
     from .blocking import BlockingError
+    from .setup.project_worktree import ticket_workspace
 
-    assert ctx.worktree_path is not None
-    repositories = ticket_repositories(ctx.worktree_path)
-    project_prefixes = {repo.path_prefix for repo in repositories if repo.path_prefix}
-    failures: list[str] = []
-    for repository in repositories:
-        if repository.path_prefix:
-            selected = [path for path in paths if path.startswith(f"{repository.path_prefix}/")]
-        else:
-            selected = [
-                path
-                for path in paths
-                if not any(path.startswith(f"{prefix}/") for prefix in project_prefixes)
-            ]
-        if not selected:
-            continue
-        local_paths = [repository.local_path(path) for path in selected]
-        try:
-            commit_scope(repository.worktree, local_paths, message, literal=True)
-        except BlockingError as exc:
-            label = repository.path_prefix or "outer repository"
-            failures.append(f"{label}: {exc}")
-    if failures:
-        raise BlockingError("; ".join(failures))
+    try:
+        ticket_workspace(ctx).commit(paths, message)
+    except TicketWorkspaceError as exc:
+        raise BlockingError(str(exc)) from exc
 
 
 def _run_post_guardrails(
@@ -1132,6 +1114,8 @@ def _run_post_guardrails(
     run_index: int,
 ) -> bool:
     """Run post-developer guardrails. Returns True if ticket was blocked."""
+    from booley.runtime.ticket_repositories import TicketWorkspaceError
+
     from .colors import yellow
     from .developer_guardrails import (
         GitStatusError,
@@ -1143,7 +1127,7 @@ def _run_post_guardrails(
     if ctx.worktree_path:
         try:
             dirty = _check_ticket_dirty_statuses(ctx.worktree_path)
-        except GitStatusError as exc:
+        except (GitStatusError, TicketWorkspaceError) as exc:
             logger.warning("Cannot inspect uncommitted edits for %s: %s", ctx.slug, exc)
             block_ticket(
                 ctx,
@@ -1356,6 +1340,8 @@ def _commit_leftover_edits(
     *committable* contains only paths authorized by the ticket Scope. Other
     dirty paths remain in the worktree for explicit triage.
     """
+    from booley.runtime.ticket_repositories import TicketWorkspaceError
+
     from .blocking import BlockingError
     from .colors import yellow
     from .developer_guardrails import (
@@ -1382,7 +1368,7 @@ def _commit_leftover_edits(
 
     try:
         remaining = _check_ticket_dirty_statuses(ctx.worktree_path)
-    except GitStatusError as exc:
+    except (GitStatusError, TicketWorkspaceError) as exc:
         logger.warning("Cannot recheck leftover edits for %s: %s", ctx.slug, exc)
         block_ticket(
             ctx,
@@ -1804,11 +1790,14 @@ def _resolve_booley_project_dir(project_root: Path) -> Path:
 def _ticket_project_dir(ctx: TicketContext) -> Path:
     """Return ticket-authored project content, falling back to control-plane data."""
     if ctx.worktree_path is not None:
-        from booley.runtime.ticket_repositories import paired_project_repository
+        from booley.runtime.ticket_repositories import TicketWorkspaceError
 
-        repository = paired_project_repository(ctx.worktree_path)
-        if repository is not None:
-            return repository.worktree
+        from .setup.project_worktree import ticket_workspace
+
+        try:
+            return ticket_workspace(ctx).authored_project_dir
+        except TicketWorkspaceError:
+            pass
     return _resolve_booley_project_dir(ctx.project_root)
 
 
@@ -2034,15 +2023,8 @@ async def _launch_developer_agent(
     backend_kwargs = {"on_event": on_event}
     if developer_budget is not None:
         backend_kwargs["developer_budget"] = developer_budget
-    previous_project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
-    os.environ.update(endpoint_env)
-    try:
+    with scoped_environment(endpoint_env):
         return await cfg.active_backend.call(params, **backend_kwargs)
-    finally:
-        if previous_project_dir is None:
-            os.environ.pop("BOOLEY_PROJECT_DIR", None)
-        else:
-            os.environ["BOOLEY_PROJECT_DIR"] = previous_project_dir
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:
