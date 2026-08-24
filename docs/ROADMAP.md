@@ -72,7 +72,12 @@ per-Target metadata should explicitly include or exclude that Target rather
 than making users maintain a second Target allowlist in a workflow file. Push
 it to CI and the answer to "does this repo still build" stops being folklore.
 
-On a pull request it goes further and reports what the change *cost* — area, Fmax, coverage, measured against the same design before the change rather than against a stale number from last week. Reviewers see "+2.2% area, −6 MHz" next to the diff, and a project can set limits so a regression fails the run instead of being noticed a month later.
+On a pull request it goes further and reports what the change *cost* — area,
+Fmax, simulation cycle counts, and coverage, measured against the same design
+before the change rather than against a stale number from last week. Reviewers
+see "+2.2% area, −6 MHz, +4.1% cycles" next to the diff, so users can track both
+area and performance in CI. A project can set limits so a regression fails the
+run instead of being noticed a month later.
 
 Because the sandbox image already carries the EDA stack, there is nothing to
 install on a hosted runner: the workflow is a handful of lines and no simulator

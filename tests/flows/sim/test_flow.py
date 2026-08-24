@@ -255,27 +255,60 @@ def _make_flow(
 
 class TestCycleParsing:
     def test_extracts_cycle_count(self):
-        output = "some log\n[SIM_CYCLES] 12345\nmore log"
-        assert parse_cycles(output) == 12345
+        output = "some log\n[SIM_CYCLES] smoke 12345\nmore log"
+        assert parse_cycles(output, "smoke") == 12345
 
     def test_large_cycle_count(self):
-        output = "[SIM_CYCLES] 9999999"
-        assert parse_cycles(output) == 9999999
+        output = "[SIM_CYCLES] stress 9999999"
+        assert parse_cycles(output, "stress") == 9999999
 
     def test_no_cycle_sentinel(self):
         output = "simulation finished without cycle info"
-        assert parse_cycles(output) is None
+        assert parse_cycles(output, "smoke") is None
 
     def test_empty_output(self):
-        assert parse_cycles("") is None
+        assert parse_cycles("", "smoke") is None
 
-    def test_multiple_cycle_lines_returns_first(self):
-        output = "[SIM_CYCLES] 100\n[SIM_CYCLES] 200"
-        assert parse_cycles(output) == 100
+    def test_multiple_cycle_lines_selects_test_name(self):
+        output = "[SIM_CYCLES] smoke 100\n[SIM_CYCLES] stress 200"
+        assert parse_cycles(output, "stress") == 200
+
+    def test_test_name_may_contain_spaces(self):
+        output = "[SIM_CYCLES] pipeline smoke test 314"
+        assert parse_cycles(output, "pipeline smoke test") == 314
 
     def test_cycle_with_extra_whitespace(self):
-        output = "[SIM_CYCLES]   42"
-        assert parse_cycles(output) == 42
+        output = "[SIM_CYCLES]   smoke   42"
+        assert parse_cycles(output, "smoke") == 42
+
+    def test_configured_cycle_sentinel(self):
+        output = "CoreMark completed in: coremark 12345"
+        assert parse_cycles(output, "coremark", ["CoreMark completed in:"]) == 12345
+
+    def test_configured_cycle_sentinel_is_literal(self):
+        output = "cycles.total: smoke 987"
+        assert parse_cycles(output, "smoke", ["cycles.total:"]) == 987
+
+    def test_configured_cycle_sentinel_overrides_default(self):
+        output = "[SIM_CYCLES] smoke 10\nEXECUTED_CYCLES smoke 20"
+        assert parse_cycles(output, "smoke", ["EXECUTED_CYCLES"]) == 20
+
+    def test_overlapping_configured_sentinels_use_the_longest_literal(self):
+        output = "CYCLES TOTAL smoke 20"
+        assert parse_cycles(output, "smoke", ["CYCLES", "CYCLES TOTAL"]) == 20
+
+    def test_single_legacy_cycle_record_remains_compatible(self):
+        assert parse_cycles("[SIM_CYCLES] 42", "smoke") == 42
+
+    def test_multiple_legacy_cycle_records_are_ambiguous(self):
+        output = "[SIM_CYCLES] 10\n[SIM_CYCLES] 20"
+        assert parse_cycles(output, "smoke") is None
+
+    def test_legacy_cycle_record_can_be_disabled_for_a_batch(self):
+        assert parse_cycles("[SIM_CYCLES] 42", "smoke", allow_legacy=False) is None
+
+    def test_named_record_for_another_test_is_not_misattributed(self):
+        assert parse_cycles("[SIM_CYCLES] stress 42", "smoke") is None
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +861,20 @@ def _mock_execute_fail(self, cmd: list[str]) -> SubprocessResult:
     )
 
 
+def _mock_execute_custom_cycle_pass(self, cmd: list[str]) -> SubprocessResult:
+    """Simulate a passing test run with a project-native cycle prefix."""
+    return SubprocessResult(
+        returncode=0,
+        stdout=(
+            "[SIM_RESULT] PASSED\n"
+            "CoreMark completed in: coremark 31415\n"
+            '[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
+        ),
+        stderr="",
+        duration_s=6.1,
+    )
+
+
 def _mock_execute_inconclusive(self, cmd: list[str]) -> SubprocessResult:
     """Simulate an inconclusive run — rc=0, no sentinel, no summary."""
     return SubprocessResult(
@@ -1038,6 +1085,31 @@ class TestReportGeneration:
         assert len(report["tests"]) == 2
         assert report["tests"][0]["name"] == "smoke"
         assert report["tests"][0]["cycles"] == 2561
+
+    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["coremark"]})
+    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
+    @patch.object(SimulateFlow, "_execute", _mock_execute_custom_cycle_pass)
+    def test_configured_cycle_sentinel_reaches_mcp_and_json_reports(
+        self,
+        _mock_edalize,
+        _mock_backend,
+        _mock_tests,
+        tmp_path: Path,
+    ):
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            "[flows.sim]\n"
+            'cycle_sentinels = ["CoreMark completed in:"]\n',
+            encoding="utf-8",
+        )
+
+        result = _make_flow(tmp_path, config="lite")._run()
+
+        assert "31,415 cycles" in result.report_text
+        report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text())
+        assert report["tests"][0]["cycles"] == 31415
 
     def test_grouped_hdl_run_preserves_each_test_log_after_later_failure(
         self,
@@ -1407,6 +1479,24 @@ class TestEdalizeSimPath:
         assert fails == ["ERROR!", "TIMEOUT"]
         # Unconfigured project -> empty lists (built-in markers used downstream).
         assert _resolve_sim_sentinels(tmp_path / "nowhere") == ([], [])
+
+    def test_resolve_cycle_sentinels_reads_booley_toml(self, tmp_path: Path):
+        """[flows.sim].cycle_sentinels are read from booley.toml."""
+        from booley.flows.sim.flow import _resolve_cycle_sentinels
+
+        proj = tmp_path / ".booley_project"
+        proj.mkdir()
+        (proj / "booley.toml").write_text(
+            "[flows.sim]\n"
+            'cycle_sentinels = ["CoreMark completed in:", "EXECUTED_CYCLES"]\n',
+            encoding="utf-8",
+        )
+        assert _resolve_cycle_sentinels(tmp_path) == [
+            "CoreMark completed in:",
+            "EXECUTED_CYCLES",
+        ]
+        # Unconfigured project -> built-in marker used by parse_cycles.
+        assert _resolve_cycle_sentinels(tmp_path / "nowhere") == []
 
     def test_run_cmds_forward_configured_trace_args(self, tmp_path: Path):
         """[flows.sim].trace_args rides both run-half commands when tracing.
