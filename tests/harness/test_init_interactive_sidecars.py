@@ -44,3 +44,30 @@ def test_installed_wheel_builds_missing_interactive_sidecars(monkeypatch, tmp_pa
     assert all(call[-1] == str(docker_source) for call in build_calls)
     dockerfiles = {Path(call[call.index("-f") + 1]).name for call in build_calls}
     assert dockerfiles == {"Dockerfile.egress-proxy", "Dockerfile.reaper"}
+
+
+def test_sidecar_build_failures_explain_impact_and_retry(tmp_path: Path, capsys) -> None:
+    ctx = InitContext(project_root=tmp_path)
+    with (
+        patch.object(init_cmd, "_booley_repo_root", return_value=tmp_path),
+        patch.object(init_cmd.idk, "ensure_egress_network", return_value=False),
+        patch.object(
+            init_cmd.idk,
+            "ensure_egress_proxy_image",
+            side_effect=RuntimeError("egress-proxy image build failed: failed to fetch layer"),
+        ),
+        patch.object(
+            init_cmd.idk,
+            "ensure_reaper_image",
+            side_effect=RuntimeError("reaper image build failed: base image unavailable"),
+        ),
+    ):
+        notes = init_cmd._ensure_interactive_docker(ctx)
+
+    output = capsys.readouterr().out
+    assert "failed to fetch layer" in output
+    assert "Session Runtime has no model-service egress" in output
+    assert "idle timeout and maximum-session enforcement are unavailable" in output
+    assert "booley init --seed" in output
+    assert "proxy:skipped" in notes
+    assert "reaper:skipped" in notes

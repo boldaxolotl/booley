@@ -1377,7 +1377,8 @@ def _ensure_interactive_docker(ctx: InitContext, *, license_required: bool = Fal
         ok(f"booley-proxy {proxy_status}")
         notes.append(f"proxy:{proxy_status}")
     else:
-        warn("could not build egress-proxy image — egress sidecar not started")
+        warn("egress-proxy image unavailable — Session Runtime has no model-service egress")
+        info("  fix the build error above, then retry: booley init --seed")
         notes.append("proxy:skipped")
 
     # Idle reaper + concurrency cap.
@@ -1395,7 +1396,11 @@ def _ensure_interactive_docker(ctx: InitContext, *, license_required: bool = Fal
         )
         notes.append(f"reaper:{reaper_status}")
     else:
-        warn("could not build reaper image — idle reaper not started")
+        warn(
+            "reaper image unavailable — idle timeout and maximum-session enforcement "
+            "are unavailable"
+        )
+        info("  fix the build error above, then retry: booley init --seed")
         notes.append("reaper:skipped")
 
     return notes
