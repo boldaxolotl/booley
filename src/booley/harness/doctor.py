@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import getpass
 import hashlib
 import json
 import os
@@ -25,13 +24,25 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from booley.audit import (
+    agent_schema,
+    config_common,
+    configs_schema,
+    design_size,
+    eda_environment,
+    flow_schema,
+    host_environment,
+    project_schema,
+    resource_policy,
+    target_matrix,
+)
 from booley.config.guidance_links import (
     CANON_NAME,
     LINK_NAMES,
     ensure_guidance_links,
     guidance_entry_current,
 )
-from booley.config.project_config import normalize_configs_toml, normalize_tests_toml
+from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
 from booley.dev_support.workspace_isolation import get_category_dirs
 from booley.flows import execution
@@ -84,13 +95,7 @@ from booley.runtime.project_dir import (
 )
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
-from booley.targets.flow_names import (
-    DEFAULT_TARGET_KEY,
-    LEGACY_TO_CANONICAL,
-    RETIRED_TARGET_KEY,
-    canonical,
-    config_section,
-)
+from booley.targets.flow_names import config_section
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
@@ -152,48 +157,9 @@ _SELFTEST_FOOTPRINT_NOTE = {
 # 0 = pass, 1 = graded design failure (fail/elab_error), 2 = infra/contract error.
 _TOOL_EXIT_PASS = 0
 _TOOL_EXIT_DESIGN_FAIL = 1
-# Knobs that only some Flows honor. Maps a knob to the Flows that read it from
-# ``[flows.<flow>]``. A knob set under a Flow outside its reader set is silently
-# ignored; Doctor warns so a setting copied from another Flow (e.g.
-# lint borrowing simulate/asic's ``timeout_ms``) that *looks* active is flagged
-# instead of quietly doing nothing.
-_SELECTIVE_FLOW_KNOBS = {
-    "timeout_ms": frozenset({"sim", "synth", "fpga"}),
-    "pre_run_commands": frozenset({"sim"}),
-    "sim_time_grace_s": frozenset({"sim"}),
-    "keep_build_dir": frozenset({"elab"}),
-    "fail_on_timing_violation": frozenset({"synth"}),
-    "warnings_as_errors": frozenset({"lint"}),
-    # Single-reader knobs surfaced by the 2026-07 hotspot sweep: each was
-    # documented but absent here, so a copy under the wrong Flow was silently
-    # inert with no warning.
-    "run_cwd": frozenset({"sim"}),
-    "trace_args": frozenset({"sim"}),
-    "trace_files": frozenset({"sim"}),
-    "output_dir": frozenset({"sim", "synth"}),
-    "expected_latches": frozenset({"synth"}),
-}
-# HDL source suffixes — used by the readmemh scan and the large-design advisory.
+# HDL source suffixes used by Doctor's readmem scan. Design sizing owns its own
+# source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
-# Large-design advisory (F5 / scale-awareness). Tree entries pruned for the cheap
-# ``--deep`` budget heuristic below.
-_SIZE_SKIP_DIRS = frozenset(
-    {
-        ".git",
-        ".booley_project",
-        "build",
-        "dist",
-        "node_modules",
-        ".venv",
-        "__pycache__",
-        ".hg",
-        ".svn",
-    }
-)
-# Thresholds chosen to flag genuinely oversized cores (e.g. C910 ≈ 483 files /
-# 415K LOC) without faulting mid-size designs (ibex, picorv32).
-_LARGE_DESIGN_FILES = 250
-_LARGE_DESIGN_LOC = 150_000
 _CONTAINER_CLI = "doc" + "ker"
 _SKILL_DIRS = (
     Path("." + "ag" + "ents") / "skills",
@@ -259,6 +225,25 @@ def _warning_sink(
             sink(finding)
 
     return emit
+
+
+def _render_environment_finding(
+    finding: host_environment.EnvironmentFinding,
+    _pass: Check,
+    _warn: Warn,
+    _skip: Check,
+    _fail: Fail,
+) -> None:
+    """Translate a typed host finding into Doctor presentation callbacks."""
+    if finding.severity is host_environment.EnvironmentSeverity.PASS:
+        _pass(finding.message)
+    elif finding.severity is host_environment.EnvironmentSeverity.SKIP:
+        _skip(finding.message)
+    elif finding.severity is host_environment.EnvironmentSeverity.FAIL:
+        _fail(finding.message, finding.fix)
+    else:
+        assert finding.check_id is not None
+        _warning_sink(_warn, finding.check_id)(finding.message, finding.fix)
 
 
 @dataclass(frozen=True)
@@ -691,13 +676,13 @@ def _run_deep_phase(
 def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> str | None:
     """Run host environment checks. Returns the container CLI path."""
     py_ver = sys.version_info
-    if (py_ver.major, py_ver.minor) >= MIN_PY:
-        _pass(f"Python {py_ver.major}.{py_ver.minor}")
-    else:
-        _fail(
-            f"Python {py_ver.major}.{py_ver.minor} (need >= {MIN_PY[0]}.{MIN_PY[1]})",
-            f"install python{MIN_PY[0]}.{MIN_PY[1]}+",
-        )
+    _render_environment_finding(
+        host_environment.audit_python_version((py_ver.major, py_ver.minor), MIN_PY),
+        _pass,
+        _warn,
+        _skip,
+        _fail,
+    )
 
     try:
         import booley
@@ -721,47 +706,15 @@ def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> s
 
 
 def _check_legacy_distribution(_pass: Check, _fail: Fail) -> None:
-    """Fail when the pre-rename ``booley`` distribution is still installed.
-
-    The PyPI distribution was renamed ``booley`` -> ``booley-rtl``. Because the
-    *import* package kept the name ``booley``, a leftover editable install of
-    the old distribution drops a ``__editable__.booley-*.pth`` on sys.path that
-    silently wins over a freshly installed ``booley-rtl`` checkout: `pip show
-    booley-rtl` points at the new tree while `import booley` and `booley
-    --version` still resolve the old one. Nothing about that is visible unless
-    you look for it, so name both the conflict and the exact cleanup.
-    """
-    from importlib.metadata import PackageNotFoundError, distribution
-
-    try:
-        legacy = distribution("booley")
-    except PackageNotFoundError:
-        _pass("no legacy `booley` distribution shadowing `booley-rtl`")
-        return
-
-    import booley
-
-    resolved = Path(booley.__file__ or "?").resolve().parent
-    legacy_ver = legacy.metadata["Version"] or "?"
-    if booley.__dist_name__ == "booley":
-        _fail(
-            f"the pre-rename `booley` distribution ({legacy_ver}) is installed "
-            f"and is the one supplying `import booley` (from {resolved}); "
-            "`booley-rtl` is not installed at all",
-            "pip uninstall -y booley && pip install -e '.[dev]'  # or: pip install booley-rtl",
-        )
-        return
-    _fail(
-        f"both `booley` ({legacy_ver}) and `booley-rtl` are installed; the "
-        f"legacy distribution can shadow the newer one on sys.path "
-        f"(`import booley` currently resolves to {resolved})",
-        "pip uninstall -y booley  # then re-run doctor to confirm the path moved",
+    """Render the extracted legacy-distribution audit."""
+    _render_environment_finding(
+        host_environment.audit_legacy_distribution(),
+        _pass,
+        lambda _message: None,
+        lambda _message: None,
+        _fail,
     )
 
-
-# Skew beyond this is enough to make apt reject a freshly published Release
-# file ("not valid yet") during a sandbox image build.
-_CLOCK_SKEW_WARN_S = 120
 
 #: ``.core`` security violations whose verdict depends on the agent's write
 #: Scope. doctor only has a synthetic project-wide Scope, so these are
@@ -772,115 +725,29 @@ _SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script
 
 
 def _check_host_clock(_pass: Check, _warn: Check, _skip: Check) -> None:
-    """Warn when the host clock is skewed from true UTC (F-5).
-
-    Dual-boot Windows machines commonly read the RTC as *local* time, leaving
-    the host — and the Docker Desktop/WSL2 VM, which inherits its clock —
-    hours off true UTC. apt inside a sandbox image build then rejects
-    freshly published Ubuntu Release files as "not valid yet" and the build
-    dies confusingly in an early layer. The Dockerfile relaxes apt's
-    date-window check as a backstop, but the skewed clock also breaks TLS
-    edge cases and timestamps, so surface it. Reference time comes from an
-    HTTP ``Date:`` header (second-granularity — plenty for a >2 min
-    threshold); fail-soft offline.
-    """
-    _warn = _warning_sink(_warn, "host.clock-skew")
-
-    import email.utils
-    import urllib.error
-    import urllib.request
-
-    for url in ("https://www.google.com", "https://one.one.one.one"):
-        try:
-            req = urllib.request.Request(url, method="HEAD")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                date_header = resp.headers.get("Date", "")
-            remote = email.utils.parsedate_to_datetime(date_header)
-        except (urllib.error.URLError, OSError, TypeError, ValueError):
-            continue
-        if remote.tzinfo is None:
-            continue
-        skew = (datetime.now(UTC) - remote).total_seconds()
-        if abs(skew) <= _CLOCK_SKEW_WARN_S:
-            _pass(f"host clock agrees with true UTC (skew {skew:+.0f}s)")
-            return
-        direction = "behind" if skew < 0 else "ahead of"
-        hours = abs(skew) / 3600
-        _warn(
-            f"host clock is {hours:.1f}h {direction} true UTC (vs HTTP Date "
-            f"from {url}) — sandbox image builds and TLS can fail on this; "
-            "dual-boot machines often read the RTC as local time. Fix: "
-            "elevated `w32tm /resync` (Windows) or enable NTP time sync"
-        )
-        return
-    _skip("host clock check skipped - no reference time reachable (offline?)")
+    """Render the extracted host clock probe."""
+    _render_environment_finding(
+        host_environment.probe_host_clock(), _pass, _warn, _skip, lambda *_args: None
+    )
 
 
 def _check_docker(_pass: Check, _skip: Check, _fail: Fail) -> str | None:
-    """Check the container runtime.
-
-    Inside the Session Runtime container (``BOOLEY_CONTAINER=1``) there is no
-    nested container runtime — Booley Flows run directly in-container —
-    so a missing runtime is expected, not a failure. SKIP the whole check there
-    rather than emit a scary FAIL for a healthy in-container setup (QA-3).
-    """
+    """Render the extracted container-runtime probe."""
     from booley.runtime import runtime_context
 
-    if runtime_context.inside_session_runtime():
-        _skip("container runtime check skipped (inside Session Runtime; Booley Flows run here)")
-        return None
-    docker_exe = shutil.which(_CONTAINER_CLI)
-    if not docker_exe:
-        _fail("container runtime not on PATH", "install a supported container runtime")
-        return None
-    try:
-        result = subprocess.run(
-            [docker_exe, "info"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError) as exc:
-        _fail(f"container runtime probe failed: {exc}", "start the container runtime service")
-        return None
-    if result.returncode == 0:
-        _pass("container runtime running")
-        return docker_exe
-    combined = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
-    if "permission denied" in combined:
-        _fail("container runtime permission denied", _docker_permission_denied_fix())
-    else:
-        _fail("container runtime not running", "start the container runtime service")
-    return None
+    audit = host_environment.probe_container_runtime(
+        _CONTAINER_CLI,
+        inside_session_runtime=runtime_context.inside_session_runtime(),
+        which=shutil.which,
+        run=subprocess.run,
+    )
+    _render_environment_finding(audit.finding, _pass, lambda _message: None, _skip, _fail)
+    return audit.executable
 
 
 def _docker_permission_denied_fix() -> str:
-    """Tailor the docker permission-denied remedy to the user's group state.
-
-    On native Linux the most common cause is that the user was added to the
-    ``docker`` group but the current login session still carries the old group
-    set; ``sg``/re-login refreshes it. Distinguish that from "never added".
-    """
-    try:
-        import grp
-
-        group = grp.getgrnam("docker")
-    except (ImportError, KeyError):
-        return "add your user to the 'docker' group (sudo usermod -aG docker $USER) and log out/in"
-    in_group_static = getpass.getuser() in group.gr_mem
-    try:
-        in_group_live = group.gr_gid in os.getgroups()
-    except (AttributeError, OSError):
-        in_group_live = False
-    if in_group_static and not in_group_live:
-        return (
-            "you are in the 'docker' group but this shell predates it; "
-            "log out/in, or run via: sg docker -c '<command>'"
-        )
-    if not in_group_static:
-        return "add your user to the 'docker' group (sudo usermod -aG docker $USER) and log out/in"
-    return "ensure the docker daemon is running and the socket is accessible"
+    """Compatibility facade for the extracted runtime permission guidance."""
+    return host_environment.docker_permission_denied_fix()
 
 
 def _sandbox_image(project: ProjectAudit | None) -> str:
@@ -1032,67 +899,6 @@ def _load_toml(path: Path, _pass: Check, _fail: Fail) -> dict[str, Any] | None:
     return data
 
 
-# Canonical top-level booley.toml tables. An unrecognized table is almost always
-# a typo or a stale/removed section — every consumer silently ignores it, so a
-# setting the user believes is active does nothing. Doctor surfaces these.
-_KNOWN_BOOLEY_TOML_TABLES = frozenset(
-    {
-        "project",
-        "flows",
-        "mcp_tools",
-        "sandbox",
-        "agent",
-        "models",
-        "jobs",
-        "interactive",
-        "notifications",
-        "feedback",
-        "sources",
-        "developer",
-        "eda",
-        # Honored by the commit-msg hook (dev_support.commit_msg_utils.stealth_enabled)
-        # and emitted by `booley init --scaffold` — omitting it made doctor warn
-        # that a live knob Booley itself wrote was "ignored".
-        "stealth",
-        # [submodules].paths picks which submodule dirs a ticket worktree copies
-        # (dev_support/worktree_create.sh, tomllib heredoc; falls back to .gitmodules
-        # discovery when absent). Read from shell, not Python, which is exactly
-        # how it slipped past the first audit of this list.
-        "submodules",
-    }
-)
-# Removed tables get a targeted migration hint instead of the generic warning.
-_RETIRED_BOOLEY_TOML_TABLES = {
-    "tools": (
-        "retired — move deterministic settings to [flows.*] and Specialist or "
-        "other non-Flow endpoint settings to [mcp_tools.*]"
-    ),
-    "fusesoc": "removed in ADR 0030 — Target scoping now lives in .core files",
-}
-
-
-def _validate_known_tables(data: dict[str, Any], _warn: Check) -> None:
-    """Warn on unrecognized top-level booley.toml tables (typo / stale config).
-
-    A misspelled or removed table is silently ignored by every consumer, so a
-    setting the user believes is active quietly does nothing. Only *top-level*
-    tables are checked — per-table key schemas vary per Flow and are not
-    enumerated here (a follow-up could allowlist the well-defined ones).
-    """
-    for key in data:
-        if key in _KNOWN_BOOLEY_TOML_TABLES:
-            continue
-        hint = _RETIRED_BOOLEY_TOML_TABLES.get(key)
-        table_warn = _warning_sink(_warn, "config.unknown-table", subject=key)
-        if hint:
-            table_warn(f"booley.toml [{key}] is no longer used — {hint}")
-        else:
-            table_warn(
-                f"booley.toml has an unrecognized top-level table/key [{key}] — "
-                "likely a typo or stale config; its settings are ignored"
-            )
-
-
 def _validate_booley_toml(
     data: dict[str, Any],
     project_dir: Path,
@@ -1101,33 +907,22 @@ def _validate_booley_toml(
     _fail: Fail,
 ) -> bool:
     """Validate the project-level booley.toml schema used by doctor."""
-    from booley.eda.config import (
-        EdaConfigError,
-        parse_eda_config,
-        retired_config_error,
-        validate_host_provisioning_platform,
+    if not _render_config_audit(project_schema.audit_eda_config(data), _pass, _warn, _fail):
+        return False
+    valid = _render_config_audit(project_schema.audit_project_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(agent_schema.audit_agent_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(agent_schema.audit_models_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(project_schema.audit_feedback_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(project_schema.audit_stealth_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(
+        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS), _pass, _warn, _fail
     )
-
-    migration = retired_config_error(data)
-    if migration:
-        _fail(f"booley.toml {migration}", "remove retired commercial-EDA authority keys")
-        return False
-    try:
-        eda_configs = parse_eda_config(data.get("eda"))
-        validate_host_provisioning_platform(eda_configs)
-    except EdaConfigError as exc:
-        _fail(f"booley.toml {exc}", "fix [eda] provisioning configuration")
-        return False
-    valid = _validate_project_table(data, _pass, _warn)
-    valid &= _validate_agent_table(data, _pass, _fail)
-    valid &= _validate_models_table(data, _pass, _warn, _fail)
-    valid &= _validate_feedback_table(data, _pass, _fail)
-    valid &= _validate_stealth_table(data, _fail)
-    valid &= _validate_flow_tables(data, _warn, _fail)
-    valid &= _validate_sandbox_table(data, _fail)
-    valid &= _validate_interactive_table(data, _fail)
-    valid &= _validate_developer_table(data, _fail)
-    _validate_known_tables(data, _warn)
+    valid &= _render_config_audit(project_schema.audit_sandbox_table(data), _pass, _warn, _fail)
+    valid &= _render_config_audit(
+        project_schema.audit_interactive_table(data), _pass, _warn, _fail
+    )
+    valid &= _render_config_audit(project_schema.audit_developer_table(data), _pass, _warn, _fail)
+    _render_config_audit(project_schema.audit_known_tables(data), _pass, _warn, _fail)
     # Source RTL/TB layout is validated from the .core tags:[tb] partition (see
     # _run_core_checks → sim_target_has_untagged_tb), not a booley.toml
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).
@@ -1138,227 +933,46 @@ def _validate_booley_toml(
     return valid
 
 
-def _validate_stealth_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Validate native-core isolation's explicit stealth-only contract."""
-    stealth = data.get("stealth")
-    if stealth is None:
-        return True
-    if not isinstance(stealth, dict):
-        _fail("booley.toml [stealth] must be a table", "rewrite [stealth] as a TOML table")
-        return False
-    ignore_native = stealth.get("ignore_native_cores")
-    if ignore_native is None:
-        return True
-    if not isinstance(ignore_native, bool):
-        _fail(
-            "booley.toml [stealth].ignore_native_cores must be a boolean",
-            "use true or false",
-        )
-        return False
-    if ignore_native and stealth.get("enabled") is not True:
-        _fail(
-            "booley.toml cannot ignore native .core files while stealth mode is disabled",
-            "set [stealth] enabled = true or ignore_native_cores = false",
-        )
-        return False
-    return True
-
-
-def _validate_feedback_table(data: dict[str, Any], _pass: Check, _fail: Fail) -> bool:
-    """Validate the live ``[feedback]`` disclosure and redaction settings."""
-    feedback = data.get("feedback")
-    if feedback is None:
-        return True
-    if not isinstance(feedback, dict):
-        _fail("booley.toml [feedback] must be a table", "rewrite [feedback] as a TOML table")
-        return False
-
-    valid = True
-    mode = feedback.get("mode", "ask")
-    if not isinstance(mode, str) or mode not in {"ask", "email", "file-only", "off"}:
-        _fail(
-            f"booley.toml [feedback].mode is invalid: {mode!r}",
-            "use one of: ask, email, file-only, off",
-        )
-        valid = False
-    extra = feedback.get("redact_extra")
-    if extra is not None and not is_str_list(extra):
-        _fail(
-            "booley.toml [feedback].redact_extra must be a list of strings",
-            'use e.g. redact_extra = ["codename"]',
-        )
-        valid = False
-    redact_identifiers = feedback.get("redact_identifiers")
-    if redact_identifiers is not None and not isinstance(redact_identifiers, bool):
-        _fail(
-            "booley.toml [feedback].redact_identifiers must be a boolean",
-            "use true or false",
-        )
-        valid = False
-    if valid:
-        _pass(f"booley.toml [feedback] settings valid (mode={mode})")
-    return valid
-
-
-def _validate_project_table(data: dict[str, Any], _pass: Check, _warn: Check) -> bool:
-    _warn = _warning_sink(_warn, "config.project-metadata")
-    project = data.get("project")
-    if not isinstance(project, dict):
-        _warn("booley.toml missing [project] table")
-        return True
-    name = project.get("name")
-    if isinstance(name, str) and name.strip():
-        _pass("booley.toml [project].name set")
-    else:
-        _warn("booley.toml [project].name missing or empty")
-    if "description" in project:
-        _warn(
-            "booley.toml [project].description is unused; keep the description "
-            "in the .core and delete this duplicate"
-        )
-    return True
+def _render_config_audit(
+    audit: config_common.ConfigTableAudit,
+    _pass: Check,
+    _warn: Warn,
+    _fail: Fail,
+) -> bool:
+    """Translate domain findings into Doctor's presentation callbacks."""
+    for finding in audit.findings:
+        if finding.severity is config_common.ConfigFindingSeverity.PASS:
+            _pass(finding.message)
+        elif finding.severity is config_common.ConfigFindingSeverity.FAIL:
+            _fail(finding.message, finding.fix)
+        else:
+            assert finding.check_id is not None
+            _warning_sink(_warn, finding.check_id, subject=finding.subject)(
+                finding.message, finding.fix
+            )
+    return audit.is_valid
 
 
 def _validate_agent_table(data: dict[str, Any], _pass: Check, _fail: Fail) -> bool:
-    """FAIL on an ``[agent] provider`` the backend layer will reject at run time.
-
-    ``_backend_config._parse_provider`` raises on an unknown value rather than
-    quietly run a backend the project never chose — so a typo here does not
-    degrade, it kills every agent run with a ``BackendConfigError``. Doctor is
-    where that should surface, not the first ticket.
-
-    An absent ``[agent]`` is not an error: the provider may come from
-    ``BOOLEY_PRIMARY_PROVIDER`` or the container's ``BOOLEY_AGENT_APP``, and the
-    host falls back to a default. Only a *present and wrong* value fails.
-    """
-    from booley.config.agent import BackendConfigError, _parse_auth, _parse_provider
-
-    agent = data.get("agent")
-    if agent is None:
-        return True
-    if not isinstance(agent, dict):
-        _fail("booley.toml [agent] must be a table", "rewrite [agent] as a TOML table")
-        return False
-    retired = sorted(set(agent) & {"primary", "primary_auth", "secondary", "secondary_auth"})
-    if retired:
-        replacements = "provider/auth"
-        _fail(
-            f"booley.toml [agent] uses retired key(s): {', '.join(retired)}",
-            f"use only [agent].{replacements}",
-        )
-        return False
-    try:
-        provider = _parse_provider(agent)
-    except BackendConfigError as exc:
-        _fail(str(exc), 'set [agent] provider = "claude" or "codex"')
-        return False
-    try:
-        auth = _parse_auth(agent)
-    except BackendConfigError as exc:
-        _fail(str(exc), 'set [agent] auth = "auto", "subscription", or "api_key"')
-        return False
-    if provider:
-        detail = f" (auth: {auth})" if auth else ""
-        _pass(f"booley.toml [agent] provider: {provider}{detail}")
-    return True
+    """Compatibility facade for the extracted agent configuration audit."""
+    return _render_config_audit(
+        agent_schema.audit_agent_table(data), _pass, lambda _message: None, _fail
+    )
 
 
 def _validate_models_table(data: dict[str, Any], _pass: Check, _warn: Check, _fail: Fail) -> bool:
-    """Validate ``[models]`` tier overrides and ``[models.roles]`` pins.
-
-    Same contract as ``_validate_agent_table``: a bad role name or value makes
-    ``_parse_role_models`` raise at config-load time, killing every agent run,
-    so doctor surfaces it here rather than at the first ticket. Stray keys only
-    warn — they are inert, not fatal.
-    """
-    from booley.config.agent import (
-        _KNOWN_ROLES,
-        _MODEL_TIERS,
-        BackendConfigError,
-        _parse_role_models,
-    )
-
-    models = data.get("models")
-    if models is None:
-        return True
-    if not isinstance(models, dict):
-        _fail("booley.toml [models] must be a table", "rewrite [models] as a TOML table")
-        return False
-
-    for key in models:
-        if key not in _MODEL_TIERS and key != "roles":
-            _warning_sink(_warn, "config.models-unknown-key", subject=key)(
-                f"booley.toml [models] has an unrecognized key {key!r} — expected a tier "
-                f"({'/'.join(_MODEL_TIERS)}) or the [models.roles] table; it is ignored"
-            )
-
-    try:
-        role_models = _parse_role_models(models)
-    except BackendConfigError as exc:
-        _fail(str(exc), f"use one of: {', '.join(sorted(_KNOWN_ROLES))}")
-        return False
-
-    tiers = [t for t in _MODEL_TIERS if isinstance(models.get(t), str)]
-    if tiers:
-        _pass(f"booley.toml [models] tier overrides: {', '.join(tiers)}")
-    if role_models:
-        pins = ", ".join(f"{role}={model}" for role, model in sorted(role_models.items()))
-        _pass(f"booley.toml [models.roles] pins: {pins}")
-    return True
+    """Compatibility facade for the extracted models configuration audit."""
+    return _render_config_audit(agent_schema.audit_models_table(data), _pass, _warn, _fail)
 
 
 def _validate_flow_tables(data: dict[str, Any], _warn: Check, _fail: Fail) -> bool:
-    legacy_tools = data.get("tools")
-    if legacy_tools is not None:
-        _fail(
-            "booley.toml [tools] is retired",
-            "move deterministic settings to [flows.*], move Specialist or other "
-            "non-Flow endpoint settings to [mcp_tools.*], and use enabled = false "
-            "for opt-outs",
-        )
-        return False
-
-    flows = data.get("flows", {})
-    if not isinstance(flows, dict):
-        _fail("booley.toml [flows] must be a table", "rewrite [flows] as a TOML table")
-        return False
-
-    valid = True
-    for retired in ("builtin", "custom"):
-        if retired in flows:
-            _fail(
-                f"booley.toml [flows].{retired} is retired",
-                "delete the allowlist and use [flows.<name>].enabled = false for opt-outs",
-            )
-            valid = False
-    for old, new in LEGACY_TO_CANONICAL.items():
-        if old in flows:
-            _fail(
-                f"booley.toml [flows.{old}] is retired",
-                f"rename it to [flows.{new}]",
-            )
-            valid = False
-    for flow_name in _AUDITED_FLOWS:
-        section = config_section(flows, flow_name)
-        section_present = flow_name in flows or any(
-            old in flows and new == flow_name for old, new in LEGACY_TO_CANONICAL.items()
-        )
-        if not section_present:
-            _warning_sink(_warn, "config.flow-section-missing", subject=flow_name)(
-                f"booley.toml [flows.{flow_name}] missing; using built-in defaults"
-            )
-            continue
-        valid &= _validate_one_flow_table(flow_name, section, _warn, _fail)
-    validated = set(_AUDITED_FLOWS)
-    for raw_name, section in flows.items():
-        if raw_name in {"builtin", "custom"} or raw_name in LEGACY_TO_CANONICAL:
-            continue
-        flow_name = canonical(raw_name)
-        if flow_name in validated:
-            continue
-        valid &= _validate_one_flow_table(flow_name, section, _warn, _fail)
-        validated.add(flow_name)
-    return valid
+    """Compatibility facade for the extracted Flow configuration audit."""
+    return _render_config_audit(
+        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS),
+        lambda _message: None,
+        _warn,
+        _fail,
+    )
 
 
 def _validate_one_flow_table(
@@ -1367,134 +981,13 @@ def _validate_one_flow_table(
     _warn: Check,
     _fail: Fail,
 ) -> bool:
-    if not isinstance(section, dict):
-        _fail(f"booley.toml [flows.{flow_name}] must be a table", f"fix [flows.{flow_name}]")
-        return False
-    valid = True
-    if "selftest" in section:
-        _fail(
-            f"booley.toml [flows.{flow_name}.selftest] is retired",
-            "delete the table; Doctor now discovers simulation's bad-overlay "
-            "and lint's lint_selftest_bad Target by convention",
-        )
-        valid = False
-    if "sandbox" in section:
-        _fail(
-            f"booley.toml [flows.{flow_name}].sandbox is retired",
-            "delete sandbox; all Flows run in the Session Runtime",
-        )
-        valid = False
-    moved_recipe_keys = {
-        "base_defines",
-        "flatten",
-        "frontend",
-        "openroad",
-        "out_of_context",
-        "part",
-        "ppa_profile",
-        "sdc",
-        "slang_options",
-        "strategy",
-        "timing",
-        "timing_engine",
-        "yosys",
-    }
-    if flow_name in {"synth", "fpga"}:
-        moved = sorted(set(section) & moved_recipe_keys)
-        if moved:
-            _fail(
-                f"booley.toml [flows.{flow_name}] contains Target build input(s): "
-                f"{', '.join(moved)}",
-                "move them to the selected .core Target's flow_options "
-                "(and express defines as vlogdefine parameters)",
-            )
-            valid = False
-    enabled = section.get("enabled")
-    if enabled is not None and not isinstance(enabled, bool):
-        _fail(
-            f"booley.toml [flows.{flow_name}].enabled must be a bool (true/false, no quotes)",
-            f"fix [flows.{flow_name}].enabled",
-        )
-        valid = False
-    for retired in (RETIRED_TARGET_KEY, DEFAULT_TARGET_KEY, "calibration_target"):
-        if retired not in section:
-            continue
-        _fail(
-            f"booley.toml [flows.{flow_name}].{retired} is retired",
-            "delete it; Flow calls require an explicit target, and Doctor selection "
-            "lives in each .core Target's flow_options.booley.doctor list",
-        )
-        valid = False
-    # Pre-Run Commands (ADR 0039): shell lines run before each sim run. A
-    # non-list (or non-string entry) would be silently coerced/ignored at run
-    # time, so the shape fails here.
-    pre_run = section.get("pre_run_commands")
-    if pre_run is not None and not is_str_list(pre_run):
-        _fail(
-            f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
-            "list of strings (shell lines run before each sim run)",
-            f"fix [flows.{flow_name}].pre_run_commands",
-        )
-        valid = False
-    # Set-but-ignored knobs: a value recognized by *another* Flow but not read
-    # by this one looks active yet quietly does nothing (F4). Warn, don't fail —
-    # the config is well-typed, just inert.
-    for knob, readers in _SELECTIVE_FLOW_KNOBS.items():
-        if knob in section and flow_name not in readers:
-            _warning_sink(
-                _warn,
-                "config.flow-knob-ignored",
-                subject=f"{flow_name}.{knob}",
-            )(
-                f"booley.toml [flows.{flow_name}].{knob} is set but {flow_name} "
-                f"ignores it (only {', '.join(sorted(readers))} read {knob}); "
-                "it has no effect"
-            )
-    return valid
-
-
-def _validate_sandbox_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Validate the surviving Session Runtime sandbox table."""
-    sandbox = data.get("sandbox")
-    if sandbox is None:
-        return True
-    if not isinstance(sandbox, dict):
-        _fail("booley.toml [sandbox] must be a table", "rewrite [sandbox] as a TOML table")
-        return False
-    if "mode" in sandbox:
-        _fail(
-            "booley.toml [sandbox].mode is retired; the Session Runtime is always Docker",
-            "delete [sandbox].mode",
-        )
-        return False
-    return True
-
-
-def _validate_interactive_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Reject the retired provider duplicate from ``[interactive]``."""
-    section = data.get("interactive")
-    if not isinstance(section, dict) or "app" not in section:
-        return True
-    _fail(
-        "booley.toml [interactive].app is retired",
-        "delete it and select the runtime with [agent].provider",
+    """Compatibility facade for one extracted Flow-table audit."""
+    return _render_config_audit(
+        flow_schema.audit_flow_table(flow_name, section),
+        lambda _message: None,
+        _warn,
+        _fail,
     )
-    return False
-
-
-def _validate_developer_table(data: dict[str, Any], _fail: Fail) -> bool:
-    """Keep auto-retry's disable control single-valued."""
-    developer = data.get("developer")
-    if not isinstance(developer, dict):
-        return True
-    auto_retry = developer.get("auto_retry")
-    if not isinstance(auto_retry, dict) or "enabled" not in auto_retry:
-        return True
-    _fail(
-        "booley.toml [developer.auto_retry].enabled is retired",
-        "delete enabled and use max_attempts = 0 to disable",
-    )
-    return False
 
 
 def _validate_configs_toml(
@@ -1502,101 +995,13 @@ def _validate_configs_toml(
     _pass: Check,
     _fail: Fail,
 ) -> dict[str, dict[str, Any]] | None:
-    try:
-        normalized = normalize_configs_toml(raw)
-    except ValueError as exc:
-        _fail(str(exc), "fix configs.toml")
+    audit = configs_schema.audit_configs_toml(raw)
+    for issue in audit.issues:
+        _fail(issue.message, issue.fix)
+    if audit.configs is None:
         return None
-
-    if not normalized:
-        _fail("configs.toml has no config sections", "add [default] with defines = []")
-        return None
-
-    valid = True
-    configs: dict[str, dict[str, Any]] = {}
-    for name, section in normalized.items():
-        if not isinstance(section, dict):
-            _fail(f"configs.toml [{name}] must be a table", f"fix [{name}]")
-            valid = False
-            continue
-        configs[name] = section
-        if not is_str_list(section.get("defines")):
-            _fail(
-                f"configs.toml [{name}].defines must be present as list[str]",
-                f"add defines = [] to [{name}]",
-            )
-            valid = False
-        for key in ("top_module", "tb_top"):
-            value = section.get(key)
-            if value is not None and not isinstance(value, str):
-                _fail(f"configs.toml [{name}].{key} must be a string", f"fix [{name}].{key}")
-                valid = False
-        tests = section.get("tests")
-        if tests is not None and not is_str_list(tests):
-            _fail(f"configs.toml [{name}].tests must be list[str]", f"fix [{name}].tests")
-            valid = False
-        valid &= _validate_parameters_table(name, section.get("parameters"), _fail)
-
-    if not valid:
-        return None
-    _pass(f"configs.toml contains {len(configs)} valid config(s)")
-    return configs
-
-
-def _validate_parameters_table(name: str, value: Any, _fail: Fail) -> bool:
-    if value is None:
-        return True
-    if not isinstance(value, dict):
-        _fail(
-            f"configs.toml [{name}].parameters must be a table",
-            f"fix [{name}.parameters]",
-        )
-        return False
-    valid = True
-    for param_name, param_value in value.items():
-        label = f"configs.toml [{name}.parameters].{param_name}"
-        if not isinstance(param_name, str) or not param_name.strip():
-            _fail(f"{label} name must be non-empty", f"fix [{name}.parameters]")
-            valid = False
-            continue
-        error = _parameter_value_error(label, param_value)
-        if error is not None:
-            _fail(*error)
-            valid = False
-    return valid
-
-
-def _parameter_value_error(label: str, value: Any) -> tuple[str, str] | None:
-    if isinstance(value, (bool, int)):
-        return None
-    if isinstance(value, str):
-        return (
-            f"{label} plain strings are not allowed",
-            'use { expr = "..." } or { string = "..." }',
-        )
-    if isinstance(value, dict):
-        return _parameter_table_error(label, value)
-    return (
-        f'{label} must be bool, int, {{ expr = "..." }}, or {{ string = "..." }}',
-        f"fix {label}",
-    )
-
-
-def _parameter_table_error(label: str, value: dict[str, Any]) -> tuple[str, str] | None:
-    keys = set(value)
-    if keys == {"expr"}:
-        expr = value["expr"]
-        if isinstance(expr, str) and expr.strip():
-            return None
-        return f"{label}.expr must be a non-empty string", f"fix {label}"
-    if keys == {"string"}:
-        if isinstance(value["string"], str):
-            return None
-        return f"{label}.string must be a string", f"fix {label}"
-    return (
-        f"{label} table must contain exactly one key: expr or string",
-        f"fix {label}",
-    )
+    _pass(f"configs.toml contains {len(audit.configs)} valid config(s)")
+    return audit.configs
 
 
 def _check_agents_md(
@@ -2031,26 +1436,6 @@ def _check_board_orphans(
 # ADR 0028 Decision 12: container memory invariant + runtime detection health
 # ---------------------------------------------------------------------------
 
-_GIB = 1024**3
-# Default budget per concurrent HEAVY EDA job and fixed headroom.  Projects may
-# raise the reservation with [jobs].heavy_memory; a successful heaviest-target
-# Doctor calibration can raise it further from measured peak RSS.
-_HEAVY_JOB_MEM_BYTES = 4 * _GIB
-_MEM_HEADROOM_BYTES = 2 * _GIB
-_SYNTH_MEMORY_MARGIN_PERCENT = 15
-
-# cgroup memory-limit files, most modern first. Module-level so tests can
-# point them at fixtures.
-_CGROUP_MEM_LIMIT_PATHS = (
-    Path("/sys/fs/cgroup/memory.max"),  # cgroup v2
-    Path("/sys/fs/cgroup/memory/memory.limit_in_bytes"),  # cgroup v1
-)
-# cgroup v1 reports "unlimited" as a huge page-rounded sentinel (~2^63)
-# rather than the literal "max"; anything this large is no real limit.
-_CGROUP_UNLIMITED_FLOOR = 1 << 60
-
-_DOCKER_MEM_SUFFIX = {"b": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
-
 # Actionable fix shared by both runtime-marker failures: the marker is baked by
 # the sandbox image build, and the derived-image drift gotcha means the base
 # rebuild alone silently leaves per-project images stale.
@@ -2058,55 +1443,6 @@ _RUNTIME_MARKER_FIX = (
     "rebuild the base AND derived sandbox images (booley init --force) — "
     "the image predates the ADR 0028 runtime marker"
 )
-
-
-def _fmt_g(n: int | float) -> str:
-    """Format a byte count in GiB the way the config spells it ('6g')."""
-    gib = n / _GIB
-    if gib == int(gib):
-        return f"{int(gib)}g"
-    return f"{gib:.1f}g"
-
-
-def _parse_mem_limit(text: str) -> int | None:
-    """Parse a docker-style memory string ('6g', '512m', '2048') to bytes."""
-    match = re.fullmatch(r"(\d+)\s*([bkmg]?)", text.strip().lower())
-    if not match:
-        return None
-    return int(match.group(1)) * _DOCKER_MEM_SUFFIX[match.group(2) or "b"]
-
-
-def _cgroup_memory_limit_bytes() -> int | None:
-    """The container's effective memory limit, or None when unlimited.
-
-    Reads the real cgroup limit (v2 ``memory.max``, v1 fallback
-    ``memory.limit_in_bytes``); a literal ``max``, the v1 unlimited
-    sentinel, or absent/unreadable files all mean "no limit to check".
-    """
-    for path in _CGROUP_MEM_LIMIT_PATHS:
-        try:
-            text = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            continue
-        if text == "max":
-            return None
-        try:
-            value = int(text)
-        except ValueError:
-            continue
-        return None if value >= _CGROUP_UNLIMITED_FLOOR else value
-    return None
-
-
-def _configured_sandbox_memory(booley_toml: dict[str, Any]) -> str:
-    """The single ``[sandbox] memory`` limit string, '' when unconfigured."""
-    section = booley_toml.get("sandbox", {})
-    if not isinstance(section, dict):
-        return ""
-    mem = section.get("memory", "")
-    if isinstance(mem, dict):  # legacy tier table — best usable remnant
-        mem = mem.get("default", "")
-    return mem.strip() if isinstance(mem, str) else ""
 
 
 def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
@@ -2123,53 +1459,25 @@ def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
     return (developer_probe.FALLBACK_BYTES, False)
 
 
-def _heavy_job_mem_bytes(project: ProjectAudit) -> tuple[int, str, str | None]:
-    """Return the HEAVY reservation, its evidence label, and a config error."""
+def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMemoryReservation:
+    """Load project evidence and apply the extracted HEAVY-memory policy."""
     jobs = project.booley_toml.get("jobs", {})
     raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
-    if raw is None:
-        configured = _HEAVY_JOB_MEM_BYTES
-        configured_label = "4g default"
-    elif not isinstance(raw, str) or (configured := _parse_mem_limit(raw)) is None:
-        return (
-            _HEAVY_JOB_MEM_BYTES,
-            "4g default",
-            f"[jobs] heavy_memory = {raw!r} is unparseable; use a value such as '8g'",
-        )
-    elif configured <= 0:
-        return (
-            _HEAVY_JOB_MEM_BYTES,
-            "4g default",
-            "[jobs] heavy_memory must be greater than zero",
-        )
-    else:
-        configured_label = f"configured {_fmt_g(configured)}"
-
     from booley.harness import synth_probe
 
     measurement = synth_probe.load_measurement(project.project_dir)
-    if measurement is None:
-        return configured, configured_label, None
-    doctor_targets = _doctor_targets(project, "synth")
-    measured_target = str(measurement["target"])
-    calibration_error = None
-    if measured_target not in doctor_targets:
-        calibration_error = (
-            f"stored synthesis memory calibration is for unselected Target "
-            f"{measured_target!r}; rerun doctor --deep over the current Doctor matrix"
+    calibration = (
+        resource_policy.SynthesisMemoryCalibration(
+            target=str(measurement["target"]),
+            peak_rss_bytes=int(measurement["peak_rss_bytes"]),
         )
-    if calibration_error:
-        return configured, configured_label, calibration_error
-    peak = int(measurement["peak_rss_bytes"])
-    with_margin = peak * (100 + _SYNTH_MEMORY_MARGIN_PERCENT) // 100
-    measured_reservation = ((with_margin + _GIB - 1) // _GIB) * _GIB
-    if measured_reservation <= configured:
-        return configured, f"{configured_label}; calibrated peak {_fmt_g(peak)}", None
-    target = str(measurement["target"])
-    return (
-        measured_reservation,
-        f"{_fmt_g(peak)} measured on {target} + {_SYNTH_MEMORY_MARGIN_PERCENT}% margin",
-        None,
+        if measurement is not None
+        else None
+    )
+    return resource_policy.heavy_memory_reservation(
+        raw,
+        calibration,
+        target_matrix.doctor_targets(project.project_root, "synth"),
     )
 
 
@@ -2196,7 +1504,7 @@ def _check_memory_invariant(
         return
 
     if runtime_context.inside_session_runtime():
-        limit = _cgroup_memory_limit_bytes()
+        limit = resource_policy.cgroup_memory_limit_bytes()
         if limit is None:
             _pass(
                 "memory invariant: container memory is unlimited "
@@ -2205,11 +1513,11 @@ def _check_memory_invariant(
             return
         source = "container memory"
     else:
-        mem_str = _configured_sandbox_memory(project.booley_toml)
+        mem_str = resource_policy.configured_sandbox_memory(project.booley_toml)
         if not mem_str:
             _skip("memory invariant: no [sandbox] memory limit configured — nothing to check")
             return
-        limit = _parse_mem_limit(mem_str)
+        limit = resource_policy.parse_memory_limit(mem_str)
         if limit is None:
             _warn(
                 f"[sandbox] memory = {mem_str!r} is unparseable — "
@@ -2219,31 +1527,37 @@ def _check_memory_invariant(
         source = "[sandbox] memory"
 
     caps = job_slots.parse_caps(project.booley_toml)
-    heavy_mem, heavy_note, heavy_error = _heavy_job_mem_bytes(project)
-    if heavy_error:
-        _warn(heavy_error)
+    reservation = _heavy_memory_reservation(project)
+    if reservation.error:
+        _warn(reservation.error)
         return
     orch, measured = _developer_mem_bytes(project.project_dir)
-    required = caps.max_heavy * heavy_mem + caps.max_tickets * orch + _MEM_HEADROOM_BYTES
+    requirement = resource_policy.memory_requirement(
+        max_heavy=caps.max_heavy,
+        heavy_job_bytes=reservation.bytes,
+        max_tickets=caps.max_tickets,
+        developer_bytes=orch,
+    )
+    fmt = resource_policy.format_memory
     arithmetic = (
-        f"{caps.max_heavy}x{_fmt_g(heavy_mem)} + {caps.max_tickets}x{_fmt_g(orch)} "
-        f"+ 2g = {_fmt_g(required)}"
+        f"{caps.max_heavy}x{fmt(reservation.bytes)} + {caps.max_tickets}x{fmt(orch)} "
+        f"+ 2g = {fmt(requirement.required_bytes)}"
     )
     orch_note = (
         "measured developer RSS"
         if measured
         else "1g developer fallback — doctor --deep measures it"
     )
-    if limit >= required:
+    if limit >= requirement.required_bytes:
         _pass(
-            f"memory invariant holds: {source} {_fmt_g(limit)} ≥ {arithmetic} "
-            f"({heavy_note}; {orch_note})"
+            f"memory invariant holds: {source} {fmt(limit)} ≥ {arithmetic} "
+            f"({reservation.evidence}; {orch_note})"
         )
     else:
         _warn(
-            f"{source} {_fmt_g(limit)} < {arithmetic} — raise the "
+            f"{source} {fmt(limit)} < {arithmetic} — raise the "
             "devcontainer memory or lower [jobs] caps; set [jobs].heavy_memory "
-            f"to record the calibrated reservation ({heavy_note}; {orch_note})"
+            f"to record the calibrated reservation ({reservation.evidence}; {orch_note})"
         )
 
 
@@ -2423,7 +1737,10 @@ def _run_developer_probe(
         _skip(f"developer memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
         return
     bound = "" if exact else " (upper bound)"
-    _pass(f"developer peak RSS measured: {_fmt_g(peak)}{bound} — recorded to {path}")
+    _pass(
+        f"developer peak RSS measured: {resource_policy.format_memory(peak)}{bound} — "
+        f"recorded to {path}"
+    )
     _pass("developer backend live authorization check completed successfully")
 
 
@@ -2934,14 +2251,8 @@ def _run_container_checks(
 # RISC-V variant checks fire only when the image bakes this flavour marker
 # (Dockerfile.riscv), so the vanilla base sandbox is never faulted for lacking a
 # cross-toolchain it was never meant to carry.
-_RISCV_IMAGE_FIX = "rebuild the RISC-V image: ./src/booley/data/docker/build-riscv.sh"
-_RISCV_DOC_FILES = (
-    "INDEX.md",
-    "riscv-abi.pdf",
-    "riscv-debug-specification.pdf",
-    "riscv-isa-manual.html",
-    "riscv-isa-manual.pdf",
-)
+_RISCV_IMAGE_FIX = eda_environment.RISCV_IMAGE_FIX
+_RISCV_DOC_FILES = eda_environment.RISCV_DOC_FILES
 
 
 def _check_riscv_toolchain(
@@ -2951,58 +2262,19 @@ def _check_riscv_toolchain(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """Verify the RISC-V toolchain when the sandbox is the RISC-V variant.
-
-    Detection keys off ``BOOLEY_SANDBOX_FLAVOR=riscv`` baked into
-    ``booley-sandbox-riscv`` (see ``data/docker/Dockerfile.riscv``), so it fires
-    for any image built from that variant regardless of its tag, and is silently
-    skipped for every other image. A project that points ``[sandbox].image`` at
-    the RISC-V image but hasn't (re)built it then gets a clear failure here
-    instead of a confusing ``riscv32-unknown-elf-gcc: not found`` at Flow runtime.
-    """
-    if _image_env_value(docker_exe, image, "BOOLEY_SANDBOX_FLAVOR") != "riscv":
-        return
-
-    def _probe(description: str, cmd: list[str]) -> None:
-        try:
-            result = subprocess.run(
-                [docker_exe, "run", "--rm", image, *cmd],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (subprocess.SubprocessError, FileNotFoundError):
-            _fail(f"{description} (timeout/error)", _RISCV_IMAGE_FIX)
-            return
-        if result.returncode == 0:
-            _pass(description)
-        else:
-            _fail(description, _RISCV_IMAGE_FIX)
-
-    # Both triple aliases the target cores invoke (ibex/picorv32 default to the
-    # rv32 prefix; picorv32's Booley recipe uses the rv64 one) must resolve.
-    _probe("riscv32-unknown-elf-gcc", ["riscv32-unknown-elf-gcc", "--version"])
-    _probe("riscv64-unknown-elf-gcc", ["riscv64-unknown-elf-gcc", "--version"])
-    # srec_cat: ibex .vmem generation hard-depends on it; spike: reference ISS;
-    # pdftotext: keeps the baked manuals searchable in an offline agent session.
-    _probe("srec_cat (srecord)", ["sh", "-c", "command -v srec_cat"])
-    _probe("spike (riscv-isa-sim)", ["sh", "-c", "command -v spike"])
-    _probe("pdftotext (poppler-utils)", ["pdftotext", "-v"])
-    # Every advertised offline document must exist and be non-empty. Pass the
-    # fixed names as positional parameters rather than interpolating them into
-    # shell source, keeping one cheap container probe without weakening quoting.
-    _probe(
-        "RISC-V offline specs complete at $BOOLEY_RISCV_DOCS",
-        [
-            "sh",
-            "-c",
-            'test -n "$BOOLEY_RISCV_DOCS" || exit 1; '
-            'for name in "$@"; do test -s "$BOOLEY_RISCV_DOCS/$name" || exit 1; done',
-            "sh",
-            *_RISCV_DOC_FILES,
-        ],
+    """Render the extracted RISC-V image toolchain audit."""
+    flavor = _image_env_value(docker_exe, image, "BOOLEY_SANDBOX_FLAVOR")
+    findings = eda_environment.audit_riscv_toolchain(
+        docker_exe,
+        image,
+        flavor,
+        run=subprocess.run,
     )
+    for finding in findings:
+        if finding.severity is eda_environment.EdaFindingSeverity.PASS:
+            _pass(finding.message)
+        else:
+            _fail(finding.message, finding.fix)
 
 
 def _run_mcp_checks(
@@ -4564,58 +3836,6 @@ def _check_agent_backend_health(
         )
 
 
-def _count_design_files(paths: set[Path]) -> tuple[int, int]:
-    """Return ``(file_count, total_lines)`` for readable HDL *paths*."""
-    files = 0
-    lines = 0
-    for path in paths:
-        try:
-            with path.open("rb") as handle:
-                lines += sum(
-                    chunk.count(b"\n") for chunk in iter(lambda: handle.read(1 << 20), b"")
-                )
-        except OSError:
-            continue
-        files += 1
-    return files, lines
-
-
-def _design_size(root: Path) -> tuple[int, int]:
-    """Return ``(hdl_file_count, total_lines)`` for HDL sources under *root*.
-
-    A best-effort tree scan, deliberately NOT a fusesoc resolve: it is a cheap
-    *scale signal* for the ``--deep`` advisory, not an exact resolved fileset.
-    VCS/build/booley-internal directories are pruned; unreadable files are
-    skipped rather than aborting the walk.
-    """
-    paths: set[Path] = set()
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SIZE_SKIP_DIRS]
-        for name in filenames:
-            if Path(name).suffix.lower() in _HDL_SUFFIXES:
-                paths.add(Path(dirpath) / name)
-    return _count_design_files(paths)
-
-
-def _configured_design_size(project: ProjectAudit) -> tuple[int, int] | None:
-    """Size the unique HDL files reachable from Doctor Target selections."""
-    paths: set[Path] = set()
-    for target in _doctor_target_seed(project):
-        try:
-            sources = fusesoc_registry.target_source_files(
-                project.project_root,
-                target,
-                include_dependencies=True,
-            )
-        except fusesoc_registry.FuseSocError:
-            continue
-        for relative in (*sources.rtl_source_files, *sources.tb_files):
-            path = project.project_root / relative
-            if path.suffix.lower() in _HDL_SUFFIXES:
-                paths.add(path)
-    return _count_design_files(paths) if paths else None
-
-
 def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> None:
     """Advise when the design is large enough to strain ``--deep`` budgets (F5).
 
@@ -4629,10 +3849,19 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
     Nothing here is broken and there is nothing to fix -- the size only sets
     expectations for ``--deep``.
     """
-    scoped = _configured_design_size(project)
-    files, loc = scoped or _design_size(project.project_root)
-    label = "Doctor Target filesets" if scoped is not None else "whole-repository estimate"
-    if files >= _LARGE_DESIGN_FILES or loc >= _LARGE_DESIGN_LOC:
+    audit = design_size.analyze_design_size(
+        project.project_root,
+        project.project_dir,
+        _project_target_matrix(project).seed_targets,
+    )
+    label = (
+        "Doctor Target filesets"
+        if audit.scope is design_size.DesignSizeScope.CONFIGURED_TARGETS
+        else "whole-repository estimate"
+    )
+    files = audit.hdl_files
+    loc = audit.lines_of_code
+    if audit.exceeds_deep_smoke_budget:
         _note(
             f"large design ({label}: ~{files} HDL files / ~{loc:,} LOC): --deep's smoke "
             "checks may run long or OOM (asic flatten especially). Validate heavy "
@@ -4821,7 +4050,7 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
     unfollowable for a repo that must stay byte-identical to upstream.
     """
     owned: set[Path] = set()
-    for token in _doctor_target_seed(project):
+    for token in _project_target_matrix(project).seed_targets:
         try:
             owned.add(fusesoc_registry.resolve_ref(root, token).core_file)
         except fusesoc_registry.FuseSocError:
@@ -4844,7 +4073,7 @@ def _selected_core_targets(project: ProjectAudit, root: Path) -> set[tuple[Path,
     each caller.
     """
     selected: set[tuple[Path, str]] = set()
-    for token in _doctor_target_seed(project):
+    for token in _project_target_matrix(project).seed_targets:
         try:
             ref = fusesoc_registry.resolve_ref(root, token)
         except fusesoc_registry.FuseSocError:
@@ -4915,7 +4144,9 @@ def _check_core_setup_hazards(
     """Catch offline-provider and recursive-symlink failures before FuseSoC."""
     note_sink = _note or _pass
     owned_cores = _owned_core_files(project, root)
-    selected_closure = fusesoc_registry.selectable_core_closure(root, _doctor_target_seed(project))
+    selected_closure = fusesoc_registry.selectable_core_closure(
+        root, _project_target_matrix(project).seed_targets
+    )
     required_cores = owned_cores | set(selected_closure or ())
     hazards = fusesoc_registry.core_setup_hazards(root)
     if not hazards:
@@ -5065,7 +4296,7 @@ def _run_core_audit(
             _warn,
             _fail,
             _note=note_sink,
-            selected_targets=set(_doctor_target_seed(project)) or None,
+            selected_targets=set(_project_target_matrix(project).seed_targets) or None,
         )
 
         # 2b*. Verilator sim Targets built with the auto --main/--binary have no
@@ -5101,7 +4332,7 @@ def _run_core_audit(
     violations = core_security.validate_project_cores(
         root,
         scope=_project_write_scope(root),
-        seed_targets=_doctor_target_seed(project),
+        seed_targets=_project_target_matrix(project).seed_targets,
     )
     if violations:
         for v in violations:
@@ -5337,22 +4568,6 @@ def _check_legacy_core_targets(
         )
 
 
-def _doctor_axis_by_target(project: ProjectAudit) -> dict[str, str]:
-    """Bare Target name -> naming axis implied by its Doctor metadata."""
-    axes: dict[str, str] = {}
-    try:
-        declarations = fusesoc_registry.target_declarations(project.project_root)
-    except fusesoc_registry.FuseSocError:
-        return axes
-    for name, refs in declarations.items():
-        for ref in refs:
-            for flow_name in ref.doctor_flows:
-                axis = target_naming.AXIS_FOR_FLOW.get(flow_name)
-                if axis:
-                    axes.setdefault(name, axis)
-    return axes
-
-
 def _check_naming_conventions(
     project: ProjectAudit,
     root: Path,
@@ -5388,7 +4603,7 @@ def _check_target_naming(
     del refs  # qualified duplicate Target names need exact declaration scope
     state_cores = fusesoc_registry.state_cores_dir(root)
     selected = _selected_core_targets(project, root)
-    doctor_axes = _doctor_axis_by_target(project)
+    doctor_axes = _project_target_matrix(project).axes()
     try:
         declarations = fusesoc_registry.target_declarations(root)
     except fusesoc_registry.FuseSocError:
@@ -6353,7 +5568,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     Advisory by design — this is a curated header list, not a resolver, so it
     can only be a hint. It never fails the gate.
     """
-    seeds = _doctor_target_seed(project)
+    seeds = _project_target_matrix(project).seed_targets
     if not seeds:
         return
     root = project.project_root
@@ -6437,18 +5652,6 @@ def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail
         )
 
 
-def _doctor_target_matcher(project: ProjectAudit) -> Callable[[str, str], bool]:
-    """Return whether an enumerated Target belongs to Doctor's explicit matrix."""
-    selected: set[tuple[str, str]] = set()
-    for token in _doctor_target_seed(project):
-        try:
-            ref = fusesoc_registry.resolve_ref(project.project_root, token)
-        except fusesoc_registry.FuseSocError:
-            continue
-        selected.add((ref.name, ref.vlnv))
-    return lambda name, vlnv: (name, vlnv) in selected
-
-
 def _report_core_resolve(
     name: str,
     ok: bool,
@@ -6513,7 +5716,7 @@ def _run_core_resolve_checks(
     if not refs:
         return
 
-    is_configured = _doctor_target_matcher(project)
+    is_configured = _project_target_matrix(project).is_selected
 
     image = _sandbox_image(project)
     if docker_exe and _docker_image_exists_by_name(image):
@@ -7534,10 +6737,11 @@ def _record_synth_memory_calibration(
         float(peak),
         selected_targets=_doctor_targets(project, "synth"),
     )
-    reservation, note, _error = _heavy_job_mem_bytes(project)
+    reservation = _heavy_memory_reservation(project)
     _pass(
         f"synth memory calibrated: {target} peaked at {float(peak) / 1024:.1f}g; "
-        f"HEAVY reservation {_fmt_g(reservation)} ({note})"
+        f"HEAVY reservation {resource_policy.format_memory(reservation.bytes)} "
+        f"({reservation.evidence})"
     )
     # The runtime-phase invariant ran before the deep synthesis created this
     # measurement. Re-evaluate now so the same Doctor invocation cannot finish
@@ -7576,18 +6780,17 @@ def _is_simulate_tb_top_skip(
 
 def _doctor_targets(project: ProjectAudit, flow_name: str) -> list[str]:
     """Every ``.core`` Target that explicitly selects one Doctor Flow."""
-    try:
-        return fusesoc_registry.doctor_target_selectors(project.project_root, flow_name)
-    except fusesoc_registry.FuseSocError:
-        return []
+    return list(target_matrix.doctor_targets(project.project_root, flow_name))
 
 
 def _doctor_target_seed(project: ProjectAudit) -> list[str]:
     """The deduplicated Target surface that Doctor gates and audits."""
-    try:
-        return fusesoc_registry.doctor_target_seed(project.project_root)
-    except fusesoc_registry.FuseSocError:
-        return []
+    return list(_project_target_matrix(project).seed_targets)
+
+
+def _project_target_matrix(project: ProjectAudit) -> target_matrix.DoctorTargetMatrix:
+    """Build the domain view consumed by Doctor's target orchestration."""
+    return target_matrix.build_doctor_target_matrix(project.project_root)
 
 
 def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) -> list[str]:
@@ -7741,7 +6944,7 @@ def _flow_command(
         image,
         project.project_root,
         inner,
-        memory=_configured_sandbox_memory(project.booley_toml),
+        memory=resource_policy.configured_sandbox_memory(project.booley_toml),
         doctor_selftest_kind=doctor_selftest_kind,
     )
 

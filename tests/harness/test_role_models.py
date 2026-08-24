@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.audit import project_schema
 from booley.config import agent as bc
 from booley.config.agent import (
     _KNOWN_ROLES,
@@ -302,11 +303,8 @@ class TestDoctorModelsTable:
         assert any("reviewer=claude-sonnet-4-6" in m for m in passes)
 
     def test_models_is_a_recognized_top_level_table(self):
-        from booley.harness import doctor
-
-        warns: list[str] = []
-        doctor._validate_known_tables({"models": {}}, lambda msg, fix="": warns.append(msg))
-        assert warns == []
+        audit = project_schema.audit_known_tables({"models": {}})
+        assert audit.findings == ()
 
 
 def test_tier_names_and_role_names_do_not_collide():

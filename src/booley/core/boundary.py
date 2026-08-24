@@ -42,6 +42,7 @@ __all__ = [
     "require_bool",
     "require_dict",
     "require_finite_number",
+    "require_int",
     "require_opt_str",
     "require_str",
 ]
@@ -195,6 +196,13 @@ def as_int(value: Any, default: int | None = None) -> int | None:
             return default
         return int(parsed) if math.isfinite(parsed) else default
     return default
+
+
+def require_int(value: Any, *, field: str = "value") -> int:
+    """Return a strict integer, rejecting bool and all coercible non-int values."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise BoundaryError(f"{field} must be an integer, got {value!r}")
+    return value
 
 
 def as_float(value: Any, default: float | None = None) -> float | None:

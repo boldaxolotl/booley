@@ -9,9 +9,11 @@ scaffolded file in between, and asserts the ownership contract file by file:
   devcontainer.json) come back byte-identical to the first run — hand edits
   are deliberately regenerated away.
 
-Docker/vscode/systemctl are absent (shutil.which -> None), so the image and
-network steps skip/err without subprocesses; the docker-file preservation path
-(SETUP-6, 8c6a01c) is exercised separately with a stubbed image build.
+Docker/vscode/systemctl are absent (shutil.which -> None). The fatal Docker
+preflight is stubbed as healthy so this clobber-contract test can exercise the
+remaining steps; image/network steps still skip or error without subprocesses.
+The docker-file preservation path (SETUP-6, 8c6a01c) is exercised separately
+with a stubbed image build.
 """
 
 from __future__ import annotations
@@ -69,6 +71,13 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         "which",
         lambda name: trusted_booley if name == "booley" else None,
     )
+
+    def docker_preflight(ctx: InitContext) -> bool:
+        ctx.step_banner("host bootstrap tool detection")
+        ctx.record("eda_tools", "ok")
+        return True
+
+    monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", docker_preflight)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
     monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: tmp_path / "pdk")

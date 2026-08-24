@@ -106,8 +106,12 @@ def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
 
     assert "repository: YosysHQ/picorv32" in workflow
     assert "repository: boldaxolotl/booley-prj-picorv32" in workflow
-    assert "booley init" in workflow
-    assert "booley doctor --deep --skip-agent-checks" in workflow
+    assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
+    assert 'booley init | tee "${init_log}"' in workflow
+    assert 'grep -Fq "[!!]" "${init_log}"' in workflow
+    assert 'booley doctor --deep --skip-agent-checks | tee "${doctor_log}"' in workflow
+    assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
+    assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
     assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
     assert 'bash "${project_dir}/hooks/post-setup.sh"' in workflow
     assert "python -m booley.ticket_board parse-ticket" in workflow

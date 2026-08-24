@@ -85,7 +85,8 @@ _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
         "assertion/cover-point quality"
     ),
     "review_rtl_optimization": (
-        "Strict power/performance/area improvements with no functional or engineering trade-off"
+        "Unused/dead RTL and strict power/performance/area improvements with no "
+        "functional or engineering trade-off"
     ),
     "review_rtl_security": (
         "Fault-injection resistance, simple power/timing leakage, secret "
