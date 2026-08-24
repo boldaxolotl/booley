@@ -10,6 +10,7 @@ the rule that keeps it honest: an explicit `enabled = false` is a deliberate
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -149,6 +150,33 @@ class TestOutstandingSteps:
 
 
 class TestAdvisorySendOff:
+    def test_demo_gets_demo_next_steps_instead_of_setup_skill(self, project, capsys):
+        _write(project, init_cmd.BOOLEY_TOML_SKELETON, agents=False)
+        state_dir = project / ".booley_project"
+        subprocess.run(["git", "init", "-q", str(state_dir)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(state_dir),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/boldaxolotl/booley-prj-picorv32.git",
+            ],
+            check=True,
+        )
+        ctx = InitContext(project_root=project)
+
+        init_cmd._step_advisories(ctx)
+        assert init_cmd._print_summary(ctx) == 0
+
+        out = capsys.readouterr().out
+        assert "Booley demo setup complete" in out
+        assert '"Reopen in Container"' in out
+        assert "Run the booley-setup skill" not in out
+        assert ctx.results[-1].detail == "demo"
+
     def test_configured_project_is_not_told_to_finish_setup(self, project, capsys):
         _write(project, CONFIGURED_TOML)
         ctx = InitContext(project_root=project)

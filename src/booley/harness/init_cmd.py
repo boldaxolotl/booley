@@ -1764,6 +1764,44 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
 
 
+_DEMO_PROJECT_ORIGIN = "github.com/boldaxolotl/booley-prj-picorv32"
+
+
+def _is_demo_project(project_root: Path) -> bool:
+    """Whether the project state is the published PicoRV32 demo checkout."""
+    try:
+        project_dir = resolve_project_dir(project_root)
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    origin = result.stdout.strip().lower().replace("\\", "/").rstrip("/")
+    if origin.endswith(".git"):
+        origin = origin[:-4]
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if origin.startswith(prefix):
+            origin = origin[len(prefix) :]
+            break
+    origin = origin.removeprefix("git@").replace("github.com:", "github.com/", 1)
+    return origin == _DEMO_PROJECT_ORIGIN
+
+
+def _print_demo_advisory() -> None:
+    """Send the preconfigured demo straight to its documented runtime steps."""
+    info("This is the preconfigured PicoRV32 demo — the booley-setup skill does not apply.")
+    print()
+    info('  * Open the PicoRV32 folder in VS Code and choose "Reopen in Container"')
+    info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
+    info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
+
+
 def _failed_step_names(ctx: InitContext) -> list[str]:
     """Names of the steps that recorded an error so far, in run order."""
     return [r.name for r in ctx.results if r.status == "err"]
@@ -1800,6 +1838,7 @@ def _step_advisories(ctx: InitContext) -> None:
         info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
         ctx.record("advisories", "ok", "incomplete")
         return
+    demo = _is_demo_project(ctx.project_root)
     # A scaffolded project needs a different send-off: --scaffold already wrote
     # a populated booley.toml with every enabled Flow and Specialist already wired up, so
     # pointing the user at Steps 4-6 ("enable the disabled Flows and Specialists") contradicts
@@ -1807,7 +1846,9 @@ def _step_advisories(ctx: InitContext) -> None:
     # only wants Step 3").
     scaffolded = any(r.name == "scaffold" and r.status in ("ok", "warn") for r in ctx.results)
     configured = False
-    if scaffolded:
+    if demo:
+        _print_demo_advisory()
+    elif scaffolded:
         info("Scaffolded starter project: booley.toml/tests.toml are populated and")
         info(
             "every enabled Flow and Specialist is already wired — most booley-setup steps don't apply:"
@@ -1832,7 +1873,9 @@ def _step_advisories(ctx: InitContext) -> None:
     print()
     info("Optional:")
     info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
-    detail = "scaffold" if scaffolded else ("configured" if configured else "")
+    detail = (
+        "demo" if demo else ("scaffold" if scaffolded else ("configured" if configured else ""))
+    )
     ctx.record("advisories", "ok", detail)
 
 
@@ -1865,6 +1908,9 @@ def _print_summary(ctx: InitContext) -> int:
     if advisory is None:
         # --seed: no advisories step ran, so there is nothing "above" to finish.
         print(green("Booley base setup complete."))
+    elif advisory.detail == "demo":
+        print(green("Booley demo setup complete."))
+        print(green('Next: open the PicoRV32 folder in VS Code and choose "Reopen in Container".'))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))

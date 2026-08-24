@@ -75,8 +75,25 @@ def _stub_flavor_env(
 
 
 class TestFlavorDispatch:
+    def test_missing_flavor_pulls_published_image_before_build(
+        self, flavor_repo, monkeypatch
+    ):
+        built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
+        pulled: list[str] = []
+        monkeypatch.setattr(
+            idi, "_try_pull_image", lambda version, image=idi.DOCKER_IMAGE: pulled.append(image) or True
+        )
+        ctx = InitContext(project_root=flavor_repo)
+
+        init_cmd._step_project_image(ctx)
+
+        assert pulled == [FLAVOR]
+        assert not built, "a published flavor must not be rebuilt locally"
+        assert ctx.results[-1].detail == f"flavor {FLAVOR} pulled"
+
     def test_flavor_is_not_treated_as_user_managed(self, flavor_repo, monkeypatch, capsys):
         built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
+        monkeypatch.setattr(idi, "_try_pull_image", lambda *args, **kwargs: False)
         ctx = InitContext(project_root=flavor_repo)
 
         init_cmd._step_project_image(ctx)

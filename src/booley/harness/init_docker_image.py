@@ -789,7 +789,7 @@ def _flavor_build(
 
 
 def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
-    """Build, pull, or refresh the Booley-shipped sandbox flavor the project selected.
+    """Pull, build, or refresh the Booley-shipped sandbox flavor the project selected.
 
     Runs right after the base Docker-image step, and that ordering is
     load-bearing: a flavor is
@@ -820,6 +820,15 @@ def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
         ctx.record("project_image", "warn", f"would {verb}")
         return False
 
+    # Release flavors are published beside the base image. A normal wheel also
+    # ships the Dockerfile as a local-build fallback, so gating the pull on a
+    # *missing* Dockerfile made fresh installs compile the entire RISC-V image
+    # locally even when the matching release was available from GHCR.
+    if not exists and not ctx.force and _try_pull_image(expected_version, image):
+        ok(f"{image} pulled from registry")
+        ctx.record("project_image", "ok", f"flavor {image} pulled")
+        return True
+
     # No shipped Dockerfile to build from (a trimmed install): the registry is
     # the only source, and a flavor already on disk is trusted as-is — there is
     # nothing local to check it against.
@@ -828,10 +837,6 @@ def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
             skip(f"{image} present; no shipped {dockerfile_name} to rebuild from — trusting it")
             ctx.record("project_image", "skip", f"flavor {image} unverifiable")
             return False
-        if _try_pull_image(expected_version, image):
-            ok(f"{image} pulled from registry")
-            ctx.record("project_image", "ok", f"flavor {image} pulled")
-            return True
         err(f"{image} is missing and cannot be built — no shipped {dockerfile_name}")
         info(f"  pull it: docker pull {remote_tag(image, expected_version)}")
         ctx.record("project_image", "err", f"flavor {image} unavailable")
