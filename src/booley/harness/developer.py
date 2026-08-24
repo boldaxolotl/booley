@@ -1080,19 +1080,14 @@ def _guard_scorer_restore_artifacts(
     return True
 
 
-def _check_ticket_dirty_statuses(worktree: Path) -> list[DirtyFile]:
-    """Return dirty paths from the outer and paired project repositories."""
-    from booley.runtime.ticket_repositories import ticket_repositories
+def _check_ticket_dirty_statuses(ctx: TicketContext) -> list[DirtyFile]:
+    """Return dirty paths through the Ticket Workspace's repository routing."""
+    from .developer_guardrails import DirtyFile
+    from .setup.project_worktree import ticket_workspace
 
-    from .developer_guardrails import DirtyFile, check_uncommitted_code_statuses
-
-    dirty: list[DirtyFile] = []
-    for repository in ticket_repositories(worktree):
-        dirty.extend(
-            DirtyFile(repository.ticket_path(entry.path), entry.status)
-            for entry in check_uncommitted_code_statuses(repository.worktree)
-        )
-    return dirty
+    return [
+        DirtyFile(change.path, change.status) for change in ticket_workspace(ctx).pending_changes()
+    ]
 
 
 def _commit_ticket_paths(ctx: TicketContext, paths: list[str], message: str) -> None:
@@ -1117,17 +1112,14 @@ def _run_post_guardrails(
     from booley.runtime.ticket_repositories import TicketWorkspaceError
 
     from .colors import yellow
-    from .developer_guardrails import (
-        GitStatusError,
-    )
     from .scope_policy import ScopeTier, classify_path, is_restore_artifact
 
     # Leftover uncommitted edits are fine to have, but review/merge only sees
     # committed branch history, so commit them before handoff.
     if ctx.worktree_path:
         try:
-            dirty = _check_ticket_dirty_statuses(ctx.worktree_path)
-        except (GitStatusError, TicketWorkspaceError) as exc:
+            dirty = _check_ticket_dirty_statuses(ctx)
+        except TicketWorkspaceError as exc:
             logger.warning("Cannot inspect uncommitted edits for %s: %s", ctx.slug, exc)
             block_ticket(
                 ctx,
@@ -1344,9 +1336,6 @@ def _commit_leftover_edits(
 
     from .blocking import BlockingError
     from .colors import yellow
-    from .developer_guardrails import (
-        GitStatusError,
-    )
     from .scope_policy import ScopeTier, classify_path
 
     logger.warning(
@@ -1367,8 +1356,8 @@ def _commit_leftover_edits(
         return True
 
     try:
-        remaining = _check_ticket_dirty_statuses(ctx.worktree_path)
-    except (GitStatusError, TicketWorkspaceError) as exc:
+        remaining = _check_ticket_dirty_statuses(ctx)
+    except TicketWorkspaceError as exc:
         logger.warning("Cannot recheck leftover edits for %s: %s", ctx.slug, exc)
         block_ticket(
             ctx,

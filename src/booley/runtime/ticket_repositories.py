@@ -189,19 +189,41 @@ class TicketWorkspace:
         self,
         disposition: WorkspaceDisposition,
         message: str = "",
+        *,
+        cleanup: bool = True,
     ) -> tuple[bool, str]:
         """Finish the paired repository while preserving recovery state on failure."""
+        return self.retire(
+            self.request.project_root,
+            self.request.ticket_slug,
+            disposition,
+            message,
+            cleanup=cleanup,
+        )
+
+    @staticmethod
+    def retire(
+        project_root: Path,
+        ticket_slug: str,
+        disposition: WorkspaceDisposition,
+        message: str = "",
+        *,
+        cleanup: bool = True,
+    ) -> tuple[bool, str]:
+        """Merge or discard one paired repository through the workspace boundary."""
         if disposition is WorkspaceDisposition.KEEP:
             return True, ""
         if disposition is WorkspaceDisposition.MERGE:
             ok, detail = merge_project_ticket_branch(
-                self.request.project_root,
-                self.request.ticket_slug,
+                project_root,
+                ticket_slug,
                 message,
             )
             if not ok:
                 return False, detail
-        if cleanup_project_ticket_branch(self.request.project_root, self.request.ticket_slug):
+        if not cleanup:
+            return True, ""
+        if cleanup_project_ticket_branch(project_root, ticket_slug):
             return True, ""
         return False, "project repository cleanup failed"
 

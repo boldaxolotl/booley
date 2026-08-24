@@ -15,6 +15,8 @@ from booley.config.guidance_links import (
     ensure_guidance_links,
     plan_guidance_links,
 )
+from booley.harness import init_cmd
+from booley.harness.init_common import InitContext
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -96,6 +98,22 @@ def test_blocker_prevents_partial_guidance_link_creation(tmp_path: Path):
         ensure_guidance_links(project_root, project_dir, plan=plan)
     assert not (project_root / "AGENTS.md").exists()
     assert claude.read_text(encoding="utf-8") == "mine\n"
+
+
+def test_init_records_guidance_precondition_change_as_error(tmp_path: Path):
+    project_root, project_dir, _canon = _make_project(tmp_path)
+    plan = plan_guidance_links(project_root, project_dir)
+    foreign = project_root / "AGENTS.md"
+    foreign.write_text("changed after planning\n", encoding="utf-8")
+    ctx = InitContext(project_root=project_root)
+
+    init_cmd._step_guidance_links(ctx, plan)
+
+    assert [(result.name, result.status, result.detail) for result in ctx.results] == [
+        ("guidance_links", "err", "filesystem precondition changed")
+    ]
+    assert foreign.read_text(encoding="utf-8") == "changed after planning\n"
+    assert not (project_root / "CLAUDE.md").exists()
 
 
 def test_preserves_matching_tracked_root_file(tmp_path: Path):

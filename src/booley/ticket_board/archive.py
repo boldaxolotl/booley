@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.ticket_repositories import TicketWorkspace, WorkspaceDisposition
+
 from .frontmatter import parse_frontmatter
 from .git_ops import cleanup_worktree_and_branch
 from .io import scan_all_tickets
@@ -109,9 +111,12 @@ def _archive_single(tio: Any, slug: str, keep_logs: bool, force: bool) -> list[s
 
     log_dir = ticket_log_dir(tio.logs_dir, slug)
     with tio._ticket_lock(slug):
-        from .project_git_ops import cleanup_project_ticket_branch
-
-        if not cleanup_project_ticket_branch(tio._project_root, slug):
+        ok, _detail = TicketWorkspace.retire(
+            tio._project_root,
+            slug,
+            WorkspaceDisposition.DISCARD,
+        )
+        if not ok:
             print(
                 f"Error: could not clean up project repository branch for '{slug}'",
                 file=sys.stderr,
@@ -168,9 +173,12 @@ def op_archive(
             except OSError:
                 summary = md_file.stem
                 fields = {}
-            from .project_git_ops import cleanup_project_ticket_branch
-
-            if not cleanup_project_ticket_branch(tio._project_root, ticket_slug):
+            ok, _detail = TicketWorkspace.retire(
+                tio._project_root,
+                ticket_slug,
+                WorkspaceDisposition.DISCARD,
+            )
+            if not ok:
                 print(
                     f"Error: could not clean up project repository branch for '{ticket_slug}'",
                     file=sys.stderr,

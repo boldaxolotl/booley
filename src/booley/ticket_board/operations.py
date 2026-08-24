@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.pid import is_pid_alive
+from booley.runtime.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 from booley.runtime.timefmt import format_human_datetime
 
 logger = logging.getLogger(__name__)
@@ -645,11 +646,20 @@ def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = 
 
     if not _merge_outer_repository(merge_into, merge_from, merge_msg):
         return False
-    if project_root is not None and not _merge_project_repository(project_root, slug, merge_msg):
-        return False
+    if project_root is not None:
+        ok, detail = TicketWorkspace.retire(
+            project_root,
+            slug,
+            WorkspaceDisposition.MERGE,
+            merge_msg,
+            cleanup=cleanup,
+        )
+        if not ok:
+            print(f"Error: project repository merge failed: {detail}", file=sys.stderr)
+            return False
 
     # Both merges landed — now it is safe to drop the ticket worktrees and branches.
-    return not cleanup or _cleanup_merged_branches(project_root, slug, merge_from)
+    return not cleanup or _cleanup_merged_branch(merge_from)
 
 
 def _merge_outer_repository(merge_into: str, merge_from: str, merge_msg: str) -> bool:
@@ -684,22 +694,7 @@ def _merge_outer_repository(merge_into: str, merge_from: str, merge_msg: str) ->
     return True
 
 
-def _merge_project_repository(project_root: Path, slug: str, message: str) -> bool:
-    from .project_git_ops import merge_project_ticket_branch
-
-    ok, err = merge_project_ticket_branch(project_root, slug, message)
-    if not ok:
-        print(f"Error: project repository merge failed: {err}", file=sys.stderr)
-    return ok
-
-
-def _cleanup_merged_branches(project_root: Path | None, slug: str, merge_from: str) -> bool:
-    if project_root is not None:
-        from .project_git_ops import cleanup_project_ticket_branch
-
-        if not cleanup_project_ticket_branch(project_root, slug):
-            print("Error: project repository cleanup failed", file=sys.stderr)
-            return False
+def _cleanup_merged_branch(merge_from: str) -> bool:
     if merge_from:
         remove_worktree_for_branch(merge_from)
         prune_worktrees()
@@ -714,9 +709,12 @@ def _cleanup_merged_branches(project_root: Path | None, slug: str, merge_from: s
 
 def _do_cleanup(slug: str, entry: dict, on_success: OnSuccess, project_root: Path) -> bool:
     """Perform the cleanup step of op_complete."""
-    from .project_git_ops import cleanup_project_ticket_branch
-
-    if not cleanup_project_ticket_branch(project_root, slug):
+    ok, _detail = TicketWorkspace.retire(
+        project_root,
+        slug,
+        WorkspaceDisposition.DISCARD,
+    )
+    if not ok:
         return False
     fb = entry.get("feature_branch", "") or entry.get("branch", "")
     if not fb:
@@ -1091,9 +1089,12 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
 
 def _cleanup_reset_branches(project_root: Path, slug: str, feature_branch: str) -> bool:
     """Discard both repositories' ticket branches during a full reset."""
-    from .project_git_ops import cleanup_project_ticket_branch
-
-    if not cleanup_project_ticket_branch(project_root, slug):
+    ok, _detail = TicketWorkspace.retire(
+        project_root,
+        slug,
+        WorkspaceDisposition.DISCARD,
+    )
+    if not ok:
         print(
             f"Error: reset could not delete project repository branch for '{slug}'.",
             file=sys.stderr,

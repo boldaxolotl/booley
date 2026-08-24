@@ -376,7 +376,4 @@ def _digest(content: bytes) -> str:
 
 
 def _file_digest(path: Path) -> str:
-    try:
-        return _digest(path.read_bytes())
-    except OSError:
-        return ""
+    return _digest(path.read_bytes())
