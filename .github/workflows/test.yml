@@ -3,8 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Run on stacked PRs as well as PRs targeting main. Each optimization phase
+  # has its own reviewable base branch and must retain the same CI coverage.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ntpath
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,11 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
             "tests/bwave",
         ],
         cwd=REPOSITORY_ROOT,
+        env={
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith("PYTEST_XDIST_")
+        },
         capture_output=True,
         text=True,
         check=False,
