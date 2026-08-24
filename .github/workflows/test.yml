@@ -318,14 +318,6 @@ jobs:
           docker run --rm booley-sandbox sh -c 'command -v verible-verilog-lint'
           docker run --rm booley-sandbox python3 -c 'import edalize.tools.verible'
 
-      - name: Run Verible production-image end-to-end test
-        run: >-
-          pytest tests/docker/test_sandbox_verible_e2e.py
-          -q --tb=short -rs
-
-      - name: Run sandbox isolation suite
-        run: python tests/docker/isolation/run_isolation_tests.py
-
       # Use the same checksum-pinned fetcher as `booley init`. The payload is
       # deliberately not cached or baked into the image; it includes the
       # upstream notice and is mounted read-only only for this job.
@@ -336,28 +328,102 @@ jobs:
           PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
 
-      - name: Run FIFO pipeline smoke test
-        run: >
-          docker run --rm -v "${{ github.workspace }}:/work" booley-test
-          bash -c "pip install --break-system-packages pytest &&
-          python -m pytest /work/tests/sim/test_bwave_fifo_pipeline.py
-          -v -k 'not slow'"
+      - name: Prepare isolated validation temp directories
+        shell: bash
+        run: |
+          for validation in verible isolation fifo native-fst simulator ticket-mode; do
+            install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
+          done
 
-      - name: Cross-validate B-Wave against simulator traces
-        run: >
-          docker run --rm -v "${{ github.workspace }}:/work" booley-test
-          bash -c "pip install --break-system-packages pytest &&
-          python /work/crates/bwave/tests/native_fst_verilator_test.py &&
-          python -m pytest
-          /work/crates/bwave/tests/simulator_ground_truth_test.py
-          -q --tb=short"
+      # GitHub's native parallel group retains a separate log and exit status
+      # for every validation while sharing the already-loaded candidate image.
+      - parallel:
+          - name: Run Verible production-image end-to-end test
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/verible
+              TMPDIR: ${{ runner.temp }}/bwave-smoke/verible
+              BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-verible
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              "${BOOLEY_DOCKER_NAME_PREFIX}"
+              pytest tests/docker/test_sandbox_verible_e2e.py
+              -q --tb=short -rs --basetemp "${VALIDATION_TMP}/pytest"
 
-      - name: Run Ticket Mode production-image smoke
-        run: >
-          docker run --rm
-          --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
-          --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
-          -e BOOLEY_TICKET_MODE_SMOKE=1
-          booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
-          python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
-          -v --tb=short -o cache_dir=/tmp/pytest-cache"
+          - name: Run sandbox isolation suite
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/isolation
+              TMPDIR: ${{ runner.temp }}/bwave-smoke/isolation
+              BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-isolation
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              "${BOOLEY_DOCKER_NAME_PREFIX}"
+              python tests/docker/isolation/run_isolation_tests.py
+
+          - name: Run FIFO pipeline smoke test
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/fifo
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-fifo
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-fifo
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test bash -c "pip install --break-system-packages pytest &&
+              python -m pytest /work/tests/sim/test_bwave_fifo_pipeline.py
+              -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
+
+          - name: Run native FST/Verilator cross-validation
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/native-fst
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-native-fst
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-native-fst
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test python /work/crates/bwave/tests/native_fst_verilator_test.py
+
+          - name: Run simulator ground-truth tests
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/simulator
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-simulator
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-simulator
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test bash -c "pip install --break-system-packages pytest &&
+              python -m pytest /work/crates/bwave/tests/simulator_ground_truth_test.py
+              -q --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+
+          - name: Run Ticket Mode production-image smoke
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/ticket-mode
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp -e BOOLEY_TICKET_MODE_SMOKE=1
+              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
+              python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
+              -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+
+      - name: Clean up image validation containers
+        if: always()
+        shell: bash
+        run: |
+          prefix="^/booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-"
+          mapfile -t containers < <(docker ps -aq --filter "name=${prefix}")
+          if (( ${#containers[@]} )); then
+            docker rm -f "${containers[@]}"
+          fi

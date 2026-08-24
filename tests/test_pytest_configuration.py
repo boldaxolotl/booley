@@ -6,6 +6,7 @@ import ntpath
 import os
 import subprocess
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -164,3 +165,133 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "--cov-fail-under=60" in command
     assert "coverage report --fail-under=60" in command
     assert "coverage xml -o coverage.xml" in command
+
+
+def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
+    """Production-image checks overlap without sharing writable state."""
+    workflow = _test_workflow()
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+    group_index, group = next(
+        (index, step) for index, step in enumerate(steps) if "parallel" in step
+    )
+    validations = group["parallel"]
+    expected_names = {
+        "Run Verible production-image end-to-end test",
+        "Run sandbox isolation suite",
+        "Run FIFO pipeline smoke test",
+        "Run native FST/Verilator cross-validation",
+        "Run simulator ground-truth tests",
+        "Run Ticket Mode production-image smoke",
+    }
+
+    assert {step["name"] for step in validations} == expected_names
+    assert all(not step.get("continue-on-error", False) for step in validations)
+    temp_dirs = {step["env"]["VALIDATION_TMP"] for step in validations}
+    assert len(temp_dirs) == len(validations)
+
+    rendered = "\n".join(step["run"] for step in validations)
+    assert rendered.count("--name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-") >= 4
+    readonly_workspace = '--mount type=bind,src="${{ github.workspace }}",dst=/work,readonly'
+    assert rendered.count(readonly_workspace) >= 4
+    assert "native_fst_verilator_test.py" in rendered
+    assert "simulator_ground_truth_test.py" in rendered
+    cleanup_wrapper = ".github/scripts/run_with_container_cleanup.sh"
+    assert all(cleanup_wrapper in step["run"] for step in validations)
+
+    wrapper = (REPOSITORY_ROOT / cleanup_wrapper).read_text(encoding="utf-8")
+    assert 'setsid -- "$@" &' in wrapper
+    assert "trap 'terminate INT 130' INT" in wrapper
+    assert "trap 'terminate TERM 143' TERM" in wrapper
+    assert "trap cleanup EXIT" in wrapper
+    assert "docker rm -f" in wrapper
+
+    cleanup = steps[group_index + 1]
+    assert cleanup["if"] == "always()"
+    assert "docker rm -f" in cleanup["run"]
+    assert "github.run_id" in cleanup["run"]
+    assert "github.run_attempt" in cleanup["run"]
+
+
+def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-child EXIT boundary cleans Docker state without hiding failure."""
+    docker_log = tmp_path / "docker.log"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "${DOCKER_LOG}"\n'
+        'if [[ "$1" == "ps" ]]; then printf "container-id\\n"; fi\n',
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    monkeypatch.setenv("DOCKER_LOG", str(docker_log))
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    result = subprocess.run(
+        [
+            str(REPOSITORY_ROOT / ".github/scripts/run_with_container_cleanup.sh"),
+            "booley-ci-123-1-fifo",
+            "bash",
+            "-c",
+            "exit 7",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+    )
+
+    assert result.returncode == 7
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert calls == [
+        "ps -aq --filter name=^/booley-ci-123-1-fifo",
+        "rm -f container-id",
+    ]
+
+
+def test_image_validation_wrapper_cleans_promptly_on_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SIGTERM interrupts wait, kills an ignoring child group, and cleans Docker."""
+    docker_log = tmp_path / "docker.log"
+    child_pid_path = tmp_path / "child.pid"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "${DOCKER_LOG}"\n'
+        'if [[ "$1" == "ps" ]]; then printf "container-id\\n"; fi\n',
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    monkeypatch.setenv("DOCKER_LOG", str(docker_log))
+    monkeypatch.setenv("CHILD_PID_PATH", str(child_pid_path))
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    process = subprocess.Popen(
+        [
+            str(REPOSITORY_ROOT / ".github/scripts/run_with_container_cleanup.sh"),
+            "booley-ci-123-1-fifo",
+            "bash",
+            "-c",
+            'echo $$ > "$CHILD_PID_PATH"; trap "" INT TERM; sleep 30',
+        ],
+        cwd=REPOSITORY_ROOT,
+    )
+    for _ in range(200):
+        if child_pid_path.exists():
+            break
+        time.sleep(0.01)
+    assert child_pid_path.exists(), "wrapped child did not start"
+
+    process.terminate()
+    assert process.wait(timeout=5) == 143
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(child_pid_path.read_text(encoding="utf-8")), 0)
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert calls[-2:] == [
+        "ps -aq --filter name=^/booley-ci-123-1-fifo",
+        "rm -f container-id",
+    ]
