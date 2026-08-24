@@ -1315,9 +1315,16 @@ def _devcontainer_is_tracked(project_root: Path) -> bool:
 
 
 def _booley_repo_root() -> Path | None:
-    """Locate the Booley repo root (Docker build context), or None."""
-    root = docker_data_dir().parent.parent.parent.parent
-    return root if (root / "pyproject.toml").is_file() else None
+    """Locate sidecar build assets in a checkout or installed package."""
+    docker_data = docker_data_dir()
+    repo_root = docker_data.parent.parent.parent.parent
+    if (repo_root / "pyproject.toml").is_file():
+        return repo_root
+
+    package_root = docker_data.parent.parent
+    if (package_root / "docker").is_dir():
+        return package_root
+    return None
 
 
 def _ensure_sidecar_image(

@@ -289,6 +289,12 @@ def ensure_egress_network(name: str = EGRESS_NETWORK) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _booley_package_dir(booley_root: Path) -> Path:
+    """Resolve ``booley/`` from either a source tree or an installed wheel."""
+    source_package = booley_root / "src" / "booley"
+    return source_package if source_package.is_dir() else booley_root
+
+
 def _docker_src_dir(booley_root: Path) -> Path:
     """Build context for the sidecar/reaper images.
 
@@ -297,7 +303,12 @@ def _docker_src_dir(booley_root: Path) -> Path:
     whitelist-style and strips ``src/`` — it only ships the wheel for the
     sandbox image. The Dockerfiles therefore COPY by bare filename.
     """
-    return booley_root / "src" / "booley" / "docker"
+    return _booley_package_dir(booley_root) / "docker"
+
+
+def _docker_data_dir(booley_root: Path) -> Path:
+    """Resolve packaged Dockerfiles from either supported layout."""
+    return _booley_package_dir(booley_root) / "data" / "docker"
 
 
 def _build_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
@@ -310,8 +321,7 @@ def _build_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
 
 def build_egress_proxy_image(booley_root: Path) -> bool:
     """Build the egress-proxy image from the in-repo Dockerfile. Returns success."""
-    docker_data = booley_root / "src" / "booley" / "data" / "docker"
-    dockerfile = docker_data / "Dockerfile.egress-proxy"
+    dockerfile = _docker_data_dir(booley_root) / "Dockerfile.egress-proxy"
     if not dockerfile.is_file():
         raise RuntimeError(f"egress-proxy Dockerfile not found at {dockerfile}")
     result = _run_docker(
@@ -398,7 +408,7 @@ def _connect_to_egress(container: str, network: str = EGRESS_NETWORK) -> None:
 
 def build_reaper_image(booley_root: Path) -> bool:
     """Build the reaper image from the in-repo Dockerfile. Returns success."""
-    dockerfile = booley_root / "src" / "booley" / "data" / "docker" / "Dockerfile.reaper"
+    dockerfile = _docker_data_dir(booley_root) / "Dockerfile.reaper"
     if not dockerfile.is_file():
         raise RuntimeError(f"reaper Dockerfile not found at {dockerfile}")
     result = _run_docker(
