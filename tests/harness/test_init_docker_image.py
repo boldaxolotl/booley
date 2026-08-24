@@ -132,6 +132,38 @@ def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypa
     assert any(value.startswith("BOOLEY_IMAGE_BUILT_AT=") for value in values)
 
 
+def test_local_build_constructs_base_before_candidate_with_named_context(
+    tmp_path, monkeypatch
+) -> None:
+    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile.base").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile").write_text("FROM booley-runtime-base\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args: True)
+    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: False)
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+    monkeypatch.setattr(init_docker_image, "_runtime_base_build_metadata_args", lambda _root: [])
+
+    def fake_build(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(init_docker_image, "_docker_build_image", fake_build)
+    ctx = InitContext(project_root=tmp_path)
+
+    init_docker_image._docker_local_build(ctx, docker_dir, exists=False, fingerprint="fp")
+
+    assert calls[0][0][1].name == "Dockerfile.base"
+    assert calls[0][1]["image"] == "booley-runtime-base:local"
+    assert calls[1][0][1].name == "Dockerfile"
+    assert calls[1][1]["build_contexts"] == {
+        "booley-runtime-base": "docker-image://booley-runtime-base:local"
+    }
+
+
 # ---------------------------------------------------------------------------
 # _image_is_stale
 # ---------------------------------------------------------------------------

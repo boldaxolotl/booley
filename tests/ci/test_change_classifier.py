@@ -105,6 +105,24 @@ def test_pure_docker_change_requires_only_image_build_path(tmp_path: Path) -> No
     assert _required(outputs) == {"changes", "package-artifacts", "bwave-smoke"}
 
 
+def test_stable_base_input_requests_local_compatibility_build(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/data/docker/Dockerfile.base", "FROM scratch\n")
+    head = _commit(repo, "stable base")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["stable_base"] == "true"
+    assert outputs["build_stable_base"] == "true"
+    assert _required(outputs) == {
+        "changes",
+        "lint",
+        "test",
+        "package-artifacts",
+        "bwave-smoke",
+    }
+
+
 def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "docs/architecture.md")
@@ -202,6 +220,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
     assert workflow["workflow"] == "true"
     assert _required(workflow) == expected
     assert forced["full"] == "true"
+    assert forced["stable_base"] == "false"
     assert _required(forced) == expected
 
 

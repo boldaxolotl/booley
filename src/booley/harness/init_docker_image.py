@@ -27,12 +27,14 @@ from booley.harness.build_stamp import (
     resolve_build_commit,
     resolve_source_updated_at,
 )
+from booley.harness.docker_base_contract import contract as runtime_base_contract
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 DOCKER_IMAGE = "booley-sandbox"
 GHCR_IMAGE = "ghcr.io/boldaxolotl/booley-sandbox"
+LOCAL_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 
 # Booley-SHIPPED sandbox flavors: purpose-built images a project selects by name
 # via ``[sandbox].image``, each ``FROM booley-sandbox`` plus a domain toolchain.
@@ -84,6 +86,23 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
             resolve_source_updated_at(booley_root) if is_checkout else "unknown"
         ),
         "BOOLEY_VERSION": _expected_version(booley_root),
+    }
+    return [
+        item
+        for name, value in values.items()
+        for item in ("--build-arg", f"{name}={value or 'unknown'}")
+    ]
+
+
+def _runtime_base_build_metadata_args(booley_root: Path) -> list[str]:
+    """Docker build args for explicit stable-base provenance and compatibility."""
+    is_checkout = (booley_root / ".git").exists()
+    values = {
+        "BOOLEY_BASE_SOURCE_REVISION": (
+            resolve_build_commit(booley_root) if is_checkout else "unknown"
+        ),
+        "BOOLEY_BASE_CONTRACT": runtime_base_contract(booley_root),
+        "BOOLEY_BASE_BUILT_AT": utc_now_rfc3339(),
     }
     return [
         item
@@ -507,8 +526,12 @@ def _docker_local_build(
     source drift; computed here if not supplied by the caller.
     """
     dockerfile = docker_dir / "Dockerfile"
-    if not dockerfile.is_file():
-        err(f"Dockerfile not found at {dockerfile}")
+    base_dockerfile = docker_dir / "Dockerfile.base"
+    missing_dockerfile = next(
+        (path for path in (base_dockerfile, dockerfile) if not path.is_file()), None
+    )
+    if missing_dockerfile:
+        err(f"Dockerfile not found at {missing_dockerfile}")
         ctx.record("docker_image", "err", "Dockerfile missing")
         return
 
@@ -522,10 +545,21 @@ def _docker_local_build(
     if fingerprint is None:
         fingerprint = _image_build_fingerprint(booley_root)
 
+    if not _docker_build_runtime_base(ctx, base_dockerfile, booley_root):
+        return
+
     if not _docker_build_wheel(ctx, booley_root):
         return
 
-    returncode = _docker_build_image(ctx, dockerfile, booley_root, exists, fingerprint)
+    returncode = _docker_build_image(
+        ctx,
+        dockerfile,
+        booley_root,
+        exists,
+        fingerprint,
+        build_contexts={"booley-runtime-base": f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"},
+        build_args=["--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={LOCAL_RUNTIME_BASE_IMAGE}"],
+    )
     if returncode is None:
         return  # error already recorded
 
@@ -537,6 +571,31 @@ def _docker_local_build(
     ok(f"{DOCKER_IMAGE} image built successfully")
     _report_build_cache()
     ctx.record("docker_image", "ok", "built")
+
+
+def _docker_build_runtime_base(ctx: InitContext, dockerfile: Path, booley_root: Path) -> bool:
+    """Build the local named base consumed by the thin candidate Dockerfile."""
+    try:
+        build_args = _runtime_base_build_metadata_args(booley_root)
+    except (OSError, ValueError) as error:
+        err(f"stable runtime-base contract failed: {error}")
+        ctx.record("docker_image", "err", "runtime-base contract failed")
+        return False
+    returncode = _docker_build_image(
+        ctx,
+        dockerfile,
+        booley_root,
+        _docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
+        image=LOCAL_RUNTIME_BASE_IMAGE,
+        build_note="stable EDA/runtime layers are cached across source changes",
+        build_args=build_args,
+    )
+    if returncode == 0:
+        return True
+    if returncode is not None:
+        err("stable runtime-base build failed — re-run with -v for full output")
+        ctx.record("docker_image", "err", "runtime-base build failed")
+    return False
 
 
 def _size_to_gb(size: str) -> float:
@@ -665,6 +724,8 @@ def _docker_build_image(
     image: str = DOCKER_IMAGE,
     record_key: str = "docker_image",
     build_note: str = "this can take 20-30 minutes on first build",
+    build_contexts: dict[str, str] | None = None,
+    build_args: list[str] | None = None,
 ) -> int | None:
     """Run docker build of *dockerfile* against the *context* dir.
 
@@ -697,6 +758,9 @@ def _docker_build_image(
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
     if image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(context)
+    build_cmd += build_args or []
+    for name, source in sorted((build_contexts or {}).items()):
+        build_cmd += ["--build-context", f"{name}={source}"]
     build_cmd += ["-t", image, "-f", str(dockerfile), str(context)]
 
     try:

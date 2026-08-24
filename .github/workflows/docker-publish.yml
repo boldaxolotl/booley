@@ -8,6 +8,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: boldaxolotl/booley-sandbox
+  BASE_IMAGE_NAME: boldaxolotl/booley-sandbox-base
   RISCV_IMAGE_NAME: boldaxolotl/booley-sandbox-riscv
 
 jobs:
@@ -52,11 +53,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve compatible stable runtime base
+        id: runtime-base
+        shell: bash
+        env:
+          BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
+        run: >-
+          python .github/scripts/docker_base_contract.py --repo .
+          --resolve-image "${BASE_REF}" --github-output "${GITHUB_OUTPUT}"
+
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: src/booley/data/docker/Dockerfile
+          build-contexts: |
+            booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
@@ -66,6 +78,7 @@ jobs:
             BOOLEY_SOURCE_REVISION=${{ steps.version.outputs.revision }}
             BOOLEY_SOURCE_UPDATED_AT=${{ steps.version.outputs.source_updated_at }}
             BOOLEY_IMAGE_BUILT_AT=${{ steps.version.outputs.image_built_at }}
+            BOOLEY_RUNTIME_BASE_IMAGE=${{ steps.runtime-base.outputs.image }}
           cache-from: type=gha,scope=sandbox
           # Same scope as bwave-smoke in test.yml, so tag builds reuse the
           # per-PR cache. ignore-error: a failed cache upload must not fail
