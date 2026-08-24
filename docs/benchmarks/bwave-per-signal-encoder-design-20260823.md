@@ -1,5 +1,11 @@
 # B-Wave per-signal encoder design — 23 AUG 2026
 
+> **Superseded:** the selected fused section-local representation passed the
+> sustained acceptance campaign, and the parallel engine is now the production
+> default. The design and rejected prototype measurements below remain
+> historical context; see
+> [B-Wave VCD streaming acceptance](bwave-vcd-streaming-acceptance-20260824.md).
+
 ## Decision
 
 Keep the production build engine serial. Preserve 128 MiB estimated FST-stream

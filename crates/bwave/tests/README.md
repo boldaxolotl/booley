@@ -118,19 +118,19 @@ the median query must be at most 1.10× the serial query; both ratios are
 configurable. A missed gate still writes the evidence file, prints each
 violation, and exits 2.
 
-The benchmark runners default to the draft parallel converter; production
-`bwave build` remains serial until every promotion gate passes. Pass
-`--engine serial` to either runner when collecting the semantic oracle or a
-serial performance baseline. Optional
+The benchmark runners and production `bwave build` default to the promoted
+parallel converter. Pass `--engine serial` when collecting the semantic oracle,
+a performance baseline, or diagnostic evidence. Optional
 `--jobs`, optional `--parse-jobs`/`--encode-jobs` split overrides, the opt-in
-`--pack-jobs` per-signal compression prototype, `--chunk-bytes`, and
+`--pack-jobs` per-signal compression override, `--chunk-bytes`, and
 `--section-bytes` are recorded in the evidence and
 forwarded to hidden developer controls on `bwave build`; they are not supported
-user surface. The measured parallel defaults are 8 MiB timestamp-aligned parse
-chunks, 128 MiB estimated-uncompressed FST sections, and a three-parser,
-one-encoder split on a four-worker budget. `--pack-jobs` defaults to one because
-the prototype improves wall time without meeting the CPU-work gate. Experimental
-splits are rejected when parser plus packer concurrency exceeds `--jobs`.
+user surface. The promoted defaults cap the worker budget at six and select four
+parsers, one encoder, and two packers when at least six logical CPUs are
+available. Timestamp-aligned parse chunks target 4 MiB and estimated-uncompressed
+FST sections target 128 MiB. Smaller hosts scale the worker topology down.
+Experimental splits are rejected when parser plus packer concurrency exceeds
+`--jobs`.
 Section sizing follows the accumulated FST stream rather than raw VCD bytes, so
 signal activity does not multiply the section count. The hidden `--engine
 serial` control remains available for differential diagnosis and benchmark

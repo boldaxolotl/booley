@@ -192,8 +192,8 @@ struct BuildArgs {
     #[arg(long)]
     scope: Option<String>,
 
-    /// Temporary developer control for the staged VCD converter rollout
-    #[arg(long, value_enum, default_value_t = BuildEngine::Serial, hide = true)]
+    /// Hidden converter selection for diagnostics and serial-oracle checks
+    #[arg(long, value_enum, default_value_t = BuildEngine::Parallel, hide = true)]
     engine: BuildEngine,
 
     /// Temporary total worker-budget override
@@ -700,7 +700,7 @@ fn build_bwave_from_reader(
 
 fn default_build_jobs() -> usize {
     std::thread::available_parallelism()
-        .map(|count| count.get().clamp(2, 24))
+        .map(|count| count.get().clamp(2, 6))
         .unwrap_or(2)
 }
 
@@ -710,13 +710,22 @@ fn parallel_worker_counts(
     encode_jobs: Option<usize>,
     pack_jobs: Option<usize>,
 ) -> Result<(usize, usize, usize), String> {
-    let default_encode = total_jobs
-        .div_ceil(4)
-        .min(7)
-        .min(total_jobs.saturating_sub(1).max(1));
+    let default_pack = if total_jobs >= 6 && encode_jobs.is_none_or(|jobs| jobs == 1) {
+        2
+    } else {
+        1
+    };
+    let pack = pack_jobs.unwrap_or(default_pack);
+    let default_encode = if pack > 1 {
+        1
+    } else {
+        total_jobs
+            .div_ceil(4)
+            .min(7)
+            .min(total_jobs.saturating_sub(1).max(1))
+    };
     let encode = encode_jobs.unwrap_or(default_encode);
-    let parse = parse_jobs.unwrap_or(total_jobs.saturating_sub(encode).max(1));
-    let pack = pack_jobs.unwrap_or(1);
+    let parse = parse_jobs.unwrap_or(total_jobs.saturating_sub(encode.max(pack)).max(1));
     if parse == 0 || encode == 0 || pack == 0 {
         return Err("parallel worker counts must be positive".to_string());
     }
@@ -734,6 +743,24 @@ fn parallel_worker_counts(
         ));
     }
     Ok((parse, encode, pack))
+}
+
+#[cfg(test)]
+mod build_worker_tests {
+    use super::parallel_worker_counts;
+
+    #[test]
+    fn six_job_default_matches_promoted_topology() {
+        assert_eq!(parallel_worker_counts(6, None, None, None), Ok((4, 1, 2)));
+    }
+
+    #[test]
+    fn explicit_encoder_override_keeps_single_packer_default() {
+        assert_eq!(
+            parallel_worker_counts(6, None, Some(2), None),
+            Ok((4, 2, 1))
+        );
+    }
 }
 
 #[cfg(unix)]

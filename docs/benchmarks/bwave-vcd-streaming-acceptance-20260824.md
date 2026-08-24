@@ -10,9 +10,19 @@ output-size, and query-time limits on both workload shapes.
 The selected configuration uses six worker threads: four parsers, one
 encoder, and two packers, with the encoder also participating in packing.
 Timestamp-aligned VCD chunks target 4 MiB and estimated FST-stream sections
-target 128 MiB. The production build engine remains serial pending integration
-review; these results establish that the draft parallel engine is ready for
-that review.
+target 128 MiB. Following integration review and a PR-head repeat of the
+acceptance campaign, this configuration is the production default. The hidden
+serial engine remains available as the semantic oracle, benchmark baseline,
+and diagnostic fallback.
+
+## Promotion verification
+
+After changing the production default and worker-selection policy, an optimized
+no-`--engine` smoke build converted the 1,082,616,034-byte ordinary corpus in
+0.91 seconds (1.190 GB/s) with 259,852 KiB peak RSS. Its 19,589,936-byte FST has
+SHA-256 `7d37bc915d2805c0e59b0e0dfde6a4c3aa2519bda3b9bdcdaa8dbc450218ccff`,
+identical to the accepted parallel artifact. This smoke check complements the
+five-trial file/FIFO campaigns below; it does not replace them.
 
 ## Topology correction
 

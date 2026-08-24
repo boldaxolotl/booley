@@ -2,6 +2,8 @@
 
 > **Superseded:** dynamic parser dispatch, narrower boundary reads, and a
 > corrected four-physical-core affinity pass the sustained acceptance gates.
+> The parallel engine is now the production default; the decision below is a
+> historical checkpoint.
 > See
 > [B-Wave VCD streaming acceptance](bwave-vcd-streaming-acceptance-20260824.md).
 

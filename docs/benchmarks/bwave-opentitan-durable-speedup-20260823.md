@@ -1,5 +1,11 @@
 # B-Wave OpenTitan durable-output speedup — 23 AUG 2026
 
+> **Superseded:** parser-produced fragments and corrected CPU affinity later
+> passed the sustained file, FIFO, memory, size, and query gates. The parallel
+> engine is now the production default. This report remains the historical
+> evidence for the rejected intermediate topology; see
+> [B-Wave VCD streaming acceptance](bwave-vcd-streaming-acceptance-20260824.md).
+
 ## Outcome
 
 Durable publication and structural section formation are implemented, but the

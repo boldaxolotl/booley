@@ -1,11 +1,12 @@
 # Implementation plan — timestamp-chunked, multi-core VCD-to-FST conversion
 
 **Created:** 2026-08-21
-**Revised:** 2026-08-22
+**Revised:** 2026-08-24
 **Owner:** unassigned
 **Scope:** `crates/bwave` VCD-to-FST build path, its FIFO integration, and
 throughput/correctness validation
-**Primary production evidence:** pending the retained Ibex trace follow-up
+**Primary production evidence:**
+[B-Wave VCD streaming acceptance](../benchmarks/bwave-vcd-streaming-acceptance-20260824.md)
 
 ## Objective
 
@@ -69,10 +70,9 @@ The reader and final writer remain ordered. They should perform bulk byte I/O,
 not per-event work. Parsing, ID resolution, normalization, duplicate detection,
 bit packing, and section compression run in worker pools.
 
-The existing serial converter remains available until rollout as:
+The serial converter remains available after rollout as:
 
 - the semantic oracle for differential tests;
-- the small-input path if parallel startup costs are not worthwhile; and
 - a diagnostic fallback selected explicitly, never silently after a parallel
   conversion has consumed a non-seekable FIFO.
 
@@ -189,13 +189,13 @@ Keep small hand-authored fixtures for rare boundary behavior such as dump
 control, malformed input, and decreasing timestamps. Do not contort an Ibex
 excerpt to cover dialect cases it does not contain.
 
-## Implementation status — complete locally, 2026-08-22
+## Implementation status — promoted, 2026-08-24
 
 The bounded regular-file/FIFO pipeline is complete and the parallel converter
-is now the default. The hidden `--engine serial` control remains available as
-the semantic oracle, benchmark baseline, and diagnostic fallback. Regenerating
-the unavailable primary Ibex artifacts and recording production measurements
-has been split into a focused follow-up handoff.
+is the production default. The hidden `--engine serial` control remains
+available as the semantic oracle, benchmark baseline, and diagnostic fallback.
+The final retained Ibex-derived file, FIFO, and bounded-memory measurements are
+recorded in the primary production evidence linked above.
 
 ### Implemented
 
@@ -235,11 +235,15 @@ has been split into a focused follow-up handoff.
 - Per-signal value-change streams use the FST-standard zlib pack type at level
   1. This retains independent-section parallelism while recovering the
   compression ratio that LZ4 lost when its history reset at every section.
-- Measured parallel defaults are 1 MiB parse chunks, 34 MiB FST sections, and
-  an approximately 70/30 parser/encoder split capped at 24 workers (17/7 on
-  the 24-logical-CPU reference host).
+- Promoted parallel defaults are 4 MiB parse chunks, 128 MiB FST sections, and
+  a worker budget capped at six. Hosts with at least six logical CPUs use four
+  parsers, one encoder, and two packers; smaller hosts scale down.
 
-### Current evidence
+### Earlier 22 AUG evidence (superseded)
+
+> This checkpoint predates the retained Ibex-derived acceptance campaign and
+> is preserved as architectural attribution. Use the primary production
+> evidence linked above for rollout decisions.
 
 The available real trace is a 307,985,605-byte PicoRV32 VCD, not a primary Ibex
 artifact. A deterministic 1,078,240,241-byte replay of a contiguous 51,291,711-
@@ -279,14 +283,10 @@ count or exceeding the CPU/RSS budgets.
   simulation-flow, native-resolution, and validation-target suite: 739 passed
   with local-loopback permission. `ruff check src/ tests/` passes.
 
-The earlier Ibex attribution handoff and the original retained Ibex
-`small`/`opentitan` VCDs are not present on this host. Consequently Phase 0's
-checked-in Ibex excerpts and pinned-host baseline, both primary 1 GiB workload
-gates, and end-to-end Ibex `small`/`opentitan` production validation remain an
-external evidence follow-up. Do not substitute the PicoRV32 results above for
-those primary acceptance results. The default switch was explicitly approved
-from the complete local correctness suite and the sustained regular-file/FIFO
-evidence while that production campaign is handed off separately.
+The retained Ibex-derived ordinary and OpenTitan-high excerpts, reproducible
+1 GiB and 4 GiB replays, serial baselines, and regular-file/FIFO acceptance
+campaign are now present. They supersede this PicoRV32 checkpoint and provide
+the evidence for the production default.
 
 ## Phase 0 — land the oracle, fixtures, and trustworthy benchmark
 

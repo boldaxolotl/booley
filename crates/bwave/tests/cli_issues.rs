@@ -68,11 +68,11 @@ fn run(args: &[&str]) -> (String, String, i32) {
 }
 
 #[test]
-fn build_default_remains_serial_until_parallel_promotion() {
+fn build_default_uses_parallel_engine() {
     let vcd = fixture("small_clocked.vcd");
     let default_store = vcd.with_extension("default_engine.fst");
-    let serial_store = vcd.with_extension("explicit_serial.fst");
-    for store in [&default_store, &serial_store] {
+    let parallel_store = vcd.with_extension("explicit_parallel.fst");
+    for store in [&default_store, &parallel_store] {
         let _ = std::fs::remove_file(store);
     }
 
@@ -82,22 +82,22 @@ fn build_default_remains_serial_until_parallel_promotion() {
         "-o",
         default_store.to_str().unwrap(),
     ]);
-    let (_, serial_stderr, serial_code) = run(&[
+    let (_, parallel_stderr, parallel_code) = run(&[
         "build",
         "--engine",
-        "serial",
+        "parallel",
         vcd.to_str().unwrap(),
         "-o",
-        serial_store.to_str().unwrap(),
+        parallel_store.to_str().unwrap(),
     ]);
 
     assert_eq!(default_code, 0, "default build failed: {default_stderr}");
-    assert_eq!(serial_code, 0, "serial build failed: {serial_stderr}");
+    assert_eq!(parallel_code, 0, "parallel build failed: {parallel_stderr}");
     assert_eq!(
         std::fs::read(&default_store).unwrap(),
-        std::fs::read(&serial_store).unwrap()
+        std::fs::read(&parallel_store).unwrap()
     );
-    for store in [default_store, serial_store] {
+    for store in [default_store, parallel_store] {
         let _ = std::fs::remove_file(store);
     }
 }
