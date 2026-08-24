@@ -1,4 +1,9 @@
-# B-Wave Ibex VCD throughput — 2026-08-22
+# B-Wave Ibex VCD throughput — 22 AUG 2026
+
+> Historical pre-promotion evidence. The failed live/FIFO conditions recorded
+> here were corrected and rerun in the
+> [24 AUG 2026 final live acceptance](bwave-ibex-live-acceptance-20260824.md)
+> and [streaming acceptance](bwave-vcd-streaming-acceptance-20260824.md).
 
 ## Outcome
 

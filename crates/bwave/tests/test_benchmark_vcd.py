@@ -72,6 +72,8 @@ def _run(
         "2",
         "--query-trials",
         "1",
+        "--query-range",
+        "ordinary=0t:10t",
         "--min-bytes-per-second",
         threshold,
     ]
@@ -101,7 +103,9 @@ def test_benchmark_writes_complete_machine_readable_record(tmp_path: Path) -> No
     assert len(corpus["trials"]) == 2
     assert corpus["trials"][0]["fst_section_count"] == 3
     assert corpus["trials"][0]["peak_rss_kb"] == 1234
-    assert corpus["query"]["trials"][0]["cpu_percent"] == 90.0
+    assert corpus["queries"]["multi_signal"]["trials"][0]["cpu_percent"] == 90.0
+    assert corpus["queries"]["ranged_multi_signal"]["trials"][0]["cpu_percent"] == 90.0
+    assert corpus["queries"]["ranged_multi_signal"]["time_range"] == "0t:10t"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="executable test stubs use POSIX shebangs")
@@ -125,7 +129,10 @@ def test_benchmark_gates_rss_and_serial_output_ratio(tmp_path: Path) -> None:
                     {
                         "profile": "ordinary",
                         "trials": [{"output_bytes": 70}],
-                        "query": {"trials": [{"wall_seconds": 1000.0}]},
+                        "queries": {
+                            "multi_signal": {"trials": [{"wall_seconds": 1000.0}]},
+                            "ranged_multi_signal": {"trials": [{"wall_seconds": 1000.0}]},
+                        },
                     }
                 ]
             }

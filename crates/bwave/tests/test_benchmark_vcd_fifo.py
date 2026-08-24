@@ -73,6 +73,8 @@ def _run(tmp_path: Path, producer_threshold: str) -> subprocess.CompletedProcess
             "2",
             "--query-trials",
             "1",
+            "--query-range",
+            "ordinary=0t:10t",
             "--min-producer-bytes-per-second",
             producer_threshold,
             "--min-converter-bytes-per-second",

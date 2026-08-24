@@ -17,6 +17,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from benchmark_args import nonnegative_int, positive_float, positive_int
+
 PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
 TIME_FORMAT = "user_seconds=%U\nsystem_seconds=%S\ncpu_percent=%P\npeak_rss_kb=%M"
 
@@ -59,34 +61,11 @@ def _corpus(text: str) -> tuple[str, Path]:
     return profile, Path(raw_path)
 
 
-def _positive_int(text: str) -> int:
-    try:
-        value = int(text)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}") from error
-    if value <= 0:
-        raise argparse.ArgumentTypeError("value must be positive")
-    return value
-
-
-def _nonnegative_int(text: str) -> int:
-    try:
-        value = int(text)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}") from error
-    if value < 0:
-        raise argparse.ArgumentTypeError("value must be non-negative")
-    return value
-
-
-def _positive_float(text: str) -> float:
-    try:
-        value = float(text)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(f"expected a number, got {text!r}") from error
-    if not 0 < value < float("inf"):
-        raise argparse.ArgumentTypeError("value must be finite and positive")
-    return value
+def _query_range(text: str) -> tuple[str, str]:
+    profile, separator, time_range = text.partition("=")
+    if not separator or not PROFILE_RE.fullmatch(profile) or ":" not in time_range:
+        raise argparse.ArgumentTypeError("query range must be SAFE_PROFILE=START:END")
+    return profile, time_range
 
 
 def _load_corpora(values: list[tuple[str, Path]]) -> list[Corpus]:
@@ -102,6 +81,19 @@ def _load_corpora(values: list[tuple[str, Path]]) -> list[Corpus]:
         corpora.append(Corpus(profile, path, path.stat().st_size, _sha256(path)))
         seen.add(profile)
     return corpora
+
+
+def _load_query_ranges(values: list[tuple[str, str]], corpora: list[Corpus]) -> dict[str, str]:
+    ranges: dict[str, str] = {}
+    for profile, time_range in values:
+        if profile in ranges:
+            raise BenchmarkError(f"duplicate query range profile: {profile}")
+        ranges[profile] = time_range
+    known = {corpus.profile for corpus in corpora}
+    unknown = sorted(ranges.keys() - known)
+    if unknown:
+        raise BenchmarkError("query range has no matching corpus: " + ", ".join(unknown))
+    return {profile: ranges.get(profile, "0t:1000000t") for profile in known}
 
 
 def _parse_time_metrics(path: Path, wall_seconds: float) -> ProcessMetrics:
@@ -191,14 +183,46 @@ def _build_options(args: argparse.Namespace) -> list[str]:
 
 
 def _run_query(
-    bwave: Path, fst_path: Path, pattern: str, time_bin: Path, scratch: Path
+    bwave: Path,
+    fst_path: Path,
+    pattern: str,
+    time_bin: Path,
+    scratch: Path,
+    *,
+    time_range: str | None = None,
 ) -> dict[str, object]:
+    command = [str(bwave), "stats", str(fst_path), "--async", "--format", "json"]
+    if time_range is not None:
+        command.extend(("--time", time_range))
+    command.extend(("-s", pattern))
     metrics = _timed_command(
-        [str(bwave), "stats", str(fst_path), "--async", "--format", "json", "-s", pattern],
+        command,
         time_bin,
         scratch,
     )
     return asdict(metrics)
+
+
+def _run_query_groups(
+    args: argparse.Namespace, corpus: Corpus, fst_path: Path, scratch: Path
+) -> dict[str, dict[str, object]]:
+    shared = (args.bwave, fst_path, args.query_pattern, args.time_bin, scratch)
+    time_range = args.query_ranges[corpus.profile]
+    return {
+        "multi_signal": {
+            "command": "stats --async",
+            "pattern": args.query_pattern,
+            "trials": [_run_query(*shared) for _ in range(args.query_trials)],
+        },
+        "ranged_multi_signal": {
+            "command": "stats --async --time",
+            "pattern": args.query_pattern,
+            "time_range": time_range,
+            "trials": [
+                _run_query(*shared, time_range=time_range) for _ in range(args.query_trials)
+            ],
+        },
+    }
 
 
 def _summary(trials: list[dict[str, object]]) -> dict[str, float | int]:
@@ -268,19 +292,38 @@ def _comparison_violations(
         failures.append(
             f"{profile}: output-size ratio {output_ratio:.3f} exceeds {max_output_ratio:.3f}"
         )
-    queries = record["query"]["trials"]
-    baseline_queries = baseline["query"]["trials"]
-    if queries and baseline_queries:
-        query_ratio = statistics.median(float(item["wall_seconds"]) for item in queries) / (
-            statistics.median(float(item["wall_seconds"]) for item in baseline_queries)
-        )
-        if query_ratio > max_query_ratio:
-            failures.append(
-                f"{profile}: query-time ratio {query_ratio:.3f} exceeds {max_query_ratio:.3f}"
+    candidate_groups = _query_groups(record)
+    baseline_groups = _query_groups(baseline)
+    for name in sorted(candidate_groups.keys() | baseline_groups.keys()):
+        candidate = candidate_groups.get(name)
+        oracle = baseline_groups.get(name)
+        if candidate is None or oracle is None:
+            failures.append(f"{profile}: {name} query is missing from candidate or baseline")
+            continue
+        queries = candidate["trials"]
+        baseline_queries = oracle["trials"]
+        if queries and baseline_queries:
+            query_ratio = statistics.median(float(item["wall_seconds"]) for item in queries) / (
+                statistics.median(float(item["wall_seconds"]) for item in baseline_queries)
             )
-    elif queries or baseline_queries:
-        failures.append(f"{profile}: candidate and baseline query trial counts are inconsistent")
+            if query_ratio > max_query_ratio:
+                failures.append(
+                    f"{profile}: {name} query-time ratio {query_ratio:.3f} "
+                    f"exceeds {max_query_ratio:.3f}"
+                )
+        elif queries or baseline_queries:
+            failures.append(
+                f"{profile}: {name} candidate and baseline trial counts are inconsistent"
+            )
     return failures
+
+
+def _query_groups(record: dict[str, object]) -> dict[str, dict[str, object]]:
+    groups = record.get("queries")
+    if isinstance(groups, dict):
+        return groups
+    legacy = record.get("query")
+    return {"multi_signal": legacy} if isinstance(legacy, dict) else {}
 
 
 def _benchmark_corpus(
@@ -293,10 +336,7 @@ def _benchmark_corpus(
     for _ in range(args.warmups):
         _run_build(args, corpus, fst_path, scratch)
     trials = [_run_build(args, corpus, fst_path, scratch) for _ in range(args.trials)]
-    queries = [
-        _run_query(args.bwave, fst_path, args.query_pattern, args.time_bin, scratch)
-        for _ in range(args.query_trials)
-    ]
+    queries = _run_query_groups(args, corpus, fst_path, scratch)
     summary = _summary(trials)
     record = {
         "profile": corpus.profile,
@@ -307,7 +347,7 @@ def _benchmark_corpus(
         },
         "trials": trials,
         "summary": summary,
-        "query": {"command": "stats --async", "pattern": args.query_pattern, "trials": queries},
+        "queries": queries,
     }
     failures = _violations(
         corpus.profile,
@@ -341,6 +381,7 @@ def benchmark(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
     if not args.time_bin.is_file():
         raise BenchmarkError(f"GNU time binary not found: {args.time_bin}")
     corpora = _load_corpora(args.corpus)
+    args.query_ranges = _load_query_ranges(args.query_range, corpora)
     baseline = _load_baseline(args.baseline)
     missing_baselines = [
         corpus.profile
@@ -372,7 +413,7 @@ def _report(
     args: argparse.Namespace, records: list[dict[str, object]], failures: list[str]
 ) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": f"bwave_{args.engine}_vcd_benchmark",
         "bwave_version": _bwave_version(args.bwave),
         "host": {
@@ -388,6 +429,7 @@ def _report(
             "warmups": args.warmups,
             "trials": args.trials,
             "query_trials": args.query_trials,
+            "query_ranges": args.query_ranges,
             "engine": args.engine,
             "jobs": args.jobs,
             "parse_jobs": args.parse_jobs,
@@ -412,23 +454,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--bwave", type=Path, required=True)
     parser.add_argument("--corpus", type=_corpus, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--warmups", type=_nonnegative_int, default=1)
-    parser.add_argument("--trials", type=_positive_int, default=5)
-    parser.add_argument("--query-trials", type=_nonnegative_int, default=1)
+    parser.add_argument("--warmups", type=nonnegative_int, default=1)
+    parser.add_argument("--trials", type=positive_int, default=5)
+    parser.add_argument("--query-trials", type=nonnegative_int, default=1)
     parser.add_argument("--query-pattern", default="*")
+    parser.add_argument("--query-range", type=_query_range, action="append", default=[])
     parser.add_argument("--engine", choices=("serial", "parallel"), default="parallel")
-    parser.add_argument("--jobs", type=_positive_int)
-    parser.add_argument("--parse-jobs", type=_positive_int)
-    parser.add_argument("--encode-jobs", type=_positive_int)
-    parser.add_argument("--pack-jobs", type=_positive_int)
-    parser.add_argument("--chunk-bytes", type=_positive_int)
-    parser.add_argument("--section-bytes", type=_positive_int)
-    parser.add_argument("--min-bytes-per-second", type=_positive_float)
-    parser.add_argument("--max-slowest-ratio", type=_positive_float)
-    parser.add_argument("--max-peak-rss-kb", type=_positive_int, default=1024 * 1024)
+    parser.add_argument("--jobs", type=positive_int)
+    parser.add_argument("--parse-jobs", type=positive_int)
+    parser.add_argument("--encode-jobs", type=positive_int)
+    parser.add_argument("--pack-jobs", type=positive_int)
+    parser.add_argument("--chunk-bytes", type=positive_int)
+    parser.add_argument("--section-bytes", type=positive_int)
+    parser.add_argument("--min-bytes-per-second", type=positive_float)
+    parser.add_argument("--max-slowest-ratio", type=positive_float)
+    parser.add_argument("--max-peak-rss-kb", type=positive_int, default=1024 * 1024)
     parser.add_argument("--baseline", type=Path)
-    parser.add_argument("--max-output-ratio", type=_positive_float, default=1.10)
-    parser.add_argument("--max-query-ratio", type=_positive_float, default=1.10)
+    parser.add_argument("--max-output-ratio", type=positive_float, default=1.10)
+    parser.add_argument("--max-query-ratio", type=positive_float, default=1.10)
     parser.add_argument("--scratch-dir", type=Path)
     parser.add_argument("--time-bin", type=Path, default=Path("/usr/bin/time"))
     return parser

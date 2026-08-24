@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "bwave_ibex_live_acceptance",
+  "date": "2026-08-24",
+  "status": "passed",
+  "candidate": {
+    "binary_sha256": "ea3a0504e7f6a2727407917c6a3d06568aefd5c8ff201c2524086c4ff9c395c0",
+    "firmware_sha256": "0412183f498163639f3df4759a0828c5d92273750121155b03c41273397acdf3",
+    "engine": "parallel"
+  },
+  "topology": {
+    "producer": "live Ibex Verilator simulator writing VCD to a FIFO",
+    "conversion_scratch": "tmpfs",
+    "durable_handoff": ".booley_project/handoffs/bwave-vcd-throughput-20260824/live-results"
+  },
+  "primary": {
+    "small": {
+      "raw_vcd_bytes": 17763580128,
+      "executed_cycles": 4149572,
+      "warmups_per_mode": 1,
+      "measured_trials_per_mode": 3,
+      "all_simulations_passed": true,
+      "sink_median_wall_seconds": 15.228847959999257,
+      "serial_median_wall_seconds": 69.60931364600037,
+      "parallel_median_wall_seconds": 23.98638647900043,
+      "parallel_speedup": 2.9020341895575577,
+      "parallel_slowest_to_median_ratio": 1.003099022025019,
+      "parallel_median_bytes_per_second": 740569919.3322583,
+      "parallel_peak_rss_kb": 383380,
+      "serial_fst_bytes": 547537453,
+      "parallel_fst_bytes": 549762888,
+      "parallel_to_serial_fst_ratio": 1.0040644434235624,
+      "serial_fst_sections": 10,
+      "parallel_fst_sections": 20
+    },
+    "opentitan": {
+      "raw_vcd_bytes": 91348171298,
+      "executed_cycles": 3237588,
+      "warmups_per_mode": 1,
+      "measured_trials_per_mode": 3,
+      "all_simulations_passed": true,
+      "sink_median_wall_seconds": 79.92898171100023,
+      "serial_median_wall_seconds": 355.3322553020007,
+      "parallel_median_wall_seconds": 122.92733368299923,
+      "parallel_speedup": 2.890587834747309,
+      "parallel_slowest_to_median_ratio": 1.0003572133445482,
+      "parallel_median_bytes_per_second": 743107179.260555,
+      "parallel_peak_rss_kb": 755056,
+      "serial_fst_bytes": 2295480774,
+      "parallel_fst_bytes": 2312071180,
+      "parallel_to_serial_fst_ratio": 1.007227421021301,
+      "serial_fst_sections": 50,
+      "parallel_fst_sections": 99
+    }
+  },
+  "secondary": {
+    "maxperf": {
+      "raw_vcd_bytes": 18543697579,
+      "executed_cycles": 3223502,
+      "all_simulations_passed": true,
+      "sink_wall_seconds": 13.76590203699925,
+      "serial_wall_seconds": 70.1066728270016,
+      "parallel_wall_seconds": 24.215077493001445,
+      "parallel_speedup": 2.8951661561794952,
+      "serial_fst_bytes": 571244821,
+      "parallel_fst_bytes": 573779961
+    },
+    "maxperf-pmp-bmbalanced": {
+      "raw_vcd_bytes": 21989343779,
+      "executed_cycles": 3223502,
+      "all_simulations_passed": true,
+      "sink_wall_seconds": 20.491314820003026,
+      "serial_wall_seconds": 89.23999717299739,
+      "parallel_wall_seconds": 30.645567162999214,
+      "parallel_speedup": 2.912003445664527,
+      "serial_fst_bytes": 712081203,
+      "parallel_fst_bytes": 714177389
+    }
+  },
+  "acceptance": {
+    "passed": true,
+    "checks": [
+      "all live simulator arms pass CoreMark",
+      "parallel conversion is faster than serial for every target",
+      "primary parallel slowest-to-median ratios are at most 1.10",
+      "primary parallel peak RSS remains below 1 GiB",
+      "primary parallel FST size is at most 1.10x serial",
+      "full JSON and simulator logs are retained in the durable Ibex handoff"
+    ]
+  }
+}

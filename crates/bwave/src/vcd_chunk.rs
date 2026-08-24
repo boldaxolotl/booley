@@ -19,6 +19,38 @@ const READ_BLOCK_BYTES: usize = 64 * 1024;
 // allocations (64 x 32 MiB would violate the process RSS contract alone).
 const MAX_RECYCLED_BUFFERS: usize = 4;
 
+#[cfg(unix)]
+fn wait_for_nonblocking_input(descriptor: Option<i32>) -> std::io::Result<()> {
+    let Some(descriptor) = descriptor else {
+        std::thread::sleep(Duration::from_millis(2));
+        return Ok(());
+    };
+    let mut descriptor = libc::pollfd {
+        fd: descriptor,
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: `descriptor` points to one initialized pollfd for the
+        // duration of the call. The borrowed input owns the live file
+        // descriptor; poll only observes its readiness.
+        let result = unsafe { libc::poll(&mut descriptor, 1, 2) };
+        if result >= 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_for_nonblocking_input(_descriptor: Option<i32>) -> std::io::Result<()> {
+    std::thread::sleep(Duration::from_millis(2));
+    Ok(())
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct VcdChunk {
     pub sequence: u64,
@@ -37,6 +69,7 @@ pub struct VcdChunkSource<R> {
     boundary_search: usize,
     recycled: Vec<Vec<u8>>,
     cancellation: Option<Arc<AtomicBool>>,
+    nonblocking_descriptor: Option<i32>,
 }
 
 impl<R: Read> VcdChunkSource<R> {
@@ -54,11 +87,17 @@ impl<R: Read> VcdChunkSource<R> {
             boundary_search: target_bytes.max(1),
             recycled: Vec::new(),
             cancellation: None,
+            nonblocking_descriptor: None,
         })
     }
 
     pub fn with_cancellation(mut self, cancellation: Arc<AtomicBool>) -> Self {
         self.cancellation = Some(cancellation);
+        self
+    }
+
+    pub fn with_nonblocking_descriptor(mut self, descriptor: Option<i32>) -> Self {
+        self.nonblocking_descriptor = descriptor;
         self
     }
 
@@ -146,7 +185,13 @@ impl<R: Read> VcdChunkSource<R> {
             match self.reader.read(&mut self.buffer[old_len..]) {
                 Ok(read) => break read,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2));
+                    wait_for_nonblocking_input(self.nonblocking_descriptor).map_err(|source| {
+                        VcdParseError::Read {
+                            section: "body",
+                            offset: self.next_offset + old_len as u64,
+                            source,
+                        }
+                    })?;
                 }
                 Err(source) => {
                     return Err(VcdParseError::Read {
@@ -201,6 +246,9 @@ impl<R: Read> VcdChunkSource<R> {
 mod tests {
     use super::*;
     use std::io::{self, Cursor};
+
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
 
     struct ShortReader<R> {
         inner: R,
@@ -333,5 +381,22 @@ mod tests {
                 offset: 44
             }
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_nonblocking_input_does_not_pay_the_poll_interval() {
+        let reader = std::fs::File::open(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            wait_for_nonblocking_input(Some(reader.as_raw_fd())).unwrap();
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "a readable descriptor should wake immediately"
+        );
     }
 }

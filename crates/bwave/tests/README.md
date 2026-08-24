@@ -154,8 +154,13 @@ fresh FIFO to an independent trivial `/bin/cat` reader. The slowest producer
 trial must exceed 1.2 GB/s by default. It then repeats with `bwave build
 --input FIFO` as the consumer and requires a median 1.0 GB/s converter rate.
 Both sides' wall/user/system time, CPU, and RSS are retained, together with FST
-size, section count, query timing, stability, host data, and input hash. Defaults
-are one warmup and five trials for both the proof and conversion. A per-trial
-timeout ensures a failed consumer cannot leave the producer blocked forever.
-The FIFO runner applies the same RSS and optional serial output/query gates as
-the regular-file runner.
+size, section count, query timing, stability, host data, and input hash. Query
+acceptance covers both an all-signal asynchronous `stats` query and the same
+multi-signal query over a bounded range. Pass repeatable profile-specific
+ranges such as `--query-range ordinary=1000000t:1100000t`; omitted profiles
+default to `0t:1000000t`. Each query is independently compared with the serial
+baseline.
+Defaults are one warmup and five trials for both the proof and conversion. A
+per-trial timeout ensures a failed consumer cannot leave the producer blocked
+forever. The FIFO runner applies the same RSS and optional serial output/query
+gates as the regular-file runner.

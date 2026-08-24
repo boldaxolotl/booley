@@ -36,6 +36,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::cache::{CachedSignal, ClockEntry, ColumnCache};
 use crate::format::format_value;
 use crate::parser::{TimestampError, VcdHeader, VcdParseError};
+#[cfg(feature = "profile")]
+use crate::profile::thread_cpu_seconds;
 use crate::signal::signals_in_scope;
 use crate::vcd_chunk::{VcdChunk, VcdChunkSource};
 
@@ -1754,21 +1756,6 @@ fn encoded_varint_len(value: u64) -> usize {
     ((u64::BITS - value.leading_zeros()).max(1) as usize).div_ceil(7)
 }
 
-#[cfg(feature = "profile")]
-fn thread_cpu_seconds() -> f64 {
-    let mut value = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `value` points to writable storage for the duration of the call.
-    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
-    if result == 0 {
-        value.tv_sec as f64 + value.tv_nsec as f64 / 1_000_000_000.0
-    } else {
-        0.0
-    }
-}
-
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -2541,6 +2528,7 @@ impl FstBuildHandler {
         pack_worker_count: usize,
         chunk_target: usize,
         section_target: usize,
+        nonblocking_descriptor: Option<i32>,
     ) -> Result<(), VcdParseError> {
         if parse_worker_count == 0
             || encode_worker_count == 0
@@ -2593,7 +2581,8 @@ impl FstBuildHandler {
                 let wall_started = Instant::now();
                 let mut source = VcdChunkSource::new(reader, body_offset, chunk_target)
                     .expect("validated VCD chunk target is positive")
-                    .with_cancellation(reader_cancellation);
+                    .with_cancellation(reader_cancellation)
+                    .with_nonblocking_descriptor(nonblocking_descriptor);
                 loop {
                     while let Ok(chunk) = recycle_receiver.try_recv() {
                         source.recycle(chunk);

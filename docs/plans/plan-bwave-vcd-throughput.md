@@ -1,12 +1,14 @@
 # Implementation plan — timestamp-chunked, multi-core VCD-to-FST conversion
 
-**Created:** 2026-08-21
-**Revised:** 2026-08-24
+**Created:** 21 AUG 2026
+**Revised:** 24 AUG 2026
 **Owner:** unassigned
 **Scope:** `crates/bwave` VCD-to-FST build path, its FIFO integration, and
 throughput/correctness validation
 **Primary production evidence:**
 [B-Wave VCD streaming acceptance](../benchmarks/bwave-vcd-streaming-acceptance-20260824.md)
+and
+[live Ibex acceptance](../benchmarks/bwave-ibex-live-acceptance-20260824.md)
 
 ## Objective
 
@@ -189,7 +191,7 @@ Keep small hand-authored fixtures for rare boundary behavior such as dump
 control, malformed input, and decreasing timestamps. Do not contort an Ibex
 excerpt to cover dialect cases it does not contain.
 
-## Implementation status — promoted, 2026-08-24
+## Implementation status — promoted, 24 AUG 2026
 
 The bounded regular-file/FIFO pipeline is complete and the parallel converter
 is the production default. The hidden `--engine serial` control remains

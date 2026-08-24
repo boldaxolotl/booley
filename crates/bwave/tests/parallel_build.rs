@@ -32,7 +32,7 @@ fn build(input: &Path, parallel: bool, suffix: &str) -> PathBuf {
     if parallel {
         // Deliberately tiny targets exercise many boundaries and queue wraps.
         handler
-            .parse_bytes_parallel(&mut reader, None, 1, 1, 3, 31, 89)
+            .parse_bytes_parallel(&mut reader, None, 1, 1, 3, 31, 89, None)
             .unwrap();
     } else {
         handler.parse_bytes(&mut reader, None).unwrap();

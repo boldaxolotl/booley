@@ -547,9 +547,7 @@ class TraceSession:
         rc = bwave_proc.poll() if bwave_proc is not None else None
         status = "success" if _bwave_valid(self.bwave_path) else "no_artifact"
         if status == "success":
-            published = self._publish_bwave(self.bwave_path)
-            if published is None:
-                status = "publication_failed"
+            self._publish_bwave(self.bwave_path)
         self.record_attempt("fifo_cleanup", status, return_code=rc)
 
     def start_monitor(
@@ -711,9 +709,7 @@ class TraceSession:
         postprocess_vcd_to_bwave(vcd_path, self.bwave_path, self._trace_scope)
         status = "success" if _bwave_valid(self.bwave_path) else "vcd_only"
         if status == "success":
-            published = self._publish_bwave(self.bwave_path)
-            if published is None:
-                status = "publication_failed"
+            self._publish_bwave(self.bwave_path)
         self.record_attempt("vcd_postprocess", status, detail=detail)
 
     def _convert_vcd(self, vcd_path: Path) -> Path | None:
@@ -770,7 +766,7 @@ class TraceSession:
         return None
 
     def _publish_bwave(self, trace_path: Path) -> Path | None:
-        """Durably publish a valid cached store beside sim artifacts."""
+        """Copy a valid cached store beside sim artifacts for later lookup."""
         if trace_path.suffix != ".fst" or not _bwave_valid(trace_path):
             return None
         dest = self.work_bwave_path
@@ -783,23 +779,9 @@ class TraceSession:
             self._work_dir.mkdir(parents=True, exist_ok=True)
             if dest.exists() and dest.stat().st_mtime >= trace_path.stat().st_mtime:
                 return dest
-            from booley.sim.durable_publish import publish_durable
-
-            metrics = publish_durable(trace_path, dest)
-            self._status["publication"] = {
-                "status": "success",
-                "source": str(trace_path),
-                "destination": str(dest),
-                **metrics.as_dict(),
-            }
+            shutil.copy2(trace_path, dest)
             self.record_event("bwave_published", str(dest))
             return dest
         except OSError as exc:
-            self._status["publication"] = {
-                "status": "failed",
-                "source": str(trace_path),
-                "destination": str(dest),
-                "error": str(exc),
-            }
             self.record_event("bwave_publish_failed", str(exc))
             return None

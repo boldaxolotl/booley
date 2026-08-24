@@ -4,6 +4,7 @@
 
 mod buffer;
 mod io;
+mod profile;
 mod types;
 mod writer;
 

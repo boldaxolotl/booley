@@ -937,6 +937,75 @@ $enddefinitions $end\n\
     assert!(!output_exists, "cancelled build must not publish an FST");
 }
 
+#[cfg(unix)]
+#[test]
+fn parallel_failure_cancels_a_blocked_stdin_reader() {
+    let fst = std::env::temp_dir().join(format!(
+        "bwave_cancel_stdin_{}_{}.fst",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = std::fs::remove_file(&fst);
+    let mut child = Command::new(exe_path())
+        .args([
+            "build",
+            "--engine",
+            "parallel",
+            "--parse-jobs",
+            "2",
+            "--encode-jobs",
+            "1",
+            "--chunk-bytes",
+            "8",
+            "-o",
+            fst.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut writer = child.stdin.take().unwrap();
+    writer
+        .write_all(
+            b"$scope module tb $end\n\
+$var wire 1 ! sig $end\n\
+$upscope $end\n\
+$enddefinitions $end\n\
+#0\n0!\n#10\n1!\n#bad\n0!\n#30\n1!\n#40\n0!\n#50\n1!\n#60\n0!\n#70\n1!\n#80\n0!\n",
+        )
+        .unwrap();
+    writer.flush().unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!("parallel build did not cancel while its stdin writer remained open");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+
+    let producer_error = writer.write_all(b"#90\n1!\n").unwrap_err();
+    assert_eq!(producer_error.kind(), std::io::ErrorKind::BrokenPipe);
+    drop(writer);
+    let output_exists = fst.exists();
+    let _ = std::fs::remove_file(&fst);
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(stderr.contains("invalid VCD timestamp"), "stderr: {stderr}");
+    assert!(!output_exists, "cancelled build must not publish an FST");
+}
+
 #[test]
 fn build_refuses_scope_matching_nothing() {
     // Same refusal for a --scope that filters every signal out — previously

@@ -14,6 +14,7 @@ use crate::io::{
     write_packed_binary_signal, write_time_chain_update, write_value_change_section,
     write_variant_u64,
 };
+use crate::profile::thread_cpu_seconds;
 use crate::writer::{
     FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstDumpState, FstSignalChange, FstSignalRecord,
 };
@@ -180,26 +181,6 @@ impl FstSignalFragment {
         self.last = Some(change);
         Ok(())
     }
-}
-
-#[cfg(feature = "profile")]
-fn thread_cpu_seconds() -> f64 {
-    let mut value = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `value` points to writable storage for the duration of the call.
-    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
-    if result == 0 {
-        value.tv_sec as f64 + value.tv_nsec as f64 / 1_000_000_000.0
-    } else {
-        0.0
-    }
-}
-
-#[cfg(not(feature = "profile"))]
-fn thread_cpu_seconds() -> f64 {
-    0.0
 }
 
 enum ExactChangeValue<'a> {

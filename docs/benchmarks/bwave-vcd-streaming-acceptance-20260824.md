@@ -33,8 +33,8 @@ Final measurements use `taskset -c 0-7`, which contains four physical P-cores
 and their sibling threads.
 
 Six worker threads do not mean six required physical cores. On this mask the
-ordinary and high regular-file medians used 4.12 and 4.66 process cores while
-remaining at 3.34 and 2.82 CPU-s/GB. The additional logical threads let the
+ordinary and high regular-file medians used 4.12 and 4.67 process cores while
+remaining at 3.20 and 2.76 CPU-s/GB. The additional logical threads let the
 reader, dispatcher, coordinator, and writer make progress without displacing
 all parser work from a physical core.
 
@@ -63,24 +63,27 @@ five-trial serial runs supplied the baselines.
 
 | Metric | Ordinary | OpenTitan high |
 |---|---:|---:|
-| Parallel median | 1.224 GB/s | 1.641 GB/s |
-| Parallel slowest | 1.179 GB/s | 1.619 GB/s |
-| Median / slowest | 1.038x | 1.013x |
-| Serial median | 0.352 GB/s | 0.448 GB/s |
-| Median speedup | 3.472x | 3.661x |
-| Median process CPU | 3.62 s | 3.03 s |
-| CPU work | 3.34 CPU-s/GB | 2.82 CPU-s/GB |
-| Median process cores | 4.12 | 4.66 |
-| Peak RSS | 259,604 KiB | 214,936 KiB |
+| Parallel median | 1.287 GB/s | 1.689 GB/s |
+| Parallel slowest | 1.256 GB/s | 1.623 GB/s |
+| Median / slowest | 1.025x | 1.040x |
+| Serial median | 0.360 GB/s | 0.445 GB/s |
+| Median speedup | 3.576x | 3.796x |
+| Median process CPU | 3.46 s | 2.96 s |
+| CPU work | 3.20 CPU-s/GB | 2.76 CPU-s/GB |
+| Median process cores | 4.12 | 4.67 |
+| Peak RSS | 261,056 KiB | 205,720 KiB |
 | Output size ratio | 1.017x | 1.000x |
-| Query-time ratio | 1.051x | 0.986x |
+| Full multi-signal query ratio | 0.979x | 0.993x |
+| Bounded-range multi-signal query ratio | 0.989x | 1.015x |
 
 The high-activity serial and parallel outputs are byte-identical: both are
 1,022,258 bytes with SHA-256
 `493e1b2b586090163948c71d50377295f717837f5f34f60215b625166e2c96bc`.
 The ordinary parallel output uses two bounded FST sections instead of the
-serial output's one, so its bytes differ; its 1.017x size and 1.051x query-time
-ratios pass the semantic-equivalence gates.
+serial output's one, so its bytes differ; its 1.017x size, 0.985x full-query,
+and 0.989x bounded-range-query ratios pass the semantic-equivalence gates. The
+bounded ranges are ticks 1,000,000–1,100,000 for ordinary activity and ticks
+0–50,000 for OpenTitan-high activity.
 
 ## One-GiB FIFO acceptance
 
@@ -89,13 +92,15 @@ then one warmup and five measured conversions for each profile.
 
 | Metric | Ordinary | OpenTitan high |
 |---|---:|---:|
-| Converter median | 1.152 GB/s | 1.558 GB/s |
-| Converter slowest | 1.131 GB/s | 1.516 GB/s |
-| Median / slowest | 1.019x | 1.028x |
-| Producer median during conversion | 1.251 GB/s | 1.747 GB/s |
-| Producer slowest during conversion | 1.183 GB/s | 1.612 GB/s |
-| Independent producer slowest | 16.941 GB/s | 33.906 GB/s |
-| Peak converter RSS | 259,604 KiB | 205,908 KiB |
+| Converter median | 1.217 GB/s | 1.632 GB/s |
+| Converter slowest | 1.152 GB/s | 1.558 GB/s |
+| Median / slowest | 1.056x | 1.047x |
+| Producer median during conversion | 1.327 GB/s | 1.746 GB/s |
+| Producer slowest during conversion | 1.251 GB/s | 1.744 GB/s |
+| Independent producer slowest | 16.965 GB/s | 33.907 GB/s |
+| Peak converter RSS | 261,520 KiB | 205,804 KiB |
+| Full multi-signal query ratio | 1.003x | 0.982x |
+| Bounded-range multi-signal query ratio | 0.990x | 0.976x |
 
 Both FIFO runs passed the converter throughput, independent-producer,
 stability, RSS, output, and query gates. Producer timing during conversion is

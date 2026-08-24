@@ -235,10 +235,7 @@ def _benchmark_corpus(
             str(fst_path),
         ],
     )
-    queries = [
-        regular._run_query(args.bwave, fst_path, args.query_pattern, args.time_bin, scratch)
-        for _ in range(args.query_trials)
-    ]
+    queries = regular._run_query_groups(args, corpus, fst_path, scratch)
     converter_summary["output_bytes"] = fst_path.stat().st_size
     converter_summary["fst_section_count"] = regular._fst_section_count(fst_path)
     failures = _gate_corpus(corpus.profile, trivial_summary, converter_summary, args)
@@ -247,12 +244,12 @@ def _benchmark_corpus(
         "input": {"file": corpus.path.name, "bytes": corpus.input_bytes, "sha256": corpus.sha256},
         "trivial_reader": {"trials": trivial_trials, "summary": trivial_summary},
         "converter": {"trials": converter_trials, "summary": converter_summary},
-        "query": {"command": "stats --async", "pattern": args.query_pattern, "trials": queries},
+        "queries": queries,
     }
     baseline = args.baseline_records.get(corpus.profile)
     candidate = {
         "trials": [{"output_bytes": converter_summary["output_bytes"]}],
-        "query": record["query"],
+        "queries": record["queries"],
     }
     failures.extend(
         regular._comparison_violations(
@@ -276,6 +273,7 @@ def benchmark(args: argparse.Namespace) -> tuple[dict[str, object], bool]:
         if not path.is_file():
             raise regular.BenchmarkError(f"{label} binary not found: {path}")
     corpora = regular._load_corpora(args.corpus)
+    args.query_ranges = regular._load_query_ranges(args.query_range, corpora)
     args.baseline_records = regular._load_baseline(args.baseline)
     missing_baselines = [
         corpus.profile
@@ -302,7 +300,7 @@ def _report(
     args: argparse.Namespace, records: list[dict[str, object]], failures: list[str]
 ) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "bwave_fifo_vcd_benchmark",
         "bwave_version": regular._bwave_version(args.bwave),
         "host": {
@@ -315,6 +313,7 @@ def _report(
             "warmups": args.warmups,
             "trials": args.trials,
             "query_trials": args.query_trials,
+            "query_ranges": args.query_ranges,
             "engine": args.engine,
             "jobs": args.jobs,
             "parse_jobs": args.parse_jobs,
@@ -341,29 +340,30 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--bwave", type=Path, required=True)
     parser.add_argument("--corpus", type=regular._corpus, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--warmups", type=regular._nonnegative_int, default=1)
-    parser.add_argument("--trials", type=regular._positive_int, default=5)
-    parser.add_argument("--query-trials", type=regular._nonnegative_int, default=1)
+    parser.add_argument("--warmups", type=regular.nonnegative_int, default=1)
+    parser.add_argument("--trials", type=regular.positive_int, default=5)
+    parser.add_argument("--query-trials", type=regular.nonnegative_int, default=1)
     parser.add_argument("--query-pattern", default="*")
+    parser.add_argument("--query-range", type=regular._query_range, action="append", default=[])
     parser.add_argument("--engine", choices=("serial", "parallel"), default="parallel")
-    parser.add_argument("--jobs", type=regular._positive_int)
-    parser.add_argument("--parse-jobs", type=regular._positive_int)
-    parser.add_argument("--encode-jobs", type=regular._positive_int)
-    parser.add_argument("--pack-jobs", type=regular._positive_int)
-    parser.add_argument("--chunk-bytes", type=regular._positive_int)
-    parser.add_argument("--section-bytes", type=regular._positive_int)
-    parser.add_argument("--timeout-seconds", type=regular._positive_float, default=600.0)
+    parser.add_argument("--jobs", type=regular.positive_int)
+    parser.add_argument("--parse-jobs", type=regular.positive_int)
+    parser.add_argument("--encode-jobs", type=regular.positive_int)
+    parser.add_argument("--pack-jobs", type=regular.positive_int)
+    parser.add_argument("--chunk-bytes", type=regular.positive_int)
+    parser.add_argument("--section-bytes", type=regular.positive_int)
+    parser.add_argument("--timeout-seconds", type=regular.positive_float, default=600.0)
     parser.add_argument(
-        "--min-producer-bytes-per-second", type=regular._positive_float, default=1.2e9
+        "--min-producer-bytes-per-second", type=regular.positive_float, default=1.2e9
     )
     parser.add_argument(
-        "--min-converter-bytes-per-second", type=regular._positive_float, default=1.0e9
+        "--min-converter-bytes-per-second", type=regular.positive_float, default=1.0e9
     )
-    parser.add_argument("--max-slowest-ratio", type=regular._positive_float, default=1.10)
-    parser.add_argument("--max-peak-rss-kb", type=regular._positive_int, default=1024 * 1024)
+    parser.add_argument("--max-slowest-ratio", type=regular.positive_float, default=1.10)
+    parser.add_argument("--max-peak-rss-kb", type=regular.positive_int, default=1024 * 1024)
     parser.add_argument("--baseline", type=Path)
-    parser.add_argument("--max-output-ratio", type=regular._positive_float, default=1.10)
-    parser.add_argument("--max-query-ratio", type=regular._positive_float, default=1.10)
+    parser.add_argument("--max-output-ratio", type=regular.positive_float, default=1.10)
+    parser.add_argument("--max-query-ratio", type=regular.positive_float, default=1.10)
     parser.add_argument("--scratch-dir", type=Path)
     parser.add_argument("--time-bin", type=Path, default=Path("/usr/bin/time"))
     parser.add_argument("--producer-bin", type=Path, default=Path("/bin/cat"))

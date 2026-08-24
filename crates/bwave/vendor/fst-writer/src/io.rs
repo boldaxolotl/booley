@@ -5,6 +5,7 @@
 
 use crate::FstWriteError::InvalidCharacter;
 use crate::writer::{FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstDumpState, FstSignalChange};
+use crate::profile::thread_cpu_seconds;
 use crate::{
     FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType, FstWriteError,
     Result,
@@ -479,26 +480,6 @@ pub(crate) struct ChainedWriteStats {
 struct PackedSignalResult<'a> {
     signal: PackedSignal<'a>,
     compression_cpu_seconds: f64,
-}
-
-#[cfg(feature = "profile")]
-fn thread_cpu_seconds() -> f64 {
-    let mut value = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `value` points to writable storage for the duration of the call.
-    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
-    if result == 0 {
-        value.tv_sec as f64 + value.tv_nsec as f64 / 1_000_000_000.0
-    } else {
-        0.0
-    }
-}
-
-#[cfg(not(feature = "profile"))]
-fn thread_cpu_seconds() -> f64 {
-    0.0
 }
 
 fn pack_signal(data: &[u8]) -> PackedSignalResult<'_> {

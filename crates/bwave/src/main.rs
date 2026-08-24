@@ -609,11 +609,13 @@ fn build_bwave_from_reader(
             process::exit(1);
         }
     };
-    if let Some(descriptor) = fifo_descriptor {
-        make_descriptor_nonblocking(descriptor).unwrap_or_else(|e| {
-            eprintln!("ERROR: cannot configure FIFO input: {e}");
-            process::exit(1);
-        });
+    if engine == BuildEngine::Parallel {
+        if let Some(descriptor) = fifo_descriptor {
+            make_descriptor_nonblocking(descriptor).unwrap_or_else(|e| {
+                eprintln!("ERROR: cannot configure FIFO input: {e}");
+                process::exit(1);
+            });
+        }
     }
     // Refuse to build an unqueryable store. A VCD that declares no signals
     // produces a header-only .fst that answers every query with silence —
@@ -679,6 +681,7 @@ fn build_bwave_from_reader(
                 pack_jobs,
                 chunk_bytes.unwrap_or(bwave::fst::PARALLEL_VCD_CHUNK_TARGET),
                 section_bytes.unwrap_or(bwave::fst::PARALLEL_FST_SECTION_TARGET),
+                fifo_descriptor,
             )
         }
     };
@@ -777,6 +780,16 @@ fn fifo_descriptor(_file: &File) -> io::Result<Option<i32>> {
 }
 
 #[cfg(unix)]
+fn stdin_descriptor(stdin: &io::Stdin) -> Option<i32> {
+    Some(stdin.as_raw_fd())
+}
+
+#[cfg(not(unix))]
+fn stdin_descriptor(_stdin: &io::Stdin) -> Option<i32> {
+    None
+}
+
+#[cfg(unix)]
 fn make_descriptor_nonblocking(descriptor: i32) -> io::Result<()> {
     // SAFETY: `descriptor` belongs to the live borrowed File. F_GETFL does
     // not mutate memory, and F_SETFL changes only the descriptor status flags.
@@ -825,7 +838,9 @@ fn run_build(args: BuildArgs) {
             fifo_descriptor,
         );
     } else {
-        let mut reader = BufReader::with_capacity(256 * 1024, io::stdin());
+        let stdin = io::stdin();
+        let input_descriptor = stdin_descriptor(&stdin);
+        let mut reader = BufReader::with_capacity(256 * 1024, stdin);
         build_bwave_from_reader(
             &args.output,
             &mut reader,
@@ -837,7 +852,7 @@ fn run_build(args: BuildArgs) {
             args.pack_jobs,
             args.chunk_bytes,
             args.section_bytes,
-            None,
+            input_descriptor,
         );
     }
 }

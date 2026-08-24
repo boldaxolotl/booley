@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
 
+from benchmark_args import nonnegative_int, positive_int
+
 U64_MAX = (1 << 64) - 1
 DEFAULT_MAX_EXCERPT_BYTES = 64 * 1024 * 1024
 FAST_TAIL_BLOCK_BYTES = 16 * 1024 * 1024
@@ -633,26 +635,6 @@ def _replay_manifest(
     }
 
 
-def _positive_int(text: str) -> int:
-    try:
-        value = int(text)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}") from error
-    if value <= 0:
-        raise argparse.ArgumentTypeError("value must be positive")
-    return value
-
-
-def _nonnegative_int(text: str) -> int:
-    try:
-        value = int(text)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}") from error
-    if value < 0:
-        raise argparse.ArgumentTypeError("value must be non-negative")
-    return value
-
-
 def _profile(text: str) -> str:
     if not PROFILE_RE.fullmatch(text):
         raise argparse.ArgumentTypeError("profile must match [a-z0-9][a-z0-9_-]*")
@@ -671,12 +653,12 @@ def _parser() -> argparse.ArgumentParser:
     capture_parser = commands.add_parser("capture", help="capture a semantic timestamp window")
     capture_parser.add_argument("source", type=Path)
     capture_parser.add_argument("--output", type=Path, required=True)
-    capture_parser.add_argument("--start", type=_nonnegative_int, required=True)
-    capture_parser.add_argument("--end", type=_nonnegative_int, required=True)
+    capture_parser.add_argument("--start", type=nonnegative_int, required=True)
+    capture_parser.add_argument("--end", type=nonnegative_int, required=True)
     capture_parser.add_argument("--profile", type=_profile, required=True)
     capture_parser.add_argument("--source-label", type=_source_label, required=True)
     capture_parser.add_argument(
-        "--max-excerpt-bytes", type=_positive_int, default=DEFAULT_MAX_EXCERPT_BYTES
+        "--max-excerpt-bytes", type=positive_int, default=DEFAULT_MAX_EXCERPT_BYTES
     )
     capture_parser.add_argument("--force", action="store_true")
     capture_parser.add_argument(
@@ -688,7 +670,7 @@ def _parser() -> argparse.ArgumentParser:
     replay_parser = commands.add_parser("replay", help="replay an excerpt to a byte target")
     replay_parser.add_argument("excerpt", type=Path)
     replay_parser.add_argument("--output", type=Path, required=True)
-    replay_parser.add_argument("--target-bytes", type=_positive_int, required=True)
+    replay_parser.add_argument("--target-bytes", type=positive_int, required=True)
     replay_parser.add_argument("--profile", type=_profile)
     replay_parser.add_argument("--force", action="store_true")
     replay_parser.set_defaults(action=replay)
