@@ -101,6 +101,17 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
 
 
+def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
+    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    trusted_cli_setup = """      - name: Install release CLI
+        run: |
+          python -m pip install --user .
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+"""
+    assert trusted_cli_setup in workflow
+
+
 def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
