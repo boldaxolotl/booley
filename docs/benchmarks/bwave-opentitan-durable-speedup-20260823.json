@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "kind": "bwave_opentitan_durable_speedup",
+  "date": "2026-08-23",
+  "effective_cpu_affinity": [0, 1, 2, 3],
+  "worker_budget": 4,
+  "current_draft_defaults": {
+    "parse_jobs": 3,
+    "encode_jobs": 1,
+    "vcd_chunk_bytes": 8388608,
+    "fst_stream_section_bytes": 134217728
+  },
+  "replay": {
+    "trials": 5,
+    "warmups": 1,
+    "provenance": {
+      "status": "supersedes the earlier table misattributed to 128 MiB; that table used 256 MiB",
+      "candidate_state": "128 MiB draft before the opt-in compression prototype; equivalent pack_jobs=1 path",
+      "cpu_affinity": "taskset -c 0-3",
+      "engine": "parallel",
+      "jobs": 4,
+      "parse_jobs": 3,
+      "encode_jobs": 1,
+      "vcd_chunk_bytes": 8388608,
+      "fst_stream_section_bytes": 134217728,
+      "section_target_was_explicit": true,
+      "scratch_filesystem": "/dev/shm",
+      "serial_oracle": "fresh one-warmup/five-trial run on identical inputs"
+    },
+    "ordinary": {
+      "serial_median_wall_seconds": 3.118327856,
+      "parallel_median_wall_seconds": 2.692127691,
+      "parallel_median_cpu_seconds": 5.55,
+      "parallel_cpu_seconds_per_gb": 5.126471275,
+      "parallel_median_bytes_per_second": 402141413,
+      "parallel_slowest_to_median_wall_ratio": 1.006007899,
+      "parallel_peak_rss_mib": 361.71484375,
+      "fst_section_count": 2,
+      "output_size_ratio": 1.016841322,
+      "query_time_ratio": 0.99789442
+    },
+    "high": {
+      "serial_median_wall_seconds": 2.484117676,
+      "parallel_median_wall_seconds": 2.067583252,
+      "parallel_median_cpu_seconds": 4.74,
+      "parallel_cpu_seconds_per_gb": 4.414443534,
+      "parallel_median_bytes_per_second": 519325168,
+      "parallel_slowest_to_median_wall_ratio": 1.010770882,
+      "parallel_peak_rss_mib": 296.22265625,
+      "fst_section_count": 2,
+      "output_size_ratio": 1.074296313,
+      "query_time_ratio": 1.033823304
+    }
+  },
+  "per_signal_compression_prototype": {
+    "selected": false,
+    "reason": "parallel compression reduced some wall time but did not reduce total CPU work",
+    "explicit_settings": {
+      "cpu_affinity": "taskset -c 0-3",
+      "vcd_chunk_bytes": 8388608,
+      "fst_stream_section_bytes": 134217728,
+      "parse_jobs": 1,
+      "encode_jobs": 1,
+      "pack_jobs": 3
+    },
+    "single_trial": {
+      "ordinary": {
+        "wall_seconds": 2.54,
+        "cpu_seconds": 4.45,
+        "cpu_seconds_per_gb": 4.110478,
+        "median_bytes_per_second_not_measured": true
+      },
+      "high": {
+        "wall_seconds": 2.23,
+        "cpu_seconds": 3.40,
+        "cpu_seconds_per_gb": 3.166478,
+        "parser_cpu_seconds": 1.698960,
+        "coordinator_cpu_seconds": 0.005813,
+        "packer_cpu_seconds": 1.301975,
+        "compression_cpu_seconds": 0.074921,
+        "assembler_cpu_seconds": 0.003632,
+        "encoder_queue_block_seconds": 0.465737,
+        "measured_active_workers": 1.395,
+        "input_bytes_per_second": 481501354
+      }
+    }
+  },
+  "durable_publication": {
+    "source_bytes": 2295480774,
+    "copy_seconds": 0.713192077,
+    "file_sync_seconds": 0.23985748,
+    "directory_sync_seconds": 0.000505148,
+    "combined_seconds": 0.967385048
+  },
+  "gate": {
+    "passed": false,
+    "violations": [
+      "ordinary replay median 402141413 B/s is below 1000000000 B/s",
+      "high replay median 519325168 B/s is below 1000000000 B/s",
+      "ordinary replay CPU cost 5.13 CPU-s/GB is above approximately 3.4 CPU-s/GB",
+      "high replay CPU cost 4.41 CPU-s/GB is above approximately 3.4 CPU-s/GB",
+      "near-sink OpenTitan performance is not demonstrated"
+    ],
+    "decision": "keep parallel engine as draft"
+  }
+}

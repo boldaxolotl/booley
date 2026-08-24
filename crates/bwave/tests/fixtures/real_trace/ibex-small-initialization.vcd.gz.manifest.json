@@ -1,0 +1,75 @@
+{
+  "activity": {
+    "event_count": 646696217,
+    "first_timestamp": 0,
+    "last_timestamp": 8299145,
+    "line_classes": {
+      "blank": 2,
+      "scalar": 151308284,
+      "timestamp": 8299146,
+      "vector": 495387933
+    },
+    "max_events_per_timestamp": 1768,
+    "selected_event_count": 400184,
+    "timestamp_count": 8299146
+  },
+  "excerpt": {
+    "compressed_bytes": 1156433,
+    "compressed_sha256": "5a1218b08eff4c1d3029e7f79f3c6b8a5f7ced387cbe9d902b6286bf2c481d6e",
+    "file": "ibex-small-initialization.vcd.gz",
+    "raw_bytes": 11047585,
+    "raw_sha256": "3ecbce9783b635314051f9a4bf9fd65d3e2ae2a2d8487b8bcec2006c6af0df5d"
+  },
+  "kind": "vcd_semantic_excerpt",
+  "profile": "initialization",
+  "schema_version": 1,
+  "selection": {
+    "actual_end": 5000,
+    "actual_start": 0,
+    "requested_end": 5000,
+    "requested_start": 0
+  },
+  "signals": {
+    "declarations": 4243,
+    "unique_ids": 1768,
+    "width_distribution": {
+      "1": 530,
+      "10": 5,
+      "12": 6,
+      "128": 2,
+      "14": 2,
+      "15": 9,
+      "16": 50,
+      "18": 5,
+      "2": 60,
+      "22": 10,
+      "24": 1,
+      "28": 2,
+      "29": 3,
+      "3": 35,
+      "31": 3,
+      "32": 647,
+      "33": 7,
+      "34": 101,
+      "35": 1,
+      "39": 2,
+      "4": 44,
+      "5": 64,
+      "56": 1,
+      "6": 69,
+      "64": 72,
+      "7": 9,
+      "72": 2,
+      "76": 2,
+      "8": 24
+    }
+  },
+  "source": {
+    "compression": "gzip",
+    "label": "ibex-small-coremark-verilator-5_046",
+    "raw_bytes": 17763580128,
+    "raw_sha256": "599f59bbe8f9f0863ac739d0b2637b9fd3cf07b7f5ba6d748ea2201935c0cbc4",
+    "stored_bytes": 3023159464,
+    "stored_sha256": "ddf9f9816132a1c1ec165135846c981515c4409d569afc66d903844cee6fe9b3"
+  }
+}

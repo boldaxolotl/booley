@@ -132,6 +132,7 @@ dependencies = [
  "fst-writer",
  "globset",
  "include_dir",
+ "libc",
  "memchr",
  "proptest",
  "rayon",
@@ -348,8 +349,10 @@ dependencies = [
 name = "fst-writer"
 version = "0.3.1"
 dependencies = [
+ "libc",
  "lz4_flex 0.11.6",
  "miniz_oxide 0.8.9",
+ "rayon",
  "thiserror",
 ]
 

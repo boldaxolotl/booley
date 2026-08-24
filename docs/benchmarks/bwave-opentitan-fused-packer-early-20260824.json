@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "kind": "bwave_opentitan_fused_packer_early_rejection",
+  "date": "2026-08-24",
+  "status": "single_trial_not_acceptance_evidence",
+  "corpus": {
+    "profile": "high",
+    "bytes": 1073748019,
+    "sha256": "ed08ec19f0f7871a860c0f8256358acdda20be052c0c1197884921fcc7db51df",
+    "source_excerpt_sha256": "a343570f14d75dd5d77a61e1661ef72701a538983dae6ed393efa503d0e5c62e"
+  },
+  "configuration": {
+    "cpu_affinity": "taskset -c 0-3",
+    "engine": "parallel",
+    "jobs": 4,
+    "parse_jobs": 2,
+    "encode_jobs": 1,
+    "pack_jobs": 2,
+    "vcd_chunk_bytes": 8388608,
+    "fst_stream_section_bytes": 134217728,
+    "scratch_filesystem": "/dev/shm",
+    "build_features": [
+      "profile"
+    ]
+  },
+  "process": {
+    "wall_seconds": 1.22,
+    "user_seconds": 3.8,
+    "system_seconds": 0.3,
+    "cpu_seconds": 4.1,
+    "cpu_seconds_per_gb": 3.818401,
+    "bytes_per_second": 880121327,
+    "average_cores": 3.361,
+    "peak_rss_kb": 275564,
+    "exit_status": 0
+  },
+  "profile": {
+    "pipeline_seconds": 1.203709,
+    "parse_wall_seconds": 2.080483,
+    "parse_cpu_seconds": 1.99661,
+    "reconcile_wall_seconds": 0.930823,
+    "coordinator_cpu_seconds": 0.026992,
+    "encode_wall_seconds": 1.151324,
+    "packer_cpu_seconds": 1.579361,
+    "compression_wall_seconds": 0.042258,
+    "compression_cpu_seconds": 0.072551,
+    "write_wall_seconds": 0.000408,
+    "assembler_cpu_seconds": 0.000406,
+    "measured_cpu_seconds": 3.675919,
+    "measured_active_workers": 3.054,
+    "encoder_queue_block_seconds": 0.903419,
+    "encoder_queue_high_water": 1,
+    "body_input_bytes": 1073110260,
+    "representation_bytes": 657949624,
+    "representation_per_input": 0.6131,
+    "peak_batch_representation_bytes": 15509700,
+    "event_count": 44340542,
+    "value_arena_bytes": 115659568,
+    "input_to_arena_copied_bytes": 115659568,
+    "arena_to_packer_copied_bytes": 3905446,
+    "packer_to_compressor_bytes": 94334496,
+    "touched_signal_chains": 786176,
+    "recycled_capacity_bytes": 1255701950,
+    "newly_allocated_capacity_bytes": 141975962,
+    "packer_worker_cpu_seconds": [
+      0.776164,
+      0.803197
+    ]
+  },
+  "comparison": {
+    "corrected_previous_cpu_seconds_per_gb": 4.414443534,
+    "cpu_work_reduction_fraction": 0.135,
+    "early_rejection_check": "passed_material_improvement"
+  },
+  "acceptance": {
+    "passed": false,
+    "violations": [
+      "880121327 B/s is below the 1200000000 B/s high-activity throughput gate",
+      "3.818401 CPU-s/GB is above the approximately 3.4 CPU-s/GB gate",
+      "3.361 average process cores is below the 3.5 utilization gate"
+    ],
+    "passes": [
+      "275564 KiB peak RSS is below the 1 GiB gate",
+      "fixture/property differential tests preserve serial semantics and deterministic bytes"
+    ],
+    "decision": "keep the production default serial; continue only small-replay redesign work before another large trial"
+  }
+}

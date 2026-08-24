@@ -7,17 +7,16 @@
 //! - Store read + query (transition decode, grid build, virtual signals)
 
 use std::fs;
-use std::io::{BufReader, Cursor, Seek, Write};
+use std::io::{BufReader, Cursor, Write};
 
-use criterion::{
-    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use bwave::cache::ColumnCache;
 use bwave::format::{format_value_with_radix, Radix};
 use bwave::fst::{scan_vcd_bytes, FstBuildHandler, VcdByteSink, VcdIdLookup};
 use bwave::parser::{parse_header, parse_streaming, VcdHandler};
+use bwave::vcd_chunk::VcdChunkSource;
 use bwave::virtual_signal::{build_virtual_transitions, parse_virtual_def, resolve_virtual};
 
 const VECTOR_WIDTHS: [usize; 6] = [1, 8, 32, 64, 256, 1_024];
@@ -644,87 +643,23 @@ fn bench_specialized_scanner(c: &mut Criterion) {
     group.finish();
 }
 
-fn bench_fst_build_stages(c: &mut Criterion) {
-    let mut group = c.benchmark_group("fst_build_stages");
-    group.sample_size(10);
-
-    for workload in REPRESENTATIVE_WORKLOADS {
-        let vcd = gen_representative_vcd(workload);
-        let mut header_reader = BufReader::new(Cursor::new(&vcd));
-        let header = parse_header(&mut header_reader);
-        let body = &vcd[header_reader.stream_position().unwrap() as usize..];
-        let label = workload.label;
-        let store_path = std::env::temp_dir().join(format!("bench_stage_{label}.fst"));
-        group.throughput(Throughput::Bytes(body.len() as u64));
-
-        group.bench_with_input(
-            BenchmarkId::new("encode_streams", label),
-            &body,
-            |b, body| {
-                b.iter_batched(
-                    || FstBuildHandler::new_in_memory(&header, None).unwrap(),
-                    |mut handler| {
-                        let mut reader = BufReader::new(Cursor::new(black_box(*body)));
-                        handler.parse_bytes(&mut reader, None);
-                        black_box(handler);
-                    },
-                    BatchSize::LargeInput,
-                );
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("encode_uncompressed_memory", label),
-            &body,
-            |b, body| {
-                b.iter_batched(
-                    || {
-                        let mut handler = FstBuildHandler::new_in_memory(&header, None).unwrap();
-                        handler.set_compression(fst_writer::FstCompression::Disabled);
-                        handler
-                    },
-                    |mut handler| {
-                        let mut reader = BufReader::new(Cursor::new(black_box(*body)));
-                        handler.parse_bytes(&mut reader, None);
-                        black_box(handler.finish().unwrap())
-                    },
-                    BatchSize::LargeInput,
-                );
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("compress_memory", label),
-            &body,
-            |b, body| {
-                b.iter_batched(
-                    || {
-                        let mut handler = FstBuildHandler::new_in_memory(&header, None).unwrap();
-                        let mut reader = BufReader::new(Cursor::new(*body));
-                        handler.parse_bytes(&mut reader, None);
-                        handler
-                    },
-                    |handler| black_box(handler.finish().unwrap()),
-                    BatchSize::LargeInput,
-                );
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("complete_counted_file", label),
-            &body,
-            |b, body| {
-                b.iter(|| {
-                    let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
-                    handler.enable_counters();
-                    let mut reader = BufReader::new(Cursor::new(*body));
-                    handler.parse_bytes(&mut reader, None);
-                    black_box(handler.finish().unwrap())
-                });
-            },
-        );
-        let _ = fs::remove_file(&store_path);
-    }
+fn bench_vcd_chunk_source(c: &mut Criterion) {
+    let vcd = gen_vcd(100, 100_000);
+    let mut group = c.benchmark_group("vcd_chunk_source");
+    group.sample_size(20);
+    group.throughput(Throughput::Bytes(vcd.len() as u64));
+    group.bench_function("1mib_timestamp_aligned", |b| {
+        b.iter(|| {
+            let mut source =
+                VcdChunkSource::new(Cursor::new(black_box(vcd.as_slice())), 0, 1 << 20).unwrap();
+            let mut bytes = 0usize;
+            while let Some(chunk) = source.next_chunk().unwrap() {
+                bytes += chunk.bytes.len();
+                source.recycle(chunk);
+            }
+            black_box(bytes)
+        });
+    });
     group.finish();
 }
 
@@ -744,8 +679,8 @@ fn bench_bwave_build(c: &mut Criterion) {
                 let mut reader = BufReader::new(Cursor::new(black_box(vcd)));
                 let header = parse_header(&mut reader);
                 let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
-                handler.parse_bytes(&mut reader, None);
-                handler.finalize_and_write();
+                handler.parse_bytes(&mut reader, None).unwrap();
+                handler.finalize_and_write().unwrap();
             });
             let _ = fs::remove_file(&store_path);
         });
@@ -768,8 +703,8 @@ fn bench_bwave_build_representative(c: &mut Criterion) {
                 let mut reader = BufReader::new(Cursor::new(black_box(vcd)));
                 let header = parse_header(&mut reader);
                 let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
-                handler.parse_bytes(&mut reader, None);
-                handler.finish().unwrap();
+                handler.parse_bytes(&mut reader, None).unwrap();
+                handler.finalize_and_write().unwrap();
             });
             let _ = fs::remove_file(&store_path);
         });
@@ -791,8 +726,8 @@ fn bench_bwave_build_widths(c: &mut Criterion) {
                 let mut reader = BufReader::new(Cursor::new(black_box(vcd)));
                 let header = parse_header(&mut reader);
                 let mut handler = FstBuildHandler::new(&header, None, &store_path).unwrap();
-                handler.parse_bytes(&mut reader, None);
-                handler.finish().unwrap();
+                handler.parse_bytes(&mut reader, None).unwrap();
+                handler.finalize_and_write().unwrap();
             });
             let _ = fs::remove_file(&store_path);
         });
@@ -813,8 +748,8 @@ fn bench_bwave_query(c: &mut Criterion) {
         let mut reader = BufReader::new(Cursor::new(&vcd));
         let header = parse_header(&mut reader);
         let mut handler = FstBuildHandler::new(&header, None, &bwave_path).unwrap();
-        handler.parse_bytes(&mut reader, None);
-        handler.finalize_and_write();
+        handler.parse_bytes(&mut reader, None).unwrap();
+        handler.finalize_and_write().unwrap();
     }
 
     let cache = ColumnCache::load_from_file(&bwave_path).expect("cache should load");
@@ -893,8 +828,8 @@ fn bench_bwave_query_large(c: &mut Criterion) {
         let mut reader = BufReader::new(Cursor::new(&vcd));
         let header = parse_header(&mut reader);
         let mut handler = FstBuildHandler::new(&header, None, &bwave_path).unwrap();
-        handler.parse_bytes(&mut reader, None);
-        handler.finalize_and_write();
+        handler.parse_bytes(&mut reader, None).unwrap();
+        handler.finalize_and_write().unwrap();
     }
 
     let cache = ColumnCache::load_from_file(&bwave_path).expect("cache should load");
@@ -987,8 +922,8 @@ fn bench_virtual_eval(c: &mut Criterion) {
         let mut reader = BufReader::new(Cursor::new(&vcd));
         let header = parse_header(&mut reader);
         let mut handler = FstBuildHandler::new(&header, None, &bwave_path).unwrap();
-        handler.parse_bytes(&mut reader, None);
-        handler.finalize_and_write();
+        handler.parse_bytes(&mut reader, None).unwrap();
+        handler.finalize_and_write().unwrap();
     }
 
     let cache = ColumnCache::load_from_file(&bwave_path).expect("cache should load");
@@ -1109,7 +1044,7 @@ criterion_group!(
     bench_parse_header,
     bench_parse_streaming,
     bench_specialized_scanner,
-    bench_fst_build_stages,
+    bench_vcd_chunk_source,
     bench_bwave_build,
     bench_bwave_build_representative,
     bench_bwave_build_widths,

@@ -4,6 +4,7 @@
 
 mod buffer;
 mod io;
+mod profile;
 mod types;
 mod writer;
 
@@ -21,8 +22,12 @@ pub enum FstWriteError {
     TimeDecrease(u64, u64),
     #[error("Invalid signal id: {0:?}")]
     InvalidSignalId(FstSignalId),
+    #[error("Initial frame has {actual} bytes; expected {expected}")]
+    InvalidFrameLength { expected: usize, actual: usize },
     #[error("Invalid bit-vector signal character: {0}")]
     InvalidCharacter(char),
+    #[error("Invalid linked signal-change data: {0}")]
+    InvalidSignalChanges(String),
 }
 
 /// Controls compression of value-change streams and time tables.
@@ -43,5 +48,10 @@ pub struct FstWriteStats {
     pub flush_time: Duration,
 }
 
+pub use buffer::FstSignalFragment;
 pub use types::*;
-pub use writer::{FstBodyWriter, FstHeaderWriter, open_fst};
+pub use writer::{
+    EncodedFstSection, FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstBodyWriter, FstDumpState,
+    FstHeaderWriter, FstSectionEncoder, FstSignalChainEncoder, FstSignalChange, FstSignalRecord,
+    OrderedFstWriter, open_fst,
+};

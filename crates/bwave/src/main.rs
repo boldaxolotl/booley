@@ -11,7 +11,12 @@ use std::io::{self, BufReader};
 use std::path::Path;
 use std::process;
 
-use clap::{Args, Parser, Subcommand};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use bwave::cache::{
     diff_from_cache, distance_from_cache, find_stuck_from_cache, find_value_from_cache,
@@ -19,7 +24,7 @@ use bwave::cache::{
     trace_from_cache, virtual_def_error_seen, wave_from_cache, ColumnCache,
 };
 use bwave::format::{is_edge_keyword, parse_radix_suffix, parse_verilog_literal};
-use bwave::parser::parse_header;
+use bwave::parser::try_parse_header;
 use bwave::ExtractConfig;
 
 // ===================================================================
@@ -186,6 +191,40 @@ struct BuildArgs {
     /// Limit build to signals within this hierarchical scope (e.g. "tb.dut")
     #[arg(long)]
     scope: Option<String>,
+
+    /// Hidden converter selection for diagnostics and serial-oracle checks
+    #[arg(long, value_enum, default_value_t = BuildEngine::Parallel, hide = true)]
+    engine: BuildEngine,
+
+    /// Temporary total worker-budget override
+    #[arg(long, hide = true)]
+    jobs: Option<usize>,
+
+    /// Temporary parser worker-count override
+    #[arg(long, hide = true)]
+    parse_jobs: Option<usize>,
+
+    /// Temporary section-encoder worker-count override
+    #[arg(long, hide = true)]
+    encode_jobs: Option<usize>,
+
+    /// Temporary per-signal compression worker-count override
+    #[arg(long, hide = true)]
+    pack_jobs: Option<usize>,
+
+    /// Temporary timestamp-aligned chunk-size override
+    #[arg(long, hide = true)]
+    chunk_bytes: Option<usize>,
+
+    /// Temporary output-section coalescing override
+    #[arg(long, hide = true)]
+    section_bytes: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum BuildEngine {
+    Serial,
+    Parallel,
 }
 
 #[derive(Args, Debug)]
@@ -549,9 +588,35 @@ fn require_bwave(path: &str, cmd: &str) {
 //   build (VCD → FST store)
 // ===================================================================
 
-fn build_bwave_from_reader(output_path: &str, reader: &mut impl io::BufRead, scope: Option<&str>) {
+fn build_bwave_from_reader(
+    output_path: &str,
+    reader: &mut (impl io::BufRead + Send),
+    scope: Option<&str>,
+    engine: BuildEngine,
+    jobs: Option<usize>,
+    parse_jobs: Option<usize>,
+    encode_jobs: Option<usize>,
+    pack_jobs: Option<usize>,
+    chunk_bytes: Option<usize>,
+    section_bytes: Option<usize>,
+    fifo_descriptor: Option<i32>,
+) {
     let out = Path::new(output_path);
-    let header = parse_header(reader);
+    let header = match try_parse_header(reader) {
+        Ok(header) => header,
+        Err(error) => {
+            eprintln!("ERROR: {error}");
+            process::exit(1);
+        }
+    };
+    if engine == BuildEngine::Parallel {
+        if let Some(descriptor) = fifo_descriptor {
+            make_descriptor_nonblocking(descriptor).unwrap_or_else(|e| {
+                eprintln!("ERROR: cannot configure FIFO input: {e}");
+                process::exit(1);
+            });
+        }
+    }
     // Refuse to build an unqueryable store. A VCD that declares no signals
     // produces a header-only .fst that answers every query with silence —
     // the caller then debugs the design instead of the trace setup. Same
@@ -596,9 +661,135 @@ fn build_bwave_from_reader(output_path: &str, reader: &mut impl io::BufRead, sco
             process::exit(1);
         }
     };
-    handler.parse_bytes(reader, Some(&heartbeat));
-    handler.finalize_and_write();
+    let parse_result = match engine {
+        BuildEngine::Serial => handler.parse_bytes(reader, Some(&heartbeat)),
+        BuildEngine::Parallel => {
+            let total_jobs = jobs.unwrap_or_else(default_build_jobs);
+            let (parse_jobs, encode_jobs, pack_jobs) =
+                match parallel_worker_counts(total_jobs, parse_jobs, encode_jobs, pack_jobs) {
+                    Ok(counts) => counts,
+                    Err(error) => {
+                        eprintln!("ERROR: {error}");
+                        process::exit(2);
+                    }
+                };
+            handler.parse_bytes_parallel(
+                reader,
+                Some(&heartbeat),
+                parse_jobs,
+                encode_jobs,
+                pack_jobs,
+                chunk_bytes.unwrap_or(bwave::fst::PARALLEL_VCD_CHUNK_TARGET),
+                section_bytes.unwrap_or(bwave::fst::PARALLEL_FST_SECTION_TARGET),
+                fifo_descriptor,
+            )
+        }
+    };
+    if let Err(error) = parse_result {
+        drop(handler);
+        let _ = std::fs::remove_file(out);
+        let _ = std::fs::remove_file(&heartbeat);
+        eprintln!("ERROR: {error}");
+        process::exit(1);
+    }
+    if let Err(error) = handler.finalize_and_write() {
+        let _ = std::fs::remove_file(out);
+        let _ = std::fs::remove_file(&heartbeat);
+        eprintln!("ERROR: {error}");
+        process::exit(1);
+    }
     let _ = std::fs::remove_file(&heartbeat);
+}
+
+fn default_build_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map(|count| count.get().clamp(2, 6))
+        .unwrap_or(2)
+}
+
+fn parallel_worker_counts(
+    total_jobs: usize,
+    parse_jobs: Option<usize>,
+    encode_jobs: Option<usize>,
+    pack_jobs: Option<usize>,
+) -> Result<(usize, usize, usize), String> {
+    let default_pack = if total_jobs >= 6 && encode_jobs.is_none_or(|jobs| jobs == 1) {
+        2
+    } else {
+        1
+    };
+    let pack = pack_jobs.unwrap_or(default_pack);
+    let default_encode = if pack > 1 {
+        1
+    } else {
+        total_jobs
+            .div_ceil(4)
+            .min(7)
+            .min(total_jobs.saturating_sub(1).max(1))
+    };
+    let encode = encode_jobs.unwrap_or(default_encode);
+    let parse = parse_jobs.unwrap_or(total_jobs.saturating_sub(encode.max(pack)).max(1));
+    if parse == 0 || encode == 0 || pack == 0 {
+        return Err("parallel worker counts must be positive".to_string());
+    }
+    if parse.saturating_add(encode) > total_jobs {
+        return Err(format!(
+            "parse jobs ({parse}) plus encode jobs ({encode}) exceed --jobs {total_jobs}"
+        ));
+    }
+    if pack > 1 && encode != 1 {
+        return Err("the compression prototype requires exactly one encode job".to_string());
+    }
+    if pack > 1 && parse.saturating_add(pack) > total_jobs {
+        return Err(format!(
+            "parse jobs ({parse}) plus pack jobs ({pack}) exceed --jobs {total_jobs}"
+        ));
+    }
+    Ok((parse, encode, pack))
+}
+
+#[cfg(unix)]
+fn fifo_descriptor(file: &File) -> io::Result<Option<i32>> {
+    if !file.metadata()?.file_type().is_fifo() {
+        return Ok(None);
+    }
+    Ok(Some(file.as_raw_fd()))
+}
+
+#[cfg(not(unix))]
+fn fifo_descriptor(_file: &File) -> io::Result<Option<i32>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn stdin_descriptor(stdin: &io::Stdin) -> Option<i32> {
+    Some(stdin.as_raw_fd())
+}
+
+#[cfg(not(unix))]
+fn stdin_descriptor(_stdin: &io::Stdin) -> Option<i32> {
+    None
+}
+
+#[cfg(unix)]
+fn make_descriptor_nonblocking(descriptor: i32) -> io::Result<()> {
+    // SAFETY: `descriptor` belongs to the live borrowed File. F_GETFL does
+    // not mutate memory, and F_SETFL changes only the descriptor status flags.
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: same valid descriptor; preserve every existing flag and add
+    // O_NONBLOCK so the chunker's cancellation checks can interrupt FIFO waits.
+    if unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_descriptor_nonblocking(_descriptor: i32) -> io::Result<()> {
+    Ok(())
 }
 
 fn run_build(args: BuildArgs) {
@@ -610,12 +801,41 @@ fn run_build(args: BuildArgs) {
             eprintln!("ERROR: cannot open '{}': {}", path, e);
             process::exit(1);
         });
+        let fifo_descriptor = fifo_descriptor(&file).unwrap_or_else(|e| {
+            eprintln!("ERROR: cannot inspect input '{}': {}", path, e);
+            process::exit(1);
+        });
         let mut reader = BufReader::with_capacity(256 * 1024, file);
-        build_bwave_from_reader(&args.output, &mut reader, args.scope.as_deref());
+        build_bwave_from_reader(
+            &args.output,
+            &mut reader,
+            args.scope.as_deref(),
+            args.engine,
+            args.jobs,
+            args.parse_jobs,
+            args.encode_jobs,
+            args.pack_jobs,
+            args.chunk_bytes,
+            args.section_bytes,
+            fifo_descriptor,
+        );
     } else {
         let stdin = io::stdin();
-        let mut reader = BufReader::with_capacity(256 * 1024, stdin.lock());
-        build_bwave_from_reader(&args.output, &mut reader, args.scope.as_deref());
+        let input_descriptor = stdin_descriptor(&stdin);
+        let mut reader = BufReader::with_capacity(256 * 1024, stdin);
+        build_bwave_from_reader(
+            &args.output,
+            &mut reader,
+            args.scope.as_deref(),
+            args.engine,
+            args.jobs,
+            args.parse_jobs,
+            args.encode_jobs,
+            args.pack_jobs,
+            args.chunk_bytes,
+            args.section_bytes,
+            input_descriptor,
+        );
     }
 }
 
@@ -1085,5 +1305,23 @@ fn main() {
     // (CI, scripts) need a reliable signal that input was bad.
     if virtual_def_error_seen() {
         process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod build_worker_tests {
+    use super::parallel_worker_counts;
+
+    #[test]
+    fn six_job_default_matches_promoted_topology() {
+        assert_eq!(parallel_worker_counts(6, None, None, None), Ok((4, 1, 2)));
+    }
+
+    #[test]
+    fn explicit_encoder_override_keeps_single_packer_default() {
+        assert_eq!(
+            parallel_worker_counts(6, None, Some(2), None),
+            Ok((4, 2, 1))
+        );
     }
 }

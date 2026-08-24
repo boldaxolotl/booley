@@ -209,7 +209,7 @@ fn model_transitions(case: &VcdCase) -> Vec<Vec<(u64, String)>> {
     out
 }
 
-fn build_fst(vcd_text: &str) -> (ColumnCache, std::path::PathBuf) {
+fn build_fst(vcd_text: &str, parallel: bool) -> (ColumnCache, std::path::PathBuf) {
     let case = CASE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("bwave_prop_{}_{}", std::process::id(), case));
     std::fs::create_dir_all(&dir).unwrap();
@@ -218,8 +218,13 @@ fn build_fst(vcd_text: &str) -> (ColumnCache, std::path::PathBuf) {
     let mut reader = BufReader::new(vcd_text.as_bytes());
     let header = parse_header(&mut reader);
     let mut h = FstBuildHandler::new(&header, None, &fst_path).unwrap();
-    h.parse_bytes(&mut reader, None);
-    h.finalize_and_write();
+    if parallel {
+        h.parse_bytes_parallel(&mut reader, None, 2, 1, 2, 37, 111, None)
+            .unwrap();
+    } else {
+        h.parse_bytes(&mut reader, None).unwrap();
+    }
+    h.finalize_and_write().unwrap();
 
     let cache = ColumnCache::load_from_file(&fst_path).expect("load .fst");
     (cache, dir)
@@ -234,9 +239,10 @@ proptest! {
     #[test]
     fn random_vcd_roundtrips_identically(case in vcd_case_strategy()) {
         let vcd_text = render_vcd(&case);
-        let (cache, dir) = build_fst(&vcd_text);
         let expected = model_transitions(&case);
 
+        for parallel in [false, true] {
+        let (cache, dir) = build_fst(&vcd_text, parallel);
         prop_assert_eq!(cache.signals.len(), case.signals.len(), "directory size");
         for i in 0..cache.signals.len() {
             let want_name = if case.signals[i].width == 1 {
@@ -270,5 +276,6 @@ proptest! {
 
         drop(cache);
         let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,13 @@ def decompress_fixture(manifest: dict, tmp_path: Path) -> Path:
 def load_fixture_manifests() -> list[dict]:
     data = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
     return data["fixture"]
+
+
+def load_ibex_excerpt_manifests() -> list[dict]:
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(FIXTURE_DIR.glob("ibex-*.vcd.gz.manifest.json"))
+    ]
 
 
 @pytest.mark.parametrize("manifest", load_fixture_manifests(), ids=lambda entry: entry["name"])
@@ -146,3 +154,34 @@ def test_real_trace_fixture_builds_and_queries(manifest: dict, tmp_path: Path) -
         ]
     )
     assert "count" in distance.stdout.lower()
+
+
+@pytest.mark.parametrize(
+    "manifest", load_ibex_excerpt_manifests(), ids=lambda entry: entry["profile"]
+)
+def test_ibex_excerpt_serial_parallel_equivalence(manifest: dict, tmp_path: Path) -> None:
+    excerpt = manifest["excerpt"]
+    serialized_manifest = json.dumps(manifest)
+    assert "/home/" not in serialized_manifest
+    assert "/work/" not in serialized_manifest
+    compressed = FIXTURE_DIR / excerpt["file"]
+    raw_vcd = tmp_path / compressed.name.removesuffix(".gz")
+    serial = tmp_path / f"{manifest['profile']}-serial.fst"
+    parallel = tmp_path / f"{manifest['profile']}-parallel.fst"
+
+    assert compressed.stat().st_size == excerpt["compressed_bytes"]
+    assert sha256(compressed) == excerpt["compressed_sha256"]
+    with gzip.open(compressed, "rb") as source, raw_vcd.open("wb") as destination:
+        shutil.copyfileobj(source, destination)
+    assert raw_vcd.stat().st_size == excerpt["raw_bytes"]
+    assert sha256(raw_vcd) == excerpt["raw_sha256"]
+
+    bwave(["build", "--engine", "serial", str(raw_vcd), "-o", str(serial)], timeout=180)
+    bwave(["build", "--engine", "parallel", str(raw_vcd), "-o", str(parallel)], timeout=180)
+    for command in (
+        ["list", "--format", "json", "--limit", "20000"],
+        ["stats", "--async", "--format", "json", "--limit", "20000"],
+    ):
+        serial_result = bwave([command[0], str(serial), *command[1:]], timeout=180)
+        parallel_result = bwave([command[0], str(parallel), *command[1:]], timeout=180)
+        assert json.loads(serial_result.stdout) == json.loads(parallel_result.stdout)
