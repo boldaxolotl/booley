@@ -354,8 +354,7 @@ class TestPrePushFailsClosed:
 
 
 class TestLineEndingsStep:
-    """Step 10d (F-15): CRLF checkouts read as a fully dirty tree inside the
-    Session Runtime container; init warns and names the mitigation."""
+    """Step 10d (F-15): keep host checkouts container-safe."""
 
     @staticmethod
     def _add_file(root: Path, name: str, data: bytes) -> None:
@@ -383,7 +382,7 @@ class TestLineEndingsStep:
         assert ctx.results[-1].name == "line_endings"
         assert ctx.results[-1].status == "ok"
 
-    def test_crlf_tree_warns(self, tmp_path: Path):
+    def test_dirty_crlf_tree_is_left_untouched(self, tmp_path: Path):
         # The real F-15 shape: core.autocrlf=true stores LF in the index and
         # checks CRLF out, so index and worktree disagree (`i/lf w/crlf`) and
         # the container's git — which does no conversion — reports every such
@@ -403,7 +402,7 @@ class TestLineEndingsStep:
         _step_line_endings(ctx)
 
         assert ctx.results[-1].status == "warn"
-        assert ctx.results[-1].detail == "CRLF working tree"
+        assert ctx.results[-1].detail == "dirty tree"
 
     def test_crlf_matching_the_index_is_not_a_phantom_diff(self, tmp_path: Path):
         # B5. With autocrlf=false git stores the CRLF bytes as-is: index and
@@ -478,9 +477,7 @@ class TestLineEndingsStep:
 
 
 class TestLineEndingsAutoFix:
-    """Step 10d's fixes, split by how much damage each could do: the config
-    flip is automatic, the .gitattributes rule is written but never committed,
-    and the tree-destroying re-checkout is opt-in and clean-tree-only."""
+    """Step 10d repairs clean trees and never overwrites local work."""
 
     def _crlf_repo(self, tmp_path: Path) -> Path:
         """A Git-for-Windows-shaped repo: LF in the index, CRLF on disk.
@@ -560,7 +557,7 @@ class TestLineEndingsAutoFix:
 
         assert (tmp_path / ".gitattributes").read_bytes() == b"* text=auto\n"
 
-    def test_check_only_changes_nothing(self, tmp_path: Path):
+    def test_check_only_previews_the_one_run_recheckout(self, tmp_path: Path, capsys):
         from booley.harness.init_git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
@@ -572,8 +569,11 @@ class TestLineEndingsAutoFix:
         assert _autocrlf(tmp_path) == "true"
         assert not (tmp_path / ".gitattributes").exists()
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
+        output = capsys.readouterr().out
+        assert "would re-check out 1 tracked file(s) with LF endings" in output
+        assert "--fix-line-endings" not in output
 
-    def test_recheckout_is_opt_in(self, tmp_path: Path):
+    def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path):
         from booley.harness.init_git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
@@ -581,11 +581,9 @@ class TestLineEndingsAutoFix:
 
         _step_line_endings(ctx)
 
-        # Config and attributes fixed; the bytes on disk are not touched
-        # without --fix-line-endings.
         assert _autocrlf(tmp_path) == "false"
-        assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
-        assert ctx.results[-1].status == "warn"
+        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
+        assert ctx.results[-1].status == "ok"
 
     def test_fix_flag_rechecks_out_as_lf(self, tmp_path: Path):
         from booley.harness.init_git_hooks import _step_line_endings
@@ -601,10 +599,9 @@ class TestLineEndingsAutoFix:
     def test_fix_flag_ignores_init_created_untracked_gitattributes(self, tmp_path: Path):
         from booley.harness.init_git_hooks import _step_line_endings
 
+        # The compatibility flag remains harmless on the already-fixed output
+        # of an ordinary first run, including its untracked policy file.
         self._crlf_repo(tmp_path)
-
-        # A normal first run writes the policy but leaves the destructive
-        # re-checkout for an explicit second invocation.
         _step_line_endings(_ctx(tmp_path))
         assert (tmp_path / ".gitattributes").exists()
         assert (
@@ -624,9 +621,8 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
 
     def test_fix_flag_refuses_on_a_dirty_tree(self, tmp_path: Path):
-        # The re-checkout deletes every tracked file. Uncommitted work would
-        # not survive it, so a dirty tree is a hard stop — init is not the
-        # thing that eats someone's afternoon.
+        # Replacing even only the affected paths could lose uncommitted work,
+        # so a dirty tree is a hard stop.
         from booley.harness.init_git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
@@ -703,3 +699,54 @@ class TestLineEndingsAutoFix:
 
         assert (tmp_path / "notes.txt").read_bytes() == b"keep me\n"
         assert ctx.results[-1].status == "ok"
+
+    def test_auto_fix_leaves_unaffected_skip_worktree_edits_untouched(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        self._crlf_repo(tmp_path)
+        TestLineEndingsStep._add_file(tmp_path, "local.v", b"module local;\nendmodule\n")
+        _git_commit(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "update-index", "--skip-worktree", "local.v"],
+            capture_output=True,
+            check=True,
+        )
+        local_edit = b"module local;\n  localparam int KEEP = 1;\nendmodule\n"
+        (tmp_path / "local.v").write_bytes(local_edit)
+        assert not subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx)
+
+        assert (tmp_path / "local.v").read_bytes() == local_edit
+        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
+        assert ctx.results[-1].status == "ok"
+
+    def test_auto_fix_refuses_an_affected_skip_worktree_path(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        self._crlf_repo(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "update-index", "--skip-worktree", "a.v"],
+            capture_output=True,
+            check=True,
+        )
+        local_edit = b"module a;\r\n  localparam int KEEP = 1;\r\nendmodule\r\n"
+        (tmp_path / "a.v").write_bytes(local_edit)
+        assert not subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx)
+
+        assert (tmp_path / "a.v").read_bytes() == local_edit
+        assert ctx.results[-1].status == "warn"

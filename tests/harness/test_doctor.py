@@ -6656,7 +6656,7 @@ class TestLineEndingsCheck:
 
         assert c.passed and not c.warned and not c.failed
 
-    def test_crlf_tree_fails_with_the_fix_command(self, tmp_path: Path):
+    def test_crlf_tree_fails_with_the_init_remediation(self, tmp_path: Path):
         # Ticket Mode is broken right now: the container reads every one of
         # these as modified.
         self._repo(tmp_path, autocrlf="true")
@@ -6672,7 +6672,8 @@ class TestLineEndingsCheck:
         doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
 
         assert len(c.failed) == 1
-        assert "--fix-line-endings" in c.failed[0][1]
+        assert "booley init" in c.failed[0][1]
+        assert "--fix-line-endings" not in c.failed[0][1]
 
     def test_autocrlf_true_with_lf_tree_warns(self, tmp_path: Path):
         # Nothing is broken yet — the next checkout is what breaks it.

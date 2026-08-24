@@ -1232,7 +1232,7 @@ def _check_line_endings(
             f"{crlf_count} tracked file(s) are checked out with CRLF — the Session "
             "Runtime container sees every one as modified, which breaks the "
             "dirty-tree check, scope enforcement, and ticket worktrees",
-            "booley init --fix-line-endings   (from a clean tree)",
+            "booley init   (automatically repairs a clean tree; commit or stash first)",
         )
         return
     if autocrlf == "true":
