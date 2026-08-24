@@ -110,6 +110,10 @@ supported. You need:
 - [Docker](https://www.docker.com/)
 - [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - Credentials for Claude (the default) or Codex
+- At least **15 GB of free disk space available to Docker**: about 5 GB for
+  images, 5 GB or more for simulation and synthesis data, and the rest for
+  overhead. Allow **25 GB** for local image builds; RISC-V or custom images and
+  concurrent runs need more.
 
 Install and verify the CLI on the host:
 
