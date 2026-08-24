@@ -69,6 +69,14 @@ def _commit(repo: Path, message: str, *, author: str | None = None) -> str:
     return _head(repo)
 
 
+def _commit_symlink(repo: Path, name: str, target: str) -> str:
+    """Commit a symlink without reading through it from the worktree."""
+    (repo / name).symlink_to(target)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "--no-verify", "-m", "feat(core): add link")
+    return _head(repo)
+
+
 # ---------------------------------------------------------------------------
 # _commit_facts
 # ---------------------------------------------------------------------------
@@ -168,6 +176,45 @@ class TestCommitOffenses:
         assert any("banned terms" in o for o in offenses)
         assert any("author not in" in o for o in offenses)
 
+    def test_banned_term_in_tracked_path_is_blocked(self, repo, monkeypatch):
+        monkeypatch.chdir(repo)
+        path = repo / "booley-state.txt"
+        path.write_text("opaque\n", encoding="utf-8")
+        _git(repo, "add", path.name)
+        _git(repo, "commit", "-q", "--no-verify", "-m", "feat(core): add state")
+
+        offenses = _commit_offenses(_head(repo), [])
+
+        assert any("tracked path has banned terms" in offense for offense in offenses)
+
+    def test_symlink_target_is_read_from_committed_blob(self, repo, monkeypatch):
+        monkeypatch.chdir(repo)
+        (repo / ".booley_project").mkdir()
+        sha = _commit_symlink(repo, "guide", ".booley_project/AGENTS.md")
+        (repo / "guide").unlink()
+        (repo / "guide").symlink_to("ordinary.txt")
+
+        offenses = _commit_offenses(sha, [])
+
+        assert any("symlink target exposes project state" in offense for offense in offenses)
+        assert any(".booley_project/AGENTS.md" in offense for offense in offenses)
+
+    def test_custom_project_dir_target_is_blocked_without_banned_term(self, repo, monkeypatch):
+        monkeypatch.chdir(repo)
+        project_dir = repo.parent / ".private-state"
+        project_dir.mkdir()
+        sha = _commit_symlink(repo, "guide", "../.private-state/AGENTS.md")
+
+        offenses = _commit_offenses(sha, [], project_dir=project_dir)
+
+        assert any("symlink target exposes project state" in offense for offense in offenses)
+
+    def test_ordinary_symlink_is_allowed(self, repo, monkeypatch):
+        monkeypatch.chdir(repo)
+        sha = _commit_symlink(repo, "guide", "docs/guide.md")
+
+        assert _commit_offenses(sha, []) == []
+
 
 # ---------------------------------------------------------------------------
 # main
@@ -205,6 +252,23 @@ class TestMain:
         assert "push blocked" in err
         assert sha[:12] in err
         assert "mut@local" in err
+
+    def test_blocks_symlink_to_project_state(self, repo, monkeypatch, capsys):
+        monkeypatch.chdir(repo)
+        monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+        project_dir = repo / ".booley_project"
+        project_dir.mkdir()
+        sha = _commit_symlink(repo, "AGENTS.md", ".booley_project/AGENTS.md")
+        with (
+            _stdin(sha),
+            patch("booley.dev_support.pre_push_hook.stealth_enabled", return_value=True),
+            patch("booley.dev_support.pre_push_hook.allowed_authors", return_value=[]),
+        ):
+            assert main() == 1
+        err = capsys.readouterr().err
+        assert "push blocked" in err
+        assert "symlink target" in err
+        assert ".booley_project/AGENTS.md" in err
 
     def test_escape_hatch_skips_everything(self, repo, monkeypatch):
         monkeypatch.chdir(repo)
