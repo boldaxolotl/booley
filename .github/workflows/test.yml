@@ -17,7 +17,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs: ${{ steps.classify.outputs.docs }}
+      python_source: ${{ steps.classify.outputs.python_source }}
+      python_tests: ${{ steps.classify.outputs.python_tests }}
+      image_tests: ${{ steps.classify.outputs.image_tests }}
+      rust: ${{ steps.classify.outputs.rust }}
+      docker_toolchain: ${{ steps.classify.outputs.docker_toolchain }}
+      packaging: ${{ steps.classify.outputs.packaging }}
+      workflow: ${{ steps.classify.outputs.workflow }}
+      release: ${{ steps.classify.outputs.release }}
+      full: ${{ steps.classify.outputs.full }}
+      run_docs_check: ${{ steps.classify.outputs.run_docs_check }}
+      run_lint: ${{ steps.classify.outputs.run_lint }}
+      run_test: ${{ steps.classify.outputs.run_test }}
+      run_rust_test: ${{ steps.classify.outputs.run_rust_test }}
+      run_bwave_integration: ${{ steps.classify.outputs.run_bwave_integration }}
+      run_package_artifacts: ${{ steps.classify.outputs.run_package_artifacts }}
+      run_bwave_smoke: ${{ steps.classify.outputs.run_bwave_smoke }}
+      required_jobs: ${{ steps.classify.outputs.required_jobs }}
+      diff_base: ${{ steps.classify.outputs.diff_base }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FORCE_ALL: ${{ github.event_name != 'pull_request' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          python .github/scripts/ci_changes.py
+          --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
+          --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
+
+  docs-check:
+    needs: changes
+    if: needs.changes.outputs.run_docs_check == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Check documentation diff
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
+
   lint:
+    needs: changes
+    if: needs.changes.outputs.run_lint == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -40,6 +96,8 @@ jobs:
         run: ruff format --check .
 
   test:
+    needs: changes
+    if: needs.changes.outputs.run_test == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -105,6 +163,8 @@ jobs:
           path: coverage.xml
 
   rust-test:
+    needs: changes
+    if: needs.changes.outputs.run_rust_test == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -159,6 +219,8 @@ jobs:
           -A clippy::wrong-self-convention
 
   bwave-integration:
+    needs: changes
+    if: needs.changes.outputs.run_bwave_integration == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -218,6 +280,8 @@ jobs:
           if-no-files-found: warn
 
   package-artifacts:
+    needs: changes
+    if: needs.changes.outputs.run_package_artifacts == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -272,7 +336,8 @@ jobs:
 
   bwave-smoke:
     runs-on: ubuntu-latest
-    needs: package-artifacts
+    needs: [changes, package-artifacts]
+    if: needs.changes.outputs.run_bwave_smoke == 'true'
     # An uncached image build compiles the EDA stack from source (~57 min
     # measured), then loads a ~6 GB image and uploads the layer cache — a
     # 60-minute budget killed the first run mid-flight. Cached rebuilds
@@ -444,3 +509,28 @@ jobs:
           if (( ${#containers[@]} )); then
             docker rm -f "${containers[@]}"
           fi
+
+  ci-required:
+    name: ci-required
+    needs:
+      - changes
+      - docs-check
+      - lint
+      - test
+      - rust-test
+      - bwave-integration
+      - package-artifacts
+      - bwave-smoke
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Resolve required CI status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: ${{ needs.changes.outputs.required_jobs }}
+        run: >-
+          python .github/scripts/ci_required.py
+          --required "${REQUIRED_JOBS}" --needs-json "${NEEDS_JSON}"
