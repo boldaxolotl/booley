@@ -47,6 +47,7 @@ pub struct FstWriteStats {
     pub flush_time: Duration,
 }
 
+pub use buffer::FstSignalFragment;
 pub use types::*;
 pub use writer::{
     EncodedFstSection, FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstBodyWriter, FstDumpState,

@@ -2,7 +2,7 @@
 // released under BSD 3-Clause License
 // author: Kevin Laeufer <laeufer@cornell.edu>
 
-use crate::buffer::{ChainedSignalBuffer, SignalBuffer};
+use crate::buffer::{ChainedSignalBuffer, FstSignalFragment, SignalBuffer};
 use crate::io::{
     HeaderFinishInfo, update_header, write_chained_value_change_section, write_geometry,
     write_header_meta_data, write_hierarchy_bytes, write_hierarchy_scope, write_hierarchy_up_scope,
@@ -587,6 +587,24 @@ impl FstSignalChainEncoder {
     ) -> Result<()> {
         self.buffer
             .apply_signal_records(changes, values, self.compression_pool.as_deref())
+    }
+
+    pub fn apply_signal_fragments(
+        &mut self,
+        fragments: &[FstSignalFragment],
+        fragment_slots: &[u32],
+        values: &[u8],
+        time_map: &[u32],
+        time_map_is_affine: bool,
+    ) -> Result<()> {
+        self.buffer.apply_signal_fragments(
+            fragments,
+            fragment_slots,
+            values,
+            time_map,
+            time_map_is_affine,
+            self.compression_pool.as_deref(),
+        )
     }
 
     pub fn size(&self) -> usize {

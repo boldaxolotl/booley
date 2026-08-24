@@ -23,16 +23,17 @@ pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> Resu
         return Ok(1);
     }
 
-    let mut bytes = Vec::with_capacity(10);
+    let mut bytes = [0u8; 10];
+    let mut len = 0usize;
     while value != 0 {
         let next_value = value >> 7;
         let mask: u8 = if next_value == 0 { 0 } else { 0x80 };
-        bytes.push((value & 0x7f) as u8 | mask);
+        bytes[len] = (value & 0x7f) as u8 | mask;
+        len += 1;
         value = next_value;
     }
-    assert!(bytes.len() <= 10);
-    output.write_all(&bytes)?;
-    Ok(bytes.len())
+    output.write_all(&bytes[..len])?;
+    Ok(len)
 }
 
 #[inline]
@@ -52,14 +53,14 @@ pub(crate) fn write_variant_i64(output: &mut impl Write, mut value: i64) -> Resu
     };
     let num_bytes = bits.div_ceil(7) as usize;
 
-    let mut bytes = Vec::with_capacity(num_bytes);
+    let mut bytes = [0u8; 10];
     for ii in 0..num_bytes {
         let mark = if ii == num_bytes - 1 { 0 } else { 0x80 };
-        bytes.push((value & 0x7f) as u8 | mark);
+        bytes[ii] = (value & 0x7f) as u8 | mark;
         value >>= 7;
     }
-    output.write_all(&bytes)?;
-    Ok(bytes.len())
+    output.write_all(&bytes[..num_bytes])?;
+    Ok(num_bytes)
 }
 
 #[inline]

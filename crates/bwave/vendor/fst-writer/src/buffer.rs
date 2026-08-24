@@ -12,6 +12,7 @@
 use crate::io::{
     MIN_SIZE_TO_ATTEMPT_COMPRESSION, write_multi_bit_signal, write_one_bit_signal,
     write_packed_binary_signal, write_time_chain_update, write_value_change_section,
+    write_variant_u64,
 };
 use crate::writer::{
     FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstDumpState, FstSignalChange, FstSignalRecord,
@@ -87,6 +88,98 @@ struct ApplySignalStats {
     copied_bytes: usize,
     cpu_seconds: f64,
     worker_index: usize,
+}
+
+/// Parser-produced changes for one signal in one timestamp-led chunk.
+///
+/// The first two distinct values remain explicit because the first value may
+/// match section state. Later values are already in final FST encoding and can
+/// normally be appended without decoding or copying.
+#[derive(Default)]
+pub struct FstSignalFragment {
+    first: Option<FstSignalRecord>,
+    first_time_last: Option<FstSignalRecord>,
+    second: Option<FstSignalRecord>,
+    last: Option<FstSignalRecord>,
+    tail: Vec<u8>,
+    change_count: usize,
+}
+
+impl FstSignalFragment {
+    pub fn reset(&mut self, first: FstSignalRecord) {
+        if self.tail.capacity() == 0 {
+            self.tail.reserve(128);
+        }
+        self.first = Some(first);
+        self.first_time_last = Some(first);
+        self.second = None;
+        self.last = Some(first);
+        self.tail.clear();
+        self.change_count = 1;
+    }
+
+    pub fn signal(&self) -> u32 {
+        self.first.expect("initialized signal fragment").signal()
+    }
+
+    pub fn last(&self) -> FstSignalRecord {
+        self.last.expect("initialized signal fragment")
+    }
+
+    pub fn last_inline_value(&self) -> Option<u8> {
+        let last = self.last.expect("initialized signal fragment");
+        last.is_inline().then(|| last.inline_value())
+    }
+
+    pub fn change_count(&self) -> usize {
+        self.change_count
+    }
+
+    pub fn representation_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.tail.len()
+    }
+
+    pub fn tail_capacity_bytes(&self) -> usize {
+        self.tail.capacity()
+    }
+
+    pub fn push(&mut self, change: FstSignalRecord, width: usize, values: &[u8]) -> Result<()> {
+        let previous = self.last.expect("initialized signal fragment");
+        if change.signal() != previous.signal() {
+            return Err(FstWriteError::InvalidSignalChanges(
+                "fragment contains changes for multiple signals".to_string(),
+            ));
+        }
+        let value = exact_change_value(&change, width, values)?;
+        let old_value = exact_change_value(&previous, width, values)?;
+        if value.equals_value(&old_value) {
+            return Ok(());
+        }
+        self.change_count += 1;
+        if change.time_index()
+            == self
+                .first
+                .expect("initialized signal fragment")
+                .time_index()
+        {
+            self.first_time_last = Some(change);
+        }
+        if self.second.is_none() {
+            self.second = Some(change);
+        } else {
+            let delta = change
+                .time_index()
+                .checked_sub(previous.time_index())
+                .ok_or_else(|| {
+                    FstWriteError::InvalidSignalChanges(
+                        "chunk fragment time index decreased".to_string(),
+                    )
+                })?;
+            value.write_to(&mut self.tail, u64::from(delta))?;
+        }
+        self.last = Some(change);
+        Ok(())
+    }
 }
 
 #[cfg(feature = "profile")]
@@ -420,6 +513,216 @@ fn apply_signal_range(
     })
 }
 
+fn fragment_time_index(record: FstSignalRecord, time_map: &[u32]) -> Result<u32> {
+    time_map
+        .get(record.time_index() as usize)
+        .copied()
+        .ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges(format!(
+                "fragment time index {} is outside the chunk map",
+                record.time_index()
+            ))
+        })
+}
+
+fn read_variant_u64(bytes: &[u8], position: &mut usize) -> Result<u64> {
+    let mut value = 0u64;
+    for shift in (0..70).step_by(7) {
+        let byte = *bytes.get(*position).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges("truncated fragment varint".to_string())
+        })?;
+        *position += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(FstWriteError::InvalidSignalChanges(
+        "fragment varint exceeds u64".to_string(),
+    ))
+}
+
+fn rewrite_fragment_tail(
+    output: &mut Vec<u8>,
+    tail: &[u8],
+    width: usize,
+    mut local_time: u32,
+    mut previous_time: u32,
+    time_map: &[u32],
+) -> Result<u32> {
+    let mut position = 0usize;
+    while position < tail.len() {
+        let header = read_variant_u64(tail, &mut position)?;
+        let shift = if width == 1 && header & 1 == 0 {
+            2
+        } else if width == 1 {
+            4
+        } else {
+            1
+        };
+        let local_delta = u32::try_from(header >> shift).map_err(|_| {
+            FstWriteError::InvalidSignalChanges("fragment time delta exceeds u32".to_string())
+        })?;
+        local_time = local_time.checked_add(local_delta).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges("fragment time index exceeds u32".to_string())
+        })?;
+        let mapped_time = *time_map.get(local_time as usize).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges(format!(
+                "fragment time index {local_time} is outside the chunk map"
+            ))
+        })?;
+        if mapped_time == FST_FRAME_TIME_INDEX || mapped_time < previous_time {
+            return Err(FstWriteError::InvalidSignalChanges(
+                "fragment mapped time is not chronological".to_string(),
+            ));
+        }
+        let preserved = header & ((1 << shift) - 1);
+        write_variant_u64(
+            output,
+            (u64::from(mapped_time - previous_time) << shift) | preserved,
+        )?;
+        let payload_len = if width == 1 {
+            0
+        } else if header & 1 == 0 {
+            width.div_ceil(8)
+        } else {
+            width
+        };
+        let end = position.checked_add(payload_len).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges("fragment payload exceeds usize".to_string())
+        })?;
+        let payload = tail.get(position..end).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges("truncated fragment payload".to_string())
+        })?;
+        output.extend_from_slice(payload);
+        position = end;
+        previous_time = mapped_time;
+    }
+    Ok(previous_time)
+}
+
+fn apply_signal_fragment(
+    signal_index: usize,
+    state: &mut ChainedSignalState,
+    stream: &mut Vec<u8>,
+    fragment: &FstSignalFragment,
+    values: &[u8],
+    time_map: &[u32],
+    time_map_is_affine: bool,
+    first_file_section: bool,
+) -> Result<usize> {
+    let first = fragment.first.expect("initialized signal fragment");
+    let first_value = exact_change_value(&first, state.current.len(), values)?;
+    let first_time = fragment_time_index(first, time_map)?;
+    if first_time == FST_FRAME_TIME_INDEX {
+        if !first_file_section {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "frame-time fragment in noninitial section for signal {signal_index}"
+            )));
+        }
+    } else if !first_value.equals(&state.current) {
+        first_value.write_to(stream, u64::from(first_time - state.previous_time_index))?;
+        state.previous_time_index = first_time;
+    }
+
+    if let Some(second) = fragment.second {
+        let second_value = exact_change_value(&second, state.current.len(), values)?;
+        let second_time = fragment_time_index(second, time_map)?;
+        if second_time == FST_FRAME_TIME_INDEX {
+            if !first_file_section {
+                return Err(FstWriteError::InvalidSignalChanges(format!(
+                    "frame-time fragment in noninitial section for signal {signal_index}"
+                )));
+            }
+        } else {
+            second_value.write_to(stream, u64::from(second_time - state.previous_time_index))?;
+            state.previous_time_index = second_time;
+        }
+        if !fragment.tail.is_empty() {
+            let last = fragment.last.expect("initialized signal fragment");
+            let last_time = fragment_time_index(last, time_map)?;
+            if time_map_is_affine {
+                stream.extend_from_slice(&fragment.tail);
+                state.previous_time_index = last_time;
+            } else {
+                state.previous_time_index = rewrite_fragment_tail(
+                    stream,
+                    &fragment.tail,
+                    state.current.len(),
+                    second.time_index(),
+                    state.previous_time_index,
+                    time_map,
+                )?;
+            }
+        }
+    }
+
+    let last = fragment.last.expect("initialized signal fragment");
+    let last_value = exact_change_value(&last, state.current.len(), values)?;
+    last_value.copy_to(&mut state.current);
+    let mut copied_bytes = last_value.len();
+    let first_time_last = fragment
+        .first_time_last
+        .expect("initialized signal fragment");
+    if fragment_time_index(first_time_last, time_map)? == FST_FRAME_TIME_INDEX {
+        let frame_value = exact_change_value(&first_time_last, state.frame.len(), values)?;
+        frame_value.copy_to(&mut state.frame);
+        copied_bytes += frame_value.len();
+    }
+    Ok(copied_bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_fragment_range(
+    range_start: usize,
+    states: &mut [ChainedSignalState],
+    streams: &mut [Vec<u8>],
+    fragments: &[FstSignalFragment],
+    fragment_slots: &[u32],
+    values: &[u8],
+    time_map: &[u32],
+    time_map_is_affine: bool,
+    first_file_section: bool,
+) -> Result<ApplySignalStats> {
+    let cpu_started = thread_cpu_seconds();
+    let initial_stream_bytes = streams.iter().map(Vec::len).sum::<usize>();
+    let mut copied_bytes = 0usize;
+    for (local, (state, stream)) in states.iter_mut().zip(streams.iter_mut()).enumerate() {
+        let signal_index = range_start + local;
+        let fragment_index = fragment_slots[signal_index];
+        if fragment_index == FST_NO_CHANGE {
+            continue;
+        }
+        let fragment = fragments.get(fragment_index as usize).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges(format!(
+                "fragment {fragment_index} for signal {signal_index} is out of bounds"
+            ))
+        })?;
+        if fragment.signal() as usize != signal_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "fragment belongs to signal {}, expected {signal_index}",
+                fragment.signal()
+            )));
+        }
+        copied_bytes += apply_signal_fragment(
+            signal_index,
+            state,
+            stream,
+            fragment,
+            values,
+            time_map,
+            time_map_is_affine,
+            first_file_section,
+        )?;
+    }
+    Ok(ApplySignalStats {
+        encoded_bytes: streams.iter().map(Vec::len).sum::<usize>() - initial_stream_bytes,
+        copied_bytes,
+        cpu_seconds: thread_cpu_seconds() - cpu_started,
+        worker_index: rayon::current_thread_index().unwrap_or(0),
+    })
+}
+
 fn gen_signal_info(signals: &[FstSignalType]) -> (Vec<SignalInfo>, usize) {
     let mut offset = 0;
     let mut out = Vec::with_capacity(signals.len());
@@ -649,6 +952,70 @@ impl ChainedSignalBuffer {
                 changes,
                 values,
                 max_time_index,
+                first_file_section,
+            )?]
+        };
+        self.worker_cpu_seconds
+            .resize(self.worker_cpu_seconds.len().max(worker_count), 0.0);
+        for stat in stats {
+            self.value_changes_bytes += stat.encoded_bytes;
+            self.arena_to_packer_copied_bytes += stat.copied_bytes;
+            self.pack_cpu_seconds += stat.cpu_seconds;
+            self.worker_cpu_seconds[stat.worker_index] += stat.cpu_seconds;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_signal_fragments(
+        &mut self,
+        fragments: &[FstSignalFragment],
+        fragment_slots: &[u32],
+        values: &[u8],
+        time_map: &[u32],
+        time_map_is_affine: bool,
+        pool: Option<&rayon::ThreadPool>,
+    ) -> Result<()> {
+        if fragment_slots.len() != self.signals.len() {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "{} fragment slots supplied for {} signals",
+                fragment_slots.len(),
+                self.signals.len()
+            )));
+        }
+        let first_file_section = self.first_file_section;
+        let worker_count = pool.map_or(1, rayon::ThreadPool::current_num_threads);
+        let range_len = self.signals.len().max(1).div_ceil(worker_count);
+        let stats = if let Some(pool) = pool {
+            pool.install(|| {
+                self.signals
+                    .par_chunks_mut(range_len)
+                    .zip(self.value_changes.par_chunks_mut(range_len))
+                    .enumerate()
+                    .map(|(range, (states, streams))| {
+                        apply_fragment_range(
+                            range * range_len,
+                            states,
+                            streams,
+                            fragments,
+                            fragment_slots,
+                            values,
+                            time_map,
+                            time_map_is_affine,
+                            first_file_section,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?
+        } else {
+            vec![apply_fragment_range(
+                0,
+                &mut self.signals,
+                &mut self.value_changes,
+                fragments,
+                fragment_slots,
+                values,
+                time_map,
+                time_map_is_affine,
                 first_file_section,
             )?]
         };

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use fst_reader::{
     FstFilter, FstHierarchyEntry, FstReader, FstSignalHandle, FstSignalValue, FstVarType,
 };
-use memchr::{memchr, memchr2};
+use memchr::{memchr, memchr2, memmem};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::cache::{CachedSignal, ClockEntry, ColumnCache};
@@ -1125,6 +1125,9 @@ struct ChunkEvents {
     input_bytes: usize,
     fst_stream_bytes: usize,
     changes: Vec<fst_writer::FstSignalRecord>,
+    fragments: Vec<fst_writer::FstSignalFragment>,
+    recycle_fragments: Vec<fst_writer::FstSignalFragment>,
+    recycle_raw_ranges: Vec<(u32, u32)>,
     chains: Vec<ChunkSignalChain>,
     timestamps: Vec<IrTimestamp>,
     values: Vec<u8>,
@@ -1133,6 +1136,8 @@ struct ChunkEvents {
     max_timestamp: Option<u64>,
     final_dump_enabled: Option<bool>,
     recycle_chain_slots: Vec<u32>,
+    #[cfg(feature = "profile")]
+    input_event_count: usize,
     #[cfg(feature = "profile")]
     parse_cpu_seconds: f64,
     #[cfg(feature = "profile")]
@@ -1145,20 +1150,26 @@ struct ChunkEvents {
 
 struct ChunkBuffers {
     changes: Vec<fst_writer::FstSignalRecord>,
+    fragments: Vec<fst_writer::FstSignalFragment>,
+    fragment_pool: Vec<fst_writer::FstSignalFragment>,
     chains: Vec<ChunkSignalChain>,
     timestamps: Vec<IrTimestamp>,
     values: Vec<u8>,
     chain_slots: Vec<u32>,
+    raw_ranges: Vec<(u32, u32)>,
 }
 
 impl ChunkBuffers {
-    fn new(input_bytes: usize) -> Self {
+    fn new(input_bytes: usize, fragment_mode: bool) -> Self {
         Self {
-            changes: Vec::with_capacity(input_bytes / 12),
+            changes: Vec::with_capacity(if fragment_mode { 0 } else { input_bytes / 12 }),
+            fragments: Vec::new(),
+            fragment_pool: Vec::new(),
             chains: Vec::new(),
             timestamps: Vec::with_capacity(input_bytes / 256),
             values: Vec::with_capacity(input_bytes / 4),
             chain_slots: Vec::new(),
+            raw_ranges: Vec::new(),
         }
     }
 
@@ -1167,15 +1178,29 @@ impl ChunkBuffers {
         self.chains.clear();
         self.timestamps.clear();
         self.values.clear();
+        self.raw_ranges.clear();
     }
 
     #[cfg(feature = "profile")]
     fn vector_capacity_bytes(&self) -> usize {
         self.changes.capacity() * std::mem::size_of::<fst_writer::FstSignalRecord>()
+            + self.fragments.capacity() * std::mem::size_of::<fst_writer::FstSignalFragment>()
+            + self
+                .fragments
+                .iter()
+                .map(fst_writer::FstSignalFragment::tail_capacity_bytes)
+                .sum::<usize>()
+            + self.fragment_pool.capacity() * std::mem::size_of::<fst_writer::FstSignalFragment>()
+            + self
+                .fragment_pool
+                .iter()
+                .map(fst_writer::FstSignalFragment::tail_capacity_bytes)
+                .sum::<usize>()
             + self.chains.capacity() * std::mem::size_of::<ChunkSignalChain>()
             + self.timestamps.capacity() * std::mem::size_of::<IrTimestamp>()
             + self.values.capacity()
             + self.chain_slots.capacity() * std::mem::size_of::<u32>()
+            + self.raw_ranges.capacity() * std::mem::size_of::<(u32, u32)>()
     }
 }
 
@@ -1254,6 +1279,9 @@ struct ActiveSectionEncoder {
 #[cfg(feature = "profile")]
 #[derive(Default)]
 struct ParallelProfile {
+    reader_seconds: f64,
+    reader_cpu_seconds: f64,
+    dispatcher_cpu_seconds: f64,
     parse_seconds: f64,
     parse_cpu_seconds: f64,
     reconcile_seconds: f64,
@@ -1268,6 +1296,7 @@ struct ParallelProfile {
     representation_bytes: usize,
     peak_batch_representation_bytes: usize,
     event_count: usize,
+    retained_event_count: usize,
     value_arena_bytes: usize,
     touched_signal_chains: usize,
     packer_input_bytes: usize,
@@ -1300,26 +1329,40 @@ impl ParallelProfile {
 #[cfg(feature = "profile")]
 fn chunk_representation_bytes(ir: &ChunkEvents) -> usize {
     ir.changes.len() * std::mem::size_of::<fst_writer::FstSignalRecord>()
+        + ir.fragments
+            .iter()
+            .map(fst_writer::FstSignalFragment::representation_bytes)
+            .sum::<usize>()
         + ir.chains.len() * std::mem::size_of::<ChunkSignalChain>()
         + ir.timestamps.len() * std::mem::size_of::<IrTimestamp>()
         + ir.values.len()
+        + ir.recycle_raw_ranges.len() * std::mem::size_of::<(u32, u32)>()
 }
 
 struct ChunkParser<'a> {
     schema: &'a SignalSchema,
+    chunk_bytes: &'a [u8],
     ir: ChunkEvents,
     chain_slots: Vec<u32>,
+    fragment_pool: Vec<fst_writer::FstSignalFragment>,
+    fragment_raw_ranges: Vec<(u32, u32)>,
+    fragment_mode: bool,
     local_dump_enabled: Option<bool>,
     last_timestamp: Option<u64>,
     current_time_ordinal: u32,
 }
 
 impl<'a> ChunkParser<'a> {
-    fn new(schema: &'a SignalSchema, chunk: &VcdChunk, recycled: Option<ChunkBuffers>) -> Self {
+    fn new(schema: &'a SignalSchema, chunk: &'a VcdChunk, recycled: Option<ChunkBuffers>) -> Self {
         #[cfg(feature = "profile")]
         let was_recycled = recycled.is_some();
-        let mut buffers = recycled.unwrap_or_else(|| ChunkBuffers::new(chunk.bytes.len()));
+        let fragment_mode = chunk.bytes.first() == Some(&b'#')
+            && memmem::find(&chunk.bytes, b"$dumpoff").is_none()
+            && memmem::find(&chunk.bytes, b"$dumpon").is_none();
+        let mut buffers =
+            recycled.unwrap_or_else(|| ChunkBuffers::new(chunk.bytes.len(), fragment_mode));
         buffers.clear();
+        buffers.fragment_pool.append(&mut buffers.fragments);
         if buffers.chain_slots.len() != schema.groups.len() {
             buffers.chain_slots = vec![u32::MAX; schema.groups.len()];
         }
@@ -1327,12 +1370,16 @@ impl<'a> ChunkParser<'a> {
         let initial_capacity = buffers.vector_capacity_bytes();
         Self {
             schema,
+            chunk_bytes: &chunk.bytes,
             ir: ChunkEvents {
                 sequence: chunk.sequence,
                 chunk_count: 1,
                 input_bytes: chunk.bytes.len(),
                 fst_stream_bytes: 0,
                 changes: buffers.changes,
+                fragments: buffers.fragments,
+                recycle_fragments: Vec::new(),
+                recycle_raw_ranges: Vec::new(),
                 chains: buffers.chains,
                 timestamps: buffers.timestamps,
                 values: buffers.values,
@@ -1341,6 +1388,8 @@ impl<'a> ChunkParser<'a> {
                 max_timestamp: None,
                 final_dump_enabled: None,
                 recycle_chain_slots: Vec::new(),
+                #[cfg(feature = "profile")]
+                input_event_count: 0,
                 #[cfg(feature = "profile")]
                 parse_cpu_seconds: 0.0,
                 #[cfg(feature = "profile")]
@@ -1351,6 +1400,9 @@ impl<'a> ChunkParser<'a> {
                 newly_allocated_capacity_bytes: if was_recycled { 0 } else { initial_capacity },
             },
             chain_slots: buffers.chain_slots,
+            fragment_pool: buffers.fragment_pool,
+            fragment_raw_ranges: buffers.raw_ranges,
+            fragment_mode,
             local_dump_enabled: None,
             last_timestamp: None,
             current_time_ordinal: fst_writer::FST_FRAME_TIME_INDEX,
@@ -1377,10 +1429,26 @@ impl<'a> ChunkParser<'a> {
             self.ir.parse_wall_seconds = wall_started.elapsed().as_secs_f64();
             let final_capacity = self.ir.changes.capacity()
                 * std::mem::size_of::<fst_writer::FstSignalRecord>()
+                + self.ir.fragments.capacity()
+                    * std::mem::size_of::<fst_writer::FstSignalFragment>()
+                + self
+                    .ir
+                    .fragments
+                    .iter()
+                    .map(fst_writer::FstSignalFragment::tail_capacity_bytes)
+                    .sum::<usize>()
+                + self.fragment_pool.capacity()
+                    * std::mem::size_of::<fst_writer::FstSignalFragment>()
+                + self
+                    .fragment_pool
+                    .iter()
+                    .map(fst_writer::FstSignalFragment::tail_capacity_bytes)
+                    .sum::<usize>()
                 + self.ir.chains.capacity() * std::mem::size_of::<ChunkSignalChain>()
                 + self.ir.timestamps.capacity() * std::mem::size_of::<IrTimestamp>()
                 + self.ir.values.capacity()
-                + self.chain_slots.capacity() * std::mem::size_of::<u32>();
+                + self.chain_slots.capacity() * std::mem::size_of::<u32>()
+                + self.fragment_raw_ranges.capacity() * std::mem::size_of::<(u32, u32)>();
             let initial_capacity =
                 self.ir.recycled_capacity_bytes + self.ir.newly_allocated_capacity_bytes;
             self.ir.newly_allocated_capacity_bytes +=
@@ -1389,6 +1457,8 @@ impl<'a> ChunkParser<'a> {
         for chain in &self.ir.chains {
             self.chain_slots[chain.signal as usize] = u32::MAX;
         }
+        self.ir.recycle_fragments = self.fragment_pool;
+        self.ir.recycle_raw_ranges = self.fragment_raw_ranges;
         self.ir.recycle_chain_slots = self.chain_slots;
         Ok(self.ir)
     }
@@ -1468,6 +1538,29 @@ impl<'a> ChunkParser<'a> {
             return Ok(());
         }
         let meta = self.schema.groups[group as usize];
+        #[cfg(feature = "profile")]
+        {
+            self.ir.input_event_count += 1;
+        }
+        if self.fragment_mode && ready {
+            let slot = self.chain_slots[group as usize];
+            if slot != u32::MAX
+                && self.ir.fragments[slot as usize].last_inline_value() == Some(raw[0])
+            {
+                return Ok(());
+            }
+        }
+        if self.fragment_mode && !ready {
+            let slot = self.chain_slots[group as usize];
+            if slot != u32::MAX {
+                let (start, len) = self.fragment_raw_ranges[slot as usize];
+                if start != u32::MAX
+                    && raw == &self.chunk_bytes[start as usize..(start + len) as usize]
+                {
+                    return Ok(());
+                }
+            }
+        }
         let dump_state = match self.local_dump_enabled {
             None => fst_writer::FstDumpState::Prefix,
             Some(true) => fst_writer::FstDumpState::Enabled,
@@ -1482,7 +1575,7 @@ impl<'a> ChunkParser<'a> {
                 dump_state,
             )
             .map_err(|error| worker_error(self.ir.sequence, error))?;
-            self.push_record(change)?;
+            self.push_record(change, 1)?;
             return Ok(());
         }
         let start = u32::try_from(self.ir.values.len()).map_err(|_| VcdParseError::Worker {
@@ -1525,12 +1618,46 @@ impl<'a> ChunkParser<'a> {
             fst_writer::FstSignalRecord::arena(group, self.current_time_ordinal, start, dump_state)
         }
         .map_err(|error| worker_error(self.ir.sequence, error))?;
-        self.push_record(change)?;
+        self.push_record(change, if meta.is_real { 8 } else { meta.width as usize })?;
+        if self.fragment_mode && !ready {
+            let slot = self.chain_slots[group as usize] as usize;
+            let start =
+                u32::try_from(raw.as_ptr() as usize - self.chunk_bytes.as_ptr() as usize)
+                    .map_err(|_| worker_error(self.ir.sequence, "chunk raw offset exceeds u32"))?;
+            let len = u32::try_from(raw.len())
+                .map_err(|_| worker_error(self.ir.sequence, "chunk raw value exceeds u32"))?;
+            if slot == self.fragment_raw_ranges.len() {
+                self.fragment_raw_ranges.push((start, len));
+            } else {
+                self.fragment_raw_ranges[slot] = (start, len);
+            }
+        }
         Ok(())
     }
 
     #[inline(always)]
-    fn push_record(&mut self, change: fst_writer::FstSignalRecord) -> Result<(), VcdParseError> {
+    fn push_record(
+        &mut self,
+        change: fst_writer::FstSignalRecord,
+        width: usize,
+    ) -> Result<(), VcdParseError> {
+        if self.fragment_mode {
+            let signal = change.signal();
+            let slot = self.chain_slots[signal as usize];
+            if slot != u32::MAX {
+                self.ir.fragments[slot as usize]
+                    .push(change, width, &self.ir.values)
+                    .map_err(|error| worker_error(self.ir.sequence, error))?;
+                return Ok(());
+            }
+            self.chain_slots[signal as usize] = u32::try_from(self.ir.fragments.len())
+                .map_err(|_| worker_error(self.ir.sequence, "chunk fragment table exceeds u32"))?;
+            let mut fragment = self.fragment_pool.pop().unwrap_or_default();
+            fragment.reset(change);
+            self.ir.fragments.push(fragment);
+            self.fragment_raw_ranges.push((u32::MAX, 0));
+            return Ok(());
+        }
         let record = u32::try_from(self.ir.changes.len()).map_err(|_| VcdParseError::Worker {
             message: "chunk change table exceeds u32".to_string(),
         })?;
@@ -1712,38 +1839,60 @@ impl ActiveSectionEncoder {
             }
             time_map.push(self.encoder.current_time_index());
         }
-        for change in &mut ir.changes {
-            if change.dump_state() == fst_writer::FstDumpState::Prefix {
-                change.set_dump_state(if self.current_dump_enabled {
-                    fst_writer::FstDumpState::Enabled
+        let time_map_is_affine = time_map.first() != Some(&fst_writer::FST_FRAME_TIME_INDEX)
+            && time_map
+                .windows(2)
+                .all(|pair| pair[1] == pair[0].saturating_add(1));
+        if ir.fragments.is_empty() {
+            for change in &mut ir.changes {
+                if change.dump_state() == fst_writer::FstDumpState::Prefix {
+                    change.set_dump_state(if self.current_dump_enabled {
+                        fst_writer::FstDumpState::Enabled
+                    } else {
+                        fst_writer::FstDumpState::Suppressed
+                    });
+                }
+                let time_index = if change.time_index() == fst_writer::FST_FRAME_TIME_INDEX {
+                    incoming_time_index
                 } else {
-                    fst_writer::FstDumpState::Suppressed
-                });
+                    *time_map.get(change.time_index() as usize).ok_or_else(|| {
+                        worker_error(self.sequence, "change timestamp ordinal is out of bounds")
+                    })?
+                };
+                change.set_time_index(time_index);
             }
-            let time_index = if change.time_index() == fst_writer::FST_FRAME_TIME_INDEX {
-                incoming_time_index
-            } else {
-                *time_map.get(change.time_index() as usize).ok_or_else(|| {
-                    worker_error(self.sequence, "change timestamp ordinal is out of bounds")
-                })?
-            };
-            change.set_time_index(time_index);
+            self.encoder
+                .apply_signal_records(&ir.changes, &ir.values)
+                .map_err(|error| worker_error(self.sequence, error))?;
+        } else if self.current_dump_enabled {
+            self.encoder
+                .apply_signal_fragments(
+                    &ir.fragments,
+                    &ir.recycle_chain_slots,
+                    &ir.values,
+                    &time_map,
+                    time_map_is_affine,
+                )
+                .map_err(|error| worker_error(self.sequence, error))?;
         }
-        self.encoder
-            .apply_signal_records(&ir.changes, &ir.values)
-            .map_err(|error| worker_error(self.sequence, error))?;
         if let Some(enabled) = ir.final_dump_enabled {
             self.current_dump_enabled = enabled;
         }
         self.encode_seconds += started.elapsed().as_secs_f64();
         ir.chains.clear();
         ir.timestamps.clear();
+        for fragment in &ir.fragments {
+            ir.recycle_chain_slots[fragment.signal() as usize] = u32::MAX;
+        }
         Ok(ChunkBuffers {
             changes: ir.changes,
+            fragments: ir.fragments,
+            fragment_pool: ir.recycle_fragments,
             chains: ir.chains,
             timestamps: ir.timestamps,
             values: ir.values,
             chain_slots: ir.recycle_chain_slots,
+            raw_ranges: ir.recycle_raw_ranges,
         })
     }
 
@@ -2257,6 +2406,7 @@ impl FstBuildHandler {
         if !incoming_dumpoff {
             self.state.overwide_values += ir.prefix_overwide_values;
             self.apply_last_changes(ir, true);
+            self.apply_last_fragments(ir);
         }
         self.apply_last_changes(ir, false);
         if let Some(max_timestamp) = ir.max_timestamp {
@@ -2282,6 +2432,26 @@ impl FstBuildHandler {
                 continue;
             }
             let change = ir.changes[record as usize];
+            let meta = self.schema.groups[change.signal() as usize];
+            if change.is_inline() {
+                self.store_frame(meta, &[change.inline_value()]);
+                continue;
+            }
+            let start = change.value_offset() as usize;
+            let len = if meta.is_real { 8 } else { meta.width as usize };
+            if change.is_packed_binary() {
+                let packed_len = len.div_ceil(8);
+                let destination = &mut self.state.frame[meta.frame_offset..meta.frame_offset + len];
+                unpack_binary_bits_into(&ir.values[start..start + packed_len], destination);
+            } else {
+                self.store_frame(meta, &ir.values[start..start + len]);
+            }
+        }
+    }
+
+    fn apply_last_fragments(&mut self, ir: &ChunkEvents) {
+        for fragment in &ir.fragments {
+            let change = fragment.last();
             let meta = self.schema.groups[change.signal() as usize];
             if change.is_inline() {
                 self.store_frame(meta, &[change.inline_value()]);
@@ -2406,11 +2576,21 @@ impl FstBuildHandler {
         let pipeline_started = Instant::now();
         let cancellation = Arc::new(AtomicBool::new(false));
         let reader_cancellation = Arc::clone(&cancellation);
+        #[cfg(feature = "profile")]
+        let reader_profile = Arc::new(Mutex::new((0.0, 0.0)));
+        #[cfg(feature = "profile")]
+        let dispatcher_cpu = Arc::new(Mutex::new(0.0));
         let body_offset = self.body_offset;
         let pipeline_result = std::thread::scope(|thread_scope| {
             let (sender, receiver) = mpsc::sync_channel(batch_capacity);
             let (recycle_sender, recycle_receiver) = mpsc::channel();
+            #[cfg(feature = "profile")]
+            let reader_profile_worker = Arc::clone(&reader_profile);
             thread_scope.spawn(move || {
+                #[cfg(feature = "profile")]
+                let cpu_started = thread_cpu_seconds();
+                #[cfg(feature = "profile")]
+                let wall_started = Instant::now();
                 let mut source = VcdChunkSource::new(reader, body_offset, chunk_target)
                     .expect("validated VCD chunk target is positive")
                     .with_cancellation(reader_cancellation);
@@ -2430,6 +2610,13 @@ impl FstBuildHandler {
                             break;
                         }
                     }
+                }
+                #[cfg(feature = "profile")]
+                {
+                    *reader_profile_worker.lock().expect("reader profile lock") = (
+                        wall_started.elapsed().as_secs_f64(),
+                        thread_cpu_seconds() - cpu_started,
+                    );
                 }
             });
             let (encoded_sender, encoded_receiver) = mpsc::sync_channel(encode_worker_count + 2);
@@ -2493,7 +2680,11 @@ impl FstBuildHandler {
                 });
             }
             let dispatcher_sender = parsed_sender.clone();
+            #[cfg(feature = "profile")]
+            let dispatcher_cpu_worker = Arc::clone(&dispatcher_cpu);
             thread_scope.spawn(move || {
+                #[cfg(feature = "profile")]
+                let cpu_started = thread_cpu_seconds();
                 let mut worker = 0usize;
                 while let Ok(message) = receiver.recv() {
                     match message {
@@ -2509,6 +2700,12 @@ impl FstBuildHandler {
                             break;
                         }
                     }
+                }
+                #[cfg(feature = "profile")]
+                {
+                    *dispatcher_cpu_worker
+                        .lock()
+                        .expect("dispatcher profile lock") = thread_cpu_seconds() - cpu_started;
                 }
             });
             drop(parsed_sender);
@@ -2533,9 +2730,14 @@ impl FstBuildHandler {
                             .max(pending_representation_bytes);
                         profile.parse_seconds += ir.parse_wall_seconds;
                         profile.input_bytes += ir.input_bytes;
-                        profile.event_count += ir.changes.len();
+                        profile.event_count += ir.input_event_count;
+                        profile.retained_event_count += ir.changes.len()
+                            + ir.fragments
+                                .iter()
+                                .map(fst_writer::FstSignalFragment::change_count)
+                                .sum::<usize>();
                         profile.value_arena_bytes += ir.values.len();
-                        profile.touched_signal_chains += ir.chains.len();
+                        profile.touched_signal_chains += ir.chains.len() + ir.fragments.len();
                         profile.recycled_capacity_bytes += ir.recycled_capacity_bytes;
                         profile.newly_allocated_capacity_bytes += ir.newly_allocated_capacity_bytes;
                         profile.parse_cpu_seconds += ir.parse_cpu_seconds;
@@ -2681,8 +2883,14 @@ impl FstBuildHandler {
         pipeline_result?;
         #[cfg(feature = "profile")]
         {
+            (profile.reader_seconds, profile.reader_cpu_seconds) =
+                *reader_profile.lock().expect("reader profile lock");
+            profile.dispatcher_cpu_seconds =
+                *dispatcher_cpu.lock().expect("dispatcher profile lock");
             let pipeline_seconds = pipeline_started.elapsed().as_secs_f64();
-            let measured_cpu_seconds = profile.parse_cpu_seconds
+            let measured_cpu_seconds = profile.reader_cpu_seconds
+                + profile.dispatcher_cpu_seconds
+                + profile.parse_cpu_seconds
                 + profile.coordinator_cpu_seconds
                 + profile.pack_cpu_seconds
                 + profile.compression_cpu_seconds
@@ -2694,18 +2902,23 @@ impl FstBuildHandler {
                 .collect::<Vec<_>>()
                 .join(",");
             eprintln!(
-                "# bwave_parallel_profile pipeline_s={:.6} parse_s={:.6} parse_cpu_s={:.6} \
+                "# bwave_parallel_profile pipeline_s={:.6} reader_s={:.6} reader_cpu_s={:.6} \
+                 dispatcher_cpu_s={:.6} parse_s={:.6} parse_cpu_s={:.6} \
                  reconcile_s={:.6} coordinator_cpu_s={:.6} encode_s={:.6} pack_cpu_s={:.6} \
                  compression_s={:.6} compression_cpu_s={:.6} write_s={:.6} \
                  assembler_cpu_s={:.6} measured_cpu_s={:.6} measured_active_workers={:.3} \
                  encoder_queue_block_s={:.6} encoder_queue_high_water={} input_bytes={} \
                  representation_bytes={} representation_per_input={:.4} \
-                 peak_batch_representation_bytes={} event_count={} value_arena_bytes={} \
+                 peak_batch_representation_bytes={} event_count={} retained_event_count={} \
+                 value_arena_bytes={} \
                  input_to_arena_copied_bytes={} arena_to_packer_copied_bytes={} \
                  packer_to_compressor_bytes={} touched_signal_chains={} \
                  recycled_capacity_bytes={} newly_allocated_capacity_bytes={} \
                  packer_worker_cpu_s={}",
                 pipeline_seconds,
+                profile.reader_seconds,
+                profile.reader_cpu_seconds,
+                profile.dispatcher_cpu_seconds,
                 profile.parse_seconds,
                 profile.parse_cpu_seconds,
                 profile.reconcile_seconds,
@@ -2725,6 +2938,7 @@ impl FstBuildHandler {
                 profile.representation_bytes as f64 / profile.input_bytes.max(1) as f64,
                 profile.peak_batch_representation_bytes,
                 profile.event_count,
+                profile.retained_event_count,
                 profile.value_arena_bytes,
                 profile.value_arena_bytes,
                 profile.arena_to_packer_copied_bytes,
