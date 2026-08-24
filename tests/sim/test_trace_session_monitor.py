@@ -149,6 +149,36 @@ class TestTraceStatusManifest:
         data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
         assert any(event["kind"] == "bwave_published" for event in data["events"])
         assert data["attempts"][-1]["status"] == "success"
+        assert data["publication"]["status"] == "success"
+        assert data["publication"]["source_bytes"] == len(MINIMAL_FST_BYTES)
+        assert data["publication"]["copy_seconds"] >= 0
+        assert data["publication"]["file_sync_seconds"] >= 0
+        assert data["publication"]["directory_sync_seconds"] >= 0
+        assert data["publication"]["total_seconds"] >= 0
+
+    def test_cleanup_fifo_keeps_cache_when_publication_fails(self, tmp_path, monkeypatch):
+        ts = TraceSession(
+            work_dir=tmp_path,
+            cache_key=f"cleanup_publish_failure_{tmp_path.name}",
+        )
+
+        def fake_cleanup_bwave(_proc, bwave_path, _fifo_path):
+            bwave_path.parent.mkdir(parents=True, exist_ok=True)
+            bwave_path.write_bytes(MINIMAL_FST_BYTES)
+
+        monkeypatch.setattr("booley.sim.bwave_fifo.cleanup_bwave", fake_cleanup_bwave)
+        monkeypatch.setattr(
+            "booley.sim.durable_publish.publish_durable",
+            lambda _source, _destination: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        ts.cleanup_fifo(None, None)
+
+        assert ts.bwave_path.read_bytes() == MINIMAL_FST_BYTES
+        assert not (tmp_path / "trace.fst").exists()
+        data = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
+        assert data["publication"]["status"] == "failed"
+        assert data["attempts"][-1]["status"] == "publication_failed"
 
     def test_incident_manifest_records_failure_and_return_codes(self, tmp_path):
         ts = TraceSession(work_dir=tmp_path, cache_key="manifest_incident")

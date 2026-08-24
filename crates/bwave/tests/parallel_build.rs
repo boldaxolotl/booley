@@ -32,7 +32,7 @@ fn build(input: &Path, parallel: bool, suffix: &str) -> PathBuf {
     if parallel {
         // Deliberately tiny targets exercise many boundaries and queue wraps.
         handler
-            .parse_bytes_parallel(&mut reader, None, 3, 2, 31, 89)
+            .parse_bytes_parallel(&mut reader, None, 1, 1, 3, 31, 89)
             .unwrap();
     } else {
         handler.parse_bytes(&mut reader, None).unwrap();
@@ -90,6 +90,7 @@ fn fixture_matrix_matches_serial_and_parallel_output_is_deterministic() {
         "test_aliases.vcd",
         "test_dumpvars.vcd",
         "test_multiline_var.vcd",
+        "test_non_monotonic.vcd",
         "test_real_values.vcd",
         "test_unpacked_array.vcd",
         "test_verilator_quirks.vcd",

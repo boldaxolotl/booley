@@ -219,7 +219,7 @@ fn build_fst(vcd_text: &str, parallel: bool) -> (ColumnCache, std::path::PathBuf
     let header = parse_header(&mut reader);
     let mut h = FstBuildHandler::new(&header, None, &fst_path).unwrap();
     if parallel {
-        h.parse_bytes_parallel(&mut reader, None, 2, 1, 37, 111)
+        h.parse_bytes_parallel(&mut reader, None, 2, 1, 2, 37, 111)
             .unwrap();
     } else {
         h.parse_bytes(&mut reader, None).unwrap();

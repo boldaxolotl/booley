@@ -181,6 +181,8 @@ def _build_options(args: argparse.Namespace) -> list[str]:
         options.extend(("--parse-jobs", str(args.parse_jobs)))
     if args.encode_jobs is not None:
         options.extend(("--encode-jobs", str(args.encode_jobs)))
+    if args.pack_jobs is not None:
+        options.extend(("--pack-jobs", str(args.pack_jobs)))
     if args.chunk_bytes is not None:
         options.extend(("--chunk-bytes", str(args.chunk_bytes)))
     if args.section_bytes is not None:
@@ -378,6 +380,9 @@ def _report(
             "release": platform.release(),
             "machine": platform.machine(),
             "logical_cpu_count": os.cpu_count(),
+            "effective_cpu_affinity": (
+                sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None
+            ),
         },
         "settings": {
             "warmups": args.warmups,
@@ -387,6 +392,7 @@ def _report(
             "jobs": args.jobs,
             "parse_jobs": args.parse_jobs,
             "encode_jobs": args.encode_jobs,
+            "pack_jobs": args.pack_jobs,
             "chunk_bytes": args.chunk_bytes,
             "section_bytes": args.section_bytes,
             "min_bytes_per_second": args.min_bytes_per_second,
@@ -414,6 +420,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--jobs", type=_positive_int)
     parser.add_argument("--parse-jobs", type=_positive_int)
     parser.add_argument("--encode-jobs", type=_positive_int)
+    parser.add_argument("--pack-jobs", type=_positive_int)
     parser.add_argument("--chunk-bytes", type=_positive_int)
     parser.add_argument("--section-bytes", type=_positive_int)
     parser.add_argument("--min-bytes-per-second", type=_positive_float)

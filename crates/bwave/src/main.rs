@@ -193,7 +193,7 @@ struct BuildArgs {
     scope: Option<String>,
 
     /// Temporary developer control for the staged VCD converter rollout
-    #[arg(long, value_enum, default_value_t = BuildEngine::Parallel, hide = true)]
+    #[arg(long, value_enum, default_value_t = BuildEngine::Serial, hide = true)]
     engine: BuildEngine,
 
     /// Temporary total worker-budget override
@@ -207,6 +207,10 @@ struct BuildArgs {
     /// Temporary section-encoder worker-count override
     #[arg(long, hide = true)]
     encode_jobs: Option<usize>,
+
+    /// Temporary per-signal compression worker-count override
+    #[arg(long, hide = true)]
+    pack_jobs: Option<usize>,
 
     /// Temporary timestamp-aligned chunk-size override
     #[arg(long, hide = true)]
@@ -592,6 +596,7 @@ fn build_bwave_from_reader(
     jobs: Option<usize>,
     parse_jobs: Option<usize>,
     encode_jobs: Option<usize>,
+    pack_jobs: Option<usize>,
     chunk_bytes: Option<usize>,
     section_bytes: Option<usize>,
     fifo_descriptor: Option<i32>,
@@ -658,17 +663,20 @@ fn build_bwave_from_reader(
         BuildEngine::Serial => handler.parse_bytes(reader, Some(&heartbeat)),
         BuildEngine::Parallel => {
             let total_jobs = jobs.unwrap_or_else(default_build_jobs);
-            let default_encode_jobs = total_jobs
-                .div_ceil(4)
-                .saturating_add(1)
-                .min(7)
-                .min(total_jobs.saturating_sub(1).max(1));
-            let default_parse_jobs = total_jobs.saturating_sub(default_encode_jobs).max(1);
+            let (parse_jobs, encode_jobs, pack_jobs) =
+                match parallel_worker_counts(total_jobs, parse_jobs, encode_jobs, pack_jobs) {
+                    Ok(counts) => counts,
+                    Err(error) => {
+                        eprintln!("ERROR: {error}");
+                        process::exit(2);
+                    }
+                };
             handler.parse_bytes_parallel(
                 reader,
                 Some(&heartbeat),
-                parse_jobs.unwrap_or(default_parse_jobs),
-                encode_jobs.unwrap_or(default_encode_jobs),
+                parse_jobs,
+                encode_jobs,
+                pack_jobs,
                 chunk_bytes.unwrap_or(bwave::fst::PARALLEL_VCD_CHUNK_TARGET),
                 section_bytes.unwrap_or(bwave::fst::PARALLEL_FST_SECTION_TARGET),
             )
@@ -694,6 +702,38 @@ fn default_build_jobs() -> usize {
     std::thread::available_parallelism()
         .map(|count| count.get().clamp(2, 24))
         .unwrap_or(2)
+}
+
+fn parallel_worker_counts(
+    total_jobs: usize,
+    parse_jobs: Option<usize>,
+    encode_jobs: Option<usize>,
+    pack_jobs: Option<usize>,
+) -> Result<(usize, usize, usize), String> {
+    let default_encode = total_jobs
+        .div_ceil(4)
+        .min(7)
+        .min(total_jobs.saturating_sub(1).max(1));
+    let encode = encode_jobs.unwrap_or(default_encode);
+    let parse = parse_jobs.unwrap_or(total_jobs.saturating_sub(encode).max(1));
+    let pack = pack_jobs.unwrap_or(1);
+    if parse == 0 || encode == 0 || pack == 0 {
+        return Err("parallel worker counts must be positive".to_string());
+    }
+    if parse.saturating_add(encode) > total_jobs {
+        return Err(format!(
+            "parse jobs ({parse}) plus encode jobs ({encode}) exceed --jobs {total_jobs}"
+        ));
+    }
+    if pack > 1 && encode != 1 {
+        return Err("the compression prototype requires exactly one encode job".to_string());
+    }
+    if pack > 1 && parse.saturating_add(pack) > total_jobs {
+        return Err(format!(
+            "parse jobs ({parse}) plus pack jobs ({pack}) exceed --jobs {total_jobs}"
+        ));
+    }
+    Ok((parse, encode, pack))
 }
 
 #[cfg(unix)]
@@ -752,6 +792,7 @@ fn run_build(args: BuildArgs) {
             args.jobs,
             args.parse_jobs,
             args.encode_jobs,
+            args.pack_jobs,
             args.chunk_bytes,
             args.section_bytes,
             fifo_descriptor,
@@ -766,6 +807,7 @@ fn run_build(args: BuildArgs) {
             args.jobs,
             args.parse_jobs,
             args.encode_jobs,
+            args.pack_jobs,
             args.chunk_bytes,
             args.section_bytes,
             None,

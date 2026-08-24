@@ -25,6 +25,8 @@ pub enum FstWriteError {
     InvalidFrameLength { expected: usize, actual: usize },
     #[error("Invalid bit-vector signal character: {0}")]
     InvalidCharacter(char),
+    #[error("Invalid linked signal-change data: {0}")]
+    InvalidSignalChanges(String),
 }
 
 /// Controls compression of value-change streams and time tables.
@@ -47,6 +49,7 @@ pub struct FstWriteStats {
 
 pub use types::*;
 pub use writer::{
-    EncodedFstSection, FstBodyWriter, FstHeaderWriter, FstSectionEncoder, OrderedFstWriter,
-    open_fst,
+    EncodedFstSection, FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstBodyWriter, FstDumpState,
+    FstHeaderWriter, FstSectionEncoder, FstSignalChainEncoder, FstSignalChange, FstSignalRecord,
+    OrderedFstWriter, open_fst,
 };

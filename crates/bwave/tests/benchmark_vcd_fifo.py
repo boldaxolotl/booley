@@ -319,6 +319,7 @@ def _report(
             "jobs": args.jobs,
             "parse_jobs": args.parse_jobs,
             "encode_jobs": args.encode_jobs,
+            "pack_jobs": args.pack_jobs,
             "chunk_bytes": args.chunk_bytes,
             "section_bytes": args.section_bytes,
             "timeout_seconds": args.timeout_seconds,
@@ -348,6 +349,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--jobs", type=regular._positive_int)
     parser.add_argument("--parse-jobs", type=regular._positive_int)
     parser.add_argument("--encode-jobs", type=regular._positive_int)
+    parser.add_argument("--pack-jobs", type=regular._positive_int)
     parser.add_argument("--chunk-bytes", type=regular._positive_int)
     parser.add_argument("--section-bytes", type=regular._positive_int)
     parser.add_argument("--timeout-seconds", type=regular._positive_float, default=600.0)

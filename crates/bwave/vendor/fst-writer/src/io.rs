@@ -4,11 +4,15 @@
 // author: Kevin Laeufer <laeufer@cornell.edu>
 
 use crate::FstWriteError::InvalidCharacter;
+use crate::writer::{FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstDumpState, FstSignalChange};
 use crate::{
     FstInfo, FstScopeType, FstSignalId, FstSignalType, FstVarDirection, FstVarType, FstWriteError,
     Result,
 };
-use std::io::{Seek, SeekFrom, Write};
+use std::cell::RefCell;
+use std::io::{Cursor, Seek, SeekFrom, Write};
+
+use rayon::prelude::*;
 
 #[inline]
 pub(crate) fn write_variant_u64(output: &mut impl Write, mut value: u64) -> Result<usize> {
@@ -342,6 +346,17 @@ pub(crate) fn write_multi_bit_signal(
     Ok(())
 }
 
+#[inline]
+pub(crate) fn write_packed_binary_signal(
+    output: &mut impl Write,
+    time_delta: u64,
+    values: &[u8],
+) -> Result<()> {
+    write_variant_u64(output, time_delta << 1)?;
+    output.write_all(values)?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 #[inline]
 pub(crate) fn write_real_signal(
@@ -402,14 +417,231 @@ fn flush_zeros(output: &mut impl Write, zeros: &mut u32) -> Result<()> {
 }
 
 /// For any signal change streams smaller than this size, skip compression.
-const MIN_SIZE_TO_ATTEMPT_COMPRESSION: usize = 32;
+pub(crate) const MIN_SIZE_TO_ATTEMPT_COMPRESSION: usize = 32;
+
+enum PackedSignal<'a> {
+    Empty,
+    Raw(&'a [u8]),
+    Zlib {
+        uncompressed_len: usize,
+        bytes: Vec<u8>,
+    },
+}
+
+enum OwnedPackedSignal {
+    Empty(Vec<u8>),
+    Raw(Vec<u8>),
+    Zlib {
+        uncompressed_len: usize,
+        bytes: Vec<u8>,
+    },
+}
+
+thread_local! {
+    static SIGNAL_PACK_BUFFER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_signal_pack_buffer() -> Vec<u8> {
+    SIGNAL_PACK_BUFFER.with(|buffer| std::mem::take(&mut *buffer.borrow_mut()))
+}
+
+fn recycle_signal_pack_buffer(mut value: Vec<u8>) {
+    value.clear();
+    SIGNAL_PACK_BUFFER.with(|buffer| {
+        let mut recycled = buffer.borrow_mut();
+        if value.capacity() > recycled.capacity() {
+            *recycled = value;
+        }
+    });
+}
+
+struct ChainedSignalResult {
+    signal: OwnedPackedSignal,
+    frame_record: Option<u32>,
+    pack_cpu_seconds: f64,
+    compression_cpu_seconds: f64,
+    packer_input_bytes: usize,
+    worker_index: usize,
+    recycled_capacity_bytes: usize,
+    newly_allocated_capacity_bytes: usize,
+}
+
+pub(crate) struct ChainedWriteStats {
+    pub(crate) pack_cpu_seconds: f64,
+    pub(crate) compression_cpu_seconds: f64,
+    pub(crate) packer_input_bytes: usize,
+    pub(crate) worker_cpu_seconds: Vec<f64>,
+    pub(crate) recycled_capacity_bytes: usize,
+    pub(crate) newly_allocated_capacity_bytes: usize,
+}
+
+struct PackedSignalResult<'a> {
+    signal: PackedSignal<'a>,
+    compression_cpu_seconds: f64,
+}
+
+#[cfg(feature = "profile")]
+fn thread_cpu_seconds() -> f64 {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `value` points to writable storage for the duration of the call.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+    if result == 0 {
+        value.tv_sec as f64 + value.tv_nsec as f64 / 1_000_000_000.0
+    } else {
+        0.0
+    }
+}
+
+#[cfg(not(feature = "profile"))]
+fn thread_cpu_seconds() -> f64 {
+    0.0
+}
+
+fn pack_signal(data: &[u8]) -> PackedSignalResult<'_> {
+    if data.is_empty() {
+        return PackedSignalResult {
+            signal: PackedSignal::Empty,
+            compression_cpu_seconds: 0.0,
+        };
+    }
+    if data.len() < MIN_SIZE_TO_ATTEMPT_COMPRESSION {
+        return PackedSignalResult {
+            signal: PackedSignal::Raw(data),
+            compression_cpu_seconds: 0.0,
+        };
+    }
+    let cpu_started = thread_cpu_seconds();
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(data, VALUE_ZLIB_LEVEL);
+    let compression_cpu_seconds = thread_cpu_seconds() - cpu_started;
+    let signal = if compressed.len() < data.len() {
+        PackedSignal::Zlib {
+            uncompressed_len: data.len(),
+            bytes: compressed,
+        }
+    } else {
+        PackedSignal::Raw(data)
+    };
+    PackedSignalResult {
+        signal,
+        compression_cpu_seconds,
+    }
+}
+
+fn pack_owned_signal(data: Vec<u8>) -> (OwnedPackedSignal, f64) {
+    if data.is_empty() {
+        return (OwnedPackedSignal::Empty(data), 0.0);
+    }
+    if data.len() < MIN_SIZE_TO_ATTEMPT_COMPRESSION {
+        return (OwnedPackedSignal::Raw(data), 0.0);
+    }
+    let cpu_started = thread_cpu_seconds();
+    let compressed = miniz_oxide::deflate::compress_to_vec_zlib(&data, VALUE_ZLIB_LEVEL);
+    let compression_cpu_seconds = thread_cpu_seconds() - cpu_started;
+    if compressed.len() < data.len() {
+        let uncompressed_len = data.len();
+        recycle_signal_pack_buffer(data);
+        (
+            OwnedPackedSignal::Zlib {
+                uncompressed_len,
+                bytes: compressed,
+            },
+            compression_cpu_seconds,
+        )
+    } else {
+        (OwnedPackedSignal::Raw(data), compression_cpu_seconds)
+    }
+}
+
+fn write_packed_signal(
+    output: &mut (impl Write + Seek),
+    signal_offsets: &mut impl Write,
+    memory_required: &mut u64,
+    zero_count: &mut u32,
+    prev_offset: &mut u64,
+    signal: PackedSignal<'_>,
+) -> Result<()> {
+    match signal {
+        PackedSignal::Empty => *zero_count += 1,
+        PackedSignal::Raw(data) => {
+            flush_zeros(signal_offsets, zero_count)?;
+            let start = output.stream_position()?;
+            *memory_required += data.len() as u64;
+            write_variant_u64(output, 0)?;
+            output.write_all(data)?;
+            let offset_delta = (start - *prev_offset) as i64;
+            write_variant_i64(signal_offsets, (offset_delta << 1) | 1)?;
+            *prev_offset = start;
+        }
+        PackedSignal::Zlib {
+            uncompressed_len,
+            bytes,
+        } => {
+            flush_zeros(signal_offsets, zero_count)?;
+            let start = output.stream_position()?;
+            *memory_required += uncompressed_len as u64;
+            write_variant_u64(output, uncompressed_len as u64)?;
+            output.write_all(&bytes)?;
+            let offset_delta = (start - *prev_offset) as i64;
+            write_variant_i64(signal_offsets, (offset_delta << 1) | 1)?;
+            *prev_offset = start;
+        }
+    }
+    Ok(())
+}
+
+fn write_owned_packed_signal(
+    output: &mut (impl Write + Seek),
+    signal_offsets: &mut impl Write,
+    memory_required: &mut u64,
+    zero_count: &mut u32,
+    prev_offset: &mut u64,
+    signal: OwnedPackedSignal,
+) -> Result<()> {
+    match signal {
+        OwnedPackedSignal::Empty(data) => {
+            *zero_count += 1;
+            recycle_signal_pack_buffer(data);
+            Ok(())
+        }
+        OwnedPackedSignal::Raw(data) => {
+            let result = write_packed_signal(
+                output,
+                signal_offsets,
+                memory_required,
+                zero_count,
+                prev_offset,
+                PackedSignal::Raw(&data),
+            );
+            recycle_signal_pack_buffer(data);
+            result
+        }
+        OwnedPackedSignal::Zlib {
+            uncompressed_len,
+            bytes,
+        } => write_packed_signal(
+            output,
+            signal_offsets,
+            memory_required,
+            zero_count,
+            prev_offset,
+            PackedSignal::Zlib {
+                uncompressed_len,
+                bytes,
+            },
+        ),
+    }
+}
 
 fn write_value_changes(
     output: &mut (impl Write + Seek),
     signal_data: &[Vec<u8>],
+    compression_pool: Option<&rayon::ThreadPool>,
     signal_offsets: &mut impl Write,
     memory_required: &mut u64,
-) -> Result<()> {
+) -> Result<f64> {
     write_variant_u64(output, signal_data.len() as u64)?;
     // Zlib gives independent parallel sections enough local compression to
     // stay close to a long serial section. FST readers treat every pack marker
@@ -418,42 +650,41 @@ fn write_value_changes(
 
     let mut zero_count = 0;
     let mut prev_offset = output.stream_position()? - 1;
-
-    for data in signal_data {
-        if data.is_empty() {
-            zero_count += 1;
-        } else {
-            flush_zeros(signal_offsets, &mut zero_count)?;
-            let start = output.stream_position()?;
-            *memory_required += data.len() as u64;
-
-            // TODO: dedup with hashmap
-            if data.len() < MIN_SIZE_TO_ATTEMPT_COMPRESSION {
-                // it is better not to compress the data
-                write_variant_u64(output, 0)?;
-                output.write_all(data)?;
-            } else {
-                // try to compress the data
-                let compressed = miniz_oxide::deflate::compress_to_vec_zlib(data, VALUE_ZLIB_LEVEL);
-                if compressed.len() < data.len() {
-                    // we use the compressed version
-                    write_variant_u64(output, data.len() as u64)?;
-                    output.write_all(&compressed)?;
-                } else {
-                    // it is better not to compress the data
-                    write_variant_u64(output, 0)?;
-                    output.write_all(data)?;
-                };
-            }
-
-            // write new incremental offset
-            let offset_delta = (start - prev_offset) as i64;
-            write_variant_i64(signal_offsets, (offset_delta << 1) | 1)?;
-            prev_offset = start;
+    let mut compression_cpu_seconds = 0.0;
+    if let Some(pool) = compression_pool {
+        let packed: Vec<PackedSignalResult<'_>> = pool.install(|| {
+            signal_data
+                .par_iter()
+                .map(|data| pack_signal(data))
+                .collect()
+        });
+        for result in packed {
+            compression_cpu_seconds += result.compression_cpu_seconds;
+            write_packed_signal(
+                output,
+                signal_offsets,
+                memory_required,
+                &mut zero_count,
+                &mut prev_offset,
+                result.signal,
+            )?;
+        }
+    } else {
+        for data in signal_data {
+            let result = pack_signal(data);
+            compression_cpu_seconds += result.compression_cpu_seconds;
+            write_packed_signal(
+                output,
+                signal_offsets,
+                memory_required,
+                &mut zero_count,
+                &mut prev_offset,
+                result.signal,
+            )?;
         }
     }
     flush_zeros(signal_offsets, &mut zero_count)?;
-    Ok(())
+    Ok(compression_cpu_seconds)
 }
 
 fn write_frame(output: &mut impl Write, frame: &[u8], num_signals: usize) -> Result<()> {
@@ -479,7 +710,8 @@ pub(crate) fn write_value_change_section(
     time_table: &[u8],
     time_table_entries: u64,
     signal_data: &[Vec<u8>],
-) -> Result<()> {
+    compression_pool: Option<&rayon::ThreadPool>,
+) -> Result<f64> {
     let num_signals = signal_data.len();
     // section header
     write_u8(output, BlockType::VcDataDynamicAlias2 as u8)?;
@@ -496,9 +728,10 @@ pub(crate) fn write_value_change_section(
 
     // value change data
     let mut signal_offsets = vec![];
-    write_value_changes(
+    let compression_cpu_seconds = write_value_changes(
         output,
         signal_data,
+        compression_pool,
         &mut signal_offsets,
         &mut memory_required,
     )?;
@@ -519,7 +752,324 @@ pub(crate) fn write_value_change_section(
     // the memory required for traversal is just the uncompressed length of all signals summed up
     write_u64(output, memory_required)?;
     output.seek(SeekFrom::Start(end))?;
-    Ok(())
+    Ok(compression_cpu_seconds)
+}
+
+enum ChangeValue<'a> {
+    Inline(u8),
+    Arena(&'a [u8]),
+}
+
+impl ChangeValue<'_> {
+    fn equals(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Inline(left), Self::Inline(right)) => left == right,
+            (Self::Inline(left), Self::Arena(right)) | (Self::Arena(right), Self::Inline(left)) => {
+                *right == std::slice::from_ref(left)
+            }
+            (Self::Arena(left), Self::Arena(right)) => left == right,
+        }
+    }
+
+    fn copy_to(&self, output: &mut [u8]) {
+        match self {
+            Self::Inline(value) => output.copy_from_slice(std::slice::from_ref(value)),
+            Self::Arena(value) => output.copy_from_slice(value),
+        }
+    }
+}
+
+fn change_value<'a>(
+    change: &FstSignalChange,
+    signal_len: usize,
+    values: &'a [u8],
+) -> Result<ChangeValue<'a>> {
+    if change.is_inline() {
+        if signal_len != 1 {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "inline value used for {}-byte signal {}",
+                signal_len,
+                change.signal()
+            )));
+        }
+        return Ok(ChangeValue::Inline(change.inline_value()));
+    }
+    let start = change.value_offset() as usize;
+    let end = start.checked_add(signal_len).ok_or_else(|| {
+        FstWriteError::InvalidSignalChanges("value range exceeds usize".to_string())
+    })?;
+    let value = values.get(start..end).ok_or_else(|| {
+        FstWriteError::InvalidSignalChanges(format!(
+            "value range {start}..{end} is outside the arena"
+        ))
+    })?;
+    Ok(ChangeValue::Arena(value))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pack_signal_chain(
+    signal_index: usize,
+    signal_len: usize,
+    incoming_value: &[u8],
+    first_record: u32,
+    changes: &[FstSignalChange],
+    values: &[u8],
+    time_point_count: usize,
+    first_file_section: bool,
+    incoming_dump_enabled: bool,
+) -> Result<ChainedSignalResult> {
+    let cpu_started = thread_cpu_seconds();
+    let mut stream = take_signal_pack_buffer();
+    let recycled_capacity_bytes = stream.capacity();
+    stream.clear();
+    let mut current_record = None;
+    let mut frame_record = None;
+    let mut previous_time_index = 0u32;
+    let mut record_index = first_record;
+    let mut visited = 0usize;
+    while record_index != FST_NO_CHANGE {
+        if visited >= changes.len() {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "cycle in chain for signal {signal_index}"
+            )));
+        }
+        visited += 1;
+        let this_record = record_index;
+        let change = changes.get(this_record as usize).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges(format!(
+                "record {record_index} for signal {signal_index} is out of bounds"
+            ))
+        })?;
+        if change.signal() as usize != signal_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "record {record_index} belongs to signal {}, expected {signal_index}",
+                change.signal()
+            )));
+        }
+        record_index = change.next();
+        let enabled = match change.dump_state() {
+            FstDumpState::Prefix => incoming_dump_enabled,
+            FstDumpState::Enabled => true,
+            FstDumpState::Suppressed => false,
+        };
+        if !enabled {
+            continue;
+        }
+        let next_value = change_value(change, signal_len, values)?;
+        if change.time_index() == FST_FRAME_TIME_INDEX {
+            if !first_file_section {
+                return Err(FstWriteError::InvalidSignalChanges(format!(
+                    "frame-time change in noninitial section for signal {signal_index}"
+                )));
+            }
+            current_record = Some(this_record);
+            frame_record = current_record;
+            continue;
+        }
+        if change.time_index() as usize >= time_point_count {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "time index {} for signal {signal_index} is out of bounds",
+                change.time_index()
+            )));
+        }
+        if change.time_index() < previous_time_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "time index decreased in signal {signal_index}"
+            )));
+        }
+        let current_value = match current_record {
+            Some(index) => change_value(&changes[index as usize], signal_len, values)?,
+            None => ChangeValue::Arena(incoming_value),
+        };
+        if current_value.equals(&next_value) {
+            continue;
+        }
+        let delta = u64::from(change.time_index() - previous_time_index);
+        if signal_len == 1 {
+            let value = match next_value {
+                ChangeValue::Inline(value) => value,
+                ChangeValue::Arena(value) => value[0],
+            };
+            write_one_bit_signal(&mut stream, delta, value)?;
+        } else {
+            let ChangeValue::Arena(value) = next_value else {
+                unreachable!("inline values were rejected for wide signals")
+            };
+            write_multi_bit_signal(&mut stream, delta, value)?;
+        }
+        previous_time_index = change.time_index();
+        current_record = Some(this_record);
+    }
+    let pack_cpu_seconds = thread_cpu_seconds() - cpu_started;
+    let newly_allocated_capacity_bytes = stream.capacity().saturating_sub(recycled_capacity_bytes);
+    let packer_input_bytes = if stream.len() >= MIN_SIZE_TO_ATTEMPT_COMPRESSION {
+        stream.len()
+    } else {
+        0
+    };
+    let (signal, compression_cpu_seconds) = pack_owned_signal(stream);
+    Ok(ChainedSignalResult {
+        signal,
+        frame_record,
+        pack_cpu_seconds,
+        compression_cpu_seconds,
+        packer_input_bytes,
+        worker_index: rayon::current_thread_index().unwrap_or(0),
+        recycled_capacity_bytes,
+        newly_allocated_capacity_bytes,
+    })
+}
+
+fn encode_time_points(time_points: &[u64]) -> Result<Vec<u8>> {
+    let mut encoded = Vec::with_capacity(time_points.len().saturating_mul(2));
+    let mut previous = 0u64;
+    for &time in time_points {
+        if time < previous {
+            return Err(FstWriteError::TimeDecrease(previous, time));
+        }
+        write_time_chain_update(&mut encoded, previous, time)?;
+        previous = time;
+    }
+    Ok(encoded)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_chained_value_change_section(
+    signals: &[FstSignalType],
+    incoming_frame: &[u8],
+    start_time: u64,
+    end_time: u64,
+    first_file_section: bool,
+    time_points: &[u64],
+    first_by_signal: &[u32],
+    changes: &[FstSignalChange],
+    values: &[u8],
+    incoming_dump_enabled: bool,
+    pool: Option<&rayon::ThreadPool>,
+) -> Result<(Vec<u8>, ChainedWriteStats)> {
+    if first_by_signal.len() != signals.len() {
+        return Err(FstWriteError::InvalidSignalChanges(format!(
+            "{} signal chains supplied for {} signals",
+            first_by_signal.len(),
+            signals.len()
+        )));
+    }
+    let mut offsets = Vec::with_capacity(signals.len());
+    let mut frame_len = 0usize;
+    for signal in signals {
+        offsets.push(frame_len);
+        frame_len = frame_len
+            .checked_add(signal.len() as usize)
+            .ok_or_else(|| FstWriteError::InvalidFrameLength {
+                expected: usize::MAX,
+                actual: incoming_frame.len(),
+            })?;
+    }
+    if incoming_frame.len() != frame_len {
+        return Err(FstWriteError::InvalidFrameLength {
+            expected: frame_len,
+            actual: incoming_frame.len(),
+        });
+    }
+    let pack_one = |signal_index: usize| {
+        let start = offsets[signal_index];
+        let len = signals[signal_index].len() as usize;
+        pack_signal_chain(
+            signal_index,
+            len,
+            &incoming_frame[start..start + len],
+            first_by_signal[signal_index],
+            changes,
+            values,
+            time_points.len(),
+            first_file_section,
+            incoming_dump_enabled,
+        )
+    };
+    let packed: Vec<ChainedSignalResult> = if let Some(pool) = pool {
+        pool.install(|| {
+            (0..signals.len())
+                .into_par_iter()
+                .map(pack_one)
+                .collect::<Result<Vec<_>>>()
+        })?
+    } else {
+        (0..signals.len())
+            .map(pack_one)
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    let mut frame = incoming_frame.to_vec();
+    for (signal_index, result) in packed.iter().enumerate() {
+        if let Some(record_index) = result.frame_record {
+            let start = offsets[signal_index];
+            let len = signals[signal_index].len() as usize;
+            change_value(&changes[record_index as usize], len, values)?
+                .copy_to(&mut frame[start..start + len]);
+        }
+    }
+    let time_table = encode_time_points(time_points)?;
+    let mut output = Cursor::new(Vec::new());
+    write_u8(&mut output, BlockType::VcDataDynamicAlias2 as u8)?;
+    let section_start = output.stream_position()?;
+    write_u64(&mut output, 0)?;
+    write_u64(&mut output, start_time)?;
+    write_u64(&mut output, end_time)?;
+    write_u64(&mut output, 0)?;
+    write_frame(&mut output, &frame, signals.len())?;
+    write_variant_u64(&mut output, signals.len() as u64)?;
+    write_u8(&mut output, VALUE_CHANGE_PACK_TYPE_ZLIB)?;
+
+    let mut signal_offsets = Vec::new();
+    let mut memory_required = 0u64;
+    let mut zero_count = 0u32;
+    let mut previous_offset = output.stream_position()? - 1;
+    let mut pack_cpu_seconds = 0.0;
+    let mut compression_cpu_seconds = 0.0;
+    let mut packer_input_bytes = 0usize;
+    let worker_count = pool.map_or(1, rayon::ThreadPool::current_num_threads);
+    let mut worker_cpu_seconds = vec![0.0; worker_count];
+    let mut recycled_capacity_bytes = 0usize;
+    let mut newly_allocated_capacity_bytes = 0usize;
+    for result in packed {
+        pack_cpu_seconds += result.pack_cpu_seconds;
+        compression_cpu_seconds += result.compression_cpu_seconds;
+        packer_input_bytes += result.packer_input_bytes;
+        worker_cpu_seconds[result.worker_index] +=
+            result.pack_cpu_seconds + result.compression_cpu_seconds;
+        recycled_capacity_bytes += result.recycled_capacity_bytes;
+        newly_allocated_capacity_bytes += result.newly_allocated_capacity_bytes;
+        write_owned_packed_signal(
+            &mut output,
+            &mut signal_offsets,
+            &mut memory_required,
+            &mut zero_count,
+            &mut previous_offset,
+            result.signal,
+        )?;
+    }
+    flush_zeros(&mut signal_offsets, &mut zero_count)?;
+    output.write_all(&signal_offsets)?;
+    write_u64(&mut output, signal_offsets.len() as u64)?;
+    write_time_table(&mut output, &time_table, time_points.len() as u64)?;
+
+    let section_end = output.stream_position()?;
+    output.seek(SeekFrom::Start(section_start))?;
+    write_u64(&mut output, section_end - section_start)?;
+    output.seek(SeekFrom::Current(2 * 8))?;
+    write_u64(&mut output, memory_required)?;
+    output.seek(SeekFrom::Start(section_end))?;
+    Ok((
+        output.into_inner(),
+        ChainedWriteStats {
+            pack_cpu_seconds,
+            compression_cpu_seconds,
+            packer_input_bytes,
+            worker_cpu_seconds,
+            recycled_capacity_bytes,
+            newly_allocated_capacity_bytes,
+        },
+    ))
 }
 
 /// by unscientific experiment, we observed that this level might be good enough :)

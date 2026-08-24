@@ -10,10 +10,14 @@
 // plus a 4-byte back-pointer and a length varint per change.
 
 use crate::io::{
-    write_multi_bit_signal, write_one_bit_signal, write_time_chain_update,
-    write_value_change_section,
+    MIN_SIZE_TO_ATTEMPT_COMPRESSION, write_multi_bit_signal, write_one_bit_signal,
+    write_packed_binary_signal, write_time_chain_update, write_value_change_section,
+};
+use crate::writer::{
+    FST_FRAME_TIME_INDEX, FST_NO_CHANGE, FstDumpState, FstSignalChange, FstSignalRecord,
 };
 use crate::{FstSignalId, FstSignalType, FstWriteError, Result};
+use rayon::prelude::*;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::io::{Cursor, Seek, Write};
@@ -49,6 +53,373 @@ struct SignalInfo {
     offset: u32,
 }
 
+struct ChainedSignalState {
+    frame: Vec<u8>,
+    current: Vec<u8>,
+    previous_time_index: u32,
+    pending_record: Option<u32>,
+    pending_frame_record: Option<u32>,
+}
+
+pub(crate) struct ChainedSignalBuffer {
+    start_time: u64,
+    end_time: u64,
+    time_table: Vec<u8>,
+    time_table_index: u32,
+    first_file_section: bool,
+    signals: Vec<ChainedSignalState>,
+    value_changes: Vec<Vec<u8>>,
+    value_changes_bytes: usize,
+    pack_cpu_seconds: f64,
+    worker_cpu_seconds: Vec<f64>,
+    arena_to_packer_copied_bytes: usize,
+}
+
+pub(crate) struct ChainedBufferStats {
+    pub(crate) pack_cpu_seconds: f64,
+    pub(crate) worker_cpu_seconds: Vec<f64>,
+    pub(crate) arena_to_packer_copied_bytes: usize,
+    pub(crate) packer_to_compressor_bytes: usize,
+}
+
+struct ApplySignalStats {
+    encoded_bytes: usize,
+    copied_bytes: usize,
+    cpu_seconds: f64,
+    worker_index: usize,
+}
+
+#[cfg(feature = "profile")]
+fn thread_cpu_seconds() -> f64 {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `value` points to writable storage for the duration of the call.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+    if result == 0 {
+        value.tv_sec as f64 + value.tv_nsec as f64 / 1_000_000_000.0
+    } else {
+        0.0
+    }
+}
+
+#[cfg(not(feature = "profile"))]
+fn thread_cpu_seconds() -> f64 {
+    0.0
+}
+
+enum ExactChangeValue<'a> {
+    Inline(u8),
+    Arena(&'a [u8]),
+    PackedBinary { bytes: &'a [u8], width: usize },
+}
+
+impl ExactChangeValue<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Inline(_) => 1,
+            Self::Arena(value) => value.len(),
+            Self::PackedBinary { width, .. } => *width,
+        }
+    }
+
+    fn equals(&self, current: &[u8]) -> bool {
+        match self {
+            Self::Inline(value) => current == std::slice::from_ref(value),
+            Self::Arena(value) => current == *value,
+            Self::PackedBinary { bytes, width } => {
+                current.len() == *width
+                    && current.iter().enumerate().all(|(index, current)| {
+                        let bit = (bytes[index / 8] >> (7 - (index & 7))) & 1;
+                        *current == b'0' + bit
+                    })
+            }
+        }
+    }
+
+    fn copy_to(&self, output: &mut [u8]) {
+        match self {
+            Self::Inline(value) => output.copy_from_slice(std::slice::from_ref(value)),
+            Self::Arena(value) => output.copy_from_slice(value),
+            Self::PackedBinary { bytes, width } => {
+                debug_assert_eq!(output.len(), *width);
+                for (index, output) in output.iter_mut().enumerate() {
+                    let bit = (bytes[index / 8] >> (7 - (index & 7))) & 1;
+                    *output = b'0' + bit;
+                }
+            }
+        }
+    }
+
+    fn equals_value(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::PackedBinary {
+                    bytes: left,
+                    width: left_width,
+                },
+                Self::PackedBinary {
+                    bytes: right,
+                    width: right_width,
+                },
+            ) => left_width == right_width && left == right,
+            (_, Self::Inline(value)) => self.equals(std::slice::from_ref(value)),
+            (_, Self::Arena(value)) => self.equals(value),
+            (Self::Inline(value), Self::PackedBinary { .. }) => {
+                other.equals(std::slice::from_ref(value))
+            }
+            (Self::Arena(value), Self::PackedBinary { .. }) => other.equals(value),
+        }
+    }
+
+    fn write_to(&self, stream: &mut Vec<u8>, delta: u64) -> Result<()> {
+        match self {
+            Self::Inline(value) => write_one_bit_signal(stream, delta, *value),
+            Self::Arena(value) if value.len() == 1 => write_one_bit_signal(stream, delta, value[0]),
+            Self::Arena(value) => write_multi_bit_signal(stream, delta, value),
+            Self::PackedBinary { bytes, width: 1 } => {
+                write_one_bit_signal(stream, delta, b'0' + (bytes[0] >> 7))
+            }
+            Self::PackedBinary { bytes, .. } => write_packed_binary_signal(stream, delta, bytes),
+        }
+    }
+}
+
+fn exact_change_value<'a>(
+    change: &FstSignalRecord,
+    len: usize,
+    values: &'a [u8],
+) -> Result<ExactChangeValue<'a>> {
+    if change.is_inline() {
+        if len != 1 {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "inline value used for {}-byte signal {}",
+                len,
+                change.signal()
+            )));
+        }
+        return Ok(ExactChangeValue::Inline(change.inline_value()));
+    }
+    let start = change.value_offset() as usize;
+    let stored_len = if change.is_packed_binary() {
+        len.div_ceil(8)
+    } else {
+        len
+    };
+    let end = start.checked_add(stored_len).ok_or_else(|| {
+        FstWriteError::InvalidSignalChanges("value range exceeds usize".to_string())
+    })?;
+    values.get(start..end).map_or_else(
+        || {
+            Err(FstWriteError::InvalidSignalChanges(format!(
+                "value range {start}..{end} is outside the arena"
+            )))
+        },
+        |value| {
+            Ok(if change.is_packed_binary() {
+                ExactChangeValue::PackedBinary {
+                    bytes: value,
+                    width: len,
+                }
+            } else {
+                ExactChangeValue::Arena(value)
+            })
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_signal_chain(
+    signal_index: usize,
+    state: &mut ChainedSignalState,
+    stream: &mut Vec<u8>,
+    first_record: u32,
+    changes: &[FstSignalChange],
+    values: &[u8],
+    max_time_index: u32,
+    first_file_section: bool,
+) -> Result<ApplySignalStats> {
+    let cpu_started = thread_cpu_seconds();
+    let initial_stream_len = stream.len();
+    let mut copied_bytes = 0usize;
+    let mut current_record = None;
+    let mut frame_record = None;
+    let mut record_index = first_record;
+    let mut visited = 0usize;
+    while record_index != FST_NO_CHANGE {
+        if visited >= changes.len() {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "cycle in chain for signal {signal_index}"
+            )));
+        }
+        visited += 1;
+        let this_record = record_index;
+        let change = changes.get(this_record as usize).ok_or_else(|| {
+            FstWriteError::InvalidSignalChanges(format!(
+                "record {record_index} for signal {signal_index} is out of bounds"
+            ))
+        })?;
+        record_index = change.next();
+        if change.signal() as usize != signal_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "record belongs to signal {}, expected {signal_index}",
+                change.signal()
+            )));
+        }
+        if change.dump_state() != FstDumpState::Enabled {
+            continue;
+        }
+        let value = exact_change_value(change.record(), state.current.len(), values)?;
+        if change.time_index() == FST_FRAME_TIME_INDEX {
+            if !first_file_section {
+                return Err(FstWriteError::InvalidSignalChanges(format!(
+                    "frame-time change in noninitial section for signal {signal_index}"
+                )));
+            }
+            current_record = Some(this_record);
+            frame_record = Some(this_record);
+            continue;
+        }
+        if change.time_index() > max_time_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "time index {} for signal {signal_index} exceeds {max_time_index}",
+                change.time_index()
+            )));
+        }
+        if change.time_index() < state.previous_time_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "time index decreased in signal {signal_index}"
+            )));
+        }
+        let unchanged = match current_record {
+            Some(index) => {
+                let current = exact_change_value(
+                    changes[index as usize].record(),
+                    state.current.len(),
+                    values,
+                )?;
+                value.equals_value(&current)
+            }
+            None => value.equals(&state.current),
+        };
+        if unchanged {
+            continue;
+        }
+        let delta = u64::from(change.time_index() - state.previous_time_index);
+        value.write_to(stream, delta)?;
+        state.previous_time_index = change.time_index();
+        current_record = Some(this_record);
+    }
+    if let Some(index) = current_record {
+        let value = exact_change_value(
+            changes[index as usize].record(),
+            state.current.len(),
+            values,
+        )?;
+        value.copy_to(&mut state.current);
+        copied_bytes += value.len();
+    }
+    if let Some(index) = frame_record {
+        let value =
+            exact_change_value(changes[index as usize].record(), state.frame.len(), values)?;
+        value.copy_to(&mut state.frame);
+        copied_bytes += value.len();
+    }
+    Ok(ApplySignalStats {
+        encoded_bytes: stream.len() - initial_stream_len,
+        copied_bytes,
+        cpu_seconds: thread_cpu_seconds() - cpu_started,
+        worker_index: rayon::current_thread_index().unwrap_or(0),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_signal_range(
+    range_start: usize,
+    states: &mut [ChainedSignalState],
+    streams: &mut [Vec<u8>],
+    changes: &[FstSignalRecord],
+    values: &[u8],
+    max_time_index: u32,
+    first_file_section: bool,
+) -> Result<ApplySignalStats> {
+    let cpu_started = thread_cpu_seconds();
+    let initial_stream_bytes = streams.iter().map(Vec::len).sum::<usize>();
+    let range_end = range_start + states.len();
+    for (record_index, change) in changes.iter().enumerate() {
+        let signal_index = change.signal() as usize;
+        if signal_index < range_start || signal_index >= range_end {
+            continue;
+        }
+        if change.dump_state() != FstDumpState::Enabled {
+            continue;
+        }
+        let local = signal_index - range_start;
+        let state = &mut states[local];
+        let stream = &mut streams[local];
+        let value = exact_change_value(change, state.current.len(), values)?;
+        let record_index = u32::try_from(record_index).map_err(|_| {
+            FstWriteError::InvalidSignalChanges("chunk change table exceeds u32".to_string())
+        })?;
+        if change.time_index() == FST_FRAME_TIME_INDEX {
+            if !first_file_section {
+                return Err(FstWriteError::InvalidSignalChanges(format!(
+                    "frame-time change in noninitial section for signal {signal_index}"
+                )));
+            }
+            state.pending_record = Some(record_index);
+            state.pending_frame_record = Some(record_index);
+            continue;
+        }
+        if change.time_index() > max_time_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "time index {} for signal {signal_index} exceeds {max_time_index}",
+                change.time_index()
+            )));
+        }
+        if change.time_index() < state.previous_time_index {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "time index decreased in signal {signal_index}"
+            )));
+        }
+        let unchanged = match state.pending_record {
+            Some(index) => {
+                let current =
+                    exact_change_value(&changes[index as usize], state.current.len(), values)?;
+                value.equals_value(&current)
+            }
+            None => value.equals(&state.current),
+        };
+        if unchanged {
+            continue;
+        }
+        let delta = u64::from(change.time_index() - state.previous_time_index);
+        value.write_to(stream, delta)?;
+        state.previous_time_index = change.time_index();
+        state.pending_record = Some(record_index);
+    }
+    let mut copied_bytes = 0usize;
+    for state in states {
+        if let Some(index) = state.pending_record.take() {
+            let value = exact_change_value(&changes[index as usize], state.current.len(), values)?;
+            value.copy_to(&mut state.current);
+            copied_bytes += value.len();
+        }
+        if let Some(index) = state.pending_frame_record.take() {
+            let value = exact_change_value(&changes[index as usize], state.frame.len(), values)?;
+            value.copy_to(&mut state.frame);
+            copied_bytes += value.len();
+        }
+    }
+    Ok(ApplySignalStats {
+        encoded_bytes: streams.iter().map(Vec::len).sum::<usize>() - initial_stream_bytes,
+        copied_bytes,
+        cpu_seconds: thread_cpu_seconds() - cpu_started,
+        worker_index: rayon::current_thread_index().unwrap_or(0),
+    })
+}
+
 fn gen_signal_info(signals: &[FstSignalType]) -> (Vec<SignalInfo>, usize) {
     let mut offset = 0;
     let mut out = Vec::with_capacity(signals.len());
@@ -60,6 +431,288 @@ fn gen_signal_info(signals: &[FstSignalType]) -> (Vec<SignalInfo>, usize) {
         offset += signal.len();
     }
     (out, offset as usize)
+}
+
+impl ChainedSignalBuffer {
+    pub(crate) fn new(signals: &[FstSignalType]) -> Result<Self> {
+        let states = signals
+            .iter()
+            .map(|signal| {
+                let value = vec![b'x'; signal.len() as usize];
+                ChainedSignalState {
+                    frame: value.clone(),
+                    current: value,
+                    previous_time_index: 0,
+                    pending_record: None,
+                    pending_frame_record: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            start_time: 0,
+            end_time: 0,
+            time_table: Vec::with_capacity(16),
+            time_table_index: 0,
+            first_file_section: true,
+            value_changes: vec![Vec::new(); states.len()],
+            signals: states,
+            value_changes_bytes: 0,
+            pack_cpu_seconds: 0.0,
+            worker_cpu_seconds: Vec::new(),
+            arena_to_packer_copied_bytes: 0,
+        })
+    }
+
+    pub(crate) fn from_frame(
+        signals: &[FstSignalType],
+        frame: &[u8],
+        start_time: u64,
+    ) -> Result<Self> {
+        let expected = signals.iter().map(|signal| signal.len() as usize).sum();
+        if frame.len() != expected {
+            return Err(FstWriteError::InvalidFrameLength {
+                expected,
+                actual: frame.len(),
+            });
+        }
+        let mut offset = 0usize;
+        let states = signals
+            .iter()
+            .map(|signal| {
+                let end = offset + signal.len() as usize;
+                let value = frame[offset..end].to_vec();
+                offset = end;
+                ChainedSignalState {
+                    frame: value.clone(),
+                    current: value,
+                    previous_time_index: 0,
+                    pending_record: None,
+                    pending_frame_record: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut time_table = Vec::with_capacity(16);
+        write_time_chain_update(&mut time_table, 0, start_time)?;
+        Ok(Self {
+            start_time,
+            end_time: start_time,
+            time_table,
+            time_table_index: 0,
+            first_file_section: false,
+            value_changes: vec![Vec::new(); states.len()],
+            signals: states,
+            value_changes_bytes: 0,
+            pack_cpu_seconds: 0.0,
+            worker_cpu_seconds: Vec::new(),
+            arena_to_packer_copied_bytes: 0,
+        })
+    }
+
+    pub(crate) fn time_change(&mut self, new_time: u64) -> Result<u32> {
+        match new_time.cmp(&self.end_time) {
+            Ordering::Less => Err(FstWriteError::TimeDecrease(self.end_time, new_time)),
+            Ordering::Equal => Ok(if self.time_table.is_empty() {
+                FST_FRAME_TIME_INDEX
+            } else {
+                self.time_table_index
+            }),
+            Ordering::Greater => {
+                if !self.time_table.is_empty() {
+                    self.time_table_index =
+                        self.time_table_index.checked_add(1).ok_or_else(|| {
+                            FstWriteError::InvalidSignalChanges(
+                                "section timestamp table exceeds u32".to_string(),
+                            )
+                        })?;
+                }
+                let previous = if self.time_table.is_empty() {
+                    0
+                } else {
+                    self.end_time
+                };
+                write_time_chain_update(&mut self.time_table, previous, new_time)?;
+                self.end_time = new_time;
+                Ok(self.time_table_index)
+            }
+        }
+    }
+
+    pub(crate) fn current_time_index(&self) -> u32 {
+        if self.time_table.is_empty() {
+            FST_FRAME_TIME_INDEX
+        } else {
+            self.time_table_index
+        }
+    }
+
+    pub(crate) fn apply_signal_chains(
+        &mut self,
+        first_by_signal: &[u32],
+        changes: &[FstSignalChange],
+        values: &[u8],
+        pool: Option<&rayon::ThreadPool>,
+    ) -> Result<()> {
+        if first_by_signal.len() != self.signals.len() {
+            return Err(FstWriteError::InvalidSignalChanges(format!(
+                "{} signal chains supplied for {} signals",
+                first_by_signal.len(),
+                self.signals.len()
+            )));
+        }
+        let max_time_index = self.current_time_index();
+        let first_file_section = self.first_file_section;
+        let stats = if let Some(pool) = pool {
+            pool.install(|| {
+                self.signals
+                    .par_iter_mut()
+                    .zip(self.value_changes.par_iter_mut())
+                    .enumerate()
+                    .map(|(signal_index, (state, stream))| {
+                        apply_signal_chain(
+                            signal_index,
+                            state,
+                            stream,
+                            first_by_signal[signal_index],
+                            changes,
+                            values,
+                            max_time_index,
+                            first_file_section,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?
+        } else {
+            self.signals
+                .iter_mut()
+                .zip(self.value_changes.iter_mut())
+                .enumerate()
+                .map(|(signal_index, (state, stream))| {
+                    apply_signal_chain(
+                        signal_index,
+                        state,
+                        stream,
+                        first_by_signal[signal_index],
+                        changes,
+                        values,
+                        max_time_index,
+                        first_file_section,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let worker_count = pool.map_or(1, rayon::ThreadPool::current_num_threads);
+        self.worker_cpu_seconds
+            .resize(self.worker_cpu_seconds.len().max(worker_count), 0.0);
+        for stat in stats {
+            self.value_changes_bytes += stat.encoded_bytes;
+            self.arena_to_packer_copied_bytes += stat.copied_bytes;
+            self.pack_cpu_seconds += stat.cpu_seconds;
+            self.worker_cpu_seconds[stat.worker_index] += stat.cpu_seconds;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply_signal_records(
+        &mut self,
+        changes: &[FstSignalRecord],
+        values: &[u8],
+        pool: Option<&rayon::ThreadPool>,
+    ) -> Result<()> {
+        let max_time_index = self.current_time_index();
+        let first_file_section = self.first_file_section;
+        let worker_count = pool.map_or(1, rayon::ThreadPool::current_num_threads);
+        let range_len = self.signals.len().max(1).div_ceil(worker_count);
+        let stats = if let Some(pool) = pool {
+            pool.install(|| {
+                self.signals
+                    .par_chunks_mut(range_len)
+                    .zip(self.value_changes.par_chunks_mut(range_len))
+                    .enumerate()
+                    .map(|(range, (states, streams))| {
+                        apply_signal_range(
+                            range * range_len,
+                            states,
+                            streams,
+                            changes,
+                            values,
+                            max_time_index,
+                            first_file_section,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?
+        } else {
+            vec![apply_signal_range(
+                0,
+                &mut self.signals,
+                &mut self.value_changes,
+                changes,
+                values,
+                max_time_index,
+                first_file_section,
+            )?]
+        };
+        self.worker_cpu_seconds
+            .resize(self.worker_cpu_seconds.len().max(worker_count), 0.0);
+        for stat in stats {
+            self.value_changes_bytes += stat.encoded_bytes;
+            self.arena_to_packer_copied_bytes += stat.copied_bytes;
+            self.pack_cpu_seconds += stat.cpu_seconds;
+            self.worker_cpu_seconds[stat.worker_index] += stat.cpu_seconds;
+        }
+        Ok(())
+    }
+
+    fn num_time_table_entries(&self) -> u64 {
+        if self.time_table.is_empty() {
+            0
+        } else {
+            self.time_table_index as u64 + 1
+        }
+    }
+
+    pub(crate) fn encode(
+        &mut self,
+        compression_pool: Option<&rayon::ThreadPool>,
+    ) -> Result<(Vec<u8>, u64, f64, ChainedBufferStats)> {
+        let mut frame =
+            Vec::with_capacity(self.signals.iter().map(|state| state.frame.len()).sum());
+        for state in &self.signals {
+            frame.extend_from_slice(&state.frame);
+        }
+        let mut output = Cursor::new(Vec::with_capacity(self.size()));
+        let compression_cpu_seconds = write_value_change_section(
+            &mut output,
+            self.start_time,
+            self.end_time,
+            &frame,
+            &self.time_table,
+            self.num_time_table_entries(),
+            &self.value_changes,
+            compression_pool,
+        )?;
+        let packer_to_compressor_bytes = self
+            .value_changes
+            .iter()
+            .filter(|stream| stream.len() >= MIN_SIZE_TO_ATTEMPT_COMPRESSION)
+            .map(Vec::len)
+            .sum();
+        Ok((
+            output.into_inner(),
+            self.end_time,
+            compression_cpu_seconds,
+            ChainedBufferStats {
+                pack_cpu_seconds: self.pack_cpu_seconds,
+                worker_cpu_seconds: std::mem::take(&mut self.worker_cpu_seconds),
+                arena_to_packer_copied_bytes: self.arena_to_packer_copied_bytes,
+                packer_to_compressor_bytes,
+            },
+        ))
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.time_table.len() + self.value_changes_bytes
+    }
 }
 
 impl SignalBuffer {
@@ -221,7 +874,11 @@ impl SignalBuffer {
         }
     }
 
-    pub(crate) fn flush(&mut self, output: &mut (impl Write + Seek)) -> Result<u64> {
+    pub(crate) fn flush(
+        &mut self,
+        output: &mut (impl Write + Seek),
+        compression_pool: Option<&rayon::ThreadPool>,
+    ) -> Result<(u64, f64)> {
         // A timestamp-aligned section may end before a later time change
         // (notably when the first timestamp contains one very wide value).
         // Ordinarily `time_change` snapshots first-step values into `frame`;
@@ -230,7 +887,7 @@ impl SignalBuffer {
             self.frame.copy_from_slice(&self.values);
         }
         // write data
-        write_value_change_section(
+        let compression_cpu_seconds = write_value_change_section(
             output,
             self.start_time,
             self.end_time,
@@ -238,6 +895,7 @@ impl SignalBuffer {
             &self.time_table,
             self.num_time_table_entries(),
             &self.value_changes,
+            compression_pool,
         )?;
 
         // reset data
@@ -253,13 +911,16 @@ impl SignalBuffer {
         self.value_changes_bytes = 0;
         self.first_buffer = false;
 
-        Ok(self.end_time)
+        Ok((self.end_time, compression_cpu_seconds))
     }
 
-    pub(crate) fn encode(&mut self) -> Result<(Vec<u8>, u64)> {
+    pub(crate) fn encode(
+        &mut self,
+        compression_pool: Option<&rayon::ThreadPool>,
+    ) -> Result<(Vec<u8>, u64, f64)> {
         let mut output = Cursor::new(Vec::with_capacity(self.size()));
-        let end_time = self.flush(&mut output)?;
-        Ok((output.into_inner(), end_time))
+        let (end_time, compression_cpu_seconds) = self.flush(&mut output, compression_pool)?;
+        Ok((output.into_inner(), end_time, compression_cpu_seconds))
     }
 
     /// Returns the estimated size of all data structures that grow over time.

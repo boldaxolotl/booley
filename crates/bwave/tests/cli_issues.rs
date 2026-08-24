@@ -67,6 +67,41 @@ fn run(args: &[&str]) -> (String, String, i32) {
     )
 }
 
+#[test]
+fn build_default_remains_serial_until_parallel_promotion() {
+    let vcd = fixture("small_clocked.vcd");
+    let default_store = vcd.with_extension("default_engine.fst");
+    let serial_store = vcd.with_extension("explicit_serial.fst");
+    for store in [&default_store, &serial_store] {
+        let _ = std::fs::remove_file(store);
+    }
+
+    let (_, default_stderr, default_code) = run(&[
+        "build",
+        vcd.to_str().unwrap(),
+        "-o",
+        default_store.to_str().unwrap(),
+    ]);
+    let (_, serial_stderr, serial_code) = run(&[
+        "build",
+        "--engine",
+        "serial",
+        vcd.to_str().unwrap(),
+        "-o",
+        serial_store.to_str().unwrap(),
+    ]);
+
+    assert_eq!(default_code, 0, "default build failed: {default_stderr}");
+    assert_eq!(serial_code, 0, "serial build failed: {serial_stderr}");
+    assert_eq!(
+        std::fs::read(&default_store).unwrap(),
+        std::fs::read(&serial_store).unwrap()
+    );
+    for store in [default_store, serial_store] {
+        let _ = std::fs::remove_file(store);
+    }
+}
+
 // -- Issue 1: `find` silently mixes signals via substring match -----
 
 #[test]

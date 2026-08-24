@@ -118,17 +118,23 @@ the median query must be at most 1.10× the serial query; both ratios are
 configurable. A missed gate still writes the evidence file, prints each
 violation, and exits 2.
 
-The parallel converter is the default. Pass `--engine serial` to either runner
-when collecting the semantic oracle or a serial performance baseline. Optional
-`--jobs`, optional `--parse-jobs`/`--encode-jobs` split overrides,
-`--chunk-bytes`, and `--section-bytes` are recorded in the evidence and
+The benchmark runners default to the draft parallel converter; production
+`bwave build` remains serial until every promotion gate passes. Pass
+`--engine serial` to either runner when collecting the semantic oracle or a
+serial performance baseline. Optional
+`--jobs`, optional `--parse-jobs`/`--encode-jobs` split overrides, the opt-in
+`--pack-jobs` per-signal compression prototype, `--chunk-bytes`, and
+`--section-bytes` are recorded in the evidence and
 forwarded to hidden developer controls on `bwave build`; they are not supported
-user surface. The measured parallel defaults are 1 MiB timestamp-aligned parse
-chunks, 34 MiB output sections, and an approximately 70/30 parser/encoder split
-with at most 24 workers. Parse chunks stay small enough to expose worker
-parallelism while adjacent chunks are coalesced into a larger FST section for
-compression and query efficiency. The hidden `--engine serial` control remains
-available for differential diagnosis and benchmark baselines.
+user surface. The measured parallel defaults are 8 MiB timestamp-aligned parse
+chunks, 128 MiB estimated-uncompressed FST sections, and a three-parser,
+one-encoder split on a four-worker budget. `--pack-jobs` defaults to one because
+the prototype improves wall time without meeting the CPU-work gate. Experimental
+splits are rejected when parser plus packer concurrency exceeds `--jobs`.
+Section sizing follows the accumulated FST stream rather than raw VCD bytes, so
+signal activity does not multiply the section count. The hidden `--engine
+serial` control remains available for differential diagnosis and benchmark
+baselines.
 
 Run the matching named-pipe procedure with the same generated corpus:
 

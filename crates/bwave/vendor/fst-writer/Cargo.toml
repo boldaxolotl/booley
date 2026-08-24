@@ -23,5 +23,15 @@ version = "0.11"
 [dependencies.miniz_oxide]
 version = "0.8.2"
 
+[dependencies.rayon]
+version = "1"
+
+[dependencies.libc]
+version = "0.2"
+optional = true
+
+[features]
+profile = ["dep:libc"]
+
 [dependencies.thiserror]
 version = "2.0"

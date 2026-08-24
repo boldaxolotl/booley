@@ -31,7 +31,6 @@ use fst_reader::{
     FstFilter, FstHierarchyEntry, FstReader, FstSignalHandle, FstSignalValue, FstVarType,
 };
 use memchr::{memchr, memchr2};
-use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::cache::{CachedSignal, ClockEntry, ColumnCache};
@@ -892,8 +891,8 @@ impl VcdIdLookup {
 /// small traces stay single-section, which keeps windowed reads cheap.
 const FST_FLUSH_THRESHOLD: usize = 256 << 20;
 const SERIAL_VCD_CHUNK_TARGET: usize = 4 << 20;
-pub const PARALLEL_VCD_CHUNK_TARGET: usize = 1 << 20;
-pub const PARALLEL_FST_SECTION_TARGET: usize = 34 << 20;
+pub const PARALLEL_VCD_CHUNK_TARGET: usize = 8 << 20;
+pub const PARALLEL_FST_SECTION_TARGET: usize = 128 << 20;
 
 /// "10ps" -> -11. Mirrors the VCD `1|10|100 <unit>` timescale grammar.
 fn timescale_to_exponent(ts: &str) -> i8 {
@@ -953,6 +952,10 @@ fn var_type_of(vt: &str) -> fst_writer::FstVarType {
 /// least-significant bits are kept, matching GTKWave).
 fn canon_bits_into(bits: &[u8], width: usize, out: &mut Vec<u8>) -> bool {
     out.clear();
+    canon_bits_append(bits, width, out)
+}
+
+fn canon_bits_append(bits: &[u8], width: usize, out: &mut Vec<u8>) -> bool {
     let len = bits.len();
     if len < width {
         let fill = match bits.first().copied().unwrap_or(b'0').to_ascii_lowercase() {
@@ -960,7 +963,7 @@ fn canon_bits_into(bits: &[u8], width: usize, out: &mut Vec<u8>) -> bool {
             b'z' => b'z',
             _ => b'0',
         };
-        out.resize(width - len, fill);
+        out.resize(out.len() + width - len, fill);
     }
     let src = if len > width {
         &bits[len - width..]
@@ -969,6 +972,53 @@ fn canon_bits_into(bits: &[u8], width: usize, out: &mut Vec<u8>) -> bool {
     };
     out.extend(src.iter().map(|b| b.to_ascii_lowercase()));
     len > width
+}
+
+fn try_pack_binary_bits_append(bits: &[u8], width: usize, out: &mut Vec<u8>) -> Option<bool> {
+    let len = bits.len();
+    let src = if len > width {
+        &bits[len - width..]
+    } else {
+        bits
+    };
+    let bit_offset = width - src.len();
+    let output_start = out.len();
+    out.resize(output_start + width.div_ceil(8), 0);
+    for (chunk_index, chunk) in src.chunks(8).enumerate() {
+        let packed = if let Ok(eight) = <[u8; 8]>::try_from(chunk) {
+            let word = u64::from_le_bytes(eight);
+            if word & 0xfefefefefefefefe != 0x3030303030303030 {
+                out.truncate(output_start);
+                return None;
+            }
+            (((word & 0x0101010101010101).wrapping_mul(0x8040201008040201)) >> 56) as u8
+        } else {
+            let mut packed = 0u8;
+            for value in chunk {
+                if !matches!(value, b'0' | b'1') {
+                    out.truncate(output_start);
+                    return None;
+                }
+                packed = (packed << 1) | (value - b'0');
+            }
+            packed << (8 - chunk.len())
+        };
+        let destination_bit = bit_offset + chunk_index * 8;
+        let destination_byte = output_start + destination_bit / 8;
+        let shift = destination_bit & 7;
+        out[destination_byte] |= packed >> shift;
+        if shift != 0 && destination_byte + 1 < out.len() {
+            out[destination_byte + 1] |= packed << (8 - shift);
+        }
+    }
+    Some(len > width)
+}
+
+fn unpack_binary_bits_into(bytes: &[u8], out: &mut [u8]) {
+    for (index, output) in out.iter_mut().enumerate() {
+        let bit = (bytes[index / 8] >> (7 - (index & 7))) & 1;
+        *output = b'0' + bit;
+    }
 }
 
 /// Emit scope transitions between two hierarchical paths: pop to the common
@@ -1059,40 +1109,78 @@ struct ConversionState {
     frame: Vec<u8>,
 }
 
-const IR_TIMESTAMP: u32 = u32::MAX;
-const IR_DUMP_OFF: u32 = u32::MAX - 1;
-const IR_DUMP_ON: u32 = u32::MAX - 2;
-const IR_INLINE_VALUE: u32 = 1 << 31;
-
-#[derive(Clone, Copy)]
-struct IrOp {
-    code: u32,
-    payload: u32,
-}
-
 struct IrTimestamp {
     tick: u64,
 }
 
-struct ChunkIr {
+struct ChunkSignalChain {
+    signal: u32,
+    prefix_last: u32,
+    enabled_last: u32,
+}
+
+struct ChunkEvents {
     sequence: u64,
     chunk_count: u64,
     input_bytes: usize,
-    operations: Vec<IrOp>,
+    fst_stream_bytes: usize,
+    changes: Vec<fst_writer::FstSignalRecord>,
+    chains: Vec<ChunkSignalChain>,
     timestamps: Vec<IrTimestamp>,
     values: Vec<u8>,
     prefix_overwide_values: u64,
     enabled_overwide_values: u64,
-    prefix_last: Vec<u32>,
-    suffix_last: Vec<u32>,
     max_timestamp: Option<u64>,
     final_dump_enabled: Option<bool>,
+    recycle_chain_slots: Vec<u32>,
+    #[cfg(feature = "profile")]
+    parse_cpu_seconds: f64,
+    #[cfg(feature = "profile")]
+    parse_wall_seconds: f64,
+    #[cfg(feature = "profile")]
+    recycled_capacity_bytes: usize,
+    #[cfg(feature = "profile")]
+    newly_allocated_capacity_bytes: usize,
 }
 
-struct EncodeChunk {
+struct ChunkBuffers {
+    changes: Vec<fst_writer::FstSignalRecord>,
+    chains: Vec<ChunkSignalChain>,
+    timestamps: Vec<IrTimestamp>,
+    values: Vec<u8>,
+    chain_slots: Vec<u32>,
+}
+
+impl ChunkBuffers {
+    fn new(input_bytes: usize) -> Self {
+        Self {
+            changes: Vec::with_capacity(input_bytes / 12),
+            chains: Vec::new(),
+            timestamps: Vec::with_capacity(input_bytes / 256),
+            values: Vec::with_capacity(input_bytes / 4),
+            chain_slots: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.changes.clear();
+        self.chains.clear();
+        self.timestamps.clear();
+        self.values.clear();
+    }
+
+    #[cfg(feature = "profile")]
+    fn vector_capacity_bytes(&self) -> usize {
+        self.changes.capacity() * std::mem::size_of::<fst_writer::FstSignalRecord>()
+            + self.chains.capacity() * std::mem::size_of::<ChunkSignalChain>()
+            + self.timestamps.capacity() * std::mem::size_of::<IrTimestamp>()
+            + self.values.capacity()
+            + self.chain_slots.capacity() * std::mem::size_of::<u32>()
+    }
+}
+
+struct EncodeSectionStart {
     sequence: u64,
-    input_bytes: usize,
-    chunks: Vec<ChunkIr>,
     incoming_frame: Vec<u8>,
     incoming_tick: u64,
     incoming_time_seen: bool,
@@ -1100,16 +1188,66 @@ struct EncodeChunk {
     first_file_section: bool,
 }
 
-impl EncodeChunk {
-    fn append(&mut self, other: EncodeChunk) {
-        self.input_bytes += other.input_bytes;
-        self.chunks.extend(other.chunks);
-    }
+enum EncodeMessage {
+    Start(EncodeSectionStart),
+    Chunk(ChunkEvents),
+    Finish,
 }
 
 struct EncodedChunk {
     sequence: u64,
     section: fst_writer::EncodedFstSection,
+    #[cfg(feature = "profile")]
+    encode_seconds: f64,
+    #[cfg(feature = "profile")]
+    pack_cpu_seconds: f64,
+    #[cfg(feature = "profile")]
+    compression_seconds: f64,
+    #[cfg(feature = "profile")]
+    compression_cpu_seconds: f64,
+    #[cfg(feature = "profile")]
+    packer_input_bytes: usize,
+    #[cfg(feature = "profile")]
+    packer_worker_cpu_seconds: Vec<f64>,
+    #[cfg(feature = "profile")]
+    recycled_capacity_bytes: usize,
+    #[cfg(feature = "profile")]
+    newly_allocated_capacity_bytes: usize,
+    #[cfg(feature = "profile")]
+    arena_to_packer_copied_bytes: usize,
+}
+
+struct EncodeTimings {
+    #[cfg(feature = "profile")]
+    encode_seconds: f64,
+    #[cfg(feature = "profile")]
+    write_seconds: f64,
+    #[cfg(feature = "profile")]
+    pack_cpu_seconds: f64,
+    #[cfg(feature = "profile")]
+    compression_seconds: f64,
+    #[cfg(feature = "profile")]
+    compression_cpu_seconds: f64,
+    #[cfg(feature = "profile")]
+    assembler_cpu_seconds: f64,
+    #[cfg(feature = "profile")]
+    packer_input_bytes: usize,
+    #[cfg(feature = "profile")]
+    packer_worker_cpu_seconds: Vec<f64>,
+    #[cfg(feature = "profile")]
+    recycled_capacity_bytes: usize,
+    #[cfg(feature = "profile")]
+    newly_allocated_capacity_bytes: usize,
+    #[cfg(feature = "profile")]
+    arena_to_packer_copied_bytes: usize,
+}
+
+struct ActiveSectionEncoder {
+    sequence: u64,
+    encoder: fst_writer::FstSignalChainEncoder,
+    current_dump_enabled: bool,
+    current_tick: u64,
+    time_seen: bool,
     encode_seconds: f64,
 }
 
@@ -1117,56 +1255,113 @@ struct EncodedChunk {
 #[derive(Default)]
 struct ParallelProfile {
     parse_seconds: f64,
+    parse_cpu_seconds: f64,
     reconcile_seconds: f64,
+    coordinator_cpu_seconds: f64,
     encode_seconds: f64,
+    pack_cpu_seconds: f64,
+    compression_seconds: f64,
+    compression_cpu_seconds: f64,
     write_seconds: f64,
+    assembler_cpu_seconds: f64,
     input_bytes: usize,
-    ir_bytes: usize,
-    peak_batch_ir_bytes: usize,
+    representation_bytes: usize,
+    peak_batch_representation_bytes: usize,
+    event_count: usize,
+    value_arena_bytes: usize,
+    touched_signal_chains: usize,
+    packer_input_bytes: usize,
+    packer_worker_cpu_seconds: Vec<f64>,
+    encoder_queue_block_seconds: f64,
+    encoder_queue_high_water: usize,
+    recycled_capacity_bytes: usize,
+    newly_allocated_capacity_bytes: usize,
+    arena_to_packer_copied_bytes: usize,
 }
 
 #[cfg(feature = "profile")]
-fn chunk_ir_bytes(ir: &ChunkIr) -> usize {
-    ir.operations.len() * std::mem::size_of::<IrOp>()
+impl ParallelProfile {
+    fn record_queue(&mut self, metrics: (f64, usize)) {
+        self.encoder_queue_block_seconds += metrics.0;
+        self.encoder_queue_high_water = self.encoder_queue_high_water.max(metrics.1);
+    }
+
+    fn record_packer_workers(&mut self, cpu_seconds: &[f64]) {
+        self.packer_worker_cpu_seconds.resize(
+            self.packer_worker_cpu_seconds.len().max(cpu_seconds.len()),
+            0.0,
+        );
+        for (total, section) in self.packer_worker_cpu_seconds.iter_mut().zip(cpu_seconds) {
+            *total += section;
+        }
+    }
+}
+
+#[cfg(feature = "profile")]
+fn chunk_representation_bytes(ir: &ChunkEvents) -> usize {
+    ir.changes.len() * std::mem::size_of::<fst_writer::FstSignalRecord>()
+        + ir.chains.len() * std::mem::size_of::<ChunkSignalChain>()
         + ir.timestamps.len() * std::mem::size_of::<IrTimestamp>()
         + ir.values.len()
 }
 
 struct ChunkParser<'a> {
     schema: &'a SignalSchema,
-    ir: ChunkIr,
-    scratch: Vec<u8>,
-    prefix_last: Vec<u32>,
-    suffix_last: Vec<u32>,
+    ir: ChunkEvents,
+    chain_slots: Vec<u32>,
     local_dump_enabled: Option<bool>,
+    last_timestamp: Option<u64>,
+    current_time_ordinal: u32,
 }
 
 impl<'a> ChunkParser<'a> {
-    fn new(schema: &'a SignalSchema, chunk: &VcdChunk) -> Self {
+    fn new(schema: &'a SignalSchema, chunk: &VcdChunk, recycled: Option<ChunkBuffers>) -> Self {
+        #[cfg(feature = "profile")]
+        let was_recycled = recycled.is_some();
+        let mut buffers = recycled.unwrap_or_else(|| ChunkBuffers::new(chunk.bytes.len()));
+        buffers.clear();
+        if buffers.chain_slots.len() != schema.groups.len() {
+            buffers.chain_slots = vec![u32::MAX; schema.groups.len()];
+        }
+        #[cfg(feature = "profile")]
+        let initial_capacity = buffers.vector_capacity_bytes();
         Self {
             schema,
-            ir: ChunkIr {
+            ir: ChunkEvents {
                 sequence: chunk.sequence,
                 chunk_count: 1,
                 input_bytes: chunk.bytes.len(),
-                operations: Vec::with_capacity(chunk.bytes.len() / 12),
-                timestamps: Vec::with_capacity(chunk.bytes.len() / 256),
-                values: Vec::with_capacity(chunk.bytes.len() / 4),
+                fst_stream_bytes: 0,
+                changes: buffers.changes,
+                chains: buffers.chains,
+                timestamps: buffers.timestamps,
+                values: buffers.values,
                 prefix_overwide_values: 0,
                 enabled_overwide_values: 0,
-                prefix_last: Vec::new(),
-                suffix_last: Vec::new(),
                 max_timestamp: None,
                 final_dump_enabled: None,
+                recycle_chain_slots: Vec::new(),
+                #[cfg(feature = "profile")]
+                parse_cpu_seconds: 0.0,
+                #[cfg(feature = "profile")]
+                parse_wall_seconds: 0.0,
+                #[cfg(feature = "profile")]
+                recycled_capacity_bytes: if was_recycled { initial_capacity } else { 0 },
+                #[cfg(feature = "profile")]
+                newly_allocated_capacity_bytes: if was_recycled { 0 } else { initial_capacity },
             },
-            scratch: Vec::with_capacity(256),
-            prefix_last: vec![u32::MAX; schema.groups.len()],
-            suffix_last: vec![u32::MAX; schema.groups.len()],
+            chain_slots: buffers.chain_slots,
             local_dump_enabled: None,
+            last_timestamp: None,
+            current_time_ordinal: fst_writer::FST_FRAME_TIME_INDEX,
         }
     }
 
-    fn parse(mut self, chunk: &VcdChunk) -> Result<ChunkIr, VcdParseError> {
+    fn parse(mut self, chunk: &VcdChunk) -> Result<ChunkEvents, VcdParseError> {
+        #[cfg(feature = "profile")]
+        let cpu_started = thread_cpu_seconds();
+        #[cfg(feature = "profile")]
+        let wall_started = Instant::now();
         let mut start = 0;
         while let Some(relative) = memchr(b'\n', &chunk.bytes[start..]) {
             let line_end = start + relative;
@@ -1176,16 +1371,25 @@ impl<'a> ChunkParser<'a> {
         if start < chunk.bytes.len() {
             self.parse_line_ending_at(chunk, start, chunk.bytes.len())?;
         }
-        self.ir.prefix_last = self
-            .prefix_last
-            .into_iter()
-            .filter(|index| *index != u32::MAX)
-            .collect();
-        self.ir.suffix_last = self
-            .suffix_last
-            .into_iter()
-            .filter(|index| *index != u32::MAX)
-            .collect();
+        #[cfg(feature = "profile")]
+        {
+            self.ir.parse_cpu_seconds = thread_cpu_seconds() - cpu_started;
+            self.ir.parse_wall_seconds = wall_started.elapsed().as_secs_f64();
+            let final_capacity = self.ir.changes.capacity()
+                * std::mem::size_of::<fst_writer::FstSignalRecord>()
+                + self.ir.chains.capacity() * std::mem::size_of::<ChunkSignalChain>()
+                + self.ir.timestamps.capacity() * std::mem::size_of::<IrTimestamp>()
+                + self.ir.values.capacity()
+                + self.chain_slots.capacity() * std::mem::size_of::<u32>();
+            let initial_capacity =
+                self.ir.recycled_capacity_bytes + self.ir.newly_allocated_capacity_bytes;
+            self.ir.newly_allocated_capacity_bytes +=
+                final_capacity.saturating_sub(initial_capacity);
+        }
+        for chain in &self.ir.chains {
+            self.chain_slots[chain.signal as usize] = u32::MAX;
+        }
+        self.ir.recycle_chain_slots = self.chain_slots;
         Ok(self.ir)
     }
 
@@ -1220,18 +1424,10 @@ impl<'a> ChunkParser<'a> {
             b'$' if line.starts_with(b"$dumpoff") => {
                 self.local_dump_enabled = Some(false);
                 self.ir.final_dump_enabled = Some(false);
-                self.ir.operations.push(IrOp {
-                    code: IR_DUMP_OFF,
-                    payload: 0,
-                });
             }
             b'$' if line.starts_with(b"$dumpon") => {
                 self.local_dump_enabled = Some(true);
                 self.ir.final_dump_enabled = Some(true);
-                self.ir.operations.push(IrOp {
-                    code: IR_DUMP_ON,
-                    payload: 0,
-                });
             }
             _ => {}
         }
@@ -1244,10 +1440,12 @@ impl<'a> ChunkParser<'a> {
                 message: "chunk timestamp table exceeds u32".to_string(),
             })?;
         self.ir.timestamps.push(IrTimestamp { tick });
-        self.ir.operations.push(IrOp {
-            code: IR_TIMESTAMP,
-            payload,
-        });
+        self.current_time_ordinal = payload;
+        let delta = self
+            .last_timestamp
+            .map_or(tick, |previous| tick.saturating_sub(previous));
+        self.last_timestamp = Some(self.last_timestamp.map_or(tick, |old| old.max(tick)));
+        self.ir.fst_stream_bytes += encoded_varint_len(delta);
         Ok(())
     }
 
@@ -1270,54 +1468,98 @@ impl<'a> ChunkParser<'a> {
             return Ok(());
         }
         let meta = self.schema.groups[group as usize];
+        let dump_state = match self.local_dump_enabled {
+            None => fst_writer::FstDumpState::Prefix,
+            Some(true) => fst_writer::FstDumpState::Enabled,
+            Some(false) => fst_writer::FstDumpState::Suppressed,
+        };
         if ready && meta.width == 1 && !meta.is_real {
-            self.ir.operations.push(IrOp {
-                code: group,
-                payload: IR_INLINE_VALUE | raw[0] as u32,
-            });
-            self.record_last_change(group)?;
+            self.ir.fst_stream_bytes += 1;
+            let change = fst_writer::FstSignalRecord::inline(
+                group,
+                self.current_time_ordinal,
+                raw[0],
+                dump_state,
+            )
+            .map_err(|error| worker_error(self.ir.sequence, error))?;
+            self.push_record(change)?;
             return Ok(());
         }
-        self.scratch.clear();
-        if meta.is_real {
+        let start = u32::try_from(self.ir.values.len()).map_err(|_| VcdParseError::Worker {
+            message: "chunk value arena exceeds u32".to_string(),
+        })?;
+        let (packed_binary, overwide) = if meta.is_real {
             let value = std::str::from_utf8(raw)
                 .ok()
                 .and_then(|text| text.parse::<f64>().ok())
                 .unwrap_or(f64::NAN);
-            self.scratch.extend_from_slice(&value.to_le_bytes());
-        } else if canon_bits_into(raw, meta.width as usize, &mut self.scratch) {
+            self.ir.values.extend_from_slice(&value.to_le_bytes());
+            (false, false)
+        } else if let Some(overwide) =
+            try_pack_binary_bits_append(raw, meta.width as usize, &mut self.ir.values)
+        {
+            (true, overwide)
+        } else {
+            (
+                false,
+                canon_bits_append(raw, meta.width as usize, &mut self.ir.values),
+            )
+        };
+        if overwide {
             match self.local_dump_enabled {
                 None => self.ir.prefix_overwide_values += 1,
                 Some(true) => self.ir.enabled_overwide_values += 1,
                 Some(false) => {}
             }
         }
-        let start = u32::try_from(self.ir.values.len()).map_err(|_| VcdParseError::Worker {
-            message: "chunk value arena exceeds u32".to_string(),
-        })?;
-        if start >= IR_INLINE_VALUE {
-            return Err(VcdParseError::Worker {
-                message: "chunk value arena exceeds 2 GiB".to_string(),
-            });
+        let value_bytes = self.ir.values.len() - start as usize;
+        self.ir.fst_stream_bytes += 1 + value_bytes;
+        let change = if packed_binary {
+            fst_writer::FstSignalRecord::packed_binary(
+                group,
+                self.current_time_ordinal,
+                start,
+                dump_state,
+            )
+        } else {
+            fst_writer::FstSignalRecord::arena(group, self.current_time_ordinal, start, dump_state)
         }
-        self.ir.values.extend_from_slice(&self.scratch);
-        self.ir.operations.push(IrOp {
-            code: group,
-            payload: start,
-        });
-        self.record_last_change(group)?;
+        .map_err(|error| worker_error(self.ir.sequence, error))?;
+        self.push_record(change)?;
         Ok(())
     }
 
-    fn record_last_change(&mut self, group: u32) -> Result<(), VcdParseError> {
-        let operation =
-            u32::try_from(self.ir.operations.len() - 1).map_err(|_| VcdParseError::Worker {
-                message: "chunk operation table exceeds u32".to_string(),
-            })?;
-        match self.local_dump_enabled {
-            None => self.prefix_last[group as usize] = operation,
-            Some(true) => self.suffix_last[group as usize] = operation,
-            Some(false) => {}
+    #[inline(always)]
+    fn push_record(&mut self, change: fst_writer::FstSignalRecord) -> Result<(), VcdParseError> {
+        let record = u32::try_from(self.ir.changes.len()).map_err(|_| VcdParseError::Worker {
+            message: "chunk change table exceeds u32".to_string(),
+        })?;
+        let signal = change.signal();
+        self.ir.changes.push(change);
+        let slot = self.chain_slots[signal as usize];
+        if slot != u32::MAX {
+            let chain = &mut self.ir.chains[slot as usize];
+            match change.dump_state() {
+                fst_writer::FstDumpState::Prefix => chain.prefix_last = record,
+                fst_writer::FstDumpState::Enabled => chain.enabled_last = record,
+                fst_writer::FstDumpState::Suppressed => {}
+            }
+        } else {
+            self.chain_slots[signal as usize] = u32::try_from(self.ir.chains.len())
+                .map_err(|_| worker_error(self.ir.sequence, "chunk chain table exceeds u32"))?;
+            self.ir.chains.push(ChunkSignalChain {
+                signal,
+                prefix_last: if change.dump_state() == fst_writer::FstDumpState::Prefix {
+                    record
+                } else {
+                    fst_writer::FST_NO_CHANGE
+                },
+                enabled_last: if change.dump_state() == fst_writer::FstDumpState::Enabled {
+                    record
+                } else {
+                    fst_writer::FST_NO_CHANGE
+                },
+            });
         }
         Ok(())
     }
@@ -1381,6 +1623,25 @@ fn parse_timestamp(line: &[u8], offset: u64) -> Result<u64, VcdParseError> {
     Ok(tick)
 }
 
+fn encoded_varint_len(value: u64) -> usize {
+    ((u64::BITS - value.leading_zeros()).max(1) as usize).div_ceil(7)
+}
+
+#[cfg(feature = "profile")]
+fn thread_cpu_seconds() -> f64 {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `value` points to writable storage for the duration of the call.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut value) };
+    if result == 0 {
+        value.tv_sec as f64 + value.tv_nsec as f64 / 1_000_000_000.0
+    } else {
+        0.0
+    }
+}
+
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -1412,77 +1673,166 @@ fn write_parallel_heartbeat(
     *last_heartbeat = Instant::now();
 }
 
-fn encode_reconciled_chunk(
-    schema: &SignalSchema,
-    factory: &fst_writer::FstSectionEncoder,
-    chunk: EncodeChunk,
-) -> Result<EncodedChunk, VcdParseError> {
-    let started = Instant::now();
-    let EncodeChunk {
-        sequence,
-        chunks,
-        incoming_frame,
-        incoming_tick,
-        incoming_time_seen,
-        incoming_dumpoff,
-        first_file_section,
-        ..
-    } = chunk;
-    let mut encoder = if first_file_section {
-        factory.fresh()
-    } else {
-        factory.from_frame(&incoming_frame, incoming_tick)
+impl ActiveSectionEncoder {
+    fn new(
+        factory: &fst_writer::FstSectionEncoder,
+        start: EncodeSectionStart,
+    ) -> Result<Self, VcdParseError> {
+        let started = Instant::now();
+        let encoder = if start.first_file_section {
+            factory.fresh_signal_chains()
+        } else {
+            factory.signal_chains_from_frame(&start.incoming_frame, start.incoming_tick)
+        }
+        .map_err(|error| worker_error(start.sequence, error))?;
+        Ok(Self {
+            sequence: start.sequence,
+            encoder,
+            current_dump_enabled: !start.incoming_dumpoff,
+            current_tick: start.incoming_tick,
+            time_seen: start.incoming_time_seen,
+            encode_seconds: started.elapsed().as_secs_f64(),
+        })
     }
-    .map_err(|error| worker_error(sequence, error))?;
-    drop(incoming_frame);
-    let mut current_tick = incoming_tick;
-    let mut time_seen = incoming_time_seen;
-    let mut in_dumpoff = incoming_dumpoff;
-    for ir in chunks {
-        for operation in &ir.operations {
-            if operation.code == IR_TIMESTAMP {
-                let timestamp = &ir.timestamps[operation.payload as usize];
-                if timestamp.tick > current_tick || !time_seen {
-                    current_tick = timestamp.tick;
-                    time_seen = true;
+
+    fn apply(&mut self, mut ir: ChunkEvents) -> Result<ChunkBuffers, VcdParseError> {
+        let started = Instant::now();
+        let incoming_time_index = self.encoder.current_time_index();
+        let mut time_map = Vec::with_capacity(ir.timestamps.len());
+        for timestamp in &ir.timestamps {
+            if timestamp.tick > self.current_tick || !self.time_seen {
+                let advanced = timestamp.tick > self.current_tick;
+                self.current_tick = timestamp.tick;
+                self.time_seen = true;
+                if advanced {
+                    self.encoder
+                        .time_change(self.current_tick)
+                        .map_err(|error| worker_error(self.sequence, error))?;
                 }
-                encoder
-                    .time_change(current_tick)
-                    .map_err(|error| worker_error(sequence, error))?;
-            } else if operation.code == IR_DUMP_OFF {
-                in_dumpoff = true;
-            } else if operation.code == IR_DUMP_ON {
-                in_dumpoff = false;
-            } else if !in_dumpoff {
-                encode_ir_change(schema, &ir, *operation, &mut encoder)
-                    .map_err(|error| worker_error(sequence, error))?;
+            }
+            time_map.push(self.encoder.current_time_index());
+        }
+        for change in &mut ir.changes {
+            if change.dump_state() == fst_writer::FstDumpState::Prefix {
+                change.set_dump_state(if self.current_dump_enabled {
+                    fst_writer::FstDumpState::Enabled
+                } else {
+                    fst_writer::FstDumpState::Suppressed
+                });
+            }
+            let time_index = if change.time_index() == fst_writer::FST_FRAME_TIME_INDEX {
+                incoming_time_index
+            } else {
+                *time_map.get(change.time_index() as usize).ok_or_else(|| {
+                    worker_error(self.sequence, "change timestamp ordinal is out of bounds")
+                })?
+            };
+            change.set_time_index(time_index);
+        }
+        self.encoder
+            .apply_signal_records(&ir.changes, &ir.values)
+            .map_err(|error| worker_error(self.sequence, error))?;
+        if let Some(enabled) = ir.final_dump_enabled {
+            self.current_dump_enabled = enabled;
+        }
+        self.encode_seconds += started.elapsed().as_secs_f64();
+        ir.chains.clear();
+        ir.timestamps.clear();
+        Ok(ChunkBuffers {
+            changes: ir.changes,
+            chains: ir.chains,
+            timestamps: ir.timestamps,
+            values: ir.values,
+            chain_slots: ir.recycle_chain_slots,
+        })
+    }
+
+    fn finish(mut self) -> Result<EncodedChunk, VcdParseError> {
+        let started = Instant::now();
+        let section = self
+            .encoder
+            .encode_section()
+            .map_err(|error| worker_error(self.sequence, error))?;
+        let compression_seconds = started.elapsed().as_secs_f64();
+        #[cfg(feature = "profile")]
+        let compression_cpu_seconds = section.compression_cpu_seconds();
+        #[cfg(feature = "profile")]
+        let packer_input_bytes = section.packer_input_bytes();
+        #[cfg(feature = "profile")]
+        let packer_worker_cpu_seconds = section.worker_cpu_seconds().to_vec();
+        #[cfg(feature = "profile")]
+        let pack_cpu_seconds = section.pack_cpu_seconds();
+        #[cfg(feature = "profile")]
+        let recycled_capacity_bytes = section.recycled_capacity_bytes();
+        #[cfg(feature = "profile")]
+        let newly_allocated_capacity_bytes = section.newly_allocated_capacity_bytes();
+        #[cfg(feature = "profile")]
+        let arena_to_packer_copied_bytes = section.arena_to_packer_copied_bytes();
+        self.encode_seconds += compression_seconds;
+        Ok(EncodedChunk {
+            sequence: self.sequence,
+            section,
+            #[cfg(feature = "profile")]
+            encode_seconds: self.encode_seconds,
+            #[cfg(feature = "profile")]
+            pack_cpu_seconds,
+            #[cfg(feature = "profile")]
+            compression_seconds,
+            #[cfg(feature = "profile")]
+            compression_cpu_seconds,
+            #[cfg(feature = "profile")]
+            packer_input_bytes,
+            #[cfg(feature = "profile")]
+            packer_worker_cpu_seconds,
+            #[cfg(feature = "profile")]
+            recycled_capacity_bytes,
+            #[cfg(feature = "profile")]
+            newly_allocated_capacity_bytes,
+            #[cfg(feature = "profile")]
+            arena_to_packer_copied_bytes,
+        })
+    }
+}
+
+fn encode_worker_loop(
+    factory: &fst_writer::FstSectionEncoder,
+    receiver: mpsc::Receiver<EncodeMessage>,
+    sender: &mpsc::SyncSender<Result<EncodedChunk, VcdParseError>>,
+    recycle_sender: &mpsc::Sender<ChunkBuffers>,
+) -> Result<(), VcdParseError> {
+    let mut active: Option<ActiveSectionEncoder> = None;
+    while let Ok(message) = receiver.recv() {
+        match message {
+            EncodeMessage::Start(start) => {
+                if active.is_some() {
+                    return Err(worker_error(start.sequence, "section already active"));
+                }
+                active = Some(ActiveSectionEncoder::new(factory, start)?);
+            }
+            EncodeMessage::Chunk(ir) => {
+                let buffers = active
+                    .as_mut()
+                    .ok_or_else(|| worker_error(ir.sequence, "section not started"))?
+                    .apply(ir)?;
+                let _ = recycle_sender.send(buffers);
+            }
+            EncodeMessage::Finish => {
+                let encoder = active
+                    .take()
+                    .ok_or_else(|| worker_error(0, "section not started"))?;
+                if sender.send(encoder.finish()).is_err() {
+                    return Ok(());
+                }
             }
         }
     }
-    let section = encoder
-        .encode_section()
-        .map_err(|error| worker_error(sequence, error))?;
-    Ok(EncodedChunk {
-        sequence,
-        section,
-        encode_seconds: started.elapsed().as_secs_f64(),
-    })
-}
-
-fn encode_ir_change(
-    schema: &SignalSchema,
-    ir: &ChunkIr,
-    operation: IrOp,
-    encoder: &mut fst_writer::FstSectionEncoder,
-) -> Result<(), fst_writer::FstWriteError> {
-    let meta = schema.groups[operation.code as usize];
-    if operation.payload & IR_INLINE_VALUE != 0 {
-        encoder.signal_change_exact(meta.fst_id, &[operation.payload as u8])
-    } else {
-        let start = operation.payload as usize;
-        let len = if meta.is_real { 8 } else { meta.width as usize };
-        encoder.signal_change_exact(meta.fst_id, &ir.values[start..start + len])
+    if active.is_some() {
+        return Err(worker_error(
+            0,
+            "encoder channel closed with an active section",
+        ));
     }
+    Ok(())
 }
 
 fn worker_error(sequence: u64, error: impl std::fmt::Display) -> VcdParseError {
@@ -1701,11 +2051,31 @@ impl FstBuildHandler {
         result: Result<EncodedChunk, VcdParseError>,
         submitted: &mut VecDeque<u64>,
         completed: &mut BTreeMap<u64, fst_writer::EncodedFstSection>,
-    ) -> Result<(f64, f64), VcdParseError> {
+    ) -> Result<EncodeTimings, VcdParseError> {
         let chunk = result?;
+        #[cfg(feature = "profile")]
         let encode_seconds = chunk.encode_seconds;
+        #[cfg(feature = "profile")]
+        let pack_cpu_seconds = chunk.pack_cpu_seconds;
+        #[cfg(feature = "profile")]
+        let compression_seconds = chunk.compression_seconds;
+        #[cfg(feature = "profile")]
+        let compression_cpu_seconds = chunk.compression_cpu_seconds;
+        #[cfg(feature = "profile")]
+        let packer_input_bytes = chunk.packer_input_bytes;
+        #[cfg(feature = "profile")]
+        let packer_worker_cpu_seconds = chunk.packer_worker_cpu_seconds;
+        #[cfg(feature = "profile")]
+        let recycled_capacity_bytes = chunk.recycled_capacity_bytes;
+        #[cfg(feature = "profile")]
+        let newly_allocated_capacity_bytes = chunk.newly_allocated_capacity_bytes;
+        #[cfg(feature = "profile")]
+        let arena_to_packer_copied_bytes = chunk.arena_to_packer_copied_bytes;
         completed.insert(chunk.sequence, chunk.section);
+        #[cfg(feature = "profile")]
         let write_started = Instant::now();
+        #[cfg(feature = "profile")]
+        let cpu_started = thread_cpu_seconds();
         while let Some(sequence) = submitted.front().copied() {
             let Some(section) = completed.remove(&sequence) else {
                 break;
@@ -1716,41 +2086,48 @@ impl FstBuildHandler {
             }
             self.sections_encoded_externally = true;
         }
-        Ok((encode_seconds, write_started.elapsed().as_secs_f64()))
+        Ok(EncodeTimings {
+            #[cfg(feature = "profile")]
+            encode_seconds,
+            #[cfg(feature = "profile")]
+            write_seconds: write_started.elapsed().as_secs_f64(),
+            #[cfg(feature = "profile")]
+            pack_cpu_seconds,
+            #[cfg(feature = "profile")]
+            compression_seconds,
+            #[cfg(feature = "profile")]
+            compression_cpu_seconds,
+            #[cfg(feature = "profile")]
+            assembler_cpu_seconds: thread_cpu_seconds() - cpu_started,
+            #[cfg(feature = "profile")]
+            packer_input_bytes,
+            #[cfg(feature = "profile")]
+            packer_worker_cpu_seconds,
+            #[cfg(feature = "profile")]
+            recycled_capacity_bytes,
+            #[cfg(feature = "profile")]
+            newly_allocated_capacity_bytes,
+            #[cfg(feature = "profile")]
+            arena_to_packer_copied_bytes,
+        })
     }
 
-    fn submit_encode(
-        &mut self,
-        mut chunk: EncodeChunk,
-        sender: &mpsc::SyncSender<EncodeChunk>,
-        receiver: &mpsc::Receiver<Result<EncodedChunk, VcdParseError>>,
-        submitted: &mut VecDeque<u64>,
-        completed: &mut BTreeMap<u64, fst_writer::EncodedFstSection>,
-    ) -> Result<(f64, f64), VcdParseError> {
-        let mut timings = (0.0, 0.0);
-        loop {
-            let sequence = chunk.sequence;
-            match sender.try_send(chunk) {
-                Ok(()) => {
-                    submitted.push_back(sequence);
-                    return Ok(timings);
-                }
-                Err(mpsc::TrySendError::Full(returned)) => {
-                    chunk = returned;
-                    let encoded = receiver.recv().map_err(|_| VcdParseError::Worker {
-                        message: "encoder workers stopped before accepting all sections"
-                            .to_string(),
-                    })?;
-                    let completed_timings = self.accept_encoded(encoded, submitted, completed)?;
-                    timings.0 += completed_timings.0;
-                    timings.1 += completed_timings.1;
-                }
-                Err(mpsc::TrySendError::Disconnected(_)) => {
-                    return Err(VcdParseError::Worker {
-                        message: "encoder worker queue disconnected".to_string(),
-                    });
-                }
+    fn send_encode_message(
+        sender: &mpsc::SyncSender<EncodeMessage>,
+        message: EncodeMessage,
+    ) -> Result<(f64, usize), VcdParseError> {
+        match sender.try_send(message) {
+            Ok(()) => Ok((0.0, 1)),
+            Err(mpsc::TrySendError::Full(message)) => {
+                let started = Instant::now();
+                sender.send(message).map_err(|_| VcdParseError::Worker {
+                    message: "encoder worker queue disconnected".to_string(),
+                })?;
+                Ok((started.elapsed().as_secs_f64(), 1))
             }
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(VcdParseError::Worker {
+                message: "encoder worker queue disconnected".to_string(),
+            }),
         }
     }
 
@@ -1863,17 +2240,25 @@ impl FstBuildHandler {
         Ok(())
     }
 
-    fn reconcile_chunk_ir(&mut self, ir: ChunkIr) -> EncodeChunk {
-        let incoming_frame = self.state.frame.clone();
-        let incoming_tick = self.state.current_tick;
-        let incoming_time_seen = self.state.any_time_written;
+    fn encode_section_start(&self, sequence: u64) -> EncodeSectionStart {
+        EncodeSectionStart {
+            sequence,
+            incoming_frame: self.state.frame.clone(),
+            incoming_tick: self.state.current_tick,
+            incoming_time_seen: self.state.any_time_written,
+            incoming_dumpoff: self.state.in_dumpoff,
+            first_file_section: sequence == 0,
+        }
+    }
+
+    fn reconcile_chunk_events(&mut self, ir: &ChunkEvents) {
         let incoming_dumpoff = self.state.in_dumpoff;
         self.state.overwide_values += ir.enabled_overwide_values;
         if !incoming_dumpoff {
             self.state.overwide_values += ir.prefix_overwide_values;
-            self.apply_last_changes(&ir, &ir.prefix_last);
+            self.apply_last_changes(ir, true);
         }
-        self.apply_last_changes(&ir, &ir.suffix_last);
+        self.apply_last_changes(ir, false);
         if let Some(max_timestamp) = ir.max_timestamp {
             if max_timestamp > self.state.current_tick || !self.state.any_time_written {
                 self.state.current_tick = max_timestamp;
@@ -1884,29 +2269,31 @@ impl FstBuildHandler {
         if let Some(enabled) = ir.final_dump_enabled {
             self.state.in_dumpoff = !enabled;
         }
-        let sequence = ir.sequence;
-        let input_bytes = ir.input_bytes;
-        EncodeChunk {
-            sequence,
-            input_bytes,
-            chunks: vec![ir],
-            incoming_frame,
-            incoming_tick,
-            incoming_time_seen,
-            incoming_dumpoff,
-            first_file_section: sequence == 0,
-        }
     }
 
-    fn apply_last_changes(&mut self, ir: &ChunkIr, operations: &[u32]) {
-        for index in operations {
-            let operation = ir.operations[*index as usize];
-            let meta = self.schema.groups[operation.code as usize];
-            if operation.payload & IR_INLINE_VALUE != 0 {
-                self.store_frame(meta, &[operation.payload as u8]);
+    fn apply_last_changes(&mut self, ir: &ChunkEvents, prefix: bool) {
+        for chain in &ir.chains {
+            let record = if prefix {
+                chain.prefix_last
             } else {
-                let start = operation.payload as usize;
-                let len = if meta.is_real { 8 } else { meta.width as usize };
+                chain.enabled_last
+            };
+            if record == fst_writer::FST_NO_CHANGE {
+                continue;
+            }
+            let change = ir.changes[record as usize];
+            let meta = self.schema.groups[change.signal() as usize];
+            if change.is_inline() {
+                self.store_frame(meta, &[change.inline_value()]);
+                continue;
+            }
+            let start = change.value_offset() as usize;
+            let len = if meta.is_real { 8 } else { meta.width as usize };
+            if change.is_packed_binary() {
+                let packed_len = len.div_ceil(8);
+                let destination = &mut self.state.frame[meta.frame_offset..meta.frame_offset + len];
+                unpack_binary_bits_into(&ir.values[start..start + packed_len], destination);
+            } else {
                 self.store_frame(meta, &ir.values[start..start + len]);
             }
         }
@@ -1981,11 +2368,13 @@ impl FstBuildHandler {
         heartbeat_path: Option<&Path>,
         parse_worker_count: usize,
         encode_worker_count: usize,
+        pack_worker_count: usize,
         chunk_target: usize,
         section_target: usize,
     ) -> Result<(), VcdParseError> {
         if parse_worker_count == 0
             || encode_worker_count == 0
+            || pack_worker_count == 0
             || chunk_target == 0
             || section_target == 0
         {
@@ -1994,9 +2383,8 @@ impl FstBuildHandler {
                     .to_string(),
             });
         }
-        let parse_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(parse_worker_count)
-            .build()
+        self.encoder
+            .set_compression_workers(pack_worker_count)
             .map_err(|error| VcdParseError::Worker {
                 message: error.to_string(),
             })?;
@@ -2014,7 +2402,8 @@ impl FstBuildHandler {
         let mut last_heartbeat = Instant::now();
         #[cfg(feature = "profile")]
         let mut profile = ParallelProfile::default();
-        let mut pending: Option<EncodeChunk> = None;
+        #[cfg(feature = "profile")]
+        let pipeline_started = Instant::now();
         let cancellation = Arc::new(AtomicBool::new(false));
         let reader_cancellation = Arc::clone(&cancellation);
         let body_offset = self.body_offset;
@@ -2043,171 +2432,236 @@ impl FstBuildHandler {
                     }
                 }
             });
-            // EncodeChunk retains expanded IR (roughly 2x input on the
-            // measured corpora), so a worker-count-sized waiting queue can
-            // exceed the 1 GiB RSS contract even though every individual
-            // channel is bounded. Workers themselves provide ample
-            // concurrency; retain only a small handoff cushion beyond them.
-            let (encode_sender, encode_receiver) = mpsc::sync_channel(1);
-            let encode_receiver = Arc::new(Mutex::new(encode_receiver));
             let (encoded_sender, encoded_receiver) = mpsc::sync_channel(encode_worker_count + 2);
+            let (event_recycle_sender, event_recycle_receiver) = mpsc::channel();
+            let mut encode_senders = Vec::with_capacity(encode_worker_count);
             for factory in encoder_factories {
-                let encode_receiver = Arc::clone(&encode_receiver);
+                let (encode_sender, encode_receiver) = mpsc::sync_channel(1);
+                encode_senders.push(encode_sender);
                 let encoded_sender = encoded_sender.clone();
-                let schema = Arc::clone(&encode_schema);
-                thread_scope.spawn(move || loop {
-                    let received = encode_receiver.lock().expect("encode queue lock").recv();
-                    let Ok(chunk) = received else {
-                        break;
-                    };
+                let event_recycle_sender = event_recycle_sender.clone();
+                thread_scope.spawn(move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        encode_reconciled_chunk(&schema, &factory, chunk)
+                        encode_worker_loop(
+                            &factory,
+                            encode_receiver,
+                            &encoded_sender,
+                            &event_recycle_sender,
+                        )
                     }))
                     .unwrap_or_else(|payload| {
                         Err(VcdParseError::Worker {
                             message: panic_message(payload),
                         })
                     });
-                    if encoded_sender.send(result).is_err() {
-                        break;
+                    if let Err(error) = result {
+                        let _ = encoded_sender.send(Err(error));
                     }
                 });
             }
             drop(encoded_sender);
+            let (parsed_sender, parsed_receiver) = mpsc::sync_channel(batch_capacity);
+            let mut parse_senders = Vec::with_capacity(parse_worker_count);
+            for _ in 0..parse_worker_count {
+                let (parse_sender, parse_receiver) =
+                    mpsc::sync_channel::<(VcdChunk, Option<ChunkBuffers>)>(1);
+                parse_senders.push(parse_sender);
+                let parsed_sender = parsed_sender.clone();
+                let recycle_sender = recycle_sender.clone();
+                let schema = Arc::clone(&encode_schema);
+                thread_scope.spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        while let Ok((chunk, recycled)) = parse_receiver.recv() {
+                            let sequence = chunk.sequence;
+                            let result = ChunkParser::new(&schema, &chunk, recycled)
+                                .parse(&chunk)
+                                .map_err(|source| VcdParseError::Chunk {
+                                    sequence,
+                                    source: Box::new(source),
+                                });
+                            let _ = recycle_sender.send(chunk);
+                            if parsed_sender.send(result).is_err() {
+                                break;
+                            }
+                        }
+                    }));
+                    if let Err(payload) = result {
+                        let _ = parsed_sender.send(Err(VcdParseError::Worker {
+                            message: panic_message(payload),
+                        }));
+                    }
+                });
+            }
+            let dispatcher_sender = parsed_sender.clone();
+            thread_scope.spawn(move || {
+                let mut worker = 0usize;
+                while let Ok(message) = receiver.recv() {
+                    match message {
+                        Ok(chunk) => {
+                            let recycled = event_recycle_receiver.try_recv().ok();
+                            if parse_senders[worker].send((chunk, recycled)).is_err() {
+                                break;
+                            }
+                            worker = (worker + 1) % parse_senders.len();
+                        }
+                        Err(error) => {
+                            let _ = dispatcher_sender.send(Err(error));
+                            break;
+                        }
+                    }
+                }
+            });
+            drop(parsed_sender);
             let mut submitted = VecDeque::new();
             let mut completed = BTreeMap::new();
+            let mut active_sequence: Option<u64> = None;
+            let mut active_fst_stream_bytes = 0usize;
+            let mut active_worker = 0usize;
             let result = (|| {
-                loop {
-                    let mut chunks = Vec::with_capacity(batch_capacity);
-                    while chunks.len() < batch_capacity {
-                        match receiver.recv() {
-                            Ok(Ok(chunk)) => chunks.push(chunk),
-                            Ok(Err(error)) => return Err(error),
-                            Err(_) => break,
-                        }
-                    }
-                    if chunks.is_empty() {
-                        break;
-                    }
-                    #[cfg(feature = "profile")]
-                    let stage_started = Instant::now();
-                    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        parse_pool.install(|| {
-                            chunks
-                                .into_par_iter()
-                                .map(|chunk| {
-                                    let sequence = chunk.sequence;
-                                    let result = ChunkParser::new(&self.schema, &chunk)
-                                        .parse(&chunk)
-                                        .map_err(|source| VcdParseError::Chunk {
-                                            sequence,
-                                            source: Box::new(source),
-                                        });
-                                    let _ = recycle_sender.send(chunk);
-                                    result
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                    }))
-                    .map_err(|payload| VcdParseError::Worker {
-                        message: panic_message(payload),
-                    })?;
+                let mut parsed_pending = BTreeMap::new();
+                #[cfg(feature = "profile")]
+                let mut pending_representation_bytes = 0usize;
+                while let Ok(parsed) = parsed_receiver.recv() {
+                    let ir = parsed?;
                     #[cfg(feature = "profile")]
                     {
-                        profile.parse_seconds += stage_started.elapsed().as_secs_f64();
-                        let batch_ir_bytes: usize = parsed
-                            .iter()
-                            .filter_map(|result| result.as_ref().ok())
-                            .map(chunk_ir_bytes)
-                            .sum();
-                        profile.ir_bytes += batch_ir_bytes;
-                        profile.peak_batch_ir_bytes =
-                            profile.peak_batch_ir_bytes.max(batch_ir_bytes);
-                        profile.input_bytes += parsed
-                            .iter()
-                            .filter_map(|result| result.as_ref().ok())
-                            .map(|ir| ir.input_bytes)
-                            .sum::<usize>();
+                        let representation_bytes = chunk_representation_bytes(&ir);
+                        pending_representation_bytes += representation_bytes;
+                        profile.representation_bytes += representation_bytes;
+                        profile.peak_batch_representation_bytes = profile
+                            .peak_batch_representation_bytes
+                            .max(pending_representation_bytes);
+                        profile.parse_seconds += ir.parse_wall_seconds;
+                        profile.input_bytes += ir.input_bytes;
+                        profile.event_count += ir.changes.len();
+                        profile.value_arena_bytes += ir.values.len();
+                        profile.touched_signal_chains += ir.chains.len();
+                        profile.recycled_capacity_bytes += ir.recycled_capacity_bytes;
+                        profile.newly_allocated_capacity_bytes += ir.newly_allocated_capacity_bytes;
+                        profile.parse_cpu_seconds += ir.parse_cpu_seconds;
                     }
-                    #[cfg(feature = "profile")]
-                    let stage_started = Instant::now();
-                    for result in parsed {
-                        let ir = result?;
-                        debug_assert_eq!(ir.sequence, next_sequence);
+                    let sequence = ir.sequence;
+                    if parsed_pending.insert(sequence, ir).is_some() {
+                        return Err(worker_error(sequence, "duplicate parsed chunk sequence"));
+                    }
+                    while let Some(ir) = parsed_pending.remove(&next_sequence) {
+                        #[cfg(feature = "profile")]
+                        {
+                            pending_representation_bytes = pending_representation_bytes
+                                .saturating_sub(chunk_representation_bytes(&ir));
+                        }
+                        #[cfg(feature = "profile")]
+                        let stage_started = Instant::now();
+                        #[cfg(feature = "profile")]
+                        let cpu_started = thread_cpu_seconds();
                         next_sequence += ir.chunk_count;
                         total_bytes += ir.input_bytes as u64;
-                        let reconciled = self.reconcile_chunk_ir(ir);
-                        if let Some(existing) = pending.as_mut() {
-                            existing.append(reconciled);
-                        } else {
-                            pending = Some(reconciled);
-                        }
-                        if pending
-                            .as_ref()
-                            .is_some_and(|chunk| chunk.input_bytes >= section_target)
-                        {
-                            let chunk = pending.take().expect("pending encode chunk exists");
-                            let timings = self.submit_encode(
-                                chunk,
-                                &encode_sender,
-                                &encoded_receiver,
-                                &mut submitted,
-                                &mut completed,
+                        if active_sequence.is_none() {
+                            let start = self.encode_section_start(ir.sequence);
+                            let queue_metrics = Self::send_encode_message(
+                                &encode_senders[active_worker],
+                                EncodeMessage::Start(start),
                             )?;
                             #[cfg(feature = "profile")]
+                            profile.record_queue(queue_metrics);
+                            #[cfg(not(feature = "profile"))]
+                            let _ = queue_metrics;
+                            active_sequence = Some(ir.sequence);
+                        }
+                        active_fst_stream_bytes += ir.fst_stream_bytes;
+                        self.reconcile_chunk_events(&ir);
+                        let queue_metrics = Self::send_encode_message(
+                            &encode_senders[active_worker],
+                            EncodeMessage::Chunk(ir),
+                        )?;
+                        #[cfg(feature = "profile")]
+                        profile.record_queue(queue_metrics);
+                        #[cfg(not(feature = "profile"))]
+                        let _ = queue_metrics;
+                        if active_fst_stream_bytes >= section_target {
+                            let sequence = active_sequence.take().expect("active section exists");
+                            let queue_metrics = Self::send_encode_message(
+                                &encode_senders[active_worker],
+                                EncodeMessage::Finish,
+                            )?;
+                            #[cfg(feature = "profile")]
+                            profile.record_queue(queue_metrics);
+                            #[cfg(not(feature = "profile"))]
+                            let _ = queue_metrics;
+                            submitted.push_back(sequence);
+                            active_fst_stream_bytes = 0;
+                            active_worker = (active_worker + 1) % encode_senders.len();
+                        }
+                        #[cfg(feature = "profile")]
+                        {
+                            profile.reconcile_seconds += stage_started.elapsed().as_secs_f64();
+                            profile.coordinator_cpu_seconds += thread_cpu_seconds() - cpu_started;
+                        }
+                        while let Ok(encoded) = encoded_receiver.try_recv() {
+                            let timings =
+                                self.accept_encoded(encoded, &mut submitted, &mut completed)?;
+                            #[cfg(feature = "profile")]
                             {
-                                profile.encode_seconds += timings.0;
-                                profile.write_seconds += timings.1;
+                                profile.encode_seconds += timings.encode_seconds;
+                                profile.write_seconds += timings.write_seconds;
+                                profile.pack_cpu_seconds += timings.pack_cpu_seconds;
+                                profile.compression_seconds += timings.compression_seconds;
+                                profile.compression_cpu_seconds += timings.compression_cpu_seconds;
+                                profile.assembler_cpu_seconds += timings.assembler_cpu_seconds;
+                                profile.packer_input_bytes += timings.packer_input_bytes;
+                                profile.recycled_capacity_bytes += timings.recycled_capacity_bytes;
+                                profile.newly_allocated_capacity_bytes +=
+                                    timings.newly_allocated_capacity_bytes;
+                                profile.arena_to_packer_copied_bytes +=
+                                    timings.arena_to_packer_copied_bytes;
+                                profile.record_packer_workers(&timings.packer_worker_cpu_seconds);
                             }
                             #[cfg(not(feature = "profile"))]
                             let _ = timings;
                         }
+                        write_parallel_heartbeat(
+                            heartbeat_path,
+                            total_bytes,
+                            self.state.current_tick,
+                            &mut last_heartbeat,
+                        );
                     }
-                    #[cfg(feature = "profile")]
-                    {
-                        profile.reconcile_seconds += stage_started.elapsed().as_secs_f64();
-                    }
-                    while let Ok(encoded) = encoded_receiver.try_recv() {
-                        let timings =
-                            self.accept_encoded(encoded, &mut submitted, &mut completed)?;
-                        #[cfg(feature = "profile")]
-                        {
-                            profile.encode_seconds += timings.0;
-                            profile.write_seconds += timings.1;
-                        }
-                        #[cfg(not(feature = "profile"))]
-                        let _ = timings;
-                    }
-                    write_parallel_heartbeat(
-                        heartbeat_path,
-                        total_bytes,
-                        self.state.current_tick,
-                        &mut last_heartbeat,
-                    );
                 }
-                if let Some(chunk) = pending.take() {
-                    let timings = self.submit_encode(
-                        chunk,
-                        &encode_sender,
-                        &encoded_receiver,
-                        &mut submitted,
-                        &mut completed,
+                if !parsed_pending.is_empty() {
+                    return Err(VcdParseError::Worker {
+                        message: "parser workers stopped before all chunks were ordered"
+                            .to_string(),
+                    });
+                }
+                if let Some(sequence) = active_sequence.take() {
+                    let queue_metrics = Self::send_encode_message(
+                        &encode_senders[active_worker],
+                        EncodeMessage::Finish,
                     )?;
                     #[cfg(feature = "profile")]
-                    {
-                        profile.encode_seconds += timings.0;
-                        profile.write_seconds += timings.1;
-                    }
+                    profile.record_queue(queue_metrics);
                     #[cfg(not(feature = "profile"))]
-                    let _ = timings;
+                    let _ = queue_metrics;
+                    submitted.push_back(sequence);
                 }
-                drop(encode_sender);
+                drop(encode_senders);
                 while let Ok(encoded) = encoded_receiver.recv() {
                     let timings = self.accept_encoded(encoded, &mut submitted, &mut completed)?;
                     #[cfg(feature = "profile")]
                     {
-                        profile.encode_seconds += timings.0;
-                        profile.write_seconds += timings.1;
+                        profile.encode_seconds += timings.encode_seconds;
+                        profile.write_seconds += timings.write_seconds;
+                        profile.pack_cpu_seconds += timings.pack_cpu_seconds;
+                        profile.compression_seconds += timings.compression_seconds;
+                        profile.compression_cpu_seconds += timings.compression_cpu_seconds;
+                        profile.assembler_cpu_seconds += timings.assembler_cpu_seconds;
+                        profile.packer_input_bytes += timings.packer_input_bytes;
+                        profile.recycled_capacity_bytes += timings.recycled_capacity_bytes;
+                        profile.newly_allocated_capacity_bytes +=
+                            timings.newly_allocated_capacity_bytes;
+                        profile.arena_to_packer_copied_bytes +=
+                            timings.arena_to_packer_copied_bytes;
+                        profile.record_packer_workers(&timings.packer_worker_cpu_seconds);
                     }
                     #[cfg(not(feature = "profile"))]
                     let _ = timings;
@@ -2221,23 +2675,66 @@ impl FstBuildHandler {
                 Ok(())
             })();
             cancellation.store(true, Ordering::Relaxed);
-            drop(receiver);
+            drop(parsed_receiver);
             result
         });
         pipeline_result?;
         #[cfg(feature = "profile")]
-        eprintln!(
-            "# bwave_parallel_profile parse_s={:.6} reconcile_s={:.6} encode_s={:.6} \
-             write_s={:.6} input_bytes={} ir_bytes={} ir_per_input={:.4} peak_batch_ir_bytes={}",
-            profile.parse_seconds,
-            profile.reconcile_seconds,
-            profile.encode_seconds,
-            profile.write_seconds,
-            profile.input_bytes,
-            profile.ir_bytes,
-            profile.ir_bytes as f64 / profile.input_bytes.max(1) as f64,
-            profile.peak_batch_ir_bytes,
-        );
+        {
+            let pipeline_seconds = pipeline_started.elapsed().as_secs_f64();
+            let measured_cpu_seconds = profile.parse_cpu_seconds
+                + profile.coordinator_cpu_seconds
+                + profile.pack_cpu_seconds
+                + profile.compression_cpu_seconds
+                + profile.assembler_cpu_seconds;
+            let packer_worker_cpu_seconds = profile
+                .packer_worker_cpu_seconds
+                .iter()
+                .map(|seconds| format!("{seconds:.6}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!(
+                "# bwave_parallel_profile pipeline_s={:.6} parse_s={:.6} parse_cpu_s={:.6} \
+                 reconcile_s={:.6} coordinator_cpu_s={:.6} encode_s={:.6} pack_cpu_s={:.6} \
+                 compression_s={:.6} compression_cpu_s={:.6} write_s={:.6} \
+                 assembler_cpu_s={:.6} measured_cpu_s={:.6} measured_active_workers={:.3} \
+                 encoder_queue_block_s={:.6} encoder_queue_high_water={} input_bytes={} \
+                 representation_bytes={} representation_per_input={:.4} \
+                 peak_batch_representation_bytes={} event_count={} value_arena_bytes={} \
+                 input_to_arena_copied_bytes={} arena_to_packer_copied_bytes={} \
+                 packer_to_compressor_bytes={} touched_signal_chains={} \
+                 recycled_capacity_bytes={} newly_allocated_capacity_bytes={} \
+                 packer_worker_cpu_s={}",
+                pipeline_seconds,
+                profile.parse_seconds,
+                profile.parse_cpu_seconds,
+                profile.reconcile_seconds,
+                profile.coordinator_cpu_seconds,
+                profile.encode_seconds,
+                profile.pack_cpu_seconds,
+                profile.compression_seconds,
+                profile.compression_cpu_seconds,
+                profile.write_seconds,
+                profile.assembler_cpu_seconds,
+                measured_cpu_seconds,
+                measured_cpu_seconds / pipeline_seconds.max(f64::EPSILON),
+                profile.encoder_queue_block_seconds,
+                profile.encoder_queue_high_water,
+                profile.input_bytes,
+                profile.representation_bytes,
+                profile.representation_bytes as f64 / profile.input_bytes.max(1) as f64,
+                profile.peak_batch_representation_bytes,
+                profile.event_count,
+                profile.value_arena_bytes,
+                profile.value_arena_bytes,
+                profile.arena_to_packer_copied_bytes,
+                profile.packer_input_bytes,
+                profile.touched_signal_chains,
+                profile.recycled_capacity_bytes,
+                profile.newly_allocated_capacity_bytes,
+                packer_worker_cpu_seconds,
+            );
+        }
         Ok(())
     }
 
