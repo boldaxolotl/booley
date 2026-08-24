@@ -156,6 +156,35 @@ class TestCocotbVerdictMatrix:
         assert result.criterion_key == "sim_pass_ccfg"
         assert result.criterion_met is True
 
+    def test_named_cycle_records_are_attributed_within_batch(self, tmp_path: Path):
+        flow = _make_cocotb_flow(tmp_path)
+        out = (
+            _cocotb_output(
+                [
+                    ("test_reset", "pass", ""),
+                    ("test_count", "pass", ""),
+                    ("test_fail_assert", "pass", ""),
+                ]
+            )
+            + "CYCLES test_count 17\n"
+            + "CYCLES test_reset 3\n"
+        )
+        with (
+            patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)),
+            patch(
+                "booley.flows.sim.flow._resolve_cycle_sentinels",
+                return_value=["CYCLES"],
+            ),
+        ):
+            result = _run_cocotb(tmp_path, flow, out)
+
+        assert "test_count           PASS         17 cycles" in result.report_text
+        report = json.loads((tmp_path / "reports" / "sim_ccfg.json").read_text())
+        by_name = {test["name"]: test for test in report["tests"]}
+        assert by_name["test_reset"]["cycles"] == 3
+        assert by_name["test_count"]["cycles"] == 17
+        assert by_name["test_fail_assert"]["cycles"] is None
+
     def test_trap_rc0_with_failing_test_in_xml_is_fail(self, tmp_path: Path):
         """Regression (G3): exit code 0 with a failing test in XML is FAIL."""
         flow = _make_cocotb_flow(tmp_path)
