@@ -7,7 +7,7 @@ Project-specific overlays may be supplied by the caller or ticket context.
 ## Scope Boundaries
 
 - **Handshake deadlocks at module port boundaries** (ready/valid, req/ack): Note the FSM's role but defer full protocol analysis to the Protocol/CDC agent. Focus on internal FSM deadlocks not involving external interface protocols
-- **Unused ports**: Not your responsibility -- the Protocol/CDC and Code Style agents handle these
+- **Unused/dead RTL**: Provably behavior-neutral internal logic and non-protocol ports belong to the Optimization agent. Undriven or partially driven signals and code that is unused because required functionality is missing remain correctness issues here
 - **Optimizations** (timing, area, power, register merging): Not your responsibility -- the Optimization agent handles this
 
 ## Procedure

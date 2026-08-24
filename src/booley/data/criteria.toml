@@ -80,7 +80,7 @@ category    = "none"
 group       = "review"
 
 [review_rtl_optimization]
-description = "RTL review: missed power/performance/area wins, strict improvements only, no trade-offs (post-sim)"
+description = "RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim)"
 workflow_region = "post_sim"
 per_target  = false
 category    = "none"

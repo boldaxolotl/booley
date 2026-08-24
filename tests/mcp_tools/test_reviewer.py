@@ -1368,6 +1368,27 @@ class TestPromptConstruction:
         assert "is it REALLY necessary" in system
         assert "Size operands and intermediate expressions deliberately" in system
 
+    def test_rtl_optimization_prompt_checks_unused_and_dead_rtl(self, state_file: Path):
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--scope",
+                "rtl/mod_a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "optimization",
+            ]
+        )
+
+        system = endpoint._build_system_prompt("optimization")
+
+        assert "Unused and dead RTL" in system
+        assert "internal signals or registers written but never read" in system
+        assert "Require proof across all legal configurations" in system
+        assert "do not claim silicon savings" in system
+        assert "interface items without complete context" in system
+
     def test_rtl_user_prompt_includes_scope(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
