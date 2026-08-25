@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from contextlib import contextmanager
 from dataclasses import replace
@@ -76,20 +77,39 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
         runtime_spec.validate(project, spec, path)
 
 
-def test_validate_rejects_missing_generated_bind_source(issued, tmp_path: Path) -> None:
+@pytest.mark.parametrize("operation", ["issue", "validate"])
+def test_issuance_paths_reject_any_missing_generated_bind_source(
+    issued, tmp_path: Path, operation: str
+) -> None:
     project, spec, path, _stamp = issued
     host_skill = tmp_path / "host-skills" / "example-skill"
     (host_skill / "SKILL.md").unlink()
     host_skill.rmdir()
 
     with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
-        runtime_spec.validate(project, spec, path)
+        getattr(runtime_spec, operation)(project, spec, path)
 
     message = str(caught.value)
     assert "generated bind source" in message
     assert docker_mount_path(host_skill) in message
     assert f"{dc.HOST_SKILLS_SIDECAR}/example-skill" in message
     assert "missing" in message
+
+
+def test_generated_bind_without_source_is_rejected() -> None:
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError,
+        match=r"generated bind source for /missing-source is missing",
+    ):
+        runtime_spec._validate_bind_sources(["target=/missing-source,type=bind,readonly"])
+
+
+def test_generated_bind_without_target_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError,
+        match=re.escape(f"generated bind target for {tmp_path} is missing"),
+    ):
+        runtime_spec._validate_bind_sources([f"source={tmp_path},type=bind,readonly"])
 
 
 @pytest.mark.parametrize("operation", ["issue", "validate"])

@@ -5,7 +5,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import pytest
@@ -45,14 +45,36 @@ class TestDockerMountPath:
 
 class TestHostPathFromDockerMount:
     @patch.object(platform_paths, "IS_WINDOWS", True)
-    def test_windows_drive_conversion(self):
+    def test_windows_docker_desktop_drive_source_becomes_native(self):
         assert host_path_from_docker_mount("/c/Users/dev/project").as_posix() == (
             "C:/Users/dev/project"
         )
 
+    @patch.object(platform_paths, "IS_WINDOWS", True)
+    @patch.object(platform_paths, "Path", PureWindowsPath)
+    def test_windows_drive_root_is_absolute(self):
+        assert host_path_from_docker_mount("/c").as_posix() == "C:/"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "/host_mnt/c/Users/dev/project",
+            "/run/desktop/mnt/host/c/Users/dev/project",
+        ],
+    )
+    @patch.object(platform_paths, "IS_WINDOWS", True)
+    @patch.object(platform_paths, "Path", PureWindowsPath)
+    def test_windows_docker_daemon_drive_source_becomes_native(self, source: str):
+        assert host_path_from_docker_mount(source).as_posix() == "C:/Users/dev/project"
+
+    @patch.object(platform_paths, "IS_WINDOWS", True)
+    def test_windows_unmappable_daemon_source_has_no_native_path(self):
+        source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/hash"
+        assert host_path_from_docker_mount(source) is None
+
     @patch.object(platform_paths, "IS_WINDOWS", False)
-    def test_posix_passthrough(self):
-        assert host_path_from_docker_mount("/home/user/project") == Path("/home/user/project")
+    def test_posix_source_passes_through(self):
+        assert host_path_from_docker_mount("/home/dev/project") == Path("/home/dev/project")
 
 
 # ---------------------------------------------------------------------------

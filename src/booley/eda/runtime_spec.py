@@ -624,8 +624,18 @@ def _validate_bind_sources(mounts: list[str]) -> None:
             continue
         source = fields.get("source", "")
         target = fields.get("target", "")
+        if not source:
+            raise RuntimeSpecError(f"generated bind source for {target} is missing: {source!r}")
+        if not target:
+            raise RuntimeSpecError(f"generated bind target for {source} is missing: {target!r}")
+        host_path = host_path_from_docker_mount(source)
+        if host_path is None:
+            raise RuntimeSpecError(
+                f"generated bind source for {target} is unavailable: {source}: "
+                "Docker path has no native host mapping"
+            )
         try:
-            host_path_from_docker_mount(source).stat()
+            host_path.stat()
         except FileNotFoundError:
             raise RuntimeSpecError(
                 f"generated bind source for {target} is missing: {source}"
