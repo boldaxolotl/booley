@@ -25,19 +25,14 @@ jobs:
       python_source: ${{ steps.classify.outputs.python_source }}
       python_tests: ${{ steps.classify.outputs.python_tests }}
       image_tests: ${{ steps.classify.outputs.image_tests }}
+      native_bwave: ${{ steps.classify.outputs.native_bwave }}
       rust: ${{ steps.classify.outputs.rust }}
       docker_toolchain: ${{ steps.classify.outputs.docker_toolchain }}
       packaging: ${{ steps.classify.outputs.packaging }}
       workflow: ${{ steps.classify.outputs.workflow }}
       release: ${{ steps.classify.outputs.release }}
       full: ${{ steps.classify.outputs.full }}
-      run_docs_check: ${{ steps.classify.outputs.run_docs_check }}
-      run_lint: ${{ steps.classify.outputs.run_lint }}
-      run_test: ${{ steps.classify.outputs.run_test }}
-      run_rust_test: ${{ steps.classify.outputs.run_rust_test }}
-      run_bwave_integration: ${{ steps.classify.outputs.run_bwave_integration }}
-      run_package_artifacts: ${{ steps.classify.outputs.run_package_artifacts }}
-      run_bwave_smoke: ${{ steps.classify.outputs.run_bwave_smoke }}
+      jobs: ${{ steps.classify.outputs.jobs }}
       required_jobs: ${{ steps.classify.outputs.required_jobs }}
       diff_base: ${{ steps.classify.outputs.diff_base }}
     steps:
@@ -58,7 +53,7 @@ jobs:
 
   docs-check:
     needs: changes
-    if: needs.changes.outputs.run_docs_check == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['docs-check']
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -73,7 +68,7 @@ jobs:
 
   lint:
     needs: changes
-    if: needs.changes.outputs.run_lint == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['lint']
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -97,7 +92,7 @@ jobs:
 
   test:
     needs: changes
-    if: needs.changes.outputs.run_test == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['test']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -164,7 +159,7 @@ jobs:
 
   rust-test:
     needs: changes
-    if: needs.changes.outputs.run_rust_test == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['rust-test']
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -220,7 +215,7 @@ jobs:
 
   bwave-integration:
     needs: changes
-    if: needs.changes.outputs.run_bwave_integration == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['bwave-integration']
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -281,7 +276,7 @@ jobs:
 
   package-artifacts:
     needs: changes
-    if: needs.changes.outputs.run_package_artifacts == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['package-artifacts']
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -337,7 +332,7 @@ jobs:
   bwave-smoke:
     runs-on: ubuntu-latest
     needs: [changes, package-artifacts]
-    if: needs.changes.outputs.run_bwave_smoke == 'true'
+    if: fromJSON(needs.changes.outputs.jobs)['bwave-smoke']
     # An uncached image build compiles the EDA stack from source (~57 min
     # measured), then loads a ~6 GB image and uploads the layer cache — a
     # 60-minute budget killed the first run mid-flight. Cached rebuilds
