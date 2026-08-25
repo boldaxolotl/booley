@@ -212,6 +212,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "github.run_attempt" in cleanup["run"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="exercises the Linux CI process-group wrapper")
 def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -250,6 +251,7 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
     ]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="exercises POSIX signals and process groups")
 def test_image_validation_wrapper_cleans_promptly_on_cancellation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
