@@ -184,6 +184,7 @@ def _cmd_validate_ticket(tio, args):
         check_files=True,
         check_git=args.check_git,
         project_root=str(detect_project_root()),
+        allowed_dirty_paths=(path,),
     )
     warnings = [e for e in results if e.startswith("[warning] ")]
     errors = [e for e in results if not e.startswith("[warning] ")]

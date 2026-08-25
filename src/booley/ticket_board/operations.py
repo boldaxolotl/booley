@@ -668,7 +668,10 @@ def _merge_outer_repository(merge_into: str, merge_from: str, merge_msg: str) ->
     if checkout:
         # Merge in the existing checkout. Git itself refuses to clobber
         # uncommitted changes, but check first for a clearer error.
-        if not worktree_is_clean(checkout):
+        if not worktree_is_clean(
+            checkout,
+            ignored_unstaged_prefixes=(".booley_project/tickets/board/",),
+        ):
             print(
                 f"Error: cannot merge into '{merge_into}': its checkout at "
                 f"{checkout} has uncommitted changes",

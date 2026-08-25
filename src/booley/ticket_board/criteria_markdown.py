@@ -7,6 +7,7 @@ expects: {"mandatory": {...}, "optional": {...}}.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -94,7 +95,13 @@ def _render_bullet(key: str, val: Any) -> str:
     if isinstance(val, bool):
         return f"- **{key}**" if val else f"- **{key}**: false"
     if isinstance(val, list):
-        return f"- **{key}**: {', '.join(f'`{item}`' for item in val)}"
+        rendered = (
+            json.dumps(item, sort_keys=True, separators=(",", ":"))
+            if isinstance(item, dict)
+            else str(item)
+            for item in val
+        )
+        return f"- **{key}**: {', '.join(f'`{item}`' for item in rendered)}"
     if isinstance(val, dict):
         parts = []
         for dk, dv in val.items():
@@ -218,7 +225,7 @@ def _parse_value(text: str) -> Any:
     """Parse a bullet value into the appropriate Python type."""
     backticks = re.findall(r"`([^`]+)`", text)
     if backticks:
-        return backticks
+        return [_parse_backtick_value(value) for value in backticks]
     if text.lower() == "true":
         return True
     if text.lower() == "false":
@@ -228,6 +235,17 @@ def _parse_value(text: str) -> Any:
     if re.search(r"\w+:\s", text):
         return _parse_dict_value(text)
     return text
+
+
+def _parse_backtick_value(value: str) -> Any:
+    """Recover structured list items while preserving legacy string items."""
+    if not value.startswith("{"):
+        return value
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return parsed if isinstance(parsed, dict) else value
 
 
 def _parse_dict_value(text: str) -> dict[str, Any]:

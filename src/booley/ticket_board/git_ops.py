@@ -106,10 +106,31 @@ def find_checkout_of_branch(branch: str) -> str | None:
     return None
 
 
-def worktree_is_clean(wt_path: str) -> bool:
-    """True when *wt_path* has no uncommitted changes (untracked files ok)."""
-    r = git("-C", wt_path, "status", "--porcelain", "--untracked-files=no")
-    return bool(r) and r.returncode == 0 and not r.stdout.strip()
+def worktree_is_clean(wt_path: str, *, ignored_unstaged_prefixes: tuple[str, ...] = ()) -> bool:
+    """True when no blocking changes exist in *wt_path*.
+
+    Callers may exempt Harness-owned, unstaged filesystem state. Staged paths
+    always remain blocking because they can alter the merge index.
+    """
+    r = git("-C", wt_path, "status", "--porcelain", "-z", "--untracked-files=all")
+    if not r or r.returncode != 0:
+        return False
+    fields = [field for field in r.stdout.split("\0") if field]
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        status = record[:2]
+        path = record[3:].replace("\\", "/").removeprefix("./")
+        if "R" in status or "C" in status:
+            index += 1
+        unstaged = status == "??" or status.startswith(" ")
+        ignored = unstaged and any(path.startswith(prefix) for prefix in ignored_unstaged_prefixes)
+        if not ignored:
+            return False
+    return True
 
 
 def remove_worktree(wt_path: str) -> None:

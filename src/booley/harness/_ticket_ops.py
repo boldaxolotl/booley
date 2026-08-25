@@ -272,6 +272,7 @@ class DirectTicketOps:
             check_git=check_git,
             project_root=str(project_root),
             check_tb_files=check_tb,
+            allowed_dirty_paths=(p,),
         )
         for w in results:
             if w.startswith("[warning] "):

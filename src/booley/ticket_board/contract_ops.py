@@ -213,7 +213,7 @@ def _status_paths(repository: Path) -> list[str]:
 def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[str]:
     paths = set(contract_control_paths(surface_root))
     if not project_repository:
-        return {path for path in paths if not path.startswith(".booley_project/")}
+        return paths
     prefix = ".booley_project/"
     return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
 
@@ -239,7 +239,11 @@ def _validate_authoring_changes(
 
 def _commit_changes(repository: Path, paths: list[str], message: str) -> str:
     if paths:
-        _require_git(repository, "add", "--", *paths)
+        # Contract paths have already passed the manifest policy above. Force
+        # them through user/global ignore rules because integrated projects
+        # commonly hide ``.booley_project/`` while still tracking its control
+        # files explicitly.
+        _require_git(repository, "add", "-f", "--", *paths)
         staged = _git(repository, "diff", "--cached", "--quiet")
         if staged.returncode not in {0, 1}:
             raise ContractOperationError(

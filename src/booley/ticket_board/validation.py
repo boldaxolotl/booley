@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -1013,11 +1014,53 @@ def _check_branch_exists(branch, git_cwd):
     return None
 
 
-def _check_clean_worktree(git_cwd):
-    """Check for dirty working tree. Returns error string or None."""
+def _git_relative_paths(paths: Iterable[str | Path], git_cwd: str | Path | None) -> set[str]:
+    """Normalize caller-owned paths to Git's repository-relative spelling."""
+    root = Path(git_cwd).resolve() if git_cwd is not None else None
+    normalized: set[str] = set()
+    for raw in paths:
+        path = Path(raw)
+        if path.is_absolute():
+            if root is None:
+                continue
+            try:
+                path = path.resolve().relative_to(root)
+            except (OSError, ValueError):
+                continue
+        value = path.as_posix().removeprefix("./")
+        if value:
+            normalized.add(value)
+    return normalized
+
+
+def _porcelain_entries(output: str) -> list[tuple[str, str]]:
+    """Parse porcelain v1, including the NUL-delimited rename form."""
+    if "\0" not in output:
+        return [
+            (line[:2], line[3:].replace("\\", "/"))
+            for line in output.splitlines()
+            if len(line) >= 4
+        ]
+    fields = [field for field in output.split("\0") if field]
+    entries: list[tuple[str, str]] = []
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        status, path = record[:2], record[3:].replace("\\", "/")
+        if "R" in status or "C" in status:
+            index += 1  # consume the source path; the record names the destination
+        entries.append((status, path))
+    return entries
+
+
+def _check_clean_worktree(git_cwd, allowed_dirty_paths: Iterable[str | Path] = ()):
+    """Check for product dirt, excluding explicitly owned control artifacts."""
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -1025,7 +1068,12 @@ def _check_clean_worktree(git_cwd):
             check=False,
         )
         if result.returncode == 0:
-            dirty = [l for l in result.stdout.strip().split("\n") if l.strip()]
+            allowed = _git_relative_paths(allowed_dirty_paths, git_cwd)
+            dirty = [
+                (status, path)
+                for status, path in _porcelain_entries(result.stdout)
+                if path not in allowed
+            ]
             if dirty:
                 return f"Dirty working tree ({len(dirty)} modified files)"
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -1060,7 +1108,11 @@ def _check_no_conflict_state(git_cwd):
     return errors
 
 
-def _validate_git_state(fields: dict[str, Any], project_root: str | Path | None) -> list[str]:
+def _validate_git_state(
+    fields: dict[str, Any],
+    project_root: str | Path | None,
+    allowed_dirty_paths: Iterable[str | Path] = (),
+) -> list[str]:
     """Validate git branch existence, clean worktree, and no in-progress operations."""
     errors: list[str] = []
     git_cwd = str(project_root) if project_root else None
@@ -1071,7 +1123,7 @@ def _validate_git_state(fields: dict[str, Any], project_root: str | Path | None)
         if err:
             errors.append(err)
 
-    err = _check_clean_worktree(git_cwd)
+    err = _check_clean_worktree(git_cwd, allowed_dirty_paths)
     if err:
         errors.append(err)
 
@@ -1086,6 +1138,7 @@ def validate_ticket_fields(
     check_git: bool = False,
     project_root: str | Path | None = None,
     check_tb_files: bool = True,
+    allowed_dirty_paths: Iterable[str | Path] = (),
 ) -> list[str]:
     """Validate ticket fields. Returns list of error strings (empty = valid).
 
@@ -1122,6 +1175,6 @@ def validate_ticket_fields(
     errors.extend(criteria_warnings)
 
     if check_git:
-        errors.extend(_validate_git_state(fields, project_root))
+        errors.extend(_validate_git_state(fields, project_root, allowed_dirty_paths))
 
     return errors
