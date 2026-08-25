@@ -2837,8 +2837,10 @@ pub fn list_signals_from_cache(
         } else {
             prefix[..prefix.len() - 1].to_string()
         };
+        let signal_count = stripped.len();
         let signals: Vec<crate::output::SignalEntry> = stripped
             .iter()
+            .take(limit)
             .map(|(n, w, vt)| crate::output::SignalEntry {
                 name: n.clone(),
                 width: *w,
@@ -2866,6 +2868,7 @@ pub fn list_signals_from_cache(
             "list",
             crate::output::ListData {
                 scope_prefix,
+                signal_count,
                 clock,
                 total_ticks,
                 signals,

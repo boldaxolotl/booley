@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -43,6 +44,41 @@ _FST_VCDATA_BLOCKS = frozenset({1, 5, 8})
 # Guard against walking a corrupt/adversarial block chain forever.
 _FST_MAX_BLOCK_SCAN = 4096
 TRACE_STATUS_SCHEMA_VERSION = 1
+TRACE_METADATA_PREFIX = "TRACE_METADATA: "
+
+
+@dataclass(frozen=True)
+class TraceArtifact:
+    """A waveform proven queryable by the same B-Wave reader users invoke."""
+
+    path: Path
+    size_bytes: int
+    top_scope: str
+    signal_count: int
+    total_ticks: int
+
+    def metadata_line(self) -> str:
+        """Stable stdout marker consumed by the parent Simulation Flow."""
+        payload = {
+            "path": str(self.path),
+            "size_bytes": self.size_bytes,
+            "top_scope": self.top_scope,
+            "signal_count": self.signal_count,
+            "total_ticks": self.total_ticks,
+        }
+        return TRACE_METADATA_PREFIX + json.dumps(payload, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
+class TraceInspection:
+    """Result of validating one retained waveform at the trace seam."""
+
+    artifact: TraceArtifact | None
+    failure_reason: str = ""
+
+    @property
+    def usable(self) -> bool:
+        return self.artifact is not None
 
 
 def _utc_now() -> str:
@@ -469,6 +505,93 @@ class TraceSession:
             return None
         converted = self._convert_vcd(vcd)
         return converted if converted else vcd
+
+    def inspect(self, path: Path | None = None) -> TraceInspection:
+        """Prove that a retained store has a hierarchy and at least one signal.
+
+        The structural FST scan used by :meth:`find` is deliberately only a
+        prefilter. This probe crosses the real consumer seam with the cheap
+        ``bwave list`` hierarchy query, so malformed and zero-signal stores
+        cannot earn ``TRACE_OK`` merely because they contain a value block.
+        """
+        candidate = path or self.find()
+        if candidate is None:
+            return TraceInspection(None, "no retained trace artifact was found")
+        if candidate.suffix.lower() != ".fst":
+            return TraceInspection(
+                None,
+                f"retained trace is raw {candidate.suffix or 'data'}, not a queryable FST store",
+            )
+
+        data, failure_reason = self._read_bwave_metadata(candidate)
+        if data is None:
+            return TraceInspection(None, failure_reason)
+        top_scope = str(data["scope_prefix"])
+        signal_count = int(data["signal_count"])
+        total_ticks = int(data["total_ticks"])
+        if not top_scope:
+            return TraceInspection(None, "retained trace has no readable top scope")
+        if signal_count <= 0:
+            return TraceInspection(None, "retained trace has no signals")
+
+        artifact = TraceArtifact(
+            path=candidate,
+            size_bytes=candidate.stat().st_size,
+            top_scope=top_scope,
+            signal_count=signal_count,
+            total_ticks=total_ticks,
+        )
+        self._status["current_status"] = "usable"
+        self._status["trace_metadata"] = {
+            "path": str(artifact.path),
+            "size_bytes": artifact.size_bytes,
+            "top_scope": artifact.top_scope,
+            "signal_count": artifact.signal_count,
+            "total_ticks": artifact.total_ticks,
+        }
+        self.record_event("validated", f"{signal_count} signals under {top_scope}")
+        return TraceInspection(artifact)
+
+    @staticmethod
+    def _read_bwave_metadata(candidate: Path) -> tuple[dict[str, object] | None, str]:
+        """Run the bounded hierarchy probe and decode its JSON data object."""
+        from booley.sim.bwave_fifo import _find_bwave_bin
+
+        bwave_bin = _find_bwave_bin()
+        if not bwave_bin:
+            return None, "native B-Wave binary is unavailable for trace validation"
+        try:
+            result = subprocess.run(
+                [bwave_bin, "list", str(candidate), "--format", "json", "--limit", "1"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return None, f"B-Wave hierarchy probe failed: {exc}"
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            return (
+                None,
+                f"B-Wave could not read the retained trace (rc={result.returncode}){suffix}",
+            )
+        try:
+            payload = json.loads(result.stdout)
+            raw_data = payload["data"]
+            if not isinstance(raw_data, dict):
+                raise TypeError("data is not an object")
+            data = {
+                "scope_prefix": str(raw_data.get("scope_prefix") or "").strip(),
+                "signal_count": int(
+                    raw_data.get("signal_count", len(raw_data.get("signals", []))) or 0
+                ),
+                "total_ticks": int(raw_data.get("total_ticks", 0) or 0),
+            }
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            return None, f"B-Wave returned malformed trace metadata: {exc}"
+        return data, ""
 
     def reset_for_run(self, raw_trace_paths: tuple[Path, ...] = ()) -> None:
         """Remove generated stores that could masquerade as this run's trace.

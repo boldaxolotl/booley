@@ -2035,6 +2035,18 @@ fn test_envelope_list() {
 }
 
 #[test]
+fn test_envelope_list_limit_retains_total_signal_count() {
+    let bwave = build_bwave("test_basic.vcd", "env_list_limit");
+    let bp = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run_bwave(&["list", &bp, "--format", "json", "--limit", "1"]);
+    let _ = std::fs::remove_file(&bwave);
+    assert_eq!(code, 0, "list failed: {}", stderr);
+    let payload: serde_json::Value = serde_json::from_str(&stdout).expect("valid list JSON");
+    assert_eq!(payload["data"]["signals"].as_array().unwrap().len(), 1);
+    assert!(payload["data"]["signal_count"].as_u64().unwrap() > 1);
+}
+
+#[test]
 fn test_envelope_value() {
     let bwave = build_bwave("test_basic.vcd", "env_value");
     let bp = bwave.to_string_lossy().to_string();

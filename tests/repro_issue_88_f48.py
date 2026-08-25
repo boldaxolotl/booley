@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,15 @@ def test_trace_enabled_cocotb_run_rejects_a_store_with_no_readable_hierarchy(
             encoding="utf-8",
         )
         (tmp_path / "trace.fst").write_bytes(MINIMAL_FST_BYTES)
-        return ["focused traced sim output\n"], SimpleNamespace(returncode=0), False
+        return (
+            ["focused traced sim output\n"],
+            SimpleNamespace(
+                returncode=0,
+                pid=os.getpid(),
+                poll=lambda: 0,
+            ),
+            False,
+        )
 
     with (
         patch.object(
@@ -67,7 +76,8 @@ def test_trace_enabled_cocotb_run_rejects_a_store_with_no_readable_hierarchy(
     # probe establishes a top scope and at least one signal.
     assert rc == 1
     assert "TRACE_OK:" not in stdout
-    assert TraceSession(tmp_path).find() is None
+    session = TraceSession(tmp_path)
+    assert session.inspect(session.find()).usable is False
 
 
 def test_focused_cocotb_stdout_summarizes_unselected_skips(
@@ -102,3 +112,5 @@ def test_focused_cocotb_stdout_summarizes_unselected_skips(
     assert "test_079" not in stdout
     assert "test_079" not in combined
     assert "79 skipped" in stdout
+    full_json = json.loads((tmp_path / "cocotb_results.json").read_text(encoding="utf-8"))
+    assert any(test["name"] == "test_079" for test in full_json["tests"])

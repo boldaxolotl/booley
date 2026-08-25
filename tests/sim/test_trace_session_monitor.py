@@ -80,6 +80,39 @@ class TestStallKill:
 
 
 class TestTraceStatusManifest:
+    def test_inspection_records_queryable_trace_metadata(self, tmp_path, monkeypatch):
+        trace = tmp_path / "trace.fst"
+        trace.write_bytes(MINIMAL_FST_BYTES)
+        monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "scope_prefix": "tb.dut",
+                            "signal_count": 42,
+                            "total_ticks": 900,
+                            "signals": [{"name": "clk"}],
+                        }
+                    }
+                ),
+                stderr="",
+            ),
+        )
+
+        inspection = TraceSession(tmp_path).inspect(trace)
+
+        assert inspection.usable is True
+        assert inspection.artifact is not None
+        assert inspection.artifact.top_scope == "tb.dut"
+        assert inspection.artifact.signal_count == 42
+        status = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
+        assert status["trace_metadata"]["total_ticks"] == 900
+
     def test_postprocess_retries_unscoped_when_scoped_build_writes_no_cache(
         self,
         tmp_path,

@@ -269,7 +269,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints com
 Key Flow-specific controls:
 
 - `elab`: `--standalone` also proves every RTL module elaborates from its declaring file
-- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run
+- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation

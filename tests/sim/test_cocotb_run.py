@@ -370,6 +370,8 @@ def test_parse_args_round_trip():
             "--trace",
             "--plusarg",
             "verbose",
+            "--result-verbosity",
+            "full",
         ]
     )
     assert args.build_dir == "build/sim"
@@ -382,6 +384,7 @@ def test_parse_args_round_trip():
     assert args.max_rundir_bytes == 1000
     assert args.trace is True
     assert args.plusargs == ["verbose"]
+    assert args.result_verbosity == "full"
 
 
 def test_parse_args_requires_eda_tool_and_module():

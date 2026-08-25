@@ -46,6 +46,7 @@ Icarus run-half already uses.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -66,6 +67,7 @@ from booley.sim.cocotb_results import (
     parse_results_xml,
     reconcile,
     recover_timeout_progress,
+    results_payload,
 )
 from booley.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.sim.sim_result import (
@@ -85,6 +87,7 @@ _DEFAULT_VCD_NAME = "dump.vcd"
 # The results file name, pinned inside the work dir (never guessed —
 # COCOTB_RESULTS_FILE is always set explicitly, ADR 0034 / C1).
 RESULTS_XML_NAME = "results.xml"
+FULL_RESULTS_JSON_NAME = "cocotb_results.json"
 
 # D3: the actionable stale-image error when the sandbox predates cocotb
 # support. Named as a constant so simulate's tests can assert the wording.
@@ -358,6 +361,34 @@ def _recover_partial_timeout_results(results, output: str, timed_out: bool, test
     return results
 
 
+def _persist_result_transport(
+    results,
+    work_dir: Path,
+    selected: list[str],
+    focused: bool,
+    result_verbosity: str,
+) -> tuple[str, int]:
+    """Write lossless JSON and return the requested stdout line plus skip count."""
+    (work_dir / FULL_RESULTS_JSON_NAME).write_text(
+        json.dumps(results_payload(results), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    compact = results_payload(results, selected=selected, verbosity="compact")
+    line = format_results_line(
+        results,
+        selected=selected if focused else None,
+        verbosity=result_verbosity,
+    )
+    return line, int(compact["skipped_unselected"]) if focused else 0
+
+
+def _selected_verdicts(tests: list[str], results) -> tuple[bool, list[str], list[tuple]]:
+    """Resolve the selected set and its reconciled verdicts."""
+    focused = bool(tests)
+    selected = tests or [test.name for test in results.tests]
+    return focused, selected, reconcile(selected, results)
+
+
 def _evaluate_verdict(
     output: str,
     returncode: int,
@@ -365,6 +396,7 @@ def _evaluate_verdict(
     work_dir: Path,
     results_file: Path,
     tests: list[str],
+    result_verbosity: str = "compact",
 ) -> tuple[str, bool]:
     """Parse results.xml, print the verdict sentinels, persist result files.
 
@@ -394,8 +426,7 @@ def _evaluate_verdict(
 
     # No selected list (a Target without tests.toml): every XML test is the
     # selected set — cocotb ran the module's full suite.
-    selected = tests or [t.name for t in results.tests]
-    verdicts = reconcile(selected, results)
+    focused, selected, verdicts = _selected_verdicts(tests, results)
 
     sva_errors = count_sva_errors(output)
     all_pass = bool(verdicts) and all(v == VERDICT_PASS for _, v, _ in verdicts)
@@ -404,7 +435,13 @@ def _evaluate_verdict(
     ) and not timed_out
     passed = all_pass and sva_errors == 0 and not timed_out and returncode == 0
 
-    results_line = format_results_line(results)
+    results_line, skipped_unselected = _persist_result_transport(
+        results,
+        work_dir,
+        selected,
+        focused,
+        result_verbosity,
+    )
     summary = format_summary(
         passed,
         sva_errors,
@@ -413,7 +450,8 @@ def _evaluate_verdict(
     print(results_line)
     print(summary)
     if passed:
-        print(f"\ncocotb sim PASSED ({len(selected)} tests)")
+        skipped_note = f"; {skipped_unselected} skipped" if skipped_unselected else ""
+        print(f"\ncocotb sim PASSED ({len(selected)} tests{skipped_note})")
     elif timed_out:
         print("\ncocotb sim FAILED (timed out)")
     elif inconclusive:
@@ -545,6 +583,7 @@ def run_cocotb_sim(
     timeout: int = 600,
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
+    result_verbosity: str = "compact",
 ) -> int:
     """Run the edalize-built cocotb sim once; return the process exit code.
 
@@ -607,23 +646,31 @@ def run_cocotb_sim(
         work_dir,
         results_file,
         tests,
+        result_verbosity,
     )
 
-    if vcd and trace:
-        # Both EDA tools drop dump.vcd in the run cwd (Icarus via the overlay's
-        # dump module, Verilator via cocotb's --trace-file main flag); feed it
-        # through the VCD→bwave postprocess and assert an artifact landed.
-        trace.postprocess(run_cwd / _DEFAULT_VCD_NAME)
-        found = trace.find()
-        if found is None:
-            reason = "trace requested but no queryable .fst store or .vcd was produced"
-            incident = trace.write_incident(reason, sim_proc=proc)
-            print(f"ERROR: {reason}")
-            print(f"TRACE_INCIDENT: {incident}")
-        else:
-            print(f"TRACE_OK: {found}")
+    trace_usable = _finalize_cocotb_trace(trace, run_cwd, proc) if trace else True
 
-    return 0 if passed else 1
+    return 0 if passed and trace_usable else 1
+
+
+def _finalize_cocotb_trace(trace: TraceSession, run_cwd: Path, proc) -> bool:
+    """Postprocess and validate one Cocotb waveform before claiming success."""
+    trace.postprocess(run_cwd / _DEFAULT_VCD_NAME)
+    inspection = trace.inspect(trace.find())
+    if not inspection.usable:
+        reason = (
+            f"trace requested but no queryable waveform was produced: {inspection.failure_reason}"
+        )
+        incident = trace.write_incident(reason, sim_proc=proc)
+        print(f"ERROR: {reason}")
+        print(f"TRACE_INCIDENT: {incident}")
+        return False
+    artifact = inspection.artifact
+    assert artifact is not None
+    print(f"TRACE_OK: {artifact.path}")
+    print(artifact.metadata_line())
+    return True
 
 
 def _positive_int(value: str) -> int:
@@ -697,6 +744,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="plusargs",
         help="plusarg passed to the sim (repeatable; +-prefix optional)",
     )
+    p.add_argument(
+        "--result-verbosity",
+        choices=["compact", "full"],
+        default="compact",
+        help="Cocotb result transport detail (full results always remain in artifacts)",
+    )
     return p.parse_args(argv)
 
 
@@ -714,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         max_rundir_bytes=args.max_rundir_bytes,
         sim_time_grace_s=args.sim_time_grace_s,
+        result_verbosity=args.result_verbosity,
     )
 
 
