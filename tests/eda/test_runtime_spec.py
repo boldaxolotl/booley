@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from contextlib import contextmanager
 from dataclasses import replace
@@ -106,7 +107,7 @@ def test_generated_bind_without_source_is_rejected() -> None:
 def test_generated_bind_without_target_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
-        match=rf"generated bind target for {tmp_path} is missing",
+        match=re.escape(f"generated bind target for {tmp_path} is missing"),
     ):
         runtime_spec._validate_bind_sources([f"source={tmp_path},type=bind,readonly"])
 
