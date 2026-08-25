@@ -74,6 +74,11 @@ def _make_endpoint_with_args(**kwargs):
     return endpoint
 
 
+def _fake_bwave_stats_command() -> list[str]:
+    """Return the stable fake command shared by B-Wave subprocess tests."""
+    return ["/fake/bwave", "stats", "--format", "json"]
+
+
 def test_vsc_prompt_uses_configured_testbench_dirs(tmp_path):
     # ADR 0026: configured TB dirs come from the .core tags:[tb] partition. The
     # tb fileset lists sources under verification/ and tb_alt/; source_dirs_from_core
@@ -592,6 +597,14 @@ class TestParseBwaveStats:
 class TestMechanicalMeasurementErrors:
     """Verify _run_mechanical_measurement returns (stats, error_msg, is_infra) tuples."""
 
+    @staticmethod
+    def _resolved_bwave():
+        """Keep subprocess behavior tests independent of a compiled dev binary."""
+        return patch(
+            "booley.specialists.coverage_analyst._bwave_stats_cmd",
+            side_effect=_fake_bwave_stats_command,
+        )
+
     def test_no_trace_file_returns_error(self):
         endpoint = _make_endpoint_with_args()
         with patch.object(CoverageAnalystSpecialist, "_find_trace_file", return_value=None):
@@ -606,6 +619,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
+            self._resolved_bwave(),
             patch(
                 "booley.specialists.coverage_analyst.subprocess.run",
                 side_effect=subprocess.TimeoutExpired("bwave", 120),
@@ -622,6 +636,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
+            self._resolved_bwave(),
             patch(
                 "booley.specialists.coverage_analyst.subprocess.run", side_effect=FileNotFoundError
             ),
@@ -641,6 +656,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
+            self._resolved_bwave(),
             patch("booley.specialists.coverage_analyst.subprocess.run", return_value=mock_proc),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
@@ -659,6 +675,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
+            self._resolved_bwave(),
             patch("booley.specialists.coverage_analyst.subprocess.run", return_value=mock_proc),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
@@ -676,6 +693,7 @@ class TestMechanicalMeasurementErrors:
             patch.object(
                 CoverageAnalystSpecialist, "_find_trace_file", return_value=Path("/fake/trace.fst")
             ),
+            self._resolved_bwave(),
             patch("booley.specialists.coverage_analyst.subprocess.run", return_value=mock_proc),
         ):
             stats, err, infra = endpoint._run_mechanical_measurement(Path("/fake/dir"))
@@ -1613,8 +1631,16 @@ class TestDiscoverDutScope:
             [{"name": n, "transitions": 1, "width": 1, "value_hist": {}} for n in signal_names]
         )
 
+    @staticmethod
+    def _resolve_fake_bwave(monkeypatch):
+        """Reach the mocked subprocess without requiring a compiled binary."""
+        from booley.specialists import coverage_analyst
+
+        monkeypatch.setattr(coverage_analyst, "_bwave_stats_cmd", _fake_bwave_stats_command)
+
     def test_prefix_instance_discovered(self, monkeypatch):
         """uu_aes128_encrypt found via stem suffix match."""
+        self._resolve_fake_bwave(monkeypatch)
         endpoint = self._make_endpoint("aes128_encrypt.sv")
         signals = [
             "tb_aes.uu_aes128_encrypt.key",
@@ -1636,6 +1662,7 @@ class TestDiscoverDutScope:
 
     def test_generic_uut_discovered(self, monkeypatch):
         """barrel_shifter instantiated as 'uut' under barrel_shifter_tb."""
+        self._resolve_fake_bwave(monkeypatch)
         endpoint = self._make_endpoint("barrel_shifter.sv")
         signals = [
             "barrel_shifter_tb.uut.data_in",
@@ -1657,6 +1684,7 @@ class TestDiscoverDutScope:
 
     def test_generic_dut_discovered(self, monkeypatch):
         """fifo_buffer instantiated as 'dut' under tb_fifo_buffer."""
+        self._resolve_fake_bwave(monkeypatch)
         endpoint = self._make_endpoint("fifo_buffer.sv")
         signals = [
             "tb_fifo_buffer.dut.wr_data",
@@ -1677,6 +1705,7 @@ class TestDiscoverDutScope:
         assert result == "tb_fifo_buffer.dut.*"
 
     def test_no_match_returns_none(self, monkeypatch):
+        self._resolve_fake_bwave(monkeypatch)
         endpoint = self._make_endpoint("nonexistent.sv")
         signals = ["tb.other_module.sig"]
         fake_stdout = self._fake_bwave_stats(signals)
@@ -1693,6 +1722,7 @@ class TestDiscoverDutScope:
         assert result is None
 
     def test_bwave_failure_returns_none(self, monkeypatch):
+        self._resolve_fake_bwave(monkeypatch)
         endpoint = self._make_endpoint("alu.sv")
         monkeypatch.setattr(
             subprocess,
@@ -1708,6 +1738,7 @@ class TestDiscoverDutScope:
 
     def test_prefers_stem_match_over_generic(self, monkeypatch):
         """When both a stem-suffix match and a generic 'dut' exist, prefer stem."""
+        self._resolve_fake_bwave(monkeypatch)
         endpoint = self._make_endpoint("aes.sv")
         signals = [
             "tb.uu_aes.key",

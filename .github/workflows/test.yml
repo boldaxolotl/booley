@@ -3,8 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Run on stacked PRs as well as PRs targeting main. Each optimization phase
+  # has its own reviewable base branch and must retain the same CI coverage.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -56,19 +57,6 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      # The bwave session tests cargo-build the native binary on demand when it
-      # isn't bundled (fresh checkout). Cache that build so it's ~free after the
-      # first run per platform.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: crates/bwave
-
-      # Pre-build here, where there is no per-test 120s pytest-timeout cap: a
-      # cold cargo build inside the on-demand test path can exceed that cap on
-      # a slow runner, failing the test instead of exercising it.
-      - name: Build bwave (release)
-        run: cargo build --release --manifest-path crates/bwave/Cargo.toml
-
       - name: Install package with dev deps
         run: pip install -e ".[dev]"
 
@@ -79,7 +67,10 @@ jobs:
         if: env.COVERAGE_LEG != 'true'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
-        run: pytest tests/ -q --tb=short -n 4 --dist=loadscope --basetemp "${{ runner.temp }}/pytest"
+        run: >-
+          pytest tests/ -q --tb=short -n 4 --dist=loadscope
+          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       # Fold the former standalone coverage job into the existing Linux/3.13
       # compatibility leg. This preserves its full suite and fail-under gate
@@ -87,9 +78,18 @@ jobs:
       - name: Run tests with coverage
         if: env.COVERAGE_LEG == 'true'
         run: |
-          coverage run -m pytest tests/ -q --tb=short
+          coverage run -m pytest tests/ -q --tb=short -m "not native_bwave" \
+            --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
           coverage report
           coverage xml -o coverage.xml
+
+      - name: Upload test timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: warn
 
       - name: Upload coverage artifact
         if: env.COVERAGE_LEG == 'true'
@@ -152,7 +152,7 @@ jobs:
           -A clippy::writeln-empty-string
           -A clippy::wrong-self-convention
 
-  bwave-python-test:
+  bwave-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -174,14 +174,42 @@ jobs:
       - name: Build bwave (debug)
         run: cargo build --locked --manifest-path crates/bwave/Cargo.toml
 
-      - name: Install Python test dependency
-        run: pip install pytest==8.4.2
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
 
-      - name: Run all BWave Python tests
+      - name: Run B-Wave crate Python tests
         shell: bash
         run: |
           test -x crates/bwave/target/debug/bwave
-          pytest crates/bwave/tests/test_*.py -q --tb=short -rs
+          pytest crates/bwave/tests/test_*.py -q --tb=short -rs \
+            --durations=30 --junitxml="${RUNNER_TEMP}/bwave-crate.xml"
+
+      - name: Run native B-Wave wrapper and contract tests
+        shell: bash
+        run: |
+          test -x crates/bwave/target/debug/bwave
+          pytest tests/ -m native_bwave -q --tb=short -rs \
+            --durations=30 --junitxml="${RUNNER_TEMP}/bwave-native.xml"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse(Path(os.environ["RUNNER_TEMP"]) / "bwave-native.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          executed = sum(int(suite.attrib["tests"]) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
+          assert executed == 11, f"expected 11 native B-Wave tests, executed {executed}"
+          assert skipped == 0, f"native B-Wave tests skipped unexpectedly: {skipped}"
+          PY
+
+      - name: Upload B-Wave timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-bwave-integration
+          path: ${{ runner.temp }}/bwave-*.xml
+          if-no-files-found: warn
 
   package-artifacts:
     runs-on: ubuntu-latest
