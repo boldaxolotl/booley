@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import itertools
 import os
 import subprocess
 import sys
+
+from .container_names import next_ci_container_name
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 IMAGE = "booley-sandbox"
-_CONTAINER_SEQUENCE = itertools.count(1)
 BASE_FLAGS = [
     "docker",
     "run",
@@ -46,9 +46,9 @@ def red(msg: str) -> None:
 
 def run(cmd_str: str, timeout: int = 30) -> tuple[int, str]:
     command = list(BASE_FLAGS)
-    name_prefix = os.environ.get("BOOLEY_DOCKER_NAME_PREFIX")
-    if name_prefix:
-        command += ["--name", f"{name_prefix}-{next(_CONTAINER_SEQUENCE)}"]
+    container_name = next_ci_container_name()
+    if container_name:
+        command += ["--name", container_name]
     command += [IMAGE, "bash", "-c", cmd_str]
     try:
         r = subprocess.run(

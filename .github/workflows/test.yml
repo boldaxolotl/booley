@@ -374,7 +374,7 @@ jobs:
             run: >-
               .github/scripts/run_with_container_cleanup.sh
               "${BOOLEY_DOCKER_NAME_PREFIX}"
-              python tests/docker/isolation/run_isolation_tests.py
+              python -m tests.docker.isolation.run_isolation_tests
 
           - name: Run FIFO pipeline smoke test
             env:

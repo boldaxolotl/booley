@@ -74,6 +74,11 @@ def _make_endpoint_with_args(**kwargs):
     return endpoint
 
 
+def _fake_bwave_stats_command() -> list[str]:
+    """Return the stable fake command shared by B-Wave subprocess tests."""
+    return ["/fake/bwave", "stats", "--format", "json"]
+
+
 def test_vsc_prompt_uses_configured_testbench_dirs(tmp_path):
     # ADR 0026: configured TB dirs come from the .core tags:[tb] partition. The
     # tb fileset lists sources under verification/ and tb_alt/; source_dirs_from_core
@@ -597,7 +602,7 @@ class TestMechanicalMeasurementErrors:
         """Keep subprocess behavior tests independent of a compiled dev binary."""
         return patch(
             "booley.specialists.coverage_analyst._bwave_stats_cmd",
-            return_value=["/fake/bwave", "stats", "--format", "json"],
+            side_effect=_fake_bwave_stats_command,
         )
 
     def test_no_trace_file_returns_error(self):
@@ -1631,11 +1636,7 @@ class TestDiscoverDutScope:
         """Reach the mocked subprocess without requiring a compiled binary."""
         from booley.specialists import coverage_analyst
 
-        monkeypatch.setattr(
-            coverage_analyst,
-            "_bwave_stats_cmd",
-            lambda: ["/fake/bwave", "stats", "--format", "json"],
-        )
+        monkeypatch.setattr(coverage_analyst, "_bwave_stats_cmd", _fake_bwave_stats_command)
 
     def test_prefix_instance_discovered(self, monkeypatch):
         """uu_aes128_encrypt found via stem suffix match."""
