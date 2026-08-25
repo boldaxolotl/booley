@@ -1819,6 +1819,43 @@ class TestFileBasedInterpretation:
         assert "Fmax 500 MHz" in result.report_text
         assert "slack +2.000 ns" in result.report_text
 
+    def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
+        """A clock label without numeric setup/hold evidence cannot complete PPA."""
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(
+                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+                encoding="utf-8",
+            )
+            (build_dir / "openroad.log").write_text(
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA\n"
+                "Design area 7000 u^2 50% utilization.\n",
+                encoding="utf-8",
+            )
+            fresh = time.time() + 1
+            for stage_log in (build_dir / "yosys.log", build_dir / "openroad.log"):
+                os.utime(stage_log, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with (
+            patch.object(
+                flow,
+                "_configure_synth",
+                side_effect=lambda target, cmd: _stub_plan(tmp_path, target, mode="physical"),
+            ),
+            patch.object(flow, "_execute", side_effect=mock_execute),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "PARTIAL" in result.report_text
+        assert result.detail["lite"]["timing_complete"] is False
+        assert result.detail["lite"]["ppa_complete"] is False
+        assert not DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
+
 
 # ===========================================================================
 # Multi-config run

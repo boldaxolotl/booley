@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_bool, require_opt_str
+from booley.synthesis.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.yosys.syn_core import (
     DEFAULT_FRONTEND,
-    SYNTH_MODE_CHOICES,
     resolve_frontend,
     resolve_slang_options,
 )
@@ -49,7 +49,7 @@ __all__ = [
     "synthesis_recipe_snapshot_fingerprint",
 ]
 
-_DEFAULT_SYNTH_MODE = "physical"
+_DEFAULT_SYNTH_MODE = SynthMode.PHYSICAL
 
 
 def default_recipe_args() -> argparse.Namespace:
@@ -125,7 +125,7 @@ def resolve_synth_mode(
     flow_options: Mapping[str, Any],
     *,
     target: str,
-) -> str:
+) -> SynthMode:
     """Resolve the Target's synthesis intent at the public configuration seam."""
     if "timing_engine" in flow_options:
         raise BoundaryError(
@@ -138,14 +138,14 @@ def resolve_synth_mode(
             "synth_mode",
             field=f"Target {target!r} flow_options.synth_mode",
         )
-        or _DEFAULT_SYNTH_MODE
+        or _DEFAULT_SYNTH_MODE.value
     )
     if mode not in SYNTH_MODE_CHOICES:
         raise BoundaryError(
             f"Target {target!r} flow_options.synth_mode must be one of "
             f"{', '.join(SYNTH_MODE_CHOICES)}; got {mode!r}"
         )
-    return mode
+    return SynthMode(mode)
 
 
 def synthesis_recipe_snapshot(

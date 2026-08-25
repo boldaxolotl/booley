@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime.platform_paths import posix_relpath
+from booley.synthesis.mode import runs_openroad
 from booley.yosys import openroad_timing, syn_core
 from booley.yosys.syn_core import StaTimingConfig
 
@@ -134,7 +135,7 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
     _write_yosys_script(spec, build_dir)
     _write_recipe_artifact(spec, build_dir)
 
-    if spec.timing.mode == "physical":
+    if runs_openroad(spec.timing.mode):
         report_dir = build_dir / "reports" / "timing"
         report_dir.mkdir(parents=True, exist_ok=True)
         _write_boundary_sdc(spec.timing, build_dir)
@@ -379,9 +380,9 @@ def _render_makefile(spec: SynthSpec, build_dir: Path) -> str:
     enforcement lives with the caller (the Flow executor's budget).
     """
     mode = spec.timing.mode
-    default_target = "sta" if mode == "physical" else "yosys"
+    default_target = "sta" if runs_openroad(mode) else "yosys"
     phony = ["all", "yosys"] + (["sv2v"] if spec.frontend == "sv2v" else [])
-    if mode == "physical":
+    if runs_openroad(mode):
         phony.append("sta")
 
     lines = [
@@ -411,7 +412,7 @@ def _render_makefile(spec: SynthSpec, build_dir: Path) -> str:
         f"\tyosys -s synth.ys > yosys.log 2>&1 {_fail_tail('yosys.log')}",
         "",
     ]
-    if mode == "physical":
+    if runs_openroad(mode):
         lines += ["sta: yosys", *_sta_recipe_lines(spec), ""]
     return "\n".join(lines)
 
@@ -421,28 +422,11 @@ def _render_makefile(spec: SynthSpec, build_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def boundary_output(
-    plan: SynthPlan,
-    returncode: int,
-    *,
+def _fresh_text_reader(
+    build_dir: Path,
     is_stale: Callable[[Path], bool],
-) -> BoundaryOutcome:
-    """Rebuild the synthesis report text from the make run's file artifacts.
-
-    Concatenates the fresh stage logs + ``stat`` file (the raw material the
-    stdout parsers in asic_synthesize already understand), then re-derives the
-    Python-computed markers the legacy flow printed in-process: overall /
-    reg->reg / per-clock Fmax (``emit_timing_markers``), the OpenROAD area
-    markers, the ``STA_REPORT`` pointers, the false-pass log scan, and the sv2v
-    source-provenance hint on failure.
-
-    *is_stale* gates every artifact against the boundary command's dispatch
-    time (``SubprocessResult.dispatched_unix``) — ADR 0037 contract clause (d).
-    """
-    build_dir = plan.build_dir
-    spec = plan.spec
-    parts: list[str] = [f"WARNING: {w}" for w in plan.warnings]
-    parts.append(_recipe_summary(spec))
+) -> Callable[[str], str | None]:
+    """Return a reader that rejects missing, stale, and unreadable artifacts."""
 
     def fresh_text(name: str) -> str | None:
         path = build_dir / name
@@ -453,43 +437,64 @@ def boundary_output(
         except OSError:
             return None
 
-    def append_section(name: str, text: str) -> None:
-        parts.append(f"--- {name} ---\n{text}")
+    return fresh_text
 
-    log_names = ["yosys.log"]
-    if spec.frontend == "sv2v":
-        log_names.insert(0, "sv2v.log")
+
+def _collect_yosys_sections(
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
+) -> tuple[list[str], bool, str | None, str | None]:
+    """Collect fresh frontend/Yosys/stat/ABC evidence for one run."""
+    spec = plan.spec
+    parts = [f"WARNING: {warning}" for warning in plan.warnings]
+    parts.append(_recipe_summary(spec))
+    log_names = ["sv2v.log", "yosys.log"] if spec.frontend == "sv2v" else ["yosys.log"]
     have_yosys_log = False
     for name in log_names:
         text = fresh_text(name)
         if text is not None:
             have_yosys_log = have_yosys_log or name == "yosys.log"
-            append_section(name, text)
+            parts.append(f"--- {name} ---\n{text}")
     parameter_parts, parameter_failure = _effective_parameter_sections(spec, fresh_text)
     parts.extend(parameter_parts)
-
-    stat_text = fresh_text(f"stat_{spec.design_name}.txt")
+    stat_name = f"stat_{spec.design_name}.txt"
+    stat_text = fresh_text(stat_name)
     if stat_text is not None:
-        append_section(f"stat_{spec.design_name}.txt", stat_text)
-
+        parts.append(f"--- {stat_name} ---\n{stat_text}")
     abc_marker = _abc_delay_marker(spec.design_name, fresh_text)
     if abc_marker is not None:
         parts.append(abc_marker)
+    return parts, have_yosys_log, parameter_failure, stat_text
 
-    if spec.timing.mode == "physical":
+
+def _false_pass_failure(
+    build_dir: Path,
+    returncode: int,
+    have_yosys_log: bool,
+    parameter_failure: str | None,
+) -> str | None:
+    """Return a parameter/log failure that a successful make rc would hide."""
+    if returncode != 0 or not have_yosys_log:
+        return parameter_failure
+    return parameter_failure or syn_core.scan_synth_logs(build_dir)
+
+
+def boundary_output(
+    plan: SynthPlan,
+    returncode: int,
+    *,
+    is_stale: Callable[[Path], bool],
+) -> BoundaryOutcome:
+    """Rebuild synthesis output from freshness-gated make artifacts."""
+    build_dir = plan.build_dir
+    spec = plan.spec
+    fresh_text = _fresh_text_reader(build_dir, is_stale)
+    parts, have_yosys_log, parameter_failure, stat_text = _collect_yosys_sections(plan, fresh_text)
+    if runs_openroad(spec.timing.mode):
         parts.extend(_timing_sections(plan, fresh_text))
-
-    # False-pass guard (legacy do_run parity): yosys/ABC can emit ERROR: lines
-    # yet exit 0. Only meaningful when this run actually produced fresh logs.
-    forced_failure: str | None = parameter_failure
-    if returncode == 0 and have_yosys_log:
-        log_failure = syn_core.scan_synth_logs(build_dir)
-        if log_failure:
-            forced_failure = forced_failure or log_failure
-            parts.append(
-                "ERROR: synthesis log reports an error despite exit 0:\n  " + forced_failure
-            )
-
+    forced_failure = _false_pass_failure(build_dir, returncode, have_yosys_log, parameter_failure)
+    if forced_failure and forced_failure != parameter_failure:
+        parts.append("ERROR: synthesis log reports an error despite exit 0:\n  " + forced_failure)
     if returncode != 0 or forced_failure:
         provenance = _source_provenance_text(build_dir, list(spec.sources))
         if provenance:

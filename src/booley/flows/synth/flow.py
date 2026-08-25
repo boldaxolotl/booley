@@ -33,6 +33,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.synthesis.mode import SynthMode
 from booley.targets.flow_names import config_section
 from booley.yosys.syn_core import (
     FRONTEND_CHOICES,
@@ -199,9 +200,9 @@ class SynthMetrics:
     # scalars were removed in favour of this map (one entry per ``create_clock``;
     # a single-clock design has exactly one). Empty when STA reported no clock.
     per_clock: dict[str, ClockTiming] = field(default_factory=dict)
-    # Public synthesis intent. Empty only for synthetic/unit-test metrics that
+    # Public synthesis intent. None only for synthetic/unit-test metrics that
     # did not pass through the configured seam.
-    synth_mode: str = ""
+    synth_mode: SynthMode | None = None
     # Logical-mode frequency estimate derived from ABC's final liberty-mapped
     # combinational delay. This is not STA: placement, wiring, clock-to-Q, and
     # setup time are absent, so it is deliberately separate from ``per_clock``
@@ -257,6 +258,72 @@ class SynthMetrics:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Normalize string-compatible construction at the metrics interface."""
+        if isinstance(self.synth_mode, str):
+            self.synth_mode = SynthMode(self.synth_mode)
+
+    def qor_detail(self) -> dict[str, Any]:
+        """Return the canonical QoR fields shared by every report surface."""
+        detail: dict[str, Any] = {
+            "area_um2": self.area_um2,
+            "area_source": self.area_source,
+            "area_kge": self.area_kge,
+            "cells": self.cells,
+            "wire_count": self.wire_count,
+            "synth_mode": self.synth_mode.value if self.synth_mode else "",
+            "per_clock": per_clock_to_json(self.per_clock),
+            "wns_ns": self.wns_ns,
+            "whs_ns": _worst_hold_slack_ns(self),
+            "reg2reg_slack_ns": self.reg2reg_slack_ns,
+            "reg2reg_fmax_mhz": self.reg2reg_fmax_mhz,
+        }
+        if self.estimated_fmax_mhz is not None:
+            detail["estimated_fmax_mhz"] = self.estimated_fmax_mhz
+        return detail
+
+    def status_detail(self) -> dict[str, Any]:
+        """Return completion and terminal-state fields shared by reports."""
+        return {
+            "passed": self.passed,
+            "returncode": self.returncode,
+            "timed_out": self.timed_out,
+            "termination": self.termination,
+            "infra_error": self.infra_error,
+            "has_metrics": self.has_metrics,
+            "yosys_complete": self.yosys_complete,
+            "timing_complete": self.timing_complete,
+            "structural_checks_complete": self.structural_checks_complete,
+            "ppa_complete": self.ppa_complete,
+            "peak_rss_mb": self.peak_rss_mb,
+        }
+
+    def structural_detail(self) -> dict[str, Any]:
+        """Return canonical structural-check counts and verdict."""
+        return {
+            "has_critical": self.has_critical,
+            "latches": self.latches,
+            "expected_latches": self.expected_latches,
+            "unexpected_latches": self.unexpected_latches,
+            "comb_loops": self.comb_loops,
+            "multi_driven": self.multi_driven,
+        }
+
+    @property
+    def has_timing_evidence(self) -> bool:
+        """Whether OpenROAD surfaced at least one numeric timing result."""
+        scalar_evidence = (
+            self.wns_ns,
+            self.reg2reg_slack_ns,
+            self.reg2reg_fmax_mhz,
+        )
+        if any(value is not None for value in scalar_evidence):
+            return True
+        return any(
+            timing.wns_ns is not None or timing.whs_ns is not None
+            for timing in self.per_clock.values()
+        )
 
     @property
     def unexpected_latches(self) -> int:
@@ -490,17 +557,18 @@ def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
 def _parse_synth_output(
     output: str,
     elapsed_s: float,
-    synth_mode: str = "logical",
+    synth_mode: SynthMode | str = SynthMode.LOGICAL,
 ) -> SynthMetrics:
     """Parse all metrics from combined synthesis stdout/stderr."""
+    mode = SynthMode(synth_mode)
     mapped_area_um2, cells = _parse_area(output)
-    if synth_mode == "physical":
+    if mode.runs_openroad:
         area_um2 = _parse_physical_area(output)
-        area_source = "openroad_post_optimization" if area_um2 is not None else ""
+        estimated_fmax_mhz = None
     else:
         area_um2 = mapped_area_um2
-        area_source = "yosys_mapped" if area_um2 is not None else ""
-    estimated_fmax_mhz = _parse_logical_estimated_fmax(output) if synth_mode == "logical" else None
+        estimated_fmax_mhz = _parse_logical_estimated_fmax(output)
+    area_source = mode.area_source if area_um2 is not None else ""
     area_kge = area_um2 / KGE_DIVISOR if area_um2 is not None else None
     wns_ns = _parse_worst_slack(output)
     reg2reg_slack_ns = _parse_reg2reg_slack(output)
@@ -521,7 +589,7 @@ def _parse_synth_output(
         estimated_fmax_mhz=estimated_fmax_mhz,
         reg2reg_slack_ns=reg2reg_slack_ns,
         reg2reg_fmax_mhz=reg2reg_fmax_mhz,
-        synth_mode=synth_mode,
+        synth_mode=mode,
         elapsed_s=elapsed_s,
         latches=latches,
         comb_loops=comb_loops,
@@ -605,11 +673,116 @@ def _first_valid_display(
     for tgt in targets:
         cur = current_results[tgt]
         critical_path_ps = _worst_critical_path_ps(cur)
-        if cur.cells is not None and cur.synth_mode == "logical":
+        if cur.cells is not None and cur.synth_mode is SynthMode.LOGICAL:
             return [f"{cur.cells:,} cells, logical area only"]
         if cur.cells is not None and critical_path_ps is not None:
             return [f"{cur.cells:,} cells, {critical_path_ps:.0f}ps"]
     return []
+
+
+_BASELINE_DETAIL_FIELDS = (
+    "area_um2",
+    "area_source",
+    "area_kge",
+    "cells",
+    "wire_count",
+    "per_clock",
+    "estimated_fmax_mhz",
+)
+_REPORT_QOR_FIELDS = (
+    "area_kge",
+    "area_um2",
+    "area_source",
+    "cells",
+    "synth_mode",
+    "per_clock",
+    "estimated_fmax_mhz",
+    "wns_ns",
+    "whs_ns",
+    "reg2reg_slack_ns",
+    "reg2reg_fmax_mhz",
+)
+_REPORT_BASELINE_FIELDS = (
+    "area_kge",
+    "area_um2",
+    "area_source",
+    "synth_mode",
+    "cells",
+    "per_clock",
+    "estimated_fmax_mhz",
+)
+_CRITERION_METRIC_MAP = {
+    "area": "area_um2",
+    "area_um2": "area_um2",
+    "area_kge": "area_kge",
+    "cell_count": "cells",
+    "wire_count": "wire_count",
+    "critical_path_ps": "critical_path_ps",
+    "fmax_mhz": "fmax_mhz",
+    "wns_ns": "wns_ns",
+    "whs_ns": "whs_ns",
+    "period_ns": "period_ns",
+    "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
+    "reg2reg_slack_ns": "reg2reg_slack_ns",
+}
+_CRITERION_MIN_ALLOWED = ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"]
+
+
+def _select_present(detail: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """Select named fields, retaining explicit None values when present."""
+    return {name: detail[name] for name in fields if name in detail}
+
+
+def _report_qor_detail(metrics: SynthMetrics) -> dict[str, Any]:
+    """Return canonical QoR fields with absent optional timing values omitted."""
+    detail = _select_present(metrics.qor_detail(), _REPORT_QOR_FIELDS)
+    optional = {
+        "estimated_fmax_mhz",
+        "wns_ns",
+        "whs_ns",
+        "reg2reg_slack_ns",
+        "reg2reg_fmax_mhz",
+    }
+    return {
+        name: value for name, value in detail.items() if name not in optional or value is not None
+    }
+
+
+def _baseline_report_detail(metrics: SynthMetrics, baseline_ref: str) -> dict[str, Any]:
+    """Return the baseline subset used by per-target JSON reports."""
+    return {
+        "ref": baseline_ref,
+        **_select_present(metrics.qor_detail(), _REPORT_BASELINE_FIELDS),
+    }
+
+
+def _add_report_deltas(
+    report: dict[str, Any],
+    current: SynthMetrics,
+    baseline: SynthMetrics,
+    compute_delta: Any,
+) -> None:
+    """Add meaningful area and timing deltas to a per-target report."""
+    area_delta = compute_delta(current.area_kge, baseline.area_kge)
+    timing_delta = compute_delta(
+        _worst_critical_path_ps(current),
+        _worst_critical_path_ps(baseline),
+    )
+    if area_delta is not None:
+        report["delta_pct"] = round(area_delta, 1)
+    if timing_delta is not None:
+        report["timing_delta_pct"] = round(timing_delta, 1)
+
+
+def _add_baseline_criterion_detail(detail: dict[str, Any], baseline: SynthMetrics) -> None:
+    """Attach baseline QoR and recipe evidence to criterion detail."""
+    detail["baseline_metrics"] = _select_present(
+        baseline.qor_detail(),
+        _BASELINE_DETAIL_FIELDS,
+    )
+    detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = baseline.recipe_fingerprint or None
+    detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = baseline.recipe_snapshot or None
+    detail[BASELINE_RUN_EVIDENCE_DETAIL] = baseline.run_evidence or None
 
 
 def _target_summary(
@@ -618,28 +791,8 @@ def _target_summary(
 ) -> dict[str, Any]:
     """QoR + verdict for one target, as carried in the aggregate detail."""
     summary: dict[str, Any] = {
-        "passed": metrics.passed,
-        "returncode": metrics.returncode,
-        "timed_out": metrics.timed_out,
-        "termination": metrics.termination,
-        "infra_error": metrics.infra_error,
-        "has_metrics": metrics.has_metrics,
-        "yosys_complete": metrics.yosys_complete,
-        "timing_complete": metrics.timing_complete,
-        "structural_checks_complete": metrics.structural_checks_complete,
-        "ppa_complete": metrics.ppa_complete,
-        "peak_rss_mb": metrics.peak_rss_mb,
-        "area_um2": metrics.area_um2,
-        "area_source": metrics.area_source,
-        "area_kge": metrics.area_kge,
-        "cells": metrics.cells,
-        "wire_count": metrics.wire_count,
-        "synth_mode": metrics.synth_mode,
-        "per_clock": per_clock_to_json(metrics.per_clock),
-        "wns_ns": metrics.wns_ns,
-        "whs_ns": _worst_hold_slack_ns(metrics),
-        "reg2reg_slack_ns": metrics.reg2reg_slack_ns,
-        "reg2reg_fmax_mhz": metrics.reg2reg_fmax_mhz,
+        **metrics.status_detail(),
+        **metrics.qor_detail(),
         "has_critical": metrics.has_critical,
         "unexpected_latches": metrics.unexpected_latches,
         "comb_loops": metrics.comb_loops,
@@ -651,24 +804,14 @@ def _target_summary(
             **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
-    if metrics.estimated_fmax_mhz is not None:
-        summary["estimated_fmax_mhz"] = metrics.estimated_fmax_mhz
     if baseline is not None:
-        baseline_summary = {
+        summary["baseline_metrics"] = {
             "passed": baseline.passed,
             "returncode": baseline.returncode,
             "infra_error": baseline.infra_error,
             "ppa_complete": baseline.ppa_complete,
-            "area_um2": baseline.area_um2,
-            "area_source": baseline.area_source,
-            "area_kge": baseline.area_kge,
-            "cells": baseline.cells,
-            "wire_count": baseline.wire_count,
-            "per_clock": per_clock_to_json(baseline.per_clock),
+            **_select_present(baseline.qor_detail(), _BASELINE_DETAIL_FIELDS),
         }
-        if baseline.estimated_fmax_mhz is not None:
-            baseline_summary["estimated_fmax_mhz"] = baseline.estimated_fmax_mhz
-        summary["baseline_metrics"] = baseline_summary
     return summary
 
 
@@ -721,83 +864,17 @@ def _build_report_dict(
         "eda_tool": eda_tool,
         "timestamp": utc_now_rfc3339(),
         "elapsed_s": round(metrics.elapsed_s, 1),
-        "passed": metrics.passed,
-        "returncode": metrics.returncode,
-        "timed_out": metrics.timed_out,
-        "termination": metrics.termination,
-        "infra_error": metrics.infra_error,
-        "has_metrics": metrics.has_metrics,
-        "yosys_complete": metrics.yosys_complete,
-        "timing_complete": metrics.timing_complete,
-        "structural_checks_complete": metrics.structural_checks_complete,
-        "ppa_complete": metrics.ppa_complete,
-        "peak_rss_mb": metrics.peak_rss_mb,
-        "area_kge": metrics.area_kge,
-        "area_um2": metrics.area_um2,
-        "area_source": metrics.area_source,
-        "cells": metrics.cells,
-        "synth_mode": metrics.synth_mode,
-        # Fmax/critical-path are per-clock (one entry per create_clock); the old
-        # top-level scalars were removed. Aggregate wns_ns/whs_ns stay below.
-        "per_clock": per_clock_to_json(metrics.per_clock),
+        **metrics.status_detail(),
+        **_report_qor_detail(metrics),
     }
-    if metrics.estimated_fmax_mhz is not None:
-        report["estimated_fmax_mhz"] = metrics.estimated_fmax_mhz
-    # Aggregate worst setup/hold slack (ns); negative == timing VIOLATED.
-    # Informational only — timing does not gate synthesis, but the numbers
-    # belong in the report. Names mirror fpga_impl's ``wns_ns``/``whs_ns`` so a
-    # cross-Flow consumer reads the same field either way. Setup is a parsed
-    # scalar; hold is the most-pessimistic per-clock value (STA reports hold
-    # per-clock, so there is no separate aggregate to parse).
-    if metrics.wns_ns is not None:
-        report["wns_ns"] = metrics.wns_ns
-    worst_hold = _worst_hold_slack_ns(metrics)
-    if worst_hold is not None:
-        report["whs_ns"] = worst_hold
-    # Internal reg->reg critical path — the true logic Fmax, unmasked by the
-    # I/O-delay budget that can dominate the overall worst path above.
-    if metrics.reg2reg_slack_ns is not None:
-        report["reg2reg_slack_ns"] = metrics.reg2reg_slack_ns
-    if metrics.reg2reg_fmax_mhz is not None:
-        report["reg2reg_fmax_mhz"] = metrics.reg2reg_fmax_mhz
-    # Flag an I/O-bound worst path so triage/criteria consumers can tell an
-    # unclosable-by-period tail apart from a real reg->reg violation (SETUP-28).
     if _is_io_bound_critical(metrics):
         report["io_bound_critical"] = True
     if baseline_metrics and baseline_ref:
-        baseline_report = {
-            "ref": baseline_ref,
-            "area_kge": baseline_metrics.area_kge,
-            "area_um2": baseline_metrics.area_um2,
-            "area_source": baseline_metrics.area_source,
-            "synth_mode": baseline_metrics.synth_mode,
-            "cells": baseline_metrics.cells,
-            "per_clock": per_clock_to_json(baseline_metrics.per_clock),
-        }
-        if baseline_metrics.estimated_fmax_mhz is not None:
-            baseline_report["estimated_fmax_mhz"] = baseline_metrics.estimated_fmax_mhz
-        report["baseline"] = baseline_report
-        delta_pct = compute_delta(metrics.area_kge, baseline_metrics.area_kge)
-        # Timing delta compares the timing-worst clock of each run (a single
-        # representative number; the per-clock breakdown is in "per_clock").
-        timing_delta_pct = compute_delta(
-            _worst_critical_path_ps(metrics),
-            _worst_critical_path_ps(baseline_metrics),
-        )
-        if delta_pct is not None:
-            report["delta_pct"] = round(delta_pct, 1)
-        if timing_delta_pct is not None:
-            report["timing_delta_pct"] = round(timing_delta_pct, 1)
+        report["baseline"] = _baseline_report_detail(baseline_metrics, baseline_ref)
+        _add_report_deltas(report, metrics, baseline_metrics, compute_delta)
     if metrics.failure_output:
         report["failure_output"] = metrics.failure_output
-    report["conditions"] = {
-        "has_critical": metrics.has_critical,
-        "latches": metrics.latches,
-        "expected_latches": metrics.expected_latches,
-        "unexpected_latches": metrics.unexpected_latches,
-        "comb_loops": metrics.comb_loops,
-        "multi_driven": metrics.multi_driven,
-    }
+    report["conditions"] = metrics.structural_detail()
     return report
 
 
@@ -984,10 +1061,10 @@ class AsicSynthesizeFlow(BooleyFlow):
         resolved: object,
         target: str,
         work_dir: Path,
-        synth_mode: str,
+        synth_mode: SynthMode,
     ) -> None:
         """Append ``--sta-sdc``/``--default-clock`` flags (ADR 0029/0031)."""
-        if synth_mode == "logical":
+        if not synth_mode.runs_openroad:
             return
         # STA constraints from the Target's file_type:SDC fileset (ADR 0029):
         # forward one --sta-sdc per file, in EDAM fileset order. Same boundary
@@ -1039,54 +1116,20 @@ class AsicSynthesizeFlow(BooleyFlow):
         """Append the shared normalized synthesis recipe for this invocation."""
         cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
 
-    def _build_synth_cmd(self, target: str) -> list[str]:
-        """Resolve the synth Target through FuseSoC, then build the run_yosys_syn command.
-
-        ADR 0022 (decision 4): FuseSoC owns design-description. ``resolve_target``
-        runs ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing
-        the RTL sources, top module, and typed parameters. Synthesis is the
-        documented **command-gen exception**: Booley does *not* ``make``-drive
-        FuseSoC's flow — it reruns Yosys its own way (sv2v + ABC recipes +
-        optional OpenROAD), feeding the resolved RTL filelist to ``run_yosys_syn`` in
-        standalone mode (``--extra-rtl`` + ``-t``, no ``-c``). That leaves the
-        legacy ``read_file_list`` / ``get_config_defines`` config-mode path
-        intact for non-FuseSoC callers (the Step-3 purge removes it later).
-
-        Sources are passed as paths relative to the worktree
-        (resolved against the Session Runtime project root), exactly
-        like ``make -C <relpath>`` for the make-driven EDA tools. A ``--baseline``
-        re-resolve runs against a throwaway worktree with ``self.args.work_dir``
-        pointed at it, so its build dir is physically separate from the current
-        run's and cannot clobber it. Raises ``TargetResolutionError`` on setup
-        failure (caller records it as an infra error).
-
-        ADR 0037 §8: this argv is no longer executed as a subprocess — it is
-        the validated, golden-snapshotted *spec* that ``_configure_synth``
-        parses back in-process (via run_yosys_syn's own parser, so flag-shape
-        drift still fails loudly) to render the make-driven build dir. It
-        remains a genuinely runnable legacy command for dry-run display.
-        """
+    def _resolve_synth_target(self, target: str) -> Any:
+        """Clean and resolve one FuseSoC Target into its isolated build root."""
         from ..edam import work_root_for
 
         build_root = work_root_for(self.args.work_dir, self.name, target)
-        # Force a clean FuseSoC re-stage. Synthesis is the command-gen exception:
-        # it reruns yosys standalone over the resolved filelist rather than
-        # make-driving the build dir, so — unlike simulate/lint/elaborate — it
-        # gains nothing from a persisted build_root. Worse, a stale staged `src/`
-        # left by an earlier resolution silently feeds yosys OUTDATED RTL: a
-        # working-tree edit that never reached the staged copy yields wrong
-        # metrics or a phantom failure against code the author already changed
-        # (the same silently-wrong-RTL hazard as the worktree `.core` shadow bug).
-        # Removing build_root guarantees `fusesoc run --setup` copies the current
-        # sources. Best-effort: a removal failure is non-fatal — resolution still
-        # runs and will surface any real problem loudly.
         shutil.rmtree(build_root, ignore_errors=True)
-        resolved = fusesoc_registry.resolve_target(
+        return fusesoc_registry.resolve_target(
             target,
             project_root=self.args.work_dir,
             build_root=build_root,
         )
 
+    def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
+        """Freeze the normalized recipe and source evidence for one Target."""
         snapshot = synthesis_recipe_snapshot(resolved, self.args, target=target)
         recipe_fingerprint = synthesis_recipe_snapshot_fingerprint(snapshot)
         run_evidence = build_flow_run_evidence(
@@ -1100,6 +1143,16 @@ class AsicSynthesizeFlow(BooleyFlow):
             evidence = self._recipe_evidence = {}
         evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
 
+    def _build_synth_cmd(self, target: str) -> list[str]:
+        """Resolve *target* and build its validated run_yosys_syn spec argv.
+
+        FuseSoC owns design description; this command-gen exception forwards
+        its staged sources into Booley's make-driven Yosys/OpenROAD module.
+        Baselines point ``work_dir`` at a separate worktree, so resolution and
+        artifacts remain isolated. The argv also remains runnable for dry-run.
+        """
+        resolved = self._resolve_synth_target(target)
+        self._record_recipe_evidence(target, resolved)
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
         top = self._append_rtl_source_args(cmd, resolved, work_dir)
@@ -1107,13 +1160,6 @@ class AsicSynthesizeFlow(BooleyFlow):
         self._append_sta_constraint_args(cmd, resolved, target, work_dir, synth_mode)
         self._append_typed_param_args(cmd, resolved, target, top)
         self._append_synth_recipe_args(cmd, resolved, target)
-        # Key run_yosys_syn's result dir on the *target name*, not the resolved
-        # toplevel module. Without ``-w`` the run falls back to run_yosys_syn's
-        # default ``syn_result/standalone.<toplevel>/`` — so two targets that
-        # share a toplevel (e.g. a scalar and a parallel config of the same DUT)
-        # silently overwrite each other's reports. ``-w`` gives each target its
-        # own ``syn_result/<target>/`` (a ``--baseline`` re-run is isolated by
-        # its separate worktree, so no per-run suffix is needed here).
         cmd.extend(["-w", target])
         return cmd
 
@@ -1238,54 +1284,44 @@ class AsicSynthesizeFlow(BooleyFlow):
             metrics.recipe_snapshot, metrics.recipe_fingerprint, metrics.run_evidence = evidence
         return metrics
 
-    def _interpret_boundary_run(
-        self,
-        target: str,
-        plan: Any,
-        proc_result: SubprocessResult,
-        elapsed: float,
-    ) -> tuple[SynthMetrics, str]:
-        """Interpret half (ADR 0037 §8): metrics from the build dir's files.
-
-        Rebuilds the report text from the artifacts the make run left in the
-        build dir (stale-gated against dispatch time), with the boundary
-        command's own stdout/stderr as evidence up front — it carries the
-        BOOLEY_STAGE markers and any recipe failure tails.
-        """
+    def _read_boundary_output(self, plan: Any, result: SubprocessResult) -> tuple[Any, str]:
+        """Reconstruct fresh synthesis output from boundary artifacts."""
         from booley.yosys import syn_make
 
         outcome = syn_make.boundary_output(
             plan,
-            proc_result.returncode,
-            is_stale=lambda p: self._is_stale_artifact(p, proc_result.dispatched_unix or None),
+            result.returncode,
+            is_stale=lambda p: self._is_stale_artifact(p, result.dispatched_unix or None),
         )
-        output = "\n".join(
-            part for part in (proc_result.stdout, proc_result.stderr, outcome.text) if part
-        )
-        metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
+        output = "\n".join(part for part in (result.stdout, result.stderr, outcome.text) if part)
+        return outcome, output
+
+    def _apply_boundary_completion(
+        self,
+        metrics: SynthMetrics,
+        outcome: Any,
+        result: SubprocessResult,
+        output: str,
+    ) -> None:
+        """Apply terminal and mode-specific completeness policy to metrics."""
         metrics.expected_latches = _expected_latches(self.args.work_dir)
-        metrics.returncode = proc_result.returncode
-        metrics.timed_out = proc_result.timed_out
-        metrics.termination = _termination_reason(proc_result, output)
-        if proc_result.peak_rss_mb is not None:
-            metrics.peak_rss_mb = max(metrics.peak_rss_mb or 0.0, proc_result.peak_rss_mb)
-        # False-pass guard (legacy run_yosys_syn parity): an ERROR: line in the
-        # yosys/sv2v log despite make exiting 0 downgrades the run to a failure.
+        metrics.returncode = result.returncode
+        metrics.timed_out = result.timed_out
+        metrics.termination = _termination_reason(result, output)
+        if result.peak_rss_mb is not None:
+            metrics.peak_rss_mb = max(metrics.peak_rss_mb or 0.0, result.peak_rss_mb)
         if outcome.forced_failure and metrics.returncode == 0:
             metrics.returncode = 1
             metrics.termination = "eda_tool_failure"
-        # A fresh final Yosys stat file is usable stage evidence even when the
-        # later STA stage times out.  It is still not a completed PPA verdict:
-        # only a clean terminal boundary may set ppa_complete.
         metrics.yosys_complete = metrics.termination == "completed" or outcome.yosys_complete
-        timing_reported = bool(metrics.per_clock) or metrics.wns_ns is not None
         metrics.timing_complete = (
             metrics.termination == "completed"
-            and metrics.synth_mode == "physical"
-            and timing_reported
+            and metrics.synth_mode is not None
+            and metrics.synth_mode.runs_openroad
+            and metrics.has_timing_evidence
         )
         metrics.structural_checks_complete = metrics.yosys_complete
-        if metrics.synth_mode == "physical":
+        if metrics.synth_mode is not None and metrics.synth_mode.runs_openroad:
             metrics.ppa_complete = (
                 metrics.termination == "completed"
                 and metrics.area_source == "openroad_post_optimization"
@@ -1295,48 +1331,54 @@ class AsicSynthesizeFlow(BooleyFlow):
             metrics.ppa_complete = (
                 metrics.termination == "completed" and metrics.area_source == "yosys_mapped"
             )
-        # Persist the full captured output on pass AND fail — the report only
-        # carries a bounded excerpt, and the MCP layer truncates stdout, so
-        # this file is the durable copy an agent can always read back.
+
+    def _record_boundary_diagnostics(
+        self,
+        target: str,
+        metrics: SynthMetrics,
+        result: SubprocessResult,
+        elapsed: float,
+        output: str,
+    ) -> None:
+        """Persist output and surface terminal diagnostics without duplicating it."""
         metrics.log_path = self._persist_synth_log(target, output)
         metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
-
         if metrics.termination == "oom":
             logger.warning("Synth %s was killed by the cgroup OOM killer", target)
         elif metrics.termination == "resource_killed":
             logger.warning("Synth %s was resource-killed", target)
-        elif proc_result.timed_out:
+        elif result.timed_out:
             logger.warning("Synth %s timed out after %.1fs", target, elapsed)
-        elif proc_result.returncode != 0:
-            logger.warning("Synth %s failed with rc=%d", target, proc_result.returncode)
-
-        # When a run dies without producing metrics, keep the real failure (a
-        # yosys/sv2v/STA diagnostic out of the stage logs, or the make recipe's
-        # echoed log tail) instead of discarding it. Previously this path
-        # emitted a hardcoded "possible lock-path or permission issue" guess
-        # and dropped ``output`` on the floor, making the Flow unusable
-        # interactively.
-        if metrics.termination != "completed" or (
-            not metrics.has_metrics and proc_result.returncode != 0
-        ):
+        elif result.returncode != 0:
+            logger.warning("Synth %s failed with rc=%d", target, result.returncode)
+        if metrics.termination != "completed" or (not metrics.has_metrics and result.returncode):
             metrics.failure_output = _error_excerpt(output)
-            # Single line only: the multi-line excerpt already reaches the
-            # report via ``failure_output`` (and the full output is persisted
-            # above) — echoing it here too printed a third copy into captured
-            # stderr and ate the MCP layer's 12KB output budget.
             reason_lines = metrics.failure_output.splitlines()
             logger.error(
                 "Synth %s: boundary run failed (rc=%d, timed_out=%s): %s (full output: %s)",
                 target,
-                proc_result.returncode,
-                proc_result.timed_out,
+                result.returncode,
+                result.timed_out,
                 reason_lines[0] if reason_lines else "(no output)",
                 metrics.log_path or "not persisted",
             )
 
+    def _interpret_boundary_run(
+        self,
+        target: str,
+        plan: Any,
+        proc_result: SubprocessResult,
+        elapsed: float,
+    ) -> tuple[SynthMetrics, str]:
+        """Interpret a boundary result from its freshness-gated artifacts."""
+        outcome, output = self._read_boundary_output(plan, proc_result)
+        metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
+        self._apply_boundary_completion(metrics, outcome, proc_result, output)
+        self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
+
         return metrics, output
 
-    def _artifact_dirs(self, target: str, synth_mode: str) -> dict[str, str]:
+    def _artifact_dirs(self, target: str, synth_mode: SynthMode | None) -> dict[str, str]:
         """The directories holding *target*'s synth artifacts, by role.
 
         Two of them in physical mode: the build dir (Yosys/OpenROAD logs, the ``stat_*.txt``
@@ -1352,7 +1394,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """
         build_dir = self._synth_build_dir(target)
         dirs = {"build": build_dir}
-        if synth_mode == "physical":
+        if synth_mode is not None and synth_mode.runs_openroad:
             dirs["timing"] = build_dir / "reports" / "timing"
         return artifacts.artifacts_block(
             self.args.work_dir,
@@ -1841,23 +1883,15 @@ class AsicSynthesizeFlow(BooleyFlow):
 
         return baseline_results, short_sha
 
-    def _emit_target_block(
+    def _target_report_lines(
         self,
         tgt: str,
         cur: SynthMetrics,
         base: SynthMetrics | None,
-    ) -> tuple[list[str], str | None, str | None]:
-        """Render one target's report lines and run its report/criterion side effects.
-
-        Returns ``(lines, violated_message, failure_summary)``: the two message
-        slots are ``None`` when that condition doesn't apply to *tgt* (worst-slack
-        VIOLATED / not-passed, respectively) — the caller folds them into the
-        run-wide ``violated``/``failed_targets`` accumulators.
-        """
+    ) -> list[str]:
+        """Render the human-facing report lines for one target."""
         lines = [self._format_config_line(tgt, cur, base)]
         if cur.passed:
-            # Surface the QoR numbers (area/cells/timing) that otherwise
-            # live only in util/syn report files.
             lines.append(self._format_qor_line(tgt, cur))
             if cur.estimated_fmax_mhz is not None:
                 lines.append(
@@ -1877,33 +1911,36 @@ class AsicSynthesizeFlow(BooleyFlow):
                 f"[synth] {tgt}: INCONCLUSIVE -- structural counts were emitted "
                 "before the final synthesis checks completed"
             )
-        # I/O-bound worst path: period_ps won't move it — flag the real fix
-        # (declare I/O delays / false-path via the sdc knob) so the author
-        # doesn't chase a period tail that never closes (SETUP-28).
         if _is_io_bound_critical(cur):
             lines.append(self._format_io_bound_line(tgt, cur))
         if cur.has_critical:
             lines.append(self._format_critical_line(tgt, cur))
         if cur.failure_output:
             lines.append(self._format_failure_output(tgt, cur))
-        # Where the full (untruncated) synth output was persisted — the
-        # durable copy behind the bounded excerpt above.
         if cur.log_path:
             lines.append(f"[synth] {tgt}: log: {cur.log_path}")
-        # Negative worst slack == STA reported a VIOLATED timing path. Per
-        # syn_core this does NOT fail synthesis, but it must not be swallowed
-        # silently — collect it for a loud WARN line below.
+        return lines
+
+    @staticmethod
+    def _timing_violation(tgt: str, cur: SynthMetrics) -> str | None:
+        """Return one aggregate timing-violation message for *tgt*."""
         timing_violations: list[str] = []
         if cur.wns_ns is not None and cur.wns_ns < 0:
             timing_violations.append(f"setup slack {cur.wns_ns:.3f} ns")
         worst_hold = _worst_hold_slack_ns(cur)
         if worst_hold is not None and worst_hold < 0:
             timing_violations.append(f"hold slack {worst_hold:.3f} ns")
-        violated_msg = f"{tgt}: {', '.join(timing_violations)}" if timing_violations else None
-        failure_summary = None
-        if not cur.passed:
-            failure_summary = self._format_failure_summary(tgt, cur)
-        return lines, violated_msg, failure_summary
+        return f"{tgt}: {', '.join(timing_violations)}" if timing_violations else None
+
+    def _emit_target_block(
+        self,
+        tgt: str,
+        cur: SynthMetrics,
+        base: SynthMetrics | None,
+    ) -> tuple[list[str], str | None, str | None]:
+        """Return report lines, timing violation, and failure summary for one target."""
+        failure = None if cur.passed else self._format_failure_summary(tgt, cur)
+        return self._target_report_lines(tgt, cur, base), self._timing_violation(tgt, cur), failure
 
     def _aggregate_results(
         self,
@@ -2008,7 +2045,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         area_str = self._fmt_area(cur.area_kge)
         timing_str = (
             "logical estimate"
-            if cur.synth_mode == "logical"
+            if cur.synth_mode is SynthMode.LOGICAL
             else self._fmt_timing(_worst_critical_path_ps(cur))
         )
         elapsed_str = f"{cur.elapsed_s:.1f}s"
@@ -2147,79 +2184,18 @@ class AsicSynthesizeFlow(BooleyFlow):
     ) -> None:
         """Set the synthesis_ok criterion for one target."""
         detail: dict[str, Any] = {
-            "area_um2": cur.area_um2,
-            "area_source": cur.area_source,
-            "area_kge": cur.area_kge,
-            "cells": cur.cells,
-            "wire_count": cur.wire_count,
-            "synth_mode": cur.synth_mode,
-            # Fmax/critical-path are per-clock; per-clock thresholds address them
-            # as "<clock>.fmax_mhz_min" / "<clock>.critical_path_ps_max" (the
-            # threshold engine resolves the dotted prefix into per_clock[clock]).
-            "per_clock": per_clock_to_json(cur.per_clock),
-            # Aggregate worst setup/hold slack — names match fpga_impl so a
-            # threshold like "wns_ns_min" resolves identically for both Flows.
-            "wns_ns": cur.wns_ns,
-            "whs_ns": _worst_hold_slack_ns(cur),
-            "reg2reg_slack_ns": cur.reg2reg_slack_ns,
-            "reg2reg_fmax_mhz": cur.reg2reg_fmax_mhz,
-            "has_critical": cur.has_critical,
-            "latches": cur.latches,
-            "expected_latches": cur.expected_latches,
-            "unexpected_latches": cur.unexpected_latches,
-            "comb_loops": cur.comb_loops,
-            "multi_driven": cur.multi_driven,
+            **cur.qor_detail(),
+            **cur.structural_detail(),
             "process_count": cur.process_count,
-            "returncode": cur.returncode,
-            "timed_out": cur.timed_out,
-            "termination": cur.termination,
-            "has_metrics": cur.has_metrics,
-            "yosys_complete": cur.yosys_complete,
-            "timing_complete": cur.timing_complete,
-            "structural_checks_complete": cur.structural_checks_complete,
-            "ppa_complete": cur.ppa_complete,
-            "peak_rss_mb": cur.peak_rss_mb,
-            "passed": cur.passed,
+            **cur.status_detail(),
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
             RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            "_metric_map": {
-                "area": "area_um2",
-                "area_um2": "area_um2",
-                "area_kge": "area_kge",
-                "cell_count": "cells",
-                "wire_count": "wire_count",
-                # Per-clock sub-metrics (identity spelling; resolved inside
-                # per_clock[clock]) plus the aggregate/internal scalars.
-                "critical_path_ps": "critical_path_ps",
-                "fmax_mhz": "fmax_mhz",
-                "wns_ns": "wns_ns",
-                "whs_ns": "whs_ns",
-                "period_ns": "period_ns",
-                "reg2reg_fmax_mhz": "reg2reg_fmax_mhz",
-                "reg2reg_slack_ns": "reg2reg_slack_ns",
-            },
-            # wns_ns/whs_ns are min-threshold (more slack = better), matching
-            # fpga_impl's _min_allowed so a shared threshold behaves the same way.
-            "_min_allowed": ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"],
+            "_metric_map": dict(_CRITERION_METRIC_MAP),
+            "_min_allowed": list(_CRITERION_MIN_ALLOWED),
         }
-        if cur.estimated_fmax_mhz is not None:
-            detail["estimated_fmax_mhz"] = cur.estimated_fmax_mhz
         if base:
-            baseline_detail = {
-                "area_um2": base.area_um2,
-                "area_source": base.area_source,
-                "area_kge": base.area_kge,
-                "cells": base.cells,
-                "wire_count": base.wire_count,
-                "per_clock": per_clock_to_json(base.per_clock),
-            }
-            if base.estimated_fmax_mhz is not None:
-                baseline_detail["estimated_fmax_mhz"] = base.estimated_fmax_mhz
-            detail["baseline_metrics"] = baseline_detail
-            detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
-            detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
-            detail[BASELINE_RUN_EVIDENCE_DETAIL] = base.run_evidence or None
+            _add_baseline_criterion_detail(detail, base)
         if baseline_ref:
             detail[BASELINE_REF_DETAIL] = getattr(self, "_baseline_full_sha", None) or baseline_ref
         self.set_criterion(

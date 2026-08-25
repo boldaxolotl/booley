@@ -29,6 +29,7 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
+from booley.synthesis.mode import SYNTH_MODE_CHOICES, SynthMode, runs_openroad
 from booley.targets.parameter_integrity import enabled_define_names
 
 # --- re-exported for backward compatibility (moved to sibling leaf modules) ---
@@ -147,7 +148,7 @@ def prepare_work_dir(work_dir: Path) -> None:
 class StaTimingConfig(NamedTuple):
     """Timing and physical-synthesis setup for the built-in backend."""
 
-    mode: str
+    mode: SynthMode
     clock: str | None
     period_ps: float
     input_delay_pct: float
@@ -1050,7 +1051,7 @@ def run_yosys(
         heartbeat_interval=60,
         poll_interval=10,
     )
-    if timing_config and timing_config.mode == "physical":
+    if timing_config and runs_openroad(timing_config.mode):
         from booley.yosys.openroad_timing import run_openroad_timing
 
         if not run_openroad_timing(design_name, liberty, work_dir, timing_config):
@@ -1178,10 +1179,6 @@ def _toml_bool(cfg: dict, key: str, default: bool) -> bool:
     return raw
 
 
-# Single source of truth for the public synthesis modes. Shared by Target
-# recipe validation, run_yosys_syn's argparse choices, and spec resolution.
-SYNTH_MODE_CHOICES = ("physical", "logical")
-
 # Every key ``synth_timing_config`` still consumes from
 # ``[flows.synth.timing]``. These are the genuine flow/backend knobs
 # (ADR 0029 decision 2). Anything else is a typo or stale knob that would be
@@ -1253,12 +1250,12 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
     return timing
 
 
-def _resolve_synth_mode(mode: str | None) -> str:
+def _resolve_synth_mode(mode: str | SynthMode | None) -> SynthMode:
     """Resolve and validate physical versus logical synthesis intent."""
     resolved_mode = str(mode or "physical").lower()
     if resolved_mode not in SYNTH_MODE_CHOICES:
         sys.exit("ERROR: synth mode must be one of: " + ", ".join(SYNTH_MODE_CHOICES))
-    return resolved_mode
+    return SynthMode(resolved_mode)
 
 
 def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> list[Path]:
@@ -1285,7 +1282,7 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
 
 def synth_timing_config(
     *,
-    mode: str | None = None,
+    mode: str | SynthMode | None = None,
     clock: str | None = None,
     period_ps: float | None = None,
     input_delay_pct: float | None = None,

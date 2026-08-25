@@ -13,6 +13,7 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
+from booley.synthesis.mode import SynthMode
 from booley.synthesis.profiles import (
     DEFAULT_PPA_PROFILE,
     PPA_PROFILE_CHOICES,
@@ -89,7 +90,7 @@ def append_ppa_args(
     recipe: Mapping[str, Any],
     args: argparse.Namespace,
     *,
-    synth_mode: str,
+    synth_mode: SynthMode,
     field_prefix: str = "Target flow_options",
 ) -> None:
     """Append resolved profile and config/call overrides to backend argv.
@@ -100,7 +101,7 @@ def append_ppa_args(
     _reject_retired_subtables(recipe, field_prefix)
     yosys_cfg = _subtable(recipe, "advanced_settings_yosys", field_prefix=field_prefix)
     openroad_cfg = _subtable(recipe, "advanced_settings_openroad", field_prefix=field_prefix)
-    if synth_mode == "logical" and openroad_cfg:
+    if not synth_mode.runs_openroad and openroad_cfg:
         raise BoundaryError(
             f"{field_prefix}.advanced_settings_openroad cannot be set when synth_mode is logical"
         )
