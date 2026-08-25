@@ -85,7 +85,7 @@ jobs:
       # blue; bump deliberately (and re-run `ruff check .` locally first).
       # Must stay in lockstep with the `ruff==` pin in pyproject.toml's dev extra.
       - name: Install ruff
-        run: pip install ruff==0.15.18
+        run: pip install ruff==0.16.4
 
       - name: Ruff check
         run: ruff check .

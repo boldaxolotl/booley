@@ -647,7 +647,7 @@ class ElaborateFlow(BooleyFlow):
             cmd = self._dry_run_command(target)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -675,7 +675,7 @@ class ElaborateFlow(BooleyFlow):
                 "rtl": list(sources.rtl_source_files),
                 "tb": list(sources.tb_files),
             }
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -1009,7 +1009,7 @@ class ElaborateFlow(BooleyFlow):
             return self._standalone_error(str(exc))
         try:
             scope = self._standalone_rtl_scope(targets)
-        except Exception as exc:  # noqa: BLE001 — resolution failure graded as a Flow ERROR, never a crash
+        except Exception as exc:  # resolution failure graded as a Flow ERROR, never a crash
             logger.debug("standalone: RTL scope resolution failed", exc_info=True)
             return self._standalone_error(
                 f"could not resolve RTL source scope: {exc}",
@@ -1321,7 +1321,9 @@ class ElaborateFlow(BooleyFlow):
             )
             try:
                 cmd = self._prepare_elab_command(target)
-            except Exception as exc:  # noqa: BLE001 — isolate per-target setup failure; recorded as a FAIL and loop continues
+            except (
+                Exception
+            ) as exc:  # isolate per-target setup failure; recorded as a FAIL and loop continues
                 elapsed = time.monotonic() - t0
                 combined = f"elab setup failed: {exc}"
                 logger.debug("elaborate EDAM/configure failed for %s", target, exc_info=True)

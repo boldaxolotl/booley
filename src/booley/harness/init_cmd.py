@@ -1492,7 +1492,7 @@ def _step_nangate_pdk(ctx: InitContext) -> Path | None:
 def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     ctx: InitContext,
     *,
-    nangate_pdk_root: Path | None | object = _NANGATE_PDK_NOT_REQUESTED,
+    nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
