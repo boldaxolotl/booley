@@ -158,7 +158,9 @@ jobs:
           python-version: "3.13"
 
       - name: Install release CLI
-        run: pip install .
+        run: |
+          python -m pip install --user .
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
       - name: Provision pinned Nangate45 PDK
         id: nangate
@@ -230,6 +232,7 @@ jobs:
               python -c "import booley, os; assert booley.__version__ == os.environ[\"EXPECTED_BOOLEY_VERSION\"]"
               project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
               ticket_slug=add-rv32-zbb-pcpi-co-processor
+              BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register
               bash "${project_dir}/hooks/post-setup.sh"
               doctor_log="$(mktemp)"
               booley doctor --deep --skip-agent-checks | tee "${doctor_log}"
@@ -248,3 +251,10 @@ jobs:
               test ! -e "${project_dir}/tickets/board/active/${ticket_slug}.md"
               test "${before}" = "$(sha256sum "${ticket}")"
             '
+
+      # The production image runs as uid 1000, while checkout cleanup runs as
+      # the hosted-runner user. Restore the nested repositories even when the
+      # smoke fails so checkout's post-job hooks can read their git metadata.
+      - name: Restore demo checkout ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" demo

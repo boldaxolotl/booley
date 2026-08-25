@@ -65,6 +65,9 @@ echo ">>> Building booley wheel..."
 # build/ is generated packaging state, so always recreate it from the source
 # tree before producing the wheel consumed by Docker.
 rm -rf "$BOOLEY_ROOT/build"
+# Docker COPY and pip expand this glob, so an older version must not survive
+# beside the wheel produced by this run (GitHub issue #66).
+rm -f "$BOOLEY_ROOT"/dist/booley_rtl-*.whl
 # Marker predating the build: the freshness check below proves the wheel the
 # docker COPY layer will pick up was actually (re)written by *this* run, not left
 # over from a previous one. Belt-and-suspenders behind `set -e`: if the wheel
@@ -74,13 +77,15 @@ WHEEL_MARKER="$(mktemp)"
 trap 'rm -f "$STAMP" "$WHEEL_MARKER"' EXIT
 (cd "$BOOLEY_ROOT" && "$PYBUILD" -P -m build --wheel --outdir dist/)
 
-# Newest wheel in dist/ must be newer than the marker, or the COPY would bake a stale wheel.
-FRESH_WHEEL="$(find "$BOOLEY_ROOT/dist" -name 'booley_rtl-*.whl' -newer "$WHEEL_MARKER" -print -quit 2>/dev/null || true)"
-if [ -z "$FRESH_WHEEL" ]; then
-  echo "ERROR: the wheel step produced no fresh dist/booley_rtl-*.whl." >&2
-  echo "       The docker COPY would bake a stale wheel — aborting." >&2
+# Exactly one wheel in dist/ must be newer than the marker, or Docker's glob
+# would either fail to COPY a wheel or pass conflicting versions to pip.
+mapfile -t FRESH_WHEELS < <(find "$BOOLEY_ROOT/dist" -maxdepth 1 -type f -name 'booley_rtl-*.whl' -newer "$WHEEL_MARKER" -print 2>/dev/null)
+if [ "${#FRESH_WHEELS[@]}" -ne 1 ]; then
+  echo "ERROR: the wheel step produced ${#FRESH_WHEELS[@]} fresh dist/booley_rtl-*.whl files; expected exactly one." >&2
+  echo "       The docker COPY requires one unambiguous wheel — aborting." >&2
   exit 1
 fi
+FRESH_WHEEL="${FRESH_WHEELS[0]}"
 echo ">>> Fresh wheel: $(basename "$FRESH_WHEEL")"
 
 # Stamp the same build-fingerprint label `booley init` uses, so an image built

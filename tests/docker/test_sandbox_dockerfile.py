@@ -101,6 +101,17 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
 
 
+def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
+    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    trusted_cli_setup = """      - name: Install release CLI
+        run: |
+          python -m pip install --user .
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+"""
+    assert trusted_cli_setup in workflow
+
+
 def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
@@ -114,7 +125,15 @@ def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
     assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
     assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
     assert 'bash "${project_dir}/hooks/post-setup.sh"' in workflow
+    assert "BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register" in workflow
     assert "python -m booley.ticket_board parse-ticket" in workflow
     assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
     assert 'booley run --ticket "${ticket_slug}" --dry-run' in workflow
     assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
+    assert (
+        """      - name: Restore demo checkout ownership
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" demo
+"""
+        in workflow
+    )

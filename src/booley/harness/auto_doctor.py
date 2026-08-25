@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,12 @@ _ANNOUNCE_LOCK_NAME = "announcements.lock"
 _TIME_FORMAT = MACHINE_TIMESTAMP_FORMAT  # Compatibility for report fixtures.
 _HEALTHY_MAX_AGE = timedelta(days=doctor_stamp.MAX_AGE_DAYS)
 _UNHEALTHY_RETRY_AGE = timedelta(days=1)
+
+Progress = Callable[[str], None]
+
+
+def _ignore_progress(_message: str) -> None:
+    """Accept progress when the caller has no visible sink."""
 
 
 def state_dir(project_dir: Path) -> Path:
@@ -204,7 +211,13 @@ def _exception_report(exc: Exception) -> tuple[dict[str, int], list[dict[str, An
     return counts, [finding], 1
 
 
-def _execute(project_root: Path, project_dir: Path, trigger: str) -> dict[str, Any]:
+def _execute(
+    project_root: Path,
+    project_dir: Path,
+    trigger: str,
+    *,
+    progress: Progress | None = None,
+) -> dict[str, Any]:
     """Execute read-only Doctor and persist its structured result."""
     from booley.harness.doctor import run_doctor_result
 
@@ -217,6 +230,7 @@ def _execute(project_root: Path, project_dir: Path, trigger: str) -> dict[str, A
                 project_root,
                 read_only=True,
                 record_clean=False,
+                progress=progress,
             )
         counts = result.counts
         findings = [asdict(finding) for finding in result.findings]
@@ -224,16 +238,21 @@ def _execute(project_root: Path, project_dir: Path, trigger: str) -> dict[str, A
     except Exception as exc:  # noqa: BLE001 — automatic health must record crashes, never break startup
         counts, findings, exit_code = _exception_report(exc)
         output.write(f"\n{findings[0]['message']}\n")
-    return _persist_report(
+    duration_s = time.monotonic() - started
+    report = _persist_report(
         project_root,
         project_dir,
         trigger=trigger,
-        duration_s=time.monotonic() - started,
+        duration_s=duration_s,
         counts=counts,
         findings=findings,
         exit_code=exit_code,
         transcript=output.getvalue(),
     )
+    (progress or _ignore_progress)(
+        f"completed in {duration_s:.1f}s; transcript: {transcript_path(project_dir)}"
+    )
+    return report
 
 
 def _persist_report(
@@ -292,15 +311,30 @@ def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[st
         return None
 
 
-def run_if_due(project_root: Path, *, trigger: str) -> dict[str, Any] | None:
+def run_if_due(
+    project_root: Path,
+    *,
+    trigger: str,
+    progress: Progress | None = None,
+) -> dict[str, Any] | None:
     """Run one automatic Doctor attempt when stale; never raises."""
     try:
         project_dir = resolve_project_dir(project_root)
         lock_path = state_dir(project_dir) / _RUN_LOCK_NAME
         with _try_lock(lock_path) as acquired:
-            if not acquired or due_reason(project_root) is None:
+            if not acquired:
                 return None
-            report = _execute(project_root, project_dir, trigger)
+            reason = due_reason(project_root)
+            if reason is None:
+                return None
+            emit_progress = progress or _ignore_progress
+            emit_progress(f"starting ({reason})")
+            report = _execute(
+                project_root,
+                project_dir,
+                trigger,
+                progress=emit_progress,
+            )
         _notify_if_changed(project_root, report)
         return report
     except Exception:  # noqa: BLE001 — lifecycle advisory must never block a session or ticket sweep
