@@ -71,39 +71,7 @@ RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source
     && yosys -p 'help read_slang' >/dev/null \
     && rm -rf /tmp/yosys
 
-# OpenSTA for post-synthesis timing reports from the simple Yosys backend.
-ARG CUDD_VERSION=3.0.0
-ARG CUDD_REF=f54f533303640afd5dbe47a05ebeabb3066f2a25
-ARG OPENSTA_REF=4249ab7b98246180db361b340b43ccfe2053054a
-RUN echo ">>> Building OpenSTA ${OPENSTA_REF} from source..." \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        cmake automake file libtool swig libeigen3-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && git init /tmp/cudd \
-    && cd /tmp/cudd \
-    && git remote add origin https://github.com/cuddorg/cudd.git \
-    && git fetch --depth 1 origin "${CUDD_REF}" \
-    && git checkout --detach FETCH_HEAD \
-    && test "$(git rev-parse HEAD)" = "${CUDD_REF}" \
-    && autoreconf -fi \
-    && ./configure --prefix=/opt/cudd \
-    && make -j$(nproc) \
-    && make install \
-    && git init /tmp/OpenSTA \
-    && cd /tmp/OpenSTA \
-    && git remote add origin https://github.com/parallaxsw/OpenSTA.git \
-    && git fetch --depth 1 origin "${OPENSTA_REF}" \
-    && git checkout --detach FETCH_HEAD \
-    && test "$(git rev-parse HEAD)" = "${OPENSTA_REF}" \
-    && cmake -S /tmp/OpenSTA -B /tmp/OpenSTA/build \
-        -DCMAKE_BUILD_TYPE=RELEASE \
-        -DCUDD_DIR=/opt/cudd \
-    && cmake --build /tmp/OpenSTA/build --parallel $(nproc) \
-    && install -m 755 /tmp/OpenSTA/build/sta /usr/local/bin/sta \
-    && sta -version \
-    && rm -rf /tmp/cudd /tmp/OpenSTA
-
-# OpenROAD (pinned prebuilt .deb) — default timing engine: placement +
+# OpenROAD (pinned prebuilt .deb) — physical synthesis: placement +
 # buffering/sizing + estimated wire RC. The ubuntu-22.04 deb installs on
 # 24.04 (Qt5 t64 Provides old names; deadsnakes ships libpython3.10).
 # Newer 24.04-native debs sit behind a registration wall, so pin the last
@@ -297,7 +265,6 @@ ENV MCP_TOOL_TIMEOUT=7200000
 # The stable image must never accidentally acquire candidate application code.
 RUN python -c 'import importlib.util; assert importlib.util.find_spec("booley") is None' \
     && yosys -V \
-    && sta -version \
     && iverilog -V \
     && verilator --version \
     && verible-verilog-lint --version

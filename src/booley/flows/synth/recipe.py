@@ -11,7 +11,7 @@ from typing import Any
 from booley.core.boundary import BoundaryError, require_bool, require_opt_str
 from booley.yosys.syn_core import (
     DEFAULT_FRONTEND,
-    TIMING_ENGINE_CHOICES,
+    SYNTH_MODE_CHOICES,
     resolve_frontend,
     resolve_slang_options,
 )
@@ -41,6 +41,7 @@ __all__ = [
     "RECIPE_SNAPSHOT_DETAIL",
     "RECIPE_SNAPSHOT_PARAM",
     "default_recipe_args",
+    "resolve_synth_mode",
     "synthesis_recipe_args",
     "synthesis_recipe_changes",
     "synthesis_recipe_fingerprint",
@@ -48,7 +49,7 @@ __all__ = [
     "synthesis_recipe_snapshot_fingerprint",
 ]
 
-_DEFAULT_TIMING_ENGINE = "openroad"
+_DEFAULT_SYNTH_MODE = "physical"
 
 
 def default_recipe_args() -> argparse.Namespace:
@@ -93,27 +94,15 @@ def synthesis_recipe_args(
         )
     )
     out = ["--flatten" if flatten else "--no-flatten"]
+    synth_mode = resolve_synth_mode(recipe, target=target)
     append_ppa_args(
         out,
         recipe,
         args,
+        synth_mode=synth_mode,
         field_prefix=f"Target {target!r} flow_options",
     )
-
-    timing_engine = (
-        require_opt_str(
-            recipe,
-            "timing_engine",
-            field=f"Target {target!r} flow_options.timing_engine",
-        )
-        or _DEFAULT_TIMING_ENGINE
-    )
-    if timing_engine not in TIMING_ENGINE_CHOICES:
-        raise BoundaryError(
-            f"Target {target!r} flow_options.timing_engine must be one of "
-            f"{', '.join(TIMING_ENGINE_CHOICES)}; got {timing_engine!r}"
-        )
-    out.extend(["--timing-engine", timing_engine])
+    out.extend(["--synth-mode", synth_mode])
 
     frontend = (
         resolve_frontend(
@@ -130,6 +119,33 @@ def synthesis_recipe_args(
     ):
         out.append(f"--slang-option={option}")
     return out
+
+
+def resolve_synth_mode(
+    flow_options: Mapping[str, Any],
+    *,
+    target: str,
+) -> str:
+    """Resolve the Target's synthesis intent at the public configuration seam."""
+    if "timing_engine" in flow_options:
+        raise BoundaryError(
+            f"Target {target!r} flow_options.timing_engine is retired; replace it "
+            "with flow_options.synth_mode = physical or logical"
+        )
+    mode = (
+        require_opt_str(
+            flow_options,
+            "synth_mode",
+            field=f"Target {target!r} flow_options.synth_mode",
+        )
+        or _DEFAULT_SYNTH_MODE
+    )
+    if mode not in SYNTH_MODE_CHOICES:
+        raise BoundaryError(
+            f"Target {target!r} flow_options.synth_mode must be one of "
+            f"{', '.join(SYNTH_MODE_CHOICES)}; got {mode!r}"
+        )
+    return mode
 
 
 def synthesis_recipe_snapshot(

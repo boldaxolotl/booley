@@ -67,7 +67,6 @@ OPENROAD_STAGE_NAMES = [
     "place_pins",
     "repair_design",
     "detailed_placement",
-    "sta_report_pre_repair",
     "repair_timing",
     "sta_report",
 ]
@@ -230,7 +229,7 @@ class SynthesisWatchdog:
         log_file: Optional open file handle to mirror stdout lines.
         timings_filename: Name of the per-run stage-timings JSON written at
             stop(). Each watched step in a shared work_dir must use its own
-            name — e.g. the OpenROAD/OpenSTA timing step after Yosys —
+            name — e.g. the OpenROAD physical step after Yosys —
             otherwise the later step's stop() clobbers the earlier one's file.
     """
 

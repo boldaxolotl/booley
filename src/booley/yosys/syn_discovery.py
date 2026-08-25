@@ -1,6 +1,6 @@
 """EDA-tool and liberty-file discovery for the Yosys Synthesis Flow.
 
-Locates external binaries (yosys, sv2v, sta) on ``PATH`` and resolves the
+Locates external binaries (including Yosys, sv2v, and OpenROAD) on ``PATH`` and resolves the
 Liberty timing library from CLI argument / ``$PRJ_LIB_DIR`` / a platform
 default.  A pure, side-effect-free leaf module — it does not import from
 ``syn_core``.

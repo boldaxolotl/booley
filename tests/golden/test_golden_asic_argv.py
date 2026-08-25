@@ -16,9 +16,8 @@ is *relative to the work dir* (the host/sandbox-boundary contract), so the
 snapshot is tmp-path-free by construction — the helper's leak guard enforces
 that.
 
-Note: ``timing_engine`` values are strictly validated host-side
-(``TIMING_ENGINE_CHOICES`` = openroad/opensta/none, commit 200e7ba), so the
-configs below use only valid values.
+Note: ``synth_mode`` is validated before the container command is built, so
+the configs below use only the public ``physical`` and ``logical`` values.
 """
 
 from __future__ import annotations
@@ -165,22 +164,21 @@ def test_synth_argv_bare_golden(state_file: Path, tmp_path: Path) -> None:
     assert_matches_golden("asic_synthesize/argv_bare.txt", "\n".join(cmd))
 
 
-def test_synth_argv_flatten_opensta_golden(
+def test_synth_argv_flatten_logical_golden(
     state_file: Path,
     tmp_path: Path,
 ) -> None:
     """Snapshot the argv with every optional knob engaged.
 
-    ``flatten = true`` → bare ``--flatten`` and ``timing_engine = "opensta"``
-    → ``--timing-engine opensta`` (strictly validated host-side). SDCs come
-    only from the Target fileset and are already represented by ``--sta-sdc``.
+    ``flatten = true`` → bare ``--flatten`` and ``synth_mode = "logical"``
+    → ``--synth-mode logical``. Logical synthesis does not consume SDCs.
     """
     tool = _make_tool(
         tmp_path,
-        'flatten = true\ntiming_engine = "opensta"\n',
+        'flatten = true\nsynth_mode = "logical"\n',
     )
     cmd = tool._build_synth_cmd("lite")
-    assert_matches_golden("asic_synthesize/argv_flatten_sdc_opensta.txt", "\n".join(cmd))
+    assert_matches_golden("asic_synthesize/argv_flatten_logical.txt", "\n".join(cmd))
 
 
 # NOTE: the former ``test_synth_argv_baseline_suffix_golden`` was removed —
@@ -227,7 +225,7 @@ def _configure_golden_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from booley.yosys import run_yosys_syn, syn_make
 
     monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
-    tool = _make_tool(tmp_path, 'timing_engine = "opensta"\n')
+    tool = _make_tool(tmp_path, 'synth_mode = "logical"\n')
     cmd = tool._build_synth_cmd("lite")  # rmtree's the work root — materialize after
     _materialize_resolved_sources(tmp_path)
     args = run_yosys_syn.parse_run_argv(cmd)
@@ -252,7 +250,7 @@ def test_synth_makefile_golden(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Snapshot the generated boundary Makefile (opensta engine).
+    """Snapshot the generated boundary Makefile (logical mode).
 
     This is the executable far side of the ``make -C <rel>`` boundary command:
     a dropped stage, a lost ``BOOLEY_STAGE`` marker, or a recipe that grows a
@@ -260,7 +258,7 @@ def test_synth_makefile_golden(
     """
     plan = _configure_golden_plan(tmp_path, monkeypatch)
     makefile = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
-    assert_matches_golden("asic_synthesize/makefile_opensta.txt", makefile)
+    assert_matches_golden("asic_synthesize/makefile_logical.txt", makefile)
 
 
 def test_synth_yosys_script_golden(
@@ -275,4 +273,4 @@ def test_synth_yosys_script_golden(
     """
     plan = _configure_golden_plan(tmp_path, monkeypatch)
     script = (plan.build_dir / "synth.ys").read_text(encoding="utf-8")
-    assert_matches_golden("asic_synthesize/synth_ys_opensta.txt", script)
+    assert_matches_golden("asic_synthesize/synth_ys_logical.txt", script)

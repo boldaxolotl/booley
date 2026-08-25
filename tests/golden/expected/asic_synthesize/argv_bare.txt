@@ -19,8 +19,8 @@ WIDTH=8
 --flatten
 --ppa-profile
 balanced
---timing-engine
-openroad
+--synth-mode
+physical
 --frontend
 sv2v
 -w

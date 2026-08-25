@@ -1,7 +1,7 @@
-"""Unit tests for openroad_timing.py — the OpenROAD timing engine.
+"""Unit tests for openroad_timing.py — OpenROAD physical synthesis.
 
 Pure tests, no live tools: PDK resolution, Tcl script content, area parsing,
-and the warn-and-degrade / marker-emission paths of run_openroad_timing with
+and the failure / marker-emission paths of run_openroad_timing with
 run_cmd_watched mocked.
 """
 
@@ -25,7 +25,7 @@ def _config(**overrides):
     from booley.yosys.syn_core import StaTimingConfig
 
     base = {
-        "engine": "openroad",
+        "mode": "physical",
         "clock": "clk_i",
         "period_ps": 4000.0,
         "input_delay_pct": 30.0,
@@ -325,113 +325,6 @@ class TestRunOpenroadDegrade:
 
 
 # ---------------------------------------------------------------------------
-# run_openroad_timing — ADR 0029 D2 pre-repair salvage
-# ---------------------------------------------------------------------------
-
-
-class TestPreRepairSalvage:
-    def test_salvage_on_nonzero_exit(self, monkeypatch, tmp_path, capsys):
-        """A repair-stage failure still salvages the pre-repair placed STA from
-        the captured stdout marker, emitting STA_REPAIR_INCOMPLETE."""
-        from booley.yosys import openroad_timing
-
-        monkeypatch.setattr(
-            openroad_timing,
-            "find_eda_tool",
-            lambda name: Path("/bin/openroad"),
-        )
-        _make_netlist(tmp_path)
-        root = _make_pdk(tmp_path)
-        monkeypatch.setenv("PRJ_LIB_DIR", str(root))
-
-        def _boom(*a, **k):
-            raise subprocess.CalledProcessError(
-                1,
-                ["openroad"],
-                output="BOOLEY_STAGE: repair_timing\nSTA_PRE_REPAIR_WORST_SLACK_NS: -1.000000\n",
-            )
-
-        monkeypatch.setattr(openroad_timing, "run_cmd_watched", _boom)
-        ok = openroad_timing.run_openroad_timing(
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            _config(period_ps=4000.0),
-        )
-        assert ok is True
-        out = capsys.readouterr().out
-        assert "STA_REPAIR_INCOMPLETE:" in out
-        # Salvaged from -1.0 ns pre-repair slack: crit = 4000 - (-1*1000) = 5000 ps.
-        assert "STA_WORST_SLACK_NS: -1.000000" in out
-        assert "STA_CRITICAL_PATH_PS: 5000.000" in out
-
-    def test_salvage_from_csv_when_marker_missing(self, monkeypatch, tmp_path, capsys):
-        """When the stdout marker is lost, salvage reads pre_repair.csv.rpt."""
-        from booley.yosys import openroad_timing
-
-        monkeypatch.setattr(
-            openroad_timing,
-            "find_eda_tool",
-            lambda name: Path("/bin/openroad"),
-        )
-        _make_netlist(tmp_path)
-        root = _make_pdk(tmp_path)
-        monkeypatch.setenv("PRJ_LIB_DIR", str(root))
-        report_dir = tmp_path / "reports" / "timing"
-        report_dir.mkdir(parents=True)
-        (report_dir / "pre_repair.csv.rpt").write_text(
-            "u/a,u/b,-0.500000\n",
-            encoding="utf-8",
-        )
-
-        def _boom(*a, **k):
-            raise subprocess.CalledProcessError(1, ["openroad"], output="")
-
-        monkeypatch.setattr(openroad_timing, "run_cmd_watched", _boom)
-        ok = openroad_timing.run_openroad_timing(
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            _config(period_ps=4000.0),
-        )
-        assert ok is True
-        out = capsys.readouterr().out
-        assert "STA_REPAIR_INCOMPLETE:" in out
-        assert "STA_WORST_SLACK_NS: -0.500000" in out
-
-    def test_no_salvage_when_repair_disabled(self, monkeypatch, tmp_path, capsys):
-        """repair_timing off → no pre-repair snapshot exists, so a failure just
-        degrades to False (no salvage attempted)."""
-        from booley.yosys import openroad_timing
-
-        monkeypatch.setattr(
-            openroad_timing,
-            "find_eda_tool",
-            lambda name: Path("/bin/openroad"),
-        )
-        _make_netlist(tmp_path)
-        root = _make_pdk(tmp_path)
-        monkeypatch.setenv("PRJ_LIB_DIR", str(root))
-
-        def _boom(*a, **k):
-            raise subprocess.CalledProcessError(
-                1,
-                ["openroad"],
-                output="STA_PRE_REPAIR_WORST_SLACK_NS: -1.0\n",
-            )
-
-        monkeypatch.setattr(openroad_timing, "run_cmd_watched", _boom)
-        ok = openroad_timing.run_openroad_timing(
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            _config(repair_timing=False),
-        )
-        assert ok is False
-        assert "STA_REPAIR_INCOMPLETE:" not in capsys.readouterr().out
-
-
-# ---------------------------------------------------------------------------
 # run_openroad_timing — happy path emits markers
 # ---------------------------------------------------------------------------
 
@@ -469,7 +362,7 @@ class TestRunOpenroadMarkers:
     def test_reg2reg_survives_false_pathed_overall(self, monkeypatch, tmp_path, capsys):
         """When the overall worst path is false-pathed (no STA_WORST_SLACK_NS),
         the internal reg->reg Fmax still surfaces and the run succeeds — no
-        needless OpenSTA fallback, no area-only QoR (SETUP-29)."""
+        no incomplete area-only physical result (SETUP-29)."""
         from booley.yosys import openroad_timing
 
         monkeypatch.setattr(openroad_timing, "find_eda_tool", lambda name: Path("/bin/openroad"))
@@ -493,3 +386,21 @@ class TestRunOpenroadMarkers:
         assert "STA_WORST_SLACK_NS" not in out
         assert "STA_REG2REG_FMAX_MHZ: 666.667" in out
         assert "no timing path slack" not in out
+
+    def test_missing_post_optimization_area_fails(self, monkeypatch, tmp_path, capsys):
+        from booley.yosys import openroad_timing
+
+        monkeypatch.setattr(openroad_timing, "find_eda_tool", lambda name: Path("/bin/openroad"))
+        _make_netlist(tmp_path)
+        root = _make_pdk(tmp_path)
+        monkeypatch.setenv("PRJ_LIB_DIR", str(root))
+        monkeypatch.setattr(
+            openroad_timing,
+            "run_cmd_watched",
+            lambda *a, **k: MagicMock(returncode=0, stdout="STA_WORST_SLACK_NS: 0.5\n"),
+        )
+
+        assert not openroad_timing.run_openroad_timing(
+            "top", Path("/lib.lib"), tmp_path, _config()
+        )
+        assert "post-optimization area was not reported" in capsys.readouterr().out

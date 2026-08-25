@@ -89,6 +89,7 @@ def append_ppa_args(
     recipe: Mapping[str, Any],
     args: argparse.Namespace,
     *,
+    synth_mode: str,
     field_prefix: str = "Target flow_options",
 ) -> None:
     """Append resolved profile and config/call overrides to backend argv.
@@ -96,6 +97,14 @@ def append_ppa_args(
     A per-call profile selects a clean built-in profile, deliberately skipping
     project backend overrides. Per-call expert flags still apply afterward.
     """
+    _reject_retired_subtables(recipe, field_prefix)
+    yosys_cfg = _subtable(recipe, "advanced_settings_yosys", field_prefix=field_prefix)
+    openroad_cfg = _subtable(recipe, "advanced_settings_openroad", field_prefix=field_prefix)
+    if synth_mode == "logical" and openroad_cfg:
+        raise BoundaryError(
+            f"{field_prefix}.advanced_settings_openroad cannot be set when synth_mode is logical"
+        )
+
     cli_profile = getattr(args, "ppa_profile", None)
     configured = recipe.get("ppa_profile", DEFAULT_PPA_PROFILE)
     profile = validate_ppa_profile(
@@ -106,16 +115,29 @@ def append_ppa_args(
     if cli_profile is None:
         _append_yosys_config(
             cmd,
-            _subtable(recipe, "yosys", field_prefix=field_prefix),
+            yosys_cfg,
             args,
-            section=f"{field_prefix}.yosys",
+            section=f"{field_prefix}.advanced_settings_yosys",
         )
         _append_openroad_config(
             cmd,
-            _subtable(recipe, "openroad", field_prefix=field_prefix),
-            section=f"{field_prefix}.openroad",
+            openroad_cfg,
+            section=f"{field_prefix}.advanced_settings_openroad",
         )
     _append_cli_overrides(cmd, args)
+
+
+def _reject_retired_subtables(recipe: Mapping[str, Any], field_prefix: str) -> None:
+    """Hard-fail old expert table names with their exact replacements."""
+    replacements = {
+        "yosys": "advanced_settings_yosys",
+        "openroad": "advanced_settings_openroad",
+    }
+    for old, new in replacements.items():
+        if old in recipe:
+            raise BoundaryError(
+                f"{field_prefix}.{old} is retired; rename it to {field_prefix}.{new}"
+            )
 
 
 def _subtable(
@@ -132,7 +154,7 @@ def _append_yosys_config(
     cfg: Mapping[str, Any],
     args: argparse.Namespace,
     *,
-    section: str = "Target flow_options.yosys",
+    section: str = "Target flow_options.advanced_settings_yosys",
 ) -> None:
     """Validate and append Yosys expert overrides."""
     _reject_unknown_keys(cfg, _YOSYS_KEYS, section)
@@ -162,7 +184,7 @@ def _append_openroad_config(
     cmd: list[str],
     cfg: Mapping[str, Any],
     *,
-    section: str = "Target flow_options.openroad",
+    section: str = "Target flow_options.advanced_settings_openroad",
 ) -> None:
     """Validate and append OpenROAD expert overrides."""
     _reject_unknown_keys(cfg, _OPENROAD_KEYS, section)

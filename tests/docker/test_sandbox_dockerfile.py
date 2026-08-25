@@ -151,8 +151,6 @@ def test_source_builds_fetch_immutable_commits() -> None:
 
     assert set(refs) == {
         "YOSYS_REF",
-        "CUDD_REF",
-        "OPENSTA_REF",
         "ICARUS_REF",
         "VERILATOR_REF",
     }

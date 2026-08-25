@@ -29,18 +29,6 @@ set_placement_padding -global -left 1 -right 1
 puts "BOOLEY_STAGE: detailed_placement"
 detailed_placement
 estimate_parasitics -placement
-puts "BOOLEY_STAGE: sta_report_pre_repair"
-report_checks -path_delay max -sort_by_slack -group_count 1 > {<WORK>/reports/timing/pre_repair.rpt}
-set _pre_paths [find_timing_paths -path_delay max -sort_by_slack -group_count 1]
-set _pre_csv [open {<WORK>/reports/timing/pre_repair.csv.rpt} w]
-foreach _pp $_pre_paths {
-  set _slk [get_property $_pp slack]
-  puts $_pre_csv [format "%s,%s,%.6f" [get_property [get_property $_pp startpoint] full_name] [get_property [get_property $_pp endpoint] full_name] $_slk]
-  puts [format "STA_PRE_REPAIR_WORST_SLACK_NS: %.6f" $_slk]
-  break
-}
-close $_pre_csv
-flush stdout
 puts "BOOLEY_STAGE: repair_timing"
 repair_timing -setup -skip_gate_cloning
 detailed_placement ; estimate_parasitics -placement

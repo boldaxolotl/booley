@@ -189,7 +189,7 @@ def run_cmd_watched(
     """Run a command with the synthesis watchdog (streaming output + metrics).
 
     ``timings_filename`` must be unique per watched step sharing a work_dir
-    (Yosys, then OpenROAD/OpenSTA), or the later step overwrites the earlier
+    (Yosys, then OpenROAD), or the later step overwrites the earlier
     step's stage-timings JSON.
 
     Returns WatchedResult with returncode, captured stdout, and watchdog metrics.

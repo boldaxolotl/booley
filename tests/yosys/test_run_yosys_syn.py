@@ -37,7 +37,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         "tdelay": 4000,
         "abc_recipe": "balanced",
         "frontend": "sv2v",
-        "timing_engine": None,
+        "synth_mode": "physical",
         "clock": None,
         "period_ps": None,
         "default_clock": None,
@@ -149,7 +149,7 @@ class TestExtraRtlParsing:
 
 
 # ---------------------------------------------------------------------------
-# Timing-engine arguments (OpenROAD)
+# Synthesis-mode arguments
 # ---------------------------------------------------------------------------
 
 
@@ -185,11 +185,12 @@ class TestTimingArgs:
         with pytest.raises(SystemExit, match="mutually exclusive"):
             _resolve_ppa_settings(args)
 
-    def test_timing_engine_openroad_parses(self):
+    @pytest.mark.parametrize("mode", ["physical", "logical"])
+    def test_synth_mode_parses(self, mode):
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top", "--timing-engine", "openroad"])
-        assert args.timing_engine == "openroad"
+        args = _build_parser().parse_args(["run", "-t", "top", "--synth-mode", mode])
+        assert args.synth_mode == mode
 
     def test_utilization_and_no_repair_timing(self):
         from booley.yosys.run_yosys_syn import _build_parser
@@ -233,7 +234,6 @@ class TestTimingArgs:
                 "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
             },
         )
-        monkeypatch.setattr("booley.yosys.syn_core._in_container", lambda: True)
         args = mod._build_parser().parse_args(["run", "-t", "top", "--default-clock", "4000"])
         _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
         timing = mod._resolve_syn_timing(args, openroad)
@@ -250,7 +250,6 @@ class TestTimingArgs:
                 "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
             },
         )
-        monkeypatch.setattr("booley.yosys.syn_core._in_container", lambda: True)
         args = mod._build_parser().parse_args(
             [
                 "run",

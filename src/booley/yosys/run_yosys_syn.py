@@ -50,7 +50,7 @@ from booley.yosys.syn_core import (  # Core synthesis functions
     PROJECT_ROOT,
     RTL_DIR,
     SYN_DIR,
-    TIMING_ENGINE_CHOICES,
+    SYNTH_MODE_CHOICES,
     StaTimingConfig,
     area_to_kge,
     parse_area_from_stat,
@@ -199,15 +199,14 @@ def _print_syn_config(
     design_name: str,
     liberty: Path,
     extra_files: list[Path],
-    timing_engine: str,
+    synth_mode: str,
 ) -> None:
     """Print synthesis configuration banner.
 
-    ``design_name``, ``liberty``, ``extra_files``, and ``timing_engine`` are
+    ``design_name``, ``liberty``, ``extra_files``, and ``synth_mode`` are
     derived/computed values not directly on ``args`` (top defaults to a CLI
     flag but ``design_name`` is validated/resolved beforehand; ``liberty`` is
-    resolved via ``resolve_liberty``; ``timing_engine`` is the resolved
-    ``timing.engine``, distinct from the raw ``args.timing_engine`` override).
+    resolved via ``resolve_liberty``; ``synth_mode`` is the resolved mode).
     Everything else is read straight off ``args`` — the single call site
     (standalone synthesis) always used ``"standalone"`` as the config label.
     """
@@ -227,7 +226,7 @@ def _print_syn_config(
     print(f"SDC: {args.sdc or 'disabled'}")
     if args.sdc and getattr(args, "abc_delay_ps", None) is not None:
         print(f"ABC delay target: {args.abc_delay_ps} ps")
-    print(f"Timing engine: {timing_engine}")
+    print(f"Synthesis mode: {synth_mode}")
 
 
 # SETUP-26 source-provenance helpers moved to syn_make (the interpret half of
@@ -330,7 +329,8 @@ def _resolve_syn_timing(
     deliberately-constrained run.
     """
     default_clock_ps = getattr(args, "default_clock", None)
-    if not args.sta_sdc and args.period_ps is None:
+    timing_required = args.synth_mode == "physical"
+    if timing_required and not args.sta_sdc and args.period_ps is None:
         if default_clock_ps is None:
             sys.exit(
                 "ERROR: no timing constraints for this synthesis run. Provide a "
@@ -342,8 +342,10 @@ def _resolve_syn_timing(
             )
         # Explicit opt-in: the canned clock is now chosen and named, never implicit.
         resolved_period_ps = default_clock_ps
-    else:
+    elif timing_required:
         resolved_period_ps = args.period_ps
+    else:
+        resolved_period_ps = args.period_ps or default_clock_ps
     # The standalone CLI historically read utilization/repair from the legacy
     # [flows.synth.timing] table. Ask synth_timing_config to honor those keys
     # only when no generic profile was explicit. The Booley Flow always forwards its
@@ -358,7 +360,7 @@ def _resolve_syn_timing(
         and getattr(args, "repair_timing", None) is None
     )
     return synth_timing_config(
-        engine=args.timing_engine,
+        mode=args.synth_mode,
         clock=args.clock,
         period_ps=resolved_period_ps,
         input_delay_pct=args.input_delay_pct,
@@ -462,7 +464,7 @@ def do_run(args: argparse.Namespace) -> None:
     params = parse_params(args.param)
     _profile, _yosys_ppa, openroad_ppa = _resolve_ppa_settings(args)
     timing = _resolve_syn_timing(args, openroad_ppa)
-    _print_syn_config(args, design_name, liberty, extra_files, timing.engine)
+    _print_syn_config(args, design_name, liberty, extra_files, timing.mode)
 
     work_dir = _resolve_syn_workdir(args, design_name, params)
     prepare_work_dir(work_dir)
@@ -762,12 +764,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_timing_args(parser: argparse.ArgumentParser) -> None:
-    """Register OpenSTA/OpenROAD timing-engine arguments."""
+    """Register synthesis-mode and physical-mode timing arguments."""
     parser.add_argument(
-        "--timing-engine",
-        choices=list(TIMING_ENGINE_CHOICES),
-        default=None,
-        help="Timing source (default: openroad, or booley.toml timing.engine)",
+        "--synth-mode",
+        choices=list(SYNTH_MODE_CHOICES),
+        default="physical",
+        help="Synthesis depth: physical runs OpenROAD + STA; logical stops after Yosys",
     )
     parser.add_argument(
         "--clock", default=None, help="Clock port for STA (default: booley.toml or auto-detect)"

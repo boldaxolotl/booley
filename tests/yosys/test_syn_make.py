@@ -3,12 +3,12 @@
 Covers the two in-sandbox halves in :mod:`booley.yosys.syn_make`:
 
 * configure — script + Makefile rendering (relative script-internal paths,
-  EDA-binaries-only recipes, BOOLEY_STAGE markers, per-engine timing stage,
+  EDA-binaries-only recipes, BOOLEY_STAGE markers, physical timing stage,
   the read-time clock probe SDC), plus ``run_yosys_syn.resolve_spec``'s
   root-anchored resolution;
 * interpret — file-based report reconstruction with freshness gating, the
-  re-derived STA markers, engine precedence (OpenROAD > salvage > OpenSTA
-  fallback), the false-pass log scan, and the SETUP-26 provenance hint.
+  re-derived physical STA markers, the false-pass log scan, and the SETUP-26
+  provenance hint.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -33,7 +34,7 @@ _HOST_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
 def _spec(
     tmp_path: Path,
     *,
-    engine: str = "opensta",
+    mode: str = "physical",
     frontend: str = "sv2v",
     clock: str | None = None,
     sdc: tuple[Path, ...] = (),
@@ -59,7 +60,7 @@ def _spec(
         frontend=frontend,
         slang_options=slang_options,
         timing=StaTimingConfig(
-            engine=engine,
+            mode=mode,
             clock=clock,
             period_ps=4000.0,
             input_delay_pct=30.0,
@@ -102,9 +103,9 @@ class TestConfigureSynthesis:
         assert (bd / "Makefile").is_file()
         assert (bd / "synth.ys").is_file()
         assert (bd / "sta_constraints.sdc").is_file()
-        assert (bd / "run_opensta.tcl").is_file()
+        assert (bd / "run_openroad.tcl").is_file()
         assert (bd / "reports" / "timing").is_dir()
-        assert not (bd / "run_openroad.tcl").exists()  # opensta engine
+        assert not (bd / "run_opensta.tcl").exists()
         recipe = json.loads((bd / "synthesis_recipe.json").read_text(encoding="utf-8"))
         assert recipe["ppa_profile"] == "balanced"
         assert recipe["flatten"] is True
@@ -148,14 +149,14 @@ class TestConfigureSynthesis:
         # Stage stdout/stderr is captured to per-stage log files.
         assert "> sv2v.log 2>&1" in text
         assert "> yosys.log 2>&1" in text
-        assert "> sta.log 2>&1" in text
+        assert "> openroad.log 2>&1" in text
 
     def test_script_paths_are_build_dir_relative(self, tmp_path: Path):
         """Script-internal workspace paths must be relative (the same rendered
         tree is executed via ``make -C`` in either venue)."""
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         makefile = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
-        sta_tcl = (plan.build_dir / "run_opensta.tcl").read_text(encoding="utf-8")
+        sta_tcl = (plan.build_dir / "run_openroad.tcl").read_text(encoding="utf-8")
         assert str(tmp_path) not in makefile  # sources referenced relatively
         assert "../" in makefile  # ... via an upward relative path
         assert str(tmp_path) not in sta_tcl
@@ -169,46 +170,45 @@ class TestConfigureSynthesis:
         rel = os.path.relpath(plan.build_dir, tmp_path).replace("\\", "/")
         assert _HOST_COMMAND_RE.fullmatch(f"make -C {rel}")
 
-    def test_engine_none_skips_timing_stage(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(_spec(tmp_path, engine="none"), _build_dir(tmp_path))
+    def test_logical_mode_skips_physical_timing_stage(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
         text = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
         assert "all: yosys" in text
         assert "run_opensta.tcl" not in text
+        assert "run_openroad.tcl" not in text
         assert not (plan.build_dir / "run_opensta.tcl").exists()
+        assert not (plan.build_dir / "run_openroad.tcl").exists()
 
-    def test_openroad_engine_renders_fallback_recipe(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(
-            _spec(tmp_path, engine="openroad"), _build_dir(tmp_path)
-        )
+    def test_physical_mode_requires_openroad_without_fallback(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         text = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
         assert (plan.build_dir / "run_openroad.tcl").is_file()
-        # Venue-reality probe + rc-failure fallback to OpenSTA in POSIX shell.
         assert "command -v openroad" in text
         assert "Nangate45_tech.lef" in text
-        assert "falling back to OpenSTA" in text
-        assert "run_opensta.tcl" in text
+        assert "falling back" not in text
+        assert "run_opensta.tcl" not in text
 
-    def test_openroad_fallback_recipe_is_one_valid_shell_block(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(
-            _spec(tmp_path, engine="openroad"), _build_dir(tmp_path)
-        )
+    def test_physical_mode_fails_when_openroad_is_missing(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         fake_bin = tmp_path / "bin"
         fake_bin.mkdir()
-        for name in ("sv2v", "yosys", "sta"):
+        for name in ("make", "echo"):
+            (fake_bin / name).symlink_to(shutil.which(name))
+        for name in ("sv2v", "yosys"):
             executable = fake_bin / name
             executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             executable.chmod(0o755)
 
         result = subprocess.run(
             ["make", "-C", str(plan.build_dir), "sta"],
-            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            env={**os.environ, "PATH": str(fake_bin)},
             capture_output=True,
             text=True,
             check=False,
         )
 
-        assert result.returncode == 0, result.stderr
-        assert "expecting fi" not in result.stderr
+        assert result.returncode != 0
+        assert "requires OpenROAD" in result.stdout
 
     def test_slang_frontend_skips_sv2v_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(
@@ -278,6 +278,17 @@ def _fresh(_path: Path) -> bool:
 
 
 class TestBoundaryOutput:
+    def test_emits_delay_marker_from_final_liberty_mapped_abc_log(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
+        (plan.build_dir / "log_abc_dut.txt").write_text(
+            "ABC: netlist : i/o = 4/2 area =10.0 delay =83.15 lev = 3\n",
+            encoding="utf-8",
+        )
+
+        outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
+
+        assert "YOSYS_ABC_LOGIC_DELAY_PS: 83.150" in outcome.text
+
     def test_collects_fresh_stage_files(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         (plan.build_dir / "yosys.log").write_text(
@@ -320,7 +331,7 @@ class TestBoundaryOutput:
 
     def test_rederives_sta_markers_from_log(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
-        (plan.build_dir / "sta.log").write_text(
+        (plan.build_dir / "openroad.log").write_text(
             "STA_WORST_SLACK_NS: 2.000000\n"
             "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n",
             encoding="utf-8",
@@ -331,33 +342,18 @@ class TestBoundaryOutput:
         assert "STA_FMAX_MHZ: 500.000" in outcome.text
         assert "STA_REPORT:" in outcome.text
 
-    def test_openroad_markers_take_precedence_over_fallback_log(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(
-            _spec(tmp_path, engine="openroad"), _build_dir(tmp_path)
-        )
+    def test_ignores_stale_standalone_opensta_log(self, tmp_path: Path):
+        plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         (plan.build_dir / "openroad.log").write_text(
             "STA_WORST_SLACK_NS: 1.000000\nDesign area 235 u^2 33% utilization.\n",
             encoding="utf-8",
         )
         (plan.build_dir / "sta.log").write_text("STA_WORST_SLACK_NS: 3.000000\n", encoding="utf-8")
         outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-        # The OpenROAD (placed) slack wins; the zero-RC fallback log is not
-        # consulted once the primary engine surfaced timing.
+        # The retired standalone OpenSTA path is never consulted.
         assert "STA_WORST_SLACK_NS: 1.000000" in outcome.text
         assert "STA_WORST_SLACK_NS: 3.000000" not in outcome.text
         assert "OPENROAD_DESIGN_AREA_UM2: 235.000" in outcome.text
-
-    def test_salvages_pre_repair_when_openroad_died(self, tmp_path: Path):
-        plan = syn_make.configure_synthesis(
-            _spec(tmp_path, engine="openroad"), _build_dir(tmp_path)
-        )
-        # OpenROAD emitted only the pre-repair snapshot before dying (ADR 0029 D2).
-        (plan.build_dir / "openroad.log").write_text(
-            "STA_PRE_REPAIR_WORST_SLACK_NS: -0.250000\n", encoding="utf-8"
-        )
-        outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
-        assert "STA_REPAIR_INCOMPLETE" in outcome.text
-        assert "STA_WORST_SLACK_NS: -0.250000" in outcome.text
 
     def test_scan_forces_failure_on_error_despite_exit_0(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
@@ -437,8 +433,8 @@ class TestResolveSpec:
             "rtl/dut.sv",
             "--default-clock",
             "4000",
-            "--timing-engine",
-            "opensta",
+            "--synth-mode",
+            "physical",
             *(extra or []),
         ]
         return run_yosys_syn.parse_run_argv(argv)
@@ -455,7 +451,7 @@ class TestResolveSpec:
         assert spec.sources == ((tmp_path / "rtl" / "dut.sv").resolve(),)
         assert spec.design_name == "dut"
         assert spec.liberty_found is True
-        assert spec.timing.engine == "opensta"
+        assert spec.timing.mode == "physical"
         assert spec.ppa_profile == "balanced"
         assert spec.abc_recipe == "balanced"
         assert spec.generic_abc_before_mapping is False

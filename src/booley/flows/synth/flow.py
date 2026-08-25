@@ -71,6 +71,7 @@ from .recipe import (
     BASELINE_REF_DETAIL,
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_SNAPSHOT_DETAIL,
+    resolve_synth_mode,
     synthesis_recipe_args,
     synthesis_recipe_snapshot,
     synthesis_recipe_snapshot_fingerprint,
@@ -180,11 +181,13 @@ class SynthMetrics:
     """Parsed synthesis metrics for a single config run."""
 
     area_um2: float | None = None
+    # Provenance for the canonical area selected by ``synth_mode``.
+    area_source: str = ""
     area_kge: float | None = None
     cells: int | None = None
     wire_count: int = 0
     process_count: int = 0
-    # Worst setup slack in ns from OpenSTA (negative == timing VIOLATED). The
+    # Worst setup slack in ns from OpenROAD's embedded STA (negative == timing VIOLATED). The
     # honest whole-design aggregate worst — kept as a scalar (unlike Fmax/critical
     # path, which are per-clock below) so the report can flag violations without
     # re-deriving them from the period. Named ``wns_ns`` to match fpga_impl's
@@ -196,11 +199,14 @@ class SynthMetrics:
     # scalars were removed in favour of this map (one entry per ``create_clock``;
     # a single-clock design has exactly one). Empty when STA reported no clock.
     per_clock: dict[str, ClockTiming] = field(default_factory=dict)
-    # Resolved STA engine for this run. Empty only for synthetic/unit-test
-    # metrics that did not pass through the configured boundary. ``none`` is
-    # materially different from a configured engine that failed to report
-    # timing: the former is an intentional area-only run, not an SDC failure.
-    timing_engine: str = ""
+    # Public synthesis intent. Empty only for synthetic/unit-test metrics that
+    # did not pass through the configured seam.
+    synth_mode: str = ""
+    # Logical-mode frequency estimate derived from ABC's final liberty-mapped
+    # combinational delay. This is not STA: placement, wiring, clock-to-Q, and
+    # setup time are absent, so it is deliberately separate from ``per_clock``
+    # and must never participate in timing thresholds.
+    estimated_fmax_mhz: float | None = None
     # Worst register-to-register (internal) setup slack + Fmax from STA. Reported
     # alongside the overall worst path because a non-zero set_input/output_delay
     # budget lets an I/O path dominate the overall worst path and hide the true
@@ -208,14 +214,6 @@ class SynthMetrics:
     # purely combinational design).
     reg2reg_slack_ns: float | None = None
     reg2reg_fmax_mhz: float | None = None
-    # Post-repair placed area from the OpenROAD engine (informational only —
-    # the contractual area metric stays Yosys ``stat``'s ``area_um2``).
-    post_opt_area_um2: float | None = None
-    # ADR 0029 D2: True when the OpenROAD ``repair_timing`` stage did not
-    # complete and the reported timing is the salvaged *pre-repair* placed STA
-    # (STA_REPAIR_INCOMPLETE marker). The run still passes — but the numbers are
-    # pre-repair, so the report/summary flags it.
-    repair_incomplete: bool = False
     elapsed_s: float = 0.0
     latches: int = 0
     expected_latches: int = 0
@@ -349,7 +347,7 @@ def _parse_per_clock_sta(output: str) -> dict[str, ClockTiming]:
 
 
 def _parse_worst_slack(output: str) -> float | None:
-    """Extract OpenSTA worst setup slack in ns (negative == VIOLATED).
+    """Extract physical STA worst setup slack in ns (negative == VIOLATED).
 
     The synth engines emit ``STA_WORST_SLACK_NS:`` once per STA run; the most
     pessimistic (minimum) value is the design's worst slack.
@@ -423,14 +421,19 @@ def _worst_hold_slack_ns(metrics: SynthMetrics) -> float | None:
     return min(slacks) if slacks else None
 
 
-def _parse_post_opt_area(output: str) -> float | None:
-    """Extract the OpenROAD post-repair placed design area in µm².
-
-    Informational only — surfaced alongside the Yosys ``stat`` area, never
-    substituted for it.  Returns ``None`` when the OpenSTA path ran (no marker).
-    """
+def _parse_physical_area(output: str) -> float | None:
+    """Extract OpenROAD's post-optimization placed design area in µm²."""
     matches = re.findall(r"OPENROAD_DESIGN_AREA_UM2:\s*([-+]?\d+(?:\.\d+)?)", output)
     return float(matches[-1]) if matches else None
+
+
+def _parse_logical_estimated_fmax(output: str) -> float | None:
+    """Convert the final mapped-ABC delay marker in ps to an Fmax estimate."""
+    matches = re.findall(r"YOSYS_ABC_LOGIC_DELAY_PS:\s*([0-9]+(?:\.[0-9]+)?)", output)
+    delays_ps = [float(value) for value in matches if float(value) > 0]
+    if not delays_ps:
+        return None
+    return 1_000_000.0 / max(delays_ps)
 
 
 def _parse_wire_count(output: str) -> int:
@@ -484,30 +487,41 @@ def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
     return latches, comb_loops, multi_driven
 
 
-def _parse_synth_output(output: str, elapsed_s: float) -> SynthMetrics:
+def _parse_synth_output(
+    output: str,
+    elapsed_s: float,
+    synth_mode: str = "logical",
+) -> SynthMetrics:
     """Parse all metrics from combined synthesis stdout/stderr."""
-    area_um2, cells = _parse_area(output)
+    mapped_area_um2, cells = _parse_area(output)
+    if synth_mode == "physical":
+        area_um2 = _parse_physical_area(output)
+        area_source = "openroad_post_optimization" if area_um2 is not None else ""
+    else:
+        area_um2 = mapped_area_um2
+        area_source = "yosys_mapped" if area_um2 is not None else ""
+    estimated_fmax_mhz = _parse_logical_estimated_fmax(output) if synth_mode == "logical" else None
     area_kge = area_um2 / KGE_DIVISOR if area_um2 is not None else None
     wns_ns = _parse_worst_slack(output)
     reg2reg_slack_ns = _parse_reg2reg_slack(output)
     reg2reg_fmax_mhz = _parse_reg2reg_fmax(output)
-    post_opt_area_um2 = _parse_post_opt_area(output)
     wire_count = _parse_wire_count(output)
     process_count = _parse_process_count(output)
     latches, comb_loops, multi_driven = _detect_critical_conditions(output)
     peak_matches = re.findall(r"Peak RSS:\s*([\d.]+)\s*MB", output, re.IGNORECASE)
     return SynthMetrics(
         area_um2=area_um2,
+        area_source=area_source,
         area_kge=area_kge,
         cells=cells,
         wire_count=wire_count,
         process_count=process_count,
         wns_ns=wns_ns,
         per_clock=_parse_per_clock_sta(output),
+        estimated_fmax_mhz=estimated_fmax_mhz,
         reg2reg_slack_ns=reg2reg_slack_ns,
         reg2reg_fmax_mhz=reg2reg_fmax_mhz,
-        post_opt_area_um2=post_opt_area_um2,
-        repair_incomplete="STA_REPAIR_INCOMPLETE:" in output,
+        synth_mode=synth_mode,
         elapsed_s=elapsed_s,
         latches=latches,
         comb_loops=comb_loops,
@@ -559,13 +573,12 @@ def _result_line(
     failed: list[str],
     selfcompare_msg: str | None,
     violated: list[str],
-    notiming: list[str],
 ) -> str:
     """The single ``RESULT:`` headline, in strict severity order.
 
     FAIL outranks every WARN; among the WARNs a meaningless baseline delta
-    outranks a timing violation, which outranks missing timing. Each WARN
-    still exits 0 — only *failed* (which already folds in an opted-in
+    outranks a timing violation. Each WARN still exits 0 — only *failed*
+    (which already folds in an opted-in
     ``fail_on_timing_violation``, F-37) moves the exit code.
     """
     if failed:
@@ -581,10 +594,6 @@ def _result_line(
         # Structurally clean but timing is VIOLATED. Exit stays 0 by default
         # (timing does not gate synthesis), yet the user must clearly see it.
         return f"RESULT: WARN -- timing VIOLATED ({'; '.join(violated)})"
-    if notiming:
-        # Structurally clean but no timing was reported (A-1): a constraint-less
-        # run must not read as an unqualified PASS.
-        return f"RESULT: WARN -- timing unavailable ({'; '.join(notiming)})"
     return "RESULT: PASS"
 
 
@@ -596,6 +605,8 @@ def _first_valid_display(
     for tgt in targets:
         cur = current_results[tgt]
         critical_path_ps = _worst_critical_path_ps(cur)
+        if cur.cells is not None and cur.synth_mode == "logical":
+            return [f"{cur.cells:,} cells, logical area only"]
         if cur.cells is not None and critical_path_ps is not None:
             return [f"{cur.cells:,} cells, {critical_path_ps:.0f}ps"]
     return []
@@ -619,10 +630,11 @@ def _target_summary(
         "ppa_complete": metrics.ppa_complete,
         "peak_rss_mb": metrics.peak_rss_mb,
         "area_um2": metrics.area_um2,
+        "area_source": metrics.area_source,
         "area_kge": metrics.area_kge,
         "cells": metrics.cells,
         "wire_count": metrics.wire_count,
-        "timing_engine": metrics.timing_engine,
+        "synth_mode": metrics.synth_mode,
         "per_clock": per_clock_to_json(metrics.per_clock),
         "wns_ns": metrics.wns_ns,
         "whs_ns": _worst_hold_slack_ns(metrics),
@@ -639,18 +651,24 @@ def _target_summary(
             **({"dirs": dict(metrics.dirs)} if metrics.dirs else {}),
         },
     }
+    if metrics.estimated_fmax_mhz is not None:
+        summary["estimated_fmax_mhz"] = metrics.estimated_fmax_mhz
     if baseline is not None:
-        summary["baseline_metrics"] = {
+        baseline_summary = {
             "passed": baseline.passed,
             "returncode": baseline.returncode,
             "infra_error": baseline.infra_error,
             "ppa_complete": baseline.ppa_complete,
             "area_um2": baseline.area_um2,
+            "area_source": baseline.area_source,
             "area_kge": baseline.area_kge,
             "cells": baseline.cells,
             "wire_count": baseline.wire_count,
             "per_clock": per_clock_to_json(baseline.per_clock),
         }
+        if baseline.estimated_fmax_mhz is not None:
+            baseline_summary["estimated_fmax_mhz"] = baseline.estimated_fmax_mhz
+        summary["baseline_metrics"] = baseline_summary
     return summary
 
 
@@ -716,20 +734,15 @@ def _build_report_dict(
         "peak_rss_mb": metrics.peak_rss_mb,
         "area_kge": metrics.area_kge,
         "area_um2": metrics.area_um2,
+        "area_source": metrics.area_source,
         "cells": metrics.cells,
-        "timing_engine": metrics.timing_engine,
+        "synth_mode": metrics.synth_mode,
         # Fmax/critical-path are per-clock (one entry per create_clock); the old
         # top-level scalars were removed. Aggregate wns_ns/whs_ns stay below.
         "per_clock": per_clock_to_json(metrics.per_clock),
     }
-    # Informational OpenROAD post-repair area — present only on the openroad
-    # path; not part of the synthesis_ok criteria (Yosys stat area is contractual).
-    if metrics.post_opt_area_um2 is not None:
-        report["post_opt_area_um2"] = metrics.post_opt_area_um2
-    # ADR 0029 D2: flag salvaged pre-repair timing so a consumer knows the
-    # numbers are not the final repaired result.
-    if metrics.repair_incomplete:
-        report["repair_incomplete"] = True
+    if metrics.estimated_fmax_mhz is not None:
+        report["estimated_fmax_mhz"] = metrics.estimated_fmax_mhz
     # Aggregate worst setup/hold slack (ns); negative == timing VIOLATED.
     # Informational only — timing does not gate synthesis, but the numbers
     # belong in the report. Names mirror fpga_impl's ``wns_ns``/``whs_ns`` so a
@@ -752,13 +765,18 @@ def _build_report_dict(
     if _is_io_bound_critical(metrics):
         report["io_bound_critical"] = True
     if baseline_metrics and baseline_ref:
-        report["baseline"] = {
+        baseline_report = {
             "ref": baseline_ref,
             "area_kge": baseline_metrics.area_kge,
             "area_um2": baseline_metrics.area_um2,
+            "area_source": baseline_metrics.area_source,
+            "synth_mode": baseline_metrics.synth_mode,
             "cells": baseline_metrics.cells,
             "per_clock": per_clock_to_json(baseline_metrics.per_clock),
         }
+        if baseline_metrics.estimated_fmax_mhz is not None:
+            baseline_report["estimated_fmax_mhz"] = baseline_metrics.estimated_fmax_mhz
+        report["baseline"] = baseline_report
         delta_pct = compute_delta(metrics.area_kge, baseline_metrics.area_kge)
         # Timing delta compares the timing-worst clock of each run (a single
         # representative number; the per-clock breakdown is in "per_clock").
@@ -850,7 +868,8 @@ class AsicSynthesizeFlow(BooleyFlow):
         "pass --default-clock <ps> to run against an explicitly-named canned "
         "clock instead. "
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
-        "timing_engine, and expert Yosys/OpenROAD recipe knobs belong in the "
+        "synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
+        "recipe knobs belong in the "
         "selected .core Target's flow_options; per-call flags can override "
         "them. [flows.synth] in booley.toml is only for enablement and verdict "
         "policy such as target, timeout_ms, and expected_latches."
@@ -965,8 +984,11 @@ class AsicSynthesizeFlow(BooleyFlow):
         resolved: object,
         target: str,
         work_dir: Path,
+        synth_mode: str,
     ) -> None:
         """Append ``--sta-sdc``/``--default-clock`` flags (ADR 0029/0031)."""
+        if synth_mode == "logical":
+            return
         # STA constraints from the Target's file_type:SDC fileset (ADR 0029):
         # forward one --sta-sdc per file, in EDAM fileset order. Same boundary
         # treatment as --extra-rtl — each is a path relative to the worktree,
@@ -1024,8 +1046,8 @@ class AsicSynthesizeFlow(BooleyFlow):
         runs ``fusesoc run --setup`` and leaves a resolved ``.eda.yml`` listing
         the RTL sources, top module, and typed parameters. Synthesis is the
         documented **command-gen exception**: Booley does *not* ``make``-drive
-        FuseSoC's flow — it reruns yosys its own way (sv2v + ABC recipes +
-        OpenSTA), feeding the resolved RTL filelist to ``run_yosys_syn`` in
+        FuseSoC's flow — it reruns Yosys its own way (sv2v + ABC recipes +
+        optional OpenROAD), feeding the resolved RTL filelist to ``run_yosys_syn`` in
         standalone mode (``--extra-rtl`` + ``-t``, no ``-c``). That leaves the
         legacy ``read_file_list`` / ``get_config_defines`` config-mode path
         intact for non-FuseSoC callers (the Step-3 purge removes it later).
@@ -1081,7 +1103,8 @@ class AsicSynthesizeFlow(BooleyFlow):
         work_dir = Path(self.args.work_dir)
         cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
         top = self._append_rtl_source_args(cmd, resolved, work_dir)
-        self._append_sta_constraint_args(cmd, resolved, target, work_dir)
+        synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
+        self._append_sta_constraint_args(cmd, resolved, target, work_dir, synth_mode)
         self._append_typed_param_args(cmd, resolved, target, top)
         self._append_synth_recipe_args(cmd, resolved, target)
         # Key run_yosys_syn's result dir on the *target name*, not the resolved
@@ -1239,8 +1262,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         output = "\n".join(
             part for part in (proc_result.stdout, proc_result.stderr, outcome.text) if part
         )
-        metrics = _parse_synth_output(output, elapsed)
-        metrics.timing_engine = plan.spec.timing.engine
+        metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
         metrics.expected_latches = _expected_latches(self.args.work_dir)
         metrics.returncode = proc_result.returncode
         metrics.timed_out = proc_result.timed_out
@@ -1256,14 +1278,28 @@ class AsicSynthesizeFlow(BooleyFlow):
         # later STA stage times out.  It is still not a completed PPA verdict:
         # only a clean terminal boundary may set ppa_complete.
         metrics.yosys_complete = metrics.termination == "completed" or outcome.yosys_complete
-        metrics.timing_complete = metrics.termination == "completed"
+        timing_reported = bool(metrics.per_clock) or metrics.wns_ns is not None
+        metrics.timing_complete = (
+            metrics.termination == "completed"
+            and metrics.synth_mode == "physical"
+            and timing_reported
+        )
         metrics.structural_checks_complete = metrics.yosys_complete
-        metrics.ppa_complete = metrics.termination == "completed" and metrics.has_metrics
+        if metrics.synth_mode == "physical":
+            metrics.ppa_complete = (
+                metrics.termination == "completed"
+                and metrics.area_source == "openroad_post_optimization"
+                and metrics.timing_complete
+            )
+        else:
+            metrics.ppa_complete = (
+                metrics.termination == "completed" and metrics.area_source == "yosys_mapped"
+            )
         # Persist the full captured output on pass AND fail — the report only
         # carries a bounded excerpt, and the MCP layer truncates stdout, so
         # this file is the durable copy an agent can always read back.
         metrics.log_path = self._persist_synth_log(target, output)
-        metrics.dirs = self._artifact_dirs(target)
+        metrics.dirs = self._artifact_dirs(target, metrics.synth_mode)
 
         if metrics.termination == "oom":
             logger.warning("Synth %s was killed by the cgroup OOM killer", target)
@@ -1300,10 +1336,10 @@ class AsicSynthesizeFlow(BooleyFlow):
 
         return metrics, output
 
-    def _artifact_dirs(self, target: str) -> dict[str, str]:
+    def _artifact_dirs(self, target: str, synth_mode: str) -> dict[str, str]:
         """The directories holding *target*'s synth artifacts, by role.
 
-        Two of them: the build dir (yosys/sta/openroad logs, the ``stat_*.txt``
+        Two of them in physical mode: the build dir (Yosys/OpenROAD logs, the ``stat_*.txt``
         area report, both netlists, the rendered ``synth.ys``, the SDC fed to
         STA, the sv2v output) and the STA report dir under it.
 
@@ -1315,9 +1351,12 @@ class AsicSynthesizeFlow(BooleyFlow):
         and the agent has ``ls``.
         """
         build_dir = self._synth_build_dir(target)
+        dirs = {"build": build_dir}
+        if synth_mode == "physical":
+            dirs["timing"] = build_dir / "reports" / "timing"
         return artifacts.artifacts_block(
             self.args.work_dir,
-            dirs={"build": build_dir, "timing": build_dir / "reports" / "timing"},
+            dirs=dirs,
         ).get("dirs", {})  # type: ignore[return-value]
 
     def _persist_synth_log(self, target: str, output: str) -> str:
@@ -1820,6 +1859,11 @@ class AsicSynthesizeFlow(BooleyFlow):
             # Surface the QoR numbers (area/cells/timing) that otherwise
             # live only in util/syn report files.
             lines.append(self._format_qor_line(tgt, cur))
+            if cur.estimated_fmax_mhz is not None:
+                lines.append(
+                    f"[synth] {tgt}: WARNING -- estimated Fmax is probably inaccurate; "
+                    "logical mode excludes placement and wire delays"
+                )
         elif cur.has_metrics and not cur.ppa_complete:
             lines.append(
                 f"[synth] {tgt}: PARTIAL -- Yosys emitted intermediate "
@@ -1880,7 +1924,6 @@ class AsicSynthesizeFlow(BooleyFlow):
         stdout_lines: list[str] = []
         failed_targets: list[str] = []
         violated: list[str] = []  # targets whose worst STA slack is negative
-        notiming: list[str] = []  # passing targets that reported no timing at all
         overall_pass = True
 
         if self.args.baseline and short_sha:
@@ -1914,24 +1957,6 @@ class AsicSynthesizeFlow(BooleyFlow):
             stdout_lines.extend(lines)
             if violated_msg is not None:
                 violated.append(violated_msg)
-            # Timing entirely absent on a timing-enabled passing run (A-1):
-            # usually a silently degraded constraint read (e.g. a non-portable
-            # SDC command aborts the parse, leaving only create_clock applied —
-            # or nothing at all). An explicit ``timing_engine = none`` is an
-            # intentional area-only run and is labelled as such instead.
-            if (
-                cur.passed
-                and not cur.infra_error
-                and cur.timing_engine != "none"
-                and _worst_critical_path_ps(cur) is None
-                and cur.wns_ns is None
-            ):
-                notiming.append(tgt)
-                stdout_lines.append(
-                    f"[synth] {tgt}: WARNING -- no timing was reported; "
-                    "the SDC may have failed to parse (non-portable commands "
-                    "abort the constraint read). Check the synth run.log."
-                )
             if failure_summary is not None:
                 failed_targets.append(failure_summary)
                 overall_pass = False
@@ -1954,7 +1979,6 @@ class AsicSynthesizeFlow(BooleyFlow):
                 failed_targets if not overall_pass else [],
                 selfcompare_msg,
                 violated,
-                notiming,
             )
         )
 
@@ -1983,8 +2007,8 @@ class AsicSynthesizeFlow(BooleyFlow):
         """Format one target's area/timing/elapsed line."""
         area_str = self._fmt_area(cur.area_kge)
         timing_str = (
-            "timing off"
-            if cur.timing_engine == "none"
+            "logical estimate"
+            if cur.synth_mode == "logical"
             else self._fmt_timing(_worst_critical_path_ps(cur))
         )
         elapsed_str = f"{cur.elapsed_s:.1f}s"
@@ -2024,6 +2048,8 @@ class AsicSynthesizeFlow(BooleyFlow):
             parts.append(f"{cur.cells:,} cells")
         if cur.area_kge is not None:
             parts.append(f"{cur.area_kge:.1f} kGE")
+        if cur.estimated_fmax_mhz is not None:
+            parts.append(f"estimated Fmax {cur.estimated_fmax_mhz:.0f} MHz")
         # Fmax/critical path are per-clock; show the timing-worst clock here,
         # tagged with its name only when the design has more than one clock (so
         # single-clock output is unchanged). Full breakdown lives in the report.
@@ -2042,10 +2068,6 @@ class AsicSynthesizeFlow(BooleyFlow):
             parts.append(f"reg2reg Fmax {cur.reg2reg_fmax_mhz:.0f} MHz")
         elif cur.reg2reg_slack_ns is not None:
             parts.append(f"reg2reg slack {cur.reg2reg_slack_ns:+.3f} ns")
-        # ADR 0029 D2: the run passed but the timing is salvaged pre-repair
-        # placed STA (repair_timing was killed/failed) — flag it inline.
-        if cur.repair_incomplete:
-            parts.append("repair_timing INCOMPLETE (pre-repair placed STA)")
         return f"[synth] {tgt}: QoR -- {', '.join(parts) or 'no metrics'}"
 
     @staticmethod
@@ -2126,10 +2148,11 @@ class AsicSynthesizeFlow(BooleyFlow):
         """Set the synthesis_ok criterion for one target."""
         detail: dict[str, Any] = {
             "area_um2": cur.area_um2,
+            "area_source": cur.area_source,
             "area_kge": cur.area_kge,
             "cells": cur.cells,
             "wire_count": cur.wire_count,
-            "timing_engine": cur.timing_engine,
+            "synth_mode": cur.synth_mode,
             # Fmax/critical-path are per-clock; per-clock thresholds address them
             # as "<clock>.fmax_mhz_min" / "<clock>.critical_path_ps_max" (the
             # threshold engine resolves the dotted prefix into per_clock[clock]).
@@ -2180,14 +2203,20 @@ class AsicSynthesizeFlow(BooleyFlow):
             # fpga_impl's _min_allowed so a shared threshold behaves the same way.
             "_min_allowed": ["fmax_mhz", "reg2reg_fmax_mhz", "wns_ns", "whs_ns"],
         }
+        if cur.estimated_fmax_mhz is not None:
+            detail["estimated_fmax_mhz"] = cur.estimated_fmax_mhz
         if base:
-            detail["baseline_metrics"] = {
+            baseline_detail = {
                 "area_um2": base.area_um2,
+                "area_source": base.area_source,
                 "area_kge": base.area_kge,
                 "cells": base.cells,
                 "wire_count": base.wire_count,
                 "per_clock": per_clock_to_json(base.per_clock),
             }
+            if base.estimated_fmax_mhz is not None:
+                baseline_detail["estimated_fmax_mhz"] = base.estimated_fmax_mhz
+            detail["baseline_metrics"] = baseline_detail
             detail[BASELINE_RECIPE_FINGERPRINT_DETAIL] = base.recipe_fingerprint or None
             detail[BASELINE_RECIPE_SNAPSHOT_DETAIL] = base.recipe_snapshot or None
             detail[BASELINE_RUN_EVIDENCE_DETAIL] = base.run_evidence or None
