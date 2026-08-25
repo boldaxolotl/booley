@@ -1,8 +1,8 @@
-"""Synthesis coordinator — sv2v/Yosys script generation and OpenSTA timing config.
+"""Synthesis coordinator — sv2v/Yosys script generation and timing config.
 
-Two responsibilities live here: building the sv2v + Yosys synthesis scripts,
-and the zero-RC OpenSTA timing script plus its config.
-The remaining concerns were split into sibling leaf modules:
+This module builds the sv2v + Yosys synthesis scripts and owns the shared
+configuration used by the OpenROAD physical path. The remaining concerns were
+split into sibling leaf modules:
 
 * :mod:`booley.yosys.syn_config`     — project-context path constants
 * :mod:`booley.yosys.syn_discovery`  — EDA tool + liberty discovery
@@ -26,6 +26,7 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
+from booley.synthesis.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.targets.parameter_integrity import enabled_define_names
 
 # --- re-exported for backward compatibility (moved to sibling leaf modules) ---
@@ -66,8 +67,8 @@ __all__ = [
     "RTL_DIR",
     "SCRIPT_DIR",
     "SV2V_OUTPUT_NAME",
+    "SYNTH_MODE_CHOICES",
     "SYN_DIR",
-    "TIMING_ENGINE_CHOICES",
     "StaTimingConfig",
     "area_to_kge",
     "build_elaborate_script",
@@ -76,6 +77,7 @@ __all__ = [
     "effective_period_ps",
     "emit_timing_markers",
     "enabled_define_names",
+    "parse_abc_mapped_delay_ps",
     "parse_area_from_stat",
     "parse_effective_parameters",
     "parse_params",
@@ -90,12 +92,23 @@ __all__ = [
     "resolve_liberty",
     "resolve_slang_options",
     "scan_synth_logs",
-    "sta_parse_abort_hint",
     "sv2v_argv",
     "synth_timing_config",
-    "write_sta_script",
     "write_sta_sdc",
 ]
+
+
+_ABC_MAPPED_DELAY_RE = re.compile(
+    r"^ABC:\s+netlist\b.*?\bdelay\s*=\s*([0-9]+(?:\.[0-9]+)?)\b.*?\blev\s*=",
+    re.MULTILINE,
+)
+
+
+def parse_abc_mapped_delay_ps(output: str) -> float | None:
+    """Return the slowest positive delay from a final liberty-mapped ABC log."""
+    delays_ps = [float(value) for value in _ABC_MAPPED_DELAY_RE.findall(output)]
+    positive_delays_ps = [delay for delay in delays_ps if delay > 0]
+    return max(positive_delays_ps) if positive_delays_ps else None
 
 
 # ============================================================================
@@ -104,9 +117,9 @@ __all__ = [
 
 
 class StaTimingConfig(NamedTuple):
-    """Timing setup for the simple Yosys synthesis backend (OpenSTA/OpenROAD)."""
+    """Timing and physical-synthesis setup for the built-in backend."""
 
-    engine: str
+    mode: SynthMode
     clock: str | None
     period_ps: float
     input_delay_pct: float
@@ -115,8 +128,8 @@ class StaTimingConfig(NamedTuple):
     # (ADR 0029), concatenated in fileset order (last-wins). Empty tuple = no
     # authored SDC, so ``write_sta_sdc`` emits its full generated default block.
     sdc: tuple[Path, ...] = ()
-    # OpenROAD-only knobs (ignored by the OpenSTA path): floorplan utilization
-    # and whether the setup-only ``repair_timing`` pass runs.
+    # Physical-mode knobs: floorplan utilization and whether the setup-only
+    # ``repair_timing`` pass runs.
     utilization_pct: float = 40.0
     repair_timing: bool = True
     placement_density: float | None = None
@@ -164,8 +177,8 @@ _CREATE_CLOCK_PERIOD_RE = re.compile(
 def reg2reg_timing_tcl(report_path: str | None = None) -> str:
     """Tcl that prints the worst register-to-register setup slack.
 
-    Both timing engines emit this alongside the overall worst path so the
-    internal (reg->reg) critical path is always visible.  The overall worst
+    Physical mode emits this alongside the overall worst path so the internal
+    (reg->reg) critical path is always visible. The overall worst
     path is the single most-negative-slack path in the design; with a non-zero
     ``set_input_delay``/``set_output_delay`` budget an I/O path routinely wins
     it, hiding the true reg->reg Fmax.  Restricting ``find_timing_paths`` to
@@ -176,11 +189,10 @@ def reg2reg_timing_tcl(report_path: str | None = None) -> str:
     was surfaced but the path behind it was not: ``overall.rpt`` holds only the
     single worst overall path, which on an I/O-bound design is a pad-to-pad
     feed-through — useless for deciding what RTL to pipeline.  Digging the
-    reg->reg path out then meant re-running OpenSTA on the placed netlist by
-    hand, at zero RC (optimistic) and off the record.
+    reg->reg path out then meant re-running timing analysis by hand.
 
     Wrapped in ``catch``: a purely combinational design (no registers) or an
-    OpenSTA build without ``all_registers`` degrades to *no* marker rather than
+    timer without ``all_registers`` degrades to *no* marker rather than
     failing the whole timing run — same warn-and-degrade contract as the rest
     of this module.  The report write sits under its own ``catch`` inside the
     same guard, so an engine that can find the paths but chokes on the report
@@ -256,8 +268,8 @@ def print_overall_fmax(slack_ns: float, period_ps: float) -> None:
 def perclock_timing_tcl() -> str:
     """Tcl that prints one ``STA_PERCLOCK`` marker per clock in the design.
 
-    Fmax and critical-path delay are inherently per-clock, so both timing
-    engines iterate ``[all_clocks]`` and, for each, report its own worst setup
+    Fmax and critical-path delay are inherently per-clock, so physical mode
+    iterates ``[all_clocks]`` and, for each, reports its own worst setup
     (``-path_delay max``) and hold (``-path_delay min``) slack against paths
     *ending* in that clock domain (``-to $clk``). The marker carries the clock's
     name, its constrained period (ns), and both slacks (ns) — Python derives the
@@ -270,12 +282,10 @@ def perclock_timing_tcl() -> str:
     worst-slack and reg->reg markers still stand) rather than failing the run —
     the same warn-and-degrade contract as the rest of this module.
 
-    Portability: ``foreach_in_collection`` is a Synopsys/OpenROAD-ism that
-    *standalone* OpenSTA does not define (it returns plain Tcl lists), so the
-    block first installs a plain-``foreach`` fallback when the command is absent.
-    OpenROAD ships the native command, where the shim is a no-op. This was found
-    the hard way — the un-shimmed ``foreach_in_collection`` aborts the OpenSTA
-    script (unknown command), taking every already-emitted timing marker with it.
+    Portability: the OpenSTA Tcl embedded by this pinned OpenROAD build returns
+    plain Tcl lists but does not define ``foreach_in_collection``. Install a
+    small ``foreach`` shim when the command is absent so per-clock reporting
+    cannot abort an otherwise-complete physical run.
     """
     return (
         "if {[llength [info commands foreach_in_collection]] == 0} {\n"
@@ -606,7 +616,7 @@ DEFAULT_FRONTEND = "sv2v"
 # area, so anything downstream of elaboration chokes on them: ``stat`` prints
 # "Area for cell type $check is unknown!" (and scores the design short), ABC has
 # nothing to map, and ``write_verilog`` emits a non-structural instance that
-# aborts OpenSTA's netlist parse ("syntax error") — leaving a synthesis run that
+# can abort OpenROAD's netlist parse ("syntax error") — leaving a synthesis run that
 # exits 0 with silently corrupted area and *no* timing (ravenoc F-30).
 FORMAL_CELL_TYPES = frozenset({"$check", "$assert", "$assume", "$cover", "$live", "$fair"})
 
@@ -863,8 +873,8 @@ def _build_yosys_script(
         abc_delay_ps=abc_delay_ps,
     )
 
-    # Step 6: Write final netlists and statistics.  The sta_* netlist keeps
-    # OpenSTA on a plain structural dialect while the regular netlist preserves
+    # Step 6: Write final netlists and statistics. The sta_* netlist keeps
+    # OpenROAD on a plain structural dialect while the regular netlist preserves
     # the historical artifact name.
     synth_out = q(out_dir + "/synth_" + design_name + ".v")
     sta_out = q(out_dir + "/sta_" + design_name + ".v")
@@ -951,7 +961,7 @@ def _unknown_area_hint(cell_type: str) -> str:
             "survived it (custom yosys template, or a Yosys build whose chformal predates "
             "$check). Guard the assertions out of the synthesis view (e.g. an "
             "`ifndef SYNTHESIS` / a NO_ASSERTIONS vlogdefine on the synth Target) and "
-            "re-run. Left in place they also abort the OpenSTA netlist parse, so timing "
+            "re-run. Left in place they can also abort OpenROAD's netlist parse, so timing "
             "comes back empty."
         )
     return (
@@ -972,9 +982,8 @@ def scan_synth_logs(work_dir: Path) -> str | None:
     line (stripped, truncated), or None if the logs are clean/absent. An
     unknown-area line is returned with a ``cause:`` hint appended
     (:func:`_unknown_area_hint`) so the report names the diagnosis, not just the
-    Yosys symptom. The OpenSTA and OpenROAD logs (``sta.log``/``openroad.log``)
-    are intentionally excluded — timing violations and RSZ buffering warnings
-    are warnings, not failures.
+    Yosys symptom. The OpenROAD log is intentionally excluded — timing
+    violations and RSZ buffering warnings are warnings, not failures.
     """
     for log_name in ("sv2v.log", "yosys.log"):
         log_path = work_dir / log_name
@@ -1029,19 +1038,12 @@ def _toml_bool(cfg: dict, key: str, default: bool) -> bool:
     return raw
 
 
-# Single source of truth for the valid --timing-engine / timing.engine values.
-# Shared by run_yosys_syn's argparse ``choices``, the resolution below, and the
-# asic_synthesize config validation — so a typo'd or wrong-typed
-# ``timing_engine`` is rejected with a clear message before EDA execution.
-TIMING_ENGINE_CHOICES = ("openroad", "opensta", "none")
-
 # Every key ``synth_timing_config`` still consumes from
 # ``[flows.synth.timing]``. These are the genuine flow/backend knobs
 # (ADR 0029 decision 2). Anything else is a typo or stale knob that would be
 # *silently ignored*, so we warn on unknown keys.
 TIMING_CONFIG_KEYS = frozenset(
     {
-        "engine",
         "utilization_pct",
         "repair_timing",
     }
@@ -1084,6 +1086,11 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
         timing = {}
 
     for key in timing:
+        if key == "engine":
+            sys.exit(
+                "ERROR: [flows.synth.timing] 'engine' is retired. Select "
+                "flow_options.synth_mode = physical or logical on the .core Target."
+            )
         if key in _MIGRATED_CONSTRAINT_KEYS:
             sys.exit(
                 f"ERROR: [flows.synth.timing] {key!r} is no longer "
@@ -1102,12 +1109,12 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
     return timing
 
 
-def _resolve_timing_engine(engine: str | None, timing: dict) -> str:
-    """Resolve and validate the configured timing path."""
-    resolved_engine = str(engine or timing.get("engine", "openroad")).lower()
-    if resolved_engine not in TIMING_ENGINE_CHOICES:
-        sys.exit("ERROR: timing engine must be one of: " + ", ".join(TIMING_ENGINE_CHOICES))
-    return resolved_engine
+def _resolve_synth_mode(mode: str | SynthMode | None) -> SynthMode:
+    """Resolve and validate physical versus logical synthesis intent."""
+    resolved_mode = str(mode or "physical").lower()
+    if resolved_mode not in SYNTH_MODE_CHOICES:
+        sys.exit("ERROR: synth mode must be one of: " + ", ".join(SYNTH_MODE_CHOICES))
+    return SynthMode(resolved_mode)
 
 
 def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> list[Path]:
@@ -1135,7 +1142,7 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
 
 def synth_timing_config(
     *,
-    engine: str | None = None,
+    mode: str | SynthMode | None = None,
     clock: str | None = None,
     period_ps: float | None = None,
     input_delay_pct: float | None = None,
@@ -1154,9 +1161,9 @@ def synth_timing_config(
 ) -> StaTimingConfig:
     """Resolve simple-backend timing config from CLI overrides and booley.toml.
 
-    OpenROAD is the default path (placed, buffered/sized, estimated wire RC).
-    Projects can opt out entirely with
-    ``[flows.synth.timing].engine = "none"`` or ``--timing-engine none``.
+    Physical mode is the default: Yosys mapping followed by OpenROAD placement,
+    repair, parasitic estimation, and STA. Logical mode stops after Yosys and
+    reports mapped area without timing.
 
     Design constraints (``period``/``clock``/I-O delays/extra SDC) are **not**
     read from ``booley.toml`` anymore (ADR 0029): they arrive as ``--sta-sdc``
@@ -1175,7 +1182,7 @@ def synth_timing_config(
     passes ``False`` by forwarding an explicit profile.
     """
     timing = _load_and_validate_timing_config(project_root)
-    resolved_engine = _resolve_timing_engine(engine, timing)
+    resolved_mode = _resolve_synth_mode(mode)
     resolved_sdc = _resolve_sta_sdc_paths(sdc, project_root)
     # Design-constraint scalars (period/clock/I-O delays) come only from the
     # trusted argparse-typed CLI overrides now; there is no booley.toml fallback
@@ -1200,7 +1207,7 @@ def synth_timing_config(
     else:
         resolved_repair = True
     return StaTimingConfig(
-        engine=resolved_engine,
+        mode=resolved_mode,
         clock=clock,
         period_ps=float(period_ps) if period_ps else DEFAULT_STA_PERIOD_PS,
         input_delay_pct=(
@@ -1219,41 +1226,6 @@ def synth_timing_config(
         gate_cloning=gate_cloning,
         setup_margin_ns=setup_margin_ns,
         repair_tns_percent=repair_tns_percent,
-    )
-
-
-# ============================================================================
-# OpenSTA timing
-# ============================================================================
-
-
-# OpenSTA aborts the whole run on the first netlist parse error, e.g.
-# ``Error: sta_ravenoc.v line 250778, syntax error``. Its Verilog reader is a
-# plain structural one, so any cell Yosys left non-structural (a formal
-# ``$check``, an unmapped word-level primitive) kills the parse — and the only
-# visible symptom is empty timing.
-_STA_SYNTAX_ERROR_RE = re.compile(r"^.*\bsyntax error\b.*$", re.MULTILINE | re.IGNORECASE)
-
-
-def sta_parse_abort_hint(sta_log_text: str, design_name: str) -> str | None:
-    """Cause-naming hint for an OpenSTA run that died parsing the netlist.
-
-    Returns a multi-line message quoting the offending ``sta.log`` line, or
-    ``None`` when the log shows no parse error (the STA run failed or came back
-    empty for some other reason — a missing clock, an over-constrained SDC).
-    """
-    match = _STA_SYNTAX_ERROR_RE.search(sta_log_text)
-    if match is None:
-        return None
-    netlist = f"sta_{design_name}.v"
-    return (
-        f"  cause: OpenSTA aborted parsing the synthesized netlist ({netlist}), so no "
-        "timing path was ever analyzed:\n"
-        f"    {match.group(0).strip()[:300]}\n"
-        "  OpenSTA reads plain structural Verilog. A cell Yosys left non-structural is "
-        "the usual culprit — most often an assertion/formal cell "
-        f"({', '.join(sorted(FORMAL_CELL_TYPES))}) that survived to write_verilog. "
-        "Check yosys.log for an 'Area for cell type ... is unknown!' line naming it."
     )
 
 
@@ -1279,7 +1251,7 @@ def detect_clock_port(netlist: Path) -> str | None:
 
 
 def write_sta_sdc(config: StaTimingConfig, clock: str, work_dir: Path) -> Path:
-    """Create an OpenSTA SDC from generated defaults plus the Target's SDC.
+    """Create the physical-mode SDC from generated defaults plus the Target's SDC.
 
     ADR 0029 decision 5: when the Target's authored SDC declares its own
     ``create_clock`` / ``set_input_delay`` / ``set_output_delay``, the matching
@@ -1301,14 +1273,13 @@ def write_sta_sdc(config: StaTimingConfig, clock: str, work_dir: Path) -> Path:
     lines: list[str] = []
     if user_sdc:
         lines.append(user_sdc)
-    lines.extend(["", "# Auto-generated by Booley simple Yosys/OpenSTA backend."])
+    lines.extend(["", "# Auto-generated by Booley Yosys/OpenROAD backend."])
     if not owns_clock:
         lines.append(f"create_clock -name {clock} -period {period_ns:.6f} [get_ports {{{clock}}}]")
     if not owns_input:
         # Constrain every input except the clock. ``remove_from_collection`` is a
-        # Synopsys-ism that some OpenSTA builds don't ship; guard it and fall back
-        # to constraining all inputs (a harmless input delay on the clock port)
-        # so the flow stays portable across OpenSTA versions.
+        # Guard the collection operation and fall back to constraining all
+        # inputs so an SDC command mismatch cannot silently erase I/O timing.
         lines.append(
             "if { [catch { set input_ports [remove_from_collection [all_inputs]"
             + " [get_ports {"
@@ -1329,46 +1300,8 @@ def write_sta_sdc(config: StaTimingConfig, clock: str, work_dir: Path) -> Path:
     return sdc_path
 
 
-def write_sta_script(
-    design_name: str,
-    liberty: Path,
-    sta_netlist: Path,
-    sdc_path: Path,
-    report_dir: Path,
-    work_dir: Path,
-) -> Path:
-    """Write the Tcl script used to run OpenSTA."""
-    script_path = work_dir / "run_opensta.tcl"
-    rpt = (report_dir / "overall.rpt").as_posix()
-    csv = (report_dir / "overall.csv.rpt").as_posix()
-    reg2reg_block = reg2reg_timing_tcl((report_dir / "reg2reg.rpt").as_posix())
-    perclock_block = perclock_timing_tcl()
-    script = f"""
-read_liberty {{{liberty.as_posix()}}}
-read_verilog {{{sta_netlist.as_posix()}}}
-link_design {design_name}
-read_sdc {{{sdc_path.as_posix()}}}
-catch {{ foreach_in_collection _clk [all_clocks] {{ puts [format "STA_CLOCK_PERIOD_NS: %.6f" [get_property $_clk period]] ; break }} }}
-report_checks -path_delay max -sort_by_slack -group_count 1 > {{{rpt}}}
-set paths [find_timing_paths -path_delay max -sort_by_slack -group_count 1]
-set csv_out [open {{{csv}}} w]
-foreach path $paths {{
-  set startpoint_name [get_property [get_property $path startpoint] full_name]
-  set endpoint_name [get_property [get_property $path endpoint] full_name]
-  set slack [get_property $path slack]
-  puts $csv_out [format "%s,%s,%.6f" $startpoint_name $endpoint_name $slack]
-  puts [format "STA_WORST_SLACK_NS: %.6f" $slack]
-  break
-}}
-close $csv_out
-{perclock_block}{reg2reg_block}exit
-""".lstrip()
-    script_path.write_text(script, encoding="utf-8")
-    return script_path
-
-
 def parse_sta_worst_slack(source: str | Path) -> float | None:
-    """Parse worst setup slack in ns from OpenSTA stdout or Booley CSV."""
+    """Parse worst setup slack in ns from STA output or Booley CSV."""
     if isinstance(source, Path):
         if not source.exists():
             return None
@@ -1378,13 +1311,13 @@ def parse_sta_worst_slack(source: str | Path) -> float | None:
     marker = _STA_SLACK_RE.search(text)
     if marker:
         # EDA-tool-output parsing: the regex constrains the group to a numeric
-        # form, but if OpenSTA's marker format ever drifts, degrade to the
+        # form, but if the marker format ever drifts, degrade to the
         # CSV scan below instead of crashing the whole synthesis flow.
         try:
             return float(marker.group(1))
         except ValueError:
             print(
-                "WARNING: OpenSTA slack marker present but not a valid float: "
+                "WARNING: STA slack marker present but not a valid float: "
                 f"{marker.group(1)!r}; falling back to CSV scan"
             )
     values: list[float] = []

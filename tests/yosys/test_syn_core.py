@@ -236,6 +236,23 @@ class TestParseAreaFromStat:
         assert syn_core.parse_area_from_stat(stat) is None
 
 
+class TestParseAbcMappedDelay:
+    def test_takes_slowest_positive_partition(self):
+        from booley.yosys import syn_core
+
+        output = (
+            "ABC: netlist : i/o = 4/2 area =10.0 delay =83.15 lev = 3\n"
+            "ABC: netlist : i/o = 8/4 area =20.0 delay =338.97 lev = 12\n"
+        )
+        assert syn_core.parse_abc_mapped_delay_ps(output) == pytest.approx(338.97)
+
+    def test_ignores_zero_and_unrelated_delay_text(self):
+        from booley.yosys import syn_core
+
+        output = "ABC: netlist : area =0.0 delay =0.00 lev = 0\nYOSYS_ABC_DELAY_PS: 3333\n"
+        assert syn_core.parse_abc_mapped_delay_ps(output) is None
+
+
 # ---------------------------------------------------------------------------
 # area_to_kge
 # ---------------------------------------------------------------------------
@@ -257,11 +274,11 @@ class TestAreaToKge:
 
 
 # ---------------------------------------------------------------------------
-# OpenSTA helpers
+# Physical STA helpers
 # ---------------------------------------------------------------------------
 
 
-class TestOpenStaHelpers:
+class TestPhysicalStaHelpers:
     def test_detect_clock_port_prefers_common_input(self, tmp_path):
         from booley.yosys import syn_core
 
@@ -289,7 +306,7 @@ class TestOpenStaHelpers:
         assert syn_core.parse_sta_worst_slack(csv) == -0.25
 
     def test_parse_sta_worst_slack_malformed_marker_degrades(self, monkeypatch):
-        # Simulate OpenSTA marker-format drift: the regex matches but the
+        # Simulate STA marker-format drift: the regex matches but the
         # captured group is not a valid float.  Must fall back to the CSV
         # scan (here yielding None) rather than crashing synthesis.
         import re
@@ -304,7 +321,7 @@ class TestOpenStaHelpers:
         from booley.yosys import syn_core
 
         cfg = syn_core.StaTimingConfig(
-            engine="opensta",
+            mode="physical",
             clock="clk_i",
             period_ps=2000.0,
             input_delay_pct=25.0,
@@ -316,8 +333,7 @@ class TestOpenStaHelpers:
         assert "create_clock -name clk_i -period 2.000000" in text
         assert "set_input_delay -clock clk_i 0.500000" in text
         assert "set_output_delay -clock clk_i 1.200000" in text
-        # remove_from_collection is unavailable in some OpenSTA builds, so it must
-        # be guarded with a catch + all_inputs fallback rather than emitted bare.
+        # Guard collection handling with an all-inputs fallback.
         assert "catch { set input_ports [remove_from_collection" in text
         assert "set input_ports [all_inputs] }" in text
 
@@ -352,21 +368,6 @@ class TestOpenStaHelpers:
         assert tcl.index("STA_REG2REG_SLACK_NS") < tcl.index("report_checks")
         assert "  catch {report_checks" in tcl
 
-    def test_write_sta_script_embeds_reg2reg_block(self, tmp_path):
-        from booley.yosys import syn_core
-
-        path = syn_core.write_sta_script(
-            "top",
-            tmp_path / "lib.lib",
-            tmp_path / "sta_top.v",
-            tmp_path / "c.sdc",
-            tmp_path,
-            tmp_path,
-        )
-        text = path.read_text(encoding="utf-8")
-        assert "STA_REG2REG_SLACK_NS" in text
-        assert (tmp_path / "reg2reg.rpt").as_posix() in text
-
     def test_perclock_tcl_iterates_all_clocks(self):
         from booley.yosys import syn_core
 
@@ -379,23 +380,6 @@ class TestOpenStaHelpers:
         assert "-path_delay max" in tcl
         assert "-path_delay min" in tcl
         assert "catch" in tcl
-
-    def test_write_sta_script_embeds_perclock_block(self, tmp_path):
-        from booley.yosys import syn_core
-
-        text = syn_core.write_sta_script(
-            "top",
-            tmp_path / "lib.lib",
-            tmp_path / "sta_top.v",
-            tmp_path / "c.sdc",
-            tmp_path,
-            tmp_path,
-        ).read_text(encoding="utf-8")
-        assert "STA_PERCLOCK" in text
-        assert "-to $_clk" in text
-        # Per-clock block sits between the CSV close and the reg->reg block.
-        assert text.index("close $csv_out") < text.index("STA_PERCLOCK")
-        assert text.index("STA_PERCLOCK") < text.index("STA_REG2REG_SLACK_NS")
 
     def test_parse_reg2reg_slack_marker(self):
         from booley.yosys import syn_core
@@ -431,7 +415,7 @@ class TestEmitTimingMarkers:
         from booley.yosys.syn_core import StaTimingConfig
 
         return StaTimingConfig(
-            engine="opensta",
+            mode="physical",
             clock="clk_i",
             period_ps=period_ps,
             input_delay_pct=30.0,
@@ -625,7 +609,7 @@ class TestSynthTimingConfigTomlBoundary:
     def test_absent_keys_use_defaults(self, monkeypatch):
         from booley.yosys import syn_core
 
-        self._with_timing(monkeypatch, {"engine": "opensta"})
+        self._with_timing(monkeypatch, {})
         cfg = syn_core.synth_timing_config()
         assert cfg.period_ps == syn_core.DEFAULT_STA_PERIOD_PS
         assert cfg.input_delay_pct == syn_core.DEFAULT_STA_INPUT_DELAY_PCT
@@ -637,7 +621,7 @@ class TestSynthTimingConfigTomlBoundary:
         # is no booley.toml source for them anymore (ADR 0029).
         from booley.yosys import syn_core
 
-        self._with_timing(monkeypatch, {"engine": "opensta"})
+        self._with_timing(monkeypatch, {})
         cfg = syn_core.synth_timing_config(
             period_ps=2500.0,
             input_delay_pct=25.0,
@@ -711,7 +695,7 @@ class TestSynthTimingConfigTomlBoundary:
         # so it must at least surface a warning, not vanish.
         self._with_timing(
             monkeypatch,
-            {"engine": "opensta", "reepair_timing": True},
+            {"reepair_timing": True},
         )
         syn_core.synth_timing_config()
         out = capsys.readouterr().out
@@ -723,18 +707,18 @@ class TestSynthTimingConfigTomlBoundary:
 
         self._with_timing(
             monkeypatch,
-            {"engine": "opensta", "utilization_pct": 55, "repair_timing": False},
+            {"utilization_pct": 55, "repair_timing": False},
         )
         syn_core.synth_timing_config()
         assert "unknown key" not in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
-# synth_timing_config — OpenROAD path default + knobs
+# synth_timing_config — synthesis mode default + physical knobs
 # ---------------------------------------------------------------------------
 
 
-class TestSynthTimingConfigOpenRoad:
+class TestSynthTimingConfigModes:
     @staticmethod
     def _with_timing(monkeypatch, timing: dict) -> None:
         cfg = {"flows": {"synth": {"timing": timing}}}
@@ -745,30 +729,37 @@ class TestSynthTimingConfigOpenRoad:
             lambda project_root=None: cfg,
         )
 
-    def test_openroad_is_default_engine(self, monkeypatch):
+    def test_physical_is_default_mode(self, monkeypatch):
         from booley.yosys import syn_core
 
         self._with_timing(monkeypatch, {})
         cfg = syn_core.synth_timing_config()
-        assert cfg.engine == "openroad"
+        assert cfg.mode == "physical"
         # Defaulted OpenROAD knobs.
         assert cfg.utilization_pct == syn_core.DEFAULT_STA_UTILIZATION_PCT
         assert cfg.repair_timing is True
 
-    def test_openroad_accepted_explicitly(self, monkeypatch):
+    def test_logical_accepted_explicitly(self, monkeypatch):
         from booley.yosys import syn_core
 
-        self._with_timing(monkeypatch, {"engine": "openroad"})
-        assert syn_core.synth_timing_config().engine == "openroad"
+        self._with_timing(monkeypatch, {})
+        assert syn_core.synth_timing_config(mode="logical").mode == "logical"
 
-    def test_invalid_engine_lists_three_engines(self, monkeypatch):
+    def test_retired_timing_engine_is_hard_error(self, monkeypatch):
         from booley.yosys import syn_core
 
-        self._with_timing(monkeypatch, {"engine": "bogus"})
-        with pytest.raises(SystemExit) as exc_info:
+        self._with_timing(monkeypatch, {"engine": "opensta"})
+        with pytest.raises(SystemExit, match="synth_mode"):
             syn_core.synth_timing_config()
+
+    def test_invalid_mode_lists_two_modes(self, monkeypatch):
+        from booley.yosys import syn_core
+
+        self._with_timing(monkeypatch, {})
+        with pytest.raises(SystemExit) as exc_info:
+            syn_core.synth_timing_config(mode="bogus")
         msg = str(exc_info.value)
-        assert "openroad" in msg and "opensta" in msg and "none" in msg
+        assert "physical" in msg and "logical" in msg
 
     def test_utilization_and_repair_timing_from_toml(self, monkeypatch):
         from booley.yosys import syn_core
@@ -858,7 +849,7 @@ def _sdc_config(tmp_path, *sdc_texts, period_ps=4000.0):
         p.write_text(text, encoding="utf-8")
         paths.append(p)
     return syn_core.StaTimingConfig(
-        engine="opensta",
+        mode="physical",
         clock="clk_i",
         period_ps=period_ps,
         input_delay_pct=30.0,
@@ -918,7 +909,7 @@ class TestEffectivePeriod:
         from booley.yosys import syn_core
 
         cfg = syn_core.StaTimingConfig(
-            engine="opensta",
+            mode="physical",
             clock="clk_i",
             period_ps=4000.0,
             input_delay_pct=30.0,
@@ -973,7 +964,7 @@ class TestWriteStaSdcSuppression:
         from booley.yosys import syn_core
 
         cfg = syn_core.StaTimingConfig(
-            engine="opensta",
+            mode="physical",
             clock="clk_i",
             period_ps=2000.0,
             input_delay_pct=25.0,
@@ -1034,7 +1025,7 @@ class TestFormalCellRemoval:
     yosys-slang *lowers* SVA into `$check` cells (sv2v strips assertions
     instead). Left in the design they reach ABC and `stat` ("Area for cell type
     $check is unknown!") and, worse, `write_verilog` emits them into the STA
-    netlist where OpenSTA's structural parser aborts — a synthesis that exits 0
+    netlist where OpenROAD's structural parser aborts — a synthesis that exits 0
     with an undercounted area and no timing at all.
     """
 
@@ -1091,7 +1082,7 @@ class TestUnknownAreaCauseNaming:
         assert "assertion/formal cell" in line
         assert "chformal -remove" in line
         # The downstream symptom the user actually saw is named too.
-        assert "OpenSTA" in line
+        assert "OpenROAD" in line
 
     def test_ordinary_cell_names_the_mapping_cause(self, tmp_path):
         from booley.yosys import syn_core
@@ -1107,29 +1098,6 @@ class TestUnknownAreaCauseNaming:
 
         work = self._yosys_log(tmp_path, "Area for cell type $scopeinfo is unknown!\n")
         assert syn_core.scan_synth_logs(work) is None
-
-
-class TestStaParseAbortHint:
-    """An OpenSTA netlist parse abort must name the cause, not just go quiet."""
-
-    def test_syntax_error_line_is_quoted_with_a_cause(self):
-        from booley.yosys import syn_core
-
-        hint = syn_core.sta_parse_abort_hint(
-            "Warning: liberty stuff\nError: sta_ravenoc.v line 250778, syntax error\n",
-            "ravenoc",
-        )
-        assert hint is not None
-        assert "sta_ravenoc.v" in hint
-        assert "line 250778, syntax error" in hint
-        assert "$check" in hint  # the usual culprit is named
-
-    def test_clean_log_yields_no_hint(self):
-        """No parse error means the empty timing has some other cause — don't
-        fabricate a diagnosis."""
-        from booley.yosys import syn_core
-
-        assert syn_core.sta_parse_abort_hint("all good\n", "dut") is None
 
 
 class TestElaborateScript:
