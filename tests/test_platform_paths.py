@@ -55,6 +55,23 @@ class TestHostPathFromDockerMount:
     def test_windows_drive_root_is_absolute(self):
         assert host_path_from_docker_mount("/c").as_posix() == "C:/"
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "/host_mnt/c/Users/dev/project",
+            "/run/desktop/mnt/host/c/Users/dev/project",
+        ],
+    )
+    @patch.object(platform_paths, "IS_WINDOWS", True)
+    @patch.object(platform_paths, "Path", PureWindowsPath)
+    def test_windows_docker_daemon_drive_source_becomes_native(self, source: str):
+        assert host_path_from_docker_mount(source).as_posix() == "C:/Users/dev/project"
+
+    @patch.object(platform_paths, "IS_WINDOWS", True)
+    def test_windows_unmappable_daemon_source_has_no_native_path(self):
+        source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/hash"
+        assert host_path_from_docker_mount(source) is None
+
     @patch.object(platform_paths, "IS_WINDOWS", False)
     def test_posix_source_passes_through(self):
         assert host_path_from_docker_mount("/home/dev/project") == Path("/home/dev/project")

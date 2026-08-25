@@ -169,7 +169,92 @@ class TestContainerName:
         assert sr.session_container_name(first) != sr.session_container_name(second)
 
 
+def _test_issuance(workspace: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        project_root=str(workspace),
+        spec_sha256="current-spec",
+        policy_revision=1,
+        installation=None,
+        license_profile=None,
+    )
+
+
+def _vscode_labels(
+    workspace: Path,
+    issuance: SimpleNamespace,
+    *,
+    spec_digest: str = "current-spec",
+) -> dict[str, str]:
+    from booley.eda import runtime_spec
+
+    labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+    labels.update(
+        {
+            "booley.role": "interactive",
+            "booley.spec-digest": spec_digest,
+            "devcontainer.local_folder": str(workspace),
+            "devcontainer.config_file": str(workspace / ".devcontainer" / "devcontainer.json"),
+        }
+    )
+    return labels
+
+
+def _container_probe(name: str, state: dict) -> object:
+    encoded = json.dumps([state])
+
+    def docker_stdout(argv: list[str]) -> str | None:
+        if argv[:3] == ["docker", "ps", "-a"]:
+            return f"{name}\n"
+        if argv[:3] == ["docker", "ps", "--filter"]:
+            return ""
+        if argv[:3] == ["docker", "inspect", name]:
+            return encoded
+        return None
+
+    return docker_stdout
+
+
+def _stub_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: Path,
+    issuance: SimpleNamespace,
+    docker_stdout: object,
+) -> None:
+    from booley.eda import runtime_spec
+
+    _write_spec(workspace, _spec())
+    monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
+    monkeypatch.setattr(
+        runtime_spec,
+        "authorized_project_data_source",
+        lambda _path: workspace / ".booley_project",
+    )
+    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
+    monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
+
+
+def _record_successful_removals(monkeypatch: pytest.MonkeyPatch, removed: list[list[str]]) -> None:
+    monkeypatch.setattr(
+        sr,
+        "_run",
+        lambda argv, **_kwargs: (
+            removed.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
+        ),
+    )
+
+
 class TestPrepareMigration:
+    def test_malformed_mount_inventory_fails_loudly(self) -> None:
+        with pytest.raises(sr.SessionError, match=r"cannot inspect bind mounts.*current-vscode"):
+            sr._container_has_unavailable_bind("current-vscode", {"Mounts": None})
+
+    def test_unmappable_windows_daemon_bind_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sr, "host_path_from_docker_mount", lambda _source: None)
+        state = {"Mounts": [{"Type": "bind", "Source": "/run/desktop/mnt/host/wsl/x"}]}
+
+        assert not sr._container_has_unavailable_bind("current-vscode", state)
+
     @pytest.mark.parametrize("config_label", ["current", "missing", "different"])
     def test_stopped_vscode_container_from_old_issuance_is_removed_before_create(
         self,
@@ -177,67 +262,22 @@ class TestPrepareMigration:
         monkeypatch: pytest.MonkeyPatch,
         config_label: str,
     ) -> None:
-        from booley.eda import runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        expected_project_id = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))[
-            "booley.project-id"
-        ]
-        container_labels = {
-            "booley.role": "interactive",
-            "booley.project-id": expected_project_id,
-            "booley.spec-digest": "old-spec",
-            "devcontainer.local_folder": str(workspace),
-        }
-        if config_label == "current":
-            container_labels["devcontainer.config_file"] = str(
-                workspace / ".devcontainer" / "devcontainer.json"
-            )
+        issuance = _test_issuance(workspace)
+        container_labels = _vscode_labels(workspace, issuance, spec_digest="old-spec")
+        if config_label == "missing":
+            container_labels.pop("devcontainer.config_file")
         elif config_label == "different":
             container_labels["devcontainer.config_file"] = str(
                 workspace / ".devcontainer" / "legacy.json"
             )
-        stale = [
-            {
-                "State": {"Running": False},
-                "Config": {"Labels": container_labels},
-                "Mounts": [],
-            }
-        ]
+        state = {
+            "State": {"Running": False},
+            "Config": {"Labels": container_labels},
+            "Mounts": [],
+        }
         removed: list[list[str]] = []
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                return "stale-vscode\n"
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            if argv[:3] == ["docker", "inspect", "stale-vscode"]:
-                return json.dumps(stale)
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            sr,
-            "_run",
-            lambda argv, **_kwargs: (
-                removed.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
-            ),
-        )
+        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("stale-vscode", state))
+        _record_successful_removals(monkeypatch, removed)
 
         assert sr.prepare(workspace) == "current-spec"
         assert removed == [["docker", "rm", "stale-vscode"]]
@@ -245,64 +285,21 @@ class TestPrepareMigration:
     def test_stopped_current_container_with_missing_injected_bind_is_removed(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels.update(
-            {
-                "booley.role": "interactive",
-                "devcontainer.local_folder": str(workspace),
-                "devcontainer.config_file": str(workspace / ".devcontainer" / "devcontainer.json"),
-            }
-        )
-        current = [
-            {
-                "State": {"Running": False},
-                "Config": {"Labels": labels},
-                "Mounts": [
-                    {
-                        "Type": "bind",
-                        "Source": str(workspace / "missing-wayland-socket"),
-                        "Destination": "/tmp/vscode-wayland.sock",
-                    }
-                ],
-            }
-        ]
+        issuance = _test_issuance(workspace)
+        state = {
+            "State": {"Running": False},
+            "Config": {"Labels": _vscode_labels(workspace, issuance)},
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": str(workspace / "missing-wayland-socket"),
+                    "Destination": "/tmp/vscode-wayland.sock",
+                }
+            ],
+        }
         removed: list[list[str]] = []
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                return "current-vscode\n"
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            if argv[:3] == ["docker", "inspect", "current-vscode"]:
-                return json.dumps(current)
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
-        monkeypatch.setattr(
-            sr,
-            "_run",
-            lambda argv, **_kwargs: (
-                removed.append(argv) or subprocess.CompletedProcess(argv, 0, "", "")
-            ),
-        )
+        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("current-vscode", state))
+        _record_successful_removals(monkeypatch, removed)
 
         assert sr.prepare(workspace) == "current-spec"
         assert removed == [["docker", "rm", "current-vscode"]]
@@ -453,62 +450,21 @@ class TestPrepareMigration:
     def test_current_container_keeps_valid_binds_and_named_volumes(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels.update(
-            {
-                "booley.role": "interactive",
-                "devcontainer.local_folder": str(workspace),
-                "devcontainer.config_file": str(workspace / ".devcontainer" / "devcontainer.json"),
-            }
-        )
-        current = [
-            {
-                "State": {"Running": False},
-                "Config": {"Labels": labels},
-                "Mounts": [
-                    {
-                        "Type": "bind",
-                        "Source": str(workspace),
-                        "Destination": "/work",
-                    },
-                    {
-                        "Type": "volume",
-                        "Name": "booley-claude-state-i2c",
-                        "Source": "/var/lib/docker/volumes/not-a-host-bind",
-                        "Destination": "/home/agent/.claude",
-                    },
-                ],
-            }
-        ]
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                return "current-vscode\n"
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            if argv[:3] == ["docker", "inspect", "current-vscode"]:
-                return json.dumps(current)
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
+        issuance = _test_issuance(workspace)
+        state = {
+            "State": {"Running": False},
+            "Config": {"Labels": _vscode_labels(workspace, issuance)},
+            "Mounts": [
+                {"Type": "bind", "Source": str(workspace), "Destination": "/work"},
+                {
+                    "Type": "volume",
+                    "Name": "booley-claude-state-i2c",
+                    "Source": "/var/lib/docker/volumes/not-a-host-bind",
+                    "Destination": "/home/agent/.claude",
+                },
+            ],
+        }
+        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("current-vscode", state))
         remove = Mock()
         monkeypatch.setattr(sr, "_run", remove)
 
@@ -518,44 +474,13 @@ class TestPrepareMigration:
     def test_container_that_starts_during_cleanup_is_not_force_removed(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
-
-        _write_spec(workspace, _spec())
-        issuance = SimpleNamespace(
-            project_root=str(workspace),
-            spec_sha256="current-spec",
-            policy_revision=1,
-            installation=None,
-            license_profile=None,
-        )
-        labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
-        labels["booley.spec-digest"] = "old-spec"
-        labels.update(
-            {
-                "booley.role": "interactive",
-                "devcontainer.local_folder": str(workspace),
-                "devcontainer.config_file": str(workspace / ".devcontainer" / "devcontainer.json"),
-            }
-        )
-        stopped = [{"State": {"Running": False}, "Config": {"Labels": labels}, "Mounts": []}]
-
-        def docker_stdout(argv: list[str]) -> str | None:
-            if argv[:3] == ["docker", "ps", "-a"]:
-                return "racing-vscode\n"
-            if argv[:3] == ["docker", "ps", "--filter"]:
-                return ""
-            if argv[:3] == ["docker", "inspect", "racing-vscode"]:
-                return json.dumps(stopped)
-            return None
-
-        monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(
-            runtime_spec,
-            "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
-        )
-        monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
+        issuance = _test_issuance(workspace)
+        state = {
+            "State": {"Running": False},
+            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
+            "Mounts": [],
+        }
+        _stub_prepare(monkeypatch, workspace, issuance, _container_probe("racing-vscode", state))
         remove = Mock(
             return_value=subprocess.CompletedProcess(
                 ["docker", "rm", "racing-vscode"],

@@ -563,7 +563,7 @@ def _reject_legacy_project_data_visibility(workspace: Path, pending_project_data
 
 
 def _strict_running_interactive_states() -> list[tuple[str, str]]:
-    names = _docker_stdout(
+    return _strict_interactive_states(
         [
             "docker",
             "ps",
@@ -571,24 +571,14 @@ def _strict_running_interactive_states() -> list[tuple[str, str]]:
             f"label={dc.INTERACTIVE_ROLE_LABEL}",
             "--format",
             "{{.Names}}",
-        ]
+        ],
+        inventory_error="cannot inventory running Session Runtime containers",
     )
-    if names is None:
-        raise SessionError("cannot inventory running Session Runtime containers")
-    states = []
-    for name in (line.strip() for line in names.splitlines()):
-        if not name:
-            continue
-        raw = _docker_stdout(["docker", "inspect", name])
-        if raw is None or _decode_container_inspect(raw) is None:
-            raise SessionError(f"cannot inspect running Session Runtime {name!r}")
-        states.append((name, raw))
-    return states
 
 
 def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
     """Inspect this Project's running or stopped Interactive Mode containers."""
-    names = _docker_stdout(
+    return _strict_interactive_states(
         [
             "docker",
             "ps",
@@ -599,10 +589,18 @@ def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
             f"label=booley.project-id={project_id}",
             "--format",
             "{{.Names}}",
-        ]
+        ],
+        inventory_error="cannot inventory Session Runtime containers",
     )
+
+
+def _strict_interactive_states(
+    inventory_argv: list[str], *, inventory_error: str
+) -> list[tuple[str, str]]:
+    """Inspect every container returned by a strict Interactive Mode inventory."""
+    names = _docker_stdout(inventory_argv)
     if names is None:
-        raise SessionError("cannot inventory Session Runtime containers")
+        raise SessionError(inventory_error)
     states = []
     for name in (line.strip() for line in names.splitlines()):
         if not name:
@@ -655,34 +653,42 @@ def _reconcile_stopped_vscode_containers(workspace: Path, issuance: object) -> N
                     "stop it before recreating the VS Code container"
                 )
             continue
-        if issuance_matches and not _container_has_unavailable_bind(state):
+        if issuance_matches and not _container_has_unavailable_bind(name, state):
             continue
-        result = _run(["docker", "rm", name])
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
-            raise SessionError(
-                f"cannot remove stale Session Runtime {name!r}: {detail}. Booley will "
-                "not force-remove it because it may have become active; stop the "
-                "container and retry"
-            )
-        logger.info("removed stopped Session Runtime %r from an older host issuance", name)
+        _remove_stopped_vscode_container(name)
 
 
-def _container_has_unavailable_bind(state: dict) -> bool:
+def _remove_stopped_vscode_container(name: str) -> None:
+    """Remove one inspected-stopped container without crossing a start race."""
+    result = _run(["docker", "rm", name])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
+        raise SessionError(
+            f"cannot remove stale Session Runtime {name!r}: {detail}. Booley will "
+            "not force-remove it because it may have become active; stop the "
+            "container and retry"
+        )
+    logger.info("removed stopped stale Session Runtime %r", name)
+
+
+def _container_has_unavailable_bind(name: str, state: dict) -> bool:
     """Whether Docker would find an inspected container's bind source unavailable."""
     mounts = state.get("Mounts")
     if not isinstance(mounts, list):
-        return True
+        raise SessionError(f"cannot inspect bind mounts for Session Runtime {name!r}")
     for mount in mounts:
         if not isinstance(mount, dict):
-            return True
+            raise SessionError(f"cannot inspect bind mounts for Session Runtime {name!r}")
         if mount.get("Type") != "bind":
             continue
         source = mount.get("Source")
         if not isinstance(source, str) or not source:
-            return True
+            raise SessionError(f"cannot inspect bind mounts for Session Runtime {name!r}")
+        host_path = host_path_from_docker_mount(source)
+        if host_path is None:
+            continue
         try:
-            host_path_from_docker_mount(source).stat()
+            host_path.stat()
         except OSError:
             return True
     return False

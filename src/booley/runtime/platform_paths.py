@@ -20,6 +20,9 @@ from booley.runtime.process_group import (
 )
 
 IS_WINDOWS = sys.platform == "win32"
+_WINDOWS_DOCKER_DRIVE_RE = re.compile(
+    r"^/(?:host_mnt/|run/desktop/mnt/host/)?(?P<drive>[A-Za-z])(?P<suffix>/.*)?$"
+)
 
 
 def posix_relpath(path: Path | str, start: Path | str) -> str:
@@ -58,11 +61,17 @@ def docker_mount_path(p: Path) -> str:
     return posix
 
 
-def host_path_from_docker_mount(value: str) -> Path:
-    """Convert a Docker bind source back to a path native Python can inspect."""
-    if IS_WINDOWS and re.fullmatch(r"/[A-Za-z](?:/.*)?", value):
-        suffix = value[2:] or "/"
-        return Path(f"{value[1].upper()}:{suffix}")
+def host_path_from_docker_mount(value: str) -> Path | None:
+    """Convert a Docker bind source to a native path, if it is host-addressable."""
+    if IS_WINDOWS:
+        match = _WINDOWS_DOCKER_DRIVE_RE.fullmatch(value)
+        if match:
+            suffix = match.group("suffix") or "/"
+            return Path(f"{match.group('drive').upper()}:{suffix}")
+        if value.startswith("/") and not value.startswith("//"):
+            # Docker Desktop can retain daemon-private WSL paths that native
+            # Windows cannot inspect. Their existence is therefore unknown.
+            return None
     return Path(value)
 
 

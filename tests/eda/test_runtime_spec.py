@@ -94,6 +94,22 @@ def test_issuance_paths_reject_any_missing_generated_bind_source(
     assert "missing" in message
 
 
+def test_generated_bind_without_source_is_rejected() -> None:
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError,
+        match=r"generated bind source for /missing-source is missing",
+    ):
+        runtime_spec._validate_bind_sources(["target=/missing-source,type=bind,readonly"])
+
+
+def test_generated_bind_without_target_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError,
+        match=rf"generated bind target for {tmp_path} is missing",
+    ):
+        runtime_spec._validate_bind_sources([f"source={tmp_path},type=bind,readonly"])
+
+
 def test_issuance_records_project_scoped_image_keeper(issued) -> None:
     project, _spec, _path, stamp = issued
     assert stamp.keeper_image == runtime_spec.keeper_image(project)
