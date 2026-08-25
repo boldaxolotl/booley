@@ -116,6 +116,20 @@ def load_stamp(project_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _version_drift_message(stamp: dict) -> str | None:
+    """Describe package drift since the stamped Doctor run, if any."""
+    import booley
+
+    stamped_version = stamp.get("booley_version")
+    if stamped_version == booley.__version__:
+        return None
+    previous = str(stamped_version) if stamped_version else "unknown"
+    return (
+        f"Booley version changed from {previous} to {booley.__version__} "
+        "since the last clean `booley doctor` run -- re-run `booley doctor`"
+    )
+
+
 def check_stamp(
     project_dir: Path,
     project_root: Path,
@@ -125,9 +139,9 @@ def check_stamp(
 ) -> str | None:
     """One-line advisory nag, or None when doctor's blessing is current.
 
-    Three nag conditions, strongest signal first: no stamp at all, the config
-    fingerprint no longer matches the files on disk, or the stamp is older
-    than *max_age_days*.
+    Conditions are evaluated strongest first: a missing/corrupt stamp, an
+    unreadable timestamp, package-version drift, config drift, then age beyond
+    *max_age_days*.
     """
     stamp = load_stamp(project_dir)
     if stamp is None:
@@ -144,15 +158,8 @@ def check_stamp(
         return "the recorded `booley doctor` stamp is unreadable -- re-run `booley doctor`"
     passed_on = format_human_date(passed_at)
 
-    import booley
-
-    stamped_version = stamp.get("booley_version")
-    if stamped_version != booley.__version__:
-        previous = str(stamped_version) if stamped_version else "unknown"
-        return (
-            f"Booley version changed from {previous} to {booley.__version__} "
-            "since the last clean `booley doctor` run -- re-run `booley doctor`"
-        )
+    if version_message := _version_drift_message(stamp):
+        return version_message
 
     if stamp.get("fingerprint") != compute_fingerprint(project_dir, project_root):
         return (

@@ -2769,6 +2769,33 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-close
     )
 
 
+def _probe_runtime_booley_version(
+    docker_exe: str,
+    image: str,
+) -> subprocess.CompletedProcess[str]:
+    """Read Booley's version from the issued image without network access."""
+    probe = "import booley; print(booley.__version__)"
+    return subprocess.run(
+        [
+            docker_exe,
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network",
+            "none",
+            "--entrypoint",
+            "python3",
+            image,
+            "-c",
+            probe,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
 def _check_runtime_booley_version(
     docker_exe: str,
     image: str,
@@ -2776,27 +2803,8 @@ def _check_runtime_booley_version(
     _fail: Fail,
 ) -> None:
     """Require the host package and issued Session Runtime image to agree."""
-    probe = "import booley; print(booley.__version__)"
     try:
-        result = subprocess.run(
-            [
-                docker_exe,
-                "run",
-                "--rm",
-                "--pull=never",
-                "--network",
-                "none",
-                "--entrypoint",
-                "python3",
-                image,
-                "-c",
-                probe,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        result = _probe_runtime_booley_version(docker_exe, image)
     except (OSError, subprocess.SubprocessError) as exc:
         _fail(
             f"could not read the issued Session Runtime Booley version: {exc}",

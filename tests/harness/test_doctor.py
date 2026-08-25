@@ -2047,6 +2047,18 @@ def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monk
     assert any("example-skill" in message and "missing" in message for message in rec.fails())
 
 
+def _runtime_probe_subprocess(other_stdout: str):
+    def run(argv, **_kwargs):
+        stdout = (
+            f"{__version__}\n"
+            if "import booley; print(booley.__version__)" in argv
+            else other_stdout
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    return run
+
+
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
     from booley.eda import runtime_spec
 
@@ -2073,11 +2085,7 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
 
-    def run_without_live_resources(argv, **_kwargs):
-        stdout = f"{__version__}\n" if "import booley; print(booley.__version__)" in argv else ""
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run_without_live_resources)
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess(""))
     project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
     rec = _Rec()
 
@@ -2209,15 +2217,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
 
-    def run_with_live_resource(argv, **_kwargs):
-        stdout = (
-            f"{__version__}\n"
-            if "import booley; print(booley.__version__)" in argv
-            else "runtime-1\n"
-        )
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run_with_live_resource)
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
 
     def inspect(argv):
         if argv[-1] == "{{json .Config.Labels}}":
@@ -2259,15 +2259,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
 
-    def run_with_vscode_resource(argv, **_kwargs):
-        stdout = (
-            f"{__version__}\n"
-            if "import booley; print(booley.__version__)" in argv
-            else "runtime-1\n"
-        )
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
-
-    monkeypatch.setattr(doctor.subprocess, "run", run_with_vscode_resource)
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
 
     def inspect(argv):
         if argv[-1] == "{{json .Config.Labels}}":
