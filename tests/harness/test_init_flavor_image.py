@@ -66,8 +66,8 @@ def _stub_flavor_env(
     monkeypatch.setattr(idi, "_expected_version", lambda _root: "0.2.0")
     monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
 
-    def _fake_build(ctx, dockerfile, context, exists_, fp=None, image=idi.DOCKER_IMAGE, **kw):
-        built.append(image)
+    def _fake_build(ctx, spec):
+        built.append(spec.image)
         return 0
 
     monkeypatch.setattr(idi, "_docker_build_image", _fake_build)

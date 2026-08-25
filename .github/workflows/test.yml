@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 # One run per branch/PR: a new push cancels the still-running stale build.
 concurrency:
@@ -28,11 +29,13 @@ jobs:
       native_bwave: ${{ steps.classify.outputs.native_bwave }}
       rust: ${{ steps.classify.outputs.rust }}
       docker_toolchain: ${{ steps.classify.outputs.docker_toolchain }}
+      stable_base: ${{ steps.classify.outputs.stable_base }}
       packaging: ${{ steps.classify.outputs.packaging }}
       workflow: ${{ steps.classify.outputs.workflow }}
       release: ${{ steps.classify.outputs.release }}
       full: ${{ steps.classify.outputs.full }}
       jobs: ${{ steps.classify.outputs.jobs }}
+      build_stable_base: ${{ steps.classify.outputs.build_stable_base }}
       required_jobs: ${{ steps.classify.outputs.required_jobs }}
       diff_base: ${{ steps.classify.outputs.diff_base }}
     steps:
@@ -356,13 +359,61 @@ jobs:
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      - name: Compute stable-base compatibility contract
+        id: base-contract
+        run: >-
+          python .github/scripts/docker_base_contract.py
+          --repo . --github-output "${GITHUB_OUTPUT}"
+
+      - name: Select compatible stable runtime base
+        id: runtime-base
+        shell: bash
+        env:
+          BUILD_STABLE_BASE: ${{ needs.changes.outputs.build_stable_base }}
+          PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
+        run: |
+          if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
+            echo "build=true" >> "${GITHUB_OUTPUT}"
+            echo "image=booley-runtime-base:ci" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          python .github/scripts/docker_base_contract.py --repo . \
+            --resolve-image "${PUBLISHED_BASE}" --github-output "${GITHUB_OUTPUT}"
+          echo "build=false" >> "${GITHUB_OUTPUT}"
+
+      # A PR that changes a stable-base input must test that candidate without
+      # publishing untrusted layers. The daemon-backed builder can consume the
+      # locally loaded base by named context (verified by the workflow contract).
+      - name: Build changed stable base and candidate locally
+        if: steps.runtime-base.outputs.build == 'true'
+        shell: bash
+        env:
+          BASE_CONTRACT: ${{ steps.base-contract.outputs.contract }}
+        run: |
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile.base \
+            --tag booley-runtime-base:ci \
+            --build-arg "BOOLEY_BASE_SOURCE_REVISION=${GITHUB_SHA}" \
+            --build-arg "BOOLEY_BASE_CONTRACT=${BASE_CONTRACT}" \
+            --build-arg "BOOLEY_BASE_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile \
+            --tag booley-test \
+            --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:ci" \
+            --build-context booley-runtime-base=docker-image://booley-runtime-base:ci .
+
       # Load into the local docker store (not push) so `docker run` below works;
       # GHA layer cache keeps rebuilds fast when the Dockerfile didn't change.
-      - name: Build Docker image
+      - name: Build candidate from published stable base
+        if: steps.runtime-base.outputs.build != 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: src/booley/data/docker/Dockerfile
+          build-contexts: |
+            booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
+          build-args: |
+            BOOLEY_RUNTIME_BASE_IMAGE=${{ steps.runtime-base.outputs.image }}
           load: true
           tags: booley-test
           cache-from: type=gha,scope=sandbox

@@ -26,7 +26,7 @@ def test_shipped_managed_policies_disable_provider_web_tools() -> None:
 
 
 def test_sandbox_image_installs_both_managed_policies() -> None:
-    dockerfile = (_docker_data() / "Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (_docker_data() / "Dockerfile.base").read_text(encoding="utf-8")
     dockerignore = (_docker_data().parents[3] / ".dockerignore").read_text(encoding="utf-8")
 
     assert "codex-requirements.toml /etc/codex/requirements.toml" in dockerfile

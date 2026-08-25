@@ -10,6 +10,8 @@ import sys
 from collections.abc import Iterable
 from pathlib import Path
 
+from docker_base_contract import stable_base_inputs
+
 CATEGORIES = (
     "docs",
     "python_source",
@@ -18,6 +20,7 @@ CATEGORIES = (
     "native_bwave",
     "rust",
     "docker_toolchain",
+    "stable_base",
     "packaging",
     "workflow",
     "release",
@@ -33,6 +36,10 @@ CONDITIONAL_JOBS = (
     "bwave-smoke",
 )
 ALL_JOBS = ("changes", *CONDITIONAL_JOBS)
+_STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
+_STABLE_BASE_ORCHESTRATION_FILES = {
+    "src/booley/data/docker/stable-base-inputs.txt",
+}
 _PACKAGING_FILES = {
     "LICENSE",
     "MANIFEST.in",
@@ -101,6 +108,8 @@ def _path_categories(path: str) -> set[str]:
         or Path(path).name.startswith("Dockerfile")
     ):
         categories.add("docker_toolchain")
+    if path in _STABLE_BASE_FILES | _STABLE_BASE_ORCHESTRATION_FILES:
+        categories.add("stable_base")
     if path.startswith((".github/workflows/", ".github/actions/", ".github/scripts/")):
         categories.add("workflow")
     if path in {
@@ -113,8 +122,6 @@ def _path_categories(path: str) -> set[str]:
 
 
 def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
-    if force_all:
-        return set(CATEGORIES)
     categories: set[str] = set()
     for path in paths:
         path_categories = _path_categories(path)
@@ -123,6 +130,10 @@ def classify(paths: Iterable[str], *, force_all: bool = False) -> set[str]:
         categories.update(path_categories)
     if not categories:
         categories.add("full")
+    if force_all:
+        # Main/manual runs execute every conditional job, but only rebuild the
+        # 57-minute runtime base when its actual compatibility inputs changed.
+        categories.update(set(CATEGORIES) - {"stable_base"})
     return categories
 
 
@@ -186,6 +197,9 @@ def _write_outputs(destination: Path, categories: set[str], base: str) -> None:
             print(f"{category}={'true' if category in categories else 'false'}", file=stream)
         job_policy = {job: job in jobs for job in CONDITIONAL_JOBS}
         print(f"jobs={json.dumps(job_policy, separators=(',', ':'))}", file=stream)
+        print(
+            f"build_stable_base={'true' if 'stable_base' in categories else 'false'}", file=stream
+        )
         print(f"required_jobs={','.join(job for job in ALL_JOBS if job in jobs)}", file=stream)
         print(f"diff_base={base}", file=stream)
 
@@ -200,7 +214,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         base = _diff_base(args.repo, args.base, args.head)
-        paths = [] if args.force_all else _changed_paths(_git_diff(args.repo, base, args.head))
+        paths = _changed_paths(_git_diff(args.repo, base, args.head))
         categories = classify(paths, force_all=args.force_all)
         _write_outputs(args.github_output, categories, base)
     except (OSError, ValueError) as error:

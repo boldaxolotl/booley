@@ -56,6 +56,7 @@ def _seed_source(root: Path) -> None:
     pkg = root / "src" / "booley"
     pkg.mkdir(parents=True)
     (pkg / "incontainer_register.py").write_text("x = 1\n", encoding="utf-8")
+    (root / ".dockerignore").write_text(".git\n", encoding="utf-8")
     (root / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
     bwave = root / "crates" / "bwave"
     (bwave / "src").mkdir(parents=True)
@@ -94,6 +95,12 @@ class TestFingerprint:
         (tmp_path / "src" / "booley" / "new_mod.py").write_text("y = 1\n", encoding="utf-8")
         assert init_cmd._image_build_fingerprint(tmp_path) != before
 
+    def test_changes_when_dockerignore_changes(self, tmp_path):
+        _seed_source(tmp_path)
+        before = init_cmd._image_build_fingerprint(tmp_path)
+        (tmp_path / ".dockerignore").write_text(".git\ndist\n", encoding="utf-8")
+        assert init_cmd._image_build_fingerprint(tmp_path) != before
+
     def test_ignores_pycache(self, tmp_path):
         _seed_source(tmp_path)
         before = init_cmd._image_build_fingerprint(tmp_path)
@@ -130,6 +137,40 @@ def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypa
     assert "BOOLEY_SOURCE_REVISION=abc123" in values
     assert "BOOLEY_SOURCE_UPDATED_AT=2026-08-10T10:00:00Z" in values
     assert any(value.startswith("BOOLEY_IMAGE_BUILT_AT=") for value in values)
+
+
+def test_local_build_constructs_base_before_candidate_with_named_context(
+    tmp_path, monkeypatch
+) -> None:
+    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    (docker_dir / "Dockerfile.base").write_text("FROM scratch\n", encoding="utf-8")
+    (docker_dir / "Dockerfile").write_text("FROM booley-runtime-base\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args: True)
+    monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: False)
+    monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
+    monkeypatch.setattr(init_docker_image, "_runtime_base_build_metadata_args", lambda _root: [])
+
+    def fake_build(*args, **kwargs):
+        calls.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(init_docker_image, "_docker_build_image", fake_build)
+    ctx = InitContext(project_root=tmp_path)
+
+    init_docker_image._docker_local_build(ctx, docker_dir, exists=False, fingerprint="fp")
+
+    base = calls[0][0][1]
+    candidate = calls[1][0][1]
+    assert base.dockerfile.name == "Dockerfile.base"
+    assert base.image == "booley-runtime-base:local"
+    assert candidate.dockerfile.name == "Dockerfile"
+    assert candidate.build_contexts == (
+        ("booley-runtime-base", "docker-image://booley-runtime-base:local"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -431,12 +472,10 @@ class TestDockerBuildCommand:
 
         monkeypatch.setattr(init_docker_image.subprocess, "Popen", fake_popen)
         ctx = init_cmd.InitContext(project_root=tmp_path, force=force, verbose=False)
-        rc = init_docker_image._docker_build_image(
-            ctx,
-            tmp_path / "Dockerfile",
-            tmp_path,
-            exists=False,
+        build = init_docker_image._DockerBuildSpec(
+            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
         )
+        rc = init_docker_image._docker_build_image(ctx, build)
         return rc, captured
 
     def test_undecodable_byte_does_not_kill_the_build(self, monkeypatch, tmp_path: Path):
