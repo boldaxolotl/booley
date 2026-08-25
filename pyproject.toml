@@ -66,7 +66,9 @@ dev = [
     # Bounds every test's wall-clock so a wedged subprocess/stall test fails
     # loudly instead of hanging the whole suite (default applied in tests/conftest.py).
     "pytest-timeout>=2.3",
-    "coverage>=7.0",
+    # Exact pin: pytest-cov owns xdist data collection/combining, while its
+    # subprocess support depends on coverage.py's configured patch mechanism.
+    "pytest-cov==7.1.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
@@ -236,6 +238,7 @@ docstring-code-format = true
 testpaths = ["tests"]
 asyncio_mode = "strict"
 markers = [
+    "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
 ]
 filterwarnings = [
@@ -250,6 +253,9 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["booley"]
 omit = ["tests/*"]
+# pytest-cov 7 removed its implicit .pth subprocess hook. Coverage.py's patch
+# starts measurement in Python child processes and writes combinable data.
+patch = ["subprocess"]
 
 [tool.coverage.report]
 fail_under = 60

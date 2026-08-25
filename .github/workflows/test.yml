@@ -3,8 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Run on stacked PRs as well as PRs targeting main. Each optimization phase
+  # has its own reviewable base branch and must retain the same CI coverage.
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +17,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs: ${{ steps.classify.outputs.docs }}
+      python_source: ${{ steps.classify.outputs.python_source }}
+      python_tests: ${{ steps.classify.outputs.python_tests }}
+      image_tests: ${{ steps.classify.outputs.image_tests }}
+      native_bwave: ${{ steps.classify.outputs.native_bwave }}
+      rust: ${{ steps.classify.outputs.rust }}
+      docker_toolchain: ${{ steps.classify.outputs.docker_toolchain }}
+      packaging: ${{ steps.classify.outputs.packaging }}
+      workflow: ${{ steps.classify.outputs.workflow }}
+      release: ${{ steps.classify.outputs.release }}
+      full: ${{ steps.classify.outputs.full }}
+      jobs: ${{ steps.classify.outputs.jobs }}
+      required_jobs: ${{ steps.classify.outputs.required_jobs }}
+      diff_base: ${{ steps.classify.outputs.diff_base }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FORCE_ALL: ${{ github.event_name != 'pull_request' }}
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          python .github/scripts/ci_changes.py
+          --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
+          --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
+
+  docs-check:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['docs-check']
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Check documentation diff
+        env:
+          BASE_SHA: ${{ needs.changes.outputs.diff_base }}
+        run: git diff --check "${BASE_SHA}" "${GITHUB_SHA}" --
+
   lint:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['lint']
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -39,6 +91,8 @@ jobs:
         run: ruff format --check .
 
   test:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['test']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -56,40 +110,45 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      # The bwave session tests cargo-build the native binary on demand when it
-      # isn't bundled (fresh checkout). Cache that build so it's ~free after the
-      # first run per platform.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: crates/bwave
-
-      # Pre-build here, where there is no per-test 120s pytest-timeout cap: a
-      # cold cargo build inside the on-demand test path can exceed that cap on
-      # a slow runner, failing the test instead of exercising it.
-      - name: Build bwave (release)
-        run: cargo build --release --manifest-path crates/bwave/Cargo.toml
-
       - name: Install package with dev deps
         run: pip install -e ".[dev]"
 
-      # Keep the coverage leg serial: coverage.py needs explicit worker data
-      # collection/combining under xdist. Every other compatibility leg runs
-      # the same tests across four workers with module/class affinity.
+      # Every compatibility leg runs across four workers with module/class
+      # affinity. pytest-cov combines worker and configured subprocess data.
       - name: Run tests (parallel)
         if: env.COVERAGE_LEG != 'true'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
-        run: pytest tests/ -q --tb=short -n 4 --dist=loadscope --basetemp "${{ runner.temp }}/pytest"
+        run: >-
+          pytest tests/ -q --tb=short -n 4 --dist=loadscope
+          --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       # Fold the former standalone coverage job into the existing Linux/3.13
       # compatibility leg. This preserves its full suite and fail-under gate
       # without serializing a seventh full-suite run after the matrix.
       - name: Run tests with coverage
         if: env.COVERAGE_LEG == 'true'
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
-          coverage run -m pytest tests/ -q --tb=short
-          coverage report
+          pytest tests/ -q --tb=short -n 4 --dist=loadscope \
+            --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave" \
+            --cov=booley --cov-report= --cov-fail-under=60 \
+            --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
+          # pytest-cov gates its worker aggregate as pytest exits. coverage.py
+          # then combines configured subprocess shards and re-gates the exact
+          # finalized database used to produce the XML artifact.
+          coverage report --fail-under=60
           coverage xml -o coverage.xml
+
+      - name: Upload test timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: warn
 
       - name: Upload coverage artifact
         if: env.COVERAGE_LEG == 'true'
@@ -99,6 +158,8 @@ jobs:
           path: coverage.xml
 
   rust-test:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['rust-test']
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -152,7 +213,9 @@ jobs:
           -A clippy::writeln-empty-string
           -A clippy::wrong-self-convention
 
-  bwave-python-test:
+  bwave-integration:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['bwave-integration']
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -174,16 +237,46 @@ jobs:
       - name: Build bwave (debug)
         run: cargo build --locked --manifest-path crates/bwave/Cargo.toml
 
-      - name: Install Python test dependency
-        run: pip install pytest==8.4.2
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
 
-      - name: Run all BWave Python tests
+      - name: Run B-Wave crate Python tests
         shell: bash
         run: |
           test -x crates/bwave/target/debug/bwave
-          pytest crates/bwave/tests/test_*.py -q --tb=short -rs
+          pytest crates/bwave/tests/test_*.py -q --tb=short -rs \
+            --durations=30 --junitxml="${RUNNER_TEMP}/bwave-crate.xml"
+
+      - name: Run native B-Wave wrapper and contract tests
+        shell: bash
+        run: |
+          test -x crates/bwave/target/debug/bwave
+          pytest tests/ -m native_bwave -q --tb=short -rs \
+            --durations=30 --junitxml="${RUNNER_TEMP}/bwave-native.xml"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from xml.etree import ElementTree
+
+          root = ElementTree.parse(Path(os.environ["RUNNER_TEMP"]) / "bwave-native.xml").getroot()
+          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+          executed = sum(int(suite.attrib["tests"]) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
+          assert executed == 11, f"expected 11 native B-Wave tests, executed {executed}"
+          assert skipped == 0, f"native B-Wave tests skipped unexpectedly: {skipped}"
+          PY
+
+      - name: Upload B-Wave timing data
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-bwave-integration
+          path: ${{ runner.temp }}/bwave-*.xml
+          if-no-files-found: warn
 
   package-artifacts:
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['package-artifacts']
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -238,7 +331,8 @@ jobs:
 
   bwave-smoke:
     runs-on: ubuntu-latest
-    needs: package-artifacts
+    needs: [changes, package-artifacts]
+    if: fromJSON(needs.changes.outputs.jobs)['bwave-smoke']
     # An uncached image build compiles the EDA stack from source (~57 min
     # measured), then loads a ~6 GB image and uploads the layer cache — a
     # 60-minute budget killed the first run mid-flight. Cached rebuilds
@@ -276,6 +370,23 @@ jobs:
           # image is already built and the smoke test can still run.
           cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
 
+      - name: Capture Docker cache and layer evidence
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/docker-build-evidence"
+          docker image inspect booley-test \
+            > "${RUNNER_TEMP}/docker-build-evidence/image-inspect.json"
+          docker history --no-trunc --format \
+            '{{json .}}' booley-test \
+            | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
+
+      - name: Upload Docker build evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-build-evidence
+          path: ${{ runner.temp }}/docker-build-evidence/
+          if-no-files-found: error
+
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash
         run: |
@@ -283,14 +394,6 @@ jobs:
           docker image inspect booley-sandbox >/dev/null
           docker run --rm booley-sandbox sh -c 'command -v verible-verilog-lint'
           docker run --rm booley-sandbox python3 -c 'import edalize.tools.verible'
-
-      - name: Run Verible production-image end-to-end test
-        run: >-
-          pytest tests/docker/test_sandbox_verible_e2e.py
-          -q --tb=short -rs
-
-      - name: Run sandbox isolation suite
-        run: python tests/docker/isolation/run_isolation_tests.py
 
       # Use the same checksum-pinned fetcher as `booley init`. The payload is
       # deliberately not cached or baked into the image; it includes the
@@ -302,28 +405,127 @@ jobs:
           PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
 
-      - name: Run FIFO pipeline smoke test
-        run: >
-          docker run --rm -v "${{ github.workspace }}:/work" booley-test
-          bash -c "pip install --break-system-packages pytest &&
-          python -m pytest /work/tests/sim/test_bwave_fifo_pipeline.py
-          -v -k 'not slow'"
+      - name: Prepare isolated validation temp directories
+        shell: bash
+        run: |
+          for validation in verible isolation fifo native-fst simulator ticket-mode; do
+            install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
+          done
 
-      - name: Cross-validate B-Wave against simulator traces
-        run: >
-          docker run --rm -v "${{ github.workspace }}:/work" booley-test
-          bash -c "pip install --break-system-packages pytest &&
-          python /work/crates/bwave/tests/native_fst_verilator_test.py &&
-          python -m pytest
-          /work/crates/bwave/tests/simulator_ground_truth_test.py
-          -q --tb=short"
+      # GitHub's native parallel group retains a separate log and exit status
+      # for every validation while sharing the already-loaded candidate image.
+      - parallel:
+          - name: Run Verible production-image end-to-end test
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/verible
+              TMPDIR: ${{ runner.temp }}/bwave-smoke/verible
+              BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-verible
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              "${BOOLEY_DOCKER_NAME_PREFIX}"
+              pytest tests/docker/test_sandbox_verible_e2e.py
+              -q --tb=short -rs --basetemp "${VALIDATION_TMP}/pytest"
 
-      - name: Run Ticket Mode production-image smoke
-        run: >
-          docker run --rm
-          --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
-          --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
-          -e BOOLEY_TICKET_MODE_SMOKE=1
-          booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
-          python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
-          -v --tb=short -o cache_dir=/tmp/pytest-cache"
+          - name: Run sandbox isolation suite
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/isolation
+              TMPDIR: ${{ runner.temp }}/bwave-smoke/isolation
+              BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-isolation
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              "${BOOLEY_DOCKER_NAME_PREFIX}"
+              python -m tests.docker.isolation.run_isolation_tests
+
+          - name: Run FIFO pipeline smoke test
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/fifo
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-fifo
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-fifo
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test bash -c "pip install --break-system-packages pytest &&
+              python -m pytest /work/tests/sim/test_bwave_fifo_pipeline.py
+              -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
+
+          - name: Run native FST/Verilator cross-validation
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/native-fst
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-native-fst
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-native-fst
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test python /work/crates/bwave/tests/native_fst_verilator_test.py
+
+          - name: Run simulator ground-truth tests
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/simulator
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-simulator
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-simulator
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test bash -c "pip install --break-system-packages pytest &&
+              python -m pytest /work/crates/bwave/tests/simulator_ground_truth_test.py
+              -q --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+
+          - name: Run Ticket Mode production-image smoke
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/ticket-mode
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp -e BOOLEY_TICKET_MODE_SMOKE=1
+              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
+              python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
+              -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+
+      - name: Clean up image validation containers
+        if: always()
+        shell: bash
+        run: |
+          prefix="^/booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-"
+          mapfile -t containers < <(docker ps -aq --filter "name=${prefix}")
+          if (( ${#containers[@]} )); then
+            docker rm -f "${containers[@]}"
+          fi
+
+  ci-required:
+    name: ci-required
+    needs:
+      - changes
+      - docs-check
+      - lint
+      - test
+      - rust-test
+      - bwave-integration
+      - package-artifacts
+      - bwave-smoke
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Resolve required CI status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          REQUIRED_JOBS: ${{ needs.changes.outputs.required_jobs }}
+        run: >-
+          python .github/scripts/ci_required.py
+          --required "${REQUIRED_JOBS}" --needs-json "${NEEDS_JSON}"

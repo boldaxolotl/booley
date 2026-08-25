@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
@@ -18,7 +19,70 @@ def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     assert "CLAUDE_SDK_BUNDLED_CLI=" in install_layer
     assert 'rm -f "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
     assert 'test ! -e "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
-    assert "backend._cli_path" in install_layer
+    assert "ClaudeSDKBackend" not in install_layer
+
+
+def test_candidate_wheel_is_installed_after_stable_python_layers() -> None:
+    """Ordinary source edits invalidate the candidate seam, not invariant deps."""
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    pyproject_copy = dockerfile.index("COPY pyproject.toml")
+    dependency_exporter = dockerfile.index(
+        "COPY src/booley/data/docker/export_project_dependencies.py"
+    )
+    project_install = dockerfile.index("--requirement /tmp/booley-build/project-dependencies.txt")
+    image_dependencies = dockerfile.index('"cocotb==2.0.1"')
+    verible_patch = dockerfile.index("COPY src/booley/data/edalize/verible.py")
+    wheel_copy = dockerfile.index("COPY dist/booley_rtl-*.whl")
+
+    assert pyproject_copy < dependency_exporter < project_install
+    assert project_install < image_dependencies < verible_patch < wheel_copy
+    candidate_region = dockerfile[wheel_copy:]
+    assert "pip install" in candidate_region
+    assert "--no-deps" in candidate_region
+    assert '--wheel "$WHEEL"' in candidate_region
+    assert "ClaudeSDKBackend" in candidate_region
+
+
+def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
+    """The whitelist context cannot silently omit a newly introduced COPY."""
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    allowed = [
+        line[1:].rstrip("/")
+        for line in Path(".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.startswith("!")
+    ]
+    local_sources: list[str] = []
+    for line in dockerfile.splitlines():
+        if not line.startswith("COPY ") or "--from=" in line:
+            continue
+        fields = shlex.split(line)
+        local_sources.extend(field.rstrip("/") for field in fields[1:-1])
+
+    assert local_sources
+    missing = [
+        source
+        for source in local_sources
+        if not any(source == entry or source.startswith(f"{entry}/") for entry in allowed)
+    ]
+    assert not missing, f"Docker COPY sources excluded by .dockerignore: {missing}"
+
+
+def test_verible_patch_does_not_depend_on_importing_candidate_package() -> None:
+    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    patch_start = dockerfile.index("COPY src/booley/data/edalize/verible.py")
+    wheel_copy = dockerfile.index("COPY dist/booley_rtl-*.whl")
+    patch_region = dockerfile[patch_start:wheel_copy]
+
+    assert "/tmp/booley-build/verible.py" in patch_region
+    assert "import booley" not in patch_region
+
+
+def test_ci_captures_docker_cache_and_layer_evidence() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+
+    assert "docker history --no-trunc" in workflow
+    assert "docker image inspect booley-test" in workflow
+    assert "docker-build-evidence" in workflow
 
 
 def test_shipped_external_base_images_are_digest_pinned() -> None:
