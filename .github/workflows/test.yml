@@ -310,6 +310,23 @@ jobs:
           # image is already built and the smoke test can still run.
           cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
 
+      - name: Capture Docker cache and layer evidence
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/docker-build-evidence"
+          docker image inspect booley-test \
+            > "${RUNNER_TEMP}/docker-build-evidence/image-inspect.json"
+          docker history --no-trunc --format \
+            '{{json .}}' booley-test \
+            | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
+
+      - name: Upload Docker build evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: docker-build-evidence
+          path: ${{ runner.temp }}/docker-build-evidence/
+          if-no-files-found: error
+
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash
         run: |
