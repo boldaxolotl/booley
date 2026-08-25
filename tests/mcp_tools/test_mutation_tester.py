@@ -22,6 +22,7 @@ from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.sim.cocotb_run import _parse_args as parse_cocotb_run_args
 from booley.specialists.mutation_tester import (
     MutationResult,
     MutationSpec,
@@ -571,6 +572,23 @@ class TestArtifacts:
         assert "`a \\| b` → `a & b`" in md
         assert "not_detected" in md
 
+    def test_results_markdown_names_the_first_killing_test(self):
+        spec = _sample_specs(1)[0]
+        summary = MutationSummary(
+            specs=[spec],
+            results=[
+                MutationResult(
+                    index=1,
+                    detected=True,
+                    first_killing_test="test_rx_overrun",
+                )
+            ],
+        )
+
+        md = generate_results_markdown(summary, 1)
+
+        assert "test_rx_overrun" in md
+
 
 # ---------------------------------------------------------------------------
 # Cold-start development with mocked agent + sim
@@ -585,6 +603,25 @@ def _patch_invoke_agent(monkeypatch, results: list[FakeAgentResult]):
         i = state["i"]
         state["i"] = i + 1
         r = results[min(i, len(results) - 1)]
+        specs = parse_creator_output(r.output)
+        by_file: dict[str, list[MutationSpec]] = {}
+        for spec in specs:
+            by_file.setdefault(spec.file, []).append(spec)
+        for rel_path, file_specs in by_file.items():
+            path = Path(self.args.work_dir) / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            body = ["module dummy;"]
+            for spec in file_specs:
+                mut_id = spec.mut_id or spec.index
+                body.extend(
+                    [
+                        f"  // MUTATION #{spec.index}: {spec.original_code} -> {spec.mutated_code}",
+                        f"  assign x_{spec.index} = (mut_id == {mut_id}) ? "
+                        f"({spec.mutated_code}) : ({spec.original_code});",
+                    ]
+                )
+            body.append("endmodule")
+            path.write_text("\n".join(body) + "\n", encoding="utf-8")
         # Mimic Specialist._invoke_agent's side-effect.
         self._last_session_id = r.session_id
         return r
@@ -923,6 +960,30 @@ class TestBuildInputHashes:
         assert "__config_file__:booley.toml" in hashes
 
 
+def _assert_durable_campaign(tmp_path: Path, result: McpToolResult) -> None:
+    """Assert that a successful campaign is self-contained and fully published."""
+    results_path = tmp_path / result.detail["artifacts"]["results"]
+    assert results_path.is_file()
+    results = results_path.read_text(encoding="utf-8")
+    assert "[rtl/mod_a.sv:41](mutated-rtl/rtl/mod_a.sv)" in results
+    assert "not_detected" in results
+    assert "campaign/mutant-logs/mutant_1.log" in results
+    assert result.detail["classified"][0]["log"].endswith("campaign/mutant-logs/mutant_1.log")
+
+    manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    assert manifest["target"] == "lite"
+    assert manifest["eda_tool"] == "verilator"
+    assert manifest["baseline"]["status"] == "passed"
+    assert len(manifest["mutants"]) == 2
+    assert all(row["status"] == "not_detected" for row in manifest["mutants"])
+    campaign_dir = manifest_path.parent
+    assert all((campaign_dir / row["log"]).is_file() for row in manifest["mutants"])
+    assert (campaign_dir / "verification-rounds" / "round_1.log").is_file()
+    assert not any(path.name.endswith(".tmp") for path in manifest_path.parents[1].iterdir())
+
+
 class TestColdStart:
     def test_happy_path_writes_lock(self, tmp_path: Path, monkeypatch):
         scope = "rtl/mod_a.sv"
@@ -970,16 +1031,12 @@ class TestColdStart:
         assert mutated == [
             {
                 "source": scope,
-                "path": "reports/mutation_tester/1/mutated-rtl/rtl/mod_a.sv",
+                "path": "reports/mutation_tester/1/campaign/mutated-rtl/rtl/mod_a.sv",
             }
         ]
         assert (tmp_path / mutated[0]["path"]).is_file()
-        results_path = tmp_path / result.detail["artifacts"]["results"]
-        assert results_path.is_file()
-        results = results_path.read_text(encoding="utf-8")
-        assert "[rtl/mod_a.sv:41](mutated-rtl/rtl/mod_a.sv)" in results
-        assert "not_detected" in results
-        assert "mutated RTL: reports/mutation_tester/1/mutated-rtl/rtl/mod_a.sv" in (
+        _assert_durable_campaign(tmp_path, result)
+        assert "mutated RTL: reports/mutation_tester/1/campaign/mutated-rtl/rtl/mod_a.sv" in (
             result.report_text
         )
         assert result.criterion_key == "mutation_score_lite"
@@ -995,6 +1052,62 @@ class TestColdStart:
         endpoint._add_residue_warning(result, {"rtl/mod_a.sv", "rtl/design_top.sv"})
 
         assert "worktree not clean after sim sweep\nRESULT: PASS" in result.report_text
+
+    def test_selector_zero_must_retain_the_literal_original_branch(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        scope = "rtl/mod_a.sv"
+        _prepare_scope_files(tmp_path, [scope])
+        _write_dut_top(tmp_path)
+        spec = MutationSpec(
+            index=1,
+            mut_id=1,
+            category="constant_flip",
+            file=scope,
+            line=3,
+            original_code="1'b1",
+            mutated_code="1'b0",
+            detectability_argument="changes x",
+        )
+
+        def _fake_agent(self, params, on_event=None):
+            (tmp_path / scope).write_text(
+                "module dummy;\n"
+                "  // MUTATION #1: 1'b1 -> 1'b0\n"
+                "  assign x = (mut_id == 1) ? 1'b0 : 1'b0;\n"
+                "endmodule\n",
+                encoding="utf-8",
+            )
+            self._last_session_id = "fake-sid"
+            return FakeAgentResult(output=_sample_creator_json([spec]))
+
+        monkeypatch.setattr(
+            "booley.specialists.specialist.Specialist._invoke_agent_with_resume",
+            _fake_agent,
+        )
+        _patch_sim_runner(monkeypatch, sim_returncode=0)
+        endpoint = _make_endpoint(
+            tmp_path,
+            monkeypatch,
+            scope=scope,
+            count=1,
+            min_detected=0,
+            dut_files=("rtl/design_top.sv",),
+        )
+
+        with patch(
+            "booley.specialists.mutation_tester.hide_opposite_sources",
+            side_effect=lambda *a, **k: _NoopCtx(),
+        ):
+            result = endpoint._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert (
+            "selector-zero baseline does not retain the literal original branch"
+            in (result.detail["reason"])
+        )
 
     def test_cold_start_restores_creator_mutated_ignored_rtl(
         self,
@@ -1019,7 +1132,9 @@ class TestColdStart:
         def _fake_agent(self, params, on_event=None):
             path.write_text(
                 "module benchmark_copilot_perf_counters(input logic clk);\n"
-                "  assign x = booley_mut_pkg::mut_id;\n"
+                "  // MUTATION #1: a + b_1 -> a - b_1\n"
+                "  assign x = (booley_mut_pkg::mut_id == 1) ? "
+                "(a - b_1) : (a + b_1);\n"
                 "endmodule\n",
                 encoding="utf-8",
             )
@@ -1068,6 +1183,13 @@ class TestColdStart:
 
         def _fake_agent(self, params, on_event=None):
             prompts.append(params.prompt)
+            (tmp_path / scope).write_text(
+                "module dummy;\n"
+                "  // MUTATION #1: a + b_1 -> a - b_1\n"
+                "  assign x = (mut_id == 1) ? (a - b_1) : (a + b_1);\n"
+                "endmodule\n",
+                encoding="utf-8",
+            )
             result = agent_results[min(len(prompts) - 1, len(agent_results) - 1)]
             self._last_session_id = result.session_id
             return result
@@ -1185,7 +1307,8 @@ class TestCoverageGapDiagnosis:
     MUXED_SOURCE = (
         "module dummy;\n"
         "  logic x;\n"
-        "  assign x = (booley_mut_pkg::mut_id == 1) ? 1'b0 : 1'b1;\n"
+        "  // MUTATION #1: a + b_1 -> a - b_1\n"
+        "  assign x = (booley_mut_pkg::mut_id == 1) ? (a - b_1) : (a + b_1);\n"
         "  initial $finish;\n"
         "endmodule\n"
     )
@@ -1317,8 +1440,8 @@ class TestCoverageGapDiagnosis:
         result, _prompts = self._run_zero_kill_cold_start(
             tmp_path,
             monkeypatch,
-            muxed_source="module dummy;\n  initial $finish;\nendmodule\n",
-            echo_selector=True,
+            muxed_source=self.MUXED_SOURCE,
+            echo_selector=False,
         )
 
         assert result.detail["failed"] is True
@@ -1976,8 +2099,9 @@ class TestCocotbSimDispatch:
 
         sim_cmd = captured[-1]
         assert sim_cmd[:3] == [sys.executable, "-m", "booley.sim.cocotb_run"]
+        parsed = parse_cocotb_run_args(sim_cmd[3:])
         assert "--cocotb-module" in sim_cmd and "tb.test_ravenoc" in sim_cmd
-        assert "--tool" in sim_cmd and "verilator" in sim_cmd
+        assert parsed.eda_tool == "verilator"
         assert "--plusarg" in sim_cmd and "MUT_ID=3" in sim_cmd
         # Sentinels do not apply to Cocotb Targets (ADR 0034 decision 6).
         assert not any(c.startswith("--pass-sentinel") for c in sim_cmd)
@@ -2133,6 +2257,33 @@ class TestInfraFailureHandling:
         assert "harness failure" in outcome.reason
         assert "default branches incorrect" not in outcome.reason
 
+    def test_runner_argument_rejection_is_not_blamed_on_the_creator(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        runner_error = (
+            "usage: cocotb_run.py [-h] --eda-tool {icarus,verilator}\n"
+            "cocotb_run.py: error: the following arguments are required: --eda-tool\n"
+        )
+        endpoint = self._endpoint_with_sim(
+            tmp_path,
+            monkeypatch,
+            sim_stdout=runner_error,
+            rc=2,
+        )
+
+        outcome = endpoint._verify_round(
+            _sample_specs(2),
+            "default",
+            tmp_path,
+            tmp_path / "build",
+            1,
+        )
+
+        assert outcome.infra_error.endswith("runner argument parsing failed")
+        assert "default branches incorrect" not in outcome.reason
+
     def test_infra_failure_grades_fail_closed(self, tmp_path: Path, monkeypatch):
         """pinned_passed used to be True on a missing-exe error — an infra
         crash would have scored as a kill in a real sweep."""
@@ -2194,6 +2345,49 @@ class TestInfraFailureHandling:
         entry = MutationSummary(specs=specs, results=results).classify()[0]
         assert entry["status"] == "not_detected"
         assert entry["log"].endswith("mutant_1.log")
+
+    def test_cocotb_classification_names_the_first_killing_test(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+        _patch_resolve_target(monkeypatch)
+        _patch_cocotb_target(monkeypatch, module="tb.test_uart")
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
+            {"default": ["test_reset", "test_rx_overrun", "test_break"]},
+        )
+        results_line = (
+            '[COCOTB_RESULTS] {"state":"ok","detail":"","tests":['
+            '{"name":"test_reset","module":"tb.test_uart","status":"pass",'
+            '"failure":"","elapsed_s":0.1},'
+            '{"name":"test_rx_overrun","module":"tb.test_uart","status":"fail",'
+            '"failure":"assertion failed","elapsed_s":0.2},'
+            '{"name":"test_break","module":"tb.test_uart","status":"fail",'
+            '"failure":"assertion failed","elapsed_s":0.3}]}'
+        )
+
+        def _fake(cmd, *args, **kwargs):
+            joined = " ".join(cmd) if isinstance(cmd, list) else ""
+            if "booley.sim.cocotb_run" in joined:
+                return _fake_proc(rc=1, stdout=results_line)
+            return _fake_proc(rc=0, stdout="[make] ok")
+
+        monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake)
+        endpoint = _make_endpoint(tmp_path, monkeypatch, target="default")
+
+        results, _ = endpoint._run_sim_sweep(
+            _sample_specs(1),
+            "default",
+            tmp_path,
+            tmp_path / "build",
+            "tb",
+        )
+
+        classified = MutationSummary(specs=_sample_specs(1), results=results).classify()[0]
+        assert classified["status"] == "detected"
+        assert classified["first_killing_test"] == "test_rx_overrun"
 
     def test_mutant_log_is_capped(self, tmp_path: Path, monkeypatch):
         """A chatty TB times the mutant count times up to 3 rounds — the cap

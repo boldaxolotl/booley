@@ -86,6 +86,10 @@ Standalone `--dry-run` prints the complexity breakdown and proposed auto count w
 Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can override module discovery with `--dut-top`, `--dut-files`, and `--tb-top`.
 <!-- END GENERATED: specialists -->
 
+Booley verifies the literal selector-zero default before compiling and emits a
+self-contained campaign manifest with durable baseline/per-mutant logs and the
+first public test that killed each detected mutant.
+
 ### Criteria
 
 <!-- BEGIN GENERATED: criteria -->

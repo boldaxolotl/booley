@@ -1025,6 +1025,23 @@ def _reset_owner_available(tio: Any, slug: str, force: bool) -> bool:
     return False
 
 
+def _reset_jobs_inactive(tio: Any, slug: str) -> bool:
+    """Refuse to archive runtime state while a detached endpoint owns it."""
+    from booley.harness.job_fence import active_ticket_jobs
+
+    active = active_ticket_jobs(ticket_log_dir(tio.logs_dir, slug))
+    if not active:
+        return True
+    jobs = ", ".join(f"{record.endpoint} ({record.run_id})" for record in active)
+    print(
+        f"Error: ticket '{slug}' still has active endpoint jobs: {jobs}.\n"
+        "  Wait for them to finish or cancel them before resetting; --force "
+        "does not override active job leases.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _reset_runtime_state(tio: Any, slug: str) -> None:
     """Archive active run state and establish an empty current runtime."""
     log_dir = ticket_log_dir(tio.logs_dir, slug)
@@ -1164,5 +1181,7 @@ def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     # alias directory while leaving the real run state intact.
     canonical_slug = Path(entry["file"]).stem
     if not _reset_owner_available(tio, canonical_slug, force):
+        return False
+    if not _reset_jobs_inactive(tio, canonical_slug):
         return False
     return _perform_reset(tio, canonical_slug, entry)

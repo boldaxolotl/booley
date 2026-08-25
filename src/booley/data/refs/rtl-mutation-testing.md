@@ -187,10 +187,18 @@ reserved for the unmutated baseline.
 
 After you finish writing muxes, the harness will:
 
-1. Build the design once.
-2. Run `MUT_ID=0` — must pass (proves your default branches are correct).
-3. Run one pinned non-zero `MUT_ID` — must compile and complete without
+1. Verify mechanically that every mutation's literal `original_code` is in
+   the selector's default branch. A passing test suite alone is not accepted
+   as proof of selector-zero equivalence.
+2. Build the design once.
+3. Run `MUT_ID=0` — must pass.
+4. Run one pinned non-zero `MUT_ID` — must compile and complete without
    crashing (proves your mux scaffolding is sound).
+
+The completed campaign publishes one atomic `campaign/manifest.json` beside
+durable copies of the selector-zero log, every mutant log, verification-round
+logs, mutation specifications, results, and instrumented RTL. Each killed
+mutant names its first killing public test.
 
 If either fails, the harness resumes this session with the failure log
 and asks you to fix the muxed file.  You have up to two retries before

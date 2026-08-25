@@ -316,6 +316,11 @@ Standalone `--dry-run` prints the complexity breakdown and proposed auto count w
 Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can override module discovery with `--dut-top`, `--dut-files`, and `--tb-top`.
 <!-- END GENERATED: flows -->
 
+Before compiling, Booley verifies that each mutation selector's default branch
+retains the literal original code. A completed run publishes one atomic
+campaign manifest with a durable baseline log, every mutant log, instrumented
+RTL, and the first public test that killed each detected mutant.
+
 The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `coverage_analyst` and `tb_coder` also exist but are hidden until they mature (see [ROADMAP.md](ROADMAP.md)); the Developer Agent authors testbenches itself.
 
 ### Running a Booley Flow directly

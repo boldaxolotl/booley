@@ -34,9 +34,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import logging
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -73,6 +75,7 @@ from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
+from booley.sim.cocotb_results import VERDICT_FAIL, parse_results_line
 from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 
 from .specialist import Specialist
@@ -103,6 +106,8 @@ def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
     first and treat a non-empty answer as "no observation" (SETUP-F-41).
     """
     combined = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode == 2 and "usage:" in combined and ": error:" in combined:
+        return "runner argument parsing failed"
     if not has_infra_error(combined):
         return ""
     for line in combined.splitlines():
@@ -122,6 +127,11 @@ def _mut_guard_regex(mut_id: int) -> re.Pattern[str]:
     return re.compile(
         rf"mut_id\s*={{2,3}}\s*(?:[0-9]+\s*'\s*[sS]?[dDhHbBoO]\s*)?0*{mut_id}\b",
     )
+
+
+def _collapsed_source(text: str) -> str:
+    """Collapse source whitespace while retaining punctuation and token order."""
+    return " ".join(text.split())
 
 
 # Marker files (under the build dir) record the edalize binary dir relative to
@@ -247,6 +257,10 @@ class MutationResult:
     #: there is no error text at all, so the log is the only place the run's
     #: behaviour can be inspected. Empty when the log could not be written.
     log_path: str = ""
+    #: First public Target test whose verdict killed this mutant. Cocotb
+    #: batches are recovered from their structured results line; classic
+    #: Targets use the first failing campaign unit.
+    first_killing_test: str = ""
 
 
 @dataclass
@@ -313,6 +327,7 @@ class MutationSummary:
                     "status": status,
                     "sim_output_snippet": r.sim_output_snippet if r else "",
                     "log": (r.log_path if r else "") or None,
+                    "first_killing_test": (r.first_killing_test if r else "") or None,
                 }
             )
         return classified
@@ -678,8 +693,8 @@ def generate_results_markdown(
             )
         lines.append("")
     lines += [
-        "| # | Mutation | Mutated RTL | Status | Snippet |",
-        "|---|----------|-------------|--------|---------|",
+        "| # | Mutation | Mutated RTL | Status | First killing test | Snippet |",
+        "|---|----------|-------------|--------|--------------------|---------|",
     ]
     for c in classified:
         spec = specs_by_index[c["index"]]
@@ -689,6 +704,7 @@ def generate_results_markdown(
             f"`{_markdown_table_cell(spec.mutated_code)}` | "
             f"{_mutation_source_link(spec, mutated_rtl_paths)} | "
             f"{c['status']} | "
+            f"{_markdown_table_cell(c['first_killing_test'] or '')} | "
             f"{_markdown_table_cell(c['sim_output_snippet'][:60])} |"
         )
     return "\n".join(lines) + "\n"
@@ -1144,6 +1160,62 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         """Normalize validated creator paths for downstream artifact lookups."""
         for spec in specs:
             spec.file = fusesoc_registry.canonical_project_path(work_dir, spec.file)
+
+    @staticmethod
+    def _selector_zero_violations(
+        specs: list[MutationSpec],
+        work_dir: Path,
+    ) -> list[int]:
+        """Return mutations whose source cannot prove the literal original default."""
+        texts: dict[str, str] = {}
+        violations: list[int] = []
+        marker_re = re.compile(r"//\s*MUTATION\s+#(?P<index>\d+)\b")
+        for spec in specs:
+            text = texts.get(spec.file)
+            if text is None:
+                try:
+                    text = (work_dir / spec.file).read_text(
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                except OSError:
+                    violations.append(spec.index)
+                    continue
+                texts[spec.file] = text
+            markers = list(marker_re.finditer(text))
+            marker_pos = next(
+                (
+                    position
+                    for position, marker in enumerate(markers)
+                    if int(marker["index"]) == spec.index
+                ),
+                None,
+            )
+            if marker_pos is None:
+                violations.append(spec.index)
+                continue
+            marker = markers[marker_pos]
+            segment_end = (
+                markers[marker_pos + 1].start() if marker_pos + 1 < len(markers) else len(text)
+            )
+            segment = text[marker.end() : segment_end]
+            guard = _mut_guard_regex(spec.mut_id or spec.index).search(segment)
+            if guard is None:
+                violations.append(spec.index)
+                continue
+            tail = _collapsed_source(segment[guard.end() :])
+            original = _collapsed_source(spec.original_code)
+            original_pos = tail.find(original)
+            if not original or original_pos < 0:
+                violations.append(spec.index)
+                continue
+            prefix = tail[:original_pos]
+            question = prefix.find("?")
+            ternary_default = question >= 0 and prefix.find(":", question + 1) >= 0
+            statement_default = re.search(r"\belse\b", prefix) is not None
+            if not (ternary_default or statement_default):
+                violations.append(spec.index)
+        return violations
 
     def _validate_scope_against_target(self, scope_files: list[str]) -> McpToolResult | None:
         """Fail fast when a ``--scope`` entry isn't a source file of ``--target``.
@@ -1612,6 +1684,32 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                 break
             self._canonicalize_spec_paths(specs, work_dir)
 
+            selector_zero_violations = (
+                []
+                if find_forbidden_specs(specs)
+                else self._selector_zero_violations(specs, work_dir)
+            )
+            if selector_zero_violations:
+                names = ", ".join(f"#{index}" for index in selector_zero_violations)
+                last_outcome = VerificationOutcome(
+                    ok=False,
+                    baseline_passed=False,
+                    pinned_passed=False,
+                    log_tail=(
+                        f"mutation(s) {names} do not place their exact original_code "
+                        "behind the selector's default branch"
+                    ),
+                    reason=(
+                        "selector-zero baseline does not retain the literal original branch "
+                        f"for mutation(s) {names}"
+                    ),
+                )
+                self._write_round_log(round_idx, last_outcome)
+                if round_idx < self.MAX_VERIFICATION_ROUNDS:
+                    retry_prompt = self._build_retry_prompt(last_outcome)
+                    continue
+                break
+
             # Phase 3.4 — forbidden-category gate (spec validation).
             forbidden = find_forbidden_specs(specs)
             if forbidden:
@@ -1904,6 +2002,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             mut_id=0,
         )
         baseline_output = self._suite_output(baseline_runs)
+        self._persist_baseline_log(baseline_output)
         infra = self._suite_infra_reason(baseline_runs)
         if infra:
             return self._infra_outcome_text(round_idx, infra, baseline_output)
@@ -2160,6 +2259,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                 mut_id=0,
             )
             baseline_output = self._suite_output(baseline_runs)
+            self._persist_baseline_log(baseline_output)
             infra = self._suite_infra_reason(baseline_runs)
             if infra:
                 # Same distinction as the cold path: an unrunnable simulator is
@@ -2467,7 +2567,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             "booley.sim.cocotb_run",
             "--build-dir",
             rel,
-            "--tool",
+            "--eda-tool",
             cocotb.eda_tool,
             "--cocotb-module",
             cocotb.module,
@@ -2711,6 +2811,28 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             ),
         )
 
+    @staticmethod
+    def _first_killing_test(runs: list[MutationTestRun]) -> str:
+        """Return the first public test that produced a real kill verdict."""
+        for run in runs:
+            parsed = parse_results_line(run.output)
+            if parsed is not None:
+                failed = next(
+                    (test.name for test in parsed.tests if test.status == VERDICT_FAIL),
+                    "",
+                )
+                if failed:
+                    return failed
+            if run.timed_out:
+                return run.test_name
+            if (
+                run.process is not None
+                and not _infra_failure_reason(run.process)
+                and run.process.returncode != 0
+            ):
+                return run.test_name
+        return ""
+
     def _persist_mutant_log(self, mut_id: int, output: str) -> str:
         """Write one mutant's full simulator output; return its relative path.
 
@@ -2745,6 +2867,24 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             path.write_bytes(data)
         except OSError:
             logger.debug("could not persist mutant log for MUT_ID=%s", mut_id, exc_info=True)
+            return ""
+        return _artifacts.relative(path, self.args.work_dir) or ""
+
+    def _persist_baseline_log(self, output: str) -> str:
+        """Persist this invocation's selector-zero output for campaign evidence."""
+        from booley.sim.sim_result import _cap_log_bytes
+
+        try:
+            path = lock_mod.baseline_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(
+                _cap_log_bytes(
+                    output.encode("utf-8", errors="replace"),
+                    _MUTANT_LOG_MAX_BYTES,
+                )
+            )
+        except OSError:
+            logger.debug("could not persist mutation baseline log", exc_info=True)
             return ""
         return _artifacts.relative(path, self.args.work_dir) or ""
 
@@ -2810,6 +2950,7 @@ Return a fresh JSON mutation spec list matching the updated muxes.
                     sim_output_snippet=snippet,
                     selector_observed=(f"{lock_mod.MUT_ECHO_PREFIX}{mut_id}" in combined),
                     log_path=self._persist_mutant_log(mut_id, combined),
+                    first_killing_test=(self._first_killing_test(runs) if detected else ""),
                 )
             )
         return results, time.monotonic() - start
@@ -3158,17 +3299,47 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         inputs: RunResultInputs,
         detail: dict[str, Any],
     ) -> None:
-        artifact_dir = self.reserve_invocation_dir() if plan.report_dir else None
-        mutated_rtl = self._preserve_mutated_rtl(plan.scope_files, artifact_dir)
-        detail["mutated_rtl_files"] = self._mutated_rtl_detail(mutated_rtl)
-        self._attach_campaign_directories(detail, artifact_dir)
-        if artifact_dir is None:
+        invocation_dir = self.reserve_invocation_dir() if plan.report_dir else None
+        if invocation_dir is None:
+            mutated_rtl = self._preserve_mutated_rtl(plan.scope_files, None)
+            detail["mutated_rtl_files"] = self._mutated_rtl_detail(mutated_rtl)
+            self._attach_campaign_directories(detail, None)
             return
-        specs_path = artifact_dir / "mutation-specs.md"
+
+        staging_dir = invocation_dir / ".campaign.tmp"
+        campaign_dir = invocation_dir / "campaign"
+        staging_dir.mkdir()
+        mutated_rtl = self._preserve_mutated_rtl(plan.scope_files, staging_dir)
+        specs_path = staging_dir / "mutation-specs.md"
         specs_path.write_text(generate_specs_markdown(inputs.summary.specs), encoding="utf-8")
-        results_path = artifact_dir / "mutation-results.md"
+        if plan.complexity and not inputs.reused_lock:
+            (staging_dir / "complexity-breakdown.json").write_text(
+                json.dumps(plan.complexity, indent=2),
+                encoding="utf-8",
+            )
+
+        baseline_log = self._copy_campaign_file(
+            lock_mod.baseline_log_path(),
+            staging_dir / "baseline.log",
+        )
+        mutant_log_dir = self._copy_campaign_dir(
+            lock_mod.mutant_logs_dir(),
+            staging_dir / "mutant-logs",
+        )
+        if mutant_log_dir is not None:
+            for result in inputs.summary.results:
+                if not result.log_path:
+                    continue
+                staged_log = mutant_log_dir / Path(result.log_path).name
+                if staged_log.is_file():
+                    result.log_path = posix_relpath(
+                        campaign_dir / "mutant-logs" / staged_log.name,
+                        plan.work_dir,
+                    )
+        detail["classified"] = inputs.summary.classify()
+        results_path = staging_dir / "mutation-results.md"
         source_links = {
-            source: posix_relpath(path, artifact_dir) for source, path in mutated_rtl.items()
+            source: posix_relpath(path, staging_dir) for source, path in mutated_rtl.items()
         }
         results_path.write_text(
             generate_results_markdown(
@@ -3178,19 +3349,106 @@ Return a fresh JSON mutation spec list matching the updated muxes.
             ),
             encoding="utf-8",
         )
-        if plan.complexity and not inputs.reused_lock:
-            (artifact_dir / "complexity-breakdown.json").write_text(
-                json.dumps(plan.complexity, indent=2),
-                encoding="utf-8",
-            )
+        verification_dir = self._copy_verification_rounds(
+            inputs.verification_rounds,
+            staging_dir / "verification-rounds",
+        )
+        manifest_path = staging_dir / "manifest.json"
+        manifest = self._campaign_manifest(
+            plan,
+            inputs,
+            baseline_log=baseline_log,
+            mutant_log_dir=mutant_log_dir,
+            verification_dir=verification_dir,
+        )
+        manifest_tmp = staging_dir / ".manifest.json.tmp"
+        manifest_tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        manifest_tmp.replace(manifest_path)
+        staging_dir.replace(campaign_dir)
+
+        final_mutated_rtl = {
+            source: campaign_dir / path.relative_to(staging_dir)
+            for source, path in mutated_rtl.items()
+        }
+        detail["mutated_rtl_files"] = self._mutated_rtl_detail(final_mutated_rtl)
+        self._attach_campaign_directories(detail, campaign_dir)
         _artifacts.merge_artifacts(
             detail,
             _artifacts.artifacts_block(
                 self.args.work_dir,
-                specs=specs_path,
-                results=results_path,
+                manifest=campaign_dir / "manifest.json",
+                specs=campaign_dir / "mutation-specs.md",
+                results=campaign_dir / "mutation-results.md",
             ),
         )
+
+    @staticmethod
+    def _copy_campaign_file(source: Path, destination: Path) -> Path | None:
+        if not source.is_file():
+            return None
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        return destination
+
+    @staticmethod
+    def _copy_campaign_dir(source: Path, destination: Path) -> Path | None:
+        if not source.is_dir():
+            return None
+        shutil.copytree(source, destination)
+        return destination
+
+    @staticmethod
+    def _copy_verification_rounds(count: int, destination: Path) -> Path | None:
+        source = lock_mod.verification_rounds_dir()
+        copied = False
+        for round_idx in range(1, count + 1):
+            round_log = source / f"round_{round_idx}.log"
+            if not round_log.is_file():
+                continue
+            destination.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(round_log, destination / round_log.name)
+            copied = True
+        return destination if copied else None
+
+    def _campaign_manifest(
+        self,
+        plan: MutationRunPlan,
+        inputs: RunResultInputs,
+        *,
+        baseline_log: Path | None,
+        mutant_log_dir: Path | None,
+        verification_dir: Path | None,
+    ) -> dict[str, Any]:
+        fingerprint_payload = json.dumps(
+            plan.scope_hashes,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        mutants = inputs.summary.classify()
+        for row in mutants:
+            if mutant_log_dir is not None and row.get("log"):
+                row["log"] = f"mutant-logs/{Path(str(row['log'])).name}"
+        return {
+            "schema_version": 1,
+            "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
+            "target": plan.target,
+            "eda_tool": self.target_eda_tool(plan.target, plan.work_dir, lock_mod.build_dir()),
+            "source_fingerprint": "sha256:" + hashlib.sha256(fingerprint_payload).hexdigest(),
+            "scope_hashes": plan.scope_hashes,
+            "baseline": {
+                "status": "passed",
+                "log": baseline_log.name if baseline_log is not None else None,
+            },
+            "mutants": mutants,
+            "artifacts": {
+                "specs": "mutation-specs.md",
+                "results": "mutation-results.md",
+                "mutated_rtl": "mutated-rtl",
+                "verification_rounds": (
+                    verification_dir.name if verification_dir is not None else None
+                ),
+            },
+        }
 
     def _attach_campaign_directories(
         self,
@@ -3200,14 +3458,20 @@ Return a fresh JSON mutation spec list matching the updated muxes.
         mutated_dir = (
             artifact_dir / "mutated-rtl" if artifact_dir else lock_mod.lock_dir() / "muxed"
         )
+        mutant_logs = artifact_dir / "mutant-logs" if artifact_dir else lock_mod.mutant_logs_dir()
+        verification_rounds = (
+            artifact_dir / "verification-rounds"
+            if artifact_dir
+            else lock_mod.verification_rounds_dir()
+        )
         _artifacts.merge_artifacts(
             detail,
             _artifacts.artifacts_block(
                 self.args.work_dir,
                 dirs={
                     "mutated_rtl": mutated_dir,
-                    "mutant_logs": lock_mod.mutant_logs_dir(),
-                    "verification_rounds": lock_mod.verification_rounds_dir(),
+                    "mutant_logs": mutant_logs,
+                    "verification_rounds": verification_rounds,
                 },
             ),
         )

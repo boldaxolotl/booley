@@ -178,6 +178,11 @@ def mutant_logs_dir(logs_dir: Path | str | None = None) -> Path:
     return lock_dir(logs_dir) / "mutant_logs"
 
 
+def baseline_log_path(logs_dir: Path | str | None = None) -> Path:
+    """Return the current campaign's selector-zero simulator log path."""
+    return lock_dir(logs_dir) / "baseline.log"
+
+
 def verification_rounds_dir(logs_dir: Path | str | None = None) -> Path:
     return lock_dir(logs_dir) / "verification_rounds"
 
