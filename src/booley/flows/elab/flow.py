@@ -76,9 +76,9 @@ def _elaborate_exit_code(all_passed: bool, eda_tool_failed: bool) -> int:
     return EXIT_ERROR if eda_tool_failed else EXIT_FAILURE
 
 
-def _followed_selection(work_dir: Path | None = None) -> execution.ExecutionSelection:
+def _elab_enabled(work_dir: Path | None = None) -> bool:
     """Resolve elaboration enablement from its own Flow configuration."""
-    return execution.resolve_execution("elab", work_dir)
+    return execution.flow_enabled("elab", work_dir)
 
 
 # The compiler-error gist extractor lives in the shared parser module.
@@ -245,13 +245,13 @@ class ElaborateFlow(BooleyFlow):
         return job_slots.CLASS_HEAVY
 
     @property
-    def _exec_selection(self) -> execution.ExecutionSelection:
-        """The followed ``[flows.sim]`` selection, resolved once per run."""
-        selection = getattr(self, "_followed", None)
-        if selection is None:
-            selection = _followed_selection(Path(self.args.work_dir))
-            self._followed = selection
-        return selection
+    def _elab_enabled(self) -> bool:
+        """Return the cached ``[flows.elab]`` enablement value."""
+        enabled = getattr(self, "_enabled", None)
+        if enabled is None:
+            enabled = _elab_enabled(Path(self.args.work_dir))
+            self._enabled = enabled
+        return enabled
 
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` is its TB
@@ -311,9 +311,9 @@ class ElaborateFlow(BooleyFlow):
         Booley generates into the build dir. Defines are declared ``vlogdefine``
         params (decision 8). ``target`` is the FuseSoC Target name (decision 10).
 
-        The resolved build dir is relocatable, so ``make -C <relpath>`` crosses
-        the host/sandbox boundary unchanged. Raises on setup failure so the
-        caller records it as a Flow error.
+        The resolved build dir is relocatable, so ``make -C <relpath>`` is
+        independent of the Runtime's absolute workspace path. Raises on setup
+        failure so the caller records it as a Flow error.
 
         One exception to the make-driving rule: a Target that synthesizes
         through the slang frontend is elaborated by Booley's own Yosys script
@@ -1212,11 +1212,7 @@ class ElaborateFlow(BooleyFlow):
 
     def _run(self) -> McpToolResult:
         """Run elaboration for each requested Target."""
-        selection = self._exec_selection
-        exec_error = self.validate_execution(selection)
-        if exec_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=exec_error)
-        if not selection.enabled:
+        if not self._elab_enabled:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text="elab is disabled ([flows.elab].enabled = false).",

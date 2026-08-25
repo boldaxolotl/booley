@@ -1,24 +1,16 @@
-"""OpenROAD timing engine for the builtin Yosys ASIC-synthesis flow.
+"""OpenROAD timing-script support for the built-in Yosys ASIC-synthesis Flow.
 
-Unlike the zero-RC OpenSTA path (:func:`syn_core.run_opensta`), this engine runs
-a quick floorplan + global placement inside OpenROAD, buffers/sizes the netlist
+The generated script runs a quick floorplan + global placement inside OpenROAD,
+buffers/sizes the netlist
 (``repair_design``/``repair_timing``), estimates wire RC from placement, and then
-reports timing through OpenROAD's embedded OpenSTA.  It emits the *same* stdout
-markers (``STA_WORST_SLACK_NS:`` etc.) as ``run_opensta`` so ``_parse_synth_output``
-and the criteria layer need no structural change — plus two informational area
-markers.
-
-Mirrors :func:`syn_core.run_opensta`'s warn-and-degrade shape: any missing
-prerequisite (binary, netlist, clock, PDK) or a nonzero/unparseable run returns
-``False`` so the caller can fall back to OpenSTA.  Imported lazily from
-``run_yosys()``.
+reports timing through OpenROAD's embedded OpenSTA. It emits the same stable
+markers as the generated OpenSTA path, plus two informational area markers.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
@@ -26,10 +18,6 @@ from booley.yosys import syn_core
 from booley.yosys.syn_core import (
     DEFAULT_LIB_DIR,
     StaTimingConfig,
-    detect_clock_port,
-    find_eda_tool,
-    run_cmd_watched,
-    write_sta_sdc,
 )
 
 # Nangate45 physical conventions from the OpenROAD reference flow @ a008522d8.
@@ -94,9 +82,8 @@ def _repair_timing_tcl(config: StaTimingConfig) -> str:
     """Tcl for configured setup/hold repair, or ``""`` when disabled.
 
     OpenROAD prints no per-command banners (unlike Yosys's "Executing ..."
-    lines), so the script announces each stage itself. The watchdog matches
-    these BOOLEY_STAGE markers for stage timing and stall attribution — keep
-    the names in sync with ``synthesis_watchdog.OPENROAD_STAGE_NAMES``.
+    lines), so the script announces each stage itself. The Flow uses these
+    BOOLEY_STAGE markers for boundary-stage attribution.
     """
     if not _timing_repair_enabled(config):
         return ""
@@ -132,7 +119,7 @@ def _pre_repair_snapshot_tcl(config: StaTimingConfig, pre_rpt: str, pre_csv: str
     ADR 0029 D2 (pre-repair salvage): when repair_timing runs, snapshot the
     placed (pre-repair) STA first — to its own pre_repair.{rpt,csv} + a
     distinct STA_PRE_REPAIR_WORST_SLACK_NS marker, flushed immediately. If the
-    repair stage then stalls/errors/is-killed, ``run_openroad_timing``
+    repair stage then stalls/errors/is-killed, file-based interpretation
     salvages these numbers instead of losing the whole run. Distinct marker
     names keep the post-repair report below canonical (no double-count in the
     min-slack parse). Omitted when repair is off — the single report is final.
@@ -184,10 +171,9 @@ def write_openroad_script(
         if config.placement_density is not None
         else min(0.80, util / 100.0 + 0.25)
     )
-    # cwd-relative, NOT work_dir-absolute: both callers run OpenROAD with
-    # cwd == work_dir (the make-split recipe via `make -C`, the legacy inline
-    # path via run_cmd_watched's cwd). Keeping this relative also makes the
-    # generated plan relocatable within the Session Runtime workspace.
+    # cwd-relative, NOT work_dir-absolute: the boundary recipe runs OpenROAD
+    # under `make -C work_dir`. Keeping this relative also makes the generated
+    # plan relocatable within the Session Runtime workspace.
     out_verilog = f"openroad_{design_name}.v"
     rpt = (report_dir / "overall.rpt").as_posix()
     csv = (report_dir / "overall.csv.rpt").as_posix()
@@ -270,23 +256,16 @@ def parse_openroad_area(text: str) -> tuple[float | None, float | None]:
 def _salvage_pre_repair(
     config: StaTimingConfig,
     report_dir: Path,
-    stdout: str,
+    output: str,
 ) -> bool:
-    """Emit the pre-repair placed STA as a salvaged result (ADR 0029 D2).
-
-    Reads the pre-repair worst slack from the stdout marker (or, failing that,
-    the ``pre_repair.csv.rpt`` OpenROAD wrote before the repair stage) and
-    re-emits the canonical ``STA_*`` markers so a killed/failed repair still
-    yields actionable numbers — fronted by an ``STA_REPAIR_INCOMPLETE`` line the
-    report layer surfaces as a warning. Returns True when numbers were salvaged.
-    """
-    match = _PRE_REPAIR_SLACK_RE.search(stdout)
+    """Emit stable markers from a pre-repair snapshot left by the boundary run."""
+    match = _PRE_REPAIR_SLACK_RE.search(output)
     slack_ns = float(match.group(1)) if match else None
     if slack_ns is None:
         slack_ns = syn_core.parse_sta_worst_slack(report_dir / "pre_repair.csv.rpt")
     if slack_ns is None:
         return False
-    period_ps = syn_core.effective_period_ps(config, stdout)
+    period_ps = syn_core.effective_period_ps(config, output)
     critical_path_ps = period_ps - (slack_ns * 1000.0)
     fmax_mhz = 1_000_000.0 / critical_path_ps if critical_path_ps > 0 else None
     print("STA_REPAIR_INCOMPLETE: repair_timing did not complete; reporting pre-repair placed STA")
@@ -297,48 +276,6 @@ def _salvage_pre_repair(
     print(f"STA_REPORT: {report_dir / 'pre_repair.rpt'}")
     print(f"STA_CSV_REPORT: {report_dir / 'pre_repair.csv.rpt'}")
     return True
-
-
-class _OpenRoadRunInputs(NamedTuple):
-    openroad: str
-    sta_netlist: Path
-    clock: str
-    pdk: object
-
-
-def _resolve_openroad_run_inputs(
-    design_name: str,
-    work_dir: Path,
-    config: StaTimingConfig,
-) -> _OpenRoadRunInputs | None:
-    """Resolve the binary/netlist/clock/PDK prerequisites for an OpenROAD run.
-
-    Prints the same WARNING and returns ``None`` for any missing prerequisite,
-    mirroring :func:`syn_core.run_opensta`'s warn-and-degrade shape so the
-    caller can fall back to OpenSTA.
-    """
-    openroad = find_eda_tool("openroad")
-    if not openroad:
-        print("WARNING: OpenROAD requested but 'openroad' is not on PATH")
-        return None
-
-    sta_netlist = work_dir / f"sta_{design_name}.v"
-    if not sta_netlist.exists():
-        print(f"WARNING: OpenROAD netlist missing: {sta_netlist}")
-        return None
-
-    clock = (
-        config.clock or detect_clock_port(sta_netlist) or syn_core._first_authored_clock(config)
-    )
-    if not clock:
-        print("WARNING: OpenROAD requested but no clock port was configured or detected")
-        return None
-
-    pdk = resolve_openroad_pdk()
-    if pdk is None:
-        return None
-
-    return _OpenRoadRunInputs(openroad, sta_netlist, clock, pdk)
 
 
 def _print_openroad_area_markers(stdout: str) -> None:
@@ -352,78 +289,3 @@ def _print_openroad_area_markers(stdout: str) -> None:
         print(f"OPENROAD_DESIGN_AREA_UM2: {area_um2:.3f}")
     if utilization_pct is not None:
         print(f"OPENROAD_UTILIZATION_PCT: {utilization_pct:.3f}")
-
-
-def run_openroad_timing(
-    design_name: str,
-    liberty: Path,
-    work_dir: Path,
-    config: StaTimingConfig,
-) -> bool:
-    """Run OpenROAD placement + repair + timing; print stable markers.
-
-    Returns ``True`` on success (markers emitted), ``False`` on any degrade
-    (missing binary/netlist/clock/PDK, nonzero rc, unparseable slack) so the
-    caller can fall back to OpenSTA.  Reuses the OpenSTA SDC verbatim so the two
-    engines constrain identically.
-    """
-    inputs = _resolve_openroad_run_inputs(design_name, work_dir, config)
-    if inputs is None:
-        return False
-    openroad, sta_netlist, clock, pdk = inputs
-
-    report_dir = work_dir / "reports" / "timing"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    sdc_path = write_sta_sdc(config, clock, work_dir)
-    script_path = write_openroad_script(
-        design_name,
-        liberty,
-        sta_netlist,
-        sdc_path,
-        pdk,
-        report_dir,
-        work_dir,
-        config,
-    )
-    try:
-        result = run_cmd_watched(
-            [str(openroad), "-no_init", "-exit", str(script_path)],
-            "OpenROAD: Placement + repair + static timing",
-            work_dir,
-            log_file="openroad.log",
-            heartbeat_interval=60,
-            poll_interval=10,
-            # Own file — the default name would clobber Yosys's stage timings.
-            timings_filename="stage_timings_openroad.json",
-        )
-    except subprocess.CalledProcessError as exc:
-        print(f"WARNING: OpenROAD failed with code {exc.returncode}; timing unavailable")
-        # ADR 0029 D2: a nonzero exit during/after repair may still have emitted
-        # the pre-repair placed STA — salvage it rather than lose the whole run.
-        # Only meaningful when repair was on (that is the only path that writes a
-        # pre-repair snapshot); a repair-off failure is a genuine dead end.
-        return bool(
-            _timing_repair_enabled(config)
-            and _salvage_pre_repair(config, report_dir, exc.output or "")
-        )
-
-    # Surface overall AND reg->reg markers independently: an I/O-bound /
-    # false-pathed overall worst path leaves the overall query empty, but the
-    # internal reg->reg Fmax is still valid and must not be dropped — nor should
-    # its absence force a needless OpenSTA fallback (SETUP-29). emit_timing_markers
-    # recovers the effective period from the Target SDC (ADR 0029 decision 6).
-    surfaced = syn_core.emit_timing_markers(result.stdout, config, report_dir)
-
-    _print_openroad_area_markers(result.stdout)
-
-    if not surfaced:
-        # No overall AND no reg->reg timing at all — a genuine degrade.
-        print("WARNING: OpenROAD completed but no timing path slack was reported")
-        # ADR 0029 D2: repair may have wedged silently and left a pre-repair
-        # placed-STA snapshot — salvage it; else return False so run_yosys falls
-        # back to the OpenSTA path (which retries timing on the same netlist).
-        return bool(
-            _timing_repair_enabled(config)
-            and _salvage_pre_repair(config, report_dir, result.stdout)
-        )
-    return True

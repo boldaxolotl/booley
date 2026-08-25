@@ -456,8 +456,8 @@ class LintFlow(BooleyFlow):
 
         ``target`` is the FuseSoC Target name (decision 10). The resolved build
         dir is relocatable (FuseSoC copies sources in and references them
-        relatively), so ``make -C <relpath>`` crosses the host/sandbox boundary
-        unchanged, exactly as the 0019 path did. Raises on any setup failure so
+        relatively), so ``make -C <relpath>`` is independent of the Runtime's
+        absolute workspace path. Raises on any setup failure so
         the caller records it as a Flow error.
         """
         build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target)
@@ -807,13 +807,8 @@ class LintFlow(BooleyFlow):
                     "else qualify it as vlnv#name. There is no lint-all sweep."
                 ),
             )
-        # Resolve enablement and reject retired execution configuration before
-        # running any target.
-        selection = self._resolve_execution()
-        exec_error = self.validate_execution(selection)
-        if exec_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=exec_error)
-        if not selection.enabled:
+        # Resolve enablement before running any target.
+        if not self._flow_enabled():
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text="lint is disabled ([flows.lint].enabled = false).",

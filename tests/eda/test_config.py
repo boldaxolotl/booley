@@ -65,10 +65,13 @@ def test_rejects_invalid_authority_surface(raw: object, match: str) -> None:
     "raw,fragment",
     [
         ({"flows": {"venue": "host"}}, "[flows].venue"),
-        ({"flows": {"fpga": {"venue": "host"}}}, "[flows.fpga].venue"),
+        ({"flows": {"backend": "docker"}}, "[flows].backend"),
+        ({"flows": {"host_setup_commands": ["setup"]}}, "[flows].host_setup_commands"),
+        ({"flows": {"sim": {"venue": "host"}}}, "[flows.sim].venue"),
+        ({"flows": {"sim": {"backend": "docker"}}}, "[flows.sim].backend"),
         (
-            {"flows": {"sim": {"host_setup_commands": ["module load x"]}}},
-            "host_setup_commands",
+            {"flows": {"sim": {"host_setup_commands": ["setup"]}}},
+            "[flows.sim].host_setup_commands",
         ),
         ({"sandbox": {"passthrough_env": ["LM_LICENSE_FILE"]}}, "passthrough_env"),
     ],

@@ -2,9 +2,9 @@
 
 Resolves the repository root and the RTL / synthesis-output directories from
 ``booley.toml`` (via :mod:`booley.runtime.shared_infra`).  Extracted into its own leaf
-module so the discovery, subprocess, parsing, and coordinator layers share a
-single source of truth for these paths without importing back into
-``syn_core`` (which would create a circular import).
+module so discovery, parsing, configuration, and script generation share a
+single source of truth without importing back into ``syn_core`` (which would
+create a circular import).
 """
 
 from __future__ import annotations

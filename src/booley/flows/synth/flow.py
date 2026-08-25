@@ -55,7 +55,6 @@ from ..clock_timing import (
     per_clock_to_json,
     worst_clock,
 )
-from ..execution import ExecutionSelection
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
@@ -979,9 +978,9 @@ class AsicSynthesizeFlow(BooleyFlow):
         # or it is a hard error here — refuse to fabricate a 250 MHz clock and
         # report a PPA number against a period the author never chose. Caught by
         # _run_single_config (BoundaryError -> rc=2 infra) so the fix-hint reaches
-        # the report instead of crashing the whole run. Fail host-side (before the
-        # sandbox spins up) with the Target name run_yosys_syn's own guard can't
-        # know.
+        # the report instead of crashing the whole run. Fail during in-process
+        # configuration, before EDA execution, with the Target name that
+        # run_yosys_syn's own guard cannot know.
         default_clock = getattr(self.args, "default_clock", None)
         if not resolved.sdc_files and default_clock is None:
             raise BoundaryError(
@@ -1026,7 +1025,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         documented **command-gen exception**: Booley does *not* ``make``-drive
         FuseSoC's flow — it reruns yosys its own way (sv2v + ABC recipes +
         OpenSTA), feeding the resolved RTL filelist to ``run_yosys_syn`` in
-        standalone mode (``--extra-rtl`` + ``-t``, no ``-c``). That leaves the
+        explicit-source mode (``--extra-rtl`` + ``-t``, no ``-c``). That leaves the
         legacy ``read_file_list`` / ``get_config_defines`` config-mode path
         intact for non-FuseSoC callers (the Step-3 purge removes it later).
 
@@ -1042,13 +1041,13 @@ class AsicSynthesizeFlow(BooleyFlow):
         the validated, golden-snapshotted *spec* that ``_configure_synth``
         parses back in-process (via run_yosys_syn's own parser, so flag-shape
         drift still fails loudly) to render the make-driven build dir. It
-        remains a genuinely runnable legacy command for dry-run display.
+        remains a readable command-shaped specification for dry-run display.
         """
         from ..edam import work_root_for
 
         build_root = work_root_for(self.args.work_dir, self.name, target)
         # Force a clean FuseSoC re-stage. Synthesis is the command-gen exception:
-        # it reruns yosys standalone over the resolved filelist rather than
+        # it configures Yosys directly from the resolved filelist rather than
         # make-driving the build dir, so — unlike simulate/lint/elaborate — it
         # gains nothing from a persisted build_root. Worse, a stale staged `src/`
         # left by an earlier resolution silently feeds yosys OUTDATED RTL: a
@@ -1079,7 +1078,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         evidence[target] = (snapshot, recipe_fingerprint, run_evidence.as_dict())
 
         work_dir = Path(self.args.work_dir)
-        cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
+        cmd = ["python3", "-m", "booley.yosys.run_yosys_syn", "configure"]
         top = self._append_rtl_source_args(cmd, resolved, work_dir)
         self._append_sta_constraint_args(cmd, resolved, target, work_dir)
         self._append_typed_param_args(cmd, resolved, target, top)
@@ -1123,7 +1122,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """
         from booley.yosys import run_yosys_syn, syn_make
 
-        args = run_yosys_syn.parse_run_argv(cmd)
+        args = run_yosys_syn.parse_configure_argv(cmd)
         spec = run_yosys_syn.resolve_spec(
             args,
             project_root=Path(self.args.work_dir),
@@ -1550,14 +1549,14 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     # -- Main run logic -------------------------------------------------------
 
-    def _resolve_run_policy(self, selection: ExecutionSelection) -> str | None:
+    def _resolve_run_policy(self, enabled: bool) -> str | None:
         """Latch the per-run policy state, or return the message that blocks the run.
 
         The ``fail_on_timing_violation`` gate (F-37) must be settled before a
         half-hour synthesis starts: a mistyped knob has to fail now, not while
         formatting the report at the end.
         """
-        if not selection.enabled:
+        if not enabled:
             return "synth is disabled ([flows.synth].enabled = false)."
         try:
             self._timing_violation_is_fatal = _fail_on_timing_violation(self.args.work_dir)
@@ -1604,10 +1603,9 @@ class AsicSynthesizeFlow(BooleyFlow):
         baseline_error = self._apply_ticket_baseline(targets)
         if baseline_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=baseline_error)
-        # Resolve enablement and legacy-migration errors once per run, then
-        # reuse the result in each config and the dry-run report.
-        selection = self._resolve_execution()
-        config_error = self.validate_execution(selection) or self._resolve_run_policy(selection)
+        # Resolve enablement once per run, then reuse it in each config and the
+        # dry-run report.
+        config_error = self._resolve_run_policy(self._flow_enabled())
         if config_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=config_error)
         if self.args.dry_run:

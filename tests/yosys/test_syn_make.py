@@ -25,9 +25,8 @@ import pytest
 from booley.yosys import run_yosys_syn, syn_core, syn_make
 from booley.yosys.syn_core import StaTimingConfig
 
-# run_host_command's parameter regex — the Boundary Command Contract's literal
-# enforcement point (ADR 0037 §5).
-_HOST_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
+# Boundary Command Contract parameter regex (ADR 0037 §5).
+_BOUNDARY_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
 
 
 def _spec(
@@ -83,10 +82,9 @@ class TestConfigureSynthesis:
     def test_slang_options_reach_rendered_synth_ys(self, tmp_path: Path):
         """spec.slang_options land on the read_slang line of synth.ys.
 
-        Regression (ravenoc halt #2b tail): the knob was plumbed through the
-        legacy do_run path but dropped by the production configure path
-        (resolve_spec -> SynthSpec -> _write_yosys_script), so the rendered
-        script silently lacked --single-unit while the CLI parsed it fine.
+        Regression (ravenoc halt #2b tail): the knob was dropped by the
+        configure path (resolve_spec -> SynthSpec -> _write_yosys_script), so
+        the rendered script silently lacked --single-unit.
         """
         plan = syn_make.configure_synthesis(
             _spec(tmp_path, frontend="slang", slang_options=("--single-unit",)),
@@ -151,8 +149,7 @@ class TestConfigureSynthesis:
         assert "> sta.log 2>&1" in text
 
     def test_script_paths_are_build_dir_relative(self, tmp_path: Path):
-        """Script-internal workspace paths must be relative (the same rendered
-        tree is executed via ``make -C`` in either venue)."""
+        """Script-internal paths must be relative to the boundary build dir."""
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         makefile = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
         sta_tcl = (plan.build_dir / "run_opensta.tcl").read_text(encoding="utf-8")
@@ -162,12 +159,12 @@ class TestConfigureSynthesis:
         assert "read_verilog {sta_dut.v}" in sta_tcl
         assert "read_sdc {sta_constraints.sdc}" in sta_tcl
 
-    def test_boundary_command_passes_host_regex(self, tmp_path: Path):
+    def test_boundary_command_passes_contract_regex(self, tmp_path: Path):
         import os
 
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         rel = os.path.relpath(plan.build_dir, tmp_path).replace("\\", "/")
-        assert _HOST_COMMAND_RE.fullmatch(f"make -C {rel}")
+        assert _BOUNDARY_COMMAND_RE.fullmatch(f"make -C {rel}")
 
     def test_engine_none_skips_timing_stage(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path, engine="none"), _build_dir(tmp_path))
@@ -182,7 +179,7 @@ class TestConfigureSynthesis:
         )
         text = (plan.build_dir / "Makefile").read_text(encoding="utf-8")
         assert (plan.build_dir / "run_openroad.tcl").is_file()
-        # Venue-reality probe + rc-failure fallback to OpenSTA in POSIX shell.
+        # Runtime prerequisite probe + rc-failure fallback in POSIX shell.
         assert "command -v openroad" in text
         assert "Nangate45_tech.lef" in text
         assert "falling back to OpenSTA" in text
@@ -430,7 +427,7 @@ class TestBoundaryOutput:
 class TestResolveSpec:
     def _args(self, tmp_path: Path, extra: list[str] | None = None):
         argv = [
-            "run",
+            "configure",
             "-t",
             "dut",
             "--extra-rtl",
@@ -441,7 +438,7 @@ class TestResolveSpec:
             "opensta",
             *(extra or []),
         ]
-        return run_yosys_syn.parse_run_argv(argv)
+        return run_yosys_syn.parse_configure_argv(argv)
 
     def test_relative_paths_anchor_to_project_root(self, tmp_path: Path):
         (tmp_path / "rtl").mkdir()
@@ -480,9 +477,9 @@ class TestResolveSpec:
         with pytest.raises(SystemExit, match="Extra RTL file not found"):
             run_yosys_syn.resolve_spec(self._args(tmp_path), project_root=tmp_path)
 
-    def test_lenient_liberty_for_other_venue(self, tmp_path: Path, monkeypatch):
+    def test_lenient_liberty_for_runtime_diagnostic(self, tmp_path: Path, monkeypatch):
         """require_liberty=False: a missing liberty resolves to a path + warning
-        material instead of a hard exit (the executing venue may have it)."""
+        material instead of a hard exit so the boundary run can diagnose it."""
         monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
@@ -494,11 +491,11 @@ class TestResolveSpec:
         assert spec.liberty == tmp_path / "absent.lib"
         assert spec.liberty_found is False
 
-    def test_parse_run_argv_strips_module_prefix(self):
-        args = run_yosys_syn.parse_run_argv(
-            ["python3", "-m", "booley.yosys.run_yosys_syn", "run", "-t", "top"]
+    def test_parse_configure_argv_strips_module_prefix(self):
+        args = run_yosys_syn.parse_configure_argv(
+            ["python3", "-m", "booley.yosys.run_yosys_syn", "configure", "-t", "top"]
         )
-        assert args.action == "run"
+        assert args.action == "configure"
         assert args.top == "top"
 
 

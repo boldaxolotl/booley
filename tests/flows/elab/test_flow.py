@@ -545,29 +545,11 @@ class TestRun:
 
 
 # ---------------------------------------------------------------------------
-# ADR 0037 — elaborate follows [flows.sim]'s (backend, venue) selection
+# Elaborate follows the Simulation Flow's enablement
 # ---------------------------------------------------------------------------
 
 
-def _write_sim_selection(tmp_path: Path, body: str) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
-    (project_dir / "booley.toml").write_text(f"[flows.sim]\n{body}", encoding="utf-8")
-
-
 class TestFollowedSelection:
-    def test_report_identifies_session_runtime(self, tmp_path: Path):
-        flow = _make_flow(tmp_path)
-        ok = SubprocessResult(returncode=0, stdout="OK", stderr="")
-        with (
-            patch.object(ElaborateFlow, "_prepare_elab_command", return_value=["make", "-C", "x"]),
-            patch.object(flow, "_execute", return_value=ok),
-        ):
-            result = flow._run()
-        report = json.loads((tmp_path / "reports" / "elab_default.json").read_text())
-        assert "venue" not in report
-        assert "venue" not in result.detail
-
     def test_job_class_is_heavy(self, tmp_path: Path):
         from booley.runtime import job_slots
 
@@ -1544,7 +1526,7 @@ class TestAsicFrontendParity:
 
     def test_asic_target_uses_the_local_executor(self, tmp_path):
         """Wiring check: the diverted command goes through `_execute`, not the
-        venue-crossing boundary executor."""
+        Session Runtime boundary executor."""
         flow = _make_flow(tmp_path, target="asic_dut")
         flow._asic_targets().add("asic_dut")
         with (

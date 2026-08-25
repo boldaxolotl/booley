@@ -1,7 +1,7 @@
 python3
 -m
 booley.yosys.run_yosys_syn
-run
+configure
 -t
 dut
 --extra-rtl

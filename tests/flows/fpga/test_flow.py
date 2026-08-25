@@ -280,7 +280,7 @@ _REAL_RESOLVE = fusesoc_registry.resolve_target
 def _stub_fusesoc_resolution(tmp_path: Path):
     """Default every test's FuseSoC resolution to a fake vivado-flow EDAM.
 
-    The Edalize-path tests mock only the host executor; without this,
+    The Edalize-path tests mock only the boundary executor; without this,
     ``_prepare_fpga_command`` would shell out to a real ``fusesoc run --setup``
     against a project with no ``.core``. Tests that exercise resolution itself
     re-patch ``resolve_target`` inside a ``with`` block (that inner patch wins);
@@ -391,23 +391,16 @@ def test_enable_out_of_context_missing_tcl_raises(tmp_path: Path) -> None:
 
 
 # ===========================================================================
-# Execution selection — the ADR 0037 backend x venue split
+# Session Runtime execution
 # ===========================================================================
 
 
-class TestExecutionSelection:
+class TestFlowEnablement:
     def test_default_runs_in_session_runtime(self, tmp_path: Path, state_file: Path):
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
-        assert flow._resolve_execution().enabled
+        assert flow._flow_enabled()
         assert flow._resolve_job_class() == job_slots.CLASS_HEAVY
-
-    def test_combined_backend_is_hard_migration(self, tmp_path: Path, state_file: Path):
-        _write_project_config(tmp_path, execution_lines='backend = "builtin-host"\n')
-        result = _flow(tmp_path, state_file)._run()
-        assert result.exit_code == EXIT_ERROR
-        assert "retired" in result.report_text
-        assert "Session Runtime" in result.report_text
 
 
 def _patch_edam_build(captured: dict):
@@ -456,7 +449,7 @@ class TestFpgaResolution:
 
         assert run_cmd == ["make", "-C", "x"]
         assert captured["toplevel"] == "dut_top"  # from resolved.toplevel
-        # These are absolute host Paths (edam relativizes+POSIX-ifies them into
+        # These are absolute workspace Paths (Edalize relativizes them into
         # the .vc later); compare in POSIX form so a Windows host's backslashes
         # don't fail the suffix checks.
         sv = [p.as_posix() for p in captured["sv_files"]]
@@ -510,7 +503,7 @@ class TestFpgaResolution:
         assert seen["target"] == "default"
         assert seen["project_root"] == tmp_path
         # FuseSoC build dir is keyed distinctly so it can't clobber the vivado dir.
-        # (build_root is a host Path — compare in POSIX form for Windows hosts.)
+        # Compare build_root in POSIX form so the assertion is portable.
         assert seen["build_root"].as_posix().endswith("fpga/default-fusesoc")
 
 
@@ -709,7 +702,7 @@ class TestTargetRecipeBoundary:
             flow._prepare_fpga_command("fpga")
 
         assert captured["toplevel"] == "dut_top"
-        # Absolute host Paths (edam relativizes+POSIX-ifies them downstream);
+        # Absolute workspace Paths (Edalize relativizes them downstream);
         # compare in POSIX form so a Windows host's backslashes don't fail.
         sv = [p.as_posix() for p in captured["sv_files"]]
         v = [p.as_posix() for p in captured["v_files"]]
@@ -725,7 +718,7 @@ class TestTargetRecipeBoundary:
         assert "SYNTH" in captured["defines"]
         assert captured["vlogparams"] == {"WIDTH": 8}
         # Resolved build dir lives under the worktree and is relocatable — no
-        # absolute host path (in either separator form) leaked into the EDAM.
+        # absolute workspace path (in either separator form) leaked into the EDAM.
         edam = next((work_dir / ".booley_project" / ".runtime").rglob("*.eda.yml"))
         edam_text = edam.read_text(encoding="utf-8")
         assert str(work_dir) not in edam_text
@@ -913,8 +906,7 @@ def _write_route_report(work_root: Path, name: str, text: str, mtime: float) -> 
 
 
 class TestRouteReportAgeGating:
-    """A run that did nothing on the host (e.g. a detached workspace mount) must
-    not parse the *previous* run's stale reports into a bogus cached result."""
+    """A run that produced nothing must not parse a previous stale report."""
 
     def test_stale_report_predating_dispatch_is_skipped(self, tmp_path: Path) -> None:
         work_root = tmp_path / "wr"

@@ -8,11 +8,9 @@ verdict sentinel the criteria layer scrapes.
 
 This module is the edalize successor to the retired legacy Verilator
 run-half. It is deliberately a **self-contained subprocess entry-point**
-(``python -m booley.sim.verilator_run …``) so a Booley Flow can ship the whole run
-— including the FIFO/bwave streaming lifecycle — across the host/sandbox
-boundary via ``BooleyFlow._execute`` as one unit (the same shipping
-model ``run_sim_batch`` relies on; an in-process ``TraceSession`` would
-strand the FIFO on the host when the binary runs inside Docker).
+(``python -m booley.sim.verilator_run …``) so a Booley Flow can supervise the
+whole run — including the FIFO/bwave streaming lifecycle — as one Session
+Runtime subprocess.
 
 Unlike the legacy runner it does **not** build anything and reads no
 ``configs.toml``/``build_file_list`` design-description: the binary location is
@@ -602,9 +600,9 @@ def run_verilated_binary(
     from booley.runtime.heartbeat import Heartbeat
 
     # Resolve every path to absolute up front, while cwd is still the project
-    # root: --bin-dir/--work-dir/--run-cwd arrive relative (so they cross the
-    # host/sandbox boundary), but the binary runs from --run-cwd — where a
-    # relative binary path, FIFO path, or trace dir would miss. The TraceSession
+    # root: --bin-dir/--work-dir/--run-cwd arrive relative so the generated
+    # command is workspace-location independent. The binary runs from --run-cwd,
+    # where a relative binary path, FIFO path, or trace dir would miss. The TraceSession
     # FIFO and the V<top> path must both be absolute for the run cwd switch.
     bin_dir = Path(bin_dir).resolve()
     run_cwd = Path(run_cwd).resolve() if run_cwd is not None else bin_dir
@@ -746,7 +744,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="plusarg passed to the binary (repeatable; +-prefix optional)",
     )
     # Project-configured verdict sentinels (booley.toml [flows.sim]); the
-    # host side of simulate forwards these so a project keeps its own TB wording.
+    # The Simulation Flow forwards these so a project keeps its own TB wording.
     p.add_argument(
         "--pass-sentinel",
         action="append",

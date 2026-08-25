@@ -21,8 +21,8 @@ Script-internal paths are rendered relative to the build directory (make runs
 with ``-C <build dir>``). Liberty/PDK data live at the Session Runtime's issued
 paths (``/opt/pdk`` / ``$PRJ_LIB_DIR``).
 
-The legacy ``run_yosys_syn run`` CLI keeps its in-process execution path
-(with the stall watchdog); this module never spawns a process itself.
+This module never spawns a process itself; the Session Runtime boundary owns
+execution of the generated Makefile.
 """
 
 from __future__ import annotations
@@ -345,8 +345,8 @@ def _write_boundary_sdc(config: StaTimingConfig, build_dir: Path) -> None:
 def _sv2v_recipe(spec: SynthSpec, build_dir: Path) -> str:
     """The sv2v stage's shell command (build-dir-relative paths, quoted).
 
-    The argv itself comes from :func:`syn_core.sv2v_argv` so the make recipe,
-    the legacy in-process runner, and ``elaborate``'s ASIC path cannot drift.
+    The argv itself comes from :func:`syn_core.sv2v_argv` so the make recipe and
+    ``elaborate``'s ASIC path cannot drift.
     """
     argv = syn_core.sv2v_argv(
         [Path(_rel(f, build_dir)) for f in spec.sources],
@@ -515,7 +515,7 @@ def boundary_output(
     if spec.timing.engine != "none":
         parts.extend(_timing_sections(plan, fresh_text))
 
-    # False-pass guard (legacy do_run parity): yosys/ABC can emit ERROR: lines
+    # False-pass guard: yosys/ABC can emit ERROR: lines
     # yet exit 0. Only meaningful when this run actually produced fresh logs.
     forced_failure: str | None = parameter_failure
     if returncode == 0 and have_yosys_log:
