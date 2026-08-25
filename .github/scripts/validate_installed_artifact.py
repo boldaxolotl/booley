@@ -20,8 +20,10 @@ EXPECTED_ENTRY_POINTS = {
 }
 EXPECTED_RESOURCES = {
     "booley/data/docker/Dockerfile",
+    "booley/data/docker/Dockerfile.base",
     "booley/data/docker/build.sh",
     "booley/data/docker/export_project_dependencies.py",
+    "booley/data/docker/stable-base-inputs.txt",
     "booley/data/edalize/verible.py",
     "booley/dev_support/pre-commit-ruff.sh",
     "booley/dev_support/worktree_create.sh",

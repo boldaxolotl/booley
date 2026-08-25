@@ -8,10 +8,11 @@ from pathlib import Path
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
 _DOCKER_DIR = _DOCKERFILE.parent
+_BASE_DOCKERFILE = _DOCKER_DIR / "Dockerfile.base"
 
 
 def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     install_start = dockerfile.index("RUN python -m ensurepip --default-pip")
     install_end = dockerfile.index("\n\n# EDA invocation", install_start)
     install_layer = dockerfile[install_start:install_end]
@@ -22,41 +23,46 @@ def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     assert "ClaudeSDKBackend" not in install_layer
 
 
-def test_candidate_wheel_is_installed_after_stable_python_layers() -> None:
-    """Ordinary source edits invalidate the candidate seam, not invariant deps."""
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
-    pyproject_copy = dockerfile.index("COPY pyproject.toml")
-    dependency_exporter = dockerfile.index(
-        "COPY src/booley/data/docker/export_project_dependencies.py"
-    )
-    project_install = dockerfile.index("--requirement /tmp/booley-build/project-dependencies.txt")
-    image_dependencies = dockerfile.index('"cocotb==2.0.1"')
-    verible_patch = dockerfile.index("COPY src/booley/data/edalize/verible.py")
-    wheel_copy = dockerfile.index("COPY dist/booley_rtl-*.whl")
+def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> None:
+    """The published boundary keeps ordinary source edits out of EDA layers."""
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    candidate = _DOCKERFILE.read_text(encoding="utf-8")
+    pyproject_copy = base.index("COPY pyproject.toml")
+    dependency_exporter = base.index("COPY src/booley/data/docker/export_project_dependencies.py")
+    project_install = base.index("--requirement /tmp/booley-build/project-dependencies.txt")
+    image_dependencies = base.index('"cocotb==2.0.1"')
 
     assert pyproject_copy < dependency_exporter < project_install
-    assert project_install < image_dependencies < verible_patch < wheel_copy
-    candidate_region = dockerfile[wheel_copy:]
-    assert "pip install" in candidate_region
-    assert "--no-deps" in candidate_region
-    assert '--wheel "$WHEEL"' in candidate_region
-    assert "ClaudeSDKBackend" in candidate_region
+    assert project_install < image_dependencies
+    assert "YOSYS_REF" in base
+    assert "verible-verilog-lint --version" in base
+    assert "COPY dist/booley_rtl-*.whl" not in base
+    assert "COPY crates/bwave/" not in base
+    assert "COPY src/booley/data/edalize/verible.py" not in base
+
+    assert "FROM booley-runtime-base" in candidate
+    assert "COPY dist/booley_rtl-*.whl" in candidate
+    assert "COPY crates/bwave/" in candidate
+    assert "COPY src/booley/data/edalize/verible.py" in candidate
+    assert "--no-deps" in candidate
+    assert '--wheel "$WHEEL"' in candidate
+    assert "ClaudeSDKBackend" in candidate
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
     """The whitelist context cannot silently omit a newly introduced COPY."""
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
     allowed = [
         line[1:].rstrip("/")
         for line in Path(".dockerignore").read_text(encoding="utf-8").splitlines()
         if line.startswith("!")
     ]
     local_sources: list[str] = []
-    for line in dockerfile.splitlines():
-        if not line.startswith("COPY ") or "--from=" in line:
-            continue
-        fields = shlex.split(line)
-        local_sources.extend(field.rstrip("/") for field in fields[1:-1])
+    for dockerfile in (_BASE_DOCKERFILE, _DOCKERFILE):
+        for line in dockerfile.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("COPY ") or "--from=" in line:
+                continue
+            fields = shlex.split(line)
+            local_sources.extend(field.rstrip("/") for field in fields[1:-1])
 
     assert local_sources
     missing = [
@@ -94,7 +100,7 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
             # The RISC-V flavor deliberately consumes a locally built named
             # context; the release workflow maps that name to the exact digest
             # emitted by the base-image job.
-            if image == "${BOOLEY_BASE_IMAGE}":
+            if image in {"${BOOLEY_BASE_IMAGE}", "booley-runtime-base"}:
                 continue
             assert re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", image), (
                 f"{path}: external base image is not digest-pinned: {image}"
@@ -109,7 +115,7 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
 
 
 def test_sandbox_downloads_are_verified_before_use() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
 
     assert "| bash" not in dockerfile
@@ -140,7 +146,7 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
 
 
 def test_source_builds_fetch_immutable_commits() -> None:
-    dockerfile = _DOCKERFILE.read_text(encoding="utf-8")
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     refs = dict(re.findall(r"^ARG ([A-Z0-9_]+_REF)=([0-9a-f]{40})$", dockerfile, re.MULTILINE))
 
     assert set(refs) == {
@@ -163,6 +169,42 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "booley-sandbox=docker-image://" in workflow
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
+
+
+def test_candidate_builds_consume_compatible_stable_base_by_immutable_digest() -> None:
+    test_workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    release_workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    build_script = (_DOCKER_DIR / "build.sh").read_text(encoding="utf-8")
+    contract_helper = Path("src/booley/harness/docker_base_contract.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "docker_base_contract.py" in test_workflow
+    assert "--resolve-image" in test_workflow
+    assert "booley-runtime-base=docker-image://" in test_workflow
+    assert "Dockerfile.base" in test_workflow
+    assert "docker_base_contract.py" in release_workflow
+    assert "--resolve-image" in release_workflow
+    assert "booley-runtime-base=docker-image://" in release_workflow
+    assert "@sha256:" in contract_helper
+    assert "--build-context" in build_script
+    assert "booley-runtime-base=docker-image://booley-runtime-base:local" in build_script
+    assert "io.booley.runtime-base.image" in _DOCKERFILE.read_text(encoding="utf-8")
+
+
+def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -> None:
+    workflow = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
+
+    assert "branches: [main]" in workflow
+    assert "paths:" in workflow
+    assert "Dockerfile.base" in workflow
+    assert "boldaxolotl/booley-sandbox-base" in workflow
+    assert "docker_base_contract.py" in workflow
+    assert "group: publish-stable-docker-runtime-base" in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert "@${{ steps.build.outputs.digest }}" in workflow
+    assert 'find_spec("booley") is None' in workflow
+    assert workflow.index("Verify exact published base") < workflow.index("Promote verified base")
 
 
 def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
