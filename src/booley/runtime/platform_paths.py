@@ -62,7 +62,12 @@ def docker_mount_path(p: Path) -> str:
 
 
 def host_path_from_docker_mount(value: str) -> Path | None:
-    """Convert a Docker bind source to a native path, if it is host-addressable."""
+    """Convert a Docker bind source to a native path, when host-addressable.
+
+    Docker Desktop exposes drive binds in several POSIX forms. Daemon-private
+    WSL paths have no reliable native Windows equivalent and return ``None``.
+    POSIX and UNC paths otherwise pass through unchanged.
+    """
     if IS_WINDOWS:
         match = _WINDOWS_DOCKER_DRIVE_RE.fullmatch(value)
         if match:

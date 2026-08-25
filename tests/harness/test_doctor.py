@@ -312,7 +312,7 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "devcontainer.json present and valid" in output
+    assert "devcontainer.json present and structurally current" in output
     assert "Booley files excluded from git" in output
 
 
@@ -1974,6 +1974,31 @@ def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> Non
     doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
 
     assert any("host issuance is invalid" in message for message in rec.fails())
+
+
+def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monkeypatch) -> None:
+    from booley.eda import runtime_spec
+
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
+    spec_path.parent.mkdir()
+    spec_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+
+    def missing_bind(*_args):
+        raise runtime_spec.RuntimeSpecError(
+            "generated bind source for /home/agent/.booley-host-skills/example-skill "
+            "is missing: /host/skills/renamed-skill"
+        )
+
+    monkeypatch.setattr(runtime_spec, "validate", missing_bind)
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    rec = _Rec()
+
+    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
+
+    assert any("example-skill" in message and "missing" in message for message in rec.fails())
 
 
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
@@ -6656,7 +6681,7 @@ class TestLineEndingsCheck:
 
         assert c.passed and not c.warned and not c.failed
 
-    def test_crlf_tree_fails_with_the_fix_command(self, tmp_path: Path):
+    def test_crlf_tree_fails_with_the_init_remediation(self, tmp_path: Path):
         # Ticket Mode is broken right now: the container reads every one of
         # these as modified.
         self._repo(tmp_path, autocrlf="true")
@@ -6672,7 +6697,8 @@ class TestLineEndingsCheck:
         doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
 
         assert len(c.failed) == 1
-        assert "--fix-line-endings" in c.failed[0][1]
+        assert "booley init" in c.failed[0][1]
+        assert "--fix-line-endings" not in c.failed[0][1]
 
     def test_autocrlf_true_with_lf_tree_warns(self, tmp_path: Path):
         # Nothing is broken yet — the next checkout is what breaks it.
@@ -6682,6 +6708,31 @@ class TestLineEndingsCheck:
         doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
 
         assert c.warned and not c.failed
+
+    @pytest.mark.parametrize("true_value", ["yes", "on", "1"])
+    def test_autocrlf_true_alias_with_lf_tree_warns(self, tmp_path: Path, true_value: str):
+        self._repo(tmp_path, autocrlf=true_value)
+        c = _Collector()
+
+        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
+
+        assert c.warned and not c.failed and not c.passed
+
+    def test_explicit_crlf_checkout_policy_is_not_a_finding(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="false")
+        self._commit(tmp_path, ".gitattributes", b"*.txt text eol=crlf\n")
+        self._commit(tmp_path, "intentional.txt", b"alpha\nbeta\n")
+        (tmp_path / "intentional.txt").unlink()
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "--", "intentional.txt"],
+            capture_output=True,
+            check=True,
+        )
+        c = _Collector()
+
+        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
+
+        assert c.passed and not c.warned and not c.failed
 
     def test_minus_text_payload_is_not_a_finding(self, tmp_path: Path):
         # A `*.bat -text` file is stored CRLF and checked out CRLF deliberately:

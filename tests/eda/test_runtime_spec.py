@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.eda import authority, runtime_spec
-from booley.eda.vivado import wrapper_path
+from booley.eda.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
@@ -89,6 +89,7 @@ def test_issuance_paths_reject_any_missing_generated_bind_source(
         getattr(runtime_spec, operation)(project, spec, path)
 
     message = str(caught.value)
+    assert "generated bind source" in message
     assert docker_mount_path(host_skill) in message
     assert f"{dc.HOST_SKILLS_SIDECAR}/example-skill" in message
     assert "missing" in message
@@ -108,6 +109,84 @@ def test_generated_bind_without_target_is_rejected(tmp_path: Path) -> None:
         match=rf"generated bind target for {tmp_path} is missing",
     ):
         runtime_spec._validate_bind_sources([f"source={tmp_path},type=bind,readonly"])
+
+
+@pytest.mark.parametrize("operation", ["issue", "validate"])
+def test_missing_project_data_bind_names_source_and_target(issued, operation: str) -> None:
+    project, spec, path, _stamp = issued
+    source = project / ".booley_project"
+    source.rmdir()
+
+    with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
+        getattr(runtime_spec, operation)(project, spec, path)
+
+    message = str(caught.value)
+    assert docker_mount_path(source) in message
+    assert "/booley-project" in message
+    assert "unavailable" in message
+
+
+@pytest.mark.parametrize("operation", ["issue", "validate"])
+def test_missing_vivado_bind_names_source_and_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+    operation: str,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    vivado_root = tmp_path / "Vivado-2025.2"
+    vivado_root.mkdir()
+    vivado_source = docker_mount_path(vivado_root)
+    installation = authority.Installation(
+        "site-vivado",
+        "vivado",
+        vivado_source,
+        "2025.2",
+        "linux-x86_64",
+        POLICY_REVISION,
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(runtime_spec, "_host_vivado_requested", lambda *_args: True)
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    monkeypatch.setattr(runtime_spec, "_validate_image_contract", lambda _image: None)
+
+    @contextmanager
+    def resolved(*_args):
+        yield installation, None
+
+    monkeypatch.setattr(authority, "resolve_for_issuance", resolved)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        trusted_eda_mounts=((vivado_source, CONTAINER_TARGET),),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    runtime_spec.issue(project, spec, path)
+    vivado_root.rmdir()
+
+    @contextmanager
+    def unavailable(*_args):
+        raise authority.InstallationValidationError(
+            f"registered Vivado installation failed revalidation: "
+            f"Vivado source is unavailable: {vivado_root}"
+        )
+        yield  # pragma: no cover - makes this an intentionally failing context manager
+
+    monkeypatch.setattr(authority, "resolve_for_issuance", unavailable)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
+        getattr(runtime_spec, operation)(project, spec, path)
+
+    message = str(caught.value)
+    assert vivado_source in message
+    assert CONTAINER_TARGET in message
+    assert "unavailable" in message
 
 
 def test_issuance_records_project_scoped_image_keeper(issued) -> None:

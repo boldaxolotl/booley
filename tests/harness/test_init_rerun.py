@@ -80,9 +80,9 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", docker_preflight)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
-    pdk = tmp_path / "pdk"
-    pdk.mkdir()
-    monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: pdk)
+    pdk_root = tmp_path / "pdk"
+    pdk_root.mkdir()
+    monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: pdk_root)
     return root
 
 
