@@ -116,28 +116,30 @@ def test_triage_treats_all_review_modes_as_freshness_sensitive():
         assert required in contract
 
 
-def test_ticket_create_defaults_every_review_to_done_mode():
+def test_ticket_create_defaults_every_review_to_corrective_mode():
     skill = _skill_text("booley-ticket-create")
     template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
+    contract = " ".join(skill.split())
 
     for criterion in (
-        "review_rtl_bugs_done",
-        "review_tb_quality_done",
-        "review_rtl_spec_done",
+        "review_rtl_bugs",
+        "review_tb_quality",
+        "review_rtl_spec",
     ):
         assert criterion in skill
     for criterion in (
-        "review_rtl_bugs_done",
-        "review_tb_quality_done",
-        "review_rtl_spec_done",
-        "review_rtl_protocol_done",
-        "review_rtl_security_done",
-        "review_rtl_optimization_done",
-        "review_rtl_code_style_done",
+        "review_rtl_bugs",
+        "review_tb_quality",
+        "review_rtl_spec",
+        "review_rtl_protocol",
+        "review_rtl_security",
+        "review_rtl_optimization",
+        "review_rtl_code_style",
     ):
         assert f"{criterion}: true" in template
-    assert "`_clean` is opt-in only" in skill
-    assert "Every `_clean` waiver must include a justification" in skill
+    assert "expands to corrective `_clean`" in contract
+    assert "Use explicit `_done` only for" in contract
+    assert "Every `_clean` waiver includes a justification" in contract
 
 
 def test_ticket_create_grills_frontiers_then_shows_one_complete_draft():

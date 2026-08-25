@@ -10,7 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.dev_support.development_state import (
+    SOURCE_FINGERPRINT_DETAIL_KEY,
+    DevelopmentState,
+    compute_source_fingerprint,
+)
 from booley.specialists.reviewer import (
     RTL_FOCUS_CATEGORIES,
     SEVERITY_CRITICAL,
@@ -2140,7 +2144,7 @@ class TestRtlSpecFocus:
         endpoint.args.work_dir = str(tmp_path)
         prompt = endpoint._build_prompt(focus_override="spec")
         assert "The real spec text." in prompt
-        assert "o_valid pulses exactly one cycle" not in prompt
+        assert "o_valid pulses exactly one cycle" in prompt
 
     def test_run_errors_without_spec(self, state_file: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
@@ -2225,12 +2229,13 @@ class TestTbQualityPrompt:
 
 class TestOneShotGuard:
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_one_shot_guard(self, mock_agent, state_file: Path):
-        """Pre-set review_rtl_bugs_done => no re-run, benign exit 0 (F-49)."""
+    def test_legacy_met_without_receipt_reruns(self, mock_agent, state_file: Path):
+        """A legacy met review without freshness evidence is rerun fail-closed."""
         # Pre-set the criterion as met
         st = DevelopmentState.load(state_file)
         st.set_criterion("review_rtl_bugs_done", met=True)
         st.save()
+        mock_agent.return_value = _make_agent_result([])
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(
@@ -2248,10 +2253,12 @@ class TestOneShotGuard:
         # A policy refusal is NOT an infra crash: exit 2 is reserved for
         # "the MCP tool could not run" (docs/BOOLEY-FLOWS.md exit taxonomy).
         assert result.exit_code == 0
-        assert mock_agent.call_count == 0
-        assert "already completed" in result.report_text
-        assert "did NOT re-run" in result.report_text
+        assert mock_agent.call_count == 1
+        assert "RESULT: REVIEWED — NO FINDINGS" in result.report_text
         assert result.criterion_met is True
+        detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail
+        assert detail["review_detail_version"] == 3
+        assert detail["receipt_id"]
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_one_shot_replays_prior_verdict_verbatim(self, mock_agent, state_file: Path):
@@ -2273,6 +2280,10 @@ class TestOneShotGuard:
                     }
                 ],
                 "gate_passed": True,
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl"],
+                    "fingerprint": compute_source_fingerprint(Path.cwd()),
+                },
             },
         )
         st.save()
@@ -2413,7 +2424,16 @@ class TestCleanModeInitial:
     ):
         """Already met _clean criterion => immediate exit, no agent call."""
         st = DevelopmentState.load(state_file)
-        st.set_criterion("review_rtl_bugs_clean", met=True)
+        st.set_criterion(
+            "review_rtl_bugs_clean",
+            met=True,
+            detail={
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl"],
+                    "fingerprint": compute_source_fingerprint(Path.cwd()),
+                }
+            },
+        )
         st.save()
 
         endpoint = ReviewerSpecialist()

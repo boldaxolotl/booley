@@ -27,6 +27,8 @@ def _finding_row(
         "line": finding.get("line", 0),
         "summary": str(finding.get("summary", "")),
         "disposition": disposition,
+        "kind": str(finding.get("kind", "")),
+        "ticket_clause": str(finding.get("ticket_clause", "")),
         "evidence": str(finding.get("evidence", "")),
         "justification": str(finding.get("justification", "")),
         "exclusion_reason": str(finding.get("exclusion_reason", "")),
@@ -34,7 +36,9 @@ def _finding_row(
     }
 
 
-def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
+def collect_review_dispositions(  # noqa: PLR0912 — one linear schema-1/2/3 migration pass
+    criteria: Mapping[str, Any],
+) -> list[dict[str, Any]]:
     """Return normalized findings from new and legacy review criterion detail."""
     rows: list[dict[str, Any]] = []
     for criterion, entry in criteria.items():
@@ -45,7 +49,16 @@ def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, A
             issues = detail.get("issue_list", [])
             if isinstance(issues, list):
                 rows.extend(
-                    _finding_row(criterion, finding, "reported")
+                    _finding_row(
+                        criterion,
+                        finding,
+                        str(
+                            finding.get(
+                                "status",
+                                finding.get("disposition", "reported"),
+                            )
+                        ),
+                    )
                     for finding in issues
                     if isinstance(finding, Mapping)
                 )
@@ -78,7 +91,29 @@ def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, A
                     ),
                 }
             rows.append(_finding_row(criterion, normalized_finding, status))
-    return rows
+        observations = detail.get("observations", [])
+        if isinstance(observations, list):
+            rows.extend(
+                _finding_row(
+                    criterion,
+                    finding,
+                    str(finding.get("status", finding.get("disposition", "advisory"))),
+                )
+                for finding in observations
+                if isinstance(finding, Mapping)
+            )
+
+    deduplicated: dict[tuple[str, str], dict[str, Any]] = {}
+    anonymous = 0
+    for row in rows:
+        finding_id = row["finding_id"]
+        if finding_id:
+            key = (row["criterion"], finding_id)
+        else:
+            anonymous += 1
+            key = (row["criterion"], f"legacy-{anonymous}")
+        deduplicated[key] = row
+    return list(deduplicated.values())
 
 
 def review_report_required(criteria: Mapping[str, Any]) -> bool:

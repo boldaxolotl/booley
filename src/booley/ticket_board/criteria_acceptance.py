@@ -143,6 +143,34 @@ def _refresh_verification_entry(
 ) -> bool:
     """Refresh one passing criterion; unresolved Target config is stale evidence."""
     categories = _verification_fingerprint_categories(key)
+    if key.startswith(("review_rtl_", "review_tb_")):
+        from booley.dev_support.review_receipt import review_receipt_drift
+
+        try:
+            changed_dimensions = review_receipt_drift(entry.detail or {}, work_dir)
+        except (FuseSocError, OSError) as exc:
+            _mark_verification_stale(
+                entry,
+                now=now,
+                reason=f"Reviewer Target contract can no longer be resolved: {exc}",
+                changed_categories=categories,
+                current={},
+            )
+            entry.detail["stale_review_dimensions"] = ["target_surface"]
+            return True
+        if changed_dimensions:
+            _mark_verification_stale(
+                entry,
+                now=now,
+                reason=(
+                    "Reviewer contract changed after the recorded verdict "
+                    f"({', '.join(changed_dimensions)}); re-run Reviewer."
+                ),
+                changed_categories=categories,
+                current={},
+            )
+            entry.detail["stale_review_dimensions"] = changed_dimensions
+            return True
     stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
     target = stamp.get("target") if isinstance(stamp, dict) else None
     target = target if isinstance(target, str) and target else None
@@ -185,9 +213,9 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
     stale_keys: list[str] = []
     fingerprints: dict[str | None, dict] = {}
     for key, entry in state.criteria.items():
-        if key.startswith("_") or not entry.met:
-            continue
         is_review = key.startswith(("review_rtl_", "review_tb_"))
+        if key.startswith("_") or (not entry.met and not is_review):
+            continue
         if not entry.mandatory and not is_review:
             continue
         if not _verification_fingerprint_categories(key):

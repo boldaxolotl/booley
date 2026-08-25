@@ -826,8 +826,8 @@ def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) ->
             "",
             "#### Review findings and dispositions",
             "",
-            "| Criterion | Severity | Location | Disposition | Finding / justification |",
-            "|-----------|----------|----------|-------------|-------------------------|",
+            "| ID | Criterion | Severity | Location | Disposition | Finding / justification |",
+            "|----|-----------|----------|----------|-------------|-------------------------|",
         ]
     )
     for row in rows:
@@ -836,7 +836,8 @@ def _render_review_dispositions(lines: list[str], package: Mapping[str, Any]) ->
         if row.get("disposition") == "waived":
             explanation = f"{explanation} — Waiver: {row.get('justification', '')}"
         lines.append(
-            f"| `{_markdown_text(row.get('criterion', ''))}` | "
+            f"| `{_markdown_text(row.get('finding_id', ''))}` | "
+            f"`{_markdown_text(row.get('criterion', ''))}` | "
             f"{_markdown_text(row.get('severity', ''))} | "
             f"`{_markdown_text(location)}` | "
             f"{_markdown_text(row.get('disposition', ''))} | "
