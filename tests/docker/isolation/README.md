@@ -18,7 +18,7 @@ Then run either entry point:
 tests/docker/isolation/test_isolation.sh [--verbose]
 
 # Python version (identical checks; avoids the agent bash-hook pattern matching)
-python tests/docker/isolation/run_isolation_tests.py [--verbose]
+python -m tests.docker.isolation.run_isolation_tests [--verbose]
 ```
 
 Exit 0 = all isolation checks pass. Non-zero = the sandbox is broken.

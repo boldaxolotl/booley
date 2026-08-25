@@ -54,3 +54,20 @@ def test_exporter_rejects_a_non_string_dependency(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "project.dependencies must be a list of strings" in result.stderr
     assert not requirements.exists()
+
+
+def test_exporter_rejects_a_non_table_project(tmp_path: Path) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    requirements = tmp_path / "requirements.txt"
+    pyproject.write_text('project = "invalid"\n', encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(_EXPORTER), str(pyproject), str(requirements)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "project must be a table" in result.stderr
+    assert not requirements.exists()

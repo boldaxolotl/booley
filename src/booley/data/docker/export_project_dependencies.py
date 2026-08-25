@@ -11,6 +11,8 @@ from pathlib import Path
 
 def export_project_dependencies(pyproject: Path, destination: Path) -> None:
     project = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
+    if not isinstance(project, dict):
+        raise ValueError("project must be a table")
     dependencies = project.get("dependencies")
     if not isinstance(dependencies, list) or not all(
         isinstance(dependency, str) for dependency in dependencies

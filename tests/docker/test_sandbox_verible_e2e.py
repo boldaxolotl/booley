@@ -18,18 +18,16 @@ FuseSoC resolutions.
 
 from __future__ import annotations
 
-import itertools
 import json
-import os
 import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+from tests.docker.isolation.container_names import next_ci_container_name
 
 _IMAGE = "booley-sandbox"
-_CONTAINER_SEQUENCE = itertools.count(1)
 
 # One deliberate violation under Verible's default ruleset: a trailing space.
 # (no-trailing-spaces is in the default set and is line-stable — immune to
@@ -69,9 +67,9 @@ def _docker() -> str | None:
 def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: int = 300):
     docker = _docker()
     cmd = [docker, "run", "--rm"]
-    name_prefix = os.environ.get("BOOLEY_DOCKER_NAME_PREFIX")
-    if name_prefix:
-        cmd += ["--name", f"{name_prefix}-{next(_CONTAINER_SEQUENCE)}"]
+    container_name = next_ci_container_name()
+    if container_name:
+        cmd += ["--name", container_name]
     for m in mounts or []:
         cmd += ["-v", m]
     cmd += [_IMAGE, *args]
