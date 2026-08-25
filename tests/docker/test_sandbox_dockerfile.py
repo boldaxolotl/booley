@@ -202,6 +202,7 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
     assert "cancel-in-progress: true" in workflow
     assert "@${{ steps.build.outputs.digest }}" in workflow
     assert 'find_spec("booley") is None' in workflow
+    assert "command -v yosys openroad iverilog verilator verible-verilog-lint" in workflow
     assert workflow.index("Verify exact published base") < workflow.index("Promote verified base")
 
 
