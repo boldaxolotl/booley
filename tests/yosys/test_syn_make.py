@@ -194,13 +194,9 @@ class TestConfigureSynthesis:
         fake_bin.mkdir()
         for name in ("make", "echo"):
             (fake_bin / name).symlink_to(shutil.which(name))
-        for name in ("sv2v", "yosys"):
-            executable = fake_bin / name
-            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o755)
 
         result = subprocess.run(
-            ["make", "-C", str(plan.build_dir), "sta"],
+            ["make", "-o", "yosys", "-C", str(plan.build_dir), "sta"],
             env={**os.environ, "PATH": str(fake_bin)},
             capture_output=True,
             text=True,
