@@ -595,8 +595,7 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
     init_p.add_argument(
         "--fix-line-endings",
         action="store_true",
-        help="Re-check out a CRLF working tree with LF endings (deletes and restores "
-        "every tracked file — refused unless the tree is clean)",
+        help="Compatibility option; clean CRLF checkouts are repaired automatically",
     )
     init_p.add_argument(
         "--seed",

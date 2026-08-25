@@ -169,23 +169,27 @@ first-run traps:
   it still win. **Commit the `.gitattributes`**: the rule only reaches your
   team through git.
 
-  Files already on disk with CRLF are a separate matter: rewriting them means
-  deleting and restoring every tracked file, so init leaves them alone unless
-  you ask. From a clean tree:
+  Files already on disk with CRLF are a separate matter. From a clean tracked
+  tree, init stages Git-filtered LF replacements, verifies that the affected
+  files have not changed since inspection, then rewrites their content in place.
+  This preserves filesystem metadata and leaves untracked and unaffected tracked
+  files alone. Init refuses dirty trees, Git-protected affected paths, and
+  hard-linked candidates; commit or stash changes and rerun:
 
   ```bash
-  booley init --fix-line-endings
+  booley init
   ```
 
-  It refuses on a dirty tree, so commit or stash first. `booley doctor` re-asks
-  every run, so a config reset or a fresh clone that drifts back to CRLF gets
-  caught rather than surfacing as phantom diffs in the container.
+  `booley doctor` re-asks every run, so a config reset or a fresh clone that
+  drifts back to CRLF gets caught rather than surfacing as phantom diffs in the
+  container. The old `--fix-line-endings` option remains accepted for CLI
+  compatibility but is no longer required for a clean tree.
 
   (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
   is **not** enough. With the clean filter in place the worktree files already
-  match the index, so git decides nothing needs rewriting and leaves the CRLF on
-  disk, and `git checkout-index -a -f` does not help either. The tracked files
-  have to be deleted first.)
+  match the index, so Git decides nothing needs rewriting and leaves the CRLF on
+  disk. Init materializes filtered replacements separately and applies them only
+  after all safety checks pass; it never deletes the originals.)
 
 - **The first sandbox image build takes over an hour.** First builds compile
   EDA tools from source and can take well over an hour on a WSL2-backed Docker;
