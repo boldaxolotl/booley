@@ -897,6 +897,7 @@ def test_deep_check_fails_when_issued_runtime_is_invalid(tmp_path, monkeypatch):
         monkeypatch,
         lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
     )
+
     def fail_up(_root):
         raise doctor.session_runtime.SessionError("issued spec is stale")
 

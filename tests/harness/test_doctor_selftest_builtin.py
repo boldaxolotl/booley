@@ -127,9 +127,7 @@ def test_builtin_without_fixtures_warns(tmp_path, monkeypatch):
     _set_venue(monkeypatch, False)
     rec = _Rec()
     project = _audit(tmp_path, fixture=False)
-    doctor._run_selftest_checks(
-        project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f
-    )
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
     assert not rec.fails()
     assert any("fail-path unvalidated" in m for lvl, m in rec.events if lvl == "warn")
 
@@ -189,9 +187,7 @@ def test_lint_without_conventional_bad_target_warns(tmp_path, monkeypatch):
     rec = _Rec()
     project = _lint_audit(tmp_path, fixture=False)
 
-    doctor._run_selftest_checks(
-        project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f
-    )
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
 
     warns = [m for level, m in rec.events if level == "warn"]
     lint_warn = next(m for m in warns if m.startswith("lint fail-path unvalidated"))
@@ -203,9 +199,7 @@ def test_disabled_flow_skips_silently(tmp_path, monkeypatch):
     _set_venue(monkeypatch, False)
     rec = _Rec()
     project = _audit(tmp_path, enabled=False)
-    doctor._run_selftest_checks(
-        project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f
-    )
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
     # The disabled simulate emits nothing — not even the fixtures nag. (The
     # unconfigured-but-active lint still gets its own unvalidated WARN.)
     assert not rec.fails()
@@ -220,9 +214,7 @@ def test_unvalidated_warning_names_the_sim_footprint_tradeoff(tmp_path, monkeypa
     rec = _Rec()
     project = _audit(tmp_path, fixture=False)
 
-    doctor._run_selftest_checks(
-        project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f
-    )
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
 
     warns = [m for lvl, m in rec.events if lvl == "warn"]
     sim_warn = next(m for m in warns if m.startswith("sim fail-path unvalidated"))
