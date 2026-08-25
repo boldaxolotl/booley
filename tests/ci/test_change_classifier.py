@@ -81,6 +81,10 @@ def _required(outputs: dict[str, str]) -> set[str]:
     return set(filter(None, outputs["required_jobs"].split(",")))
 
 
+def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
+    return json.loads(outputs["jobs"])
+
+
 def test_mixed_docker_and_docs_changes_require_image_path(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "docs/setup.md")
@@ -132,8 +136,26 @@ def test_docs_only_requires_only_lightweight_tests_aggregate_inputs(tmp_path: Pa
 
     assert outputs["docs"] == "true"
     assert _required(outputs) == {"changes", "docs-check"}
-    assert outputs["run_docs_check"] == "true"
-    assert outputs["run_test"] == "false"
+    assert _jobs(outputs)["docs-check"] is True
+    assert _jobs(outputs)["test"] is False
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["tests/bwave/test_contract.py", "src/booley/bwave/cli.py"],
+)
+def test_native_bwave_changes_require_the_owning_integration_job(
+    tmp_path: Path, path: str
+) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "native B-Wave change")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["native_bwave"] == "true"
+    assert _jobs(outputs)["bwave-integration"] is True
+    assert "bwave-integration" in _required(outputs)
 
 
 def test_rename_classifies_both_old_and_new_paths(tmp_path: Path) -> None:

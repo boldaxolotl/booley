@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -16,6 +17,7 @@ CATEGORIES = (
     "python_source",
     "python_tests",
     "image_tests",
+    "native_bwave",
     "rust",
     "docker_toolchain",
     "stable_base",
@@ -24,8 +26,7 @@ CATEGORIES = (
     "release",
     "full",
 )
-ALL_JOBS = (
-    "changes",
+CONDITIONAL_JOBS = (
     "docs-check",
     "lint",
     "test",
@@ -34,15 +35,7 @@ ALL_JOBS = (
     "package-artifacts",
     "bwave-smoke",
 )
-JOB_OUTPUTS = {
-    "docs-check": "run_docs_check",
-    "lint": "run_lint",
-    "test": "run_test",
-    "rust-test": "run_rust_test",
-    "bwave-integration": "run_bwave_integration",
-    "package-artifacts": "run_package_artifacts",
-    "bwave-smoke": "run_bwave_smoke",
-}
+ALL_JOBS = ("changes", *CONDITIONAL_JOBS)
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
 _STABLE_BASE_ORCHESTRATION_FILES = {
     "src/booley/data/docker/stable-base-inputs.txt",
@@ -59,6 +52,7 @@ _PACKAGING_FILES = {
 }
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
 _IMAGE_TEST_FILES = {"tests/sim/test_bwave_fifo_pipeline.py"}
+_NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
 
 
 def _boolean(value: str) -> bool:
@@ -102,6 +96,8 @@ def _path_categories(path: str) -> set[str]:
         categories.add("python_tests")
     if path.startswith(_IMAGE_TEST_PREFIXES) or path in _IMAGE_TEST_FILES:
         categories.add("image_tests")
+    if path.startswith(_NATIVE_BWAVE_PREFIXES):
+        categories.add("native_bwave")
     if path.startswith("crates/") or path in {"Cargo.lock", "Cargo.toml"}:
         categories.add("rust")
     if (
@@ -151,6 +147,8 @@ def required_jobs(categories: set[str]) -> set[str]:
         jobs.update({"lint", "test"})
     if "rust" in categories:
         jobs.update({"rust-test", "bwave-integration", "package-artifacts", "bwave-smoke"})
+    if "native_bwave" in categories:
+        jobs.add("bwave-integration")
     if "python_source" in categories:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if categories & {"docker_toolchain", "image_tests"}:
@@ -197,8 +195,8 @@ def _write_outputs(destination: Path, categories: set[str], base: str) -> None:
     with destination.open("a", encoding="utf-8") as stream:
         for category in CATEGORIES:
             print(f"{category}={'true' if category in categories else 'false'}", file=stream)
-        for job, output in JOB_OUTPUTS.items():
-            print(f"{output}={'true' if job in jobs else 'false'}", file=stream)
+        job_policy = {job: job in jobs for job in CONDITIONAL_JOBS}
+        print(f"jobs={json.dumps(job_policy, separators=(',', ':'))}", file=stream)
         print(
             f"build_stable_base={'true' if 'stable_base' in categories else 'false'}", file=stream
         )
