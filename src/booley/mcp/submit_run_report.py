@@ -30,12 +30,12 @@ import argparse
 import json
 import logging
 import os
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.runtime import job_records as jobrec
 from booley.runtime.pid import is_pid_alive
+from booley.runtime.ticket_repositories import TicketWorkspaceError, pending_ticket_changes
 from booley.runtime.timefmt import format_human_datetime, format_human_datetime_safe
 
 from .base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
@@ -72,7 +72,8 @@ class SubmitRunReportMcpTool(McpTool):
         "For CLI calls, pass exactly one legacy type-specific field: bugfix "
         "uses --root-cause, feature uses --design-decisions, refactor uses "
         "--behavior-preservation, verification uses --coverage-added. "
-        "MUST be called exactly once as the developer's final action."
+        "MUST be called exactly once as the developer's final action, after "
+        "all intended changes are committed and every ticket repository is clean."
     )
     code_modifying: bool = False
     config_aware: bool = False
@@ -191,6 +192,8 @@ class SubmitRunReportMcpTool(McpTool):
         return schema
 
     def _run(self) -> McpToolResult:
+        if gate := self._clean_worktree_gate():
+            return gate
         if gate := self._criteria_freshness_gate():
             return gate
 
@@ -251,6 +254,35 @@ class SubmitRunReportMcpTool(McpTool):
             report_text=self._confirmation_text(wrote),
         )
 
+    def _clean_worktree_gate(self) -> McpToolResult | None:
+        """Reject finalization until every repository in the Ticket Workspace is clean."""
+        try:
+            changes = pending_ticket_changes(Path(self.args.work_dir))
+        except TicketWorkspaceError as exc:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=(
+                    f"submit_run_report: could not verify that the ticket worktree is clean: {exc}"
+                ),
+            )
+        if not changes:
+            return None
+
+        shown = [
+            f"  {(change.status.strip() or change.status)} {change.path}"
+            for change in changes[:10]
+        ]
+        if len(changes) > len(shown):
+            shown.append(f"  ... and {len(changes) - len(shown)} more")
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=(
+                "submit_run_report: uncommitted changes remain:\n"
+                + "\n".join(shown)
+                + "\nCommit or restore them, then call submit_run_report again."
+            ),
+        )
+
     def _criteria_freshness_gate(self) -> McpToolResult | None:
         """Refresh source stamps and reject submission while mandatory work is unmet."""
         from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
@@ -276,61 +308,24 @@ class SubmitRunReportMcpTool(McpTool):
 
     # --- helpers ---
 
-    # Caps for the post-submit confirmation echo: keep the card compact so
-    # it reads as a receipt, not another report.
-    _DIFF_STAT_TIMEOUT_S = 15
-    _DIFF_STAT_MAX_BYTES = 2048
-    _DIFF_STAT_MAX_LINES = 6
-
     def _confirmation_text(self, wrote: str) -> str:
         """Assemble the submit receipt: what was written + what was captured.
 
         Field data: ~50 ticket runs ended with a wasteful pre-submit ritual
-        (re-grepping run.log, git diff --check, git diff) because this MCP tool
-        gave no confirmation of what the submission captured. Echoing the
-        worktree diff-stat and the last simulation verdict here shows the
-        agent its edits and PASS/FAIL are already on record — no manual
-        re-verification needed. Both echoes are best-effort.
+        because this MCP tool gave no confirmation of what the submission
+        captured. The cleanliness gate and last simulation verdict make those
+        facts explicit, so no manual re-verification is needed.
         """
-        lines = [wrote, "", "Captured with this submission:"]
-        lines.extend(f"  {line}" for line in self._diff_stat_lines())
+        lines = [
+            wrote,
+            "",
+            "Captured with this submission:",
+            "  ticket worktree: clean (including staged and untracked files)",
+        ]
         sim_line = self._last_simulate_line()
         if sim_line:
             lines.append(f"  {sim_line}")
         return "\n".join(lines)
-
-    def _diff_stat_lines(self) -> list[str]:
-        """``git diff --stat`` of the worktree, elided to a compact block.
-
-        Best-effort: any git/subprocess failure degrades to a single
-        "diff unavailable" line rather than failing the submission.
-        """
-        try:
-            proc = subprocess.run(
-                ["git", "diff", "--stat"],
-                cwd=self.args.work_dir,
-                capture_output=True,
-                text=True,
-                timeout=self._DIFF_STAT_TIMEOUT_S,
-                check=False,  # non-zero handled below as "unavailable"
-            )
-        except (OSError, subprocess.SubprocessError):
-            return ["worktree diff: unavailable"]
-        if proc.returncode != 0:
-            return ["worktree diff: unavailable"]
-        stat = proc.stdout.strip()
-        if not stat:
-            return ["worktree diff: clean (no uncommitted changes)"]
-        stat_lines = stat[: self._DIFF_STAT_MAX_BYTES].strip().splitlines()
-        if len(stat_lines) > self._DIFF_STAT_MAX_LINES:
-            # Keep the head plus git's trailing "N files changed" summary.
-            elided = len(stat_lines) - self._DIFF_STAT_MAX_LINES
-            stat_lines = [
-                *stat_lines[: self._DIFF_STAT_MAX_LINES - 1],
-                f"... ({elided} more)",
-                stat_lines[-1],
-            ]
-        return ["worktree diff (git diff --stat):", *stat_lines]
 
     def _last_simulate_line(self) -> str | None:
         """Fingerprint of the newest simulate per-target report, or None.

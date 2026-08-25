@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,7 +13,11 @@ import pytest
 
 from booley.harness.blocking import AgentTimeoutError, TransientAPIError
 from booley.harness.models import AgentCallParams
-from booley.runtime._codex_backend import _codex_run_subprocess, _codex_write_markdown
+from booley.runtime._codex_backend import (
+    _codex_resolve_structured,
+    _codex_run_subprocess,
+    _codex_write_markdown,
+)
 from booley.runtime.agent import (
     _is_transient_error,
     _transcript_path_for_attempt,
@@ -269,6 +274,25 @@ class TestCodexExtractStructured:
         result, fallback = _codex_extract_structured(output)
         assert result["execution_context"]["configs"] == ["config_a_prot"]
         assert fallback is True
+
+    def test_supported_last_segment_recovery_is_not_a_warning(self, caplog):
+        first = json.dumps({"configs": []})
+        final = json.dumps({"configs": ["config_a_prot"]})
+
+        with caplog.at_level(logging.WARNING, logger="booley.runtime._codex_backend"):
+            result, fallback = _codex_resolve_structured(
+                {"type": "object"},
+                f"{first}\n\n{final}",
+            )
+
+        assert result == {"configs": ["config_a_prot"]}
+        assert fallback is True
+        assert not [
+            record
+            for record in caplog.records
+            if record.name == "booley.runtime._codex_backend"
+            and "recovered via last-segment extraction" in record.getMessage()
+        ]
 
     def test_embedded_json(self):
         result, fallback = _codex_extract_structured('Answer: {"x": 1} done')
