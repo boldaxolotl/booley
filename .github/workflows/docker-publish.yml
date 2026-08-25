@@ -24,7 +24,7 @@ jobs:
       image-digest: ${{ steps.build.outputs.digest }}
 
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Read version
         id: version
@@ -100,7 +100,7 @@ jobs:
       image-digest: ${{ steps.build.outputs.digest }}
 
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Read version
         id: version
@@ -146,21 +146,21 @@ jobs:
     steps:
       # Keep this checkout at the release ref. It supplies the checksum-pinned
       # Nangate fetcher and the expected package version for the image check.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Read version
         id: version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Check out PicoRV32
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: YosysHQ/picorv32
           path: demo
           persist-credentials: false
 
       - name: Check out Booley demo configuration
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: boldaxolotl/booley-prj-picorv32
           path: demo/.booley_project
