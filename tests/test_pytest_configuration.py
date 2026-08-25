@@ -297,3 +297,30 @@ def test_image_validation_wrapper_cleans_promptly_on_cancellation(
         "ps -aq --filter name=^/booley-ci-123-1-fifo",
         "rm -f container-id",
     ]
+
+
+def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
+    """Conditional jobs never leave the stable required check unresolved."""
+    workflow = _test_workflow()
+    jobs = workflow["jobs"]
+    conditional = set(jobs) - {"changes", "ci-required"}
+
+    changes = jobs["changes"]
+    rendered_changes = "\n".join(str(step) for step in changes["steps"])
+    assert "fetch-depth" in rendered_changes
+    assert ".github/scripts/ci_changes.py" in rendered_changes
+    assert "github.event_name != 'pull_request'" in rendered_changes
+
+    assert changes["outputs"]["jobs"] == "${{ steps.classify.outputs.jobs }}"
+    for job_name in conditional:
+        job = jobs[job_name]
+        needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+        assert "changes" in needs, job_name
+        assert job["if"] == f"fromJSON(needs.changes.outputs.jobs)['{job_name}']", job_name
+
+    aggregate = jobs["ci-required"]
+    assert aggregate["if"] == "always()"
+    assert set(aggregate["needs"]) == {"changes", *conditional}
+    rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
+    assert ".github/scripts/ci_required.py" in rendered_aggregate
+    assert "toJSON(needs)" in rendered_aggregate
