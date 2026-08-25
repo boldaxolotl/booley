@@ -361,9 +361,11 @@ jobs:
 
       - name: Compute stable-base compatibility contract
         id: base-contract
-        run: >-
-          python .github/scripts/docker_base_contract.py
-          --repo . --github-output "${GITHUB_OUTPUT}"
+        shell: bash
+        run: |
+          python .github/scripts/docker_base_contract.py \
+            --repo . --github-output "${GITHUB_OUTPUT}"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
 
       - name: Select compatible stable runtime base
         id: runtime-base
@@ -382,28 +384,35 @@ jobs:
           echo "build=false" >> "${GITHUB_OUTPUT}"
 
       # A PR that changes a stable-base input must test that candidate without
-      # publishing untrusted layers. The daemon-backed builder can consume the
-      # locally loaded base by named context (verified by the workflow contract).
-      - name: Build changed stable base and candidate locally
+      # publishing untrusted layers. Reuse the trusted main-branch cache, but do
+      # not export the PR's result back into that shared scope.
+      - name: Build changed stable runtime base locally
+        if: steps.runtime-base.outputs.build == 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.base
+          load: true
+          tags: booley-runtime-base:ci
+          build-args: |
+            BOOLEY_BASE_SOURCE_REVISION=${{ github.sha }}
+            BOOLEY_BASE_CONTRACT=${{ steps.base-contract.outputs.contract }}
+            BOOLEY_BASE_BUILT_AT=${{ steps.base-contract.outputs.built_at }}
+          cache-from: type=gha,scope=sandbox-runtime-base
+
+      # The default daemon-backed builder can consume the locally loaded base
+      # by named context (verified by the workflow contract).
+      - name: Build candidate from changed stable base
         if: steps.runtime-base.outputs.build == 'true'
         shell: bash
-        env:
-          BASE_CONTRACT: ${{ steps.base-contract.outputs.contract }}
         run: |
           set -o pipefail
-          {
-            docker buildx build --builder default --load \
-              --file src/booley/data/docker/Dockerfile.base \
-              --tag booley-runtime-base:ci \
-              --build-arg "BOOLEY_BASE_SOURCE_REVISION=${GITHUB_SHA}" \
-              --build-arg "BOOLEY_BASE_CONTRACT=${BASE_CONTRACT}" \
-              --build-arg "BOOLEY_BASE_BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
-            docker buildx build --builder default --load \
-              --file src/booley/data/docker/Dockerfile \
-              --tag booley-test \
-              --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:ci" \
-              --build-context booley-runtime-base=docker-image://booley-runtime-base:ci .
-          } 2>&1 | tee "${RUNNER_TEMP}/stable-base-build.log"
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile \
+            --tag booley-test \
+            --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:ci" \
+            --build-context booley-runtime-base=docker-image://booley-runtime-base:ci . \
+            2>&1 | tee "${RUNNER_TEMP}/stable-base-build.log"
 
       - name: Upload failed stable-base build log
         if: failure() && steps.runtime-base.outputs.build == 'true'
@@ -411,7 +420,7 @@ jobs:
         with:
           name: stable-base-build-log
           path: ${{ runner.temp }}/stable-base-build.log
-          if-no-files-found: error
+          if-no-files-found: warn
 
       # Load into the local docker store (not push) so `docker run` below works;
       # GHA layer cache keeps rebuilds fast when the Dockerfile didn't change.
