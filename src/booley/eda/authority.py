@@ -60,6 +60,10 @@ class AuthorityError(RuntimeError):
     """Private EDA authority is absent, corrupt, insecure, or insufficient."""
 
 
+class InstallationValidationError(AuthorityError):
+    """A registered EDA installation is unavailable or has drifted."""
+
+
 def _wait_for_lock(lock: object, timeout_s: float = 10.0) -> None:
     """Acquire the authority lock with a bounded, user-readable wait."""
     deadline = time.monotonic() + timeout_s
@@ -368,11 +372,15 @@ def _revalidate_installation(record: Installation, project_root: Path) -> None:
     try:
         observed = inspect_installation(Path(record.source), project_root=project_root)
     except (OSError, VivadoPolicyError) as exc:
-        raise AuthorityError(f"registered Vivado installation failed revalidation: {exc}") from exc
+        raise InstallationValidationError(
+            f"registered Vivado installation failed revalidation: {exc}"
+        ) from exc
     identity = (observed.version, observed.architecture, VIVADO_POLICY_REVISION)
     recorded = (record.version, record.architecture, record.policy_revision)
     if identity != recorded:
-        raise AuthorityError("registered Vivado installation identity or policy has drifted")
+        raise InstallationValidationError(
+            "registered Vivado installation identity or policy has drifted"
+        )
 
 
 def _build_license(
