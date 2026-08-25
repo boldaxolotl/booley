@@ -17,7 +17,7 @@ from typing import Any
 
 from booley.harness.devcontainer import EGRESS_NETWORK
 from booley.runtime.auth_token import config_dir
-from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 from . import authority
@@ -192,7 +192,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
             _validate_generated_spec(project, spec, installation, profile, provisional)
             return digest
     except authority.AuthorityError as exc:
-        raise RuntimeSpecError(str(exc)) from exc
+        raise _runtime_authority_error(spec, host_provisioning, exc) from exc
 
 
 def requested_host_installation(
@@ -236,6 +236,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
                 project_data_source=project_data_source,
             )
             _validate_generated_spec(project, spec, installation, profile, issuance)
+            _validate_bind_sources(spec["mounts"])
             image = _require_string(spec, "image")
             image_id = _resolve_image_id(image)
             if image != image_id:
@@ -248,7 +249,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
             _write_stamp(stamp_path(project), issuance)
             return issuance
     except authority.AuthorityError as exc:
-        raise RuntimeSpecError(str(exc)) from exc
+        raise _runtime_authority_error(spec, host_provisioning, exc) from exc
 
 
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
@@ -269,6 +270,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
             profile,
         ):
             _validate_generated_spec(project, spec, installation, profile, stamp)
+            _validate_bind_sources(spec["mounts"])
             if stamp.image != spec.get("image") or stamp.image_id != _resolve_image_id(
                 stamp.image
             ):
@@ -307,7 +309,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 raise RuntimeSpecError("host Booley validator has changed since spec issuance")
             return stamp
     except authority.AuthorityError as exc:
-        raise RuntimeSpecError(str(exc)) from exc
+        raise _runtime_authority_error(spec, host_provisioning, exc) from exc
 
 
 def labels(issuance: Issuance) -> tuple[str, ...]:
@@ -603,7 +605,7 @@ def _validate_mount_surfaces(mounts: list[str], project_data_workspace_target: s
         writable_targets.add(project_data_workspace_target)
     forbidden = {"/", "/var/run/docker.sock", "/run/docker.sock", "/root", "/home"}
     for raw in mounts:
-        fields = dict(field.split("=", 1) for field in raw.split(",") if "=" in field)
+        fields = _mount_fields(raw)
         target = fields.get("target", "")
         kind = fields.get("type")
         if target in forbidden or target.startswith("/root/"):
@@ -612,6 +614,36 @@ def _validate_mount_surfaces(mounts: list[str], project_data_workspace_target: s
             raise RuntimeSpecError(f"host bind must be read-only: {target}")
         if "readonly=false" in raw:
             raise RuntimeSpecError(f"host bind explicitly disables read-only policy: {target}")
+
+
+def _validate_bind_sources(mounts: list[str]) -> None:
+    """Reject an issued spec that Docker cannot instantiate on this host."""
+    for raw in mounts:
+        fields = _mount_fields(raw)
+        if fields.get("type") != "bind":
+            continue
+        source = fields.get("source", "")
+        target = fields.get("target", "")
+        if not source:
+            raise RuntimeSpecError(f"generated bind source for {target} is missing: {source!r}")
+        if not target:
+            raise RuntimeSpecError(f"generated bind target for {source} is missing: {target!r}")
+        host_path = host_path_from_docker_mount(source)
+        if host_path is None:
+            raise RuntimeSpecError(
+                f"generated bind source for {target} is unavailable: {source}: "
+                "Docker path has no native host mapping"
+            )
+        try:
+            host_path.stat()
+        except FileNotFoundError:
+            raise RuntimeSpecError(
+                f"generated bind source for {target} is missing: {source}"
+            ) from None
+        except OSError as exc:
+            raise RuntimeSpecError(
+                f"generated bind source for {target} is unavailable: {source}: {exc}"
+            ) from exc
 
 
 def authorized_project_data_source(project_root: Path) -> Path:
@@ -623,7 +655,17 @@ def authorized_project_data_source(project_root: Path) -> Path:
     else:
         _reject_project_authored_mount_override(project)
         candidate = project / ".booley_project"
-    return _validate_project_data_source(project, candidate)
+    return _validate_project_data_bind_source(project, candidate)
+
+
+def _validate_project_data_bind_source(project: Path, candidate: Path) -> Path:
+    try:
+        return _validate_project_data_source(project, candidate)
+    except RuntimeSpecError as exc:
+        source = docker_mount_path(candidate)
+        raise RuntimeSpecError(
+            f"generated bind source for /booley-project could not be validated: {source}: {exc}"
+        ) from exc
 
 
 def _reject_project_authored_mount_override(project: Path) -> None:
@@ -870,7 +912,7 @@ def _require_project_data_mount(
     if not source:
         raise RuntimeSpecError("host issuance lacks an authorized Project-data mount source")
     project = Path(source)
-    canonical = _validate_project_data_source(project_root, project)
+    canonical = _validate_project_data_bind_source(project_root, project)
     if canonical != project:
         raise RuntimeSpecError("issued Project-data mount source is no longer canonical")
     expected_source = docker_mount_path(project)
@@ -915,6 +957,36 @@ def _mount_target(raw: str) -> str:
         if separator and key == "target":
             return value
     return ""
+
+
+def _mount_fields(raw: str) -> dict[str, str]:
+    """Parse Booley's generated Docker mount grammar."""
+    return dict(field.split("=", 1) for field in raw.split(",") if "=" in field)
+
+
+def _runtime_authority_error(
+    spec: dict[str, Any], host_provisioning: bool, exc: authority.AuthorityError
+) -> RuntimeSpecError:
+    """Add sealed bind context when Vivado authority fails before mount validation."""
+    mounts = spec.get("mounts")
+    if (
+        host_provisioning
+        and isinstance(exc, authority.InstallationValidationError)
+        and isinstance(mounts, list)
+    ):
+        sources = [
+            fields.get("source", "")
+            for raw in mounts
+            if isinstance(raw, str)
+            and (fields := _mount_fields(raw)).get("type") == "bind"
+            and fields.get("target") == CONTAINER_TARGET
+        ]
+        if len(sources) == 1 and sources[0]:
+            return RuntimeSpecError(
+                f"generated bind source for {CONTAINER_TARGET} could not be validated: "
+                f"{sources[0]}: {exc}"
+            )
+    return RuntimeSpecError(str(exc))
 
 
 def _optional_license(project: Path) -> authority.LicenseProfile | None:

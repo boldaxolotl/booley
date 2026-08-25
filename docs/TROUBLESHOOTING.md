@@ -14,6 +14,22 @@ the config knobs named below see [CONFIG.md](CONFIG.md). For the Booley-specific
 terms below (Session Runtime, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](CONTEXT.md).
 
+## VS Code says “A mount config is invalid” while reopening the container
+
+Booley validates every host bind in the current generated spec before Docker
+creates the Session Runtime. The error names the missing or unavailable host
+source and its container target; restore that source, or run `booley init
+--seed` on the host when the source was intentionally removed.
+
+A rebuild may otherwise select a stopped VS Code container whose old bind list
+still mentions a deleted skill, credential file, tool installation, mask
+directory, or editor-injected socket. During `booley session prepare`, Booley
+now removes such a stopped container (without deleting named volumes) so Dev
+Containers creates one from the current spec. It never removes a running
+container, a headless `booley session` container, or a container belonging to a
+different Project. If one is running with an older issuance, stop it and retry
+the rebuild.
+
 ## `booley` is missing from `/mcp` in Claude Code or Codex
 
 Run **Developer: Reload Window** so the agent session re-reads its MCP config.
@@ -169,23 +185,27 @@ first-run traps:
   it still win. **Commit the `.gitattributes`**: the rule only reaches your
   team through git.
 
-  Files already on disk with CRLF are a separate matter: rewriting them means
-  deleting and restoring every tracked file, so init leaves them alone unless
-  you ask. From a clean tree:
+  Files already on disk with CRLF are a separate matter. From a clean tracked
+  tree, init stages Git-filtered LF replacements, verifies that the affected
+  files have not changed since inspection, then rewrites their content in place.
+  This preserves filesystem metadata and leaves untracked and unaffected tracked
+  files alone. Init refuses dirty trees, Git-protected affected paths, and
+  hard-linked candidates; commit or stash changes and rerun:
 
   ```bash
-  booley init --fix-line-endings
+  booley init
   ```
 
-  It refuses on a dirty tree, so commit or stash first. `booley doctor` re-asks
-  every run, so a config reset or a fresh clone that drifts back to CRLF gets
-  caught rather than surfacing as phantom diffs in the container.
+  `booley doctor` re-asks every run, so a config reset or a fresh clone that
+  drifts back to CRLF gets caught rather than surfacing as phantom diffs in the
+  container. The old `--fix-line-endings` option remains accepted for CLI
+  compatibility but is no longer required for a clean tree.
 
   (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
   is **not** enough. With the clean filter in place the worktree files already
-  match the index, so git decides nothing needs rewriting and leaves the CRLF on
-  disk, and `git checkout-index -a -f` does not help either. The tracked files
-  have to be deleted first.)
+  match the index, so Git decides nothing needs rewriting and leaves the CRLF on
+  disk. Init materializes filtered replacements separately and applies them only
+  after all safety checks pass; it never deletes the originals.)
 
 - **The first sandbox image build takes over an hour.** First builds compile
   EDA tools from source and can take well over an hour on a WSL2-backed Docker;

@@ -7,6 +7,7 @@ portable. Keeps the rest of Booley OS-agnostic without over-abstraction.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,9 @@ from booley.runtime.process_group import (
 )
 
 IS_WINDOWS = sys.platform == "win32"
+_WINDOWS_DOCKER_DRIVE_RE = re.compile(
+    r"^/(?:host_mnt/|run/desktop/mnt/host/)?(?P<drive>[A-Za-z])(?P<suffix>/.*)?$"
+)
 
 
 def posix_relpath(path: Path | str, start: Path | str) -> str:
@@ -55,6 +59,25 @@ def docker_mount_path(p: Path) -> str:
     if len(posix) >= 2 and posix[1] == ":":
         return "/" + posix[0].lower() + posix[2:]
     return posix
+
+
+def host_path_from_docker_mount(value: str) -> Path | None:
+    """Convert a Docker bind source to a native path, when host-addressable.
+
+    Docker Desktop exposes drive binds in several POSIX forms. Daemon-private
+    WSL paths have no reliable native Windows equivalent and return ``None``.
+    POSIX and UNC paths otherwise pass through unchanged.
+    """
+    if IS_WINDOWS:
+        match = _WINDOWS_DOCKER_DRIVE_RE.fullmatch(value)
+        if match:
+            suffix = match.group("suffix") or "/"
+            return Path(f"{match.group('drive').upper()}:{suffix}")
+        if value.startswith("/") and not value.startswith("//"):
+            # Docker Desktop can retain daemon-private WSL paths that native
+            # Windows cannot inspect. Their existence is therefore unknown.
+            return None
+    return Path(value)
 
 
 # MSYS2 fallback path (used only on Windows when cargo is not on PATH).

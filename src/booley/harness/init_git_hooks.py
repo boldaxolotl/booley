@@ -16,9 +16,14 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
+import stat
 import subprocess
+from contextlib import suppress
 from pathlib import Path
+from typing import BinaryIO
 
 from booley.harness.init_common import (
     InitContext,
@@ -355,8 +360,8 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _count_crlf_worktree_files(project_root: Path) -> int | None:
-    """Number of tracked files that will read as modified in the container.
+def _crlf_worktree_files(project_root: Path) -> list[str] | None:
+    """Tracked paths that will read as modified in the container.
 
     ``git ls-files --eol`` prints one ``i/<index-eol> w/<worktree-eol>
     attr/<text-attr>`` line per tracked file. A CRLF worktree file is only a
@@ -378,9 +383,10 @@ def _count_crlf_worktree_files(project_root: Path) -> int | None:
     """
     try:
         proc = subprocess.run(
-            ["git", "-C", str(project_root), "ls-files", "--eol"],
+            ["git", "-C", str(project_root), "ls-files", "--eol", "-z"],
             capture_output=True,
             text=True,
+            errors="surrogateescape",
             check=False,
             timeout=60,
         )
@@ -388,9 +394,12 @@ def _count_crlf_worktree_files(project_root: Path) -> int | None:
         return None
     if proc.returncode != 0:
         return None
-    count = 0
-    for line in proc.stdout.splitlines():
-        fields = line.split()
+    paths: list[str] = []
+    for record in proc.stdout.split("\0"):
+        metadata, separator, path = record.partition("\t")
+        fields = metadata.split()
+        if not separator or not path:
+            continue
         if len(fields) < 2:
             continue
         index_eol, worktree_eol = fields[0], fields[1]
@@ -398,8 +407,36 @@ def _count_crlf_worktree_files(project_root: Path) -> int | None:
             continue
         if index_eol[2:] == worktree_eol[2:]:
             continue  # index already holds CRLF — no diff for git to see
-        count += 1
-    return count
+        if any(field.lower() == "eol=crlf" for field in fields[2:]):
+            continue  # an explicit checkout policy the Session Runtime also honors
+        paths.append(path)
+    return paths
+
+
+def _count_crlf_worktree_files(project_root: Path) -> int | None:
+    """Number of tracked files that will read as modified in the container."""
+    paths = _crlf_worktree_files(project_root)
+    return None if paths is None else len(paths)
+
+
+def read_autocrlf_enabled(project_root: Path) -> bool | None:
+    """Return Git's normalized ``core.autocrlf`` Boolean; None means unreadable."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "config", "--bool", "--get", "core.autocrlf"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode == 1 and not proc.stdout.strip():
+        return False  # unset: Git's non-Windows checkout default
+    if proc.returncode != 0:
+        return None
+    value = proc.stdout.strip().lower()
+    return value == "true" if value in {"true", "false"} else None
 
 
 GITATTRIBUTES_RULE = "* text=auto eol=lf"
@@ -415,7 +452,7 @@ def _eol_policy_is_user_owned(project_root: Path) -> bool:
     """
     path = project_root / ".gitattributes"
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
     except OSError:
         return False
     for line in lines:
@@ -440,13 +477,15 @@ def _write_gitattributes_rule(project_root: Path) -> bool:
     """
     path = project_root / ".gitattributes"
     try:
-        existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        existing = (
+            path.read_text(encoding="utf-8", errors="surrogateescape") if path.exists() else ""
+        )
     except OSError:
         return False
     if existing and not existing.endswith("\n"):
         existing += "\n"
     try:
-        with path.open("w", encoding="utf-8", newline="\n") as f:
+        with path.open("w", encoding="utf-8", errors="surrogateescape", newline="\n") as f:
             f.write(f"{GITATTRIBUTES_RULE}\n{existing}")
     except OSError:
         return False
@@ -460,9 +499,9 @@ def _worktree_is_clean(project_root: Path) -> bool | None:
     this answer: with ``core.autocrlf=true`` the clean filter hides the CRLF
     from ``git status`` on the host, and flipping the knob can expose those
     same files as modified. Only the pre-fix reading tells us whether the user
-    has real work in the tree. Untracked files are ignored because the repair
-    deletes and restores only paths reported by ``git ls-files``. None = git
-    could not answer.
+    has real work in the tree. Untracked files are ignored because normalization
+    rewrites only exact paths reported by ``git ls-files``. None = git could not
+    answer.
     """
     try:
         proc = subprocess.run(
@@ -486,117 +525,235 @@ def _worktree_is_clean(project_root: Path) -> bool | None:
     return not proc.stdout.strip()
 
 
-def _recheckout_as_lf(project_root: Path) -> str | None:
-    """Delete every tracked file, then restore it through the LF filters.
-
-    `git checkout -- .` alone does NOT re-checkout: with the clean filter in
-    place the worktree already matches the index, so git rewrites nothing and
-    the CRLF survives (so does `git checkout-index -a -f`). The tracked files
-    have to be gone first (F-3). Untracked files are left alone — only git's
-    own content is destroyed, and only what git can put straight back.
-
-    Returns an error string, or None on success.
-    """
+def _protected_index_paths(project_root: Path, paths: list[str]) -> list[str] | None:
+    """Affected paths hidden from normal status by Git index flags."""
     try:
-        listed = subprocess.run(
-            ["git", "-C", str(project_root), "ls-files", "-z"],
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "ls-files", "-v", "-z"],
             capture_output=True,
             text=True,
+            errors="surrogateescape",
             check=False,
             timeout=60,
         )
-        if listed.returncode != 0:
-            return f"git ls-files failed: {listed.stderr.strip()}"
-        for name in listed.stdout.split("\0"):
-            if not name:
-                continue
-            try:
-                (project_root / name).unlink()
-            except FileNotFoundError:
-                pass  # already gone (deleted upstream, or a stale index entry)
-            except OSError as exc:
-                # Restore what we removed so far rather than leave a half tree.
-                subprocess.run(
-                    ["git", "-C", str(project_root), "checkout", "--", "."],
-                    capture_output=True,
-                    check=False,
-                    timeout=300,
-                )
-                return f"could not delete {name}: {exc}"
-        restored = subprocess.run(
-            ["git", "-C", str(project_root), "checkout", "--", "."],
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+
+    affected = set(paths)
+    protected: list[str] = []
+    for record in proc.stdout.split("\0"):
+        tag, separator, path = record.partition(" ")
+        if not separator or path not in affected:
+            continue
+        if tag == "S" or tag.islower():
+            protected.append(path)
+    return protected
+
+
+def _file_digest(path: Path) -> bytes:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.digest()
+
+
+def _candidate_digest(project_root: Path, name: str) -> tuple[bytes | None, str | None]:
+    """Snapshot one candidate without following links or disturbing metadata."""
+    path = project_root / name
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            return None, f"refusing to normalize non-regular tracked path {name!r}"
+        if metadata.st_nlink > 1:
+            return None, f"refusing to normalize hard-linked tracked path {name!r}"
+        return _file_digest(path), None
+    except OSError as exc:
+        return None, f"could not inspect tracked path {name!r}: {exc}"
+
+
+def _snapshot_candidates(
+    project_root: Path, paths: list[str]
+) -> tuple[dict[str, bytes], str | None]:
+    snapshots: dict[str, bytes] = {}
+    for name in paths:
+        digest, error = _candidate_digest(project_root, name)
+        if error:
+            return {}, error
+        assert digest is not None
+        snapshots[name] = digest
+    return snapshots, None
+
+
+def _staged_paths(project_root: Path, output: bytes) -> dict[str, Path]:
+    staged: dict[str, Path] = {}
+    for record in output.split(b"\0"):
+        temporary, separator, original = record.partition(b"\t")
+        if separator and temporary and original:
+            staged[os.fsdecode(original)] = project_root / os.fsdecode(temporary)
+    return staged
+
+
+def _cleanup_staged_files(paths: dict[str, Path]) -> None:
+    for path in paths.values():
+        with suppress(FileNotFoundError):
+            path.unlink()
+
+
+def _stage_lf_files(project_root: Path, paths: list[str]) -> tuple[dict[str, Path], str | None]:
+    """Materialize checkout-filtered LF replacements without touching the worktree."""
+    encoded_paths = b"\0".join(os.fsencode(name) for name in paths) + b"\0"
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "-c",
+                "core.autocrlf=false",
+                "-C",
+                str(project_root),
+                "checkout-index",
+                "--temp",
+                "-z",
+                "--stdin",
+            ],
+            input=encoded_paths,
             capture_output=True,
-            text=True,
             check=False,
             timeout=300,
         )
-        if restored.returncode != 0:
-            return (
-                f"git checkout failed after deleting the tracked files: "
-                f"{restored.stderr.strip()} — recover with "
-                f"`git -C {project_root} checkout -- .`"
-            )
     except (subprocess.SubprocessError, OSError) as exc:
-        return f"re-checkout failed: {exc} — recover with `git -C {project_root} checkout -- .`"
+        return {}, f"could not stage LF replacements: {exc}"
+    staged = _staged_paths(project_root, proc.stdout)
+    if proc.returncode != 0 or set(staged) != set(paths):
+        _cleanup_staged_files(staged)
+        detail = proc.stderr.decode(errors="replace").strip() or "incomplete Git output"
+        return {}, f"could not stage LF replacements: {detail}"
+    return staged, None
+
+
+def _restore_after_write_failure(
+    target: BinaryIO, original: bytes, path: Path, cause: OSError
+) -> str:
+    try:
+        target.seek(0)
+        target.write(original)
+        target.truncate()
+        target.flush()
+    except OSError as restore_exc:
+        return (
+            f"could not normalize {path.name!r}: {cause}; restoring the original "
+            f"content also failed: {restore_exc}"
+        )
+    return f"could not normalize {path.name!r}: {cause}; original content restored"
+
+
+def _rewrite_from_stage(path: Path, replacement: Path, expected: bytes) -> str | None:
+    """Update file content in place, preserving its inode and non-Git metadata."""
+    digest, error = _candidate_digest(path.parent, path.name)
+    if error:
+        return error
+    if digest != expected:
+        return f"tracked path changed during line-ending repair: {path.name!r}"
+    try:
+        replacement_bytes = replacement.read_bytes()
+        with path.open("r+b") as target:
+            original = target.read()
+            if hashlib.sha256(original).digest() != expected:
+                return f"tracked path changed during line-ending repair: {path.name!r}"
+            try:
+                target.seek(0)
+                target.write(replacement_bytes)
+                target.truncate()
+                target.flush()
+            except OSError as exc:
+                return _restore_after_write_failure(target, original, path, exc)
+    except OSError as exc:
+        return f"could not normalize {path.name!r}: {exc}"
+    return None
+
+
+def _normalize_as_lf(
+    project_root: Path, paths: list[str], snapshots: dict[str, bytes]
+) -> str | None:
+    """Stage every replacement, then rewrite only unchanged, unprotected paths."""
+    protected = _protected_index_paths(project_root, paths)
+    if protected is None:
+        return "could not inspect Git index flags — refusing to normalize files"
+    if protected:
+        names = ", ".join(repr(name) for name in protected[:3])
+        suffix = " …" if len(protected) > 3 else ""
+        return (
+            f"refusing to normalize Git-protected path(s): {names}{suffix} "
+            "(skip-worktree or assume-unchanged may hide local edits)"
+        )
+
+    staged, error = _stage_lf_files(project_root, paths)
+    if error:
+        return error
+    try:
+        for name in paths:
+            error = _rewrite_from_stage(project_root / name, staged[name], snapshots[name])
+            if error:
+                return error
+    finally:
+        _cleanup_staged_files(staged)
     return None
 
 
 def _step_line_endings(ctx: InitContext) -> None:
     """Keep the checkout from reading as dirty inside the container (F-15).
 
-    Git for Windows defaults to ``core.autocrlf=true``, which checks text files
-    out with CRLF. The Session Runtime bind-mounts that worktree into a Linux
-    container whose git does no CRLF conversion, so every CRLF file shows as
-    modified in-container — phantom diffs that trip the dirty-tree doctor
-    warning, scope enforcement, and ticket worktrees.
-
-    The fix is three acts of very different weight, so init treats them
-    differently:
-
-    - ``core.autocrlf=false`` — repo-local, reversible, touches no file. Done
-      automatically; it is what stops CRLF coming back on the next checkout.
-    - ``* text=auto eol=lf`` in ``.gitattributes`` — an added (never appended)
-      line that normalizes detected text without forcing binary files through
-      text conversion, only when the project has not stated its own policy.
-      Left uncommitted: it is the user's tracked source, and only they should
-      commit to it.
-    - the re-checkout — deletes every tracked file. Opt-in via
-      ``--fix-line-endings`` and refused on a dirty tree; init will not be the
-      thing that eats uncommitted work.
+    Disable future auto-conversion, normalize unchanged candidates in place,
+    then install the project policy only after file content is safe.
     """
     ctx.step_banner("line endings")
-
-    probe = subprocess.run(
-        ["git", "-C", str(ctx.project_root), "rev-parse", "--git-dir"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if probe.returncode != 0:
+    if not _is_git_repository(ctx.project_root):
         skip("project root is not a git repo — line-endings check skipped")
         ctx.record("line_endings", "skip", "not a git repo")
         return
 
-    autocrlf_proc = subprocess.run(
-        ["git", "-C", str(ctx.project_root), "config", "--get", "core.autocrlf"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    autocrlf = autocrlf_proc.stdout.strip().lower() if autocrlf_proc.returncode == 0 else ""
-
-    crlf_count = _count_crlf_worktree_files(ctx.project_root)
-    if not crlf_count and autocrlf != "true":
+    autocrlf = read_autocrlf_enabled(ctx.project_root)
+    if autocrlf is None:
+        warn("could not read core.autocrlf as a Git Boolean — no files changed")
+        ctx.record("line_endings", "warn", "autocrlf unreadable")
+        return
+    crlf_paths = _crlf_worktree_files(ctx.project_root)
+    if crlf_paths is None:
+        warn("could not read `git ls-files --eol` — no files changed")
+        ctx.record("line_endings", "warn", "EOL scan unreadable")
+        return
+    if not crlf_paths and not autocrlf:
         ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
         ctx.record("line_endings", "ok", "no CRLF")
         return
 
-    # Sampled before the autocrlf flip below, which can itself expose CRLF
-    # files as modified and make a genuinely clean tree look dirty.
+    snapshots, safety_error = _snapshot_candidates(ctx.project_root, crlf_paths)
     clean = _worktree_is_clean(ctx.project_root)
+    _report_line_ending_findings(len(crlf_paths), autocrlf)
+    if ctx.check_only:
+        _report_line_endings_plan(ctx, autocrlf, len(crlf_paths), clean, safety_error)
+        ctx.record("line_endings", "warn", "CRLF working tree")
+        return
+    _apply_line_ending_repairs(ctx, autocrlf, crlf_paths, snapshots, clean, safety_error)
 
+
+def _is_git_repository(project_root: Path) -> bool:
+    try:
+        probe = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "--git-dir"],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return probe.returncode == 0
+
+
+def _report_line_ending_findings(crlf_count: int, autocrlf: bool) -> None:
     if crlf_count:
         warn(
             f"{crlf_count} tracked file(s) are checked out with CRLF — the "
@@ -604,31 +761,31 @@ def _step_line_endings(ctx: InitContext) -> None:
             "(phantom diffs break the dirty-tree check, scope enforcement, "
             "and ticket worktrees)"
         )
-    if autocrlf == "true":
+    if autocrlf:
         warn(
             "core.autocrlf=true (Git for Windows' installer default) "
             "re-creates CRLF checkouts on every clone/checkout"
         )
 
-    if ctx.check_only:
-        _report_line_endings_plan(ctx, autocrlf, crlf_count)
-        ctx.record("line_endings", "warn", "CRLF working tree")
-        return
 
+def _apply_line_ending_repairs(
+    ctx: InitContext,
+    autocrlf: bool,
+    crlf_paths: list[str],
+    snapshots: dict[str, bytes],
+    clean: bool | None,
+    safety_error: str | None,
+) -> None:
     fixed: list[str] = []
-    if autocrlf == "true" and _disable_autocrlf(ctx.project_root):
+    if autocrlf and _disable_autocrlf(ctx.project_root):
         fixed.append("autocrlf")
-
-    # Disk first, .gitattributes second. The re-checkout restores every tracked
-    # file from the index, and .gitattributes is normally tracked — writing our
-    # rule before the re-checkout would hand it straight back to git to
-    # overwrite, silently losing the one part of the fix the user's teammates
-    # ever see.
-    status, detail = ("ok", "") if not crlf_count else _maybe_recheckout(ctx, crlf_count, clean)
-
+    status, detail = (
+        ("ok", "")
+        if not crlf_paths
+        else _maybe_normalize(ctx, crlf_paths, snapshots, clean, safety_error)
+    )
     if _apply_gitattributes_rule(ctx.project_root):
         fixed.append("gitattributes")
-
     if status == "ok":
         detail = detail or "+".join(fixed)
         if not detail:
@@ -636,14 +793,27 @@ def _step_line_endings(ctx: InitContext) -> None:
     ctx.record("line_endings", status, detail)
 
 
-def _report_line_endings_plan(ctx: InitContext, autocrlf: str, crlf_count: int | None) -> None:
+def _report_line_endings_plan(
+    ctx: InitContext,
+    autocrlf: bool,
+    crlf_count: int,
+    clean: bool | None,
+    safety_error: str | None,
+) -> None:
     """Name every fix ``--check-only`` is holding back from (its contract)."""
-    if autocrlf == "true":
+    if autocrlf:
         info("  would set core.autocrlf=false")
     if not _eol_policy_is_user_owned(ctx.project_root):
         info(f"  would add '{GITATTRIBUTES_RULE}' to .gitattributes")
     if crlf_count:
-        info("  would need `booley init --fix-line-endings` to re-check out the tree")
+        if safety_error:
+            info(f"  would leave tracked files untouched: {safety_error}")
+        elif clean is True:
+            info(f"  would normalize {crlf_count} tracked file(s) to LF in place")
+        elif clean is False:
+            info("  would leave tracked files untouched until changes are committed or stashed")
+        else:
+            info("  would leave tracked files untouched because `git status` was unreadable")
 
 
 def _disable_autocrlf(project_root: Path) -> bool:
@@ -675,41 +845,53 @@ def _apply_gitattributes_rule(project_root: Path) -> bool:
     return True
 
 
-def _maybe_recheckout(ctx: InitContext, crlf_count: int, clean: bool | None) -> tuple[str, str]:
-    """Re-check out the CRLF files as LF, if the user asked and it is safe.
-
-    Returns the ``(status, detail)`` for the step record.
-    """
-    if not ctx.fix_line_endings:
-        warn(
-            f"{crlf_count} file(s) still hold CRLF on disk — re-check them out with "
-            "`booley init --fix-line-endings` (deletes and restores every tracked "
-            "file; needs a clean tree)"
-        )
-        return "warn", "CRLF working tree"
-
+def _normalization_refusal(clean: bool | None, safety_error: str | None) -> tuple[str, str] | None:
+    if safety_error:
+        return safety_error, "candidate unsafe"
     if clean is None:
-        warn("could not read `git status` — refusing to re-check out the tree")
-        return "warn", "status unreadable"
-    if not clean:
-        warn(
-            "working tree has uncommitted changes — refusing to re-check it out "
-            "(the re-checkout deletes every tracked file). Commit or stash first, "
-            "then re-run `booley init --fix-line-endings`."
+        return (
+            "could not read `git status` — refusing to normalize tracked files",
+            "status unreadable",
         )
-        return "warn", "dirty tree"
+    if not clean:
+        return (
+            "working tree has uncommitted changes — refusing to normalize it "
+            "(normalization rewrites the affected tracked files). Commit or stash "
+            "first, then re-run `booley init`.",
+            "dirty tree",
+        )
+    return None
 
-    error = _recheckout_as_lf(ctx.project_root)
+
+def _maybe_normalize(
+    ctx: InitContext,
+    crlf_paths: list[str],
+    snapshots: dict[str, bytes],
+    clean: bool | None,
+    safety_error: str | None,
+) -> tuple[str, str]:
+    """Normalize a clean CRLF tree without deleting worktree files."""
+    crlf_count = len(crlf_paths)
+    refusal = _normalization_refusal(clean, safety_error)
+    if refusal:
+        message, detail = refusal
+        warn(message)
+        return "warn", detail
+
+    error = _normalize_as_lf(ctx.project_root, crlf_paths, snapshots)
     if error:
         warn(error)
-        return "warn", "re-checkout failed"
+        return "warn", "normalization failed"
 
     remaining = _count_crlf_worktree_files(ctx.project_root)
+    if remaining is None:
+        warn("could not verify line endings after normalization")
+        return "warn", "EOL verification unreadable"
     if remaining:
-        warn(f"{remaining} file(s) still read as CRLF after the re-checkout")
-        return "warn", "CRLF survived re-checkout"
-    ok(f"re-checked out {crlf_count} file(s) with LF endings — tree is container-safe")
-    return "ok", "re-checked out"
+        warn(f"{remaining} file(s) still read as CRLF after normalization")
+        return "warn", "CRLF survived normalization"
+    ok(f"normalized {crlf_count} file(s) to LF in place — tree is container-safe")
+    return "ok", "normalized"
 
 
 # The exact git config knob/value the guard sets; doctor checks the same pair.
