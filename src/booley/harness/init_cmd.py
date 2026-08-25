@@ -930,6 +930,24 @@ def _step_project_image(ctx: InitContext) -> None:
     _build_and_configure_image(ctx, docker_dir, generated)
 
 
+def _step_sandbox_images(ctx: InitContext) -> None:
+    """Prepare only the runtime image chain selected by this project."""
+    selected = project_sandbox_image(ctx.project_root)
+    if selected not in FLAVOR_IMAGES:
+        _step_docker_image(ctx, selected)
+        _step_project_image(ctx)
+        return
+
+    ctx.step_banner("project sandbox image")
+    changed = ensure_flavor_image(
+        ctx,
+        selected,
+        ensure_base=lambda: _step_docker_image(ctx, selected),
+    )
+    if changed:
+        _warn_on_live_session_on_old_image(ctx, selected)
+
+
 # ---------------------------------------------------------------------------
 # Sandbox image resolution for the Interactive Mode devcontainer.
 # ---------------------------------------------------------------------------
@@ -1783,6 +1801,60 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
 
 
+_DEMO_PROJECT_ORIGIN = "github.com/boldaxolotl/booley-prj-picorv32"
+
+
+def _normalize_demo_origin(origin: str) -> str:
+    """Normalize common GitHub remote URL forms for an exact repository comparison."""
+    normalized = origin.strip().lower().replace("\\", "/").rstrip("/")
+    if normalized.endswith(".git"):
+        normalized = normalized[:-4]
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+    return normalized.removeprefix("git@").replace("github.com:", "github.com/", 1)
+
+
+def _is_demo_project(project_root: Path) -> bool:
+    """Whether the project state is the published PicoRV32 demo checkout."""
+    try:
+        project_dir = resolve_project_dir(project_root)
+    except FileNotFoundError:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_dir), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        warn(f"could not inspect PicoRV32 demo origin at {project_dir}: git timed out after 5s")
+        return False
+    except (FileNotFoundError, OSError) as exc:
+        warn(f"could not inspect PicoRV32 demo origin at {project_dir}: {exc}")
+        return False
+    if result.returncode != 0:
+        if error := result.stderr.strip():
+            warn(
+                f"could not inspect PicoRV32 demo origin at {project_dir}: "
+                f"git exited {result.returncode}: {error}"
+            )
+        return False
+    return _normalize_demo_origin(result.stdout) == _DEMO_PROJECT_ORIGIN
+
+
+def _print_demo_advisory() -> None:
+    """Send the preconfigured demo straight to its documented runtime steps."""
+    info("This is the preconfigured PicoRV32 demo — the booley-setup skill does not apply.")
+    print()
+    info('  * Open the PicoRV32 folder in VS Code and choose "Reopen in Container"')
+    info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
+    info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
+
+
 def _failed_step_names(ctx: InitContext) -> list[str]:
     """Names of the steps that recorded an error so far, in run order."""
     return [r.name for r in ctx.results if r.status == "err"]
@@ -1807,6 +1879,35 @@ def _print_incomplete_advisory(failed: list[str]) -> None:
     info("  * Only then start the booley-setup skill (Step 0, the plan phase)")
 
 
+def _print_success_advisory(ctx: InitContext, *, demo: bool, scaffolded: bool) -> str:
+    """Print the successful-run send-off and return its summary detail."""
+    if demo:
+        _print_demo_advisory()
+        return "demo"
+    if scaffolded:
+        info("Scaffolded starter project: booley.toml/tests.toml are populated and")
+        info(
+            "every enabled Flow and Specialist is already wired — most booley-setup steps don't apply:"
+        )
+        print()
+        info("  * Step 3 (AGENTS.md) - writes the project's AGENTS.md guide (recommended)")
+        info("  * Step 4 (doctor)    - `booley doctor --deep` should be green as scaffolded")
+        info("  * Commit the scaffolded files and keep the working tree clean")
+        return "scaffold"
+    outstanding = _outstanding_setup_steps(ctx.project_root)
+    if not outstanding:
+        _print_configured_advisory(ctx)
+        return "configured"
+    info("Before running the harness, finish project setup with the booley-setup skill")
+    info("(it starts with Step 0, the plan phase, here on the host):")
+    print()
+    for line in outstanding:
+        info(f"  * {line}")
+    info("  * Step 4 (doctor)          - final doctor + deep doctor audit")
+    info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
+    return ""
+
+
 def _step_advisories(ctx: InitContext) -> None:
     ctx.step_banner("post-setup advisories")
     # A failed required step outranks every other send-off: routing the user to
@@ -1819,39 +1920,17 @@ def _step_advisories(ctx: InitContext) -> None:
         info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
         ctx.record("advisories", "ok", "incomplete")
         return
+    demo = _is_demo_project(ctx.project_root)
     # A scaffolded project needs a different send-off: --scaffold already wrote
     # a populated booley.toml with every enabled Flow and Specialist already wired up, so
     # pointing the user at Steps 4-6 ("enable the disabled Flows and Specialists") contradicts
     # what just happened on their disk (SETUP.md: such a project "typically
     # only wants Step 3").
     scaffolded = any(r.name == "scaffold" and r.status in ("ok", "warn") for r in ctx.results)
-    configured = False
-    if scaffolded:
-        info("Scaffolded starter project: booley.toml/tests.toml are populated and")
-        info(
-            "every enabled Flow and Specialist is already wired — most booley-setup steps don't apply:"
-        )
-        print()
-        info("  * Step 3 (AGENTS.md) - writes the project's AGENTS.md guide (recommended)")
-        info("  * Step 4 (doctor)    - `booley doctor --deep` should be green as scaffolded")
-        info("  * Commit the scaffolded files and keep the working tree clean")
-    else:
-        outstanding = _outstanding_setup_steps(ctx.project_root)
-        if not outstanding:
-            _print_configured_advisory(ctx)
-            configured = True
-        else:
-            info("Before running the harness, finish project setup with the booley-setup skill")
-            info("(it starts with Step 0, the plan phase, here on the host):")
-            print()
-            for line in outstanding:
-                info(f"  * {line}")
-            info("  * Step 4 (doctor)          - final doctor + deep doctor audit")
-            info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
+    detail = _print_success_advisory(ctx, demo=demo, scaffolded=scaffolded)
     print()
     info("Optional:")
     info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
-    detail = "scaffold" if scaffolded else ("configured" if configured else "")
     ctx.record("advisories", "ok", detail)
 
 
@@ -1884,6 +1963,9 @@ def _print_summary(ctx: InitContext) -> int:
     if advisory is None:
         # --seed: no advisories step ran, so there is nothing "above" to finish.
         print(green("Booley base setup complete."))
+    elif advisory.detail == "demo":
+        print(green("Booley demo setup complete."))
+        print(green('Next: open the PicoRV32 folder in VS Code and choose "Reopen in Container".'))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
         print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))
@@ -2065,10 +2147,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     _step_auth(ctx)
     _deploy_skills(ctx)
     pdk_root = _step_nangate_pdk(ctx)
-    # The base is always built; the project's own image is only passed
-    # so the step can say how the two relate — see _base_image_note.
-    _step_docker_image(ctx, project_sandbox_image(project_root))
-    _step_project_image(ctx)
+    _step_sandbox_images(ctx)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
