@@ -381,7 +381,9 @@ class ClaudeSDKBackend:
                             transcript_path=transcript_path,
                         )
                         raise
-                except Exception as e:  # noqa: BLE001 — funnel any stream failure into unified crash-context handler
+                except (
+                    Exception  # noqa: BLE001 — funnel failures into unified crash handling
+                ) as e:
                     _handle_stream_exception(
                         e,
                         counters.got_result,
@@ -796,7 +798,7 @@ def _dispatch_on_event(on_event: Any, message: AssistantMessage) -> None:
         if chunks:
             try:
                 on_event({"type": etype, "text": "\n".join(chunks)})
-            except Exception:  # noqa: BLE001 — display callback is best-effort; failure must not abort streaming
+            except Exception:  # display callback is best-effort; failure must not abort streaming
                 logger.debug("on_event error (swallowed)", exc_info=True)
 
 
@@ -905,7 +907,7 @@ def _dispatch_completed_file_edits(
         return
     try:
         on_event({"type": "file_change", "paths": paths})
-    except Exception:  # noqa: BLE001 — display callback is best-effort; failure must not abort streaming
+    except Exception:  # display callback is best-effort; failure must not abort streaming
         logger.debug("on_event file change error (swallowed)", exc_info=True)
 
 
@@ -932,7 +934,7 @@ def _dispatch_usage(on_event: Any, counters: _UsageCounters, model: str) -> None
                 "context_limit": context_limit(model),
             }
         )
-    except Exception:  # noqa: BLE001 — display callback is best-effort; failure must not abort streaming
+    except Exception:  # display callback is best-effort; failure must not abort streaming
         logger.debug("on_event usage error (swallowed)", exc_info=True)
 
 

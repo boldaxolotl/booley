@@ -332,8 +332,8 @@ they can satisfy:
 
 ```python
 class MyTool(BooleyFlow):
-    satisfies = ["my_check"]        # list of criterion names
-    satisfies_args = {}             # empty for simple Flows
+    satisfies = ["my_check"]  # list of criterion names
+    satisfies_args = {}  # empty for simple Flows
 ```
 
 For multi-Criterion MCP tools:
@@ -546,9 +546,19 @@ Built-in Specialists may still add provider-specific restrictions as defense-in-
 
 ```python
 def _disallowed_tools(self) -> list[str] | None:
-    return ["Bash", "BashOutput", "KillShell", "Write", "Edit",
-            "MultiEdit", "NotebookEdit", "Task", "WebFetch", "WebSearch",
-            "SlashCommand"]
+    return [
+        "Bash",
+        "BashOutput",
+        "KillShell",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+        "SlashCommand",
+    ]
 ```
 
 Category isolation is separate from write isolation. Some built-ins temporarily hide opposite-category sources through Booley's internal `workspace_isolation` helpers; `workspace_access = "read_only"` protects the real worktree from writes but does not hide files from the snapshot.

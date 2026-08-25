@@ -481,7 +481,7 @@ class TestInitInteractive:
 
         pdk = tmp_path / "host-cache" / "pdk"
         pdk.mkdir(parents=True)
-        seen: list[Path | None | object] = []
+        seen: list[Path | object | None] = []
         monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: pdk)
         monkeypatch.setattr(
             init_cmd,
