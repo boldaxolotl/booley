@@ -77,6 +77,17 @@ class TestCheckStamp:
 
         assert doctor_stamp.check_stamp(project_dir, tmp_path) is None
 
+    def test_stamp_from_different_booley_version_nags(self, tmp_path, monkeypatch):
+        project_dir = _write_project(tmp_path)
+        monkeypatch.setattr("booley.__version__", "1.0.0")
+        doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        monkeypatch.setattr("booley.__version__", "2.0.0")
+
+        msg = doctor_stamp.check_stamp(project_dir, tmp_path)
+
+        assert msg is not None
+        assert "Booley version changed from 1.0.0 to 2.0.0" in msg
+
     def test_stale_stamp_nags_with_age(self, tmp_path):
         project_dir = _write_project(tmp_path)
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)

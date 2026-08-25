@@ -8,12 +8,14 @@ submit must stamp what it sent, or the next report re-publishes it.
 from __future__ import annotations
 
 import argparse
+import subprocess
 
 import pytest
 
 from booley.feedback import cli
 from booley.feedback import submit as submit_mod
 from booley.feedback.findings import read_log
+from booley.harness.init_cmd import PROJECT_GITIGNORE
 from booley.runtime import project_dir as project_dir_mod
 
 
@@ -50,6 +52,37 @@ def run(project):
 
 def _log(project):
     return read_log(project / ".booley_project")
+
+
+def _commit_project_data(state):
+    (state / ".gitignore").write_text(PROJECT_GITIGNORE, encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(state)], check=True)
+    subprocess.run(["git", "-C", str(state), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(state),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+
+
+def _project_data_status(state):
+    result = subprocess.run(
+        ["git", "-C", str(state), "status", "--short"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout
 
 
 class TestLogging:
@@ -178,6 +211,22 @@ class TestReporting:
         assert (state / "SETUP-REPORT.md").is_file()
         assert not (state / "BOOLEY-FEEDBACK.md").exists()
         assert "no second report was written" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "finding_args",
+        [
+            ("add", "--title", "project note", "--bucket", "project"),
+            ("add", "--title", "bug note", "--bucket", "project", "--origin", "bug"),
+        ],
+        ids=["setup-report", "bug-report"],
+    )
+    def test_user_report_keeps_project_data_repository_clean(self, run, project, finding_args):
+        state = project / ".booley_project"
+        run(*finding_args)
+        _commit_project_data(state)
+
+        assert run("report") == 0
+        assert _project_data_status(state) == ""
 
     def test_report_warns_that_an_existing_export_was_not_refreshed(
         self, run, project, filable, capsys
