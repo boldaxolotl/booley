@@ -330,9 +330,7 @@ def cmd_register(args: argparse.Namespace) -> None:
         age = _trace_age_note(trace)
         identity_label = "top scopes" if ", " in identity else "top scope"
         detail = " ".join(
-            part
-            for part in (f"{identity_label}: {identity}" if identity else "", age)
-            if part
+            part for part in (f"{identity_label}: {identity}" if identity else "", age) if part
         )
         if detail:
             print(f"[bwave] {detail}", file=sys.stderr)

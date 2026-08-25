@@ -594,8 +594,7 @@ class TraceSession:
                     {
                         str(signal.get("name", "")).split(".", 1)[0]
                         for signal in raw_data.get("signals", [])
-                        if isinstance(signal, dict)
-                        and "." in str(signal.get("name", ""))
+                        if isinstance(signal, dict) and "." in str(signal.get("name", ""))
                     }
                 )
             data = {
