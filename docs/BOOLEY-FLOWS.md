@@ -378,32 +378,33 @@ counts as declared, so an I/O hiccup never fabricates a coverage warning.
 
 ## `synth`
 
-`synth` is a fast ASIC quality-of-results (QoR) estimate. It maps the RTL through
-Yosys and, on the default timing path, places it with OpenROAD; `opensta` and
-`none` provide non-placement alternatives. The Flow normalizes timing, area,
-and latch/loop conditions into a per-target `synthesis_ok_{target}` Criterion.
+`synth` is a fast ASIC quality-of-results (QoR) estimate. It maps RTL through
+Yosys in both modes; physical mode continues through OpenROAD, while logical
+mode stops after mapping. The Flow normalizes area, physical timing or a logical
+frequency estimate, and
+latch/loop conditions into a per-target `synthesis_ok_{target}` Criterion.
 
-> **PPA estimate, not sign-off.** On the default `openroad` timing path, the
-> numbers come after quick floorplan / global placement / setup repair but are
-> still pre-layout estimates, not a tape-out flow. `opensta` is a faster
-> zero-RC estimate, and `none` omits timing. See
+> **PPA estimate, not sign-off.** In default `physical` mode, the numbers come
+> after quick floorplan / global placement / setup repair but are still
+> pre-layout estimates, not a tape-out flow. `logical` is a faster mapped-area
+> flow with only a rough logic-delay frequency estimate. See
 > [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows).
 
 ### Configuration boundary
 
 The `.core` Target owns the persistent recipe and timing inputs: frontend,
-profile, flattening, timing engine, backend overrides, source files, SDC, and
+profile, flattening, synthesis mode, backend overrides, source files, SDC, and
 toplevel. `[flows.synth]` owns execution and verdict policy such as the default
 Target, timeout, and intentional-latch allowance.
 [CONFIG.md](CONFIG.md#asic-synthesis-flowssynth) owns the exact keys, defaults,
 and examples.
 
-`ppa_profile` and `flatten` are EDA-tool-independent synthesis intent. The built-in
-backend translates the profile to Yosys and OpenROAD settings; a future Genus
-backend can translate the same two generic settings without inheriting any ABC
-or OpenROAD vocabulary. Per-call profile and expert overrides are resolved
-before command generation; their precedence and profile contents are part of
-the [configuration reference](CONFIG.md#asic-synthesis-flowssynth).
+`ppa_profile` and `synth_mode` are the main synthesis controls. The built-in
+backend translates the profile to Yosys and OpenROAD settings; backend-specific
+knobs live under `advanced_settings_yosys` and `advanced_settings_openroad`.
+Per-call profile and expert overrides are resolved before command generation;
+their precedence and profile contents are part of the
+[configuration reference](CONFIG.md#asic-synthesis-flowssynth).
 
 Timing intent lives in the Target's SDC fileset (below), not in config scalars.
 
@@ -415,11 +416,12 @@ SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
 FPGA XDC is a Target fileset. The configuration shape and example live in
 [CONFIG.md](CONFIG.md#asic-synthesis-flowssynth).
 
-A Target with **no** SDC fileset **and** no explicit clock is a **hard error**,
-not a silent default: the run fails loudly, naming the Target and the fix,
-rather than fabricating a clock the author never chose. The only way to a canned
-clock without SDC is the explicit per-run `--default-clock <ps>` opt-in on the
-Flow CLI.
+A physical Target with **no** SDC fileset **and** no explicit clock is a **hard
+error**, not a silent default: the run fails loudly, naming the Target and the
+fix, rather than fabricating a clock the author never chose. Logical mode does
+not run STA, so it neither requires nor consumes SDC. The only way to a canned
+clock in physical mode without SDC is the explicit per-run `--default-clock
+<ps>` opt-in.
 When the Target's SDC declares its own `create_clock` / `set_input_delay` /
 `set_output_delay`, that fully owns the timing intent and the Fmax readout
 recovers the effective period from the SDC's `create_clock`, not a config scalar.
@@ -430,48 +432,36 @@ MHz, makes `repair_timing` buffer/upsize thousands of instances chasing an
 impossible constraint, running for minutes before STA. Near the achievable
 period it converges quickly, with Fmax falling out of the slack.
 
-### Timing evidence (per-clock and reg→reg)
+### Synthesis modes and timing evidence
 
-Timing is reported **per clock**: a `per_clock` map keyed by clock name carries
-each clock's `critical_path_ps` / `fmax_mhz` / `wns_ns` / `whs_ns`. The Target's
-`flow_options.timing_engine` picks *how* those numbers are measured. Both real choices run the
-same static-timing math — OpenROAD **embeds** the OpenSTA engine — so the axis is
-timing **fidelity**, i.e. how much physical context the timer sees, not two rival
-timing engines:
+- **`physical`** (default) runs OpenROAD floorplanning, global placement,
+  optimization, placement-based parasitic estimation, and OpenROAD's embedded
+  OpenSTA. Timing is reported per clock, including `critical_path_ps`,
+  `fmax_mhz`, `wns_ns`, and `whs_ns`. `area_um2` is the OpenROAD
+  post-optimization area and `area_source` is
+  `openroad_post_optimization`. Missing OpenROAD/PDK inputs or incomplete
+  physical results fail the run; there is no standalone OpenSTA fallback.
+- **`logical`** stops after Yosys technology mapping. It is the fast option for
+  area iteration. `estimated_fmax_mhz` is derived from ABC's slowest
+  liberty-mapped combinational partition, but it is not STA and is not
+  per-clock. It excludes placement, wire delay, clock-to-Q, and setup time, so
+  Booley warns that the estimate is probably inaccurate and never uses it for
+  timing thresholds. `area_um2` is Yosys's liberty-mapped area and
+  `area_source` is `yosys_mapped`.
 
-- **`openroad`** (default) runs a slice of the physical-design flow
-  before timing: a quick floorplan, global placement, estimated wire parasitics
-  (R and C), and a setup-repair resizer pass. Because it times a *placed* netlist
-  with modelled wire delay, its Fmax is lower and more trustworthy — closer to
-  what a real place-and-route EDA tool would report. This path is "OpenSTA **plus**
-  placement and parasitics," which is exactly why the two names overlap.
-- **`opensta`** runs the standalone `sta` / `opensta` binary directly on the
-  mapped netlist: no placement, **zero-RC** (ideal wires with no resistance or
-  capacitance). Faster and optimistic — its Fmax comes out higher than silicon
-  will deliver. This is the legacy engine and the **automatic fallback** when the
-  OpenROAD binary or PDK is missing, so a synth run still yields timing instead of
-  none (degraded fidelity, never lost availability).
-- **`none`** skips timing entirely (fastest; area/gate metrics only).
-
-Both engines emit the identical metric keys, so reports and Criteria are
-engine-agnostic — but the *values* are not comparable across engines: the same
-RTL times slower under `openroad` than under `opensta`, so an `fmax_mhz_min`
-threshold calibrated on one engine can mis-grade the other, and a `--baseline`
-run that straddles two engines yields an apples-to-oranges delta. A
-run may also return `post_opt_area_um2` (OpenROAD post-repair placed area, µm²)
-as an **informational** field; the contractual area metric stays `area_um2`.
+Both modes expose the same canonical area fields: `area_um2` and
+`area_source`. There are no parallel mapped/post-optimization area fields.
 
 Beyond the parsed metrics, [`artifacts.dirs`](#shared-run-logs-and-artifacts) names the two
 directories holding everything the run wrote:
 
-- **`timing`** — the STA reports the engine left on disk: `overall.rpt` and its
-  machine-readable `overall.csv.rpt` twin, plus `reg2reg.rpt` and the
-  `pre_repair.*` snapshots when they apply. List it for the per-path slack
-  breakdown behind the summarized `per_clock` numbers. Absent when
-  `timing.engine = "none"`.
+- **`timing`** — physical-mode STA reports: `overall.rpt` and its
+  machine-readable `overall.csv.rpt` twin plus `reg2reg.rpt`. List it for the
+  per-path slack breakdown behind the summarized `per_clock` numbers. Absent
+  in logical mode.
 - **`build`** — everything else: `stat_<design>.txt` (the `stat -liberty` output
   `area_um2`/`cells` are parsed from, with the per-cell-type breakdown), both
-  netlists, the per-stage `yosys.log` / `sta.log` / `openroad.log` / `sv2v.log`,
+  netlists, the per-stage `yosys.log` / `openroad.log` / `sv2v.log`,
   the rendered `synth.ys`, and the SDC actually fed to STA.
 
 Worth reaching for on a large design, where `run.log` inlines every stage's full
@@ -485,10 +475,6 @@ the worst **register-to-register** path (`reg2reg_fmax_mhz` /
 budget. Compare reg→reg numbers for A/B logic changes; author
 `set_input/output_delay 0` in the Target SDC only if you also want the
 *overall* path to reflect reg→reg.
-
-**Salvaged pre-repair timing.** If OpenROAD's `repair_timing` stage fails, the
-run salvages the pre-repair placed STA (flagged `repair_incomplete` in the JSON
-report and a `WARN` line) rather than losing the whole run.
 
 ### Intentional latches
 
@@ -554,7 +540,8 @@ work dir, on pass and fail alike.
 The Criteria detail includes:
 
 - `area_um2`, `area_kge`, `cells`, `wire_count`
-- `per_clock` (per-clock `critical_path_ps` / `fmax_mhz` / `wns_ns` /
+- `estimated_fmax_mhz` in logical mode; `per_clock` (per-clock
+  `critical_path_ps` / `fmax_mhz` / `wns_ns` /
   `whs_ns`), aggregate `wns_ns` / `whs_ns`, `reg2reg_fmax_mhz`, `reg2reg_slack_ns`
 - `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`,
   `multi_driven`, `process_count`

@@ -78,7 +78,7 @@ jobs:
           docker run --rm "${BASE_IMAGE}" python -c \
             'import importlib.util; assert importlib.util.find_spec("booley") is None'
           docker run --rm "${BASE_IMAGE}" sh -c \
-            'command -v yosys sta iverilog verilator verible-verilog-lint'
+            'command -v yosys openroad iverilog verilator verible-verilog-lint'
           docker run --rm "${BASE_IMAGE}" python -c \
             'import cocotb, edalize, fusesoc, numpy'
 

@@ -388,7 +388,8 @@ def _assert_board_state(project: Path, slug: str, expected: str) -> None:
 def _assert_openroad_criterion(state: DevelopmentState) -> None:
     entry = state.criteria["synthesis_ok_synth_smoke"]
     detail = entry.detail
-    assert entry.met and detail["timing_engine"] == "openroad"
+    assert entry.met and detail["synth_mode"] == "physical"
+    assert detail["area_source"] == "openroad_post_optimization"
     assert detail["ppa_complete"] is True and detail["timing_complete"] is True
     assert isinstance(detail["cells"], int) and detail["cells"] > 0
     clock = detail["per_clock"]["clk_i"]

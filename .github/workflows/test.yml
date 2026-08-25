@@ -405,12 +405,22 @@ jobs:
       - name: Build candidate from changed stable base
         if: steps.runtime-base.outputs.build == 'true'
         shell: bash
-        run: >-
-          docker buildx build --builder default --load
-          --file src/booley/data/docker/Dockerfile
-          --tag booley-test
-          --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:ci"
-          --build-context booley-runtime-base=docker-image://booley-runtime-base:ci .
+        run: |
+          set -o pipefail
+          docker buildx build --builder default --load \
+            --file src/booley/data/docker/Dockerfile \
+            --tag booley-test \
+            --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:ci" \
+            --build-context booley-runtime-base=docker-image://booley-runtime-base:ci . \
+            2>&1 | tee "${RUNNER_TEMP}/stable-base-build.log"
+
+      - name: Upload failed stable-base build log
+        if: failure() && steps.runtime-base.outputs.build == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: stable-base-build-log
+          path: ${{ runner.temp }}/stable-base-build.log
+          if-no-files-found: warn
 
       # Load into the local docker store (not push) so `docker run` below works;
       # GHA layer cache keeps rebuilds fast when the Dockerfile didn't change.

@@ -97,7 +97,7 @@ RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
 #
 # Pinned to a master commit rather than the v1.1.0 tag: v1.1.0 predates the
 # <cstdint> header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's
-# default) with "uint64_t not declared". Fetch-by-SHA mirrors the OpenSTA layer.
+# default) with "uint64_t not declared". Fetch-by-SHA mirrors the Yosys layer.
 # Terminated with an explicit `test -x` so a broken build fails the image loudly
 # — NOT `|| true`, which would silently ship an image with no spike.
 # ---------------------------------------------------------------------------
