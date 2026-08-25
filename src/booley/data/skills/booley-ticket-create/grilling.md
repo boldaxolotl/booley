@@ -23,10 +23,13 @@ field inference feed off this.
 4. After each response, record the settled decisions and recompute the frontier. Answers
    expose downstream questions; unanswered questions remain open rather than being silently
    inferred.
-5. Finish only when the frontier is empty and no branch remains silently assumed. Summarize
-   the resulting shared understanding and ask the user to confirm it.
-6. After confirmation, write the detailed plan (see below). Include any explicitly deferred
-   follow-up, its owner or fallback, and the impact of leaving it open.
+5. Treat material ticket metadata and acceptance-criteria choices as part of the decision
+   tree. Apply clear skill defaults without asking; ask only where the choice is genuinely
+   uncertain or changes the contract.
+6. Finish only when the frontier is empty and no branch remains silently assumed. Write the
+   detailed plan, assemble the complete ticket, and show that ticket at the draft gate as
+   the single post-grill review artifact. Include any explicitly deferred follow-up, its
+   owner or fallback, and the impact of leaving it open in the complete ticket.
 
 Format every question like this:
 
@@ -94,11 +97,13 @@ Scale depth to complexity; skip what the user already covered.
 - **Keep decisions with the user** — show assumptions and material trade-offs, then wait for
   an answer instead of choosing silently.
 - **Proportional depth** — 2–3 questions for a simple refactor, 10+ for a new pipeline stage.
+- **One post-grill artifact** — the complete ticket carries the shared understanding and the
+  draft approval; revise it in place instead of recapping the same information first.
 
 ## Writing the Detailed Plan
 
-Once the user confirms the shared-understanding summary, synthesise the decisions into a
-concrete implementation plan and place it in the ticket body under
+Once the decision frontier is empty, synthesise the decisions into a concrete implementation
+plan and place it in the ticket body under
 `## Implementation Plan`, **after** the type-specific `## Description` block. The section
 skeleton (Approach / Implementation Steps / Interface Changes / Edge Cases & Risks /
 Verification / Open Questions) lives in `TICKET_TEMPLATE.md` — fill that, don't invent a
