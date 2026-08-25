@@ -45,6 +45,7 @@ from booley.config.guidance_links import (
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
 from booley.dev_support.workspace_isolation import get_category_dirs
+from booley.flows import execution
 from booley.fusesoc import (
     core_projection,
     core_security,
@@ -195,6 +196,41 @@ print(json.dumps({
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
 Warn = Callable[..., None]
+
+
+@dataclass
+class _DoctorFlowRuntime:
+    """Lazy, reusable entry into this Project's issued Session Runtime."""
+
+    project_root: Path
+    docker_exe: str | None
+    container_name: str | None = None
+    startup_error: session_runtime.SessionError | None = None
+
+    @property
+    def inside(self) -> bool:
+        return runtime_context.inside_session_runtime()
+
+    @property
+    def available(self) -> bool:
+        return self.inside or self.docker_exe is not None
+
+    def command(self, inner: list[str], *, env: Mapping[str, str] | None = None) -> list[str]:
+        if self.inside:
+            return inner
+        if self.docker_exe is None:
+            raise session_runtime.SessionError("Docker is not available on this host")
+        if self.startup_error is not None:
+            raise self.startup_error
+        if self.container_name is None:
+            try:
+                self.container_name = session_runtime.up(self.project_root)
+            except session_runtime.SessionError as exc:
+                self.startup_error = exc
+                raise
+        argv = session_runtime.exec_argv(self.container_name, inner, tty=False, env=env)
+        argv[0] = self.docker_exe
+        return argv
 
 
 class _CoreAuditInputs:
@@ -522,11 +558,12 @@ def run_doctor_result(
     report_progress = progress or (lambda _message: None)
     report_progress("host/project checks")
     docker_exe, project = _run_project_phase(project_root, reporter, read_only=read_only)
+    flow_runtime = _DoctorFlowRuntime(project_root, docker_exe) if project is not None else None
     _run_runtime_phase(project, docker_exe, verbose, reporter, report_progress)
-    _run_flow_and_core_phase(project, docker_exe, verbose, reporter, report_progress)
+    _run_flow_and_core_phase(project, flow_runtime, verbose, reporter, report_progress)
 
     if deep:
-        _run_deep_phase(project, docker_exe, verbose, reporter)
+        _run_deep_phase(project, docker_exe, flow_runtime, verbose, reporter)
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
@@ -622,7 +659,7 @@ def _run_runtime_phase(
 
 def _run_flow_and_core_phase(
     project: ProjectAudit | None,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime | None,
     verbose: bool,
     reporter: _Reporter,
     progress: Check,
@@ -633,9 +670,10 @@ def _run_flow_and_core_phase(
     if project is None:
         reporter.skip_("Flow dry-runs skipped - project config invalid")
     else:
+        assert flow_runtime is not None
         _run_flow_audit(
             project,
-            docker_exe,
+            flow_runtime,
             verbose,
             reporter.pass_,
             reporter.note_,
@@ -661,6 +699,7 @@ def _run_flow_and_core_phase(
 def _run_deep_phase(
     project: ProjectAudit | None,
     docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime | None,
     verbose: bool,
     reporter: _Reporter,
 ) -> None:
@@ -668,6 +707,7 @@ def _run_deep_phase(
     if project is None:
         reporter.skip_("deep checks skipped - project config invalid")
         return
+    assert flow_runtime is not None
     # First, before the EDA smoke checks: the probe's RUSAGE_CHILDREN reading
     # is exact only while no bigger child (a real sim/synth run) has been
     # reaped yet.
@@ -675,7 +715,7 @@ def _run_deep_phase(
         _run_developer_probe(project, reporter.pass_, reporter.skip_, reporter.fail_)
     _run_deep_checks(
         project,
-        docker_exe,
+        flow_runtime,
         verbose,
         reporter.pass_,
         reporter.warn_,
@@ -3896,7 +3936,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
 
 def _run_flow_audit(
     project: ProjectAudit,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     verbose: bool,
     _pass: Check,
     _note: Check,
@@ -3931,7 +3971,7 @@ def _run_flow_audit(
             project,
             flow_name,
             targets,
-            docker_exe=docker_exe,
+            flow_runtime=flow_runtime,
             _pass=_pass,
             _skip=_skip,
             _fail=_fail,
@@ -3942,7 +3982,7 @@ def _run_flow_audit(
                 flow_name,
                 target=target,
                 dry_run=True,
-                docker_exe=docker_exe,
+                flow_runtime=flow_runtime,
                 # The fusesoc roots scan alone can exceed 60s on large repos.
                 timeout_s=_configured_timeout_s(project, flow_name, _DRY_RUN_TIMEOUT_S),
                 verbose=verbose,
@@ -3960,18 +4000,17 @@ def _check_flow_runtime_reality(
     flow_name: str,
     targets: list[str],
     *,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     _pass: Check,
     _skip: Check,
     _fail: Fail,
 ) -> None:
     """Probe every selected Target's EDA binary in the Session Runtime."""
     for binary in _runtime_probe_binaries(project, targets):
-        _check_sandbox_binary(
+        _check_session_binary(
             flow_name,
             binary,
-            docker_exe=docker_exe,
-            image=_sandbox_image(project),
+            flow_runtime=flow_runtime,
             _pass=_pass,
             _skip=_skip,
             _fail=_fail,
@@ -4001,22 +4040,18 @@ def _runtime_probe_binaries(project: ProjectAudit, targets: list[str]) -> list[s
     return binaries
 
 
-def _check_sandbox_binary(
+def _check_session_binary(
     flow_name: str,
     binary: str,
     *,
-    docker_exe: str | None,
-    image: str,
+    flow_runtime: _DoctorFlowRuntime,
     _pass: Check,
     _skip: Check,
     _fail: Fail,
 ) -> None:
     """PASS/FAIL on *binary* being on the Session Runtime PATH."""
-    from booley.runtime import runtime_context
-
     label = f"{flow_name}: '{binary}' on the Session Runtime PATH"
-    if runtime_context.inside_session_runtime():
-        # This container IS the sandbox (ADR 0028) — probe the local PATH.
+    if flow_runtime.inside:
         if shutil.which(binary):
             _pass(label)
         else:
@@ -4025,29 +4060,26 @@ def _check_sandbox_binary(
                 f"bake {binary} into the Session Runtime image and rebuild (booley init --force)",
             )
         return
-    if not docker_exe:
+    if not flow_runtime.available:
         _skip(f"{label} - container runtime unavailable")
         return
-    if not _docker_image_exists_by_name(image):
-        # The missing image is already a FAIL in the container checks.
-        _skip(f"{label} - sandbox image '{image}' unavailable")
-        return
     try:
+        command = flow_runtime.command(["sh", "-c", f"command -v {binary}"])
         result = subprocess.run(
-            [docker_exe, "run", "--rm", image, "sh", "-c", f"command -v {binary}"],
+            command,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
         )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        _fail(f"{label} (probe timeout/error)", "rebuild the sandbox image")
+    except (session_runtime.SessionError, subprocess.SubprocessError, FileNotFoundError) as exc:
+        _fail(f"{label} (runtime/probe error: {exc})", "run 'booley init --seed' and retry")
         return
     if result.returncode == 0:
         _pass(label)
     else:
         _fail(
-            f"{flow_name}: '{binary}' is not on the '{image}' image's PATH",
+            f"{flow_name}: '{binary}' is not on the issued Session Runtime PATH",
             f"bake {binary} into the Session Runtime image and rebuild (booley init --force)",
         )
 
@@ -5872,7 +5904,7 @@ def _run_core_resolve_in_docker(
 
 def _run_deep_checks(
     project: ProjectAudit,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     verbose: bool,
     _pass: Check,
     _warn: Check,
@@ -5894,7 +5926,7 @@ def _run_deep_checks(
                 flow_name,
                 target=target,
                 dry_run=False,
-                docker_exe=docker_exe,
+                flow_runtime=flow_runtime,
                 timeout_s=_deep_timeout_s(project, flow_name),
                 verbose=verbose,
                 _pass=_pass,
@@ -5904,7 +5936,7 @@ def _run_deep_checks(
             )
     _run_elaborate_deep_check(
         project,
-        docker_exe,
+        flow_runtime,
         verbose,
         _pass,
         _warn,
@@ -5912,7 +5944,7 @@ def _run_deep_checks(
         _fail,
     )
     _run_fpga_impl_deep_notice(project, _skip)
-    _run_selftest_checks(project, docker_exe, _pass, _warn, _skip, _fail)
+    _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail)
 
 
 def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
@@ -5939,7 +5971,7 @@ def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
 
 def _run_elaborate_deep_check(
     project: ProjectAudit,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     verbose: bool,
     _pass: Check,
     _warn: Check,
@@ -5969,7 +6001,7 @@ def _run_elaborate_deep_check(
             "elab",
             target=target,
             dry_run=False,
-            docker_exe=docker_exe,
+            flow_runtime=flow_runtime,
             timeout_s=_deep_timeout_s(project, "elab"),
             verbose=verbose,
             _pass=_pass,
@@ -6042,29 +6074,16 @@ def _selftest_plan(
 
 def _run_selftest_checks(
     project: ProjectAudit,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     _pass: Check,
     _warn: Check,
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    """``--deep`` fail-path self-test for the verification Flows (sim/lint).
+    """Prove enabled verification Flows pass good and reject known-bad fixtures.
 
-    A pass-path smoke proves a Flow can GREEN a good design; it proves nothing
-    about whether the Flow can DETECT a bad one — the entire purpose of a
-    verification Flow, and the exact gap that let a false pass (QA-4) and a
-    fail-path contract error (QA-5) reach a green setup. A generic doctor cannot
-    manufacture a project-specific failing design, so the project (its setup
-    agent) supplies conventional fixtures: a simulation bad-overlay and/or a
-    lint Target named ``lint_selftest_bad``. Doctor infers the good cases from
-    each Flow's first Doctor-selected Target.
-
-    Asserted purely by the Flow exit-code contract: ``good`` => 0. ``bad`` => 1
-    (fail/elab_error). A ``bad`` that exits 0 is a FALSE PASS (QA-4: stale
-    artifact / ignored build rc). A ``bad`` that exits 2 is an infra/contract
-    error MASKING the failure (QA-5: location-less finding turned contract_error).
-    Both are hard setup failures. Absent fixtures are a WARN, not silent green:
-    the fail path is simply unproven until the setup agent authors a known-bad.
+    The project supplies conventional fixtures. Exit 0 is required for the good
+    case and graded-design-failure exit 1 for the bad case; absent fixtures WARN.
     """
     for flow_name in _SELFTEST_FLOWS:
         if not _flow_enabled(project, flow_name):
@@ -6080,7 +6099,7 @@ def _run_selftest_checks(
             flow_name,
             plan.good,
             expect_pass=True,
-            docker_exe=docker_exe,
+            flow_runtime=flow_runtime,
             _pass=_pass,
             _skip=_skip,
             _fail=_fail,
@@ -6090,7 +6109,7 @@ def _run_selftest_checks(
             flow_name,
             plan.bad,
             expect_pass=False,
-            docker_exe=docker_exe,
+            flow_runtime=flow_runtime,
             _pass=_pass,
             _skip=_skip,
             _fail=_fail,
@@ -6104,53 +6123,33 @@ def _prepare_selftest_invocation(
     label: str,
     kind: str,
     *,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     _skip: Check,
     _fail: Fail,
 ) -> tuple[list[str], dict[str, str], int] | None:
     """Resolve the Flow configuration and build the argv for one self-test case.
 
-    Returns ``None`` after already reporting a skip/fail when the case cannot
-    be run at all (missing container runtime/image, or no matching Target).
-
-    Routing mirrors :func:`_flow_check_routing`'s in-container exception:
-    inside the Session Runtime there is no docker by design (ADR 0028) — this
-    container IS the Session Runtime, and Flows already run as direct
-    subprocesses here. Routing through docker would demand a runtime that
-    cannot exist, turning the final ``--deep`` gate's fail-path proof into a
-    guaranteed SKIP in-container (F-17) — so run the self-test in-place
-    instead, exactly how the Flow itself executes.
+    Returns ``None`` after reporting why the Session Runtime cannot be entered.
     """
-    from booley.runtime import runtime_context
-
-    # Mirror _flow_check_routing: a self-test is always a REAL Flow run (never
-    # a dry-run), so a host-launched deep Flow needs the sandbox image regardless
-    # of backend — the old project-native-only gate ran builtin self-tests
-    # bare on the host, where the toolchain doesn't exist (C910 re-port gate:
-    # both good cases "failed" on a missing EDA-tool extension / Verilator, and
-    # the bad cases "passed" for the wrong reason).
-    use_docker = not runtime_context.inside_session_runtime()
-    image = _sandbox_image(project)
-    if use_docker and not docker_exe:
+    if not flow_runtime.available:
         _skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
         return None
-    if use_docker and not _docker_image_exists_by_name(image):
+    try:
+        cmd = _flow_command(
+            project,
+            flow_name,
+            case.target,
+            dry_run=False,
+            flow_runtime=flow_runtime,
+            test_override=case.test,
+            doctor_selftest_kind=kind,
+        )
+    except session_runtime.SessionError as exc:
         _fail(
-            f"{label} requires sandbox image '{image}' but it is unavailable",
-            "rebuild the sandbox image (run 'booley init --force')",
+            f"{label} could not enter the Session Runtime: {exc}",
+            "run 'booley init --seed' and retry",
         )
         return None
-    cmd = _flow_command(
-        project,
-        flow_name,
-        case.target,
-        dry_run=False,
-        use_docker=use_docker,
-        docker_exe=docker_exe,
-        image=image,
-        test_override=case.test,
-        doctor_selftest_kind=kind,
-    )
     env = os.environ.copy()
     env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
     env[selftest_overlay.INTERNAL_KIND_ENV] = kind
@@ -6170,9 +6169,8 @@ def _execute_selftest(
 ) -> subprocess.CompletedProcess | None:
     """Run the self-test subprocess, reporting infra failures as they occur.
 
-    Returns ``None`` (having already reported a fail) on timeout, a failure to
-    start, or a tripped sandbox-routing guard; otherwise the completed process
-    for the caller to grade.
+    Returns ``None`` after reporting a timeout or failure to start; otherwise
+    returns the completed process for the caller to grade.
     """
     try:
         result = subprocess.run(
@@ -6192,13 +6190,6 @@ def _execute_selftest(
         return None
     except OSError as exc:
         _fail(f"{label} failed to start: {exc}", "check the sandbox / toolchain")
-        return None
-    if _sandbox_guard_failed(result):
-        _fail(
-            f"{label} was routed into the sandbox but executed OUTSIDE it",
-            "doctor routing bug - rebuild the image ('booley init --force')",
-        )
-        _print_output_excerpt(result)
         return None
     return result
 
@@ -6249,7 +6240,7 @@ def _run_one_selftest(
     case: _SelftestCase,
     *,
     expect_pass: bool,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     _pass: Check,
     _skip: Check,
     _fail: Fail,
@@ -6262,7 +6253,7 @@ def _run_one_selftest(
         case,
         label,
         kind,
-        docker_exe=docker_exe,
+        flow_runtime=flow_runtime,
         _skip=_skip,
         _fail=_fail,
     )
@@ -6277,11 +6268,7 @@ def _run_one_selftest(
 
 def _flow_enabled(project: ProjectAudit, flow_name: str) -> bool:
     """Return *flow_name*'s enablement from parsed booley.toml."""
-    flows = project.booley_toml.get("flows", {})
-    if not isinstance(flows, dict):
-        flows = {}
-    section = config_section(flows, flow_name)
-    return section.get("enabled", True) is not False
+    return execution.flow_enabled_from_config(flow_name, project.booley_toml)
 
 
 def _elaborate_active(project: ProjectAudit) -> bool:
@@ -6321,70 +6308,6 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     except (TypeError, ValueError):
         return floor
     return max(floor, configured_s)
-
-
-def _flow_check_routing(
-    project: ProjectAudit,
-    flow_name: str,
-    *,
-    dry_run: bool,
-) -> tuple[bool, str, str]:
-    """Return ``(use_docker, image, label)`` for a Flow check.
-
-    Every check invokes the Flow inside the Session Runtime. On the host that
-    means routing even a dry-run through the runtime image; a dry-run still
-    exercises Flow orchestration and must not create a host execution surface.
-
-    Exception: inside the Session Runtime there is no docker by design (ADR
-    0028) — this container is the Session Runtime, and Flows already
-    run natively here (Phase B of QA_REPORT ran simulate/lint/synth to
-    completion in exactly this runtime). Routing to docker here would demand a
-    'booley-sandbox' image that cannot exist in-container, turning the highest-
-    value health check into a guaranteed red herring with dead-end advice
-    ('booley init --force', install docker) — QA_REPORT A5. Run the deep check
-    natively instead, mirroring how the Flows themselves execute.
-    """
-    from booley.runtime import runtime_context
-
-    in_container = runtime_context.inside_session_runtime()
-    use_docker = not in_container
-    image = _sandbox_image(project)
-    label = f"{flow_name} {'dry-run' if dry_run else 'deep check'}"
-    return use_docker, image, label
-
-
-def _guard_docker_availability(
-    *,
-    use_docker: bool,
-    docker_exe: str | None,
-    image: str,
-    label: str,
-    _skip: Check,
-    _fail: Fail,
-) -> bool:
-    """Report SKIP/FAIL for a broken docker routing; ``True`` means continue."""
-    if use_docker and not docker_exe:
-        # No container runtime on this host at all — an unavailable runtime, not a
-        # broken build. Mirror the sibling checks (container / interactive), which
-        # SKIP for exactly this condition: "cannot run here", not "setup broken".
-        # Suggesting 'booley init --force' would be noise when there's no runtime.
-        _skip(
-            f"{label} skipped - '{_CONTAINER_CLI}' runtime not available "
-            "(sandbox check cannot run here)"
-        )
-        return False
-    if use_docker and not _docker_image_exists_by_name(image):
-        # The runtime IS present but the sandbox image is missing/unbuilt: this
-        # check MUST run in the sandbox and genuinely can't. b5e8681's failure
-        # class — a silent SKIP here let a broken/missing image read as a healthy
-        # setup (the check never ran anywhere) — so it is a hard FAIL.
-        _fail(
-            f"{label} requires the sandbox image '{image}' but the image is "
-            "unavailable - the check cannot run",
-            "rebuild the sandbox image (run 'booley init --force')",
-        )
-        return False
-    return True
 
 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
@@ -6458,22 +6381,6 @@ def _interpret_flow_check_result(
     _fail: Fail,
 ) -> None:
     """Translate a Flow check's subprocess result into a PASS/WARN/SKIP/FAIL."""
-    if _sandbox_guard_failed(result):
-        # The in-container self-assertion refused to run: a command composed
-        # for the sandbox executed somewhere WITHOUT the sandbox environment.
-        # This is doctor misrouting (b5e8681's failure class), never a project
-        # problem — surface it loudly instead of letting the Flow's own exit
-        # code masquerade as an ordinary check failure.
-        _fail(
-            f"{label} was routed into the sandbox but executed OUTSIDE it "
-            "(in-container self-assertion failed)",
-            "doctor routing bug - a sandbox-semantics check ran on the host; "
-            "report this, and rebuild the image ('booley init --force') to rule "
-            "out a stale sandbox",
-        )
-        _print_output_excerpt(result)
-        return
-
     _report_flow_check_result(
         project,
         flow_name,
@@ -6584,13 +6491,59 @@ def _is_lint_findings_exit(
     )
 
 
+def _prepare_flow_report_dir(
+    project: ProjectAudit, flow_name: str, target: str, dry_run: bool
+) -> Path:
+    """Create the Doctor report directory and remove stale synth evidence."""
+    report_dir = project.project_dir / _DOCTOR_TMP / "flow-reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    if flow_name != "synth" or dry_run:
+        return report_dir
+    from booley.flows.synth.flow import synth_target_report_slug
+
+    safe_target = synth_target_report_slug(target)
+    with contextlib.suppress(OSError):
+        (report_dir / f"synth_{safe_target}.json").unlink(missing_ok=True)
+    return report_dir
+
+
+def _doctor_flow_command(
+    project: ProjectAudit,
+    flow_runtime: _DoctorFlowRuntime,
+    flow_name: str,
+    target: str,
+    dry_run: bool,
+    label: str,
+    _skip: Check,
+    _fail: Fail,
+) -> list[str] | None:
+    """Build a Flow command or report why the issued runtime cannot run it."""
+    if not flow_runtime.available:
+        _skip(f"{label} skipped - '{_CONTAINER_CLI}' runtime not available")
+        return None
+    try:
+        return _flow_command(
+            project,
+            flow_name,
+            target,
+            dry_run=dry_run,
+            flow_runtime=flow_runtime,
+        )
+    except session_runtime.SessionError as exc:
+        _fail(
+            f"{label} could not enter the Session Runtime: {exc}",
+            "run 'booley init --seed' and retry",
+        )
+        return None
+
+
 def _run_flow_check(
     project: ProjectAudit,
     flow_name: str,
     *,
     target: str,
     dry_run: bool,
-    docker_exe: str | None,
+    flow_runtime: _DoctorFlowRuntime,
     timeout_s: int,
     verbose: bool,
     _pass: Check,
@@ -6598,42 +6551,13 @@ def _run_flow_check(
     _skip: Check,
     _fail: Fail,
 ) -> None:
-    use_docker, image, label = _flow_check_routing(
-        project,
-        flow_name,
-        dry_run=dry_run,
+    label = f"{flow_name} {'dry-run' if dry_run else 'deep check'} [{target}]"
+    cmd = _doctor_flow_command(
+        project, flow_runtime, flow_name, target, dry_run, label, _skip, _fail
     )
-    label = f"{label} [{target}]"
-    if not _guard_docker_availability(
-        use_docker=use_docker,
-        docker_exe=docker_exe,
-        image=image,
-        label=label,
-        _skip=_skip,
-        _fail=_fail,
-    ):
+    if cmd is None:
         return
-
-    report_dir = project.project_dir / _DOCTOR_TMP / "flow-reports"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    if flow_name == "synth" and not dry_run:
-        from booley.flows.synth.flow import synth_target_report_slug
-
-        safe_target = synth_target_report_slug(target)
-        # A killed calibration may never reach the Flow's eager per-target
-        # writer. Remove the previous flat copy so post-run calibration cannot
-        # mistake an older passing Target report for this attempt.
-        with contextlib.suppress(OSError):
-            (report_dir / f"synth_{safe_target}.json").unlink(missing_ok=True)
-    cmd = _flow_command(
-        project,
-        flow_name,
-        target,
-        dry_run=dry_run,
-        use_docker=use_docker,
-        docker_exe=docker_exe,
-        image=image,
-    )
+    report_dir = _prepare_flow_report_dir(project, flow_name, target, dry_run)
     result = _run_flow_check_subprocess(
         project,
         cmd,
@@ -6644,7 +6568,6 @@ def _run_flow_check(
     )
     if result is None:
         return
-
     _interpret_flow_check_result(
         project,
         flow_name,
@@ -6660,13 +6583,7 @@ def _run_flow_check(
         _fail=_fail,
     )
     if flow_name == "synth" and not dry_run:
-        _record_synth_memory_calibration(
-            project,
-            target,
-            report_dir,
-            _pass,
-            _warn,
-        )
+        _record_synth_memory_calibration(project, target, report_dir, _pass, _warn)
 
 
 def _record_synth_memory_calibration(
@@ -6848,22 +6765,19 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
     return None
 
 
-def _flow_command(
+def _flow_argv(
     project: ProjectAudit,
     flow_name: str,
     target: str,
     *,
     dry_run: bool,
-    use_docker: bool,
-    docker_exe: str | None,
-    image: str,
+    host_entry: bool,
     test_override: str | None = None,
-    doctor_selftest_kind: str | None = None,
 ) -> list[str]:
-    work_dir = "/work" if use_docker else str(project.project_root)
+    work_dir = "/work" if host_entry else str(project.project_root)
     report_dir = (
-        "/work/.booley_project/tmp/doctor/flow-reports"
-        if use_docker
+        f"{dc.PROJECT_DIR_TARGET}/{_DOCTOR_TMP}/flow-reports"
+        if host_entry
         else str(project.project_dir / _DOCTOR_TMP / "flow-reports")
     )
     argv = [
@@ -6871,47 +6785,55 @@ def _flow_command(
         work_dir,
         "--report-dir",
         report_dir,
-        # The built-in Booley Flows (simulate/lint/asic_synthesize) take --target
-        # (ADR 0022); doctor probes them with a flow-matched .core Target.
         "--target",
         target,
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout", "30000"])
-
     if flow_name == "sim":
-        # tb_top comes from the resolved Target now; only --test stays on the
-        # surface. asic_synthesize/fpga_impl take their top from the Target too.
-        # A self-test pins the exact test (test_override); otherwise probe the
-        # first configured test.
         if test_override is not None:
             argv.extend(["--test", test_override])
         else:
             first = _first_smoke_test(project, target)
             if first:
                 argv.extend(["--test", first])
+    return argv
+
+
+def _flow_command(
+    project: ProjectAudit,
+    flow_name: str,
+    target: str,
+    *,
+    dry_run: bool,
+    flow_runtime: _DoctorFlowRuntime,
+    test_override: str | None = None,
+    doctor_selftest_kind: str | None = None,
+) -> list[str]:
+    host_entry = not flow_runtime.inside
+    argv = _flow_argv(
+        project,
+        flow_name,
+        target,
+        dry_run=dry_run,
+        host_entry=host_entry,
+        test_override=test_override,
+    )
 
     from booley.targets.flow_names import implementation_module
 
     inner = [
-        "python3" if use_docker else sys.executable,
+        "python3" if host_entry else sys.executable,
         "-m",
         f"booley.flows.{implementation_module(flow_name)}",
         *argv,
     ]
-    if not use_docker:
-        return inner
-
-    if docker_exe is None:
-        return inner
-    return _docker_wrap(
-        docker_exe,
-        image,
-        project.project_root,
-        inner,
-        memory=resource_policy.configured_sandbox_memory(project.booley_toml),
-        doctor_selftest_kind=doctor_selftest_kind,
+    command_env = (
+        {selftest_overlay.INTERNAL_KIND_ENV: doctor_selftest_kind}
+        if doctor_selftest_kind is not None
+        else None
     )
+    return flow_runtime.command(inner, env=command_env)
 
 
 # In-container self-assertion (b5e8681's failure class: sandbox-semantics

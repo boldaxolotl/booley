@@ -52,6 +52,12 @@ detailed below, starting with the shared `enabled` flow setting.
 Every Booley Flow builds and executes its command inside the Session Runtime.
 `enabled = false` removes a Flow from agent and autonomous discovery.
 
+The former `backend`, `venue`, and `host_setup_commands` keys are retired and
+now produce hard migration errors. Delete them: execution location and runtime
+setup are no longer Project-configurable. Replace `backend = "none"` with
+`enabled = false`. Likewise, replace `[sandbox].passthrough_env` with a
+host-owned License Profile.
+
 The Target selects the concrete EDA tool. For an approved commercial tool, the
 Project can request only a provisioning source; the host owns the installation,
 mount, wrapper, environment, and any License Profile.

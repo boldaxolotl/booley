@@ -186,6 +186,11 @@ def _patch_environment(
             "Session Runtime spec has valid host issuance (fixture)"
         ),
     )
+    monkeypatch.setattr(
+        doctor.session_runtime,
+        "up",
+        lambda _root: "booley-session-test",
+    )
     # Keep the suite hermetic: the host-clock check (F-5) probes an HTTP Date
     # header over the real network.
     monkeypatch.setattr(doctor, "_check_host_clock", lambda *a, **k: None)
@@ -299,7 +304,8 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     assert "NOTE  project guidance file missing" in output
     tool_calls = [call for call in calls if "booley.flows.sim" in call]
     assert tool_calls
-    assert tool_calls[0][:2] == ["doc" + "ker", "run"]
+    assert tool_calls[0][:2] == ["doc" + "ker", "exec"]
+    assert "booley-session-test" in tool_calls[0]
     assert "--dry-run" in tool_calls[0]
     assert "--target" in tool_calls[0]
     assert tool_calls[0][tool_calls[0].index("--target") + 1] == "sim_fast"
@@ -579,9 +585,11 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     sim_calls = [call for call in calls if "booley.flows.sim" in call]
     assert len(sim_calls) == 2
     dry_call, deep_call = sim_calls
-    assert dry_call[:2] == ["doc" + "ker", "run"]
+    assert dry_call[:3] == ["doc" + "ker", "exec", "-e"]
+    assert "booley-session-test" in dry_call
     assert "--dry-run" in dry_call
-    assert deep_call[:2] == ["doc" + "ker", "run"]
+    assert deep_call[:3] == ["doc" + "ker", "exec", "-e"]
+    assert "booley-session-test" in deep_call
     assert "--dry-run" not in deep_call
     assert deep_call[deep_call.index("--target") + 1] == "sim_fast"
 
@@ -618,9 +626,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
 
 
 # ---------------------------------------------------------------------------
-# Sandbox routing + in-container self-assertion (b5e8681 regression class):
-# sandbox-semantics checks must run IN the sandbox, and a check that cannot
-# (misrouted, or image missing) must FAIL loudly — never pass or SKIP.
+# Session Runtime routing for Doctor Flow checks.
 # ---------------------------------------------------------------------------
 
 
@@ -640,7 +646,7 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
         first_target="fast",
     )
     monkeypatch.setattr(fusesoc_registry, "enumerate_targets", lambda _root: {})
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _img: True)
+    monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
 
     calls: list[list[str]] = []
 
@@ -658,7 +664,7 @@ def _run_flow_check(project, rec: _Rec, *, dry_run: bool) -> None:
         "sim",
         target="fast",
         dry_run=dry_run,
-        docker_exe="doc" + "ker",
+        flow_runtime=doctor._DoctorFlowRuntime(project.project_root, "doc" + "ker"),
         timeout_s=10,
         verbose=False,
         _pass=rec.p,
@@ -668,20 +674,30 @@ def _run_flow_check(project, rec: _Rec, *, dry_run: bool) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("dry_run", "expect_docker"),
-    [
-        # Every Flow check stays in the Session Runtime; dry-run changes whether
-        # EDA commands execute, not the execution boundary.
-        (True, True),
-        (False, True),
-    ],
-)
+def test_doctor_flow_runtime_starts_once_and_reuses_container(tmp_path, monkeypatch):
+    _set_venue(monkeypatch, False)
+    starts = []
+
+    def up(root):
+        starts.append(root)
+        return "booley-session-test"
+
+    monkeypatch.setattr(doctor.session_runtime, "up", up)
+    runtime = doctor._DoctorFlowRuntime(tmp_path, "docker")
+
+    first = runtime.command(["python3", "-V"])
+    second = runtime.command(["booley", "doctor"])
+
+    assert starts == [tmp_path]
+    assert "booley-session-test" in first
+    assert "booley-session-test" in second
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
 def test_deep_check_routing_truth_table(
     tmp_path,
     monkeypatch,
     dry_run,
-    expect_docker,
 ):
     """Dry and deep Flow checks both run in the Session Runtime."""
     project, calls = _tool_check_harness(
@@ -696,15 +712,10 @@ def test_deep_check_routing_truth_table(
     assert rec.kinds() == {"pass"}
     assert len(calls) == 1
     cmd = calls[0]
-    if expect_docker:
-        assert cmd[:2] == ["doc" + "ker", "run"]
-        # The wrapped inner command carries the in-container self-assertion.
-        assert doctor._SANDBOX_GUARD_SCRIPT in cmd
-        assert "booley.flows.sim" in cmd
-    else:
-        assert cmd[0] == sys.executable
-        assert cmd[1] != "run"  # not a container invocation
-        assert doctor._SANDBOX_GUARD_SCRIPT not in cmd
+    assert cmd[:3] == ["doc" + "ker", "exec", "-e"]
+    assert "booley-session-test" in cmd
+    assert "booley.flows.sim" in cmd
+    assert doctor._SANDBOX_GUARD_SCRIPT not in cmd
 
 
 def test_sandbox_guard_execs_inside_and_refuses_outside(tmp_path):
@@ -748,26 +759,24 @@ def test_sandbox_guard_execs_inside_and_refuses_outside(tmp_path):
     assert doctor._sandbox_guard_failed(outside)
 
 
-def test_misrouted_sandbox_check_fails_loudly(tmp_path, monkeypatch):
-    """P3: a guard refusal surfaces as a FAIL naming the misroute — never a
-    silent pass, SKIP, or generic 'Flow failed' verdict."""
-    refusal = f"{doctor._SANDBOX_GUARD_MARKER} refusing to run: not inside the sandbox"
+def test_session_runtime_startup_failure_fails_loudly(tmp_path, monkeypatch):
     project, _calls = _tool_check_harness(
         tmp_path,
         monkeypatch,
-        lambda cmd: subprocess.CompletedProcess(
-            cmd,
-            doctor._SANDBOX_GUARD_EXIT,
-            stdout="",
-            stderr=refusal,
-        ),
+        lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(
+        doctor.session_runtime,
+        "up",
+        lambda _root: (_ for _ in ()).throw(doctor.session_runtime.SessionError("bad issuance")),
     )
     rec = _Rec()
 
     _run_flow_check(project, rec, dry_run=False)
 
     assert rec.kinds() == {"fail"}
-    assert "executed OUTSIDE it" in rec.fails()[0]
+    assert "could not enter the Session Runtime" in rec.fails()[0]
+    assert "bad issuance" in rec.fails()[0]
 
 
 def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
@@ -830,23 +839,25 @@ def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
     assert "executed OUTSIDE it" in rec.fails()[0]
 
 
-def test_doctor_deep_fails_hard_when_sandbox_image_missing(
+def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
     tmp_path,
     monkeypatch,
     capsys,
 ):
-    """P4: --deep with no sandbox image is a hard FAIL (with a rebuild hint),
-    not a SKIP — the deep checks NEED the sandbox and cannot run at all."""
     project_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, project_dir)
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _img: False)
+
+    def fail_up(_root):
+        raise doctor.session_runtime.SessionError("sandbox image is not built")
+
+    monkeypatch.setattr(doctor.session_runtime, "up", fail_up)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
     output = capsys.readouterr().out
     assert rc == 1
-    assert "requires the sandbox image" in output
-    assert "booley init --force" in output
+    assert "could not enter the Session Runtime" in output
+    assert "sandbox image is not built" in output
 
 
 def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
@@ -860,14 +871,12 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     )
     rec = _Rec()
 
-    # A host-launched deep check routes into Docker; docker_exe=None
-    # models a host with no container runtime at all.
     doctor._run_flow_check(
         project,
         "sim",
         target="fast",
         dry_run=False,
-        docker_exe=None,
+        flow_runtime=doctor._DoctorFlowRuntime(project.project_root, None),
         timeout_s=10,
         verbose=False,
         _pass=rec.p,
@@ -882,16 +891,16 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     assert "booley init --force" not in skip_msg
 
 
-def test_deep_check_fails_when_runtime_present_but_image_missing(tmp_path, monkeypatch):
-    """QA-2 flip side: with the runtime present but the sandbox image genuinely
-    unbuilt, the docker-routed check still cannot run — that IS a hard FAIL (a
-    missing/broken image must not read as a healthy setup)."""
+def test_deep_check_fails_when_issued_runtime_is_invalid(tmp_path, monkeypatch):
     project, _calls = _tool_check_harness(
         tmp_path,
         monkeypatch,
         lambda cmd: subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr=""),
     )
-    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _img: False)
+    def fail_up(_root):
+        raise doctor.session_runtime.SessionError("issued spec is stale")
+
+    monkeypatch.setattr(doctor.session_runtime, "up", fail_up)
     rec = _Rec()
 
     doctor._run_flow_check(
@@ -899,7 +908,7 @@ def test_deep_check_fails_when_runtime_present_but_image_missing(tmp_path, monke
         "sim",
         target="fast",
         dry_run=False,
-        docker_exe="doc" + "ker",
+        flow_runtime=doctor._DoctorFlowRuntime(project.project_root, "doc" + "ker"),
         timeout_s=10,
         verbose=False,
         _pass=rec.p,
@@ -909,7 +918,7 @@ def test_deep_check_fails_when_runtime_present_but_image_missing(tmp_path, monke
     )
 
     assert rec.kinds() == {"fail"}
-    assert "requires the sandbox image" in rec.fails()[0]
+    assert "issued spec is stale" in rec.fails()[0]
 
 
 def test_doctor_rejects_configs_without_defines(tmp_path, monkeypatch):
@@ -992,7 +1001,8 @@ MODE = "pkg::ModeFast"
     assert "plain strings are not allowed" in output
 
 
-def test_flow_command_uses_first_config_and_first_test(tmp_path):
+def test_flow_command_uses_first_config_and_first_test(tmp_path, monkeypatch):
+    _set_venue(monkeypatch, True)
     project_dir = _write_project(tmp_path)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
@@ -1015,9 +1025,7 @@ def test_flow_command_uses_first_config_and_first_test(tmp_path):
         "sim",
         "fast",
         dry_run=False,
-        use_docker=False,
-        docker_exe=None,
-        image="booley-sandbox",
+        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
     )
 
     assert cmd[:3] == [sys.executable, "-m", "booley.flows.sim"]
@@ -1027,7 +1035,7 @@ def test_flow_command_uses_first_config_and_first_test(tmp_path):
     assert cmd[cmd.index("--test") + 1] == "smoke"
 
 
-def test_flow_command_passes_internal_selftest_kind_into_sandbox(tmp_path):
+def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monkeypatch):
     from booley.fusesoc import selftest_overlay
 
     project_dir = _write_project(tmp_path)
@@ -1038,15 +1046,15 @@ def test_flow_command_passes_internal_selftest_kind_into_sandbox(tmp_path):
         configs_toml={},
         first_target="sim_core",
     )
+    _set_venue(monkeypatch, False)
+    monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
 
     cmd = doctor._flow_command(
         project,
         "sim",
         "sim_core",
         dry_run=False,
-        use_docker=True,
-        docker_exe="docker",
-        image="booley-sandbox",
+        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, "docker"),
         doctor_selftest_kind="bad",
     )
 
@@ -1065,7 +1073,7 @@ def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectA
     )
 
 
-def test_flow_command_deep_smoke_pins_first_tests_toml_test(tmp_path):
+def test_flow_command_deep_smoke_pins_first_tests_toml_test(tmp_path, monkeypatch):
     """A configs.toml-less (post-ADR-0022) project must still get a pinned
     ``--test``: without one the deep simulate smoke runs the Target's WHOLE
     list and times out on any large design (openc910: 16 full-chip sims)."""
@@ -1073,21 +1081,20 @@ def test_flow_command_deep_smoke_pins_first_tests_toml_test(tmp_path):
         tmp_path,
         '[sim_core]\ntests = ["hello_world", "coremark"]\n',
     )
+    _set_venue(monkeypatch, True)
 
     cmd = doctor._flow_command(
         project,
         "sim",
         "sim_core",
         dry_run=False,
-        use_docker=False,
-        docker_exe=None,
-        image="booley-sandbox",
+        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
     )
 
     assert cmd[cmd.index("--test") + 1] == "hello_world"
 
 
-def test_flow_command_deep_smoke_skips_skipped_tests(tmp_path):
+def test_flow_command_deep_smoke_skips_skipped_tests(tmp_path, monkeypatch):
     """The smoke's one pinned test must be runnable: honor the tests.toml
     ``skip`` list so a known-hang or an always-fail selftest fixture at the
     head of the list can't turn the deep check into a guaranteed FAIL."""
@@ -1097,56 +1104,53 @@ def test_flow_command_deep_smoke_skips_skipped_tests(tmp_path):
         'tests = ["booley_selftest_bad", "hello_world"]\n'
         'skip = ["booley_selftest_bad"]\n',
     )
+    _set_venue(monkeypatch, True)
 
     cmd = doctor._flow_command(
         project,
         "sim",
         "sim_core",
         dry_run=False,
-        use_docker=False,
-        docker_exe=None,
-        image="booley-sandbox",
+        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
     )
 
     assert cmd[cmd.index("--test") + 1] == "hello_world"
 
 
-def test_flow_command_deep_smoke_resolves_vlnv_qualified_target(tmp_path):
+def test_flow_command_deep_smoke_resolves_vlnv_qualified_target(tmp_path, monkeypatch):
     """ADR 0030 Targets may arrive VLNV-qualified; tests.toml keys are bare."""
     project = _tests_toml_project_audit(
         tmp_path,
         '[sim_core]\ntests = ["hello_world"]\n',
     )
+    _set_venue(monkeypatch, True)
 
     cmd = doctor._flow_command(
         project,
         "sim",
         "acme:ip:c910#sim_core",
         dry_run=False,
-        use_docker=False,
-        docker_exe=None,
-        image="booley-sandbox",
+        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
     )
 
     assert cmd[cmd.index("--test") + 1] == "hello_world"
 
 
-def test_flow_command_deep_smoke_all_skipped_falls_back_to_head(tmp_path):
+def test_flow_command_deep_smoke_all_skipped_falls_back_to_head(tmp_path, monkeypatch):
     """All-skip misconfig: smoke the declared head rather than nothing
     (mirrors the Simulation Flow's never-run-zero-tests semantics)."""
     project = _tests_toml_project_audit(
         tmp_path,
         '[sim_core]\ntests = ["hello_world"]\nskip = ["hello_world"]\n',
     )
+    _set_venue(monkeypatch, True)
 
     cmd = doctor._flow_command(
         project,
         "sim",
         "sim_core",
         dry_run=False,
-        use_docker=False,
-        docker_exe=None,
-        image="booley-sandbox",
+        flow_runtime=doctor._DoctorFlowRuntime(tmp_path, None),
     )
 
     assert cmd[cmd.index("--test") + 1] == "hello_world"
@@ -5462,7 +5466,7 @@ class TestElaborateValidateOrOptOut:
         rec = _Rec()
         doctor._run_elaborate_deep_check(
             p,
-            None,
+            doctor._DoctorFlowRuntime(tmp_path, None),
             False,
             rec.p,
             rec.w,
@@ -5590,9 +5594,10 @@ class TestFailPathSelfTest:
             return subprocess.CompletedProcess(cmd, exit_by_kind[kind], stdout="", stderr="")
 
         monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-        monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+        monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
         rec = _Rec()
-        doctor._run_selftest_checks(project, "docker", rec.p, rec.w, rec.s, rec.f)
+        runtime = doctor._DoctorFlowRuntime(project.project_root, "docker")
+        doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
         return rec
 
     def test_healthy_selftest_passes(self, tmp_path, monkeypatch):
@@ -5620,7 +5625,7 @@ class TestFailPathSelfTest:
         rec = _Rec()
         doctor._run_selftest_checks(
             self._audit(tmp_path, fixture=False),
-            "docker",
+            doctor._DoctorFlowRuntime(tmp_path, "docker"),
             rec.p,
             rec.w,
             rec.s,
@@ -5648,8 +5653,8 @@ class TestFailPathSelfTest:
         monkeypatch.setattr(doctor.subprocess, "run", fake_run)
         project = self._audit(tmp_path)
         rec = _Rec()
-        # docker_exe=None: no nested container runtime exists by design.
-        doctor._run_selftest_checks(project, None, rec.p, rec.w, rec.s, rec.f)
+        runtime = doctor._DoctorFlowRuntime(project.project_root, None)
+        doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
         assert not rec.fails()
         assert not any(lvl == "skip" for lvl, _ in rec.events)
         assert any("correctly graded a failure" in m for _, m in rec.events)
@@ -5662,7 +5667,8 @@ class TestFailPathSelfTest:
         _set_venue(monkeypatch, False)
         project = self._audit(tmp_path)
         rec = _Rec()
-        doctor._run_selftest_checks(project, None, rec.p, rec.w, rec.s, rec.f)
+        runtime = doctor._DoctorFlowRuntime(project.project_root, None)
+        doctor._run_selftest_checks(project, runtime, rec.p, rec.w, rec.s, rec.f)
         skips = [m for lvl, m in rec.events if lvl == "skip"]
         assert skips and all("runtime not available" in m for m in skips)
         assert not rec.fails()
@@ -5698,7 +5704,8 @@ class TestFailPathSelfTest:
             first_target="x",
         )
         rec = _Rec()
-        doctor._run_selftest_checks(p, "docker", rec.p, rec.w, rec.s, rec.f)
+        runtime = doctor._DoctorFlowRuntime(p.project_root, "docker")
+        doctor._run_selftest_checks(p, runtime, rec.p, rec.w, rec.s, rec.f)
         assert not rec.fails()
         warns = [m for lvl, m in rec.events if lvl == "warn"]
         assert any("sim fail-path unvalidated" in m for m in warns)
@@ -6829,21 +6836,23 @@ class TestSynthHeavyTargetCalibration:
         )
         return _adr28_project(tmp_path, booley_toml=booley_toml)
 
-    def test_host_deep_container_uses_configured_memory_limit(self, tmp_path):
+    def test_host_deep_uses_issued_session_resources(self, tmp_path, monkeypatch):
         project = _adr28_project(
             tmp_path,
             booley_toml={"sandbox": {"memory": "24g"}},
         )
+        _set_venue(monkeypatch, False)
+        monkeypatch.setattr(doctor.session_runtime, "up", lambda _root: "booley-session-test")
         cmd = doctor._flow_command(
             project,
             "synth",
             "asic_full",
             dry_run=False,
-            use_docker=True,
-            docker_exe="docker",
-            image="booley-sandbox",
+            flow_runtime=doctor._DoctorFlowRuntime(tmp_path, "docker"),
         )
-        assert cmd[cmd.index("--memory") + 1] == "24g"
+        assert cmd[:2] == ["docker", "exec"]
+        assert "booley-session-test" in cmd
+        assert "--memory" not in cmd
 
     def test_multi_target_matrix_uses_every_marked_target(self, tmp_path):
         project = self._project(tmp_path)

@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -274,6 +275,24 @@ def hook_argv(name: str, hook: str) -> list[str]:
     the Dev Containers CLI gives it.
     """
     return ["docker", "exec", name, *_HOOK_SHELL, hook]
+
+
+def exec_argv(
+    name: str,
+    command: list[str],
+    *,
+    tty: bool = True,
+    env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Build a ``docker exec`` argv for an already-issued Session Runtime."""
+    argv = ["docker", "exec"]
+    if tty:
+        argv.append("-t")
+    else:
+        argv += ["-e", "TERM=dumb"]
+    for key, value in (env or {}).items():
+        argv += ["-e", f"{key}={value}"]
+    return [*argv, "-i", name, *command]
 
 
 # ---------------------------------------------------------------------------
@@ -1070,26 +1089,7 @@ def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True
     name = up(workspace)
     if command:
         _warn_on_mangled_args(command)
-    argv = ["docker", "exec"]
-    # TERM is set by ``docker exec -t`` and by nothing else, so a non-tty
-    # caller (every agent-driven exec: the MCP dispatch, `booley session
-    # enter -- ...` from a pipe) landed in a shell with no TERM and every
-    # single command answered "TERM environment variable not set." (F-43a).
-    # Only that branch needs a value.
-    #
-    # The tty branch is deliberately left alone: docker already puts a plain
-    # TERM=xterm there, and the image has terminfo for it. Forwarding the
-    # host's $TERM instead would hand the container names it cannot resolve —
-    # ubuntu:24.04 ships no ncurses-term, so xterm-kitty/alacritty/ghostty
-    # users would get "unknown terminal type" out of clear/tput/less/vim.
-    if tty:
-        argv.append("-t")
-    else:
-        # A non-tty stream cannot honour escape codes anyway, and "dumb" is
-        # the standard name for exactly that.
-        argv += ["-e", "TERM=dumb"]
-    argv += ["-i", name]
-    argv += list(command) if command else ["/bin/bash", "-l"]
+    argv = exec_argv(name, list(command) if command else ["/bin/bash", "-l"], tty=tty)
     return _run(argv, capture=False).returncode
 
 
