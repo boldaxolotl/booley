@@ -105,7 +105,21 @@ BUILD_METADATA_ARGS=(
   --build-arg "BOOLEY_IMAGE_BUILT_AT=$IMAGE_BUILT_AT"
 )
 
+BASE_CONTRACT="$($PYBUILD "$BOOLEY_ROOT/.github/scripts/docker_base_contract.py" \
+  --repo "$BOOLEY_ROOT")"
+BASE_METADATA_ARGS=(
+  --build-arg "BOOLEY_BASE_SOURCE_REVISION=${COMMIT:-unknown}"
+  --build-arg "BOOLEY_BASE_CONTRACT=$BASE_CONTRACT"
+  --build-arg "BOOLEY_BASE_BUILT_AT=$IMAGE_BUILT_AT"
+)
+
+echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
+docker build "${BASE_METADATA_ARGS[@]}" "$@" \
+  -t booley-runtime-base:local -f "$SCRIPT_DIR/Dockerfile.base" "$BOOLEY_ROOT"
+
 echo ">>> Building booley-sandbox Docker image..."
 docker build "${LABEL_ARGS[@]}" "${BUILD_METADATA_ARGS[@]}" "$@" \
+  --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:local" \
+  --build-context booley-runtime-base=docker-image://booley-runtime-base:local \
   -t booley-sandbox -f "$SCRIPT_DIR/Dockerfile" "$BOOLEY_ROOT"
 echo "✓ booley-sandbox image built successfully"

@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 
+from .container_names import next_ci_container_name
+
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -27,9 +29,6 @@ BASE_FLAGS = [
     "no-new-privileges",
     "--cap-drop",
     "ALL",
-    IMAGE,
-    "bash",
-    "-c",
 ]
 
 PASS = 0
@@ -46,9 +45,14 @@ def red(msg: str) -> None:
 
 
 def run(cmd_str: str, timeout: int = 30) -> tuple[int, str]:
+    command = list(BASE_FLAGS)
+    container_name = next_ci_container_name()
+    if container_name:
+        command += ["--name", container_name]
+    command += [IMAGE, "bash", "-c", cmd_str]
     try:
         r = subprocess.run(
-            [*BASE_FLAGS, cmd_str],
+            command,
             capture_output=True,
             text=True,
             timeout=timeout,

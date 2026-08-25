@@ -27,6 +27,7 @@ from booley.bwave.contract import (
 
 BOOLEY_ROOT = Path(__file__).resolve().parent.parent.parent
 FIXTURE_DIR = BOOLEY_ROOT / "crates" / "bwave" / "tests" / "fixtures"
+pytestmark = pytest.mark.native_bwave
 
 # A VCD that declares no signals — the header-only shape a Verilator sim
 # traced via the auto-generated --main produces.
@@ -36,7 +37,7 @@ EMPTY_VCD = (
 
 
 def _native_bwave_binary() -> Path:
-    """The Rust binary from the local cargo tree, building it if needed."""
+    """Return a prebuilt Rust binary or skip on a stock development host."""
     suffix = ".exe" if sys.platform == "win32" else ""
     release = BOOLEY_ROOT / "crates" / "bwave" / "target" / "release" / f"bwave{suffix}"
     debug = BOOLEY_ROOT / "crates" / "bwave" / "target" / "debug" / f"bwave{suffix}"
@@ -44,20 +45,9 @@ def _native_bwave_binary() -> Path:
         return release
     if debug.exists():
         return debug
-    try:
-        subprocess.run(
-            [
-                "cargo",
-                "build",
-                "--manifest-path",
-                str(BOOLEY_ROOT / "crates" / "bwave" / "Cargo.toml"),
-            ],
-            check=True,
-            timeout=300,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        pytest.skip(f"native bwave binary not built and cargo unavailable: {exc}")
-    return debug
+    pytest.skip(
+        "native bwave binary not built; run cargo build --manifest-path crates/bwave/Cargo.toml"
+    )
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:

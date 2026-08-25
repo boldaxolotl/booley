@@ -5,6 +5,13 @@
 # Booley wheel (built by build.sh or `python -m build --wheel`)
 !dist/
 
+# Stable dependency and candidate-verification inputs copied explicitly by the
+# sandbox Dockerfile before the wheel cache boundary.
+!pyproject.toml
+!src/booley/data/docker/export_project_dependencies.py
+!src/booley/data/edalize/verible.py
+!.github/scripts/validate_installed_artifact.py
+
 # PDK liberty file (static, cached in its own Docker layer)
 !src/booley/data/docker/pdk/
 

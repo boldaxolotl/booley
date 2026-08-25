@@ -25,6 +25,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.docker.isolation.container_names import next_ci_container_name
 
 _IMAGE = "booley-sandbox"
 
@@ -66,6 +67,9 @@ def _docker() -> str | None:
 def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: int = 300):
     docker = _docker()
     cmd = [docker, "run", "--rm"]
+    container_name = next_ci_container_name()
+    if container_name:
+        cmd += ["--name", container_name]
     for m in mounts or []:
         cmd += ["-v", m]
     cmd += [_IMAGE, *args]
@@ -161,3 +165,23 @@ def test_verible_violation_warns_then_waiver_passes(tmp_path: Path) -> None:
     report = json.loads((project / "rep" / "lint_report.json").read_text(encoding="utf-8"))
     assert report["passed"] is True
     assert report["total_warnings"] == 0
+
+
+def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parallel CI can identify and clean every nested Verible container."""
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setenv("BOOLEY_DOCKER_NAME_PREFIX", "booley-ci-123-1-verible")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    _run_in_sandbox(["true"])
+    _run_in_sandbox(["true"])
+
+    names = [command[command.index("--name") + 1] for command in commands]
+    assert len(set(names)) == 2
+    assert all(name.startswith("booley-ci-123-1-verible-") for name in names)

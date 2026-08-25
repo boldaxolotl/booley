@@ -1,0 +1,91 @@
+name: Publish stable Docker runtime base
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .dockerignore
+      - pyproject.toml
+      - src/booley/data/docker/Dockerfile.base
+      - src/booley/data/docker/agent-clis-package.json
+      - src/booley/data/docker/agent-clis-package-lock.json
+      - src/booley/data/docker/claude-managed-settings.json
+      - src/booley/data/docker/codex-requirements.toml
+      - src/booley/data/docker/export_project_dependencies.py
+      - src/booley/data/docker/vivado-wrapper
+      - src/booley/harness/docker_base_contract.py
+      - src/booley/data/docker/stable-base-inputs.txt
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: boldaxolotl/booley-sandbox-base
+
+# Only the newest stable-input revision may promote the shared :main tag.
+concurrency:
+  group: publish-stable-docker-runtime-base
+  cancel-in-progress: true
+
+jobs:
+  build-publish-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Compute stable-base compatibility contract
+        id: base
+        run: |
+          python .github/scripts/docker_base_contract.py \
+            --repo . --github-output "${GITHUB_OUTPUT}"
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_OUTPUT}"
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish stable runtime base
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: src/booley/data/docker/Dockerfile.base
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            BOOLEY_BASE_SOURCE_REVISION=${{ steps.base.outputs.revision }}
+            BOOLEY_BASE_CONTRACT=${{ steps.base.outputs.contract }}
+            BOOLEY_BASE_BUILT_AT=${{ steps.base.outputs.built_at }}
+          cache-from: type=gha,scope=sandbox-runtime-base
+          cache-to: type=gha,scope=sandbox-runtime-base,mode=max,ignore-error=true
+
+      - name: Verify exact published base compatibility and tools
+        env:
+          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          python .github/scripts/docker_base_contract.py --repo . \
+            --resolve-image "${BASE_IMAGE}"
+          docker run --rm "${BASE_IMAGE}" python -c \
+            'import importlib.util; assert importlib.util.find_spec("booley") is None'
+          docker run --rm "${BASE_IMAGE}" sh -c \
+            'command -v yosys sta iverilog verilator verible-verilog-lint'
+          docker run --rm "${BASE_IMAGE}" python -c \
+            'import cocotb, edalize, fusesoc, numpy'
+
+      - name: Promote verified base to main consumption tag
+        env:
+          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: >-
+          docker buildx imagetools create
+          --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main"
+          "${BASE_IMAGE}"
