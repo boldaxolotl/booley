@@ -465,16 +465,20 @@ def _stale_verification_entry(
 def _verification_fingerprint_categories(key: str) -> set[str]:
     """Return source categories a verification criterion must fingerprint."""
     if key.startswith("review_rtl_"):
-        return {"rtl"}
-    if key.startswith("review_tb_"):
-        return {"tb"}
-    if key.startswith(("mutation_score_", "coverage_")):
-        return {"rtl", "tb", "campaign"}
-    if key.startswith(("sim_", "elab_")):
-        return {"rtl", "tb"}
-    if key.startswith(("lint_", "synthesis_", "fpga_impl_")):
-        return {"rtl"}
-    return set()
+        categories = {"rtl"}
+    elif key.startswith("review_tb_"):
+        categories = {"tb"}
+    elif key.startswith(("mutation_score_", "coverage_")):
+        categories = {"rtl", "tb", "campaign"}
+    elif key.startswith("cycle_count_"):
+        categories = {"rtl", "tb", "campaign", "workload"}
+    elif key.startswith(("sim_", "elab_")):
+        categories = {"rtl", "tb"}
+    elif key.startswith(("lint_", "synthesis_", "fpga_impl_")):
+        categories = {"rtl"}
+    else:
+        categories = set()
+    return categories
 
 
 def _mark_verification_stale(

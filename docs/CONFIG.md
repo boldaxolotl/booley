@@ -151,7 +151,10 @@ test it invoked, then puts the count in the MCP tool's per-test output and the
 JSON report's `tests[].cycles`. Configuring `cycle_sentinels` replaces the
 built-in cycle prefix; it does not affect the pass/fail verdict. For backward
 compatibility, a count-only record remains readable when it is the only cycle
-record in the log.
+record in the log. That legacy form and all named records remain observational
+unless the Ticket declares a `cycle_count` Criterion. Gated evidence requires
+exactly one named record for the invoked test; missing, duplicate, malformed,
+or wrong-test records fail closed.
 
 Cocotb Targets are the exception: they score from cocotb's `results.xml`, so
 pass/fail sentinel knobs don't apply. Named cycle records are still collected

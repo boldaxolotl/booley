@@ -76,6 +76,7 @@ def _category(name: str) -> str:
         (("lint_",), "Lint"),
         (("elab_",), "Elaboration"),
         (("sim_",), "Simulation"),
+        (("cycle_count_",), "Simulation"),
         (("synthesis_", "synth_"), "Synthesis"),
         (("fpga_",), "FPGA"),
         (("mutation",), "Mutation"),
@@ -134,6 +135,10 @@ def _criterion_metric(entry: Mapping[str, Any]) -> str:
     if not isinstance(detail, dict):
         return "booley_state.json"
     keys = (
+        "cycles",
+        "baseline_cycles",
+        "delta_cycles",
+        "delta_pct",
         "warnings",
         "tests_passed",
         "tests_total",
@@ -253,6 +258,53 @@ def _recipe_comparisons(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return sorted(rows, key=lambda row: row["criterion"])
+
+
+def _cycle_comparisons(
+    state: Mapping[str, Any], changed_files: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Extract typed per-test Cycle Count comparison evidence from state."""
+    raw = state.get("criteria")
+    if not isinstance(raw, Mapping):
+        return []
+    rows: list[dict[str, Any]] = []
+    for criterion, entry in raw.items():
+        name = str(criterion)
+        if not name.startswith("cycle_count_") or not isinstance(entry, Mapping):
+            continue
+        detail = entry.get("detail")
+        comparison = detail.get("cycle_comparison") if isinstance(detail, Mapping) else None
+        if isinstance(comparison, Mapping):
+            row = {"criterion": name, **dict(comparison)}
+            row["known_input_changes"] = _link_workload_changes(
+                row.get("known_input_changes"), changed_files
+            )
+            rows.append(row)
+    return sorted(rows, key=lambda row: row["criterion"])
+
+
+def _link_workload_changes(
+    workload: Any,
+    changed_files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach materialized diff endpoints to known changed workload paths."""
+    by_path: dict[str, dict[str, Any]] = {}
+    for change in changed_files:
+        for key in ("path", "old_path"):
+            path = change.get(key)
+            if isinstance(path, str) and path:
+                by_path[path] = change
+    linked: list[dict[str, Any]] = []
+    for item in workload if isinstance(workload, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        row = dict(item)
+        materialized = by_path.get(str(row.get("path", "")))
+        if materialized is not None:
+            row["diff_left"] = materialized.get("diff_left")
+            row["diff_right"] = materialized.get("diff_right")
+        linked.append(row)
+    return linked
 
 
 def _repository_commits(
@@ -635,6 +687,7 @@ def build_review_facts(ctx: TriageContext) -> dict[str, Any]:
         ),
         "review_dispositions": collect_review_dispositions(state.get("criteria", {})),
         "recipe_comparisons": _recipe_comparisons(state),
+        "cycle_comparisons": _cycle_comparisons(state, changes),
         "scope": scope,
         "commits": _commits(ctx),
         "changed_files": changes,
@@ -874,6 +927,61 @@ def _render_recipe_comparisons(lines: list[str], package: Mapping[str, Any]) -> 
             lines.append(f"  - `{check.get('param')}` — **{verdict}**: {summary}")
 
 
+def _render_cycle_comparisons(lines: list[str], package: Mapping[str, Any]) -> None:
+    """Render observed per-test Cycle Count changes and workload disclosure."""
+    rows = package.get("cycle_comparisons", [])
+    if not rows:
+        return
+    lines.extend(["", "#### Cycle Count comparisons", ""])
+    for row in rows:
+        baseline = row.get("baseline_cycles")
+        current = row.get("cycles")
+        delta_cycles = row.get("delta_cycles")
+        delta_pct = row.get("delta_pct")
+        delta_text = "unavailable"
+        if delta_cycles is not None:
+            delta_text = f"{delta_cycles:+} cycles"
+            if delta_pct is not None:
+                delta_text += f" ({delta_pct:+.2f}%)"
+        lines.append(
+            f"- `{_markdown_text(row.get('target', ''))}` / "
+            f"`{_markdown_text(row.get('test', ''))}` — observed Cycle Count change: "
+            f"`{baseline}` → `{current}`; {delta_text}"
+        )
+        if row.get("workload_changed"):
+            lines.append(
+                "  - **WARNING:** known workload inputs changed; this comparison combines "
+                "RTL and workload effects and does not establish causality."
+            )
+        else:
+            lines.append("  - Known declared workload inputs: unchanged.")
+        for change in row.get("known_input_changes", []):
+            path = _markdown_text(change.get("path", ""))
+            diff_path = change.get("diff_right") or change.get("diff_left")
+            path_text = (
+                _markdown_link(str(change.get("path", "")), str(diff_path))
+                if isinstance(diff_path, str) and diff_path
+                else f"`{path}`"
+            )
+            lines.append(
+                f"  - {path_text} "
+                f"({_markdown_text(change.get('role', 'workload'))}): "
+                f"{_markdown_text(change.get('status', 'changed'))}"
+            )
+        for check in row.get("checks", []):
+            verdict = "PASS" if check.get("pass") else "FAIL"
+            summary = check.get("reason")
+            if not summary:
+                summary = f"threshold {check.get('threshold')} {check.get('unit', '')}"
+            lines.append(
+                f"  - `{_markdown_text(check.get('param', ''))}` — "
+                f"**{verdict}**: {_markdown_text(summary)}"
+            )
+        limitation = row.get("provenance_limitation")
+        if limitation:
+            lines.append(f"  - Provenance boundary: {_markdown_text(limitation)}")
+
+
 def _render_scope(lines: list[str], package: Mapping[str, Any]) -> None:
     lines.extend(["", "#### Scope deviations", ""])
     rows = package["assessment"].get("scope_deviations", [])
@@ -1049,6 +1157,7 @@ def render_review_briefing(package: Mapping[str, Any], diff_failures: list[str])
     _render_changes(lines, package, set(diff_failures))
     _render_criteria(lines, package)
     _render_review_dispositions(lines, package)
+    _render_cycle_comparisons(lines, package)
     _render_recipe_comparisons(lines, package)
     _render_commits(lines, package)
     _render_economics(lines, package)

@@ -228,6 +228,7 @@ criteria:
 |------|---------|
 | Config list | `lint_clean: [<target_a>, <target_b>]` → per-Target expansion |
 | Sim-style | `sim_pass: [tb@config@test@cur->exp]` |
+| Per-test Cycle Count | `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000}]` |
 | Parameterized | `synthesis_ok: {targets: [<target>], cell_count_max: 500}` |
 | Parameterized | `fpga_impl_ok: {targets: [<target>], lut_count_max: 100000}` |
 | Scalar | Spell review criteria as `<key>_done` for the default terminal advisory review (report findings, do not fix). Use `<key>_clean` only when the user requests every finding fixed or explicitly waived with user-visible justification |
@@ -253,6 +254,12 @@ project-authored Verible style-lint Target (a `.core` lint Target with
 `flow_options: {tool: verible}`, typically `lint_style`) alongside the Verilator one — a
 project that authored it presumably wants it enforced. `lint_clean_<target>`
 means "clean under whatever linter that Target names"; there is no separate style criterion.
+
+`cycle_count` is a list of mappings, never a `sim_pass` numeric parameter. Every item must
+name one `target` and registered `test`, plus at least one threshold. Absolute
+`cycle_count_max` / `cycle_count_min` use the current run. Relative percentage and `_cycles`
+forms automatically compare the same Target/test at `base_sha`; consult
+`booley cheat --criteria` for the complete signed-bound vocabulary.
 
 `synthesis_ok` / `fpga_impl_ok` take threshold **params** in four flavours per metric:
 absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_at_least`

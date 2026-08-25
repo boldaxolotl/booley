@@ -375,6 +375,7 @@ class ReviewPackage(Mapping[str, Any]):
     commits: tuple[Mapping[str, Any], ...]
     scope: Mapping[str, Any]
     recipe_comparisons: tuple[Mapping[str, Any], ...]
+    cycle_comparisons: tuple[Mapping[str, Any], ...]
     developer_report_path: str
     html_path: str | None
     explanation: StructuredExplanation | None
@@ -428,6 +429,10 @@ class ReviewPackage(Mapping[str, Any]):
                     _freeze(require_dict(item, field="recipe comparison"))
                     for item in _rows(row.get("recipe_comparisons", []), "recipe_comparisons")
                 ),
+                cycle_comparisons=tuple(
+                    _freeze(require_dict(item, field="cycle comparison"))
+                    for item in _rows(row.get("cycle_comparisons", []), "cycle_comparisons")
+                ),
                 developer_report_path=report_path,
                 html_path=_optional_path(row, "html_path"),
                 explanation=(
@@ -457,6 +462,7 @@ class ReviewPackage(Mapping[str, Any]):
             "criteria": [row.to_dict() for row in self.criteria],
             "review_dispositions": [row.to_dict() for row in self.review_dispositions],
             "recipe_comparisons": [_thaw(row) for row in self.recipe_comparisons],
+            "cycle_comparisons": [_thaw(row) for row in self.cycle_comparisons],
             "scope": _thaw(self.scope),
             "commits": [_thaw(row) for row in self.commits],
             "changed_files": [row.to_dict() for row in self.changed_files],

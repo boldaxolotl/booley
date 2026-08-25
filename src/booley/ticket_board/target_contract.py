@@ -25,6 +25,7 @@ from booley.core.boundary import (
     require_dict,
     require_str,
 )
+from booley.dev_support.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.targets.target_surface import flow_can_drive
 
@@ -37,6 +38,7 @@ _PROGRAM_SUFFIXES = frozenset({".py", ".sh", ".tcl", ".pl", ".rb"})
 _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 _FLOW_BY_CRITERION = {
     "sim_pass": "sim",
+    "cycle_count": "sim",
     "lint_clean": "lint",
     "synthesis_ok": "synth",
     "fpga_impl_ok": "fpga",
@@ -319,11 +321,7 @@ def _criterion_flow(key: str) -> str | None:
 def _relative_params(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
-    return any(
-        isinstance(key, str) and key.endswith(("_increase_at_most", "_reduce_at_least"))
-        for key in value
-        if not str(key).startswith("_")
-    )
+    return has_relative_threshold(dict(value))
 
 
 def _targets_from_value(key: str, value: Any) -> list[tuple[str, bool]]:

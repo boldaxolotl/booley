@@ -70,6 +70,14 @@ per_target  = true
 category    = "rtl"
 group       = "simulation"
 
+[cycle_count]
+description = "A named test passes and its observed Cycle Count meets every declared threshold"
+workflow_region = "core_loop"
+per_target  = false
+per_test    = true
+category    = "rtl"
+group       = "simulation"
+
 # --- Post-sim criteria ---
 
 [review_rtl_security]

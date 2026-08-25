@@ -40,6 +40,12 @@ criteria:
       - tb/file1_tb.sv @ config1 @ all @ pass -> pass   # tb @ config @ test @ current -> expected
       - tb/file1_tb.sv @ config1 @ smoke @ fail -> pass  # single named test
       - tb/file2_tb.sv @ config2 @ all @ pass -> pass    # multiple TBs supported
+    cycle_count:                             # -> sim Flow; per Target + named test
+      - target: sim_coremark
+        test: coremark
+        cycle_count_max: 100000              # absolute inclusive cap
+        cycle_count_reduce_at_least: 5       # ≥5% reduction vs base_sha
+        cycle_count_reduce_at_least_cycles: 2000  # ≥2000-cycle reduction vs base_sha
     synthesis_ok:                            # -> synth Flow
       targets: [target1, target2]            # per-target expansion (scoping key is `targets`)
       cell_count_max: 500                    # absolute cap (optional)

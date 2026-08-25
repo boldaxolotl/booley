@@ -209,6 +209,7 @@ def compute_source_fingerprint(
             "tb_dirs": sorted({PurePosixPath(f).parent.as_posix() for f in tb_files}),
             "rtl": _hash_named_files(root, rtl_files),
             "tb": _hash_named_files(root, tb_files),
+            "workload": _hash_named_files(root, [*rtl_files, *tb_files]),
             "campaign": campaign,
         }
     rtl_dirs, tb_dirs = _read_source_dirs(root)
@@ -220,5 +221,6 @@ def compute_source_fingerprint(
         "tb_dirs": tb_dirs,
         "rtl": _hash_source_group(root, rtl_dirs),
         "tb": _hash_source_group(root, tb_dirs),
+        "workload": _hash_source_group(root, [*rtl_dirs, *tb_dirs]),
         "campaign": campaign,
     }

@@ -944,7 +944,10 @@ def _has_mandatory_sim_criterion(criteria: Any, ticket_type: str) -> bool:
         return isinstance(mandatory, dict) and any(
             isinstance(key, str) and key.startswith("sim_") for key in mandatory
         )
-    return any(key.startswith("sim_") and mandatory for key, mandatory in expanded.items())
+    return any(
+        key.startswith(("sim_", "cycle_count_")) and mandatory
+        for key, mandatory in expanded.items()
+    )
 
 
 def _has_existing_testbench(project_root: Path, tb_prefixes: list[str]) -> bool:

@@ -197,13 +197,17 @@ def _matches_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
 def _verification_fingerprint_categories(key: str) -> set[str]:
     """Return source categories that a passing verification criterion depends on."""
     if key.startswith("review_rtl_"):
-        return {CATEGORY_RTL}
-    if key.startswith("review_tb_"):
-        return {CATEGORY_TB}
-    if key.startswith(("mutation_score_", "coverage_")):
-        return {CATEGORY_RTL, CATEGORY_TB, "campaign"}
-    if key.startswith(("sim_", "elab_")):
-        return {CATEGORY_RTL, CATEGORY_TB}
-    if key.startswith(("lint_", "synthesis_", "fpga_impl_", "elaborate_standalone")):
-        return {CATEGORY_RTL}
-    return set()
+        categories = {CATEGORY_RTL}
+    elif key.startswith("review_tb_"):
+        categories = {CATEGORY_TB}
+    elif key.startswith(("mutation_score_", "coverage_")):
+        categories = {CATEGORY_RTL, CATEGORY_TB, "campaign"}
+    elif key.startswith("cycle_count_"):
+        categories = {CATEGORY_RTL, CATEGORY_TB, "campaign", "workload"}
+    elif key.startswith(("sim_", "elab_")):
+        categories = {CATEGORY_RTL, CATEGORY_TB}
+    elif key.startswith(("lint_", "synthesis_", "fpga_impl_", "elaborate_standalone")):
+        categories = {CATEGORY_RTL}
+    else:
+        categories = set()
+    return categories

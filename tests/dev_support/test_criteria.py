@@ -549,10 +549,14 @@ class TestCriterionEligibility:
     def test_eligible_families_per_tool(self):
         assert eligible_eda_tool_criterion_families("yosys") == frozenset({"synthesis_ok"})
         assert eligible_eda_tool_criterion_families("verilator") == frozenset(
-            {"sim_pass", "lint_clean"}
+            {"sim_pass", "cycle_count", "lint_clean"}
         )
-        assert eligible_eda_tool_criterion_families("icarus") == frozenset({"sim_pass"})
-        assert eligible_eda_tool_criterion_families("iverilog") == frozenset({"sim_pass"})
+        assert eligible_eda_tool_criterion_families("icarus") == frozenset(
+            {"sim_pass", "cycle_count"}
+        )
+        assert eligible_eda_tool_criterion_families("iverilog") == frozenset(
+            {"sim_pass", "cycle_count"}
+        )
         assert eligible_eda_tool_criterion_families("unknown_tool") == frozenset()
         # Unsupported commercial simulators have no criterion eligibility.
         assert eligible_eda_tool_criterion_families("xcelium") == frozenset()

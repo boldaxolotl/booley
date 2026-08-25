@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
 from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -26,6 +27,8 @@ from booley.flows.recipe_evidence import (
     RECIPE_SNAPSHOT_PARAM,
     recipe_changes,
 )
+from booley.flows.sim.threshold_eval import evaluate_cycle_threshold
+from booley.flows.sim.workload import PROVENANCE_LIMITATION, workload_changes
 from booley.flows.source_fingerprint import (  # noqa: F401  # compatibility re-export
     SOURCE_FINGERPRINT_DETAIL_KEY,
     as_str_list,
@@ -51,6 +54,48 @@ def _recipe_flow(baseline: Any, current: Any) -> str | None:
         if isinstance(snapshot, dict) and isinstance(snapshot.get("flow"), str):
             return snapshot["flow"]
     return None
+
+
+def _cycle_comparison(entry: CriterionEntry, checks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the typed review block for one per-test Cycle Count Criterion."""
+    detail = entry.detail
+    baseline = detail.get("baseline_cycles")
+    current = detail.get("cycles")
+    delta = (
+        current - baseline
+        if isinstance(current, int)
+        and not isinstance(current, bool)
+        and isinstance(baseline, int)
+        and not isinstance(baseline, bool)
+        else None
+    )
+    pct = delta / baseline * 100 if delta is not None and baseline else None
+    baseline_snapshot = detail.get("baseline_workload_snapshot")
+    current_snapshot = detail.get("workload_snapshot")
+    changes = (
+        workload_changes(baseline_snapshot, current_snapshot)
+        if isinstance(baseline_snapshot, dict) and isinstance(current_snapshot, dict)
+        else []
+    )
+    return {
+        "target": entry.params.get("target"),
+        "test": entry.params.get("test"),
+        "baseline_ref": entry.params.get(BASELINE_REF_PARAM),
+        "baseline_cycles": baseline,
+        "cycles": current,
+        "delta_cycles": delta,
+        "delta_pct": pct,
+        "checks": list(checks),
+        "baseline_workload_fingerprint": (
+            baseline_snapshot.get("fingerprint") if isinstance(baseline_snapshot, dict) else None
+        ),
+        "workload_fingerprint": (
+            current_snapshot.get("fingerprint") if isinstance(current_snapshot, dict) else None
+        ),
+        "workload_changed": bool(changes),
+        "known_input_changes": changes,
+        "provenance_limitation": PROVENANCE_LIMITATION,
+    }
 
 
 @dataclass
@@ -131,6 +176,7 @@ _CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
     "synthesis_": frozenset({CATEGORY_RTL}),
     "fpga_impl_": frozenset({CATEGORY_RTL}),
     "sim_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
+    "cycle_count_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
     "coverage_": frozenset({CATEGORY_RTL}),
     # Exact key (prefix matching still applies): the standalone-elaboration
     # sweep is an RTL structural check, so an RTL edit must reset its met
@@ -449,20 +495,32 @@ class DevelopmentState:
         for param_key, threshold in params.items():
             if param_key.startswith("_"):
                 continue
-            result = self._check_single_threshold(
-                param_key,
-                threshold,
-                detail,
-                baseline,
-                metric_map,
-                min_allowed,
-            )
+            if param_key in {"target", "test"}:
+                continue
+            if param_key in CYCLE_COUNT_PARAMS:
+                result = evaluate_cycle_threshold(
+                    param_key,
+                    threshold,
+                    current=detail.get("cycles"),
+                    baseline=detail.get("baseline_cycles"),
+                )
+            else:
+                result = self._check_single_threshold(
+                    param_key,
+                    threshold,
+                    detail,
+                    baseline,
+                    metric_map,
+                    min_allowed,
+                )
             if result is not None:
                 checks.append(result)
                 if not result["pass"]:
                     all_pass = False
 
         detail["checks"] = checks
+        if any(param in CYCLE_COUNT_PARAMS for param in params):
+            detail["cycle_comparison"] = _cycle_comparison(entry, checks)
         if not all_pass:
             entry.met = False
             entry.ever_met = False
