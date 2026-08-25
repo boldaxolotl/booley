@@ -120,10 +120,11 @@ def test_missing_vivado_bind_names_source_and_target(
     (project / ".booley_project").mkdir()
     vivado_root = tmp_path / "Vivado-2025.2"
     vivado_root.mkdir()
+    vivado_source = docker_mount_path(vivado_root)
     installation = authority.Installation(
         "site-vivado",
         "vivado",
-        str(vivado_root),
+        vivado_source,
         "2025.2",
         "linux-x86_64",
         POLICY_REVISION,
@@ -141,7 +142,7 @@ def test_missing_vivado_bind_names_source_and_target(
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
-        trusted_eda_mounts=((docker_mount_path(vivado_root), CONTAINER_TARGET),),
+        trusted_eda_mounts=((vivado_source, CONTAINER_TARGET),),
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
     runtime_spec.pin_image(spec)
@@ -164,7 +165,7 @@ def test_missing_vivado_bind_names_source_and_target(
         getattr(runtime_spec, operation)(project, spec, path)
 
     message = str(caught.value)
-    assert docker_mount_path(vivado_root) in message
+    assert vivado_source in message
     assert CONTAINER_TARGET in message
     assert "unavailable" in message
 
