@@ -350,8 +350,18 @@ def op_fail(tio: Any, slug: str, error: str, step: str) -> bool:
 
 
 def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
-    """Requeue a ticket: atomically move to queue/, clear runtime state, log transition."""
-    _entry, old_status, old_step = _get_old_state(tio, slug)
+    """Requeue an interrupted run after proving no other process owns it."""
+    entry, old_status, old_step = _get_old_state(tio, slug)
+    if entry:
+        slug = Path(str(entry["file"])).stem
+    live_pid = _live_owner_pid(tio, slug)
+    if live_pid is not None:
+        print(
+            f"Error: ticket '{slug}' is owned by a live process (PID {live_pid}).\n"
+            "  Stop the active run before requeueing it.",
+            file=sys.stderr,
+        )
+        return False
 
     return _op_move_and_log(
         tio,
@@ -366,6 +376,7 @@ def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
             "blocked_step": None,
         },
         (f"{old_status}:{old_step}", "queued:requeue", "loop-runner", reason),
+        expected_execution_id=str(entry.get("execution_id", "")) if entry else None,
     )
 
 
@@ -1003,7 +1014,8 @@ def _live_owner_pid(tio: Any, slug: str) -> int | None:
 
     lock_path = existing_runtime_file(tio.tickets_dir / "logs", slug, "ticket.lock")
     pid = read_lock_pid(lock_path)
-    if pid is None or pid == os.getpid() or not is_pid_alive(pid):
+    caller_owner_pid = str(tio._resolve_developer_pid())
+    if pid is None or str(pid) == caller_owner_pid or not is_pid_alive(pid):
         return None
     return pid
 
@@ -1046,7 +1058,7 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
         transitions_path.write_text(transition_history, encoding="utf-8")
 
 
-def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
+def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> bool:
     """Reset under the ticket lock, publishing queue state only at the end."""
     from .io import find_ticket_file
 
@@ -1081,7 +1093,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
             f"{entry.get('status', 'unknown')}:{entry.get('step', '')}",
             "queued:reset",
             "ticket-triage",
-            "user reset ticket",
+            reason,
         )
 
     return True
@@ -1134,7 +1146,12 @@ def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any])
     return True
 
 
-def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
+def op_reset(
+    tio: Any,
+    slug: str,
+    force: bool = False,
+    reason: str = "user reset ticket",
+) -> bool:
     """Reset a ticket's state and artifacts, then move it to queue/.
 
     The queue move is the final publication step: a queued ticket therefore
@@ -1165,4 +1182,4 @@ def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     canonical_slug = Path(entry["file"]).stem
     if not _reset_owner_available(tio, canonical_slug, force):
         return False
-    return _perform_reset(tio, canonical_slug, entry)
+    return _perform_reset(tio, canonical_slug, entry, reason)
