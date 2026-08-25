@@ -511,8 +511,9 @@ three substantive choices:
 1. Approve the Ticket as `done`. Small corrections may be made directly in the
    existing Ticket worktree, with the relevant Flows and Specialists invoked
    there, before approval; the Ticket remains in `review` throughout.
-2. Reset it completely. This discards that execution workspace and state and
-   returns the Ticket to `queued` as a clean run. It does not resume or
+2. Reset it completely. This retires the Ticket worktree and branch, archives
+   the current runtime artifacts as prior-run history, clears the active state,
+   and returns the Ticket to `queued` as a clean run. It does not resume or
    selectively retain the reviewed work.
 3. Archive it. If the remaining work needs a different contract, create a new
    Ticket rather than sending this one back for rework.

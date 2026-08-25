@@ -30,7 +30,7 @@ One Ticket keeps one branch, worktree, and evidence history.
 | `running → queued` | Exceptional interruption recovery; wait for active jobs first |
 | `running → done` | Explicit `on_success.destination: done` shortcut |
 | `review → archived` | Close this Ticket; use a new Ticket for separate follow-up |
-| `review ──full reset──► queued` | Discard the execution workspace and state; start clean |
+| `review ──full reset──► queued` | Retire worktree/branch; archive artifacts; clear active state |
 
 Review is a decision point, not a partial-rework loop. Fix small findings
 directly in the existing Ticket worktree and finish as `done`; archive it and

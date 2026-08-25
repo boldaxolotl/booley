@@ -61,9 +61,12 @@ Ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
   relevant Flows and Specialists directly against that worktree, commit the
   correction to the same Ticket branch, refresh its review evidence, and return
   to this decision. Do not hand it back to the Runner for partial rework.
-- **Reset**: `python -m booley.ticket_board reset $SLUG`. This is a clean start:
-  discard the execution workspace and state and return the Ticket to `queued`.
-  Do not selectively retain reviewed work.
+- **Reset**: ask why a clean run is required, then run
+  `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`.
+  This is a clean start:
+  retire the Ticket worktree and branch, archive the current runtime artifacts
+  as prior-run history, clear the active state, and return the Ticket to
+  `queued`. Do not selectively retain reviewed work.
 - **Archive**: `python -m booley.ticket_board archive $SLUG --force`
 - **Skip**: leave as-is
 

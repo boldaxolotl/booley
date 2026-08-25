@@ -126,6 +126,7 @@ def test_triage_review_distinguishes_direct_fix_from_clean_reset():
         "This is a clean start",
         "Do not selectively retain reviewed work",
         "never resumes through an ordinary move to `queued`",
+        '--reason "<correction reason>"',
     ):
         assert required in contract
 
