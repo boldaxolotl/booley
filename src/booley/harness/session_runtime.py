@@ -30,7 +30,7 @@ from typing import Any
 from booley.harness import devcontainer as dc
 from booley.harness import interactive_docker as idk
 from booley.runtime import auth_token
-from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +521,7 @@ def prepare(workspace: Path) -> str:
         raise SessionError(
             f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
         ) from exc
+    _reconcile_stopped_vscode_containers(workspace, issuance)
     profile = runtime_spec.requested_license(workspace)
     _preflight(spec, license_required=profile is not None)
     if profile is None:
@@ -583,6 +584,108 @@ def _strict_running_interactive_states() -> list[tuple[str, str]]:
             raise SessionError(f"cannot inspect running Session Runtime {name!r}")
         states.append((name, raw))
     return states
+
+
+def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
+    """Inspect this Project's running or stopped Interactive Mode containers."""
+    names = _docker_stdout(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label={dc.INTERACTIVE_ROLE_LABEL}",
+            "--filter",
+            f"label=booley.project-id={project_id}",
+            "--format",
+            "{{.Names}}",
+        ]
+    )
+    if names is None:
+        raise SessionError("cannot inventory Session Runtime containers")
+    states = []
+    for name in (line.strip() for line in names.splitlines()):
+        if not name:
+            continue
+        raw = _docker_stdout(["docker", "inspect", name])
+        if raw is None or _decode_container_inspect(raw) is None:
+            raise SessionError(f"cannot inspect Session Runtime {name!r}")
+        states.append((name, raw))
+    return states
+
+
+def _reconcile_stopped_vscode_containers(workspace: Path, issuance: object) -> None:
+    """Discard stopped VS Code containers that predate the current issuance."""
+    from booley.eda import runtime_spec
+
+    expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+    expected_config = str(dc.devcontainer_path(workspace))
+    project_id = expected["booley.project-id"]
+    for name, raw in _strict_all_interactive_states(project_id):
+        state = _decode_container_inspect(raw)
+        assert state is not None
+        config = state.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            continue
+        # The headless `booley session` container deliberately shares Booley's
+        # role and issuance labels.  Only Dev Containers stamps local_folder,
+        # so require that positive origin marker before removing anything.
+        local_folder = labels.get(_DEVCONTAINER_FOLDER_LABEL)
+        if (
+            not isinstance(local_folder, str)
+            or local_folder.casefold() != str(workspace).casefold()
+        ):
+            continue
+        if labels.get("booley.project-id") != expected.get("booley.project-id"):
+            continue
+        actual_config = labels.get("devcontainer.config_file")
+        config_matches = (
+            isinstance(actual_config, str)
+            and actual_config.casefold() == expected_config.casefold()
+        )
+        issuance_matches = config_matches and all(
+            labels.get(key) == value for key, value in expected.items()
+        )
+        running = state.get("State", {}).get("Running") is True
+        if running:
+            if not issuance_matches:
+                raise SessionError(
+                    f"running Session Runtime {name!r} uses an older host issuance; "
+                    "stop it before recreating the VS Code container"
+                )
+            continue
+        if issuance_matches and not _container_has_unavailable_bind(state):
+            continue
+        result = _run(["docker", "rm", name])
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
+            raise SessionError(
+                f"cannot remove stale Session Runtime {name!r}: {detail}. Booley will "
+                "not force-remove it because it may have become active; stop the "
+                "container and retry"
+            )
+        logger.info("removed stopped Session Runtime %r from an older host issuance", name)
+
+
+def _container_has_unavailable_bind(state: dict) -> bool:
+    """Whether Docker would find an inspected container's bind source unavailable."""
+    mounts = state.get("Mounts")
+    if not isinstance(mounts, list):
+        return True
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            return True
+        if mount.get("Type") != "bind":
+            continue
+        source = mount.get("Source")
+        if not isinstance(source, str) or not source:
+            return True
+        try:
+            host_path_from_docker_mount(source).stat()
+        except OSError:
+            return True
+    return False
 
 
 def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) -> bool:

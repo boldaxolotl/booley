@@ -17,7 +17,7 @@ from typing import Any
 
 from booley.harness.devcontainer import EGRESS_NETWORK
 from booley.runtime.auth_token import config_dir
-from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 from . import authority
@@ -236,6 +236,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
                 project_data_source=project_data_source,
             )
             _validate_generated_spec(project, spec, installation, profile, issuance)
+            _validate_bind_sources(spec["mounts"])
             image = _require_string(spec, "image")
             image_id = _resolve_image_id(image)
             if image != image_id:
@@ -269,6 +270,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
             profile,
         ):
             _validate_generated_spec(project, spec, installation, profile, stamp)
+            _validate_bind_sources(spec["mounts"])
             if stamp.image != spec.get("image") or stamp.image_id != _resolve_image_id(
                 stamp.image
             ):
@@ -612,6 +614,26 @@ def _validate_mount_surfaces(mounts: list[str], project_data_workspace_target: s
             raise RuntimeSpecError(f"host bind must be read-only: {target}")
         if "readonly=false" in raw:
             raise RuntimeSpecError(f"host bind explicitly disables read-only policy: {target}")
+
+
+def _validate_bind_sources(mounts: list[str]) -> None:
+    """Reject a generated bind that Docker cannot resolve on this host."""
+    for raw in mounts:
+        fields = dict(field.split("=", 1) for field in raw.split(",") if "=" in field)
+        if fields.get("type") != "bind":
+            continue
+        source = fields.get("source", "")
+        target = fields.get("target", "")
+        try:
+            host_path_from_docker_mount(source).stat()
+        except FileNotFoundError:
+            raise RuntimeSpecError(
+                f"generated bind source for {target} is missing: {source}"
+            ) from None
+        except OSError as exc:
+            raise RuntimeSpecError(
+                f"generated bind source for {target} is unavailable: {source}: {exc}"
+            ) from exc
 
 
 def authorized_project_data_source(project_root: Path) -> Path:

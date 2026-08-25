@@ -7,6 +7,7 @@ portable. Keeps the rest of Booley OS-agnostic without over-abstraction.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,14 @@ def docker_mount_path(p: Path) -> str:
     if len(posix) >= 2 and posix[1] == ":":
         return "/" + posix[0].lower() + posix[2:]
     return posix
+
+
+def host_path_from_docker_mount(value: str) -> Path:
+    """Convert a Docker bind source back to a path native Python can inspect."""
+    if IS_WINDOWS and re.fullmatch(r"/[A-Za-z](?:/.*)?", value):
+        suffix = value[2:] or "/"
+        return Path(f"{value[1].upper()}:{suffix}")
+    return Path(value)
 
 
 # MSYS2 fallback path (used only on Windows when cargo is not on PATH).

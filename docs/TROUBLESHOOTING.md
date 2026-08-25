@@ -14,6 +14,22 @@ the config knobs named below see [CONFIG.md](CONFIG.md). For the Booley-specific
 terms below (Session Runtime, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [CONTEXT.md](CONTEXT.md).
 
+## VS Code says “A mount config is invalid” while reopening the container
+
+Booley validates every host bind in the current generated spec before Docker
+creates the Session Runtime. The error names the missing or unavailable host
+source and its container target; restore that source, or run `booley init
+--seed` on the host when the source was intentionally removed.
+
+A rebuild may otherwise select a stopped VS Code container whose old bind list
+still mentions a deleted skill, credential file, tool installation, mask
+directory, or editor-injected socket. During `booley session prepare`, Booley
+now removes such a stopped container (without deleting named volumes) so Dev
+Containers creates one from the current spec. It never removes a running
+container, a headless `booley session` container, or a container belonging to a
+different Project. If one is running with an older issuance, stop it and retry
+the rebuild.
+
 ## `booley` is missing from `/mcp` in Claude Code or Codex
 
 Run **Developer: Reload Window** so the agent session re-reads its MCP config.

@@ -205,20 +205,62 @@ def _vscode_up(command: list[str], workspace: Path) -> subprocess.CompletedProce
 
 def _assert_vscode_lifecycle(docker: str, command: list[str], workspace: Path) -> None:
     project_id = hashlib.sha256(str(workspace.resolve()).encode()).hexdigest()
-    created = _vscode_up(command, workspace)
-    assert created.returncode == 0, created.stdout + created.stderr
-    listed = subprocess.run(
-        [docker, "ps", "-aq", "--filter", f"label=booley.project-id={project_id}"],
+    spec = json.loads(
+        (workspace / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
+    )
+    stale_source = workspace.parent / f"{workspace.name}-deleted-bind"
+    stale_source.mkdir()
+    stale = subprocess.run(
+        [
+            docker,
+            "create",
+            "--label",
+            dc.INTERACTIVE_ROLE_LABEL,
+            "--label",
+            f"booley.project-id={project_id}",
+            "--label",
+            "booley.spec-digest=stale",
+            "--label",
+            f"devcontainer.local_folder={workspace}",
+            "--label",
+            f"devcontainer.config_file={workspace / '.devcontainer' / 'devcontainer.json'}",
+            "--mount",
+            f"type=bind,source={stale_source},target=/tmp/deleted-bind",
+            str(spec["image"]),
+            "sleep",
+            "infinity",
+        ],
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
     )
-    assert listed.returncode == 0, listed.stdout + listed.stderr
-    containers = [line for line in listed.stdout.splitlines() if line]
-    assert len(containers) == 1, listed.stdout
-    container = containers[0]
+    assert stale.returncode == 0, stale.stdout + stale.stderr
+    stale_container = stale.stdout.strip()
+    stale_source.rmdir()
+    container = ""
     try:
+        created = _vscode_up(command, workspace)
+        assert created.returncode == 0, created.stdout + created.stderr
+        stale_inspect = subprocess.run(
+            [docker, "inspect", stale_container],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert stale_inspect.returncode != 0, "stopped stale container was not reconciled"
+        listed = subprocess.run(
+            [docker, "ps", "-aq", "--filter", f"label=booley.project-id={project_id}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert listed.returncode == 0, listed.stdout + listed.stderr
+        containers = [line for line in listed.stdout.splitlines() if line]
+        assert len(containers) == 1, listed.stdout
+        container = containers[0]
         version = _exec(docker, container, "vivado", "-version")
         assert version.returncode == 0, version.stdout + version.stderr
         assert "vivado v2025.2" in version.stdout.lower()
@@ -227,13 +269,15 @@ def _assert_vscode_lifecycle(docker: str, command: list[str], workspace: Path) -
         resumed = _vscode_up(command, workspace)
         assert resumed.returncode == 0, resumed.stdout + resumed.stderr
     finally:
-        subprocess.run(
-            [docker, "rm", "-f", container],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
+        for candidate in (container, stale_container):
+            if candidate:
+                subprocess.run(
+                    [docker, "rm", "-f", candidate],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
 
 
 def _assert_headless_lifecycle(docker: str, workspace: Path) -> None:
