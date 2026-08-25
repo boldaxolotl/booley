@@ -18,7 +18,7 @@ def _config(**overrides):
     from booley.yosys.syn_core import StaTimingConfig
 
     base = {
-        "engine": "openroad",
+        "mode": "physical",
         "clock": "clk_i",
         "period_ps": 4000.0,
         "input_delay_pct": 30.0,

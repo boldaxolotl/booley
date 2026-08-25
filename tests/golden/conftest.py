@@ -7,8 +7,7 @@ A silently **missing** line is invisible to a substring assert — exactly how
 two real bugs slipped through:
 
 * ``519842f`` — the generated OpenROAD script lacked ``make_tracks`` after
-  ``initialize_floorplan``, so every placement run died with PPL-0021 (and
-  silently fell back to OpenSTA).
+  ``initialize_floorplan``, so every placement run died with PPL-0021.
 * ``ca5adaf`` — asic_synthesize emitted a bare ``--sdc`` flag (run_yosys_syn's
   ``--sdc`` takes a value), crashing argparse deep inside the sandbox.
 
@@ -83,7 +82,7 @@ def assert_matches_golden(rel_path: str, actual_text: str) -> None:
     """Compare *actual_text* against the checked-in golden at *rel_path*.
 
     *rel_path* is relative to ``tests/golden/expected/`` (e.g.
-    ``"yosys/opensta_script.tcl"``).  The text is normalized to end with a
+    ``"yosys/openroad_repair_on_util40.tcl"``). The text is normalized to end with a
     single trailing newline so checked-in goldens stay POSIX-friendly.
 
     Behavior (see module docstring for rationale):
