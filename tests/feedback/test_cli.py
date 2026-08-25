@@ -8,12 +8,14 @@ submit must stamp what it sent, or the next report re-publishes it.
 from __future__ import annotations
 
 import argparse
+import subprocess
 
 import pytest
 
 from booley.feedback import cli
 from booley.feedback import submit as submit_mod
 from booley.feedback.findings import read_log
+from booley.harness.init_cmd import PROJECT_GITIGNORE
 from booley.runtime import project_dir as project_dir_mod
 
 
@@ -178,6 +180,70 @@ class TestReporting:
         assert (state / "SETUP-REPORT.md").is_file()
         assert not (state / "BOOLEY-FEEDBACK.md").exists()
         assert "no second report was written" in capsys.readouterr().out
+
+    def test_setup_report_keeps_project_data_repository_clean(self, run, project):
+        state = project / ".booley_project"
+        (state / ".gitignore").write_text(PROJECT_GITIGNORE, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(state)], check=True)
+        run("add", "--title", "project note", "--bucket", "project")
+        subprocess.run(["git", "-C", str(state), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(state),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+
+        assert run("report") == 0
+
+        status = subprocess.run(
+            ["git", "-C", str(state), "status", "--short"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
+
+    def test_bug_report_keeps_project_data_repository_clean(self, run, project):
+        state = project / ".booley_project"
+        (state / ".gitignore").write_text(PROJECT_GITIGNORE, encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(state)], check=True)
+        run("add", "--title", "bug note", "--bucket", "project", "--origin", "bug")
+        subprocess.run(["git", "-C", str(state), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(state),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            check=True,
+        )
+
+        assert run("report") == 0
+
+        status = subprocess.run(
+            ["git", "-C", str(state), "status", "--short"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert status.stdout == ""
 
     def test_report_warns_that_an_existing_export_was_not_refreshed(
         self, run, project, filable, capsys

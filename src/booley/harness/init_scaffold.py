@@ -743,8 +743,13 @@ def _sdc_file(c: ScaffoldChoices) -> str:
 # ADR 0031: a synth Target without an SDC fileset is a hard error — no silent
 # default clock. 10 ns = 100 MHz scaffold clock; keep in sync with the TB.
 create_clock -name clk -period 10.0 [get_ports clk]
-set_input_delay  -clock clk 0.0 [all_inputs]
-set_output_delay -clock clk 0.0 [all_outputs]
+# Only synchronous data ports carry clock-relative I/O delay. rst_n is an
+# asynchronous assertion/deassertion input in this starter and is intentionally
+# excluded from recovery/removal timing; replace this assumption when the reset
+# crosses into a real clock domain.
+set_input_delay  -clock clk 0.0 [get_ports en]
+set_output_delay -clock clk 0.0 [get_ports count]
+set_false_path -from [get_ports rst_n]
 """
 
 
