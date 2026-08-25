@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).parents[2]
 _CLASSIFIER = _ROOT / ".github/scripts/ci_changes.py"
 _AGGREGATOR = _ROOT / ".github/scripts/ci_required.py"
@@ -203,6 +205,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
     assert _required(forced) == expected
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Win32 rejects newlines in path components")
 def test_rust_fixture_and_nul_unsafe_filename_are_not_lost(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "crates/bwave/tests/fixtures/trace.fst")
