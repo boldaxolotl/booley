@@ -170,10 +170,11 @@ first-run traps:
   team through git.
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
-  tree, init automatically deletes and restores only the affected files so Git
-  checks them out as LF. It leaves untracked and unaffected tracked files alone.
-  If the tree has tracked changes, init refuses the re-checkout; commit or stash
-  them and rerun:
+  tree, init stages Git-filtered LF replacements, verifies that the affected
+  files have not changed since inspection, then rewrites their content in place.
+  This preserves filesystem metadata and leaves untracked and unaffected tracked
+  files alone. Init refuses dirty trees, Git-protected affected paths, and
+  hard-linked candidates; commit or stash changes and rerun:
 
   ```bash
   booley init
@@ -186,9 +187,9 @@ first-run traps:
 
   (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
   is **not** enough. With the clean filter in place the worktree files already
-  match the index, so git decides nothing needs rewriting and leaves the CRLF on
-  disk, and `git checkout-index -a -f` does not help either. The affected files
-  have to be deleted first.)
+  match the index, so Git decides nothing needs rewriting and leaves the CRLF on
+  disk. Init materializes filtered replacements separately and applies them only
+  after all safety checks pass; it never deletes the originals.)
 
 - **The first sandbox image build takes over an hour.** First builds compile
   EDA tools from source and can take well over an hour on a WSL2-backed Docker;

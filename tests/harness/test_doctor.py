@@ -6684,6 +6684,31 @@ class TestLineEndingsCheck:
 
         assert c.warned and not c.failed
 
+    @pytest.mark.parametrize("true_value", ["yes", "on", "1"])
+    def test_autocrlf_true_alias_with_lf_tree_warns(self, tmp_path: Path, true_value: str):
+        self._repo(tmp_path, autocrlf=true_value)
+        c = _Collector()
+
+        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
+
+        assert c.warned and not c.failed and not c.passed
+
+    def test_explicit_crlf_checkout_policy_is_not_a_finding(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="false")
+        self._commit(tmp_path, ".gitattributes", b"*.txt text eol=crlf\n")
+        self._commit(tmp_path, "intentional.txt", b"alpha\nbeta\n")
+        (tmp_path / "intentional.txt").unlink()
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "--", "intentional.txt"],
+            capture_output=True,
+            check=True,
+        )
+        c = _Collector()
+
+        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
+
+        assert c.passed and not c.warned and not c.failed
+
     def test_minus_text_payload_is_not_a_finding(self, tmp_path: Path):
         # A `*.bat -text` file is stored CRLF and checked out CRLF deliberately:
         # byte-identical to the index, so it is clean in the container too.

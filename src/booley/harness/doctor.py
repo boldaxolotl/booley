@@ -1197,7 +1197,10 @@ def _check_line_endings(
     """
     _warn = _warning_sink(_warn, "git.autocrlf-risk")
 
-    from booley.harness.init_git_hooks import _count_crlf_worktree_files
+    from booley.harness.init_git_hooks import (
+        _count_crlf_worktree_files,
+        read_autocrlf_enabled,
+    )
 
     try:
         probe = subprocess.run(
@@ -1210,18 +1213,14 @@ def _check_line_endings(
         if probe.returncode != 0:
             _skip("line endings: project root is not a git repo")
             return
-        got = subprocess.run(
-            ["git", "-C", str(project_root), "config", "--get", "core.autocrlf"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
     except (FileNotFoundError, subprocess.SubprocessError):
         _skip("line endings: git unavailable")
         return
 
-    autocrlf = got.stdout.strip().lower() if got.returncode == 0 else ""
+    autocrlf = read_autocrlf_enabled(project_root)
+    if autocrlf is None:
+        _skip("line endings: could not read core.autocrlf as a Git Boolean")
+        return
     crlf_count = _count_crlf_worktree_files(project_root)
     if crlf_count is None:
         _skip("line endings: could not read `git ls-files --eol`")
@@ -1235,7 +1234,7 @@ def _check_line_endings(
             "booley init   (automatically repairs a clean tree; commit or stash first)",
         )
         return
-    if autocrlf == "true":
+    if autocrlf:
         _warn(
             "core.autocrlf=true — the tree is LF today, but the next clone or "
             "checkout will re-create it with CRLF and break Ticket Mode",
