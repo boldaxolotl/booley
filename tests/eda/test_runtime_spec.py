@@ -50,11 +50,15 @@ def issued(
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
+    host_skill = tmp_path / "host-skills" / "example-skill"
+    host_skill.mkdir(parents=True)
+    (host_skill / "SKILL.md").write_text("# Example skill\n", encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
+        host_skills=(("example-skill", docker_mount_path(host_skill)),),
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
     runtime_spec.pin_image(spec)
@@ -70,6 +74,22 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
     runtime_spec.stamp_path(project).unlink()
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing or corrupt"):
         runtime_spec.validate(project, spec, path)
+
+
+def test_validate_rejects_missing_generated_bind_source(issued, tmp_path: Path) -> None:
+    project, spec, path, _stamp = issued
+    host_skill = tmp_path / "host-skills" / "example-skill"
+    (host_skill / "SKILL.md").unlink()
+    host_skill.rmdir()
+
+    with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
+        runtime_spec.validate(project, spec, path)
+
+    message = str(caught.value)
+    assert "generated bind source" in message
+    assert docker_mount_path(host_skill) in message
+    assert f"{dc.HOST_SKILLS_SIDECAR}/example-skill" in message
+    assert "missing" in message
 
 
 def test_issuance_records_project_scoped_image_keeper(issued) -> None:

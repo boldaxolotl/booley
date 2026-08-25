@@ -15,6 +15,7 @@ from booley.runtime import platform_paths
 from booley.runtime.platform_paths import (
     cargo_bin,
     docker_mount_path,
+    host_path_from_docker_mount,
     kill_process_tree,
     native_binary,
     popen_new_group_kwargs,
@@ -40,6 +41,18 @@ class TestDockerMountPath:
     def test_windows_lowercase_drive(self):
         result = docker_mount_path(Path("D:/data"))
         assert result == "/d/data"
+
+
+class TestHostPathFromDockerMount:
+    @patch.object(platform_paths, "IS_WINDOWS", True)
+    def test_windows_drive_conversion(self):
+        assert host_path_from_docker_mount("/c/Users/dev/project").as_posix() == (
+            "C:/Users/dev/project"
+        )
+
+    @patch.object(platform_paths, "IS_WINDOWS", False)
+    def test_posix_passthrough(self):
+        assert host_path_from_docker_mount("/home/user/project") == Path("/home/user/project")
 
 
 # ---------------------------------------------------------------------------
