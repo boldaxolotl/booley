@@ -208,6 +208,8 @@ PROJECT_GITIGNORE_PATTERNS = (
     "worktrees/",
     "__pycache__/",
     "*.pyc",
+    "SETUP-REPORT.md",
+    "FEEDBACK-REPORT.md",
 )
 
 PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(
