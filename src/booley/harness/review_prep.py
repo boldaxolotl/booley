@@ -1150,5 +1150,5 @@ def review_briefing_command(
             render_review_briefing(package, failures),
             tuple(failures),
         )
-    except Exception as exc:  # noqa: BLE001 - CLI boundary returns a stable outcome
+    except Exception as exc:  # noqa: BLE001 — CLI boundary returns a stable outcome
         return ReviewBriefingOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])

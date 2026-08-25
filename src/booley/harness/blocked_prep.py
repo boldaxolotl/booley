@@ -351,7 +351,7 @@ async def prepare_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepO
         }
         _write_json(_manifest_path(ctx), manifest)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
-    except Exception as exc:  # noqa: BLE001 - post-processing must never alter disposition
+    except Exception as exc:  # post-processing must never alter disposition
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)
         if "ctx" in locals():
             try:
@@ -409,5 +409,5 @@ def render_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepOutcome:
             lines.extend(["", "**Findings:**"])
             lines.extend(f"- {item}" for item in diagnosis["findings"])
         return BlockedPrepOutcome("ready", "\n".join(lines), path)
-    except Exception as exc:  # noqa: BLE001 - CLI boundary returns a stable outcome
+    except Exception as exc:  # noqa: BLE001 — CLI boundary returns a stable outcome
         return BlockedPrepOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])
