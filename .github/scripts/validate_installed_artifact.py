@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import email
 import importlib.metadata
-import os
 import subprocess
 import sys
+import sysconfig
 import zipfile
 from pathlib import Path
 
@@ -75,6 +75,11 @@ def _assert_resources(files: set[str]) -> None:
     assert not forbidden, f"installed artifact contains forbidden payloads: {sorted(forbidden)}"
 
 
+def _entry_point_executable(name: str) -> Path:
+    """Return an entry point from the interpreter's active install scheme."""
+    return Path(sysconfig.get_path("scripts"), name)
+
+
 def _assert_entry_points() -> None:
     entry_points = {
         entry.name: entry.value
@@ -85,7 +90,7 @@ def _assert_entry_points() -> None:
         assert entry_points.get(name) == expected_value, (
             f"entry point {name!r} is {entry_points.get(name)!r}, expected {expected_value!r}"
         )
-        executable = Path(sys.prefix, "Scripts" if os.name == "nt" else "bin", name)
+        executable = _entry_point_executable(name)
         result = subprocess.run(
             [str(executable), "--help"],
             capture_output=True,
