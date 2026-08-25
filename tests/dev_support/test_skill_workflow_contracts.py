@@ -140,7 +140,7 @@ def test_ticket_create_defaults_every_review_to_done_mode():
     assert "Every `_clean` waiver must include a justification" in skill
 
 
-def test_ticket_create_grills_one_dependency_frontier_per_round():
+def test_ticket_create_grills_frontiers_then_shows_one_complete_draft():
     skill = _skill_text("booley-ticket-create")
     grilling = _skill_text("booley-ticket-create", "grilling.md")
     contract = " ".join(f"{skill}\n{grilling}".split())
@@ -151,12 +151,19 @@ def test_ticket_create_grills_one_dependency_frontier_per_round():
         "Ask the whole frontier in one round",
         "defer it to a later round",
         "After each response, record the settled decisions and recompute the frontier",
-        "ask the user to confirm it",
+        "continue directly to the draft gate",
+        "The complete ticket is the one post-grill review artifact",
+        "Detailed mode skips 2d and 2e",
+        "single post-grill review artifact",
         "MANDATORY DRAFT GATE",
         "combined ticket + Target diff is the separate seal gate",
     ):
         assert required in contract
     assert "one question at a time" not in contract.lower()
+    assert (
+        "summarize the resulting shared understanding and ask the user to confirm it"
+        not in contract
+    )
 
 
 def test_setup_grills_one_dependency_frontier_per_round():
