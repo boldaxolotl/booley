@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -849,16 +850,52 @@ def _flavor_build(
     return True
 
 
-def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
-    """Build, pull, or refresh the Booley-shipped sandbox flavor the project selected.
+def _prepare_flavor_without_build(
+    ctx: InitContext,
+    image: str,
+    *,
+    exists: bool,
+    fingerprint: str | None,
+    expected_version: str,
+) -> bool | None:
+    """Return changed/current when handled, or ``None`` when a local build is needed."""
+    if exists and not ctx.force and not _image_is_stale(fingerprint, image, expected_version):
+        skip(f"{image} is a Booley-shipped sandbox flavor and is up to date")
+        ctx.record("project_image", "skip", f"flavor {image} current")
+        return False
+    if ctx.check_only:
+        verb = "rebuild (stale)" if exists else "pull or build"
+        warn(f"would {verb} the {image} sandbox flavor")
+        ctx.record("project_image", "warn", f"would {verb}")
+        return False
+    if not exists and not ctx.force and _try_pull_image(expected_version, image):
+        ok(f"{image} pulled from registry")
+        ctx.record("project_image", "ok", f"flavor {image} pulled")
+        return True
+    return None
 
-    Runs right after the base Docker-image step, and that ordering is
-    load-bearing: a flavor is
-    ``FROM booley-sandbox``, so rebuilding only the base leaves the flavor frozen
-    on the previous layers under an unchanged tag. The session then keeps serving
-    pre-rebuild code and nothing looks wrong — derived-image drift. Sharing the
-    base's build fingerprint closes that: the source change that restamps the
-    base marks the flavor stale here, and it is rebuilt in the same run.
+
+def _flavor_base_ready(ctx: InitContext, ensure_base: Callable[[], None] | None) -> bool:
+    """Provision a flavor's local-build base on demand and report whether it succeeded."""
+    if ensure_base is None:
+        return True
+    result_count = len(ctx.results)
+    ensure_base()
+    return not any(result.status == "err" for result in ctx.results[result_count:])
+
+
+def ensure_flavor_image(
+    ctx: InitContext,
+    image: str,
+    *,
+    ensure_base: Callable[[], None] | None = None,
+) -> bool:
+    """Pull, build, or refresh the Booley-shipped sandbox flavor the project selected.
+
+    A published flavor is tried before ``ensure_base`` is invoked. The callback
+    is therefore needed only for the local-build fallback; registry images
+    already carry their inherited base layers. Callers that provisioned the
+    base earlier may omit it.
 
     Returns True when this run actually (re)built the image, so the caller can
     warn about a live session still serving the previous one.
@@ -869,18 +906,15 @@ def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
     exists = _docker_image_exists(image)
     fingerprint = _image_build_fingerprint(docker_dir.parent.parent.parent.parent)
     expected_version = _expected_version(docker_dir.parent.parent.parent.parent)
-
-    if exists and not ctx.force and not _image_is_stale(fingerprint, image, expected_version):
-        skip(f"{image} is a Booley-shipped sandbox flavor and is up to date")
-        ctx.record("project_image", "skip", f"flavor {image} current")
-        return False
-
-    if ctx.check_only:
-        verb = "rebuild (stale)" if exists else "build"
-        warn(f"would {verb} the {image} sandbox flavor")
-        ctx.record("project_image", "warn", f"would {verb}")
-        return False
-
+    prepared = _prepare_flavor_without_build(
+        ctx,
+        image,
+        exists=exists,
+        fingerprint=fingerprint,
+        expected_version=expected_version,
+    )
+    if prepared is not None:
+        return prepared
     # No shipped Dockerfile to build from (a trimmed install): the registry is
     # the only source, and a flavor already on disk is trusted as-is — there is
     # nothing local to check it against.
@@ -889,15 +923,13 @@ def ensure_flavor_image(ctx: InitContext, image: str) -> bool:
             skip(f"{image} present; no shipped {dockerfile_name} to rebuild from — trusting it")
             ctx.record("project_image", "skip", f"flavor {image} unverifiable")
             return False
-        if _try_pull_image(expected_version, image):
-            ok(f"{image} pulled from registry")
-            ctx.record("project_image", "ok", f"flavor {image} pulled")
-            return True
         err(f"{image} is missing and cannot be built — no shipped {dockerfile_name}")
         info(f"  pull it: docker pull {remote_tag(image, expected_version)}")
         ctx.record("project_image", "err", f"flavor {image} unavailable")
         return False
 
+    if not _flavor_base_ready(ctx, ensure_base):
+        return False
     if exists:
         warn(f"{image} is stale (its {DOCKER_IMAGE} base or Booley's sources changed)")
         warn("  rebuilding — a session left on the old image keeps serving pre-rebuild code")
