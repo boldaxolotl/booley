@@ -3114,11 +3114,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
             report_text=f"Traced simulation failed (rc={proc.returncode}): {detail[-500:]}",
         )
 
-    def _ensure_trace(self, trace_dir: Path, work_dir: Path) -> McpToolResult | None:  # noqa: PLR0911 — each prerequisite check returns its own early error McpToolResult
+    def _ensure_trace(self, trace_dir: Path, work_dir: Path) -> McpToolResult | None:
         """Run traced simulation if no trace file exists. Returns error McpToolResult or None."""
-        from booley.flows.execution import resolve_execution
-        from booley.flows.sim.flow import SimulateFlow
-
         # Pre-flight: TB-level $dumpfile/$dumpvars hijack the +tracefile path
         # the harness sets up, so bwave finds nothing and the run dies with a
         # vague "no trace file" message.  Catch it early with a precise,
@@ -3127,10 +3124,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
         if err is not None:
             return err
 
-        selection = resolve_execution("sim", Path(self.args.work_dir))
-        selection_error = SimulateFlow.validate_execution(selection)
-        if selection_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=selection_error)
         trace_scope = self._derive_trace_scope()
         trace_timeout = max(int(self.args.timeout * 0.6), 300)
         # Both simulators trace through the edalize build + their EDA-tool-specific

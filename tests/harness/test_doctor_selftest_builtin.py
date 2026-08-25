@@ -40,6 +40,10 @@ def _set_venue(monkeypatch, inside: bool) -> None:
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
 
 
+def _runtime(project, docker_exe: str | None = None):
+    return doctor._DoctorFlowRuntime(project.project_root, docker_exe)
+
+
 def _audit(
     tmp_path,
     *,
@@ -84,7 +88,7 @@ def _run(monkeypatch, project, exit_by_kind):
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
     rec = _Rec()
-    doctor._run_selftest_checks(project, None, rec.p, rec.w, rec.s, rec.f)
+    doctor._run_selftest_checks(project, _runtime(project), rec.p, rec.w, rec.s, rec.f)
     return rec
 
 
@@ -112,7 +116,8 @@ def test_good_and_bad_runs_pin_the_same_smoke_test(tmp_path, monkeypatch):
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
     rec = _Rec()
-    doctor._run_selftest_checks(_audit(tmp_path), None, rec.p, rec.w, rec.s, rec.f)
+    project = _audit(tmp_path)
+    doctor._run_selftest_checks(project, _runtime(project), rec.p, rec.w, rec.s, rec.f)
 
     assert not rec.fails()
     assert seen_tests == ["hello_world", "hello_world"]
@@ -121,9 +126,8 @@ def test_good_and_bad_runs_pin_the_same_smoke_test(tmp_path, monkeypatch):
 def test_builtin_without_fixtures_warns(tmp_path, monkeypatch):
     _set_venue(monkeypatch, False)
     rec = _Rec()
-    doctor._run_selftest_checks(
-        _audit(tmp_path, fixture=False), "docker", rec.p, rec.w, rec.s, rec.f
-    )
+    project = _audit(tmp_path, fixture=False)
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
     assert not rec.fails()
     assert any("fail-path unvalidated" in m for lvl, m in rec.events if lvl == "warn")
 
@@ -171,7 +175,8 @@ def test_lint_selftest_uses_conventional_bad_target(tmp_path, monkeypatch):
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
     rec = _Rec()
-    doctor._run_selftest_checks(_lint_audit(tmp_path), None, rec.p, rec.w, rec.s, rec.f)
+    project = _lint_audit(tmp_path)
+    doctor._run_selftest_checks(project, _runtime(project), rec.p, rec.w, rec.s, rec.f)
 
     assert not rec.fails()
     assert seen_targets == ["lint_core", "lint_selftest_bad"]
@@ -180,10 +185,9 @@ def test_lint_selftest_uses_conventional_bad_target(tmp_path, monkeypatch):
 def test_lint_without_conventional_bad_target_warns(tmp_path, monkeypatch):
     _set_venue(monkeypatch, False)
     rec = _Rec()
+    project = _lint_audit(tmp_path, fixture=False)
 
-    doctor._run_selftest_checks(
-        _lint_audit(tmp_path, fixture=False), "docker", rec.p, rec.w, rec.s, rec.f
-    )
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
 
     warns = [m for level, m in rec.events if level == "warn"]
     lint_warn = next(m for m in warns if m.startswith("lint fail-path unvalidated"))
@@ -194,9 +198,8 @@ def test_lint_without_conventional_bad_target_warns(tmp_path, monkeypatch):
 def test_disabled_flow_skips_silently(tmp_path, monkeypatch):
     _set_venue(monkeypatch, False)
     rec = _Rec()
-    doctor._run_selftest_checks(
-        _audit(tmp_path, enabled=False), "docker", rec.p, rec.w, rec.s, rec.f
-    )
+    project = _audit(tmp_path, enabled=False)
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
     # The disabled simulate emits nothing — not even the fixtures nag. (The
     # unconfigured-but-active lint still gets its own unvalidated WARN.)
     assert not rec.fails()
@@ -209,10 +212,9 @@ def test_unvalidated_warning_names_the_sim_footprint_tradeoff(tmp_path, monkeypa
     port hand-proved its fail paths and left the WARN standing, unexplained."""
     _set_venue(monkeypatch, False)
     rec = _Rec()
+    project = _audit(tmp_path, fixture=False)
 
-    doctor._run_selftest_checks(
-        _audit(tmp_path, fixture=False), "docker", rec.p, rec.w, rec.s, rec.f
-    )
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
 
     warns = [m for lvl, m in rec.events if lvl == "warn"]
     sim_warn = next(m for m in warns if m.startswith("sim fail-path unvalidated"))

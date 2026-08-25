@@ -1,27 +1,18 @@
-"""EDA-tool and liberty-file discovery for the Yosys Synthesis Flow.
+"""Liberty-file discovery for the Yosys Synthesis Flow.
 
-Locates external binaries (yosys, sv2v, sta) on ``PATH`` and resolves the
-Liberty timing library from CLI argument / ``$PRJ_LIB_DIR`` / a platform
-default.  A pure, side-effect-free leaf module — it does not import from
-``syn_core``.
+Resolves the Liberty timing library from CLI argument / ``$PRJ_LIB_DIR`` / a
+platform default. A pure, side-effect-free leaf module.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
 # Default liberty library path (platform-dependent fallback)
 DEFAULT_LIB_DIR = Path("C:/tools") if sys.platform == "win32" else Path("/opt/pdk")
 DEFAULT_LIBERTY = DEFAULT_LIB_DIR / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
-
-
-def find_eda_tool(name: str) -> Path | None:
-    """Find an EDA tool on PATH, return full path or None."""
-    result = shutil.which(name)
-    return Path(result) if result else None
 
 
 def resolve_liberty(cli_liberty: str | None = None) -> Path:
@@ -69,7 +60,7 @@ def resolve_liberty_lenient(cli_liberty: str | None = None) -> tuple[Path, bool]
             return lib, True
         if DEFAULT_LIBERTY.exists():
             return DEFAULT_LIBERTY, True
-        # Keep the PRJ_LIB_DIR-derived path as the best guess for the far side.
+        # Keep the issued PRJ_LIB_DIR-derived path for boundary diagnostics.
         return lib, False
 
     return DEFAULT_LIBERTY, DEFAULT_LIBERTY.exists()

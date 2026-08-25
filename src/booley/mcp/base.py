@@ -308,22 +308,10 @@ class McpTool(ABC):
     # Per-criterion CLI args hint for the developer (criterion -> args string)
     satisfies_args: ClassVar[dict[str, str]] = {}
 
-    @classmethod
-    def validate_execution(cls, selection: execution.ExecutionSelection) -> str | None:
-        """Return a config-facing error for an invalid ``[flows.<name>]``
-        selection, or None when it is valid.
-
-        Principle 9 (depend on abstractions): the doctor audit validates a
-        Flow's configured execution through this method instead of reaching
-        into per-endpoint helpers. A surviving ``backend =`` line fails here with
-        the exact migration lines (ADR 0037/0039 hard-migration precedent).
-        """
-        return execution.execution_error(cls.name, selection)
-
-    def _resolve_execution(self) -> execution.ExecutionSelection:
-        """This run's resolved execution selection from the scoped config."""
+    def _flow_enabled(self) -> bool:
+        """Return whether this Flow is enabled in the scoped config."""
         work_dir = Path(getattr(self.args, "work_dir", ".")) if self.args else None
-        return execution.resolve_execution(self.name, work_dir)
+        return execution.flow_enabled(self.name, work_dir)
 
     @property
     def _selected_target(self) -> str:

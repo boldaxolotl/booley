@@ -309,7 +309,7 @@ class TestRunCommand:
         work_root = tmp_path / ".booley_project" / ".runtime" / "edalize" / "fpga" / "cfgA"
         cmd = fpga_edam.fpga_run_command(work_root, work_dir)
         assert cmd[0] == "make" and cmd[1] == "-C"
-        # Relative so it resolves identically host-side and at /work in-sandbox.
+        # Relative so it stays independent of the Runtime workspace location.
         assert not Path(cmd[2]).is_absolute()
         assert cmd[2] == ".booley_project/.runtime/edalize/fpga/cfgA"
 

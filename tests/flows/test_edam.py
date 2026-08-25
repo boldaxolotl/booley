@@ -274,7 +274,7 @@ class TestMakeCommand:
 
 
 # ---------------------------------------------------------------------------
-# Relocatable (relative) paths for the host/sandbox boundary
+# Relocatable paths inside the Session Runtime workspace
 # ---------------------------------------------------------------------------
 
 
@@ -332,7 +332,7 @@ class TestRelativePaths:
         )
         configure("lint", edam, work_root)
         vc = (work_root / "design.vc").read_text()
-        # the .vc carries a relative path, not an absolute host path
+        # The .vc carries a relative path, not an absolute workspace path.
         assert str(ws) not in vc
         assert "../" in vc
         assert "--lint-only" in vc  # added by the Lint flow itself

@@ -1,6 +1,8 @@
 """Unit tests for Session Runtime-only Flow selection."""
 
-from booley.flows.execution import ExecutionSelection, execution_error, resolve_execution
+import pytest
+
+from booley.flows.execution import FlowConfigError, flow_enabled, flow_enabled_from_config
 
 
 def _project(tmp_path, toml_text: str):
@@ -11,28 +13,35 @@ def _project(tmp_path, toml_text: str):
 
 
 def test_defaults_enabled_without_config(tmp_path):
-    assert resolve_execution("sim", tmp_path) == ExecutionSelection()
+    assert flow_enabled("sim", tmp_path) is True
 
 
 def test_enabled_false_read_from_flow_section(tmp_path):
     root = _project(tmp_path, "[flows.sim]\nenabled = false\n")
-    assert resolve_execution("sim", root).enabled is False
+    assert flow_enabled("sim", root) is False
 
 
-def test_surviving_backend_is_carried_for_migration(tmp_path):
-    root = _project(tmp_path, '[flows.sim]\nbackend = "project-native"\n')
-    assert resolve_execution("sim", root).legacy_backend == "project-native"
+def test_parsed_config_enablement_uses_shared_resolver():
+    assert flow_enabled_from_config("sim", {"flows": {"sim": {"enabled": False}}}) is False
 
 
-def test_backend_migration_names_session_runtime():
-    err = execution_error("sim", ExecutionSelection(legacy_backend="project-native"))
-    assert err is not None and "Session Runtime" in err and "Delete" in err
+@pytest.mark.parametrize("backend", ["docker", "host"])
+def test_retired_backend_is_a_hard_migration_error(backend):
+    config = {"flows": {"sim": {"backend": backend}}}
+
+    with pytest.raises(FlowConfigError, match=r"all Flows run inside the Session Runtime"):
+        flow_enabled_from_config("sim", config)
 
 
-def test_none_backend_maps_to_enabled_false():
-    err = execution_error("lint", ExecutionSelection(legacy_backend="none"))
-    assert err is not None and "enabled = false" in err
+def test_retired_none_backend_points_to_enabled_false():
+    config = {"flows": {"sim": {"backend": "none"}}}
+
+    with pytest.raises(FlowConfigError, match=r"enabled = false"):
+        flow_enabled_from_config("sim", config)
 
 
-def test_clean_disabled_selection_is_valid():
-    assert execution_error("lint", ExecutionSelection(enabled=False)) is None
+def test_loaded_project_backend_is_not_silently_ignored(tmp_path):
+    root = _project(tmp_path, '[flows.sim]\nbackend = "docker"\n')
+
+    with pytest.raises(FlowConfigError, match=r"delete the key"):
+        flow_enabled("sim", root)

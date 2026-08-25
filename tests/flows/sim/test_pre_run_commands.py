@@ -13,7 +13,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from booley.flows.base import SubprocessResult
-from booley.flows.execution import ExecutionSelection
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.project_dir import reset_cache
@@ -27,7 +26,7 @@ from tests.flows.sim.test_flow import (
     _mock_execute_pass,
 )
 
-_BUILTIN_SANDBOX = ExecutionSelection()
+_FLOW_ENABLED = True
 
 _PRE_RUN = ["make -C tests prep CASE=$BOOLEY_TEST_NAME"]
 
@@ -81,7 +80,7 @@ class TestPreRunEnvContract:
         assert env["BOOLEY_RUN_CWD"] == str(tmp_path / "util" / "sim")
 
     def test_default_run_dir_used_when_knob_unset(self, tmp_path: Path):
-        # The boundary path passes the work root — where the host EDA tools run.
+        # The boundary path passes the work root used by the Runtime command.
         flow = _make_flow(tmp_path, config="lite")
         work_root = tmp_path / "wr"
         env = flow._pre_run_env("lite", None, {}, None, default_run_dir=work_root)
@@ -109,7 +108,7 @@ class TestPreRunEnvContract:
 
 class TestHdlLoopFiring:
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
@@ -133,7 +132,7 @@ class TestHdlLoopFiring:
             assert call.kwargs["timeout"] == flow._get_timeout()
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_unset_knob_spawns_nothing(
@@ -154,7 +153,7 @@ class TestHdlLoopFiring:
 
 class TestFailureIsolation:
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
@@ -179,7 +178,7 @@ class TestFailureIsolation:
         assert "1/2 tests" in result.report_text
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
@@ -338,7 +337,7 @@ class TestTargetSimEnvVisibleToPreRun:
     """
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
@@ -374,7 +373,7 @@ class TestFiringIsVisible:
     """
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
@@ -390,7 +389,7 @@ class TestFiringIsVisible:
         assert report.count("pre_run_commands (1 line(s)) for stress: rc=0") == 1
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
@@ -407,7 +406,7 @@ class TestFiringIsVisible:
         assert "pre_run_commands (1 line(s)) for smoke: rc=3" in result.report_text
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_unset_knob_records_nothing(

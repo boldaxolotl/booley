@@ -12,11 +12,11 @@ FuseSoC resolution is stubbed with a canned ResolvedTarget (the
 ``_stub_fusesoc_resolution`` autouse pattern copied from
 ``tests/dev_support/test_asic_synthesize.py``): ``_build_synth_cmd`` would otherwise
 shell out to a real ``fusesoc run --setup``.  Every path in the resulting argv
-is *relative to the work dir* (the host/sandbox-boundary contract), so the
+is *relative to the work dir* (the Session Runtime boundary contract), so the
 snapshot is tmp-path-free by construction — the helper's leak guard enforces
 that.
 
-Note: ``timing_engine`` values are strictly validated host-side
+Note: ``timing_engine`` values are strictly validated before EDA execution
 (``TIMING_ENGINE_CHOICES`` = openroad/opensta/none, commit 200e7ba), so the
 configs below use only valid values.
 """
@@ -156,7 +156,7 @@ def _make_tool(tmp_path: Path, recipe_body: str | None = None) -> AsicSynthesize
 def test_synth_argv_bare_golden(state_file: Path, tmp_path: Path) -> None:
     """Snapshot the argv for a bare config (no booley.toml knobs).
 
-    Baseline shape: standalone run_yosys_syn with resolved sources/top/params
+    Baseline shape: run_yosys_syn configure argv with resolved sources/top/params
     and no optional flags — a token appearing here unexpectedly (e.g. a bare
     ``--sdc``, the ca5adaf bug) is a diff, not a silent pass.
     """
@@ -172,8 +172,9 @@ def test_synth_argv_flatten_opensta_golden(
     """Snapshot the argv with every optional knob engaged.
 
     ``flatten = true`` → bare ``--flatten`` and ``timing_engine = "opensta"``
-    → ``--timing-engine opensta`` (strictly validated host-side). SDCs come
-    only from the Target fileset and are already represented by ``--sta-sdc``.
+    → ``--timing-engine opensta`` (strictly validated during configuration).
+    SDCs come only from the Target fileset and are already represented by
+    ``--sta-sdc``.
     """
     tool = _make_tool(
         tmp_path,
@@ -230,7 +231,7 @@ def _configure_golden_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     tool = _make_tool(tmp_path, 'timing_engine = "opensta"\n')
     cmd = tool._build_synth_cmd("lite")  # rmtree's the work root — materialize after
     _materialize_resolved_sources(tmp_path)
-    args = run_yosys_syn.parse_run_argv(cmd)
+    args = run_yosys_syn.parse_configure_argv(cmd)
     spec = run_yosys_syn.resolve_spec(
         args,
         project_root=tmp_path,
