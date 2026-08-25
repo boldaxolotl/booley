@@ -188,6 +188,7 @@ class TestConfigureSynthesis:
         assert "falling back" not in text
         assert "run_opensta.tcl" not in text
 
+    @pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires a POSIX shell")
     def test_physical_mode_fails_when_openroad_is_missing(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         fake_bin = tmp_path / "bin"
