@@ -2556,6 +2556,14 @@ class SimulateFlow(BooleyFlow):
             or []
         )
         complete_suite = not self.args.test and (not declared or set(selected) == set(declared))
+        passed_tests = [test.name for test in target_result.tests if test.passed]
+        failed_tests = [
+            test.name for test in target_result.tests if not test.passed and not test.inconclusive
+        ]
+        skipped_tests = self._skipped_tests(
+            target_result.target,
+            getattr(self, "_test_names_map", None) or _get_test_names(),
+        )
         self.set_criterion(
             crit_key,
             target_result.passed,
@@ -2564,7 +2572,11 @@ class SimulateFlow(BooleyFlow):
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
+                "registry_tests": declared,
                 "selected_tests": selected,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "skipped_tests": skipped_tests,
             },
         )
 
