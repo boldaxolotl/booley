@@ -113,6 +113,41 @@ class TestTraceStatusManifest:
         status = json.loads((tmp_path / "trace_status.json").read_text(encoding="utf-8"))
         assert status["trace_metadata"]["total_ticks"] == 900
 
+    def test_inspection_accepts_queryable_trace_with_multiple_root_scopes(
+        self, tmp_path, monkeypatch
+    ):
+        """Cocotb/Verilator exposes $rootio beside the DUT, so no common prefix exists."""
+        trace = tmp_path / "trace.fst"
+        trace.write_bytes(MINIMAL_FST_BYTES)
+        monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "scope_prefix": "",
+                            "root_scopes": ["$rootio", "uart16550"],
+                            "signal_count": 148,
+                            "total_ticks": 1705,
+                            "signals": [{"name": "$rootio.clk"}],
+                        }
+                    }
+                ),
+                stderr="",
+            ),
+        )
+
+        inspection = TraceSession(tmp_path).inspect(trace)
+
+        assert inspection.usable is True
+        assert inspection.artifact is not None
+        assert inspection.artifact.top_scope == "$rootio, uart16550"
+        assert inspection.artifact.signal_count == 148
+
     def test_postprocess_retries_unscoped_when_scoped_build_writes_no_cache(
         self,
         tmp_path,

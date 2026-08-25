@@ -2819,6 +2819,12 @@ pub fn list_signals_from_cache(
             .map(|(n, _, _)| n.clone())
             .collect::<Vec<_>>(),
     );
+    let root_scopes = crate::signal::top_scopes(
+        &matched
+            .iter()
+            .map(|(n, _, _)| n.clone())
+            .collect::<Vec<_>>(),
+    );
 
     let stripped: Vec<(String, u32, String)> = if !prefix.is_empty() {
         matched
@@ -2868,6 +2874,7 @@ pub fn list_signals_from_cache(
             "list",
             crate::output::ListData {
                 scope_prefix,
+                root_scopes,
                 signal_count,
                 clock,
                 total_ticks,

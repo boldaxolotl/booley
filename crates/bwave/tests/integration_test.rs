@@ -2030,6 +2030,7 @@ fn test_envelope_list() {
         "command should be 'list'"
     );
     assert!(json_has_key(&stdout, "scope_prefix"));
+    assert!(json_has_key(&stdout, "root_scopes"));
     assert!(json_has_key(&stdout, "signals"));
     assert!(json_has_key(&stdout, "warnings"));
 }

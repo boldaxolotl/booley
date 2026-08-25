@@ -45,6 +45,8 @@ pub fn emit_json<T: Serialize>(command: &str, data: T, warnings: Vec<String>) {
 #[derive(Serialize)]
 pub struct ListData {
     pub scope_prefix: String,
+    /// Distinct first-level scopes represented by the matched signals.
+    pub root_scopes: Vec<String>,
     /// Total matched signals before `--limit` is applied to `signals`.
     pub signal_count: usize,
     /// Full hierarchical name of the detected (or `--clock`-overridden) clock;

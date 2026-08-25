@@ -36,7 +36,6 @@ import json
 import sys
 from pathlib import Path
 
-from booley.bwave.contract import SCOPE_LINE_PREFIX
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -130,12 +129,12 @@ def _register_trace(trace: Path, alias: str | None = None) -> str:
 # Subcommand: register
 # ---------------------------------------------------------------------------
 def _trace_identity(trace: Path) -> str:
-    """Top-level scope recorded in *trace*, or "" when it cannot be read.
+    """Top-level scope(s) recorded in *trace*, or "" when unreadable/empty.
 
     Registration is the only moment where a wrong trace is cheap to notice,
-    so print what design the file actually contains. `bwave list --tree`
-    reports the common scope prefix of every signal on stderr as
-    ``# scope: <top>``; that string is the design's identity.
+    so print what design the file actually contains. A common prefix is useful
+    when one exists; otherwise retain every first-level root (Cocotb/Verilator
+    normally exposes ``$rootio`` beside the DUT).
     """
     import subprocess
 
@@ -143,7 +142,15 @@ def _trace_identity(trace: Path) -> str:
 
     try:
         result = subprocess.run(
-            [*bwave._bwave_cmd(), "list", str(trace), "--tree"],
+            [
+                *bwave._bwave_cmd(),
+                "list",
+                str(trace),
+                "--format",
+                "json",
+                "--limit",
+                "1",
+            ],
             capture_output=True,
             text=True,
             timeout=60,
@@ -151,12 +158,20 @@ def _trace_identity(trace: Path) -> str:
         )
     except (OSError, subprocess.TimeoutExpired, SystemExit):
         return ""
-    for line in result.stderr.splitlines():
-        # SCOPE_LINE_PREFIX is pinned in _bwave_contract: the Rust side owns
-        # the line format, and rewording it there breaks this parse.
-        if line.startswith(SCOPE_LINE_PREFIX.rstrip()):
-            return line.split(":", 1)[1].strip()
-    return ""
+    if result.returncode != 0:
+        return ""
+    try:
+        data = json.loads(result.stdout)["data"]
+        common = str(data.get("scope_prefix") or "").strip()
+        if common:
+            return common
+        roots = [str(scope).strip() for scope in data.get("root_scopes", [])]
+        identity = ", ".join(scope for scope in roots if scope)
+        return identity or (
+            "<top-level signals>" if int(data.get("signal_count", 0) or 0) > 0 else ""
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return ""
 
 
 def _trace_age_note(trace: Path) -> str:
@@ -313,8 +328,11 @@ def cmd_register(args: argparse.Namespace) -> None:
     if trace.suffix == ".fst":
         identity = _trace_identity(trace)
         age = _trace_age_note(trace)
+        identity_label = "top scopes" if ", " in identity else "top scope"
         detail = " ".join(
-            part for part in (f"top scope: {identity}" if identity else "", age) if part
+            part
+            for part in (f"{identity_label}: {identity}" if identity else "", age)
+            if part
         )
         if detail:
             print(f"[bwave] {detail}", file=sys.stderr)
@@ -323,10 +341,10 @@ def cmd_register(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
         if not identity:
-            # The store parsed but reported no top scope — either the identity
-            # probe failed, or the store carries no signals at all. Silently
-            # skipping the identity block hid exactly the store one should
-            # not trust; say so instead.
+            # A queryable store with signals always yields a common scope,
+            # root scopes, or the explicit top-level-signals marker. Reaching
+            # here therefore means the identity probe itself failed or could
+            # not enumerate signals.
             print(
                 "[bwave] WARNING: could not read a top scope from this store — "
                 "it may have no signals (header-only trace?). Run "

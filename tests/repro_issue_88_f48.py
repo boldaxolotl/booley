@@ -73,7 +73,8 @@ def test_trace_enabled_cocotb_run_rejects_a_store_with_no_readable_hierarchy(
     assert probe.returncode != 0 or not payload.get("data", {}).get("signals")
 
     # Desired F-48 contract: a trace-enabled run succeeds only after a cheap
-    # probe establishes a top scope and at least one signal.
+    # hierarchy probe establishes at least one signal. A valid store may have
+    # multiple roots and therefore no single common scope prefix.
     assert rc == 1
     assert "TRACE_OK:" not in stdout
     session = TraceSession(tmp_path)

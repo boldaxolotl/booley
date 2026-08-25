@@ -527,12 +527,14 @@ class TraceSession:
         if data is None:
             return TraceInspection(None, failure_reason)
         top_scope = str(data["scope_prefix"])
+        if not top_scope:
+            top_scope = ", ".join(str(scope) for scope in data["root_scopes"])
         signal_count = int(data["signal_count"])
         total_ticks = int(data["total_ticks"])
-        if not top_scope:
-            return TraceInspection(None, "retained trace has no readable top scope")
         if signal_count <= 0:
             return TraceInspection(None, "retained trace has no signals")
+        if not top_scope:
+            top_scope = "<top-level signals>"
 
         artifact = TraceArtifact(
             path=candidate,
@@ -582,8 +584,23 @@ class TraceSession:
             raw_data = payload["data"]
             if not isinstance(raw_data, dict):
                 raise TypeError("data is not an object")
+            root_scopes = [
+                str(scope).strip()
+                for scope in raw_data.get("root_scopes", [])
+                if str(scope).strip()
+            ]
+            if not root_scopes:
+                root_scopes = sorted(
+                    {
+                        str(signal.get("name", "")).split(".", 1)[0]
+                        for signal in raw_data.get("signals", [])
+                        if isinstance(signal, dict)
+                        and "." in str(signal.get("name", ""))
+                    }
+                )
             data = {
                 "scope_prefix": str(raw_data.get("scope_prefix") or "").strip(),
+                "root_scopes": root_scopes,
                 "signal_count": int(
                     raw_data.get("signal_count", len(raw_data.get("signals", []))) or 0
                 ),
