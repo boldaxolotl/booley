@@ -226,7 +226,18 @@ class TestCheckCriteriaAcceptance:
             },
             strict=True,
         )
-        state.set_criterion("sim_pass_sim_uart", False, detail={"failed_tests": ["test_transmit"]})
+        state.set_criterion(
+            "sim_pass_sim_uart",
+            False,
+            detail={
+                "failed_tests": ["test_transmit"],
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl", "tb"],
+                    "fingerprint": "red-source-fingerprint",
+                    "target": "sim_uart",
+                },
+            },
+        )
         state.set_criterion(
             "sim_pass_sim_uart",
             True,

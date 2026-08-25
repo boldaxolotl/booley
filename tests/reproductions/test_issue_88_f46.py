@@ -111,6 +111,36 @@ def test_full_suite_criterion_rejects_partial_registry_evidence(tmp_path: Path) 
     assert verdict.unmet_mandatory == ["sim_pass_sim_uart"]
 
 
+def test_malformed_registry_cannot_weaken_sim_acceptance(tmp_path: Path) -> None:
+    """Invalid tests.toml must fail closed instead of becoming an empty registry."""
+    project = _project(tmp_path)
+    state = _state(tmp_path, {"sim_pass_sim_uart": True})
+    state.work_dir = str(project)
+    state.set_criterion(
+        "sim_pass_sim_uart",
+        True,
+        detail={
+            "tests_passed": 1,
+            "tests_total": 1,
+            "selected_tests": ["test_reset"],
+            "passed_tests": ["test_reset"],
+            SOURCE_FINGERPRINT_DETAIL_KEY: _source_stamp(project),
+        },
+    )
+    state.save()
+    (project / ".booley_project" / "tests.toml").write_text(
+        "[sim_uart\ntests = ['test_reset']\n",
+        encoding="utf-8",
+    )
+
+    verdict = check_criteria_acceptance(state._file_path, work_dir=project)
+
+    assert verdict.disposition == "failed"
+    assert verdict.unmet_mandatory == ["sim_pass_sim_uart"]
+    entry = DevelopmentState.load(state._file_path).criteria["sim_pass_sim_uart"]
+    assert "tests.toml acceptance registry is invalid" in entry.detail["acceptance_error"]
+
+
 def test_unmet_criterion_shows_copyable_target_invocation(tmp_path: Path) -> None:
     """Status should prevent wrong-Target calls by displaying the exact Target."""
     state = _state(tmp_path, {"lint_clean_lint_uart": True})
@@ -169,3 +199,60 @@ def test_fail_to_pass_requires_a_recorded_failing_half(tmp_path: Path) -> None:
 
     assert verdict.disposition == "failed"
     assert verdict.unverified_transitions == []
+
+
+def test_fail_to_pass_rejects_a_sibling_tests_red_evidence(tmp_path: Path) -> None:
+    """The named test, not merely its suite, must supply the failing half."""
+    project = _project(tmp_path)
+    template = CriteriaTemplate.from_yaml(
+        {
+            "mandatory": {
+                "sim_pass": [
+                    "tb/test_uart.py @ sim_uart @ test_transmit @ fail -> pass",
+                ]
+            }
+        }
+    )
+    state = DevelopmentState.load(tmp_path / "booley_state.json")
+    state.slug = "issue-88-f46-exact-red"
+    state.work_dir = str(project)
+    state.init_criteria(
+        {**template.expand(["sim_uart"]), "_report_submitted": True},
+        criterion_params=template.expand_params(["sim_uart"]),
+        flow_key_aliases=template.flow_key_aliases(),
+        strict=True,
+    )
+    state.set_criterion(
+        "sim_pass_sim_uart",
+        False,
+        detail={
+            "test_selector": "all",
+            "selected_tests": ["test_transmit", "test_receive"],
+            "passed_tests": ["test_transmit"],
+            "failed_tests": ["test_receive"],
+            SOURCE_FINGERPRINT_DETAIL_KEY: _source_stamp(project),
+        },
+    )
+    state.set_criterion(
+        "sim_pass_sim_uart",
+        True,
+        detail={
+            "tests_passed": 1,
+            "tests_total": 1,
+            "test_selector": "test_transmit",
+            "selected_tests": ["test_transmit"],
+            "passed_tests": ["test_transmit"],
+            "failed_tests": [],
+            SOURCE_FINGERPRINT_DETAIL_KEY: _source_stamp(project),
+        },
+    )
+    state.set_criterion("_report_submitted", True)
+    state.save()
+
+    verdict = check_criteria_acceptance(state._file_path, work_dir=project)
+
+    assert verdict.disposition == "failed"
+    criterion_key = next(key for key in state.criteria if key.startswith("sim_pass_"))
+    assert verdict.unmet_mandatory == [criterion_key]
+    entry = DevelopmentState.load(state._file_path).criteria[criterion_key]
+    assert "matching fingerprinted failing evidence" in entry.detail["acceptance_error"]

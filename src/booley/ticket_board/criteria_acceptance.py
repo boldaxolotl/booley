@@ -112,48 +112,36 @@ def check_criteria_acceptance(
     return verdict
 
 
-def _load_test_registry(work_dir: Path | None) -> dict[str, dict]:
-    """Load normalized tests.toml data for the checkout being accepted."""
+def _load_test_registry(
+    work_dir: Path | None,
+) -> tuple[dict[str, dict], str | None]:
+    """Load normalized tests.toml data and report invalid external input."""
     if work_dir is None:
-        return {}
+        return {}, None
     from booley.config.project_config import normalize_tests_toml
     from booley.runtime.project_dir import resolve_checkout_project_dir
 
     try:
         path = resolve_checkout_project_dir(work_dir) / "tests.toml"
         if not path.exists():
-            return {}
+            return {}, None
         with path.open("rb") as stream:
-            return normalize_tests_toml(tomllib.load(stream))
-    except (FileNotFoundError, OSError, ValueError, tomllib.TOMLDecodeError):
-        logger.warning("Could not load tests.toml acceptance registry", exc_info=True)
-        return {}
+            return normalize_tests_toml(tomllib.load(stream)), None
+    except (FileNotFoundError, OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        reason = f"tests.toml acceptance registry is invalid: {exc}"
+        logger.warning("Could not load %s", reason, exc_info=True)
+        return {}, reason
 
 
-def _sim_evidence_error(  # noqa: PLR0911, PLR0912, PLR0915 - ordered contract diagnostics
-    key: str,
-    entry,
-    registry: dict[str, dict],
-) -> str | None:
-    """Return why a passing simulation record does not satisfy its contract."""
-    from booley.config.project_config import lookup_target_section
-    from booley.dev_support.criteria_actions import criterion_target
-
-    detail = entry.detail or {}
-    params = entry.params or {}
-
-    expected_subject = params.get("subject") or params.get("verification_subject") or "dut"
-    actual_subject = detail.get("verification_subject")
-    if actual_subject in {"dut", "model"} and actual_subject != expected_subject:
-        return (
-            f"verification subject is {actual_subject!r}, but this Criterion "
-            f"requires {expected_subject!r} evidence"
-        )
+def _sim_evidence_sets(
+    detail: dict,
+) -> tuple[set[str], set[str], set[str], set[str]] | None:
+    """Normalize selected/pass/fail/skip names from one simulation record."""
     selected_raw = detail.get("selected_tests")
     if not isinstance(selected_raw, list) or not all(
         isinstance(name, str) for name in selected_raw
     ):
-        return "simulation evidence does not identify the selected tests"
+        return None
     selected = set(selected_raw)
     passed_raw = detail.get("passed_tests")
     if isinstance(passed_raw, list) and all(isinstance(name, str) for name in passed_raw):
@@ -162,9 +150,22 @@ def _sim_evidence_error(  # noqa: PLR0911, PLR0912, PLR0915 - ordered contract d
         passed = set(selected)
     else:
         passed = set()
-    failed = {name for name in detail.get("failed_tests", []) if isinstance(name, str)}
-    skipped = {name for name in detail.get("skipped_tests", []) if isinstance(name, str)}
+    failed = set(as_str_list(detail.get("failed_tests")))
+    skipped = set(as_str_list(detail.get("skipped_tests")))
+    return selected, passed, failed, skipped
 
+
+def _sim_contract_requirements(
+    key: str,
+    entry,
+    registry: dict[str, dict],
+    selected: set[str],
+) -> tuple[set[str], int | None]:
+    """Resolve required names and minimum count from a sealed simulation criterion."""
+    from booley.config.project_config import lookup_target_section
+    from booley.dev_support.criteria_actions import criterion_target
+
+    params = entry.params or {}
     target = criterion_target(key, entry, "sim_pass")
     section = lookup_target_section(registry, target) if target else None
     registered = set(section.get("tests", [])) if isinstance(section, dict) else set()
@@ -178,45 +179,98 @@ def _sim_evidence_error(  # noqa: PLR0911, PLR0912, PLR0915 - ordered contract d
         required = {selector}
     else:
         required = set(selected)
-
     minimum_total = params.get("minimum_total", len(required))
     if not isinstance(minimum_total, int) or isinstance(minimum_total, bool):
+        minimum_total = None
+    return required, minimum_total
+
+
+def _sim_evidence_error(key: str, entry, registry: dict[str, dict]) -> str | None:
+    """Return why a passing simulation record does not satisfy its contract."""
+    detail = entry.detail or {}
+    params = entry.params or {}
+    expected_subject = params.get("subject") or params.get("verification_subject") or "dut"
+    actual_subject = detail.get("verification_subject")
+    if actual_subject in {"dut", "model"} and actual_subject != expected_subject:
+        return (
+            f"verification subject is {actual_subject!r}, but this Criterion "
+            f"requires {expected_subject!r} evidence"
+        )
+    evidence = _sim_evidence_sets(detail)
+    if evidence is None:
+        return "simulation evidence does not identify the selected tests"
+    selected, passed, failed, skipped = evidence
+    required, minimum_total = _sim_contract_requirements(key, entry, registry, selected)
+    if minimum_total is None:
         return "simulation Criterion has an invalid minimum_total"
+    errors: list[str] = []
     missing_selected = sorted(required - selected)
     if missing_selected:
-        return "required tests were not selected: " + ", ".join(missing_selected)
+        errors.append("required tests were not selected: " + ", ".join(missing_selected))
     missing_passed = sorted(required - passed)
     if missing_passed:
-        return "required tests did not pass: " + ", ".join(missing_passed)
+        errors.append("required tests did not pass: " + ", ".join(missing_passed))
     if len(selected) < minimum_total:
-        return f"selected {len(selected)} tests, fewer than minimum_total={minimum_total}"
+        errors.append(f"selected {len(selected)} tests, fewer than minimum_total={minimum_total}")
     if failed:
-        return "simulation evidence contains failed tests: " + ", ".join(sorted(failed))
+        errors.append("simulation evidence contains failed tests: " + ", ".join(sorted(failed)))
     required_skips = sorted(required & skipped)
     if required_skips:
-        return "required tests were skipped: " + ", ".join(required_skips)
-    return None
+        errors.append("required tests were skipped: " + ", ".join(required_skips))
+    return errors[0] if errors else None
+
+
+def _has_matching_failing_evidence(entry) -> bool:
+    """Whether a fail -> pass criterion retained its own fingerprinted red run."""
+    params = entry.params or {}
+    required_raw = params.get("required_tests")
+    if isinstance(required_raw, list) and all(isinstance(name, str) for name in required_raw):
+        required = set(required_raw)
+    else:
+        selector = params.get("test_selector") or params.get("selector")
+        required = (
+            {selector} if isinstance(selector, str) and selector not in {"", "all"} else set()
+        )
+
+    for record in getattr(entry, "transition_evidence", []) or []:
+        if not isinstance(record, dict) or record.get("met") is not False:
+            continue
+        detail = record.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        stamp = detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
+        if not isinstance(stamp, dict) or not isinstance(stamp.get("fingerprint"), str):
+            continue
+        failed_raw = detail.get("failed_tests")
+        if not isinstance(failed_raw, list) or not all(
+            isinstance(name, str) for name in failed_raw
+        ):
+            continue
+        failed = set(failed_raw)
+        if failed and (not required or failed & required):
+            return True
+    return False
 
 
 def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
     """Fail closed on evidence that cannot satisfy a sealed Ticket contract."""
     if not getattr(state, "strict_criteria", False):
         return []
-    registry = _load_test_registry(work_dir)
+    registry, registry_error = _load_test_registry(work_dir)
     now = utc_now_rfc3339()
     rejected: list[str] = []
     for key, entry in state.criteria.items():
         if key.startswith("_") or not entry.met:
             continue
         reason: str | None = None
-        transition_evidence = getattr(entry, "transition_evidence", []) or []
-        if (entry.params or {}).get("from_state") == "fail" and not any(
-            isinstance(record, dict) and record.get("met") is False
-            for record in transition_evidence
+        if (entry.params or {}).get("from_state") == "fail" and not (
+            _has_matching_failing_evidence(entry)
         ):
-            reason = "sealed fail -> pass transition has no retained failing evidence"
+            reason = (
+                "sealed fail -> pass transition has no matching fingerprinted failing evidence"
+            )
         elif key.startswith("sim_pass"):
-            reason = _sim_evidence_error(key, entry, registry)
+            reason = registry_error or _sim_evidence_error(key, entry, registry)
         if reason is None:
             continue
         entry.met = False

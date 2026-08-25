@@ -28,10 +28,7 @@ def _endpoint_contracts() -> dict[str, tuple[str, bool]]:
 
 def criterion_family(key: str) -> str | None:
     """Return the longest built-in family prefix matching *key*."""
-    try:
-        families = _endpoint_contracts()
-    except Exception:  # noqa: BLE001 - status rendering must remain best-effort
-        return None
+    families = _endpoint_contracts()
     matches = [
         family
         for family in families
