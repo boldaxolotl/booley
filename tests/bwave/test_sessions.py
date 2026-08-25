@@ -475,6 +475,10 @@ def test_register_bwave_file_no_build_hint(tmp_path, monkeypatch, capsys):
     from tests.conftest import MINIMAL_FST_BYTES
 
     monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    # This test owns the direct-store registration hint, not native trace
+    # inspection. Reaching _trace_identity here would make a stock checkout
+    # auto-build B-Wave merely to print optional diagnostic context.
+    monkeypatch.setattr("booley.bwave.sessions._trace_identity", lambda _trace: "")
 
     trace = tmp_path / "trace.fst"
     trace.write_bytes(MINIMAL_FST_BYTES)
