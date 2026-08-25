@@ -71,3 +71,42 @@ def test_sidecar_build_failures_explain_impact_and_retry(tmp_path: Path, capsys)
     assert "booley init --seed" in output
     assert "proxy:skipped" in notes
     assert "reaper:skipped" in notes
+
+
+def test_missing_sidecar_build_assets_explain_the_missing_diagnostic(
+    tmp_path: Path, capsys
+) -> None:
+    ctx = InitContext(project_root=tmp_path)
+    with (
+        patch.object(init_cmd, "_booley_repo_root", return_value=None),
+        patch.object(init_cmd.idk, "image_exists", return_value=False),
+        patch.object(init_cmd.idk, "ensure_egress_network", return_value=False),
+    ):
+        notes = init_cmd._ensure_interactive_docker(ctx)
+
+    output = capsys.readouterr().out
+    assert "could not locate packaged sidecar build assets" in output
+    assert "Session Runtime has no model-service egress" in output
+    assert "booley init --seed" in output
+    assert "proxy:skipped" in notes
+    assert "reaper:skipped" in notes
+
+
+def test_sidecar_build_timeouts_explain_impact_and_retry(tmp_path: Path, capsys) -> None:
+    ctx = InitContext(project_root=tmp_path)
+    timeout = subprocess.TimeoutExpired(cmd=["docker", "build"], timeout=600)
+    with (
+        patch.object(init_cmd, "_booley_repo_root", return_value=tmp_path),
+        patch.object(init_cmd.idk, "ensure_egress_network", return_value=False),
+        patch.object(init_cmd.idk, "ensure_egress_proxy_image", side_effect=timeout),
+        patch.object(init_cmd.idk, "ensure_reaper_image", side_effect=timeout),
+    ):
+        notes = init_cmd._ensure_interactive_docker(ctx)
+
+    output = capsys.readouterr().out
+    assert "timed out after 600 seconds" in output
+    assert "Session Runtime has no model-service egress" in output
+    assert "idle timeout and maximum-session enforcement are unavailable" in output
+    assert "booley init --seed" in output
+    assert "proxy:skipped" in notes
+    assert "reaper:skipped" in notes

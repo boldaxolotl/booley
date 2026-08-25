@@ -46,7 +46,7 @@ from pathlib import Path
 
 from booley import __version__
 from booley.config.guidance_links import ensure_guidance_links, plan_guidance_links
-from booley.config.settings import load_interactive_config
+from booley.config.settings import InteractiveConfig, load_interactive_config
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
@@ -1336,12 +1336,60 @@ def _ensure_sidecar_image(
 ) -> bool:
     """Run a sidecar image build while keeping its diagnostic user-visible."""
     if booley_root is None:
-        return idk.image_exists(image)
+        if idk.image_exists(image):
+            return True
+        warn(f"could not locate packaged sidecar build assets for {image}")
+        return False
     try:
         return ensure(booley_root, force=force)
-    except RuntimeError as exc:
+    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
         warn(str(exc))
         return False
+
+
+def _report_sidecar_unavailable(image: str, impact: str) -> None:
+    warn(f"{image} unavailable — {impact}")
+    info("  fix the build error above, then retry: booley init --seed")
+
+
+def _ensure_egress_sidecar(
+    ctx: InitContext, booley_root: Path | None, cfg: InteractiveConfig, notes: list[str]
+) -> None:
+    ready = _ensure_sidecar_image(
+        booley_root,
+        idk.ensure_egress_proxy_image,
+        image=idk.PROXY_IMAGE,
+        force=ctx.force,
+    )
+    if not ready:
+        _report_sidecar_unavailable(
+            "egress-proxy image", "Session Runtime has no model-service egress"
+        )
+        notes.append("proxy:skipped")
+        return
+    status = idk.ensure_egress_proxy(allowlist=cfg.egress_allowlist or None)
+    ok(f"booley-proxy {status}")
+    notes.append(f"proxy:{status}")
+
+
+def _ensure_reaper_sidecar(
+    ctx: InitContext, booley_root: Path | None, cfg: InteractiveConfig, notes: list[str]
+) -> None:
+    ready = _ensure_sidecar_image(
+        booley_root,
+        idk.ensure_reaper_image,
+        image=idk.REAPER_IMAGE,
+        force=ctx.force,
+    )
+    if not ready:
+        _report_sidecar_unavailable(
+            "reaper image", "idle timeout and maximum-session enforcement are unavailable"
+        )
+        notes.append("reaper:skipped")
+        return
+    status = idk.ensure_reaper(cfg, force=ctx.force)
+    ok(f"booley-reaper {status} (idle={cfg.idle_timeout_seconds}s, max={cfg.max_sessions})")
+    notes.append(f"reaper:{status}")
 
 
 def _ensure_interactive_docker(ctx: InitContext, *, license_required: bool = False) -> list[str]:
@@ -1366,42 +1414,8 @@ def _ensure_interactive_docker(ctx: InitContext, *, license_required: bool = Fal
         notes.append("network:created")
     else:
         skip(f"{idk.EGRESS_NETWORK} network already present")
-    proxy_ready = _ensure_sidecar_image(
-        booley_root,
-        idk.ensure_egress_proxy_image,
-        image=idk.PROXY_IMAGE,
-        force=ctx.force,
-    )
-    if proxy_ready:
-        proxy_status = idk.ensure_egress_proxy(allowlist=cfg.egress_allowlist or None)
-        ok(f"booley-proxy {proxy_status}")
-        notes.append(f"proxy:{proxy_status}")
-    else:
-        warn("egress-proxy image unavailable — Session Runtime has no model-service egress")
-        info("  fix the build error above, then retry: booley init --seed")
-        notes.append("proxy:skipped")
-
-    # Idle reaper + concurrency cap.
-    reaper_ready = _ensure_sidecar_image(
-        booley_root,
-        idk.ensure_reaper_image,
-        image=idk.REAPER_IMAGE,
-        force=ctx.force,
-    )
-    if reaper_ready:
-        reaper_status = idk.ensure_reaper(cfg, force=ctx.force)
-        ok(
-            f"booley-reaper {reaper_status} "
-            f"(idle={cfg.idle_timeout_seconds}s, max={cfg.max_sessions})"
-        )
-        notes.append(f"reaper:{reaper_status}")
-    else:
-        warn(
-            "reaper image unavailable — idle timeout and maximum-session enforcement "
-            "are unavailable"
-        )
-        info("  fix the build error above, then retry: booley init --seed")
-        notes.append("reaper:skipped")
+    _ensure_egress_sidecar(ctx, booley_root, cfg, notes)
+    _ensure_reaper_sidecar(ctx, booley_root, cfg, notes)
 
     return notes
 
