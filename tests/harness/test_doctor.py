@@ -312,7 +312,7 @@ def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, cap
 
     output = capsys.readouterr().out
     assert rc == 0
-    assert "devcontainer.json present and valid" in output
+    assert "devcontainer.json present and structurally current" in output
     assert "Booley files excluded from git" in output
 
 
@@ -1974,6 +1974,31 @@ def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> Non
     doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
 
     assert any("host issuance is invalid" in message for message in rec.fails())
+
+
+def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monkeypatch) -> None:
+    from booley.eda import runtime_spec
+
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
+    spec_path.parent.mkdir()
+    spec_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+
+    def missing_bind(*_args):
+        raise runtime_spec.RuntimeSpecError(
+            "generated bind source for /home/agent/.booley-host-skills/example-skill "
+            "is missing: /host/skills/renamed-skill"
+        )
+
+    monkeypatch.setattr(runtime_spec, "validate", missing_bind)
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    rec = _Rec()
+
+    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
+
+    assert any("example-skill" in message and "missing" in message for message in rec.fails())
 
 
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:

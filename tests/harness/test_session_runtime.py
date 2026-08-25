@@ -170,6 +170,38 @@ class TestContainerName:
 
 
 class TestPrepareMigration:
+    def test_missing_generated_bind_names_source_and_reseed_action(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.eda import runtime_spec
+
+        _write_spec(workspace, _spec())
+        source = "/host/skills/renamed-skill"
+        target = f"{dc.HOST_SKILLS_SIDECAR}/example-skill"
+        monkeypatch.setattr(sr, "_reject_legacy_project_data_visibility", lambda *_args: None)
+        monkeypatch.setattr(
+            runtime_spec,
+            "authorized_project_data_source",
+            lambda _path: workspace / ".booley_project",
+        )
+        monkeypatch.setattr(
+            runtime_spec,
+            "validate",
+            Mock(
+                side_effect=runtime_spec.RuntimeSpecError(
+                    f"generated bind source for {target} is missing: {source}"
+                )
+            ),
+        )
+
+        with pytest.raises(sr.SessionError) as caught:
+            sr.prepare(workspace)
+
+        message = str(caught.value)
+        assert source in message
+        assert target in message
+        assert "booley init --seed" in message
+
     def test_running_legacy_container_blocks_before_stamp_validation(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

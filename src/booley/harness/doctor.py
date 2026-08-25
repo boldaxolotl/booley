@@ -2625,7 +2625,7 @@ def _check_devcontainer_spec(  # noqa: PLR0911,PLR0912 — ordered drift precond
             "container in VS Code"
         )
         return
-    _pass("devcontainer.json present and valid")
+    _pass("devcontainer.json present and structurally current")
 
 
 def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit gates
