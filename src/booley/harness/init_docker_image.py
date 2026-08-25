@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.build_stamp import (
@@ -157,11 +158,27 @@ _FINGERPRINT_TREES = (
     "crates/bwave/src",  # bwave Rust sources -> the in-image binary
 )
 _FINGERPRINT_FILES = (
+    ".dockerignore",
     "pyproject.toml",
     "VERSION",
     "crates/bwave/Cargo.toml",
     "crates/bwave/Cargo.lock",
 )
+
+
+@dataclass(frozen=True)
+class _DockerBuildSpec:
+    """Inputs that vary between sandbox, runtime-base, and flavor builds."""
+
+    dockerfile: Path
+    context: Path
+    exists: bool
+    fingerprint: str | None = None
+    image: str = DOCKER_IMAGE
+    record_key: str = "docker_image"
+    build_note: str = "this can take 20-30 minutes on first build"
+    build_contexts: tuple[tuple[str, str], ...] = ()
+    build_args: tuple[str, ...] = ()
 
 
 #: Generated build artifacts that live inside a fingerprinted tree but must not
@@ -513,18 +530,8 @@ def _docker_check_only(ctx: InitContext, exists: bool) -> None:
         ctx.record("docker_image", "warn", "would build")
 
 
-def _docker_local_build(
-    ctx: InitContext,
-    docker_dir: Path,
-    exists: bool,
-    fingerprint: str | None = None,
-) -> None:
-    """Build Docker image locally: wheel + docker build.
-
-    *fingerprint* (from :func:`_image_build_fingerprint`) is stamped onto the
-    built image as the :data:`LABEL_FINGERPRINT` label so a later run can detect
-    source drift; computed here if not supplied by the caller.
-    """
+def _local_build_inputs(ctx: InitContext, docker_dir: Path) -> tuple[Path, Path, Path] | None:
+    """Validate and return candidate Dockerfile, base Dockerfile, and repo root."""
     dockerfile = docker_dir / "Dockerfile"
     base_dockerfile = docker_dir / "Dockerfile.base"
     missing_dockerfile = next(
@@ -533,14 +540,28 @@ def _docker_local_build(
     if missing_dockerfile:
         err(f"Dockerfile not found at {missing_dockerfile}")
         ctx.record("docker_image", "err", "Dockerfile missing")
-        return
+        return None
 
     booley_root = docker_dir.parent.parent.parent.parent
     if not (booley_root / "pyproject.toml").is_file():
         err("cannot determine Booley repo root for docker build context")
         info("  build manually: ./src/booley/data/docker/build.sh")
         ctx.record("docker_image", "err", "repo root not found")
+        return None
+    return dockerfile, base_dockerfile, booley_root
+
+
+def _docker_local_build(
+    ctx: InitContext,
+    docker_dir: Path,
+    exists: bool,
+    fingerprint: str | None = None,
+) -> None:
+    """Build the runtime base, wheel, and candidate image from local sources."""
+    inputs = _local_build_inputs(ctx, docker_dir)
+    if inputs is None:
         return
+    dockerfile, base_dockerfile, booley_root = inputs
 
     if fingerprint is None:
         fingerprint = _image_build_fingerprint(booley_root)
@@ -551,15 +572,15 @@ def _docker_local_build(
     if not _docker_build_wheel(ctx, booley_root):
         return
 
-    returncode = _docker_build_image(
-        ctx,
-        dockerfile,
-        booley_root,
-        exists,
-        fingerprint,
-        build_contexts={"booley-runtime-base": f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"},
-        build_args=["--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={LOCAL_RUNTIME_BASE_IMAGE}"],
+    build = _DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=booley_root,
+        exists=exists,
+        fingerprint=fingerprint,
+        build_contexts=(("booley-runtime-base", f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"),),
+        build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={LOCAL_RUNTIME_BASE_IMAGE}"),
     )
+    returncode = _docker_build_image(ctx, build)
     if returncode is None:
         return  # error already recorded
 
@@ -581,15 +602,15 @@ def _docker_build_runtime_base(ctx: InitContext, dockerfile: Path, booley_root: 
         err(f"stable runtime-base contract failed: {error}")
         ctx.record("docker_image", "err", "runtime-base contract failed")
         return False
-    returncode = _docker_build_image(
-        ctx,
-        dockerfile,
-        booley_root,
-        _docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
+    build = _DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=booley_root,
+        exists=_docker_image_exists(LOCAL_RUNTIME_BASE_IMAGE),
         image=LOCAL_RUNTIME_BASE_IMAGE,
         build_note="stable EDA/runtime layers are cached across source changes",
-        build_args=build_args,
+        build_args=tuple(build_args),
     )
+    returncode = _docker_build_image(ctx, build)
     if returncode == 0:
         return True
     if returncode is not None:
@@ -715,34 +736,8 @@ def _report_wheel_failure(ctx: InitContext, exc: Exception) -> bool:
     return False
 
 
-def _docker_build_image(
-    ctx: InitContext,
-    dockerfile: Path,
-    context: Path,
-    exists: bool,
-    fingerprint: str | None = None,
-    image: str = DOCKER_IMAGE,
-    record_key: str = "docker_image",
-    build_note: str = "this can take 20-30 minutes on first build",
-    build_contexts: dict[str, str] | None = None,
-    build_args: list[str] | None = None,
-) -> int | None:
-    """Run docker build of *dockerfile* against the *context* dir.
-
-    Returns the returncode, or None if an exception occurred. *image* /
-    *record_key* / *build_note* are parameterised so the flavor step
-    (:func:`ensure_flavor_image`) shares this plumbing — same fingerprint label,
-    same UTF-8-safe log streaming, same timeout — while recording its outcome
-    under its own summary key. The base's context is the Booley repo root (it
-    COPYs the wheel); a flavor's is data/docker/ (see :func:`_flavor_build`).
-    """
-    action = "Rebuilding" if exists else "Building"
-    info(f"{action} {image} image — {build_note}.")
-    # First builds compile Yosys/OpenSTA/Verilator from source; on slower hosts
-    # (Windows/WSL2 VMs especially) 40 minutes is not enough. Overridable so a
-    # constrained host can finish rather than repeatedly killing a healthy build
-    # (the layer cache makes retries resume, but a single slow layer never wins).
-    build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
+def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
+    """Translate a build specification into the Docker CLI command."""
     build_cmd = ["docker", "build"]
     # ``ctx.force`` means "run the local build even if the image fingerprint is
     # current"; it must not mean "discard Docker's layer cache".  The current
@@ -750,64 +745,66 @@ def _docker_build_image(
     # invalidate their normal descendants.  Keeping earlier EDA-tool layers is
     # what makes an explicit session refresh practical instead of another cold
     # 20-60 minute build.
-    if fingerprint:
-        build_cmd += ["--label", f"{LABEL_FINGERPRINT}={fingerprint}"]
-    if image in FLAVOR_IMAGES:
+    if spec.fingerprint:
+        build_cmd += ["--label", f"{LABEL_FINGERPRINT}={spec.fingerprint}"]
+    if spec.image in FLAVOR_IMAGES:
         base_image_id = _docker_image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
-    if image == DOCKER_IMAGE:
-        build_cmd += _image_build_metadata_args(context)
-    build_cmd += build_args or []
-    for name, source in sorted((build_contexts or {}).items()):
+    if spec.image == DOCKER_IMAGE:
+        build_cmd += _image_build_metadata_args(spec.context)
+    build_cmd += spec.build_args
+    for name, source in sorted(spec.build_contexts):
         build_cmd += ["--build-context", f"{name}={source}"]
-    build_cmd += ["-t", image, "-f", str(dockerfile), str(context)]
+    build_cmd += ["-t", spec.image, "-f", str(spec.dockerfile), str(spec.context)]
+    return build_cmd
 
+
+def _run_docker_build(ctx: InitContext, build_cmd: list[str], timeout: int) -> int:
+    """Run a Docker build, streaming only its useful progress when non-verbose."""
+    if ctx.verbose:
+        return subprocess.run(build_cmd, text=True, timeout=timeout, check=False).returncode
+    # BuildKit emits UTF-8 regardless of the Windows console codec. Replacement
+    # keeps an undecodable log byte from aborting an otherwise healthy build.
+    proc = subprocess.Popen(
+        build_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if proc.stdout is None:
+        raise OSError("docker build output pipe was not created")
+    last_msg = ""
+    for line in proc.stdout:
+        if ">>>" not in line:
+            continue
+        msg = line[line.index(">>>") :].strip().split('"', 1)[0].rstrip(" \\")
+        if msg and msg != last_msg:
+            info(msg)
+            last_msg = msg
+    proc.wait(timeout=timeout)
+    return proc.returncode
+
+
+def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
+    """Run one specified image build, recording infrastructure failures."""
+    action = "Rebuilding" if spec.exists else "Building"
+    info(f"{action} {spec.image} image — {spec.build_note}.")
+    build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
     try:
-        if ctx.verbose:
-            result = subprocess.run(build_cmd, text=True, timeout=build_timeout, check=False)
-            return result.returncode
-        # Decode the build log as UTF-8, not the console locale. `text=True`
-        # alone picks cp1252 on a Windows host, and BuildKit emits UTF-8 (box
-        # drawing, progress glyphs, and whatever the vendored toolchains print),
-        # so the first non-cp1252 byte raised UnicodeDecodeError and aborted a
-        # 20-minute image rebuild that was otherwise succeeding. Never let a log
-        # line kill the build: replace undecodable bytes.
-        proc = subprocess.Popen(
-            build_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        assert proc.stdout is not None
-        # The builder echoes each RUN instruction verbatim, so the ">>>"
-        # progress marker is captured twice: once from the Dockerfile source
-        # (trailing "  &&  \" continuation -> a dangling quote) and once as the
-        # real echo output. Trim at the echo string's closing quote so both
-        # render as the same clean line, then skip the consecutive duplicate.
-        last_msg = ""
-        for line in proc.stdout:
-            if ">>>" not in line:
-                continue
-            msg = line[line.index(">>>") :].strip()
-            msg = msg.split('"', 1)[0].rstrip(" \\")
-            if msg and msg != last_msg:
-                info(msg)
-                last_msg = msg
-        proc.wait(timeout=build_timeout)
-        return proc.returncode
+        return _run_docker_build(ctx, _docker_build_command(spec), build_timeout)
     except subprocess.TimeoutExpired:
         err(
             f"docker build timed out after {build_timeout // 60} minutes "
             "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
         )
-        ctx.record(record_key, "err", "build timed out")
+        ctx.record(spec.record_key, "err", "build timed out")
         return None
     except (FileNotFoundError, OSError) as e:
         err(f"docker build failed: {e}")
-        ctx.record(record_key, "err", str(e))
+        ctx.record(spec.record_key, "err", str(e))
         return None
 
 
@@ -825,21 +822,21 @@ def _flavor_build(
 ) -> bool:
     """``docker build`` a flavor from its shipped Dockerfile; True once it exists."""
     docker_dir = dockerfile.parent
-    returncode = _docker_build_image(
-        ctx,
-        dockerfile,
+    build = _DockerBuildSpec(
+        dockerfile=dockerfile,
         # Context is docker_dir, not the repo root build-riscv.sh passes: a
         # flavor Dockerfile has no COPY (it only layers toolchains onto the
         # base), so the context is unused — and a pip-installed Booley has no
         # repo root to point at while data/docker/ always exists. This is why
         # flavor Dockerfiles must stay COPY-free.
-        docker_dir,
-        exists,
-        fingerprint,
+        context=docker_dir,
+        exists=exists,
+        fingerprint=fingerprint,
         image=image,
         record_key="project_image",
         build_note="this can take 10-20 minutes",
     )
+    returncode = _docker_build_image(ctx, build)
     if returncode is None:
         return False  # error already recorded
     if returncode != 0:

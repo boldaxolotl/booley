@@ -56,6 +56,12 @@ def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
     assert "unsafe stable-base input" in result.stderr
 
 
+@pytest.mark.parametrize("manifest", ["../inputs.txt", "/tmp/inputs.txt"])
+def test_contract_rejects_manifest_outside_repo(tmp_path: Path, manifest: str) -> None:
+    with pytest.raises(ValueError, match="unsafe stable-base manifest"):
+        docker_base_contract.input_paths(tmp_path, manifest)
+
+
 def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
     outside = tmp_path.parent / "outside-stable-input"
     outside.write_text("secret\n", encoding="utf-8")
@@ -94,6 +100,7 @@ def test_manifest_inputs_trigger_classifier_and_publisher() -> None:
 
 def test_image_resolution_selects_repository_digest_and_verifies_contract(monkeypatch) -> None:
     calls: list[list[str]] = []
+    digest = "a" * 64
 
     def fake_run(command, **_kwargs):
         calls.append(command)
@@ -103,7 +110,7 @@ def test_image_resolution_selects_repository_digest_and_verifies_contract(monkey
             return subprocess.CompletedProcess(
                 command,
                 0,
-                '["ghcr.io/acme/base@sha256:abc", "mirror/base@sha256:def"]\n',
+                f'["ghcr.io/acme/base@sha256:{digest}", "mirror/base@sha256:{"b" * 64}"]\n',
                 "",
             )
         return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
@@ -112,7 +119,7 @@ def test_image_resolution_selects_repository_digest_and_verifies_contract(monkey
 
     assert (
         docker_base_contract.resolve_image("ghcr.io/acme/base:main", "contract-value")
-        == "ghcr.io/acme/base@sha256:abc"
+        == f"ghcr.io/acme/base@sha256:{digest}"
     )
     assert calls[0] == ["docker", "pull", "ghcr.io/acme/base:main"]
 
@@ -126,4 +133,16 @@ def test_image_resolution_rejects_malformed_digest_inventory(monkeypatch) -> Non
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
     with pytest.raises(ValueError, match="invalid Docker RepoDigests"):
+        docker_base_contract.resolve_image("ghcr.io/acme/base:main", "contract")
+
+
+def test_image_resolution_rejects_malformed_matching_digest(monkeypatch) -> None:
+    def fake_run(command, **_kwargs):
+        if command[:2] == ["docker", "pull"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, '["ghcr.io/acme/base@sha256:abc"]\n', "")
+
+    monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="did not resolve to an immutable digest"):
         docker_base_contract.resolve_image("ghcr.io/acme/base:main", "contract")

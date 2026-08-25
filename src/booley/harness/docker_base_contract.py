@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
@@ -13,27 +14,32 @@ from pathlib import Path, PurePosixPath
 DEFAULT_MANIFEST = "src/booley/data/docker/stable-base-inputs.txt"
 
 
+def _repo_file(repo: Path, relative: str, purpose: str) -> Path:
+    """Resolve a declared repository file without permitting path escapes."""
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or ".." in pure.parts:
+        raise ValueError(f"unsafe {purpose}: {relative}")
+    unresolved = repo.joinpath(*pure.parts)
+    try:
+        path = unresolved.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"missing {purpose}: {relative}") from error
+    if not path.is_relative_to(repo) or unresolved.is_symlink():
+        raise ValueError(f"unsafe {purpose}: {relative}")
+    if not path.is_file():
+        raise ValueError(f"missing {purpose}: {relative}")
+    return path
+
+
 def input_paths(repo: Path, manifest: str = DEFAULT_MANIFEST) -> tuple[Path, ...]:
     repo = repo.resolve()
-    manifest_path = repo / manifest
+    manifest_path = _repo_file(repo, manifest, "stable-base manifest")
     paths: list[Path] = []
     for line in manifest_path.read_text(encoding="utf-8").splitlines():
         relative = line.strip()
         if not relative or relative.startswith("#"):
             continue
-        pure = PurePosixPath(relative)
-        if pure.is_absolute() or ".." in pure.parts:
-            raise ValueError(f"unsafe stable-base input: {relative}")
-        unresolved = repo.joinpath(*pure.parts)
-        try:
-            path = unresolved.resolve(strict=True)
-        except OSError as error:
-            raise ValueError(f"missing stable-base input: {relative}") from error
-        if not path.is_relative_to(repo) or unresolved.is_symlink():
-            raise ValueError(f"unsafe stable-base input: {relative}")
-        if not path.is_file():
-            raise ValueError(f"missing stable-base input: {relative}")
-        paths.append(path)
+        paths.append(_repo_file(repo, relative, "stable-base input"))
     if not paths:
         raise ValueError("stable-base input manifest is empty")
     return tuple(paths)
@@ -77,9 +83,8 @@ def resolve_image(reference: str, expected_contract: str) -> str:
     last_colon = repository.rfind(":")
     if last_colon > last_slash:
         repository = repository[:last_colon]
-    immutable = next(
-        (value for value in digests if value.startswith(f"{repository}@sha256:")), None
-    )
+    digest_pattern = re.compile(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}")
+    immutable = next((value for value in digests if digest_pattern.fullmatch(value)), None)
     if immutable is None:
         raise ValueError(f"image did not resolve to an immutable digest: {reference}")
     label = subprocess.run(

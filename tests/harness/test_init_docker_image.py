@@ -56,6 +56,7 @@ def _seed_source(root: Path) -> None:
     pkg = root / "src" / "booley"
     pkg.mkdir(parents=True)
     (pkg / "incontainer_register.py").write_text("x = 1\n", encoding="utf-8")
+    (root / ".dockerignore").write_text(".git\n", encoding="utf-8")
     (root / "pyproject.toml").write_text("[project]\nname='booley'\n", encoding="utf-8")
     bwave = root / "crates" / "bwave"
     (bwave / "src").mkdir(parents=True)
@@ -92,6 +93,12 @@ class TestFingerprint:
         _seed_source(tmp_path)
         before = init_cmd._image_build_fingerprint(tmp_path)
         (tmp_path / "src" / "booley" / "new_mod.py").write_text("y = 1\n", encoding="utf-8")
+        assert init_cmd._image_build_fingerprint(tmp_path) != before
+
+    def test_changes_when_dockerignore_changes(self, tmp_path):
+        _seed_source(tmp_path)
+        before = init_cmd._image_build_fingerprint(tmp_path)
+        (tmp_path / ".dockerignore").write_text(".git\ndist\n", encoding="utf-8")
         assert init_cmd._image_build_fingerprint(tmp_path) != before
 
     def test_ignores_pycache(self, tmp_path):
@@ -156,12 +163,14 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
 
     init_docker_image._docker_local_build(ctx, docker_dir, exists=False, fingerprint="fp")
 
-    assert calls[0][0][1].name == "Dockerfile.base"
-    assert calls[0][1]["image"] == "booley-runtime-base:local"
-    assert calls[1][0][1].name == "Dockerfile"
-    assert calls[1][1]["build_contexts"] == {
-        "booley-runtime-base": "docker-image://booley-runtime-base:local"
-    }
+    base = calls[0][0][1]
+    candidate = calls[1][0][1]
+    assert base.dockerfile.name == "Dockerfile.base"
+    assert base.image == "booley-runtime-base:local"
+    assert candidate.dockerfile.name == "Dockerfile"
+    assert candidate.build_contexts == (
+        ("booley-runtime-base", "docker-image://booley-runtime-base:local"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -463,12 +472,10 @@ class TestDockerBuildCommand:
 
         monkeypatch.setattr(init_docker_image.subprocess, "Popen", fake_popen)
         ctx = init_cmd.InitContext(project_root=tmp_path, force=force, verbose=False)
-        rc = init_docker_image._docker_build_image(
-            ctx,
-            tmp_path / "Dockerfile",
-            tmp_path,
-            exists=False,
+        build = init_docker_image._DockerBuildSpec(
+            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
         )
+        rc = init_docker_image._docker_build_image(ctx, build)
         return rc, captured
 
     def test_undecodable_byte_does_not_kill_the_build(self, monkeypatch, tmp_path: Path):
