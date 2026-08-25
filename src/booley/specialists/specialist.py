@@ -38,7 +38,7 @@ from booley.dev_support.workspace_isolation import remove_shadow_package
 from booley.mcp.base import EXIT_ERROR, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
-from booley.runtime.zombie_cleanup import _descendant_pids as _zombie_descendant_pids
+from booley.runtime.process_tree import descendant_pids as _descendant_pids
 
 from .specialist_workspace import (
     WorkspaceAccess,
@@ -718,9 +718,8 @@ class Specialist(McpTool):
 _PARENT_WATCHDOG_ENV = "BOOLEY_PARENT_WATCHDOG"
 _PARENT_WATCHDOG_INTERVAL_S = 5.0
 
-# The same /proc parent-link walk the run-half reaper uses (fpu F-13); shared
-# rather than re-implemented, and aliased here so it can be substituted in tests.
-_descendant_pids = _zombie_descendant_pids
+# Shared rather than re-implemented, and imported under the private name so it
+# can be substituted in tests.
 
 
 def _abort_orphaned_run(label: str, initial_ppid: int) -> None:

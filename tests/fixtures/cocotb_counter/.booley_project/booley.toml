@@ -1,13 +1,3 @@
 # Cocotb e2e fixture (plan-cocotb-support Part G).
 [project]
 name = "cocotb-counter-fixture"
-
-[tools]
-builtin = ["simulate", "elaborate"]
-
-[tools.simulate]
-venue = "sandbox"
-
-[tools.elaborate]
-venue = "sandbox"
-target = "sim_verilator"

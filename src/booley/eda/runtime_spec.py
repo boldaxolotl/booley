@@ -125,9 +125,9 @@ def _vivado_requested(project_root: Path, config: EdaConfig | None) -> bool:
     """
     if config is None:
         return False
-    from booley.flows.execution import resolve_execution
+    from booley.flows.execution import flow_enabled
 
-    return resolve_execution("fpga", project_root).enabled
+    return flow_enabled("fpga", project_root)
 
 
 def _host_vivado_requested(project_root: Path, config: EdaConfig | None) -> bool:

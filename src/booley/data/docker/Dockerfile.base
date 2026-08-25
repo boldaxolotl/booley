@@ -163,7 +163,7 @@ RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
     && cp /tmp/sv2v/sv2v-Linux/sv2v /usr/local/bin/sv2v \
     && chmod +x /usr/local/bin/sv2v && rm -rf /tmp/sv2v.zip /tmp/sv2v
 
-# Verible (pinned prebuilt static binary — the sv2v pattern). Sandbox-only
+# Verible (pinned prebuilt static binary — the sv2v pattern). Bundled
 # lint EDA tool for .core lint Targets with flow_options.tool: verible (ADR 0033).
 ARG VERIBLE_VERSION=v0.0-4080-ga0a8d8eb
 ARG VERIBLE_SHA256=f75daa70f29dbe9624ffee3738408341cfdadbdaf7e5d714a5bcceb9223953e6

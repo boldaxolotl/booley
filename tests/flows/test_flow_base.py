@@ -48,6 +48,20 @@ class EchoFlow(BooleyFlow):
 
 
 class TestBooleyFlowExecution:
+    def test_host_entry_is_rejected_before_flow_execution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from booley.runtime import runtime_context
+
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        flow = EchoFlow()
+        with patch.object(flow, "_run") as run:
+            exit_code = flow.main(["--target", "test", "--work-dir", str(tmp_path)])
+
+        assert exit_code == EXIT_ERROR
+        run.assert_not_called()
+        assert "Session Runtime" in capsys.readouterr().err
+
     def test_successful_execution(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         from booley.dev_support.development_state import DevelopmentState
@@ -97,6 +111,7 @@ class TestBooleyFlowExecution:
     def test_target_contract_is_checked_before_flow_entry(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from booley.runtime import runtime_context
         from booley.ticket_board.frontmatter import format_frontmatter
         from booley.ticket_board.target_contract import build_contract
 
@@ -112,6 +127,7 @@ class TestBooleyFlowExecution:
             ),
             encoding="utf-8",
         )
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
         monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
         flow = EchoFlow()
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])

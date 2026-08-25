@@ -64,12 +64,6 @@ def test_rejects_invalid_authority_surface(raw: object, match: str) -> None:
 @pytest.mark.parametrize(
     "raw,fragment",
     [
-        ({"flows": {"venue": "host"}}, "[flows].venue"),
-        ({"flows": {"fpga": {"venue": "host"}}}, "[flows.fpga].venue"),
-        (
-            {"flows": {"sim": {"host_setup_commands": ["module load x"]}}},
-            "host_setup_commands",
-        ),
         ({"sandbox": {"passthrough_env": ["LM_LICENSE_FILE"]}}, "passthrough_env"),
     ],
 )

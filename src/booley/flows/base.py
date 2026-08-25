@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.mcp.base import EXIT_ERROR, McpTool, McpToolResult
+from booley.runtime import runtime_context
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +150,9 @@ class BooleyFlow(McpTool):
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
+        location_error = runtime_context.container_only_error(f"booley flow {self.name}")
+        if location_error is not None:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=location_error)
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None

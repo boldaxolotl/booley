@@ -45,7 +45,6 @@ from booley.config.guidance_links import (
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
 from booley.dev_support.workspace_isolation import get_category_dirs
-from booley.flows import execution
 from booley.fusesoc import (
     core_projection,
     core_security,
@@ -115,16 +114,6 @@ _SYNTH_DEEP_FINALIZE_MARGIN_S = 180
 # The Booley Flows the audit loop dry-runs or deep-smokes. The EDA tool comes
 # from the resolved Target; every command executes in the Session Runtime.
 _AUDITED_FLOWS = ("sim", "lint", "synth")
-# Flow name -> Booley Flow class path whose ``validate_execution`` classmethod
-# owns that Flow's enablement/migration validation (principle 9). Elaborate
-# follows [flows.sim]'s selection and validates uniformly.
-_EXECUTION_VALIDATING_FLOWS = {
-    "sim": ("booley.flows.sim.flow", "SimulateFlow"),
-    "lint": ("booley.flows.lint.flow", "LintFlow"),
-    "synth": ("booley.flows.synth.flow", "AsicSynthesizeFlow"),
-    "elab": ("booley.flows.elab.flow", "ElaborateFlow"),
-    "fpga": ("booley.flows.fpga.flow", "FpgaImplFlow"),
-}
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -2653,7 +2642,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         if (
             vivado is not None
             and vivado.provisioning == PROVISIONING_HOST
-            and _flow_selection(project, "fpga").enabled
+            and _flow_enabled(project, "fpga")
             and not mounted
         ):
             _fail(
@@ -3626,7 +3615,7 @@ def _check_mcp_tool_payload(
 def _required_mcp_tools(project: ProjectAudit) -> set[str]:
     required = set(_BASE_REQUIRED_MCP_TOOLS)
     for flow_name in _AUDITED_FLOWS:
-        if _flow_selection(project, flow_name).enabled:
+        if _flow_enabled(project, flow_name):
             required.add(flow_name)
     if _elaborate_active(project):
         required.add("elab")
@@ -3918,15 +3907,8 @@ def _run_flow_audit(
     """Validate enabled Flows and run Session Runtime dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
     for flow_name in _AUDITED_FLOWS:
-        selection = _flow_selection(project, flow_name)
-        if not selection.enabled:
+        if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
-            continue
-        execution_error = _execution_error(flow_name, selection)
-        if execution_error:
-            # Includes the ADR 0037 hard-migration error for retired combined
-            # backend spellings — the message carries the exact replacement lines.
-            _fail(execution_error, f"fix [flows.{flow_name}] configuration")
             continue
         _pass(f"{flow_name} executes in the Session Runtime")
         # Pre-Run Commands (ADR 0039): a true observation about healthy config —
@@ -3958,7 +3940,6 @@ def _run_flow_audit(
             _run_flow_check(
                 project,
                 flow_name,
-                selection,
                 target=target,
                 dry_run=True,
                 docker_exe=docker_exe,
@@ -5900,12 +5881,8 @@ def _run_deep_checks(
 ) -> None:
     """Run the real EDA smoke matrix selected by ``.core`` metadata."""
     for flow_name in _AUDITED_FLOWS:
-        selection = _flow_selection(project, flow_name)
-        if not selection.enabled:
+        if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
-            continue
-        if _execution_error(flow_name, selection):
-            _skip(f"{flow_name} deep check skipped - execution selection invalid")
             continue
         targets = _doctor_targets(project, flow_name)
         if not targets:
@@ -5915,7 +5892,6 @@ def _run_deep_checks(
             _run_flow_check(
                 project,
                 flow_name,
-                selection,
                 target=target,
                 dry_run=False,
                 docker_exe=docker_exe,
@@ -5952,7 +5928,7 @@ def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
     section = flows.get("fpga") if isinstance(flows, dict) else None
     if not isinstance(section, dict):
         return
-    if not _flow_selection(project, "fpga").enabled:
+    if not _flow_enabled(project, "fpga"):
         return
     _skip(
         "fpga deep smoke skipped - a full FPGA implementation is too slow "
@@ -5972,9 +5948,8 @@ def _run_elaborate_deep_check(
 ) -> None:
     """Deep-smoke ``elaborate`` when it is exposed (validate-or-opt-out, QA-6).
 
-    elaborate is intentionally NOT in :data:`_AUDITED_FLOWS` (it has no execution
-    menu of its own — it follows ``[flows.sim]``'s selection), so it is
-    checked here rather than in the generic loop. When a project exposes
+    elaborate is intentionally NOT in :data:`_AUDITED_FLOWS`, so it is checked
+    here rather than in the generic loop. When a project exposes
     elaborate it MUST function — a broken exposed elaborate (a generic
     FuseSoC elaborate that can't build the design) is a hard FAIL, not
     the old silent green. When a project opts out with
@@ -5984,16 +5959,6 @@ def _run_elaborate_deep_check(
     if not _elaborate_active(project):
         _skip("elab deep check skipped - not exposed (opt-out; lint/sim cover elaboration)")
         return
-    # elaborate follows [flows.sim]'s selection; its own section carries only
-    # Flow-specific policy and the enabled opt-out handled above.
-    followed = _flow_selection(project, "sim")
-    selection = execution.ExecutionSelection(
-        enabled=followed.enabled,
-        legacy_backend=followed.legacy_backend,
-    )
-    if _execution_error("elab", selection):
-        _skip("elab deep check skipped - the followed sim selection is invalid")
-        return
     targets = _doctor_targets(project, "elab")
     if not targets:
         _skip("elab deep check skipped - no Doctor Target selected")
@@ -6002,7 +5967,6 @@ def _run_elaborate_deep_check(
         _run_flow_check(
             project,
             "elab",
-            selection,
             target=target,
             dry_run=False,
             docker_exe=docker_exe,
@@ -6103,7 +6067,7 @@ def _run_selftest_checks(
     the fail path is simply unproven until the setup agent authors a known-bad.
     """
     for flow_name in _SELFTEST_FLOWS:
-        if not _flow_selection(project, flow_name).enabled:
+        if not _flow_enabled(project, flow_name):
             continue  # disabled Flow — nothing to prove
         # Backend-agnostic since ADR 0039: the fixture mechanism proves the
         # fail path of the BUILT-IN flow exactly as it did the adapters'
@@ -6144,7 +6108,7 @@ def _prepare_selftest_invocation(
     _skip: Check,
     _fail: Fail,
 ) -> tuple[list[str], dict[str, str], int] | None:
-    """Resolve the execution selection and build the argv for one self-test case.
+    """Resolve the Flow configuration and build the argv for one self-test case.
 
     Returns ``None`` after already reporting a skip/fail when the case cannot
     be run at all (missing container runtime/image, or no matching Target).
@@ -6311,34 +6275,18 @@ def _run_one_selftest(
     _grade_selftest_result(result, label, expect_pass=expect_pass, _pass=_pass, _fail=_fail)
 
 
-def _flow_class(flow_name: str) -> Any:
-    """The Booley Flow class owning *flow_name*'s execution matrix."""
-    import importlib
-
-    module_name, class_name = _EXECUTION_VALIDATING_FLOWS[flow_name]
-    return getattr(importlib.import_module(module_name), class_name)
-
-
-def _flow_selection(project: ProjectAudit, flow_name: str) -> execution.ExecutionSelection:
-    """Build *flow_name*'s ``ExecutionSelection`` from the parsed booley.toml.
-
-    Reads the dict the audit already loaded instead of re-reading config from
-    disk. A legacy backend is retained only for its hard-migration error.
-    """
+def _flow_enabled(project: ProjectAudit, flow_name: str) -> bool:
+    """Return *flow_name*'s enablement from parsed booley.toml."""
     flows = project.booley_toml.get("flows", {})
     if not isinstance(flows, dict):
         flows = {}
     section = config_section(flows, flow_name)
-    raw_backend = section.get("backend")
-    return execution.ExecutionSelection(
-        enabled=section.get("enabled", True) is not False,
-        legacy_backend=None if raw_backend is None else str(raw_backend).strip(),
-    )
+    return section.get("enabled", True) is not False
 
 
 def _elaborate_active(project: ProjectAudit) -> bool:
     """Whether elaborate is enabled and therefore must be validated (QA-6)."""
-    return _flow_selection(project, "elab").enabled
+    return _flow_enabled(project, "elab")
 
 
 def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
@@ -6375,27 +6323,17 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
     return max(floor, configured_s)
 
 
-def _execution_error(flow_name: str, selection: execution.ExecutionSelection) -> str | None:
-    """Reject a retired ``backend`` through the Flow's shared validator.
-
-    Principle 9: delegates to ``BooleyFlow.validate_execution`` (each Flow declares
-    the run entry point emit the identical migration error.
-    """
-    return _flow_class(flow_name).validate_execution(selection)
-
-
 def _flow_check_routing(
     project: ProjectAudit,
     flow_name: str,
-    selection: execution.ExecutionSelection,
     *,
     dry_run: bool,
 ) -> tuple[bool, str, str]:
     """Return ``(use_docker, image, label)`` for a Flow check.
 
-    Deep checks execute the real Flow against a resolved .core Target, which
-    needs fusesoc/edalize and the toolchain — that environment is the Session
-    Runtime image, not the host. Cheap dry-runs stay on the host.
+    Every check invokes the Flow inside the Session Runtime. On the host that
+    means routing even a dry-run through the runtime image; a dry-run still
+    exercises Flow orchestration and must not create a host execution surface.
 
     Exception: inside the Session Runtime there is no docker by design (ADR
     0028) — this container is the Session Runtime, and Flows already
@@ -6409,7 +6347,7 @@ def _flow_check_routing(
     from booley.runtime import runtime_context
 
     in_container = runtime_context.inside_session_runtime()
-    use_docker = not in_container and not dry_run
+    use_docker = not in_container
     image = _sandbox_image(project)
     label = f"{flow_name} {'dry-run' if dry_run else 'deep check'}"
     return use_docker, image, label
@@ -6507,7 +6445,6 @@ def _run_flow_check_subprocess(
 def _interpret_flow_check_result(
     project: ProjectAudit,
     flow_name: str,
-    selection: execution.ExecutionSelection,
     result: subprocess.CompletedProcess,
     *,
     target: str,
@@ -6540,7 +6477,6 @@ def _interpret_flow_check_result(
     _report_flow_check_result(
         project,
         flow_name,
-        selection,
         result,
         target=target,
         dry_run=dry_run,
@@ -6557,7 +6493,6 @@ def _interpret_flow_check_result(
 def _report_flow_check_result(
     project: ProjectAudit,
     flow_name: str,
-    selection: execution.ExecutionSelection,
     result: subprocess.CompletedProcess[str],
     *,
     target: str,
@@ -6652,7 +6587,6 @@ def _is_lint_findings_exit(
 def _run_flow_check(
     project: ProjectAudit,
     flow_name: str,
-    selection: execution.ExecutionSelection,
     *,
     target: str,
     dry_run: bool,
@@ -6667,7 +6601,6 @@ def _run_flow_check(
     use_docker, image, label = _flow_check_routing(
         project,
         flow_name,
-        selection,
         dry_run=dry_run,
     )
     label = f"{label} [{target}]"
@@ -6715,7 +6648,6 @@ def _run_flow_check(
     _interpret_flow_check_result(
         project,
         flow_name,
-        selection,
         result,
         target=target,
         dry_run=dry_run,
@@ -6731,7 +6663,6 @@ def _run_flow_check(
         _record_synth_memory_calibration(
             project,
             target,
-            selection,
             report_dir,
             _pass,
             _warn,
@@ -6741,7 +6672,6 @@ def _run_flow_check(
 def _record_synth_memory_calibration(
     project: ProjectAudit,
     target: str,
-    selection: execution.ExecutionSelection,
     report_dir: Path,
     _pass: Check,
     _warn: Check,

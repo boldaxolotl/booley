@@ -201,10 +201,6 @@ known-first-party = ["booley"]
 #             (init_common/init_docker_image/init_git_hooks/init_skills) so
 #             existing importers and tests keep resolving them by their old
 #             ``init_cmd`` names; some re-exports are intentionally unused here.
-#   PLR0911 (openroad_timing) — run_openroad_timing is an ordered ladder of
-#             degrade gates (missing binary/netlist/clock/PDK, nonzero rc,
-#             unparseable slack); each early return is a documented OpenSTA
-#             fallback surface.
 #   PLR0915 (gen_xcelium_dialect_vcd) — main() is a standalone fixture-generator
 #             script emitting a VCD header + value blocks; intrinsically a long
 #             linear emit sequence, not shared production logic.

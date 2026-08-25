@@ -402,10 +402,8 @@ def _project_config_from_env() -> _ProjectAgentConfig | None:
 def _parse_sandbox_config(data: dict) -> SandboxConfig:
     """Parse [sandbox] from booley.toml (single container memory limit).
 
-    Legacy pre-ADR-0028 knobs — a ``memory`` tier *table*, ``memory_tiers``,
-    and ``[tools.<name>].sandbox`` — configured per-Flow sibling containers
-    or marked host dependencies. They are warned about and ignored; the
-    Session Runtime is now the only Flow execution location.
+    Legacy pre-ADR-0028 memory tier knobs are warned about and ignored; the
+    Session Runtime has one memory limit.
     """
     section = data.get("sandbox", {})
     if "mode" in section:
@@ -440,26 +438,9 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
             'memory limit); use memory = "8g" — ignoring',
         )
 
-    _warn_retired_sandbox_keys(data)
-
     mount_host_skills = bool(section.get("mount_host_skills", False))
 
     return SandboxConfig(image=image, memory=memory, mount_host_skills=mount_host_skills)
-
-
-def _warn_retired_sandbox_keys(data: dict) -> None:
-    """Warn about retired ``[tools.<name>].sandbox`` keys."""
-    legacy_section = data.get("tools", {})
-    if not isinstance(legacy_section, dict):
-        return
-    for endpoint_name, legacy_config in legacy_section.items():
-        if not isinstance(legacy_config, dict) or "sandbox" not in legacy_config:
-            continue
-        logger.warning(
-            "[tools.%s].sandbox = %r is retired; delete it — Flows run in the Session Runtime",
-            endpoint_name,
-            legacy_config.get("sandbox"),
-        )
 
 
 def _parse_jobs_config(data: dict) -> SlotCaps:

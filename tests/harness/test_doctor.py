@@ -168,7 +168,7 @@ def _patch_environment(
 ) -> list[list[str]]:
     reset_cache()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
-    # Flow tests exercise the host-side runtime path deterministically,
+    # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
@@ -297,8 +297,9 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     output = capsys.readouterr().out
     assert rc == 0
     assert "NOTE  project guidance file missing" in output
-    tool_calls = [call for call in calls if call[:3] == [sys.executable, "-m", "booley.flows.sim"]]
+    tool_calls = [call for call in calls if "booley.flows.sim" in call]
     assert tool_calls
+    assert tool_calls[0][:2] == ["doc" + "ker", "run"]
     assert "--dry-run" in tool_calls[0]
     assert "--target" in tool_calls[0]
     assert tool_calls[0][tool_calls[0].index("--target") + 1] == "sim_fast"
@@ -574,17 +575,13 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
 
     assert rc == 0
-    # Two simulate invocations: the shallow dry-run (host) and the deep check.
-    # Deep checks now run INSIDE the Session Runtime, so the
-    # deep invocation is docker-wrapped rather than a bare host python call.
+    # Both the shallow dry-run and the deep check run in the Session Runtime.
     sim_calls = [call for call in calls if "booley.flows.sim" in call]
     assert len(sim_calls) == 2
     dry_call, deep_call = sim_calls
-    # Dry-run stays cheap on the host.
-    assert dry_call[:3] == [sys.executable, "-m", "booley.flows.sim"]
+    assert dry_call[:2] == ["doc" + "ker", "run"]
     assert "--dry-run" in dry_call
-    # Deep runs in-container: `docker run ... <image> python3 -m booley.flows.sim`.
-    assert deep_call[0] == "doc" + "ker" and deep_call[1] == "run"
+    assert deep_call[:2] == ["doc" + "ker", "run"]
     assert "--dry-run" not in deep_call
     assert deep_call[deep_call.index("--target") + 1] == "sim_fast"
 
@@ -655,21 +652,10 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
     return project, calls
 
 
-def _selection(backend: str = "builtin"):
-    # `backend` survives as a shim: "builtin" maps to a plain enabled
-    # selection; anything else rides legacy_backend (migration-error tests).
-    from booley.flows.execution import ExecutionSelection
-
-    if backend == "builtin":
-        return ExecutionSelection()
-    return ExecutionSelection(legacy_backend=backend)
-
-
-def _run_flow_check(project, rec: _Rec, *, backend: str, dry_run: bool) -> None:
+def _run_flow_check(project, rec: _Rec, *, dry_run: bool) -> None:
     doctor._run_flow_check(
         project,
         "sim",
-        _selection(backend),
         target="fast",
         dry_run=dry_run,
         docker_exe="doc" + "ker",
@@ -683,22 +669,21 @@ def _run_flow_check(project, rec: _Rec, *, backend: str, dry_run: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    ("backend", "dry_run", "expect_docker"),
+    ("dry_run", "expect_docker"),
     [
-        # builtin + sandbox: cheap dry-run stays on the host, the deep check
-        # (real Flow + FuseSoC/Edalize/EDA toolchain) MUST run in the sandbox.
-        ("builtin", True, False),
-        ("builtin", False, True),
+        # Every Flow check stays in the Session Runtime; dry-run changes whether
+        # EDA commands execute, not the execution boundary.
+        (True, True),
+        (False, True),
     ],
 )
 def test_deep_check_routing_truth_table(
     tmp_path,
     monkeypatch,
-    backend,
     dry_run,
     expect_docker,
 ):
-    """Dry checks run locally and deep checks run in the Session Runtime."""
+    """Dry and deep Flow checks both run in the Session Runtime."""
     project, calls = _tool_check_harness(
         tmp_path,
         monkeypatch,
@@ -706,7 +691,7 @@ def test_deep_check_routing_truth_table(
     )
     rec = _Rec()
 
-    _run_flow_check(project, rec, backend=backend, dry_run=dry_run)
+    _run_flow_check(project, rec, dry_run=dry_run)
 
     assert rec.kinds() == {"pass"}
     assert len(calls) == 1
@@ -779,7 +764,7 @@ def test_misrouted_sandbox_check_fails_loudly(tmp_path, monkeypatch):
     )
     rec = _Rec()
 
-    _run_flow_check(project, rec, backend="builtin", dry_run=False)
+    _run_flow_check(project, rec, dry_run=False)
 
     assert rec.kinds() == {"fail"}
     assert "executed OUTSIDE it" in rec.fails()[0]
@@ -800,7 +785,7 @@ def test_exit_97_without_marker_is_an_ordinary_failure(tmp_path, monkeypatch):
     )
     rec = _Rec()
 
-    _run_flow_check(project, rec, backend="builtin", dry_run=False)
+    _run_flow_check(project, rec, dry_run=False)
 
     assert rec.kinds() == {"fail"}
     assert "failed with exit 97" in rec.fails()[0]
@@ -880,7 +865,6 @@ def test_deep_check_skips_when_runtime_unavailable(tmp_path, monkeypatch):
     doctor._run_flow_check(
         project,
         "sim",
-        _selection("builtin"),
         target="fast",
         dry_run=False,
         docker_exe=None,
@@ -913,7 +897,6 @@ def test_deep_check_fails_when_runtime_present_but_image_missing(tmp_path, monke
     doctor._run_flow_check(
         project,
         "sim",
-        _selection("builtin"),
         target="fast",
         dry_run=False,
         docker_exe="doc" + "ker",
@@ -1436,13 +1419,6 @@ def test_validate_one_flow_table_pre_run_commands_shape():
     assert any("[flows.lint].pre_run_commands" in m and "ignores it" in m for m in warns)
 
 
-class TestRetiredCommercialEdaConfig:
-    def test_retired_venue_fails_closed(self):
-        from booley.eda.config import retired_config_error
-
-        assert "retired" in retired_config_error({"flows": {"sim": {"venue": "host"}}})
-
-
 def test_windows_rejects_host_provisioning_during_config_audit(tmp_path, monkeypatch):
     from booley.eda import config as eda_config
 
@@ -1903,7 +1879,7 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
     base_run = doctor.subprocess.run
 
     def run_with_tb_top_error(cmd, **kwargs):
-        if cmd[:3] == [sys.executable, "-m", "booley.flows.sim"]:
+        if "booley.flows.sim" in cmd:
             return subprocess.CompletedProcess(
                 cmd,
                 2,

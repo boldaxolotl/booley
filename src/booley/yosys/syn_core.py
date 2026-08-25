@@ -1,12 +1,11 @@
-"""Synthesis coordinator — sv2v/Yosys script generation, execution, and OpenSTA timing.
+"""Synthesis coordinator — sv2v/Yosys script generation and OpenSTA timing config.
 
-Two responsibilities live here: (3) building and running the sv2v + Yosys
-synthesis scripts, and (4) the zero-RC OpenSTA timing path plus its config.
+Two responsibilities live here: building the sv2v + Yosys synthesis scripts,
+and the zero-RC OpenSTA timing script plus its config.
 The remaining concerns were split into sibling leaf modules:
 
 * :mod:`booley.yosys.syn_config`     — project-context path constants
 * :mod:`booley.yosys.syn_discovery`  — EDA tool + liberty discovery
-* :mod:`booley.yosys.syn_subprocess` — subprocess + watchdog execution helpers
 * :mod:`booley.yosys.syn_parse`      — config-param + area result parsing
 
 Their public names are re-exported below so existing importers of ``syn_core``
@@ -17,8 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -41,7 +38,6 @@ from booley.yosys.syn_config import (
 from booley.yosys.syn_discovery import (
     DEFAULT_LIB_DIR,
     DEFAULT_LIBERTY,
-    find_eda_tool,
     resolve_liberty,
 )
 from booley.yosys.syn_parse import (
@@ -49,11 +45,6 @@ from booley.yosys.syn_parse import (
     area_to_kge,
     parse_area_from_stat,
     parse_params,
-)
-from booley.yosys.syn_subprocess import (
-    WatchedResult,
-    run_cmd,
-    run_cmd_watched,
 )
 
 # Public surface of this facade (defined here + re-exported above). Listing the
@@ -78,7 +69,6 @@ __all__ = [
     "SYN_DIR",
     "TIMING_ENGINE_CHOICES",
     "StaTimingConfig",
-    "WatchedResult",
     "area_to_kge",
     "build_elaborate_script",
     "detect_clock_port",
@@ -86,7 +76,6 @@ __all__ = [
     "effective_period_ps",
     "emit_timing_markers",
     "enabled_define_names",
-    "find_eda_tool",
     "parse_area_from_stat",
     "parse_effective_parameters",
     "parse_params",
@@ -94,18 +83,12 @@ __all__ = [
     "parse_sdc_clock_periods_ps",
     "parse_sta_clock_period_ps",
     "parse_sta_worst_slack",
-    "prepare_work_dir",
     "print_overall_fmax",
     "print_reg2reg_fmax",
     "read_user_sdc_text",
     "resolve_frontend",
     "resolve_liberty",
     "resolve_slang_options",
-    "run_cmd",
-    "run_cmd_watched",
-    "run_opensta",
-    "run_sv2v",
-    "run_yosys",
     "scan_synth_logs",
     "sta_parse_abort_hint",
     "sv2v_argv",
@@ -113,19 +96,6 @@ __all__ = [
     "write_sta_script",
     "write_sta_sdc",
 ]
-
-
-# ============================================================================
-# Work directory management
-# ============================================================================
-
-
-def prepare_work_dir(work_dir: Path) -> None:
-    """Create a fresh work directory, removing any previous contents."""
-    if work_dir.exists():
-        shutil.rmtree(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Work directory: {work_dir}")
 
 
 # ============================================================================
@@ -525,7 +495,7 @@ def effective_period_ps(config: StaTimingConfig, stdout: str) -> float:
     3. fall back to ``config.period_ps``.
 
     (3) is taken whenever the Target owns no clock — which keeps the no-SDC and
-    host-fallback paths bit-identical to pre-0029 behaviour (the generated
+    constraint-less path bit-identical to pre-0029 behaviour (the generated
     ``create_clock`` is built from ``config.period_ps``, so reading it back is
     unnecessary and would risk sub-ps ``%.6f`` rounding).
     """
@@ -599,10 +569,8 @@ def sv2v_argv(
     """The sv2v transpile command line: SystemVerilog in, one Verilog file out.
 
     The single source of truth for the transpile invocation, shared by the
-    legacy in-process runner (:func:`run_sv2v`), the make-driven synth recipe
-    (``syn_make._sv2v_recipe``), and ``elaborate``'s ASIC path — the three used
-    to hand-roll the same argv, which is exactly how an include path or a
-    define quietly stops reaching one of them.
+    make-driven synth recipe (``syn_make._sv2v_recipe``) and ``elaborate``'s
+    ASIC path.
 
     Parameter overrides are deliberately absent: sv2v preserves parameter
     declarations, and the overrides are applied on the Yosys side
@@ -619,18 +587,6 @@ def sv2v_argv(
     argv += [boundary_path(f) for f in source_files]
     argv += ["-w", boundary_path(output)]
     return argv
-
-
-def run_sv2v(files: list[Path], inc_dirs: list[Path], defines: list[str], work_dir: Path) -> Path:
-    """Convert SystemVerilog to Verilog using sv2v (legacy in-process path)."""
-    sv2v = find_eda_tool("sv2v")
-    if not sv2v:
-        sys.exit("ERROR: sv2v not found on PATH. Install from https://github.com/zachjs/sv2v")
-
-    sv2v_out = work_dir / SV2V_OUTPUT_NAME
-    cmd = sv2v_argv(files, inc_dirs, defines, sv2v_out, sv2v=sv2v)
-    run_cmd(cmd, "sv2v: Converting SystemVerilog to Verilog", work_dir, log_file="sv2v.log")
-    return sv2v_out
 
 
 def _quote_yosys_path(path) -> str:
@@ -952,107 +908,6 @@ def _build_abc_command(
     return abc + "; opt"
 
 
-def _yosys_has_read_slang(yosys: str | Path) -> bool:
-    """True when *yosys* provides the native slang frontend (``read_slang``).
-
-    Probes ``yosys -p 'help read_slang'``: a build without the command prints
-    ``No such command or cell type: read_slang`` (and the help text is absent).
-    Any probe failure (missing binary, timeout) is treated as "not available" so
-    the caller degrades to a clear, actionable error rather than crashing deep in
-    synthesis with a cryptic mid-script ``read_slang`` failure.
-    """
-    try:
-        proc = subprocess.run(
-            [str(yosys), "-p", "help read_slang"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    out = proc.stdout + proc.stderr
-    return "No such command" not in out and "read_slang" in out
-
-
-def run_yosys(
-    source_files: list[Path],
-    design_name: str,
-    liberty: Path,
-    work_dir: Path,
-    flatten: bool = False,
-    sdc: str | None = None,
-    tdelay: int | None = None,
-    params: dict[str, str] | None = None,
-    abc_recipe: str | None = None,
-    timing_config: StaTimingConfig | None = None,
-    frontend: str = "sv2v",
-    inc_dirs: list[Path] | None = None,
-    defines: list[str] | None = None,
-    slang_options: list[str] | None = None,
-    generic_abc_before_mapping: bool = False,
-    abc_script: str | None = None,
-) -> object:
-    """Run Yosys synthesis on RTL.
-
-    *source_files* is the one sv2v-converted Verilog file for the ``"sv2v"``
-    frontend, or the raw SystemVerilog sources for ``"slang"`` (which also uses
-    *inc_dirs*/*defines*/*slang_options*). See :func:`_build_yosys_script`.
-    """
-    yosys = find_eda_tool("yosys")
-    if not yosys:
-        sys.exit("ERROR: yosys not found on PATH.")
-
-    if frontend == "slang" and not _yosys_has_read_slang(yosys):
-        sys.exit(
-            "ERROR: --frontend slang needs Yosys >= 0.67 with the native slang "
-            "frontend (the 'read_slang' command), but this Yosys does not provide "
-            f"it: {yosys}. Use --frontend sv2v, or run in a Yosys 0.67+ sandbox "
-            "image (booley-sandbox built with ARG YOSYS_VERSION=v0.67)."
-        )
-
-    if sdc:
-        sdc_resolved = Path(sdc).resolve()
-        if not sdc_resolved.exists():
-            sys.exit(f"ERROR: SDC constraints file not found: {sdc_resolved}")
-
-    yosys_script = _build_yosys_script(
-        source_files,
-        design_name,
-        liberty,
-        work_dir,
-        flatten,
-        params,
-        abc_recipe,
-        frontend=frontend,
-        inc_dirs=inc_dirs,
-        defines=defines,
-        slang_options=slang_options,
-        generic_abc_before_mapping=generic_abc_before_mapping,
-        abc_script=abc_script,
-        abc_delay_ps=tdelay,
-    )
-
-    cmd = [str(yosys), "-p", yosys_script]
-    result = run_cmd_watched(
-        cmd,
-        "Yosys: Running synthesis",
-        work_dir,
-        log_file="yosys.log",
-        heartbeat_interval=60,
-        poll_interval=10,
-    )
-    if timing_config and timing_config.engine == "openroad":
-        from booley.yosys.openroad_timing import run_openroad_timing
-
-        if not run_openroad_timing(design_name, liberty, work_dir, timing_config):
-            print("WARNING: OpenROAD timing unavailable/failed; falling back to OpenSTA")
-            run_opensta(design_name, liberty, work_dir, timing_config)
-    elif timing_config and timing_config.engine == "opensta":
-        run_opensta(design_name, liberty, work_dir, timing_config)
-    return result.watchdog_result
-
-
 # Yosys/ABC/sv2v error markers that can appear in a log even when the EDA tool
 # exits 0 (e.g. ABC fallback recipes that silently partial-fail). Keep this list
 # conservative — a false positive fails otherwise-valid synthesis.
@@ -1174,21 +1029,10 @@ def _toml_bool(cfg: dict, key: str, default: bool) -> bool:
     return raw
 
 
-def _in_container() -> bool:
-    """True when running inside the Booley Docker/Podman sandbox.
-
-    Same marker-file probe as ``booley.runtime.runtime_context``; kept local and tiny so the
-    timing-config gating has no cross-package import and stays trivially
-    monkeypatchable in tests.
-    """
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
-
-
 # Single source of truth for the valid --timing-engine / timing.engine values.
 # Shared by run_yosys_syn's argparse ``choices``, the resolution below, and the
-# host-side asic_synthesize config validation — so a typo'd or wrong-typed
-# ``timing_engine`` in booley.toml is rejected on the host with a clear message
-# instead of crashing argparse deep inside the sandbox.
+# asic_synthesize config validation — so a typo'd or wrong-typed
+# ``timing_engine`` is rejected with a clear message before EDA execution.
 TIMING_ENGINE_CHOICES = ("openroad", "opensta", "none")
 
 # Every key ``synth_timing_config`` still consumes from
@@ -1228,7 +1072,7 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
 
     *project_root* pins the booley.toml lookup to an explicit worktree (the
     in-process asic_synthesize configure half, ADR 0037 §8); ``None`` keeps the
-    legacy CWD-resolution path for the standalone run_yosys_syn CLI.
+    default project-root resolution path for direct configuration.
     """
     from booley.runtime.shared_infra import _load_rtl_config
 
@@ -1259,19 +1103,10 @@ def _load_and_validate_timing_config(project_root: Path | None = None) -> dict:
 
 
 def _resolve_timing_engine(engine: str | None, timing: dict) -> str:
-    """Resolve + validate the timing engine, with sandbox-only OpenROAD gating."""
+    """Resolve and validate the configured timing path."""
     resolved_engine = str(engine or timing.get("engine", "openroad")).lower()
     if resolved_engine not in TIMING_ENGINE_CHOICES:
         sys.exit("ERROR: timing engine must be one of: " + ", ".join(TIMING_ENGINE_CHOICES))
-    # Sandbox-only gating: OpenROAD (binary + PDK) only exists inside the
-    # container. On the host, fall back to the OpenSTA path so a host run keeps
-    # today's behavior instead of hitting a missing-binary degrade every time.
-    if resolved_engine == "openroad" and not _in_container():
-        print(
-            "INFO: OpenROAD timing engine is sandbox-only; running on the host, "
-            "so falling back to the OpenSTA path."
-        )
-        resolved_engine = "opensta"
     return resolved_engine
 
 
@@ -1279,12 +1114,13 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     """Resolve ``--sta-sdc`` file paths against *root* (default ``PROJECT_ROOT``).
 
     STA constraint SDC files (ADR 0029): one per ``--sta-sdc``, sourced from
-    the Target's ``file_type: SDC`` fileset (the host forwards them) or passed
-    directly to standalone ``run_yosys_syn``. A relative path resolves against
-    the project root (``/work`` in the sandbox), not cwd — same convention as
-    ``--inc-dir`` / ``--extra-rtl`` — so a path the caller relativized against
-    the worktree crosses the host/sandbox boundary unchanged. There is no TOML
-    fallback: ``[flows.synth.timing].sdc`` is a hard-removed key.
+    the Target's ``file_type: SDC`` fileset (the Flow forwards them) or passed
+    directly to the configure surface. A relative path resolves against
+    the project root (``/work`` in the Session Runtime), not cwd — same
+    convention as ``--inc-dir`` / ``--extra-rtl`` — so a path the caller
+    relativized against the worktree stays valid for the generated boundary
+    command. There is no TOML fallback: ``[flows.synth.timing].sdc`` is a
+    hard-removed key.
     """
     base = root if root is not None else PROJECT_ROOT
     resolved_sdc: list[Path] = []
@@ -1318,16 +1154,14 @@ def synth_timing_config(
 ) -> StaTimingConfig:
     """Resolve simple-backend timing config from CLI overrides and booley.toml.
 
-    OpenROAD is the default engine (placed, buffered/sized, estimated wire RC).
-    It is **sandbox-only**: on the host (no ``/.dockerenv``) the OpenROAD binary
-    and PDK aren't installed, so we silently take the OpenSTA path with an INFO
-    note.  Projects can opt out entirely with
+    OpenROAD is the default path (placed, buffered/sized, estimated wire RC).
+    Projects can opt out entirely with
     ``[flows.synth.timing].engine = "none"`` or ``--timing-engine none``.
 
     Design constraints (``period``/``clock``/I-O delays/extra SDC) are **not**
     read from ``booley.toml`` anymore (ADR 0029): they arrive as ``--sta-sdc``
     files sourced from the Target's ``file_type: SDC`` fileset, plus the CLI
-    overrides for standalone ``run_yosys_syn`` use. ``sdc`` here is the list of
+    overrides for direct configure use. ``sdc`` here is the list of
     those SDC paths (repeatable ``--sta-sdc``).
 
     *project_root* pins the booley.toml lookup and relative-SDC resolution to
@@ -1421,80 +1255,6 @@ def sta_parse_abort_hint(sta_log_text: str, design_name: str) -> str | None:
         f"({', '.join(sorted(FORMAL_CELL_TYPES))}) that survived to write_verilog. "
         "Check yosys.log for an 'Area for cell type ... is unknown!' line naming it."
     )
-
-
-def _print_sta_parse_abort_hint(work_dir: Path, design_name: str) -> None:
-    """Print :func:`sta_parse_abort_hint` for *work_dir*'s ``sta.log``, if any.
-
-    Best-effort observability: an unreadable/absent log simply yields no hint.
-    """
-    try:
-        text = (work_dir / "sta.log").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return
-    hint = sta_parse_abort_hint(text, design_name)
-    if hint:
-        print(hint)
-
-
-def run_opensta(
-    design_name: str,
-    liberty: Path,
-    work_dir: Path,
-    config: StaTimingConfig,
-) -> None:
-    """Run OpenSTA after Yosys and print stable timing markers.
-
-    Timing violations are reported as negative slack.  They do not fail
-    synthesis; structural Yosys conditions still drive pass/fail.
-    """
-    sta = find_eda_tool("sta") or find_eda_tool("opensta")
-    if not sta:
-        print("WARNING: OpenSTA requested but neither 'sta' nor 'opensta' is on PATH")
-        return
-
-    sta_netlist = work_dir / f"sta_{design_name}.v"
-    if not sta_netlist.exists():
-        print(f"WARNING: OpenSTA netlist missing: {sta_netlist}")
-        return
-
-    clock = config.clock or detect_clock_port(sta_netlist) or _first_authored_clock(config)
-    if not clock:
-        print("WARNING: OpenSTA requested but no clock port was configured or detected")
-        return
-
-    report_dir = work_dir / "reports" / "timing"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    sdc_path = write_sta_sdc(config, clock, work_dir)
-    script_path = write_sta_script(
-        design_name,
-        liberty,
-        sta_netlist,
-        sdc_path,
-        report_dir,
-        work_dir,
-    )
-    try:
-        result = run_cmd_watched(
-            [str(sta), str(script_path)],
-            "OpenSTA: Static timing analysis",
-            work_dir,
-            log_file="sta.log",
-            heartbeat_interval=60,
-            poll_interval=10,
-            # Own file — the default name would clobber Yosys's stage timings.
-            timings_filename="stage_timings_sta.json",
-        )
-    except subprocess.CalledProcessError as exc:
-        print(f"WARNING: OpenSTA failed with code {exc.returncode}; timing unavailable")
-        _print_sta_parse_abort_hint(work_dir, design_name)
-        return
-    # Surface overall AND reg->reg markers independently: an I/O-bound /
-    # false-pathed overall worst path leaves the overall query empty, but the
-    # internal reg->reg Fmax is still valid and must not be dropped (SETUP-29).
-    if not emit_timing_markers(result.stdout, config, report_dir):
-        print("WARNING: OpenSTA completed but no timing path slack was reported")
-        _print_sta_parse_abort_hint(work_dir, design_name)
 
 
 def detect_clock_port(netlist: Path) -> str | None:

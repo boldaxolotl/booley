@@ -38,7 +38,6 @@ Security properties exercised by the test:
 - the container has no network, no Linux capabilities, and
   `no-new-privileges`;
 - only the disposable project copy is writable;
-- Host MCP is not involved.
 
 This is an opt-in PoC, not the final user-facing mount configuration. A
 production design must keep host source-path approval outside the

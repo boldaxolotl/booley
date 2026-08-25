@@ -1,41 +1,15 @@
-"""Unit tests for syn_core.py — core synthesis utilities.
-
-Tests cover EDA-tool discovery, defines building, parameter parsing,
-source patching, work directory derivation, area/FF parsing,
-and Yosys command construction.  All subprocess calls mocked.
-"""
+"""Unit tests for synthesis configuration, script generation, and parsing."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 # Make the yosys/ and src/ directories importable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-
-# ---------------------------------------------------------------------------
-# find_eda_tool
-# ---------------------------------------------------------------------------
-
-
-class TestFindEdaTool:
-    def test_found(self, monkeypatch):
-        from booley.yosys import syn_core
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/yosys")
-        result = syn_core.find_eda_tool("yosys")
-        assert result == Path("/usr/bin/yosys")
-
-    def test_not_found(self, monkeypatch):
-        from booley.yosys import syn_core
-
-        monkeypatch.setattr("shutil.which", lambda name: None)
-        assert syn_core.find_eda_tool("missing_tool") is None
 
 
 # ---------------------------------------------------------------------------
@@ -210,29 +184,6 @@ class TestScanSynthLogs:
 
 
 # ---------------------------------------------------------------------------
-# prepare_work_dir
-# ---------------------------------------------------------------------------
-
-
-class TestPrepareWorkDir:
-    def test_creates_fresh(self, tmp_path):
-        from booley.yosys import syn_core
-
-        work = tmp_path / "new_work"
-        syn_core.prepare_work_dir(work)
-        assert work.is_dir()
-
-    def test_removes_existing(self, tmp_path):
-        from booley.yosys import syn_core
-
-        work = tmp_path / "existing"
-        work.mkdir()
-        (work / "old.log").write_text("stale", encoding="utf-8")
-        syn_core.prepare_work_dir(work)
-        assert work.is_dir()
-        assert not (work / "old.log").exists()
-
-
 # ---------------------------------------------------------------------------
 # parse_area_from_stat
 # ---------------------------------------------------------------------------
@@ -655,85 +606,6 @@ class TestPerClockMarkers:
 
 
 # ---------------------------------------------------------------------------
-# run_sv2v — subprocess mocked
-# ---------------------------------------------------------------------------
-
-
-class TestRunSv2v:
-    @patch("booley.yosys.syn_core.run_cmd")
-    @patch("booley.yosys.syn_core.find_eda_tool")
-    def test_basic_command(self, mock_find, mock_run, tmp_path):
-        from booley.yosys import syn_core
-
-        mock_find.return_value = Path("/usr/bin/sv2v")
-        mock_run.return_value = MagicMock(returncode=0)
-
-        result = syn_core.run_sv2v(
-            files=[Path("a.sv"), Path("b.sv")],
-            inc_dirs=[Path("/inc")],
-            defines=["SIM"],
-            work_dir=tmp_path,
-        )
-        assert result == tmp_path / "sv2v_converted.v"
-        cmd = mock_run.call_args[0][0]
-        assert "sv2v" in cmd[0]
-        assert any("-I" in str(c) for c in cmd)
-        assert any("-DSIM" in str(c) for c in cmd)
-
-    @patch("booley.yosys.syn_core.find_eda_tool")
-    def test_sv2v_not_found_exits(self, mock_find):
-        from booley.yosys import syn_core
-
-        mock_find.return_value = None
-        with pytest.raises(SystemExit):
-            syn_core.run_sv2v([], [], [], Path("/tmp"))
-
-
-# ---------------------------------------------------------------------------
-# run_cmd (non-watched)
-# ---------------------------------------------------------------------------
-
-
-class TestSynCoreRunCmd:
-    @patch("booley.yosys.syn_core.subprocess.run")
-    def test_success(self, mock_run, tmp_path):
-        from booley.yosys import syn_core
-
-        mock_run.return_value = MagicMock(returncode=0)
-        result = syn_core.run_cmd(["echo"], "test", work_dir=tmp_path)
-        assert result.returncode == 0
-
-    @patch("booley.yosys.syn_core.subprocess.run")
-    def test_failure_exits(self, mock_run, tmp_path):
-        from booley.yosys import syn_core
-
-        mock_run.return_value = MagicMock(returncode=1)
-        with pytest.raises(SystemExit):
-            syn_core.run_cmd(["fail"], "test fail", work_dir=tmp_path)
-
-    @patch("booley.yosys.syn_core.subprocess.run")
-    def test_log_file(self, mock_run, tmp_path):
-        from booley.yosys import syn_core
-
-        mock_run.return_value = MagicMock(returncode=0)
-        syn_core.run_cmd(["echo"], "test", work_dir=tmp_path, log_file="test.log")
-        # Should have used stdout=file
-        # Verify the call happened with a file handle for stdout
-        assert mock_run.called
-
-    @patch("booley.yosys.syn_core.subprocess.run")
-    def test_rc_clamped_to_255(self, mock_run, tmp_path):
-        """Return codes > 255 should be clamped to 1 on POSIX."""
-        from booley.yosys import syn_core
-
-        mock_run.return_value = MagicMock(returncode=256)
-        with pytest.raises(SystemExit) as exc_info:
-            syn_core.run_cmd(["bad"], "test", work_dir=tmp_path)
-        # Should clamp to 1, not 256 (which wraps to 0 on POSIX)
-        assert exc_info.value.code == 1
-
-
-# ---------------------------------------------------------------------------
 # synth_timing_config — TOML boundary validation (Principle 5)
 # ---------------------------------------------------------------------------
 
@@ -761,7 +633,7 @@ class TestSynthTimingConfigTomlBoundary:
 
     def test_cli_scalars_used(self, monkeypatch):
         # Design-constraint scalars (period / I-O delays) now arrive only via
-        # the trusted argparse-typed CLI (standalone run_yosys_syn use); there
+        # the trusted argparse-typed configure surface; there
         # is no booley.toml source for them anymore (ADR 0029).
         from booley.yosys import syn_core
 
@@ -858,7 +730,7 @@ class TestSynthTimingConfigTomlBoundary:
 
 
 # ---------------------------------------------------------------------------
-# synth_timing_config — OpenROAD engine default + knobs + sandbox gating
+# synth_timing_config — OpenROAD path default + knobs
 # ---------------------------------------------------------------------------
 
 
@@ -873,18 +745,10 @@ class TestSynthTimingConfigOpenRoad:
             lambda project_root=None: cfg,
         )
 
-    @staticmethod
-    def _in_sandbox(monkeypatch) -> None:
-        """Pretend we're inside the container so OpenROAD isn't host-gated away."""
-        from booley.yosys import syn_core
-
-        monkeypatch.setattr(syn_core, "_in_container", lambda: True)
-
-    def test_openroad_is_default_engine_in_sandbox(self, monkeypatch):
+    def test_openroad_is_default_engine(self, monkeypatch):
         from booley.yosys import syn_core
 
         self._with_timing(monkeypatch, {})
-        self._in_sandbox(monkeypatch)
         cfg = syn_core.synth_timing_config()
         assert cfg.engine == "openroad"
         # Defaulted OpenROAD knobs.
@@ -895,17 +759,7 @@ class TestSynthTimingConfigOpenRoad:
         from booley.yosys import syn_core
 
         self._with_timing(monkeypatch, {"engine": "openroad"})
-        self._in_sandbox(monkeypatch)
         assert syn_core.synth_timing_config().engine == "openroad"
-
-    def test_host_falls_back_to_opensta(self, monkeypatch, capsys):
-        from booley.yosys import syn_core
-
-        self._with_timing(monkeypatch, {})
-        monkeypatch.setattr(syn_core, "_in_container", lambda: False)
-        cfg = syn_core.synth_timing_config()
-        assert cfg.engine == "opensta"
-        assert "sandbox-only" in capsys.readouterr().out
 
     def test_invalid_engine_lists_three_engines(self, monkeypatch):
         from booley.yosys import syn_core
@@ -923,7 +777,6 @@ class TestSynthTimingConfigOpenRoad:
             monkeypatch,
             {"utilization_pct": 55, "repair_timing": False},
         )
-        self._in_sandbox(monkeypatch)
         cfg = syn_core.synth_timing_config()
         assert cfg.utilization_pct == 55.0
         assert cfg.repair_timing is False
@@ -935,7 +788,6 @@ class TestSynthTimingConfigOpenRoad:
             monkeypatch,
             {"utilization_pct": 55, "repair_timing": True},
         )
-        self._in_sandbox(monkeypatch)
         cfg = syn_core.synth_timing_config(utilization_pct=70.0, repair_timing=False)
         assert cfg.utilization_pct == 70.0
         assert cfg.repair_timing is False
@@ -944,7 +796,6 @@ class TestSynthTimingConfigOpenRoad:
         from booley.yosys import syn_core
 
         self._with_timing(monkeypatch, {"repair_timing": "yes"})
-        self._in_sandbox(monkeypatch)
         with pytest.raises(SystemExit) as exc_info:
             syn_core.synth_timing_config()
         assert "repair_timing" in str(exc_info.value)
@@ -953,110 +804,9 @@ class TestSynthTimingConfigOpenRoad:
         from booley.yosys import syn_core
 
         self._with_timing(monkeypatch, {"utilization_pct": "high"})
-        self._in_sandbox(monkeypatch)
         with pytest.raises(SystemExit) as exc_info:
             syn_core.synth_timing_config()
         assert "utilization_pct" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# run_yosys dispatch — OpenROAD with OpenSTA fallback
-# ---------------------------------------------------------------------------
-
-
-class TestRunYosysDispatch:
-    @staticmethod
-    def _config(engine: str):
-        from booley.yosys import syn_core
-
-        return syn_core.StaTimingConfig(
-            engine=engine,
-            clock="clk_i",
-            period_ps=4000.0,
-            input_delay_pct=30.0,
-            output_delay_pct=70.0,
-            sdc=(),
-        )
-
-    @patch("booley.yosys.syn_core.run_opensta")
-    @patch("booley.yosys.openroad_timing.run_openroad_timing")
-    @patch("booley.yosys.syn_core.run_cmd_watched")
-    @patch("booley.yosys.syn_core.find_eda_tool")
-    def test_openroad_success_no_fallback(
-        self,
-        mock_find,
-        mock_run,
-        mock_openroad,
-        mock_opensta,
-        tmp_path,
-    ):
-        from booley.yosys import syn_core
-
-        mock_find.return_value = Path("/usr/bin/yosys")
-        mock_run.return_value = MagicMock(watchdog_result="wd")
-        mock_openroad.return_value = True
-        syn_core.run_yosys(
-            [tmp_path / "in.v"],
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            timing_config=self._config("openroad"),
-        )
-        mock_openroad.assert_called_once()
-        mock_opensta.assert_not_called()
-
-    @patch("booley.yosys.syn_core.run_opensta")
-    @patch("booley.yosys.openroad_timing.run_openroad_timing")
-    @patch("booley.yosys.syn_core.run_cmd_watched")
-    @patch("booley.yosys.syn_core.find_eda_tool")
-    def test_openroad_failure_falls_back_to_opensta(
-        self,
-        mock_find,
-        mock_run,
-        mock_openroad,
-        mock_opensta,
-        tmp_path,
-    ):
-        from booley.yosys import syn_core
-
-        mock_find.return_value = Path("/usr/bin/yosys")
-        mock_run.return_value = MagicMock(watchdog_result="wd")
-        mock_openroad.return_value = False  # unavailable / failed
-        syn_core.run_yosys(
-            [tmp_path / "in.v"],
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            timing_config=self._config("openroad"),
-        )
-        mock_openroad.assert_called_once()
-        mock_opensta.assert_called_once()
-
-    @patch("booley.yosys.syn_core.run_opensta")
-    @patch("booley.yosys.openroad_timing.run_openroad_timing")
-    @patch("booley.yosys.syn_core.run_cmd_watched")
-    @patch("booley.yosys.syn_core.find_eda_tool")
-    def test_opensta_engine_skips_openroad(
-        self,
-        mock_find,
-        mock_run,
-        mock_openroad,
-        mock_opensta,
-        tmp_path,
-    ):
-        from booley.yosys import syn_core
-
-        mock_find.return_value = Path("/usr/bin/yosys")
-        mock_run.return_value = MagicMock(watchdog_result="wd")
-        syn_core.run_yosys(
-            [tmp_path / "in.v"],
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            timing_config=self._config("opensta"),
-        )
-        mock_openroad.assert_not_called()
-        mock_opensta.assert_called_once()
 
 
 class TestSlangReadCommandOptions:
@@ -1091,73 +841,6 @@ class TestSlangReadCommandOptions:
 
         cmd = syn_core._slang_read_command([Path("/work/a.sv")], "dut", [], [], None)
         assert cmd == "read_slang --top dut /work/a.sv"
-
-
-class TestSlangFrontendGuard:
-    """--frontend slang preflight: fail fast on a Yosys without read_slang."""
-
-    def test_has_read_slang_true(self):
-        from unittest.mock import MagicMock
-
-        from booley.yosys import syn_core
-
-        with patch("booley.yosys.syn_core.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="\n    read_slang [options] [filename]\n", stderr=""
-            )
-            assert syn_core._yosys_has_read_slang("/usr/local/bin/yosys") is True
-
-    def test_has_read_slang_false_on_no_such_command(self):
-        from unittest.mock import MagicMock
-
-        from booley.yosys import syn_core
-
-        with patch("booley.yosys.syn_core.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="", stderr="No such command or cell type: read_slang\n"
-            )
-            assert syn_core._yosys_has_read_slang("/usr/bin/yosys") is False
-
-    def test_has_read_slang_false_on_probe_error(self):
-        from booley.yosys import syn_core
-
-        with patch("booley.yosys.syn_core.subprocess.run", side_effect=OSError):
-            assert syn_core._yosys_has_read_slang("/usr/bin/yosys") is False
-
-    @patch("booley.yosys.syn_core._yosys_has_read_slang", return_value=False)
-    @patch("booley.yosys.syn_core.find_eda_tool", return_value=Path("/usr/bin/yosys"))
-    def test_slang_without_read_slang_hard_errors(self, _mock_find, _mock_probe, tmp_path):
-        from booley.yosys import syn_core
-
-        with pytest.raises(SystemExit, match=r"--frontend slang needs Yosys >= 0.67"):
-            syn_core.run_yosys(
-                [tmp_path / "a.sv"],
-                "top",
-                Path("/lib.lib"),
-                tmp_path,
-                frontend="slang",
-            )
-
-    @patch("booley.yosys.syn_core.run_opensta")
-    @patch("booley.yosys.openroad_timing.run_openroad_timing")
-    @patch("booley.yosys.syn_core.run_cmd_watched")
-    @patch("booley.yosys.syn_core._yosys_has_read_slang", return_value=True)
-    @patch("booley.yosys.syn_core.find_eda_tool", return_value=Path("/usr/bin/yosys"))
-    def test_slang_with_read_slang_proceeds(
-        self, _mock_find, _mock_probe, mock_run, _mock_or, _mock_sta, tmp_path
-    ):
-        from booley.yosys import syn_core
-
-        mock_run.return_value = MagicMock(watchdog_result="wd")
-        # No SystemExit: the guard passes and synthesis is dispatched.
-        syn_core.run_yosys(
-            [tmp_path / "a.sv"],
-            "top",
-            Path("/lib.lib"),
-            tmp_path,
-            frontend="slang",
-        )
-        mock_run.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

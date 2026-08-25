@@ -1222,7 +1222,7 @@ targets:
   sim_cocotb:
     flow: sim
     flow_options:
-      tool: icarus                   # icarus | verilator (sandbox-only)
+      tool: icarus                   # icarus | verilator
       cocotb_module: test_counter    # THIS is what makes it a Cocotb Target
       iverilog_options: [-g2012]     # SystemVerilog sources need -g2012
       timescale: 1ns/1ps
@@ -1452,7 +1452,7 @@ hatches that remain, and what each is for:
 A simulator outside the built-in matrix is out of scope for Ticket Mode by
 declared boundary; widening the matrix is the sanctioned extension axis
 (per EDA tool: Edalize wiring → output parser → criteria-map row → Doctor probe).
-The current matrix — sandbox image plus host EDA tools — is in
+The current matrix — image-bundled plus authorized host-provisioned EDA tools — is in
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md), and it grows over time.
 
 **Language:** Booley drives SystemVerilog/Verilog only — VHDL is unsupported in

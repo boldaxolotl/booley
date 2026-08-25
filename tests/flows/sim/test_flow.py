@@ -13,7 +13,6 @@ import pytest
 
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
-from booley.flows.execution import ExecutionSelection
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
     _INCONCLUSIVE_NO_WAVEFORM,
@@ -39,7 +38,7 @@ from booley.runtime.project_dir import reset_cache
 from booley.sim.sim_result import write_run_log
 
 # Built-in Flow execution inside the Session Runtime.
-_BUILTIN_SANDBOX = ExecutionSelection()
+_FLOW_ENABLED = True
 
 
 def test_qualified_target_uses_declared_icarus_tool(tmp_path: Path) -> None:
@@ -566,7 +565,7 @@ class TestUnknownTestSelector:
         "booley.flows.sim.flow._get_test_names",
         return_value={"lite": ["lite_smoke", "lite_stress"]},
     )
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(
         SimulateFlow,
         "_run_target",
@@ -645,37 +644,6 @@ class TestMultiConfig:
 
 
 class TestExecutionValidation:
-    """Retired backend spellings fail with a Session Runtime migration."""
-
-    @patch.object(
-        SimulateFlow,
-        "_resolve_execution",
-        return_value=ExecutionSelection(legacy_backend="verilator"),
-    )
-    def test_legacy_backend_returns_migration_error(self, _mock_selection, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="default")
-        result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "all Flows run inside the Session Runtime" in result.report_text
-
-    def test_combined_string_in_config_yields_migration_error(self, tmp_path: Path):
-        """A real booley.toml carrying the retired combined spelling fails
-        validation with the two-knob replacement — no aliasing, no mocks."""
-        reset_cache()
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
-            '[flows.sim]\nbackend = "builtin-sandbox"\n',
-            encoding="utf-8",
-        )
-        flow = _make_flow(tmp_path, config="default")
-        result = flow._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "retired" in result.report_text
-        assert "Session Runtime" in result.report_text
-
     def test_job_class_is_heavy(self, tmp_path: Path):
         from booley.runtime import job_slots
 
@@ -690,7 +658,7 @@ class TestExecutionValidation:
 
 class TestDryRun:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(
         SimulateFlow,
         "_dry_run_command",
@@ -714,7 +682,7 @@ class TestDryRun:
     @patch(
         "booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress", "boot"]}
     )
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(
         SimulateFlow,
         "_dry_run_command",
@@ -732,7 +700,7 @@ class TestDryRun:
         assert len(commands) == 3  # one per test
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(
         SimulateFlow,
         "_dry_run_command",
@@ -756,7 +724,7 @@ class TestDryRun:
         assert "smoke" in commands[0]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_dry_run_multi_config(
         self,
@@ -778,7 +746,7 @@ class TestDryRun:
         assert len(commands) == 2
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch(
         "booley.fusesoc.fusesoc_registry.resolve_target",
         side_effect=AssertionError("dry-run must not resolve (run fusesoc)"),
@@ -892,7 +860,7 @@ def _mock_execute_inconclusive(self, cmd: list[str]) -> SubprocessResult:
 
 class TestSummaryParsing:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_summary_pass(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -901,7 +869,7 @@ class TestSummaryParsing:
         assert result.exit_code == EXIT_SUCCESS
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_summary_fail(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -917,7 +885,7 @@ class TestSummaryParsing:
 
 class TestInconclusiveDetection:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_inconclusive)
     def test_inconclusive_no_criterion(
@@ -935,7 +903,7 @@ class TestInconclusiveDetection:
 
 class TestFullRun:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_single_config_pass(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -945,7 +913,7 @@ class TestFullRun:
         assert result.criterion_met is True
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_single_config_fail(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -955,7 +923,7 @@ class TestFullRun:
         assert result.criterion_met is False
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_multi_test_all_pass(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -964,7 +932,7 @@ class TestFullRun:
         assert result.exit_code == EXIT_SUCCESS
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_multi_config_mixed(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
         """First config passes, second fails => overall FAIL."""
@@ -999,7 +967,7 @@ class TestFullRun:
 
 class TestCriterionSetting:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_sets_sim_pass_lite(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -1008,7 +976,7 @@ class TestCriterionSetting:
         assert flow.state.is_met("sim_pass_lite")
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_sets_sim_pass_full_false(
@@ -1019,7 +987,7 @@ class TestCriterionSetting:
         assert not flow.state.is_met("sim_pass_full")
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_sets_criteria_per_config(
         self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
@@ -1049,7 +1017,7 @@ class TestCriterionSetting:
         assert not flow.state.is_met("sim_pass_full")
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_inconclusive)
     def test_inconclusive_skips_criterion(
@@ -1068,7 +1036,7 @@ class TestCriterionSetting:
 
 class TestReportGeneration:
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_writes_config_report(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -1080,14 +1048,13 @@ class TestReportGeneration:
         assert report["flow"] == "sim"
         assert report["target"] == "lite"
         assert report["tb_top"] == "alu_tb"
-        assert "venue" not in report
         assert report["passed"] is True
         assert len(report["tests"]) == 2
         assert report["tests"][0]["name"] == "smoke"
         assert report["tests"][0]["cycles"] == 2561
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["coremark"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_custom_cycle_pass)
     def test_configured_cycle_sentinel_reaches_mcp_and_json_reports(
@@ -1145,7 +1112,7 @@ class TestReportGeneration:
                 "booley.flows.sim.flow._get_test_names",
                 return_value={"lite": ["smoke", "stress"]},
             ),
-            patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX),
+            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
             patch.object(flow, "_execute", side_effect=execute),
         ):
@@ -1178,7 +1145,7 @@ class TestReportGeneration:
                 "booley.flows.sim.flow._get_test_names",
                 return_value={"lite": ["smoke", "stress"]},
             ),
-            patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX),
+            patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
             patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"]),
             patch.object(
                 flow,
@@ -1246,7 +1213,7 @@ class TestReportGeneration:
         assert (invocation_dirs[-1] / "targets" / "sim_lite.json").is_file()
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_no_report_dir_skips(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -1297,7 +1264,7 @@ class TestTimeout:
         assert flow._get_timeout() == 690
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_timeout_results_in_fail(
         self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path
@@ -1501,7 +1468,7 @@ class TestEdalizeSimPath:
 
         F-15: Ibex's VerilatorSimCtrl takes only getopt `--trace=FILE`, so
         Booley's generic plusarg pair produced a header-only FST that still
-        reported PASS. The contract has to cross the host->sandbox boundary.
+        reported PASS. The contract has to reach both Runtime run-halves.
         """
         with patch(
             "booley.flows.sim.flow._resolve_trace_args",
@@ -2184,7 +2151,7 @@ class TestEdalizeSimPath:
         assert "--trace" in script
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_raw_verilator_pass)
     def test_raw_run_verdict_recovered_by_postprocessor(
@@ -2212,7 +2179,7 @@ class TestErrorTailSource:
         return report["tests"][0]["error_tail"]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_sim_failure_tail_from_stdout_not_stderr_noise(
         self,
@@ -2248,7 +2215,7 @@ class TestErrorTailSource:
         assert "warning:" not in tail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_elab_failure_tail_falls_back_to_stderr(
         self,
@@ -2282,7 +2249,7 @@ class TestElabFailedDetection:
     # _execute mock's elab error reaches _ELAB_FAIL_RE — the detection under
     # test — rather than resolution failing first on the bare tmp_path project.
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_verilator)
     def test_verilator_elab_fail_sets_flag(
@@ -2298,7 +2265,7 @@ class TestElabFailedDetection:
         assert result.detail.get("elab_failed") is True
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_iverilog)
     def test_iverilog_elab_fail_sets_flag(
@@ -2314,7 +2281,7 @@ class TestElabFailedDetection:
         assert result.detail.get("elab_failed") is True
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_fail)
     def test_sim_fail_no_elab_flag(
@@ -2327,7 +2294,7 @@ class TestElabFailedDetection:
         assert "elab_failed" not in result.detail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_pass_no_elab_flag(self, _mock_edalize, _mock_backend, _mock_tests, tmp_path: Path):
@@ -2339,7 +2306,7 @@ class TestElabFailedDetection:
 
 
 # ---------------------------------------------------------------------------
-# The boundary path (wrapper-makefile builds, venue-neutral executor, ADR 0037)
+# The Session Runtime boundary path (wrapper-Makefile builds, ADR 0037)
 # ---------------------------------------------------------------------------
 
 
@@ -2349,7 +2316,7 @@ class TestTruncationResilientReport:
     failure excerpts must be bounded, and the run.log pointer must be printed."""
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_headline_block_is_last(
         self,
@@ -2397,7 +2364,7 @@ class TestTruncationResilientReport:
         assert "[sim] full (session-runtime): FAIL (0/1 tests" in tail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_error_excerpt_capped_with_marker(
         self,
@@ -2434,7 +2401,7 @@ class TestTruncationResilientReport:
         assert "noise-051" not in report  # older lines dropped from the report
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_excerpt_marker_cites_run_log_only_when_fresh(
         self,
         _mock_backend,
@@ -3061,7 +3028,7 @@ class TestMissingExecutableIsEdaToolError:
     """F-32: the verdict channel must not say FAIL when nothing ever ran."""
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     def test_missing_fusesoc_at_setup_exits_2(self, _sel, _tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         boom = RuntimeError(
@@ -3078,7 +3045,7 @@ class TestMissingExecutableIsEdaToolError:
         assert "'fusesoc'" in result.report_text
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_missing_verilator_in_build_exits_2(self, _prep, _sel, _tests, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
@@ -3096,7 +3063,7 @@ class TestMissingExecutableIsEdaToolError:
         assert "elaboration failed" not in result.report_text.split("--- output tail ---")[0]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_missing_pre_run_executable_exits_2_without_criterion(
         self, _prep, _sel, _tests, tmp_path: Path
@@ -3123,7 +3090,7 @@ class TestMissingExecutableIsEdaToolError:
         assert "FAIL" not in result.report_text.split("--- output tail ---")[0]
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_verilator)
     def test_real_elaboration_failure_is_still_exit_1(self, _prep, _sel, _tests, tmp_path: Path):
@@ -3134,7 +3101,7 @@ class TestMissingExecutableIsEdaToolError:
         assert result.detail.get("elab_failed") is True
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_live_sim_echoing_command_not_found_is_not_hijacked(
         self, _prep, _sel, _tests, tmp_path: Path
@@ -3157,7 +3124,7 @@ class TestMissingExecutableIsEdaToolError:
 
 class TestTraceArtifactReported:
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     def test_trace_path_and_size_reach_the_report(self, _prep, _sel, _tests, tmp_path: Path):
         store = tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite-trace"
@@ -3181,7 +3148,7 @@ class TestTraceArtifactReported:
         assert report["tests"][0]["trace_bytes"] == 4096
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
-    @patch.object(SimulateFlow, "_resolve_execution", return_value=_BUILTIN_SANDBOX)
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_pass)
     def test_untraced_run_reports_no_trace_line(self, _prep, _sel, _tests, tmp_path: Path):

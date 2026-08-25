@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 from booley.dev_support.criteria import eligible_eda_tool_criterion_families
 from booley.fusesoc.fusesoc_registry import TargetRef
 from booley.targets.target_surface import flow_can_drive
@@ -12,6 +14,9 @@ def test_retired_host_execution_surfaces_are_absent() -> None:
     root = Path(__file__).resolve().parents[1]
     assert not list((root / "src/booley/host_mcp").glob("*.py"))
     assert not (root / "src/booley/venue.py").exists()
+    assert not (root / "src/booley/yosys/syn_subprocess.py").exists()
+    assert not (root / "src/booley/yosys/synthesis_watchdog.py").exists()
+    assert not (root / "src/booley/runtime/zombie_cleanup.py").exists()
 
     pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
     assert "booley-host-mcp" not in pyproject
@@ -29,7 +34,16 @@ def test_retired_host_execution_surfaces_are_absent() -> None:
         "host_mcp_spec_wired",
         "write_host_sim_makefile",
         "host_sim_make_command",
+        "kill_zombie_flow_processes",
+        "legacy_backend",
     )
+    forbidden_functions = {
+        "do_run",
+        "run_openroad_timing",
+        "run_opensta",
+        "run_sv2v",
+        "run_yosys",
+    }
     for path in production.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         tree = ast.parse(text, filename=str(path))
@@ -50,6 +64,22 @@ def test_retired_host_execution_surfaces_are_absent() -> None:
             ), f"retired import {forbidden!r} remains in {path}"
         for forbidden in forbidden_symbols:
             assert forbidden not in text, f"{forbidden!r} remains in {path}"
+        function_names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert not (function_names & forbidden_functions), (
+            f"retired direct EDA launcher remains in {path}: "
+            f"{sorted(function_names & forbidden_functions)}"
+        )
+
+
+def test_yosys_configure_surface_has_no_run_action() -> None:
+    from booley.yosys.run_yosys_syn import _build_parser
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["run"])
 
 
 def test_retired_packages_and_flat_root_modules_are_absent() -> None:

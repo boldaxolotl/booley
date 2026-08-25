@@ -106,15 +106,6 @@ def _parse_kind(kind: str, section: Any) -> EdaConfig:
 
 def retired_config_error(raw: dict[str, Any]) -> str | None:
     """Return the first hard-migration error for a removed authority surface."""
-    flows = raw.get("flows", {})
-    if isinstance(flows, dict):
-        if "venue" in flows:
-            return "booley.toml [flows].venue is retired; delete the key"
-        for name, section in flows.items():
-            if isinstance(section, dict) and "venue" in section:
-                return f"booley.toml [flows.{name}].venue is retired; delete the key"
-            if isinstance(section, dict) and "host_setup_commands" in section:
-                return f"booley.toml [flows.{name}].host_setup_commands is retired; delete the key"
     sandbox = raw.get("sandbox", {})
     if isinstance(sandbox, dict) and "passthrough_env" in sandbox:
         return "booley.toml [sandbox].passthrough_env is retired; use a host License Profile"

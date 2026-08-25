@@ -167,24 +167,6 @@ class TestParseSandboxConfig:
         assert cfg.memory == ""
         assert any("memory_tiers is retired" in r.message for r in caplog.records)
 
-    def test_legacy_tools_table_sandboxed_key_warns(self, caplog):
-        """Legacy [tools.<name>].sandbox = "sandboxed" warns and is ignored."""
-        data = {"tools": {"sim": {"sandbox": "sandboxed"}}}
-        with caplog.at_level("WARNING"):
-            cfg = _parse_sandbox_config(data)
-        assert cfg.memory == ""
-        assert any("sandboxed" in r.message and "retired" in r.message for r in caplog.records)
-
-    def test_legacy_tools_table_external_key_warns_with_host_venue_replacement(self, caplog):
-        data = {"tools": {"fpga": {"sandbox": "external"}}}
-        with caplog.at_level("WARNING"):
-            _parse_sandbox_config(data)
-        assert any(
-            "sandbox = 'external' is retired" in r.message
-            and "Flows run in the Session Runtime" in r.message
-            for r in caplog.records
-        )
-
     def test_unknown_retired_mode_is_ignored(self):
         data = {"sandbox": {"mode": "podman"}}
         cfg = _parse_sandbox_config(data)
