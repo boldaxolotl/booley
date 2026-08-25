@@ -150,6 +150,20 @@ class TestOutstandingSteps:
 
 
 class TestAdvisorySendOff:
+    def test_demo_probe_reports_git_execution_failure(self, project, monkeypatch, capsys):
+        _write(project, CONFIGURED_TOML)
+
+        def fail_git(*_args, **_kwargs):
+            raise subprocess.TimeoutExpired(["git", "config"], timeout=5)
+
+        monkeypatch.setattr(init_cmd.subprocess, "run", fail_git)
+
+        assert init_cmd._is_demo_project(project) is False
+
+        out = capsys.readouterr().out
+        assert "could not inspect PicoRV32 demo origin" in out
+        assert "timed out" in out
+
     def test_demo_gets_demo_next_steps_instead_of_setup_skill(self, project, capsys):
         _write(project, init_cmd.BOOLEY_TOML_SKELETON, agents=False)
         state_dir = project / ".booley_project"
