@@ -6,6 +6,7 @@ import ntpath
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -137,3 +138,29 @@ def test_primary_pytest_commands_emit_timing_and_junit_data() -> None:
         assert pytest_commands, job_name
         assert all("--durations=30" in command for command in pytest_commands), job_name
         assert all("--junitxml=" in command for command in pytest_commands), job_name
+
+
+def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
+    """The coverage leg is parallel without dropping child-process data."""
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev_dependencies = project["project"]["optional-dependencies"]["dev"]
+    coverage_config = project["tool"]["coverage"]["run"]
+    workflow = _test_workflow()
+    coverage_step = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Run tests with coverage"
+    )
+    command = coverage_step["run"]
+
+    assert "pytest-cov==7.1.0" in dev_dependencies
+    assert coverage_config["patch"] == ["subprocess"]
+    assert "coverage run" not in command
+    assert "pytest tests/" in command
+    assert "-n 4 --dist=loadscope" in command
+    assert '-m "not native_bwave"' in command
+    assert "--cov=booley" in command
+    assert "--cov-report=" in command
+    assert "--cov-fail-under=60" in command
+    assert "coverage report --fail-under=60" in command
+    assert "coverage xml -o coverage.xml" in command
