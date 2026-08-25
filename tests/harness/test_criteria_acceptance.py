@@ -180,6 +180,70 @@ class TestCheckCriteriaAcceptance:
         verdict = self._write_state_and_check(tmp_path, state)
         assert verdict.disposition == "review"
 
+    def test_strict_model_contract_accepts_model_evidence(self, tmp_path: Path):
+        state_path = tmp_path / "booley_state.json"
+        state = DevelopmentState.load(state_path)
+        state.init_criteria(
+            {"sim_pass_sim_model": True, "_report_submitted": True},
+            criterion_params={
+                "sim_pass_sim_model": {
+                    "target": "sim_model",
+                    "subject": "model",
+                    "required_tests": ["model_reset"],
+                    "minimum_total": 1,
+                }
+            },
+            strict=True,
+        )
+        state.set_criterion(
+            "sim_pass_sim_model",
+            True,
+            detail={
+                "verification_subject": "model",
+                "selected_tests": ["model_reset", "model_mask"],
+                "passed_tests": ["model_reset", "model_mask"],
+                "tests_passed": 2,
+            },
+        )
+        state.set_criterion("_report_submitted", True)
+        state.save()
+
+        verdict = check_criteria_acceptance(state_path)
+
+        assert verdict.disposition == "review"
+
+    def test_strict_fail_to_pass_accepts_recorded_red_then_green(self, tmp_path: Path):
+        state_path = tmp_path / "booley_state.json"
+        state = DevelopmentState.load(state_path)
+        state.init_criteria(
+            {"sim_pass_sim_uart": True, "_report_submitted": True},
+            criterion_params={
+                "sim_pass_sim_uart": {
+                    "target": "sim_uart",
+                    "from_state": "fail",
+                    "test_selector": "test_transmit",
+                }
+            },
+            strict=True,
+        )
+        state.set_criterion("sim_pass_sim_uart", False, detail={"failed_tests": ["test_transmit"]})
+        state.set_criterion(
+            "sim_pass_sim_uart",
+            True,
+            detail={
+                "selected_tests": ["test_transmit"],
+                "passed_tests": ["test_transmit"],
+                "tests_passed": 1,
+            },
+        )
+        state.set_criterion("_report_submitted", True)
+        state.save()
+
+        verdict = check_criteria_acceptance(state_path)
+
+        assert verdict.disposition == "review"
+        assert verdict.unverified_transitions == []
+
     def test_review_blocked_when_report_not_submitted(self, tmp_path: Path):
         """All visible mandatory met but report not submitted -> failed."""
         state = _FakeState(

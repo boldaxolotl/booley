@@ -832,6 +832,7 @@ def _parse_string_list_item(
             flow_key_alias=generic_key,
             params={
                 "tb_path": sc.tb,
+                "target": sc.target,
                 "from_state": sc.current,
                 "test_selector": sc.test_name or "all",
             },
