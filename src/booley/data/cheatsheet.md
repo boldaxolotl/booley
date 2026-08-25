@@ -18,6 +18,28 @@ and nested actions.
 | `booley board` | Create, inspect, move, reset, or archive tickets |
 | `booley cheat` | Show this reference, whole or by section |
 
+### Ticket Board
+
+One Ticket keeps one branch, worktree, and evidence history.
+
+| Path | Meaning |
+|------|---------|
+| `draft → queued → running → review → done` | Normal lifecycle |
+| `draft → waiting → queued` | Wait for dependency Tickets |
+| `running → blocked → queued` | Human input, then resume the same Ticket |
+| `running → queued` | Exceptional interruption recovery; wait for active jobs first |
+| `running → done` | Explicit `on_success.destination: done` shortcut |
+| `review → archived` | Close this Ticket; use a new Ticket for separate follow-up |
+| `review ──full reset──► queued` | Discard the execution workspace and state; start clean |
+
+Review is a decision point, not a partial-rework loop. Fix small findings
+directly in the existing Ticket worktree and finish as `done`; archive it and
+create a new Ticket; or reset the entire run. Ordinary `review → queued` is
+invalid—the explicit reset is a clean start, never a resume of reviewed work.
+
+Inspect with `booley board show`; handle blocked and review decisions with
+`/booley-ticket-triage`.
+
 ### Booley Flows
 
 <!-- BEGIN GENERATED: flows -->

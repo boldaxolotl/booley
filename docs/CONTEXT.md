@@ -178,7 +178,7 @@ A Criterion satisfied by a passing simulation Booley Flow run. Any Ticket that a
 _Avoid_: optional sim, smoke test
 
 **Ticket Board**:
-The filesystem-backed state machine that tracks ticket lifecycle. Each status is a directory; moving a ticket between directories constitutes a state transition. Directories live under `board/`. States (status string → directory): draft (`drafts/`), queued (`queue/`, ready for pickup), waiting (blocked on dependency tickets), running (`active/`), blocked (needs human input via escalation), review, done, archived. The status string and directory name diverge for three states: the code uses the status strings above, not `drafts`/`queue`/`active`.
+The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Scope**:

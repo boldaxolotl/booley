@@ -53,12 +53,23 @@ appear with its justification.
 
 ## 3. Decision
 
-Ask: **approve** / **archive** / **reset** / **skip**.
+Ask: **approve** / **fix here** / **reset** / **archive** / **skip**.
 
 - **Approve**: `python -m booley.ticket_board complete $SLUG`
+- **Fix here**: keep the Ticket in review and make only the correction the
+  reviewer can complete interactively in its existing worktree. Invoke the
+  relevant Flows and Specialists directly against that worktree, commit the
+  correction to the same Ticket branch, refresh its review evidence, and return
+  to this decision. Do not hand it back to the Runner for partial rework.
+- **Reset**: `python -m booley.ticket_board reset $SLUG`. This is a clean start:
+  discard the execution workspace and state and return the Ticket to `queued`.
+  Do not selectively retain reviewed work.
 - **Archive**: `python -m booley.ticket_board archive $SLUG --force`
-- **Reset**: `python -m booley.ticket_board reset $SLUG`
 - **Skip**: leave as-is
+
+Review never resumes through an ordinary move to `queued`. It finishes in
+`done` or `archived`, stays in `review` while the reviewer fixes it, or uses the
+explicit full reset above.
 
 After the decision, invoke `/booley-feedback` for every confirmed Booley defect.
 External submission remains behind that skill's explicit approval gate.

@@ -52,7 +52,7 @@ For the fastest orientation, start with `booley cheat`. It gives a compact
 overview of every public CLI command, the editable `.booley_project` files,
 Flows, Specialists, Criteria, Targets, skills, artifacts, and runtime commands.
 Print the whole sheet or use `booley cheat --list` and combine section flags,
-such as `booley cheat --commands --project`.
+such as `booley cheat --board` or `booley cheat --commands --project`.
 
 `booley doctor --deep` goes further and runs real smoke sims/lints/synthesis, but
 that one needs the Session Runtime; both it and the full command set are in the
@@ -469,7 +469,7 @@ the complete CLI workflow in the packaged
 straight to the queue cannot bypass those checks. `booley run --ticket <slug>
 --dry-run` checks the resulting setup without executing it.
 
-**Directory names and status names are not the same word.** `booley board show` prints the ticket's *status*, while the file lives in a same-meaning but differently-named directory. Two of the eight differ:
+**Directory names and status names are not always the same word.** `booley board show` prints the ticket's *status*, while the file lives in a same-meaning but differently-named directory. Three of the eight differ:
 
 | Directory | Status shown by `board show` |
 |---|---|
@@ -483,6 +483,44 @@ straight to the queue cannot bypass those checks. `booley run --ticket <slug>
 | `board/archived/` | `archived` |
 
 So a ticket reported as `running` is the one sitting in `board/active/` — nothing is out of sync.
+
+### Ticket Board lifecycle
+
+A Ticket is one body of work with one branch, worktree, and evidence history. Its
+normal path is:
+
+```text
+draft ──► queued ──► running ──► review ──► done
+  │          ▲          │           └──────► archived
+  └─► waiting┘          └─► blocked ──► queued
+```
+
+- `waiting → queued` happens when dependency Tickets finish.
+- `running → blocked` records a question or failure that needs human input.
+  Resolving it returns the same Ticket to `queued`; the Runner later resumes its
+  existing workspace and evidence.
+- `running → queued` is an exceptional interruption-recovery move, not another
+  development attempt. Do not requeue while the Ticket still has an active job.
+- `running → review` is the default successful outcome. A Ticket configured with
+  `on_success.destination: done` deliberately takes the `running → done`
+  shortcut instead.
+
+`review` is a human decision point, not a partial-rework loop. The reviewer has
+three substantive choices:
+
+1. Approve the Ticket as `done`. Small corrections may be made directly in the
+   existing Ticket worktree, with the relevant Flows and Specialists invoked
+   there, before approval; the Ticket remains in `review` throughout.
+2. Reset it completely. This discards that execution workspace and state and
+   returns the Ticket to `queued` as a clean run. It does not resume or
+   selectively retain the reviewed work.
+3. Archive it. If the remaining work needs a different contract, create a new
+   Ticket rather than sending this one back for rework.
+
+The ordinary `review → queued` move is therefore invalid. Only the explicit,
+destructive reset operation may put a reviewed Ticket back in the queue. Use
+`/booley-ticket-triage` for blocked and review decisions, `booley board show` to
+inspect state, and `booley cheat --board` for the compact transition reference.
 
 ### Acceptance Criteria
 
@@ -619,7 +657,7 @@ on_success:
   triage_report: true     # prepare rich HTML explanation before review
 ```
 
-`destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch** — `cleanup: true` is not ignored, it's deferred: it runs when you close the ticket with `booley board move <slug> done`. `destination: done` skips the pause and merges, cleans up, and closes in one step.
+`destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
 With `triage_report: true` (the default), Booley uses the configured agent
 backend after criteria acceptance to prepare a self-contained HTML explanation
@@ -775,6 +813,7 @@ booley cheat
 # Show one section of it (`--list` names them all)
 booley cheat --criteria
 booley cheat --flows --runtime
+booley cheat --board
 booley cheat --commands --project
 
 # Run diagnostics
