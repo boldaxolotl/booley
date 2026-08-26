@@ -16,8 +16,19 @@ discovery fallback into a hard error.
 
 from __future__ import annotations
 
+import json
 import sys
+from dataclasses import dataclass
 from typing import NoReturn
+
+from booley.core.boundary import (
+    BoundaryError,
+    as_str,
+    as_str_list,
+    is_str_list,
+    require_dict,
+    require_int,
+)
 
 # Exit codes of the bwave binary (and of wrapper errors that mirror it):
 #   0 — success, including a *partial* pattern miss (some -s matched).
@@ -43,6 +54,80 @@ NO_SIGNALS_IN_STORE_MARKER = "has no signals"
 # ("# scope: <top>"). bwave_sessions._trace_identity parses the design
 # identity out of `list --tree` stderr through this prefix.
 SCOPE_LINE_PREFIX = "# scope: "
+
+
+@dataclass(frozen=True)
+class BWaveListMetadata:
+    """Validated metadata returned by ``bwave list --format json``."""
+
+    scope_prefix: str
+    root_scopes: tuple[str, ...]
+    signal_count: int
+    total_ticks: int
+
+    @property
+    def display_scope(self) -> str:
+        """The most precise human-readable hierarchy identity available."""
+        if self.scope_prefix:
+            return self.scope_prefix
+        if self.root_scopes:
+            return ", ".join(self.root_scopes)
+        return "<top-level signals>"
+
+    def contains_scope(self, expected: str) -> bool:
+        """Whether the listed hierarchy contains the expected DUT scope."""
+        expected = expected.strip().rstrip(".")
+        if not expected:
+            return False
+        return (
+            self.scope_prefix == expected
+            or self.scope_prefix.startswith(f"{expected}.")
+            or expected in self.root_scopes
+        )
+
+
+def decode_list_metadata(text: str) -> BWaveListMetadata:
+    """Decode and validate one B-Wave JSON ``list`` response."""
+    payload = require_dict(json.loads(text), field="B-Wave list response")
+    data = require_dict(payload.get("data"), field="B-Wave list response.data")
+    scope_prefix = as_str(data.get("scope_prefix"))
+    if scope_prefix is None:
+        raise BoundaryError("B-Wave list response.data.scope_prefix must be a string")
+    raw_roots = data.get("root_scopes")
+    if not is_str_list(raw_roots):
+        raise BoundaryError("B-Wave list response.data.root_scopes must be a string list")
+    return BWaveListMetadata(
+        scope_prefix=scope_prefix.strip(),
+        root_scopes=tuple(scope.strip() for scope in as_str_list(raw_roots) if scope.strip()),
+        signal_count=_require_non_negative_int(data, "signal_count"),
+        total_ticks=_require_non_negative_int(data, "total_ticks"),
+    )
+
+
+def decode_trace_metadata(text: str) -> BWaveListMetadata:
+    """Decode the compact ``TRACE_METADATA`` marker payload."""
+    data = require_dict(json.loads(text), field="TRACE_METADATA")
+    top_scope = as_str(data.get("top_scope"))
+    if top_scope is None:
+        raise BoundaryError("TRACE_METADATA.top_scope must be a string")
+    return BWaveListMetadata(
+        scope_prefix=top_scope.strip(),
+        root_scopes=(),
+        signal_count=_require_non_negative_int(data, "signal_count", field="TRACE_METADATA"),
+        total_ticks=_require_non_negative_int(data, "total_ticks", field="TRACE_METADATA"),
+    )
+
+
+def _require_non_negative_int(
+    data: dict,
+    key: str,
+    *,
+    field: str = "B-Wave list response.data",
+) -> int:
+    value = require_int(data.get(key), field=f"{field}.{key}")
+    if value < 0:
+        raise BoundaryError(f"{field}.{key} must be non-negative")
+    return value
 
 
 def exit_usage(message: str) -> NoReturn:
