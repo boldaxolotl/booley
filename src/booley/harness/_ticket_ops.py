@@ -51,6 +51,7 @@ from booley.ticket_board.paths import existing_human_log_file
 from booley.ticket_board.reporting import format_timing_report
 from booley.ticket_board.validation import (
     format_validate_logs_report,
+    owned_draft_dirty_paths,
     validate_ticket_fields,
 )
 from booley.ticket_board.validation import validate_logs as tb_validate_logs
@@ -250,6 +251,7 @@ class DirectTicketOps:
     def validate_ticket(
         self, project_root: Path, path: str, *, check_git: bool = False
     ) -> dict[str, Any]:
+        tio = self._tio(project_root)
         p = Path(path)
         if not p.exists():
             return {"errors": [f"File not found: {path}"]}
@@ -272,6 +274,7 @@ class DirectTicketOps:
             check_git=check_git,
             project_root=str(project_root),
             check_tb_files=check_tb,
+            allowed_dirty_paths=owned_draft_dirty_paths(p, tio.tickets_dir),
         )
         for w in results:
             if w.startswith("[warning] "):

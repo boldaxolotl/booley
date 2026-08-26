@@ -266,7 +266,8 @@ def test_scaffold_lint_bad_target_resolves_from_dedicated_core(tmp_path: Path) -
     assert resolved.eda_tool == "verilator"
     assert len(resolved.rtl_source_files) == 1
     source = resolved.rtl_source_files[0]
-    assert source.name.endswith("/booley_doctor_selftest/lint_bad.sv")
+    normalized_source_name = source.name.replace("\\", "/")
+    assert normalized_source_name.endswith("/booley_doctor_selftest/lint_bad.sv")
     assert source.absolute(resolved.build_root).is_file()
 
 
