@@ -206,9 +206,7 @@ def test_rejects_unsafe_configured_path_before_touching_destination(tmp_path: Pa
     "configuration",
     ['submodules = "invalid"\n', '[submodules]\npaths = "vendor/ip"\n'],
 )
-def test_rejects_invalid_submodule_configuration(
-    tmp_path: Path, configuration: str
-) -> None:
+def test_rejects_invalid_submodule_configuration(tmp_path: Path, configuration: str) -> None:
     source = tmp_path / "source"
     _init_repo(source)
     _commit_file(source, "root\n", "root")
