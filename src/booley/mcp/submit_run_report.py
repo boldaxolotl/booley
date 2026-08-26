@@ -479,7 +479,8 @@ class SubmitRunReportMcpTool(McpTool):
         from booley.dev_support.review_dispositions import collect_review_dispositions
 
         rows = collect_review_dispositions(self.state.criteria)
-        visible = [row for row in rows if row["disposition"] in {"reported", "waived"}]
+        visible_dispositions = {"reported", "advisory", "deferred", "out_of_scope", "waived"}
+        visible = [row for row in rows if row["disposition"] in visible_dispositions]
         done_criteria = sorted(
             key
             for key, entry in self.state.criteria.items()
@@ -488,20 +489,27 @@ class SubmitRunReportMcpTool(McpTool):
         if not visible and not done_criteria:
             return ""
         lines = ["", "## Review findings and waivers", ""]
-        reported_criteria = {
-            row["criterion"] for row in visible if row["disposition"] == "reported"
-        }
+        reported_criteria = {row["criterion"] for row in visible}
         for criterion in done_criteria:
             if criterion not in reported_criteria:
                 lines.append(f"- **REVIEWED — NO FINDINGS** `{self._report_text(criterion)}`")
         for row in visible:
             location = f"{row['file']}:{row['line']}" if row["file"] else "location unavailable"
-            label = "WAIVED" if row["disposition"] == "waived" else "REPORTED"
+            label = {
+                "reported": "REPORTED",
+                "advisory": "ADVISORY",
+                "deferred": "DEFERRED",
+                "out_of_scope": "OUT OF SCOPE",
+                "waived": "WAIVED",
+            }[row["disposition"]]
+            finding_id = f" [{row['finding_id']}]" if row["finding_id"] else ""
             lines.append(
-                f"- **{label} {self._report_text(row['severity'])}** "
+                f"- **{label} {self._report_text(row['severity'])}**{finding_id} "
                 f"`{self._report_text(row['criterion'])}` at "
                 f"`{self._report_text(location)}` — {self._report_text(row['summary'])}"
             )
+            if row["ticket_clause"]:
+                lines.append(f"  - Ticket clause: {self._report_text(row['ticket_clause'])}")
             if row["disposition"] == "waived":
                 lines.append(f"  - Justification: {self._report_text(row['justification'])}")
         return "\n".join(lines) + "\n"

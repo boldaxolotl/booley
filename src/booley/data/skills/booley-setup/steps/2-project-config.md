@@ -545,13 +545,17 @@ What goes here:
   first Doctor Target. For simulation, mirror replacement build-tree files beneath
   `.booley_project/selftest/sim/bad-overlay/`; Doctor applies the overlay only
   to its bad run, so do not leak this internal fixture through a
-  `pre_run_commands` branch. Lint uses a Target named `lint_selftest_bad` with
-  a tiny tracked source containing an undeclared RHS (an undeclared LHS is only
-  an implicit-net warning). The bad lint fixture is genuine project
+  `pre_run_commands` branch. Lint uses a Target named `lint_selftest_bad` in a
+  dedicated `.core`, marked `flow_options.booley.doctor_selftest: true`, with a
+  tiny tracked source containing an undeclared RHS (an undeclared LHS is only
+  an implicit-net warning). Keep this core separate from every public design
+  Target; Booley hides the marked Target from `booley targets`, its MCP
+  equivalent, and ordinary Flow selection. The bad source is genuine project
   verification input, so keep it in the tracked RTL/TB tree and reference it
-  from the `.core`—never hide it under `.booley_project/`. Do not add a
-  `[flows.<flow>.selftest]` table; that mapping is retired. Step 4 consumes
-  these fixtures; it must not be the first step to discover they were omitted.
+  from the dedicated `.core`—never hide the source under `.booley_project/`.
+  Do not add a `[flows.<flow>.selftest]` table; that mapping is retired. Step 4
+  consumes these fixtures; it must not be the first step to discover they were
+  omitted.
 - **Sentinels** (SV Targets; the plan's row 5): make sure a run's verdict is
   legible — either the TB emits `[SIM_RESULT] PASSED`/`FAILED`, or set
   `[flows.sim].pass_sentinels`/`fail_sentinels` to the TB's own wording.

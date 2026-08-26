@@ -133,14 +133,15 @@ _SELFTEST_FOOTPRINT_NOTE = {
         ".booley_project/selftest/sim/bad-overlay/; Doctor applies that overlay "
         "only to its bad run."
     ),
-    # lint has no pre_run_commands hook, so its bad Target must resolve through
-    # the tracked .core -> a small known-bad source file really does land in the
-    # tree. Say it plainly rather than letting the user discover it mid-setup.
+    # lint has no pre_run_commands hook, so its bad Target resolves through a
+    # dedicated tracked .core. ``doctor_selftest`` metadata keeps the broken
+    # Target out of the public Target surface while Doctor can still resolve it.
     "lint": (
-        "Footprint: lint's conventional 'lint_selftest_bad' must be a real .core "
-        "Target - a small known-bad source file will be committed to the "
-        "repo. If that footprint is unacceptable, prove the fail path by hand and "
-        "record the decision; this stays a WARN, never a FAIL."
+        "Footprint: lint's conventional 'lint_selftest_bad' must live in a "
+        "dedicated tracked .core with booley.doctor_selftest metadata, alongside "
+        "a small known-bad source file. Booley hides it from ordinary Target "
+        "listings and selection. If that footprint is unacceptable, prove the "
+        "fail path by hand and record the decision; this stays a WARN, never a FAIL."
     ),
 }
 # Flow exit-code contract (mirror booley.dev_support.base EXIT_SUCCESS/EXIT_FAILURE):
@@ -1218,11 +1219,12 @@ def _check_line_endings(
     and worktrees — so this is worth re-asking every run, not only at init.
 
     Reports a *present* problem only. CRLF on disk FAILs (Ticket Mode is broken
-    now); ``autocrlf=true`` with a clean tree WARNs (the next checkout will
-    break it). A missing ``.gitattributes`` rule is deliberately silent: it is
-    harmless on the host doing the asking, and most vendored upstream repos
-    (the pristine picorv32 among them) will never carry one — flagging it would
-    be the unfollowable advice :func:`_owned_core_files` exists to avoid.
+    now); status-only dirtiness from an earlier repair also FAILs;
+    ``autocrlf=true`` with a clean tree WARNs (the next checkout will break it).
+    A missing ``.gitattributes`` rule is deliberately silent: it is harmless on
+    the host doing the asking, and most vendored upstream repos (the pristine
+    picorv32 among them) will never carry one — flagging it would be the
+    unfollowable advice :func:`_owned_core_files` exists to avoid.
     """
     _warn = _warning_sink(_warn, "git.autocrlf-risk")
 
@@ -1268,6 +1270,29 @@ def _check_line_endings(
             "core.autocrlf=true — the tree is LF today, but the next clone or "
             "checkout will re-create it with CRLF and break Ticket Mode",
             f"git -C {project_root} config core.autocrlf false   (or re-run `booley init`)",
+        )
+        return
+    _report_line_ending_index_metadata(project_root, _pass, _skip, _fail)
+
+
+def _report_line_ending_index_metadata(
+    project_root: Path,
+    _pass: Check,
+    _skip: Check,
+    _fail: Fail,
+) -> None:
+    """Report status-only dirtiness left by an earlier in-place LF repair."""
+    from booley.harness.init_git_hooks import _tracked_status_is_phantom
+
+    phantom_status, comparison_error = _tracked_status_is_phantom(project_root)
+    if phantom_status is None:
+        _skip(f"line endings: could not compare tracked status with Git diffs: {comparison_error}")
+        return
+    if phantom_status:
+        _fail(
+            "tracked files have stale Git index metadata after line-ending repair — "
+            "status reports modifications although staged and unstaged diffs are empty",
+            "booley init   (refreshes the affected tracked index entries)",
         )
         return
     _pass("working tree is container-safe (no CRLF checkouts, autocrlf off)")
@@ -6101,7 +6126,10 @@ def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     if flow_name == "sim":
         requirement = "add at least one file beneath .booley_project/selftest/sim/bad-overlay/"
     else:
-        requirement = f"add a known-bad .core Target named {_LINT_SELFTEST_BAD_TARGET!r}"
+        requirement = (
+            f"add a known-bad Target named {_LINT_SELFTEST_BAD_TARGET!r} in a dedicated "
+            ".core with booley.doctor_selftest metadata"
+        )
     _warning_sink(_warn, "flow.fail-path-unvalidated", subject=flow_name)(
         f"{flow_name} fail-path unvalidated - {requirement} so --deep proves a "
         "known-bad grades as a failure (not a false pass). The setup agent authors "
@@ -6130,8 +6158,11 @@ def _selftest_plan(
             bad=_SelftestCase(target, test, f"{display} + bad overlay"),
         )
     try:
-        fusesoc_registry.resolve_ref(project.project_root, _LINT_SELFTEST_BAD_TARGET)
+        bad_ref = fusesoc_registry.resolve_ref(project.project_root, _LINT_SELFTEST_BAD_TARGET)
     except fusesoc_registry.FuseSocError:
+        _warn_unvalidated_selftest(flow_name, _warn)
+        return None
+    if not bad_ref.doctor_selftest:
         _warn_unvalidated_selftest(flow_name, _warn)
         return None
     return _SelftestPlan(
