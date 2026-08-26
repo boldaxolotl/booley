@@ -72,11 +72,11 @@ def require_dict(value: Any, *, field: str = "value") -> dict[Any, Any]:
     return dict(cast(Mapping[Any, Any], value))
 
 
-def require_list(value: Any, *, field: str = "value") -> list:
+def require_list(value: Any, *, field: str = "value") -> list[Any]:
     """Return *value* when it is a list, or raise with boundary context."""
     if not isinstance(value, list):
         raise BoundaryError(f"{field} must be a list, got {type(value).__name__}")
-    return value
+    return cast(list[Any], value)
 
 
 # ---------------------------------------------------------------------------
