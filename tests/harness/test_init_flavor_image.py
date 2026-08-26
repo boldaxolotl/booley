@@ -11,10 +11,13 @@ visible, and the no-checkout fallbacks.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+import booley
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -246,7 +249,57 @@ class TestFlavorStaleness:
 
 
 class TestFlavorWithoutCheckout:
-    """A pip-installed Booley: Q2 answer — trust a flavor already on disk."""
+    """A pip-installed Booley refreshes release-mismatched flavors by version."""
+
+    def test_present_flavor_from_old_release_is_refreshed(self, tmp_path, monkeypatch):
+        docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
+        commands: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            if command == ["docker", "image", "inspect", FLAVOR]:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if command[:3] == ["docker", "image", "inspect"]:
+                return subprocess.CompletedProcess(command, 0, "pulled:0.2.3\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(booley, "__version__", "0.2.6")
+        monkeypatch.setattr(idi, "docker_data_dir", lambda: docker_dir)
+        monkeypatch.setattr(idi.subprocess, "run", fake_run)
+        ctx = InitContext(project_root=tmp_path)
+
+        changed = idi.ensure_flavor_image(ctx, FLAVOR)
+
+        assert changed is True
+        assert ctx.results[-1].detail == f"flavor {FLAVOR} pulled"
+        assert ["docker", "pull", f"ghcr.io/boldaxolotl/{FLAVOR}:0.2.6"] in commands
+
+    def test_unbuildable_old_flavor_warns_when_refresh_fails(self, tmp_path, monkeypatch, capsys):
+        docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
+
+        def fake_run(command, **_kwargs):
+            if command == ["docker", "image", "inspect", FLAVOR]:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if command[:3] == ["docker", "image", "inspect"]:
+                return subprocess.CompletedProcess(command, 0, "pulled:0.2.3\n", "")
+            if command[:2] == ["docker", "pull"]:
+                return subprocess.CompletedProcess(command, 1, "", "not found")
+            raise AssertionError(f"unexpected Docker command: {command}")
+
+        monkeypatch.setattr(booley, "__version__", "0.2.6")
+        monkeypatch.setattr(idi, "docker_data_dir", lambda: docker_dir)
+        monkeypatch.setattr(idi.subprocess, "run", fake_run)
+        ctx = InitContext(project_root=tmp_path)
+
+        changed = idi.ensure_flavor_image(ctx, FLAVOR)
+
+        output = capsys.readouterr().out
+        assert changed is False
+        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].detail == f"flavor {FLAVOR} compatible image pull failed"
+        assert "v0.2.3" in output
+        assert "Booley v0.2.6 requires sandbox image v0.2.6" in output
+        assert "trusting it" not in output
 
     def test_present_flavor_is_trusted_when_dockerfile_is_absent(
         self, flavor_repo, monkeypatch, capsys

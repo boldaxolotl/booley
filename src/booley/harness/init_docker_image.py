@@ -255,6 +255,16 @@ def _image_label(image: str, label: str) -> str | None:
     return val if val and val != "<no value>" else None
 
 
+def _installed_image_version(image: str = DOCKER_IMAGE) -> str | None:
+    """Return release provenance for a pulled or locally built image."""
+    fingerprint = _image_label(image, LABEL_FINGERPRINT)
+    if fingerprint and fingerprint.startswith("pulled:"):
+        version = fingerprint.removeprefix("pulled:").strip()
+        if version:
+            return version
+    return _image_label(image, LABEL_VERSION)
+
+
 def _image_is_stale(
     fingerprint: str | None,
     image: str = DOCKER_IMAGE,
@@ -262,8 +272,8 @@ def _image_is_stale(
 ) -> bool:
     """Whether the present sandbox image no longer matches the local source.
 
-    - ``fingerprint is None`` (no source tree to compare): not stale — leave any
-      pulled/pre-built image alone.
+    - ``fingerprint is None`` (no source tree to compare): no source-staleness
+      verdict. Init checks release compatibility separately before calling here.
     - no fingerprint label: an image built before this guard existed (the exact
       stale-image bug this fixes) -> stale.
     - ``pulled:*`` label: current only when it names *expected_version*.
@@ -463,6 +473,57 @@ def _base_image_note(selected_image: str) -> None:
     )
 
 
+def _refresh_installed_base_image(ctx: InitContext, expected_version: str) -> bool:
+    """Refresh a release image when no checkout sources exist; True when handled."""
+    installed_version = _installed_image_version()
+    if installed_version == expected_version:
+        return False
+    if ctx.check_only:
+        found = f"v{installed_version}" if installed_version else "an unknown version"
+        warn(f"{DOCKER_IMAGE} is {found}; would pull the Booley v{expected_version} image")
+        ctx.record("docker_image", "warn", "would pull compatible image")
+        return True
+    if _try_pull_image(expected_version):
+        ok(f"{DOCKER_IMAGE} pulled from registry (v{expected_version})")
+        ctx.record("docker_image", "ok", "pulled")
+        return True
+    found = f"v{installed_version}" if installed_version else "of unknown version"
+    warn(
+        f"{DOCKER_IMAGE} is {found}, but Booley v{expected_version} requires sandbox image "
+        f"v{expected_version}; the existing image was left unchanged and may be incompatible"
+    )
+    info(f"  retry: docker pull {remote_tag(DOCKER_IMAGE, expected_version)}")
+    ctx.record("docker_image", "warn", "compatible image pull failed")
+    return True
+
+
+def _prepare_existing_base_image(
+    ctx: InitContext,
+    docker_dir: Path,
+    *,
+    exists: bool,
+    fingerprint: str | None,
+    expected_version: str,
+) -> bool:
+    """Skip or refresh a present base image; False when normal provisioning remains."""
+    if not exists or ctx.force:
+        return False
+    if fingerprint is None and _refresh_installed_base_image(ctx, expected_version):
+        return True
+    if fingerprint is None or not _image_is_stale(fingerprint, expected_version=expected_version):
+        skip(f"{DOCKER_IMAGE} image already present")
+        _report_build_cache()
+        ctx.record("docker_image", "skip", "already present")
+        return True
+    warn(f"{DOCKER_IMAGE} image is stale (source changed since build) — rebuilding")
+    warn("a dev-install source/fingerprint change forces a full image rebuild (~20 min)")
+    if ctx.check_only:
+        ctx.record("docker_image", "warn", "would rebuild (stale)")
+        return True
+    _docker_local_build(ctx, docker_dir, exists, fingerprint)
+    return True
+
+
 def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
     """Build/refresh the project-agnostic ``booley-sandbox`` base image.
 
@@ -488,21 +549,13 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
     expected_version = _expected_version(booley_root)
     _warn_on_distribution_version_drift(booley_root)
 
-    if exists and not ctx.force:
-        if not _image_is_stale(fingerprint, expected_version=expected_version):
-            skip(f"{DOCKER_IMAGE} image already present")
-            _report_build_cache()
-            ctx.record("docker_image", "skip", "already present")
-            return
-        # Present but built from now-stale source: rebuild locally rather than
-        # skip (or re-pull, which would loop — the pulled image can't match the
-        # local source fingerprint).
-        warn(f"{DOCKER_IMAGE} image is stale (source changed since build) — rebuilding")
-        warn("a dev-install source/fingerprint change forces a full image rebuild (~20 min)")
-        if ctx.check_only:
-            ctx.record("docker_image", "warn", "would rebuild (stale)")
-            return
-        _docker_local_build(ctx, docker_dir, exists, fingerprint)
+    if _prepare_existing_base_image(
+        ctx,
+        docker_dir,
+        exists=exists,
+        fingerprint=fingerprint,
+        expected_version=expected_version,
+    ):
         return
 
     if ctx.check_only:
@@ -859,7 +912,18 @@ def _prepare_flavor_without_build(
     expected_version: str,
 ) -> bool | None:
     """Return changed/current when handled, or ``None`` when a local build is needed."""
-    if exists and not ctx.force and not _image_is_stale(fingerprint, image, expected_version):
+    inspect_existing = exists and not ctx.force
+    installed_release_mismatch = (
+        inspect_existing
+        and fingerprint is None
+        and (_installed_image_version(image) != expected_version)
+    )
+    source_stale = (
+        inspect_existing
+        and fingerprint is not None
+        and _image_is_stale(fingerprint, image, expected_version)
+    )
+    if inspect_existing and not installed_release_mismatch and not source_stale:
         skip(f"{image} is a Booley-shipped sandbox flavor and is up to date")
         ctx.record("project_image", "skip", f"flavor {image} current")
         return False
@@ -868,7 +932,8 @@ def _prepare_flavor_without_build(
         warn(f"would {verb} the {image} sandbox flavor")
         ctx.record("project_image", "warn", f"would {verb}")
         return False
-    if not exists and not ctx.force and _try_pull_image(expected_version, image):
+    should_pull = not exists or installed_release_mismatch
+    if should_pull and not ctx.force and _try_pull_image(expected_version, image):
         ok(f"{image} pulled from registry")
         ctx.record("project_image", "ok", f"flavor {image} pulled")
         return True
@@ -920,6 +985,23 @@ def ensure_flavor_image(
     # nothing local to check it against.
     if not dockerfile.is_file():
         if exists:
+            installed_version = (
+                _installed_image_version(image) if fingerprint is None else expected_version
+            )
+            if installed_version != expected_version:
+                found = f"v{installed_version}" if installed_version else "of unknown version"
+                warn(
+                    f"{image} is {found}, but Booley v{expected_version} requires sandbox "
+                    f"image v{expected_version}; the existing image was left unchanged and "
+                    "may be incompatible"
+                )
+                info(f"  retry: docker pull {remote_tag(image, expected_version)}")
+                ctx.record(
+                    "project_image",
+                    "warn",
+                    f"flavor {image} compatible image pull failed",
+                )
+                return False
             skip(f"{image} present; no shipped {dockerfile_name} to rebuild from — trusting it")
             ctx.record("project_image", "skip", f"flavor {image} unverifiable")
             return False
