@@ -4097,7 +4097,7 @@ class TestValidateTicketDirtyTree:
 
         mock_result_branch = MagicMock(returncode=0, stdout="", stderr="")
         mock_result_status = MagicMock(
-            returncode=0, stdout=" M rtl/foo.sv\n M rtl/bar.sv\n", stderr=""
+            returncode=0, stdout=" M rtl/foo.sv\0 M rtl/bar.sv\0", stderr=""
         )
         mock_result_gitdir = MagicMock(returncode=0, stdout=str(tmp_path / ".git"), stderr="")
         with patch(

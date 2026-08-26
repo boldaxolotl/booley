@@ -12,10 +12,11 @@ from booley.ticket_board.criteria_markdown import (
     parse_criteria_section,
     render_criteria_section,
 )
-from booley.ticket_board.frontmatter import update_frontmatter
+from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.validation import validate_ticket_fields
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -133,6 +134,56 @@ def test_authored_draft_validates_without_hiding_product_changes(
     )
 
 
+def test_validate_ticket_does_not_exempt_a_product_markdown_file(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    root, tio = _project(tmp_path, monkeypatch)
+    product_ticket = root / "ticket-shaped-product-file.md"
+    _ticket(tio).rename(product_ticket)
+    _commit_all(root, "add product markdown")
+    update_frontmatter(product_ticket, {"priority": "high"})
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setenv("TICKETS_DIR", str(tio.tickets_dir))
+    capsys.readouterr()
+
+    assert main(["validate-ticket", str(product_ticket), "--check-git"]) == 1
+    assert any(
+        "Dirty working tree" in error for error in json.loads(capsys.readouterr().out)["errors"]
+    )
+    assert any(
+        "Dirty working tree" in error
+        for error in DirectTicketOps().validate_ticket(
+            root,
+            str(product_ticket),
+            check_git=True,
+        )["errors"]
+    )
+
+
+def test_ticket_validation_normalizes_a_draft_path_from_a_project_subdirectory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, tio = _project(tmp_path, monkeypatch)
+    ticket = _ticket(tio)
+    _git(root, "add", "-f", str(ticket.relative_to(root)))
+    _commit_all(root, "add draft ticket")
+    update_frontmatter(ticket, {"priority": "high"})
+    fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    workdir = root / "rtl"
+    monkeypatch.chdir(workdir)
+
+    errors = validate_ticket_fields(
+        fields,
+        body,
+        check_files=True,
+        check_git=True,
+        project_root=root,
+        allowed_dirty_paths=(Path("..") / ticket.relative_to(root),),
+    )
+
+    assert not any("Dirty working tree" in error for error in errors)
+
+
 def test_integrated_contract_seals_tests_toml_update(tmp_path: Path, monkeypatch) -> None:
     root, tio = _project(tmp_path, monkeypatch)
     _ticket(tio)
@@ -161,6 +212,12 @@ def test_mutation_campaign_dictionary_round_trips_through_markdown() -> None:
     assert parse_criteria_section(render_criteria_section(criteria)) == criteria
 
 
+def test_json_shaped_criterion_string_round_trips_as_a_string() -> None:
+    criteria = {"mandatory": {"sim_pass": ['{"target":"literal"}']}}
+
+    assert parse_criteria_section(render_criteria_section(criteria)) == criteria
+
+
 def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -169,7 +226,15 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     queue = draft.parent.parent / "queue" / draft.name
     queue.parent.mkdir(parents=True, exist_ok=True)
     draft.rename(queue)
-    _git(root, "add", "-f", str(queue.relative_to(root)))
+    unrelated_ticket = queue.parent / "unrelated-ticket.md"
+    unrelated_ticket.write_text(queue.read_text(encoding="utf-8"), encoding="utf-8")
+    _git(
+        root,
+        "add",
+        "-f",
+        str(queue.relative_to(root)),
+        str(unrelated_ticket.relative_to(root)),
+    )
     _commit_all(root, "queue ticket")
 
     worktree = root / ".booley_project" / "worktrees" / "change-target"
@@ -190,6 +255,12 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
 
     source.write_text(original, encoding="utf-8")
+    unrelated_original = unrelated_ticket.read_text(encoding="utf-8")
+    update_frontmatter(unrelated_ticket, {"priority": "high"})
+    assert op_complete(tio, "change-target") is False
+    assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "review"
+
+    unrelated_ticket.write_text(unrelated_original, encoding="utf-8")
     assert op_complete(tio, "change-target") is True
     assert find_ticket_file(tio.tickets_dir, "change-target")[1] == "done"
     assert "acme:lib:toy:2.0" in (root / "toy.core").read_text(encoding="utf-8")

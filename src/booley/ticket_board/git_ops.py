@@ -14,6 +14,8 @@ from pathlib import Path
 
 from booley.runtime.filesystem_utils import safe_rmtree
 
+from .git_status import GitStatusEntry, parse_porcelain_v1_z
+
 # ---------------------------------------------------------------------------
 # Low-level git wrapper
 # ---------------------------------------------------------------------------
@@ -106,29 +108,52 @@ def find_checkout_of_branch(branch: str) -> str | None:
     return None
 
 
-def worktree_is_clean(wt_path: str, *, ignored_unstaged_prefixes: tuple[str, ...] = ()) -> bool:
+def _worktree_relative_path(wt_path: str, path: str | Path) -> str | None:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        return candidate.as_posix().removeprefix("./")
+    try:
+        return candidate.resolve().relative_to(Path(wt_path).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _is_allowed_unstaged_rename(
+    wt_path: str,
+    entry: GitStatusEntry,
+    allowed: tuple[str | Path, str | Path] | None,
+) -> bool:
+    if allowed is None or entry.staged or not entry.unstaged:
+        return False
+    source = _worktree_relative_path(wt_path, allowed[0])
+    destination = _worktree_relative_path(wt_path, allowed[1])
+    if source is None or destination is None:
+        return False
+    if entry.status[1] == "R":
+        return entry.path == destination and entry.source_path == source
+    source_deleted = entry.status == " D" and entry.path == source
+    destination_untracked = entry.status == "??" and entry.path == destination
+    if not (source_deleted or destination_untracked):
+        return False
+    root = Path(wt_path)
+    return not (root / source).exists() and (root / destination).is_file()
+
+
+def worktree_is_clean(
+    wt_path: str,
+    *,
+    allowed_unstaged_rename: tuple[str | Path, str | Path] | None = None,
+) -> bool:
     """True when no blocking changes exist in *wt_path*.
 
-    Callers may exempt Harness-owned, unstaged filesystem state. Staged paths
-    always remain blocking because they can alter the merge index.
+    Callers may exempt one Harness-owned, unstaged Ticket Board rename. Staged
+    paths and every unrelated change remain blocking.
     """
     r = git("-C", wt_path, "status", "--porcelain", "-z", "--untracked-files=all")
     if not r or r.returncode != 0:
         return False
-    fields = [field for field in r.stdout.split("\0") if field]
-    index = 0
-    while index < len(fields):
-        record = fields[index]
-        index += 1
-        if len(record) < 4:
-            continue
-        status = record[:2]
-        path = record[3:].replace("\\", "/").removeprefix("./")
-        if "R" in status or "C" in status:
-            index += 1
-        unstaged = status == "??" or status.startswith(" ")
-        ignored = unstaged and any(path.startswith(prefix) for prefix in ignored_unstaged_prefixes)
-        if not ignored:
+    for entry in parse_porcelain_v1_z(r.stdout):
+        if not _is_allowed_unstaged_rename(wt_path, entry, allowed_unstaged_rename):
             return False
     return True
 

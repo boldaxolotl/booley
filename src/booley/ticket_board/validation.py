@@ -20,6 +20,7 @@ from .constants import (
     VALID_PRIORITIES,
     VALID_TYPES,
 )
+from .git_status import parse_porcelain_v1_z
 from .validation_logs import (  # noqa: F401  # re-exported for backward compatibility
     _validate_state_file,
     format_validate_logs_report,
@@ -1014,46 +1015,32 @@ def _check_branch_exists(branch, git_cwd):
     return None
 
 
+def owned_draft_dirty_paths(ticket_path: str | Path, tickets_dir: str | Path) -> tuple[Path, ...]:
+    """Return the exact dirty path exemption for a canonical draft Ticket."""
+    candidate = Path(ticket_path).resolve()
+    drafts_dir = (Path(tickets_dir) / "board" / "drafts").resolve()
+    if candidate.parent != drafts_dir or candidate.suffix.casefold() != ".md":
+        return ()
+    return (candidate,)
+
+
 def _git_relative_paths(paths: Iterable[str | Path], git_cwd: str | Path | None) -> set[str]:
     """Normalize caller-owned paths to Git's repository-relative spelling."""
     root = Path(git_cwd).resolve() if git_cwd is not None else None
     normalized: set[str] = set()
     for raw in paths:
         path = Path(raw)
-        if path.is_absolute():
-            if root is None:
-                continue
+        if root is not None:
             try:
                 path = path.resolve().relative_to(root)
             except (OSError, ValueError):
                 continue
+        elif path.is_absolute():
+            continue
         value = path.as_posix().removeprefix("./")
         if value:
             normalized.add(value)
     return normalized
-
-
-def _porcelain_entries(output: str) -> list[tuple[str, str]]:
-    """Parse porcelain v1, including the NUL-delimited rename form."""
-    if "\0" not in output:
-        return [
-            (line[:2], line[3:].replace("\\", "/"))
-            for line in output.splitlines()
-            if len(line) >= 4
-        ]
-    fields = [field for field in output.split("\0") if field]
-    entries: list[tuple[str, str]] = []
-    index = 0
-    while index < len(fields):
-        record = fields[index]
-        index += 1
-        if len(record) < 4:
-            continue
-        status, path = record[:2], record[3:].replace("\\", "/")
-        if "R" in status or "C" in status:
-            index += 1  # consume the source path; the record names the destination
-        entries.append((status, path))
-    return entries
 
 
 def _check_clean_worktree(git_cwd, allowed_dirty_paths: Iterable[str | Path] = ()):
@@ -1070,9 +1057,7 @@ def _check_clean_worktree(git_cwd, allowed_dirty_paths: Iterable[str | Path] = (
         if result.returncode == 0:
             allowed = _git_relative_paths(allowed_dirty_paths, git_cwd)
             dirty = [
-                (status, path)
-                for status, path in _porcelain_entries(result.stdout)
-                if path not in allowed
+                entry for entry in parse_porcelain_v1_z(result.stdout) if entry.path not in allowed
             ]
             if dirty:
                 return f"Dirty working tree ({len(dirty)} modified files)"

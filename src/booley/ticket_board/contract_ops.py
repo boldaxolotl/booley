@@ -22,6 +22,7 @@ from booley.runtime.ticket_repositories import (
 )
 
 from .frontmatter import parse_frontmatter, update_frontmatter
+from .git_status import parse_porcelain_v1_z
 from .target_contract import (
     TargetContract,
     build_contract,
@@ -187,7 +188,7 @@ def _open_project_contract(
 
 
 def _status_paths(repository: Path) -> list[str]:
-    output = _require_git(
+    result = _git(
         repository,
         "status",
         "--porcelain",
@@ -195,19 +196,12 @@ def _status_paths(repository: Path) -> list[str]:
         "--untracked-files=all",
         "--ignore-submodules",
     )
-    fields = [field for field in output.split("\0") if field]
-    paths: list[str] = []
-    index = 0
-    while index < len(fields):
-        record = fields[index]
-        index += 1
-        if len(record) < 4:
-            continue
-        status, path = record[:2], record[2:].removeprefix(" ")
-        paths.append(path)
-        if "R" in status or "C" in status:
-            index += 1
-    return paths
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise ContractOperationError(
+            f"git status failed in {repository} (rc={result.returncode}): {detail}"
+        )
+    return [entry.path for entry in parse_porcelain_v1_z(result.stdout)]
 
 
 def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[str]:
