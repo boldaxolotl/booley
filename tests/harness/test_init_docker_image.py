@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import booley
 from booley.harness import init_cmd, init_docker_image
 from booley.harness.init_common import InitContext
 
@@ -180,7 +181,7 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
 
 class TestIsStale:
     def test_no_fingerprint_is_not_stale(self, monkeypatch):
-        # None fingerprint (no source) -> never stale, whatever the label is.
+        # None fingerprint disables only source drift; init checks release compatibility.
         monkeypatch.setattr(init_docker_image, "_image_label", lambda *a: "anything")
         assert init_docker_image._image_is_stale(None) is False
 
@@ -294,6 +295,119 @@ class TestImageLabel:
     def test_inspect_failure_is_none(self, monkeypatch):
         monkeypatch.setattr(init_cmd.subprocess, "run", self._fake_run("", returncode=1))
         assert init_cmd._image_label("img", "l") is None
+
+
+# ---------------------------------------------------------------------------
+# Installed-package image compatibility
+# ---------------------------------------------------------------------------
+
+
+def _run_pip_image_step(tmp_path, monkeypatch, docker, *, check_only=False):
+    docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
+    monkeypatch.setattr(booley, "__version__", "0.2.6")
+    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(init_docker_image.subprocess, "run", docker.run)
+    ctx = InitContext(project_root=tmp_path, check_only=check_only)
+
+    init_docker_image._step_docker_image(ctx)
+    return ctx
+
+
+def test_pip_install_refreshes_existing_image_from_old_release(
+    tmp_path, monkeypatch, release_image_docker
+):
+    """A pip install has no checkout fingerprint, but its release still pins the image."""
+    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.3"})
+
+    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
+
+    assert ctx.results[-1].status == "ok"
+    assert ctx.results[-1].detail == "pulled"
+    assert ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"] in docker.commands
+
+
+def test_pip_install_warns_when_compatible_image_pull_fails(
+    tmp_path, monkeypatch, capsys, release_image_docker
+):
+    docker = release_image_docker(
+        fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.3"},
+        pull_returncode=1,
+    )
+
+    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
+
+    output = capsys.readouterr().out
+    assert ctx.results[-1].status == "warn"
+    assert ctx.results[-1].detail == "compatible image pull failed"
+    assert "v0.2.3" in output
+    assert "Booley v0.2.6 requires sandbox image v0.2.6" in output
+    assert "may be incompatible" in output
+
+
+def test_pip_install_skips_image_from_matching_release(
+    tmp_path, monkeypatch, release_image_docker
+):
+    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.6"})
+
+    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
+
+    assert ctx.results[-1].status == "skip"
+    assert not any(command[:2] == ["docker", "pull"] for command in docker.commands)
+
+
+def test_pip_install_uses_oci_version_when_pull_stamp_is_absent(
+    tmp_path, monkeypatch, release_image_docker
+):
+    docker = release_image_docker(
+        fingerprints={init_docker_image.DOCKER_IMAGE: "abc123"},
+        oci_versions={init_docker_image.DOCKER_IMAGE: "0.2.3"},
+    )
+
+    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
+
+    assert ctx.results[-1].detail == "pulled"
+    assert ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"] in docker.commands
+
+
+def test_pip_install_check_only_warns_for_unverifiable_image(
+    tmp_path, monkeypatch, capsys, release_image_docker
+):
+    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: None})
+
+    ctx = _run_pip_image_step(tmp_path, monkeypatch, docker, check_only=True)
+
+    output = capsys.readouterr().out
+    assert ctx.results[-1].status == "warn"
+    assert ctx.results[-1].detail == "would pull compatible image"
+    assert "unknown version" in output
+    assert "would pull the Booley v0.2.6 image" in output
+    assert not any(command[:2] == ["docker", "pull"] for command in docker.commands)
+
+
+def test_checkout_source_drift_still_rebuilds_instead_of_pulling(tmp_path, monkeypatch):
+    _seed_source(tmp_path)
+    docker_dir = tmp_path / "src" / "booley" / "data" / "docker"
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command == ["docker", "image", "inspect", init_docker_image.DOCKER_IMAGE]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, "old-fingerprint\n", "")
+        raise AssertionError(f"unexpected Docker command: {command}")
+
+    monkeypatch.setattr(init_docker_image, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(init_docker_image.subprocess, "run", fake_run)
+    ctx = InitContext(project_root=tmp_path, check_only=True)
+
+    init_docker_image._step_docker_image(ctx)
+
+    assert ctx.results[-1].status == "warn"
+    assert ctx.results[-1].detail == "would rebuild (stale)"
+    assert not any(command[:2] == ["docker", "pull"] for command in commands)
 
 
 # ---------------------------------------------------------------------------
