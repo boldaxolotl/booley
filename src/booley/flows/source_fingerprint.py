@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -28,6 +29,7 @@ from booley.fusesoc.fusesoc_registry import (
     target_source_files,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.targets.declared_inputs import referenced_program_paths
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,11 @@ def _hash_named_files(work_dir: Path, rel_names: list[str]) -> dict[str, Any]:
 
 def _hash_source_group(work_dir: Path, source_dirs: list[str]) -> dict[str, Any]:
     """Hash every regular file under the configured source directories."""
+    return _hash_named_files(work_dir, _source_group_files(work_dir, source_dirs))
+
+
+def _source_group_files(work_dir: Path, source_dirs: list[str]) -> list[str]:
+    """Return project-relative regular files under configured source directories."""
     root = work_dir.resolve()
     rel_files: list[Path] = []
     for rel_dir in source_dirs:
@@ -118,22 +125,25 @@ def _hash_source_group(work_dir: Path, source_dirs: list[str]) -> dict[str, Any]
                 except ValueError:
                     continue
 
-    digest = hashlib.sha256()
-    file_names = sorted({p.as_posix() for p in rel_files})
-    for rel_name in file_names:
-        file_path = root / rel_name
-        try:
-            data = file_path.read_bytes()
-        except OSError:
-            data = b""
-        digest.update(rel_name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(len(data)).encode("ascii"))
-        digest.update(b"\0")
-        digest.update(data)
-        digest.update(b"\0")
+    return sorted({path.as_posix() for path in rel_files})
 
-    return {"digest": digest.hexdigest(), "files": file_names}
+
+def _declared_program_files(root: Path) -> list[str]:
+    """Return committed programs directly referenced by Project configuration."""
+    try:
+        config_path = resolve_checkout_project_dir(root) / "booley.toml"
+    except FileNotFoundError:
+        return []
+    if not config_path.is_file():
+        return []
+    with config_path.open("rb") as stream:
+        config = tomllib.load(stream)
+    paths = referenced_program_paths(
+        config,
+        search_roots=(root, config_path.parent),
+        project_root=root,
+    )
+    return [path.relative_to(root).as_posix() for path in paths]
 
 
 def _campaign_core_files(root: Path, target: str | None) -> list[Path]:
@@ -201,6 +211,7 @@ def compute_source_fingerprint(
     core = _core_source_files(root, target)
     if core is not None:
         rtl_files, tb_files = core
+        workload_files = [*rtl_files, *tb_files, *_declared_program_files(root)]
         return {
             "algorithm": "sha256",
             "work_dir": str(root),
@@ -209,10 +220,14 @@ def compute_source_fingerprint(
             "tb_dirs": sorted({PurePosixPath(f).parent.as_posix() for f in tb_files}),
             "rtl": _hash_named_files(root, rtl_files),
             "tb": _hash_named_files(root, tb_files),
-            "workload": _hash_named_files(root, [*rtl_files, *tb_files]),
+            "workload": _hash_named_files(root, workload_files),
             "campaign": campaign,
         }
     rtl_dirs, tb_dirs = _read_source_dirs(root)
+    workload_files = [
+        *_source_group_files(root, [*rtl_dirs, *tb_dirs]),
+        *_declared_program_files(root),
+    ]
     return {
         "algorithm": "sha256",
         "work_dir": str(root),
@@ -221,6 +236,6 @@ def compute_source_fingerprint(
         "tb_dirs": tb_dirs,
         "rtl": _hash_source_group(root, rtl_dirs),
         "tb": _hash_source_group(root, tb_dirs),
-        "workload": _hash_source_group(root, [*rtl_dirs, *tb_dirs]),
+        "workload": _hash_named_files(root, workload_files),
         "campaign": campaign,
     }

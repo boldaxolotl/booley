@@ -10,12 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shlex
 import subprocess
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import (
@@ -27,6 +26,7 @@ from booley.core.boundary import (
 )
 from booley.dev_support.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
+from booley.targets.declared_inputs import referenced_program_paths
 from booley.targets.target_surface import flow_can_drive
 
 SCHEMA_VERSION = 1
@@ -34,8 +34,6 @@ CONTRACT_BLOCK_REASON = "target-contract-change-required"
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-_PROGRAM_SUFFIXES = frozenset({".py", ".sh", ".tcl", ".pl", ".rb"})
-_PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 _FLOW_BY_CRITERION = {
     "sim_pass": "sim",
     "cycle_count": "sim",
@@ -202,35 +200,6 @@ def _target_config(path: Path) -> dict[str, Any]:
     return {key: data[key] for key in ("flows", "targets", "fusesoc") if key in data}
 
 
-def _walk_strings(value: Any) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, Mapping):
-        for child in value.values():
-            yield from _walk_strings(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _walk_strings(child)
-
-
-def _program_tokens(value: Any) -> Iterator[str]:
-    for raw in _walk_strings(value):
-        try:
-            tokens = shlex.split(raw)
-        except ValueError:
-            tokens = raw.split()
-        for token in tokens:
-            candidate = token.strip("'\";,()")
-            path = PurePosixPath(candidate)
-            if (
-                path.suffix.casefold() in _PROGRAM_SUFFIXES
-                or path.name.casefold() in _PROGRAM_BASENAMES
-                or "/" in candidate
-                or "\\" in candidate
-            ):
-                yield candidate
-
-
 def _core_referenced_files(root: Path, core_file: Path, doc: Mapping[str, Any]) -> Iterator[Path]:
     filesets = doc.get("filesets")
     if not isinstance(filesets, Mapping):
@@ -262,23 +231,25 @@ def _core_auxiliary_paths(root: Path, core_file: Path, doc: Mapping[str, Any]) -
     imperative = {
         key: doc[key] for key in ("generators", "generate", "scripts", "targets") if key in doc
     }
-    for token in _program_tokens(imperative):
-        candidate = (core_file.parent / token).resolve()
-        if candidate.is_relative_to(root) and candidate.is_file():
-            paths.add(candidate)
+    paths.update(
+        referenced_program_paths(
+            imperative,
+            search_roots=(core_file.parent,),
+            project_root=root,
+        )
+    )
     return paths
 
 
 def _config_auxiliary_paths(root: Path, config_path: Path) -> set[Path]:
     """Find executable hooks referenced by Target-selection configuration."""
-    paths: set[Path] = set()
-    for token in _program_tokens(_target_config(config_path)):
-        candidates = ((root / token).resolve(), (config_path.parent / token).resolve())
-        for candidate in candidates:
-            if candidate.is_relative_to(root) and candidate.is_file():
-                paths.add(candidate)
-                break
-    return paths
+    return set(
+        referenced_program_paths(
+            _target_config(config_path),
+            search_roots=(root, config_path.parent),
+            project_root=root,
+        )
+    )
 
 
 def surface_entries(project_root: Path | str) -> tuple[ContractSurfaceEntry, ...]:

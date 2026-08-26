@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.dev_support.criterion_categories import verification_fingerprint_categories
 from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
@@ -45,7 +46,6 @@ from .diff_classify import (
     _RTL_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._RTL_DIRS
     _TB_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._TB_DIRS
     _classify_files,
-    _verification_fingerprint_categories,
     read_source_dirs_from_toml,  # noqa: F401 — public API re-export; base itself never calls it
 )
 from .events import (
@@ -472,7 +472,7 @@ class McpTool(ABC):
         source_target: str | None,
     ) -> dict[str, Any] | None:
         """Attach source freshness metadata to passing verification criteria."""
-        categories = _verification_fingerprint_categories(key)
+        categories = verification_fingerprint_categories(key)
         if not categories:
             return detail
         stamped = dict(detail or {})
@@ -738,6 +738,14 @@ class McpTool(ABC):
                     bound.append(alias)
             if family in self.state.criteria:
                 bound.append(family)
+            bound.extend(
+                key
+                for key, entry in self.state.criteria.items()
+                if key.startswith(f"{family}_")
+                and isinstance(entry.params, dict)
+                and entry.params.get("target") == target
+                and key not in bound
+            )
         return bound
 
     def _criterion_binding_gate(self) -> McpToolResult | None:

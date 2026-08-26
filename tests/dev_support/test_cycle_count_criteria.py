@@ -6,8 +6,7 @@ import pytest
 
 from booley.dev_support.criteria import CriteriaTemplate
 from booley.dev_support.development_state import DevelopmentState
-from booley.dev_support.thresholds import is_relative_threshold
-from booley.flows.sim.threshold_eval import evaluate_cycle_threshold
+from booley.dev_support.thresholds import evaluate_cycle_threshold, is_relative_threshold
 
 
 def _entry(**thresholds):

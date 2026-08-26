@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.flows.sim.workload import (
-    PROVENANCE_LIMITATION,
-    build_workload_snapshot,
-    workload_changes,
-)
+from booley.dev_support.cycle_count import PROVENANCE_LIMITATION, workload_changes
+from booley.flows.sim.workload import build_workload_snapshot
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 

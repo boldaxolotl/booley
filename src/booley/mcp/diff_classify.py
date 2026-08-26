@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.dev_support.development_state import (
+from booley.dev_support.criterion_categories import (
     CATEGORY_RTL,
     CATEGORY_TB,
 )
@@ -192,22 +192,3 @@ def _matches_prefix(path: str, prefixes: tuple[str, ...]) -> bool:
         elif path == pre:
             return True
     return False
-
-
-def _verification_fingerprint_categories(key: str) -> set[str]:
-    """Return source categories that a passing verification criterion depends on."""
-    if key.startswith("review_rtl_"):
-        categories = {CATEGORY_RTL}
-    elif key.startswith("review_tb_"):
-        categories = {CATEGORY_TB}
-    elif key.startswith(("mutation_score_", "coverage_")):
-        categories = {CATEGORY_RTL, CATEGORY_TB, "campaign"}
-    elif key.startswith("cycle_count_"):
-        categories = {CATEGORY_RTL, CATEGORY_TB, "campaign", "workload"}
-    elif key.startswith(("sim_", "elab_")):
-        categories = {CATEGORY_RTL, CATEGORY_TB}
-    elif key.startswith(("lint_", "synthesis_", "fpga_impl_", "elaborate_standalone")):
-        categories = {CATEGORY_RTL}
-    else:
-        categories = set()
-    return categories

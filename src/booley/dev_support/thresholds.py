@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 ThresholdUnit = Literal["cycles", "percent", "metric"]
 ThresholdOperator = Literal["le", "ge"]
@@ -47,6 +47,95 @@ CYCLE_COUNT_DESCRIPTORS: dict[str, ThresholdDescriptor] = {
         for param, (unit, operator) in _CYCLE_RELATIVE.items()
     },
 }
+
+
+def _cycle_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _unavailable_cycle_check(param: str, reason: str) -> dict[str, Any]:
+    return {"param": param, "pass": False, "skipped": False, "reason": reason}
+
+
+def evaluate_cycle_threshold(
+    param: str,
+    threshold: int | float,
+    *,
+    current: int | None,
+    baseline: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate one Cycle Count threshold without rounding measured values."""
+    descriptor = CYCLE_COUNT_DESCRIPTORS.get(param)
+    if descriptor is None:
+        return _unavailable_cycle_check(param, f"unknown Cycle Count threshold {param!r}")
+    current_count = _cycle_count(current)
+    if current_count is None:
+        return _unavailable_cycle_check(
+            param, "current Cycle Count evidence is unavailable or invalid"
+        )
+    result = _cycle_check_result(param, threshold, current_count, descriptor)
+    if not descriptor.relative:
+        result["pass"] = _threshold_passes(current_count, threshold, descriptor.operator)
+        return result
+    return _evaluate_relative_cycle_check(result, descriptor, threshold, baseline)
+
+
+def _cycle_check_result(
+    param: str,
+    threshold: int | float,
+    current: int,
+    descriptor: ThresholdDescriptor,
+) -> dict[str, Any]:
+    return {
+        "param": param,
+        "pass": False,
+        "skipped": False,
+        "current": current,
+        "baseline": None,
+        "delta_cycles": None,
+        "pct": None,
+        "threshold": threshold,
+        "unit": descriptor.unit,
+    }
+
+
+def _evaluate_relative_cycle_check(
+    result: dict[str, Any],
+    descriptor: ThresholdDescriptor,
+    threshold: int | float,
+    baseline: int | None,
+) -> dict[str, Any]:
+    param = str(result["param"])
+    baseline_count = _cycle_count(baseline)
+    if baseline_count is None:
+        return _unavailable_cycle_check(
+            param, "baseline Cycle Count evidence is unavailable or invalid"
+        )
+    delta_cycles = int(result["current"]) - baseline_count
+    result["baseline"] = baseline_count
+    result["delta_cycles"] = delta_cycles
+    measured: int | float = delta_cycles
+    if descriptor.unit == "percent":
+        if baseline_count == 0:
+            return _unavailable_cycle_check(
+                param, "zero baseline cannot define a Cycle Count percentage"
+            )
+        measured = delta_cycles / baseline_count * 100
+        result["pct"] = measured
+    bound = -threshold if "reduce_" in param else threshold
+    result["pass"] = _threshold_passes(measured, bound, descriptor.operator)
+    return result
+
+
+def _threshold_passes(
+    measured: int | float,
+    bound: int | float,
+    operator: ThresholdOperator,
+) -> bool:
+    return measured <= bound if operator == "le" else measured >= bound
+
 
 _RELATIVE_SUFFIXES = (
     "_increase_at_least_cycles",

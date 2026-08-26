@@ -32,6 +32,7 @@ from booley.core.boundary import (
     BoundaryError,
     as_positive_int,
     is_str_list,
+    require_bool,
     require_finite_number,
 )
 from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
@@ -133,7 +134,11 @@ def _parse_criteria_toml(data: dict[str, Any], source: str) -> list[CriterionDef
                     source,
                 )
         per_target = section.get("per_target", False)
-        per_test = section.get("per_test", False)
+        per_test = require_bool(
+            section,
+            "per_test",
+            field=f"criterion {name!r} per_test",
+        )
         category = section.get("category", "none")
         group = section.get("group", "other")
         hidden = bool(section.get("hidden", False))

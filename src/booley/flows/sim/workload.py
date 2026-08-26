@@ -8,15 +8,11 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from booley.dev_support.cycle_count import PROVENANCE_LIMITATION
 from booley.flows.recipe_evidence import jsonable
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 WORKLOAD_SNAPSHOT_SCHEMA = 1
-PROVENANCE_LIMITATION = (
-    "Booley fingerprints declared Target inputs and captured controls. It cannot prove "
-    "arbitrary transitive files opened by hooks, generated or gitignored inputs, ambient "
-    "environment values, or external toolchain state unless they are declared on a captured surface."
-)
 
 
 def _role(file: ResolvedFile) -> str:
@@ -92,37 +88,3 @@ def build_workload_snapshot(
     }
     snapshot["fingerprint"] = _fingerprint(snapshot)
     return snapshot
-
-
-def workload_changes(
-    baseline: Mapping[str, Any],
-    current: Mapping[str, Any],
-) -> list[dict[str, Any]]:
-    """Return deterministic path-oriented changes between declared inputs."""
-    before = {
-        str(row.get("path")): row
-        for row in baseline.get("inputs", [])
-        if isinstance(row, Mapping) and row.get("path")
-    }
-    after = {
-        str(row.get("path")): row
-        for row in current.get("inputs", [])
-        if isinstance(row, Mapping) and row.get("path")
-    }
-    changes: list[dict[str, Any]] = []
-    for path in sorted(set(before) | set(after)):
-        old = before.get(path)
-        new = after.get(path)
-        if old is not None and new is not None and old.get("sha256") == new.get("sha256"):
-            continue
-        status = "added" if old is None else "deleted" if new is None else "modified"
-        changes.append(
-            {
-                "path": path,
-                "role": (new or old or {}).get("role", "workload"),
-                "status": status,
-                "baseline_sha256": old.get("sha256") if old is not None else None,
-                "current_sha256": new.get("sha256") if new is not None else None,
-            }
-        )
-    return changes
