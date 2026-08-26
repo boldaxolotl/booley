@@ -1,4 +1,4 @@
-"""Golden snapshots for the Yosys/OpenSTA/OpenROAD script generators.
+"""Golden snapshots for the Yosys/OpenROAD script generators.
 
 What drift these protect against: the ``519842f`` class — a required line
 silently missing from generated TCL (``make_tracks`` after
@@ -24,7 +24,6 @@ from booley.yosys.openroad_timing import OpenRoadPdk, write_openroad_script
 from booley.yosys.syn_core import (
     StaTimingConfig,
     reg2reg_timing_tcl,
-    write_sta_script,
     write_sta_sdc,
 )
 from tests.golden.conftest import assert_matches_golden, normalize_work_dir
@@ -47,7 +46,7 @@ def _timing_config(
 ) -> StaTimingConfig:
     """A fully pinned timing config (defaults spelled out for stability)."""
     return StaTimingConfig(
-        engine="openroad",
+        mode="physical",
         clock="clk_i",
         period_ps=4000.0,
         input_delay_pct=30.0,
@@ -104,12 +103,12 @@ def test_openroad_script_golden(
 
 
 # ---------------------------------------------------------------------------
-# reg2reg_timing_tcl — arg-free snippet shared by both timing engines
+# reg2reg_timing_tcl — arg-free snippet embedded by OpenROAD
 # ---------------------------------------------------------------------------
 
 
 def test_reg2reg_timing_tcl_golden() -> None:
-    """Snapshot the reg->reg slack reporting block (embedded in both engines)."""
+    """Snapshot the reg->reg slack reporting block embedded by OpenROAD."""
     assert_matches_golden("yosys/reg2reg_timing.tcl", reg2reg_timing_tcl())
 
 
@@ -155,25 +154,6 @@ def test_sta_sdc_target_owns_clock_and_io_golden(tmp_path: Path) -> None:
         "yosys/sta_sdc_target_owns_clock.sdc",
         sdc_path.read_text(encoding="utf-8"),
     )
-
-
-# ---------------------------------------------------------------------------
-# write_sta_script — OpenSTA TCL
-# ---------------------------------------------------------------------------
-
-
-def test_sta_script_golden(tmp_path: Path) -> None:
-    """Snapshot the complete OpenSTA TCL (reports + CSV + reg2reg + exit)."""
-    script_path = write_sta_script(
-        design_name="dut",
-        liberty=_LIBERTY,
-        sta_netlist=tmp_path / "sta_dut.v",
-        sdc_path=tmp_path / "sta_constraints.sdc",
-        report_dir=tmp_path / "reports" / "timing",
-        work_dir=tmp_path,
-    )
-    script = normalize_work_dir(script_path.read_text(encoding="utf-8"), tmp_path)
-    assert_matches_golden("yosys/opensta_script.tcl", script)
 
 
 # ---------------------------------------------------------------------------

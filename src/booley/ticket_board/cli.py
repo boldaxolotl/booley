@@ -332,6 +332,11 @@ def _add_creation_subcommands(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Reset even while a live process owns the ticket (stop the run first; this does not stop it for you)",
     )
+    p.add_argument(
+        "--reason",
+        default="user reset ticket",
+        help="Why a clean run is required (recorded in transition history)",
+    )
 
     # reset-to (removed — deprecated stub prints error)
     p = sub.add_parser("reset-to", help="[REMOVED] Use 'reset' for a full reset")

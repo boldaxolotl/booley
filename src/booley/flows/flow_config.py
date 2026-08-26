@@ -41,7 +41,9 @@ def tb_top_for_target(target: str, work_dir: Path | None = None, *, resolved: An
             fusesoc_registry.read_core(ref.core_file),
             ref.name,
         )
-    except Exception:  # noqa: BLE001 — best-effort .core toplevel read (unknown/ambiguous too); degrades to an empty TB top
+    except (
+        Exception  # noqa: BLE001 — best-effort .core read; degrades to an empty TB top
+    ):
         return ""
 
 

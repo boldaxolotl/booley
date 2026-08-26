@@ -10,8 +10,6 @@ dut
 .booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/dut.sv
 --inc-dir
 .booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/include
---sta-sdc
-.booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/constraints/dut.sdc
 -d
 SYNTHESIS
 -p
@@ -19,8 +17,8 @@ WIDTH=8
 --flatten
 --ppa-profile
 balanced
---timing-engine
-opensta
+--synth-mode
+logical
 --frontend
 sv2v
 -w

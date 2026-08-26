@@ -141,12 +141,16 @@ class TestTransitions:
         assert not can_transition(TicketState.DRAFT, TicketState.RUNNING)
         assert not can_transition(TicketState.ARCHIVED, TicketState.DONE)
         assert not can_transition(TicketState.BLOCKED, TicketState.DONE)
+        assert not can_transition(TicketState.REVIEW, TicketState.QUEUED)
 
     def test_transition_error_lists_allowed_destinations(self):
         error = format_transition_error(TicketState.BLOCKED, TicketState.DONE)
         assert error == (
             "illegal ticket transition blocked -> done; legal from blocked: queued, running"
         )
+
+    def test_review_only_has_normal_transition_to_done(self):
+        assert TRANSITIONS[TicketState.REVIEW] == frozenset({TicketState.DONE})
 
     def test_archived_is_a_sink(self):
         assert TRANSITIONS[TicketState.ARCHIVED] == frozenset()

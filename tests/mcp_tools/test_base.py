@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 from unittest import mock
 
 import pytest
@@ -59,10 +60,24 @@ class SimLikeMcpTool(ConcreteMcpTool):
     """Dummy simulate endpoint used to assert base guard behavior."""
 
     name = "sim"
+    satisfies: ClassVar[list[str]] = ["sim_pass"]
 
     def _run(self) -> McpToolResult:
         self.set_criterion("sim_pass_default", True)
         return McpToolResult(exit_code=EXIT_SUCCESS, criterion_key="sim_pass_default")
+
+
+class LintLikeMcpTool(ConcreteMcpTool):
+    """Dummy lint endpoint used to exercise sealed invocation binding."""
+
+    name = "lint"
+    satisfies: ClassVar[list[str]] = ["lint_clean"]
+    ran = False
+
+    def _run(self) -> McpToolResult:
+        self.ran = True
+        self.set_criterion(f"lint_clean_{self.args.target}", True)
+        return McpToolResult(exit_code=EXIT_SUCCESS)
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -295,6 +310,37 @@ class TestMcpToolGateBehavior:
         assert exit_code == EXIT_SUCCESS
         saved = DevelopmentState.load(state_file)
         assert saved.criteria["sim_pass_default"].met is True
+
+    def test_wrong_target_is_rejected_before_run(self, tmp_path: Path, capsys):
+        state_file = tmp_path / "state.json"
+        state = DevelopmentState.load(state_file)
+        state.init_criteria({"lint_clean_lint_uart": True}, strict=True)
+        state.save()
+        endpoint = LintLikeMcpTool()
+
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            exit_code = endpoint.main(["--target", "sim_uart"])
+
+        assert exit_code == EXIT_ERROR
+        assert endpoint.ran is False
+        assert "lint --target lint_uart" in capsys.readouterr().err
+        assert "lint_clean_sim_uart" not in DevelopmentState.load(state_file).criteria
+
+    def test_diagnostic_wrong_target_runs_without_evidence(self, tmp_path: Path):
+        state_file = tmp_path / "state.json"
+        state = DevelopmentState.load(state_file)
+        state.init_criteria({"lint_clean_lint_uart": True}, strict=True)
+        state.save()
+        endpoint = LintLikeMcpTool()
+
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            exit_code = endpoint.main(["--target", "sim_uart", "--diagnostic"])
+
+        assert exit_code == EXIT_SUCCESS
+        assert endpoint.ran is True
+        saved = DevelopmentState.load(state_file)
+        assert saved.criteria["lint_clean_lint_uart"].met is False
+        assert "lint_clean_sim_uart" not in saved.criteria
 
 
 class TestMcpToolSetCriterion:

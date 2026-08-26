@@ -96,7 +96,7 @@ disagree, the installed version wins; name in the plan which copy you read.
 The buckets:
 
 - **Green:** the built-in flow covers it as-is. SystemVerilog/Verilog RTL on
-  Verilator or Icarus (sim and lint), or Yosys + OpenROAD/OpenSTA (ASIC
+  Verilator or Icarus (sim and lint), or Yosys + OpenROAD (ASIC
   synthesis), or host-provisioned Vivado 2025.2 on Linux x86-64 when an
   administrator has already registered and granted the installation and no
   unvalidated floating-license behavior is required. Fastest path.
@@ -243,7 +243,7 @@ script lines) as you go.
   Makefiles, `*.f` file lists, `scripts/`/`flow/` directories, TCL, and CI
   configs) maps onto the supported EDA tools matrix (`docs/SUPPORTED-EDA-TOOLS.md`, read
   per the version rule in Part A's preamble). Verilator, Icarus, Yosys
-  (+OpenROAD/OpenSTA) and sv2v are built in. AMD Vivado 2025.2 is built in only
+  (+OpenROAD) and sv2v are built in. AMD Vivado 2025.2 is built in only
   through the Linux-x86-64 administrator-registered, host-provisioned policy.
   Xcelium and VCS parser modules are internal incubation material, not public
   simulator integrations; Xcelium, VCS, Questa/ModelSim, Design
