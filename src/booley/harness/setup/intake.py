@@ -472,6 +472,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
         category_overrides=category_overrides,
         flow_key_aliases=aliases,
         criterion_params=criterion_params,
+        strict=True,
     )
     state.save()
 

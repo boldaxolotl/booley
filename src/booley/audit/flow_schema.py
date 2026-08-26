@@ -38,6 +38,8 @@ SELECTIVE_FLOW_KNOBS = {
 _MOVED_TARGET_RECIPE_KEYS = frozenset(
     {
         "base_defines",
+        "advanced_settings_openroad",
+        "advanced_settings_yosys",
         "flatten",
         "frontend",
         "openroad",
@@ -47,6 +49,7 @@ _MOVED_TARGET_RECIPE_KEYS = frozenset(
         "sdc",
         "slang_options",
         "strategy",
+        "synth_mode",
         "timing",
         "timing_engine",
         "yosys",

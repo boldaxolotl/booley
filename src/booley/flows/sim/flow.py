@@ -2149,7 +2149,7 @@ class SimulateFlow(BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate per-test setup failure; recorded as a failed TestResult
+        except Exception as exc:  # isolate per-test setup failure; recorded as a failed TestResult
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -2610,6 +2610,14 @@ class SimulateFlow(BooleyFlow):
             or []
         )
         complete_suite = not self.args.test and (not declared or set(selected) == set(declared))
+        passed_tests = [test.name for test in target_result.tests if test.passed]
+        failed_tests = [
+            test.name for test in target_result.tests if not test.passed and not test.inconclusive
+        ]
+        skipped_tests = self._skipped_tests(
+            target_result.target,
+            getattr(self, "_test_names_map", None) or _get_test_names(),
+        )
         self.set_criterion(
             crit_key,
             target_result.passed,
@@ -2618,7 +2626,11 @@ class SimulateFlow(BooleyFlow):
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
+                "registry_tests": declared,
                 "selected_tests": selected,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "skipped_tests": skipped_tests,
             },
         )
 
@@ -2813,7 +2825,7 @@ class SimulateFlow(BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -2841,7 +2853,7 @@ class SimulateFlow(BooleyFlow):
                 "rtl": list(sources.rtl_source_files),
                 "tb": list(sources.tb_files),
             }
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -2919,7 +2931,7 @@ class SimulateFlow(BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate setup failure; recorded as a failed batch
+        except Exception as exc:  # isolate setup failure; recorded as a failed batch
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(

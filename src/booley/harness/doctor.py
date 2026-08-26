@@ -2657,7 +2657,7 @@ def _check_devcontainer_spec(  # noqa: PLR0911,PLR0912 — ordered drift precond
     _pass("devcontainer.json present and structurally current")
 
 
-def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit gates
+def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-closed audit gates
     project: ProjectAudit,
     docker_exe: str | None,
     _pass: Check,
@@ -2712,6 +2712,12 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
     if not docker_exe:
         _skip("live issued Session Runtime labels/topology - container runtime unavailable")
         return
+    _check_runtime_booley_version(
+        docker_exe,
+        issuance.image,
+        _pass,
+        _fail,
+    )
     identity = next(
         label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
     )
@@ -2761,6 +2767,69 @@ def _check_issued_session_runtime(  # noqa: PLR0911 - ordered fail-closed audit 
         _pass,
         _fail,
     )
+
+
+def _probe_runtime_booley_version(
+    docker_exe: str,
+    image: str,
+) -> subprocess.CompletedProcess[str]:
+    """Read Booley's version from the issued image without network access."""
+    probe = "import booley; print(booley.__version__)"
+    return subprocess.run(
+        [
+            docker_exe,
+            "run",
+            "--rm",
+            "--pull=never",
+            "--network",
+            "none",
+            "--entrypoint",
+            "python3",
+            image,
+            "-c",
+            probe,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+def _check_runtime_booley_version(
+    docker_exe: str,
+    image: str,
+    _pass: Check,
+    _fail: Fail,
+) -> None:
+    """Require the host package and issued Session Runtime image to agree."""
+    try:
+        result = _probe_runtime_booley_version(docker_exe, image)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _fail(
+            f"could not read the issued Session Runtime Booley version: {exc}",
+            "rebuild the sandbox image with `booley init --force`, then recreate the Session Runtime",
+        )
+        return
+
+    runtime_version = result.stdout.strip()
+    if result.returncode != 0 or not runtime_version:
+        detail = (result.stderr or result.stdout).strip()
+        _fail(
+            "issued Session Runtime image cannot report its Booley version",
+            f"rebuild it with `booley init --force` ({detail or f'exit {result.returncode}'})",
+        )
+        return
+
+    host_version = _read_version()
+    if runtime_version != host_version:
+        _fail(
+            f"host Booley {host_version} != Session Runtime Booley {runtime_version}",
+            "run `booley init --force`, then `booley session down` and "
+            "`booley session up` to recreate the Session Runtime",
+        )
+        return
+    _pass(f"host and Session Runtime use Booley {host_version}")
 
 
 def _check_runtime_isolation(_pass: Check, _fail: Fail) -> bool:
@@ -6423,6 +6492,17 @@ def _report_flow_check_result(
             f"{label} produced incomplete synthesis evidence: {synth_error}",
             f"see {_display_report_dir(project, report_dir)}",
         )
+    elif _is_synth_warning_verdict(flow_name, dry_run, result):
+        _warn(
+            warning(
+                "flow.synth-deep-warning",
+                f"{label} returned a WARN verdict",
+                subject=target,
+            ),
+            f"run `booley flow synth --target {target}` and resolve its reported findings",
+        )
+        if verbose:
+            _print_output_excerpt(result)
     elif result.returncode == 0:
         _pass(f"{label} passed")
         if verbose:
@@ -6534,6 +6614,21 @@ def _doctor_flow_command(
             "run 'booley init --seed' and retry",
         )
         return None
+
+
+def _is_synth_warning_verdict(
+    flow_name: str,
+    dry_run: bool,
+    result: subprocess.CompletedProcess[str],
+) -> bool:
+    """True when a completed deep synthesis run grades its design as WARN."""
+    output = f"{result.stdout}\n{result.stderr}"
+    return (
+        flow_name == "synth"
+        and not dry_run
+        and result.returncode == _TOOL_EXIT_PASS
+        and "RESULT: WARN" in output
+    )
 
 
 def _run_flow_check(

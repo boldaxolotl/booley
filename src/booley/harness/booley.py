@@ -469,6 +469,11 @@ def _add_board_subparsers(sub) -> None:
         action="store_true",
         help="Reset even while a live process owns the ticket (stop the run first; this does not stop it for you)",
     )
+    reset_p.add_argument(
+        "--reason",
+        default="user reset ticket",
+        help="Why a clean run is required (recorded in transition history)",
+    )
 
     archive_p = board_sub.add_parser(
         "archive", help="Archive done tickets or a specific ticket", parents=[root_opt]
@@ -876,7 +881,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
             render_specialists_reference(project_mcp_tools_dir=project_mcp_tools_dir),
             name="specialists",
         )
-    except Exception:  # noqa: BLE001 — best-effort live splice; fall back to committed block so cheat still renders
+    except (
+        Exception  # noqa: BLE001 — best-effort live splice; fall back to committed block
+    ):
         # Markers absent, registry unavailable, or optional deps missing:
         # fall back to the committed block so `booley cheat` always renders.
         pass
@@ -992,7 +999,12 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
     if board_cmd == "reset":
         from booley.ticket_board.operations import op_reset
 
-        ok = op_reset(tio, args.slug, force=getattr(args, "force", False))
+        ok = op_reset(
+            tio,
+            args.slug,
+            force=getattr(args, "force", False),
+            reason=getattr(args, "reason", "user reset ticket"),
+        )
         return 0 if ok else 1
 
     special = {

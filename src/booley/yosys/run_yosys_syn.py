@@ -25,6 +25,7 @@ sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
 from booley.runtime.shared_infra import (
     check_paths as _check_paths,
 )
+from booley.synthesis.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.synthesis.profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.yosys import ppa as ppa_options
 from booley.yosys import syn_make
@@ -33,7 +34,6 @@ from booley.yosys.syn_core import (  # Core synthesis functions
     PROJECT_ROOT,
     RTL_DIR,
     SYN_DIR,
-    TIMING_ENGINE_CHOICES,
     StaTimingConfig,
     parse_params,
     resolve_liberty,
@@ -171,23 +171,10 @@ def _validate_resolved_ppa(
         raise SystemExit("ERROR: repair_tns_percent must be between 0 and 100")
 
 
-def _resolve_syn_timing(
-    args: argparse.Namespace,
-    openroad: ppa_options.OpenRoadPpaSettings,
-    project_root: Path | None = None,
-) -> StaTimingConfig:
-    """Resolve the STA timing configuration for this run (ADR 0031 P1).
-
-    A synthesis run with no timing constraints must name its clock explicitly
-    - either a file_type:SDC fileset (forwarded as one or more --sta-sdc), an
-    explicit --period-ps, or the named --default-clock opt-in. The old silent
-    DEFAULT_STA_PERIOD_PS (~250 MHz) fallback re-buried the exact input the
-    whole measurement hangs on: a Target that dropped its SDC would report a
-    green PPA number against a period no one chose, indistinguishable from a
-    deliberately-constrained run.
-    """
+def _resolved_period_ps(args: argparse.Namespace, timing_required: bool) -> float | None:
+    """Resolve an explicit period, rejecting implicit physical-mode timing."""
     default_clock_ps = getattr(args, "default_clock", None)
-    if not args.sta_sdc and args.period_ps is None:
+    if timing_required and not args.sta_sdc and args.period_ps is None:
         if default_clock_ps is None:
             sys.exit(
                 "ERROR: no timing constraints for this synthesis run. Provide a "
@@ -197,14 +184,12 @@ def _resolve_syn_timing(
                 "Refusing to fabricate a default clock silently — a reported Fmax "
                 "would be measured against a period no one chose."
             )
-        # Explicit opt-in: the canned clock is now chosen and named, never implicit.
-        resolved_period_ps = default_clock_ps
-    else:
-        resolved_period_ps = args.period_ps
-    # The pre-Flow CLI historically read utilization/repair from the legacy
-    # [flows.synth.timing] table. Ask synth_timing_config to honor those keys
-    # only when no generic profile was explicit. The Booley Flow always forwards its
-    # selected profile, so its deterministic profile semantics are unaffected.
+        return default_clock_ps
+    return args.period_ps if timing_required else args.period_ps or default_clock_ps
+
+
+def _legacy_timing_fallbacks(args: argparse.Namespace) -> tuple[bool, bool]:
+    """Return standalone-only legacy utilization and repair fallback flags."""
     profile_explicit = getattr(args, "ppa_profile", None) is not None
     legacy_utilization_fallback = (
         not profile_explicit and getattr(args, "utilization_pct", None) is None
@@ -214,8 +199,20 @@ def _resolve_syn_timing(
         and getattr(args, "repair_setup", None) is None
         and getattr(args, "repair_timing", None) is None
     )
+    return legacy_utilization_fallback, legacy_repair_fallback
+
+
+def _resolve_syn_timing(
+    args: argparse.Namespace,
+    openroad: ppa_options.OpenRoadPpaSettings,
+    project_root: Path | None = None,
+) -> StaTimingConfig:
+    """Resolve validated timing configuration for logical or physical synthesis."""
+    mode = SynthMode(args.synth_mode)
+    resolved_period_ps = _resolved_period_ps(args, mode.runs_openroad)
+    legacy_utilization_fallback, legacy_repair_fallback = _legacy_timing_fallbacks(args)
     return synth_timing_config(
-        engine=args.timing_engine,
+        mode=mode,
         clock=args.clock,
         period_ps=resolved_period_ps,
         input_delay_pct=args.input_delay_pct,
@@ -497,12 +494,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_timing_args(parser: argparse.ArgumentParser) -> None:
-    """Register OpenSTA/OpenROAD timing-engine arguments."""
+    """Register synthesis-mode and physical-mode timing arguments."""
     parser.add_argument(
-        "--timing-engine",
-        choices=list(TIMING_ENGINE_CHOICES),
-        default=None,
-        help="Timing source (default: openroad, or booley.toml timing.engine)",
+        "--synth-mode",
+        choices=list(SYNTH_MODE_CHOICES),
+        type=SynthMode,
+        default=SynthMode.PHYSICAL,
+        help="Synthesis depth: physical runs OpenROAD + STA; logical stops after Yosys",
     )
     parser.add_argument(
         "--clock", default=None, help="Clock port for STA (default: booley.toml or auto-detect)"

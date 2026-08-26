@@ -151,8 +151,6 @@ def test_source_builds_fetch_immutable_commits() -> None:
 
     assert set(refs) == {
         "YOSYS_REF",
-        "CUDD_REF",
-        "OPENSTA_REF",
         "ICARUS_REF",
         "VERILATOR_REF",
     }
@@ -192,6 +190,20 @@ def test_candidate_builds_consume_compatible_stable_base_by_immutable_digest() -
     assert "io.booley.runtime-base.image" in _DOCKERFILE.read_text(encoding="utf-8")
 
 
+def test_changed_stable_base_build_reuses_trusted_cache_without_publishing() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    base_build = workflow[
+        workflow.index("- name: Build changed stable runtime base locally") : workflow.index(
+            "- name: Build candidate from changed stable base"
+        )
+    ]
+
+    assert "uses: docker/build-push-action@" in base_build
+    assert "load: true" in base_build
+    assert "cache-from: type=gha,scope=sandbox-runtime-base" in base_build
+    assert "cache-to:" not in base_build
+
+
 def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -> None:
     workflow = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
 
@@ -204,6 +216,7 @@ def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -
     assert "cancel-in-progress: true" in workflow
     assert "@${{ steps.build.outputs.digest }}" in workflow
     assert 'find_spec("booley") is None' in workflow
+    assert "command -v yosys openroad iverilog verilator verible-verilog-lint" in workflow
     assert workflow.index("Verify exact published base") < workflow.index("Promote verified base")
 
 
