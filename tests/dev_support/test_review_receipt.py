@@ -92,6 +92,38 @@ def test_explicit_ticket_source_is_reused_without_logs_environment(
     assert review_receipt_drift({"contract": contract}, tmp_path) == ["ticket"]
 
 
+def test_explicit_ticket_source_is_reused_with_empty_interactive_logs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    logs = tmp_path / "interactive-logs"
+    logs.mkdir()
+    ticket = tmp_path / "interactive-ticket.md"
+    ticket.write_text("Implement UART registers.\n", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="done",
+            targets=(),
+            target_kind="none",
+            ticket_path=ticket,
+        )
+    )
+
+    assert contract["ticket_source"]["ticket"] == str(ticket.resolve())
+    assert contract["ticket_source"]["accepted_decisions"] == str(
+        (logs / "answered_questions.md").resolve()
+    )
+    assert review_receipt_drift({"contract": contract}, tmp_path) == []
+    ticket.write_text("Implement changed UART registers.\n", encoding="utf-8")
+    assert review_receipt_drift({"contract": contract}, tmp_path) == ["ticket"]
+
+
 def test_missing_binding_ticket_fails_loud(tmp_path: Path, monkeypatch) -> None:
     ticket = tmp_path / "interactive-ticket.md"
     ticket.write_text("Implement UART registers.\n", encoding="utf-8")
