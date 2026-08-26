@@ -66,7 +66,10 @@ def _sealed_pair(
             f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
             "match the sealed contract"
         )
-    return TargetPair(sealed.baseline, state_pair.candidate)
+    # The state selector has just resolved to the sealed canonical identity.
+    # Keep its authored spelling so execution evidence matches the recipe
+    # snapshot sealed at intake; resolution still guarantees the same Target.
+    return state_pair
 
 
 def target_pairs_for_candidates(

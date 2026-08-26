@@ -61,7 +61,7 @@ targets:
     )
 
 
-def test_schema_two_executes_canonical_sealed_pair(tmp_path: Path) -> None:
+def test_schema_two_executes_selector_verified_against_sealed_pair(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
@@ -76,7 +76,7 @@ def test_schema_two_executes_canonical_sealed_pair(tmp_path: Path) -> None:
         flow="synth",
     )
 
-    assert pairs == (TargetPair("acme:lib:toy:1.0#synth_before", "synth_after"),)
+    assert pairs == (TargetPair("synth_before", "synth_after"),)
 
 
 @pytest.mark.parametrize("baseline", [None, "synth_other"])
