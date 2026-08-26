@@ -848,16 +848,18 @@ def _run_docker_build(ctx: InitContext, build_cmd: list[str], timeout: int) -> i
         encoding="utf-8",
         errors="replace",
     )
-    if proc.stdout is None:
+    stdout = proc.stdout
+    if stdout is None:
         raise OSError("docker build output pipe was not created")
     last_msg = ""
-    for line in proc.stdout:
-        if ">>>" not in line:
-            continue
-        msg = line[line.index(">>>") :].strip().split('"', 1)[0].rstrip(" \\")
-        if msg and msg != last_msg:
-            info(msg)
-            last_msg = msg
+    with stdout:
+        for line in stdout:
+            if ">>>" not in line:
+                continue
+            msg = line[line.index(">>>") :].strip().split('"', 1)[0].rstrip(" \\")
+            if msg and msg != last_msg:
+                info(msg)
+                last_msg = msg
     proc.wait(timeout=timeout)
     return proc.returncode
 

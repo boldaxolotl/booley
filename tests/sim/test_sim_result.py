@@ -219,6 +219,21 @@ class TestSummaryRoundTrip:
         with pytest.raises(ValueError, match="Malformed SIM_SUMMARY shape"):
             sr.parse_summary_line('[SIM_SUMMARY] {"sva_errors": 0}')
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            '{"passed": "yes"}',
+            '{"passed": true, "sva_errors": false}',
+            '{"passed": true, "sva_errors": "3"}',
+            '{"passed": true, "sva_errors": 3.0}',
+            '{"passed": true, "vrfc_warnings": ["ok", 7]}',
+            '{"passed": true, "inconclusive": 1}',
+        ],
+    )
+    def test_invalid_field_types_raise(self, payload):
+        with pytest.raises(ValueError, match="Malformed SIM_SUMMARY shape"):
+            sr.parse_summary_line(sr.SIM_SUMMARY_PREFIX + payload)
+
 
 # ---------------------------------------------------------------------------
 # write_run_log

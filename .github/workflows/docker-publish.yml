@@ -29,10 +29,12 @@ jobs:
       - name: Read version
         id: version
         run: |
-          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
-          echo "revision=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "source_updated_at=$(git log -1 --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
-          echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$(cat VERSION)"
+            echo "revision=$(git rev-parse --short HEAD)"
+            echo "source_updated_at=$(git log -1 --format=%cI HEAD)"
+            echo "image_built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

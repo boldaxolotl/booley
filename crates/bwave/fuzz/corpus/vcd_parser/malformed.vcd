@@ -1,0 +1,9 @@
+$timescale 1 ps $end
+$scope module top $end
+$var wire 1 ! clk $end
+$upscope $end
+$enddefinitions $end
+#not-a-time
+x!
+#18446744073709551616
+1!

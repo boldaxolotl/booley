@@ -122,7 +122,8 @@ def test_bwave_integration_prebuilds_and_runs_native_tests_without_skips() -> No
     assert "test -x crates/bwave/target/debug/bwave" in rendered_steps
     assert "pytest crates/bwave/tests/test_*.py" in rendered_steps
     assert "pytest tests/ -m native_bwave" in rendered_steps
-    assert "skipped == 0" in rendered_steps
+    assert rendered_steps.count(".github/scripts/assert_junit.py") == 2
+    assert rendered_steps.count("--max-skips 0") == 2
 
 
 def test_primary_pytest_commands_emit_timing_and_junit_data() -> None:
@@ -162,9 +163,89 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert '-m "not native_bwave"' in command
     assert "--cov=booley" in command
     assert "--cov-report=" in command
-    assert "--cov-fail-under=60" in command
-    assert "coverage report --fail-under=60" in command
-    assert "coverage xml -o coverage.xml" in command
+    assert coverage_config["branch"] is True
+    assert "--cov-fail-under=0" in command
+    rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["test"]["steps"])
+    assert "coverage report --fail-under=80" in rendered_steps
+    assert "git fetch --no-tags --unshallow origin" in rendered_steps
+    assert "diff-cover coverage.xml" in rendered_steps
+    assert "--fail-under=90" in rendered_steps
+
+
+def test_image_pytest_commands_install_configured_plugins() -> None:
+    """Image validations can load strict repository pytest configuration."""
+    workflow = _test_workflow()
+    validations = next(
+        step["parallel"] for step in workflow["jobs"]["bwave-smoke"]["steps"] if "parallel" in step
+    )
+
+    for validation in validations:
+        command = validation["run"]
+        if "pytest" in command and "docker run" in command:
+            assert "pytest-asyncio" in command, validation["name"]
+
+    host_install = next(
+        step
+        for step in workflow["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Install host-side test dependencies"
+    )
+    assert "pytest==9.0.2" in host_install["run"]
+    assert "pytest-asyncio" in host_install["run"]
+
+
+def test_matrix_uses_test_only_dependencies() -> None:
+    """Compatibility legs do not install linting or mutation-only packages."""
+    workflow = _test_workflow()
+    install_step = next(
+        step
+        for step in workflow["jobs"]["test"]["steps"]
+        if step.get("name") == "Install package with test dependencies"
+    )
+
+    assert install_step["run"] == 'pip install -e ".[test]"'
+
+
+def test_matrix_enforces_the_ci_duration_budget() -> None:
+    """Keep a stuck compatibility leg within the five-minute CI budget."""
+    workflow = _test_workflow()
+    test_job = workflow["jobs"]["test"]
+
+    assert test_job["timeout-minutes"] == 5
+
+    pytest_steps = [
+        step for step in test_job["steps"] if str(step.get("name", "")).startswith("Run tests")
+    ]
+    assert pytest_steps
+    assert all("--timeout=60" in step["run"] for step in pytest_steps)
+
+
+def test_lint_job_uses_quality_only_dependencies() -> None:
+    """The fast lint job does not install test or mutation dependencies."""
+    workflow = _test_workflow()
+    install_step = next(
+        step
+        for step in workflow["jobs"]["lint"]["steps"]
+        if step.get("name") == "Install pinned CI quality tools"
+    )
+
+    assert install_step["run"] == 'pip install -e ".[quality]"'
+
+
+def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None:
+    """A bounded scheduled campaign reports incomplete mutants without failing."""
+    workflow_path = REPOSITORY_ROOT / ".github" / "workflows" / "deep-tests.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["mutation"]["steps"]
+    run_campaign = next(
+        step["run"] for step in steps if step.get("name") == "Run bounded mutation campaign"
+    )
+    report_results = next(
+        step["run"] for step in steps if step.get("name") == "Record mutation results"
+    )
+
+    assert "campaign_status" in run_campaign
+    assert "!= 124" in run_campaign
+    assert "non-killed mutants" not in report_results
 
 
 def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:

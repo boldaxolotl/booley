@@ -18,7 +18,15 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
+from booley.core.boundary import (
+    BoundaryError,
+    as_str_list,
+    require_bool,
+    require_dict,
+    require_int,
+)
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -30,6 +38,16 @@ logger = logging.getLogger(__name__)
 SIM_RESULT_PASSED = "[SIM_RESULT] PASSED"
 SIM_RESULT_FAILED = "[SIM_RESULT] FAILED"
 SIM_SUMMARY_PREFIX = "[SIM_SUMMARY] "
+
+
+class SimSummary(TypedDict):
+    """Validated payload transported by the ``[SIM_SUMMARY]`` sentinel."""
+
+    passed: bool
+    sva_errors: NotRequired[int]
+    vrfc_warnings: NotRequired[list[str]]
+    inconclusive: NotRequired[bool]
+
 
 #: Marker a run-half prints when the *harness* failed rather than the design:
 #: no built binary in the build dir, a missing simulator, a broken cocotb
@@ -250,7 +268,7 @@ def format_summary(
     inconclusive: bool = False,
 ) -> str:
     """Build a [SIM_SUMMARY] JSON line for stdout emission."""
-    payload: dict = {
+    payload: SimSummary = {
         "passed": passed,
         "sva_errors": sva_errors,
     }
@@ -278,7 +296,7 @@ def write_result_json(
     """
     from pathlib import Path
 
-    payload: dict = {
+    payload: dict[str, object] = {
         "passed": passed,
         "sva_errors": sva_errors,
         "returncode": returncode,
@@ -538,7 +556,7 @@ def write_run_log(
     return path
 
 
-def parse_summary_line(output: str) -> dict | None:
+def parse_summary_line(output: str) -> SimSummary | None:
     """Extract and parse the [SIM_SUMMARY] JSON line from captured output.
 
     Returns the parsed dict on success, None if the line is missing.
@@ -550,10 +568,27 @@ def parse_summary_line(output: str) -> dict | None:
     for line in reversed(output.splitlines()):
         if line.startswith(SIM_SUMMARY_PREFIX):
             try:
-                payload = json.loads(line[len(SIM_SUMMARY_PREFIX) :])
+                raw_payload: object = json.loads(line[len(SIM_SUMMARY_PREFIX) :])
             except (json.JSONDecodeError, ValueError) as e:
                 raise ValueError(f"Malformed SIM_SUMMARY JSON: {line!r}") from e
-            if not isinstance(payload, dict) or "passed" not in payload:
+            try:
+                payload = require_dict(raw_payload, field="SIM_SUMMARY")
+            except BoundaryError as e:
+                raise ValueError(f"Malformed SIM_SUMMARY shape: {line!r}") from e
+            if "passed" not in payload:
                 raise ValueError(f"Malformed SIM_SUMMARY shape: {line!r}")
-            return payload
+            try:
+                summary: SimSummary = {"passed": require_bool(payload, "passed")}
+                if "sva_errors" in payload:
+                    summary["sva_errors"] = require_int(payload["sva_errors"], field="sva_errors")
+                if "vrfc_warnings" in payload:
+                    warnings = as_str_list(payload["vrfc_warnings"])
+                    if warnings != payload["vrfc_warnings"]:
+                        raise BoundaryError("vrfc_warnings must be a string list")
+                    summary["vrfc_warnings"] = warnings
+                if "inconclusive" in payload:
+                    summary["inconclusive"] = require_bool(payload, "inconclusive")
+            except BoundaryError as e:
+                raise ValueError(f"Malformed SIM_SUMMARY shape: {line!r}") from e
+            return summary
     return None

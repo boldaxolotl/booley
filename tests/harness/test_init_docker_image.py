@@ -582,7 +582,9 @@ class TestDockerBuildCommand:
             # Re-issue the *same* kwargs against a child that emits `payload`,
             # so the real decoding path in _docker_build_image runs on it.
             code = f"import sys; sys.stdout.buffer.write({payload!r}); sys.stdout.buffer.flush()"
-            return real_popen([sys.executable, "-c", code], **kwargs)
+            proc = real_popen([sys.executable, "-c", code], **kwargs)
+            captured["proc"] = proc
+            return proc
 
         monkeypatch.setattr(init_docker_image.subprocess, "Popen", fake_popen)
         ctx = init_cmd.InitContext(project_root=tmp_path, force=force, verbose=False)
@@ -605,6 +607,7 @@ class TestDockerBuildCommand:
         _rc, captured = self._run(monkeypatch, tmp_path, b">>> ok\n")
         assert captured["encoding"] == "utf-8"
         assert captured["errors"] == "replace"
+        assert captured["proc"].stdout.closed
 
     def test_force_rebuild_keeps_docker_layer_cache(self, monkeypatch, tmp_path: Path):
         _rc, captured = self._run(monkeypatch, tmp_path, b">>> ok\n", force=True)

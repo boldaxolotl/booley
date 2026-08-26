@@ -733,6 +733,7 @@ class TestRegister:
         monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
         # Registration must not depend on the real server spawn in tests.
         monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
+        monkeypatch.setattr(reg, "launch_auto_doctor", lambda: "current")
         reg.main()
         assert reg.claude_config_path(tmp_path).exists()
 
@@ -744,5 +745,6 @@ class TestRegister:
             raise AssertionError("must not start a server with no client app")
 
         monkeypatch.setattr(reg, "ensure_http_server", fail)
+        monkeypatch.setattr(reg, "launch_auto_doctor", lambda: "current")
         reg.main()
         assert not list(tmp_path.iterdir())
