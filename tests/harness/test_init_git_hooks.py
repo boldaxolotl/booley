@@ -386,7 +386,7 @@ class TestLineEndingsStep:
         assert ctx.results[-1].name == "line_endings"
         assert ctx.results[-1].status == "ok"
 
-    def test_dirty_crlf_tree_is_left_untouched(self, tmp_path: Path):
+    def test_dirty_crlf_tree_is_left_untouched(self, tmp_path: Path, capsys):
         # The real F-15 shape: core.autocrlf=true stores LF in the index and
         # checks CRLF out, so index and worktree disagree (`i/lf w/crlf`) and
         # the container's git — which does no conversion — reports every such
@@ -407,6 +407,29 @@ class TestLineEndingsStep:
 
         assert ctx.results[-1].status == "warn"
         assert ctx.results[-1].detail == "dirty tree"
+        output = capsys.readouterr().out
+        assert "[!!] 1 tracked file(s) are checked out with CRLF" in output
+        assert "[ii] detected core.autocrlf=true" in output
+
+    def test_failed_autocrlf_update_remains_a_warning(self, tmp_path: Path, capsys):
+        from booley.harness import init_git_hooks
+
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "true"],
+            capture_output=True,
+            check=True,
+        )
+        ctx = _ctx(tmp_path)
+
+        with patch.object(init_git_hooks, "_disable_autocrlf", return_value=False):
+            init_git_hooks._step_line_endings(ctx)
+
+        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].detail == "autocrlf update failed"
+        output = capsys.readouterr().out
+        assert "[!!] core.autocrlf=true" in output
+        assert "[ii] detected core.autocrlf=true" not in output
 
     def test_crlf_matching_the_index_is_not_a_phantom_diff(self, tmp_path: Path):
         # B5. With autocrlf=false git stores the CRLF bytes as-is: index and
