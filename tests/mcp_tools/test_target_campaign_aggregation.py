@@ -40,8 +40,9 @@ def test_mutant_is_killed_when_any_target_test_fails(tmp_path: Path) -> None:
     ]
 
     runs = endpoint._run_target_test_suite()
-    assert endpoint._variant_detected(runs) is True
-    assert endpoint._variant_suite_inconclusive_reason(runs) == ""
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is True
+    assert verdict.inconclusive_reason == ""
 
 
 def test_mutant_survives_only_when_every_target_test_passes(tmp_path: Path) -> None:
@@ -52,8 +53,9 @@ def test_mutant_survives_only_when_every_target_test_passes(tmp_path: Path) -> N
     ]
 
     runs = endpoint._run_target_test_suite()
-    assert endpoint._variant_detected(runs) is False
-    assert endpoint._variant_suite_inconclusive_reason(runs) == ""
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is False
+    assert verdict.inconclusive_reason == ""
 
 
 def test_infrastructure_failure_is_invalid_without_a_kill(tmp_path: Path) -> None:
@@ -64,8 +66,9 @@ def test_infrastructure_failure_is_invalid_without_a_kill(tmp_path: Path) -> Non
     ]
 
     runs = endpoint._run_target_test_suite()
-    assert endpoint._variant_detected(runs) is False
-    assert "simulator missing" in endpoint._variant_suite_inconclusive_reason(runs)
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is False
+    assert "simulator missing" in verdict.inconclusive_reason
 
 
 def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
@@ -76,8 +79,9 @@ def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
     ]
 
     runs = endpoint._run_target_test_suite()
-    assert endpoint._variant_detected(runs) is True
-    assert endpoint._variant_suite_inconclusive_reason(runs) == ""
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is True
+    assert verdict.inconclusive_reason == ""
 
 
 def test_coverage_signal_evidence_merges_across_target_traces() -> None:

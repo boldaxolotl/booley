@@ -67,7 +67,13 @@ from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
-from booley.sim.cocotb_results import STATE_OK, VERDICT_FAIL, VERDICT_PASS, parse_results_line
+from booley.sim.cocotb_results import (
+    STATE_OK,
+    VERDICT_FAIL,
+    VERDICT_PASS,
+    CocotbResults,
+    parse_results_line,
+)
 from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 
 from .specialist import Specialist
@@ -213,6 +219,16 @@ class MutationTestRun:
     timed_out: bool = False
     error: str = ""
     output: str = ""
+    requires_cocotb_results: bool = False
+
+
+@dataclass(frozen=True)
+class VariantSuiteVerdict:
+    """One complete mutant-suite classification from trustworthy evidence."""
+
+    detected: bool = False
+    first_killing_test: str = ""
+    inconclusive_reason: str = ""
 
 
 @dataclass
@@ -288,11 +304,7 @@ def compute_rtl_complexity(scope_files: list[str], work_dir: Path) -> dict:
     readable_files = 0
     for rel in scope_files:
         path = Path(rel) if Path(rel).is_absolute() else work_dir / rel
-        try:
-            source = path.read_bytes()
-        except OSError:
-            logger.warning("compute_rtl_complexity: cannot read %s", path)
-            continue
+        source = path.read_bytes()
         readable_files += 1
         source_bytes += len(source)
         source_lines += source.count(b"\n") + int(bool(source) and not source.endswith(b"\n"))
@@ -584,6 +596,30 @@ class RunResultInputs:
     coverage_gap: bool = False
     #: Exact-replacement evidence reported so the verdict is auditable.
     evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PreparedMutationRound:
+    """Creator output resolved far enough to decide whether to test or retry."""
+
+    specs: list[MutationSpec]
+    variants: MutationVariantPlan | None
+    creator_elapsed: float
+    retry_prompt: str = ""
+    error: McpToolResult | None = None
+    failure: VerificationOutcome | None = None
+
+
+@dataclass(frozen=True)
+class ColdVariantOutcome:
+    """Completed cold variant sweep ready for durable result assembly."""
+
+    specs: list[MutationSpec]
+    summary: MutationSummary
+    variants: MutationVariantPlan
+    creator_elapsed: float
+    tester_elapsed: float
+    verification_rounds: int
 
 
 # ---------------------------------------------------------------------------
@@ -1101,92 +1137,145 @@ replacement must differ, and every proposal must remain a single source edit.
         if baseline_error is not None:
             return baseline_error
 
-        specs: list[MutationSpec] = []
-        last_outcome: VerificationOutcome | None = None
-        last_summary: MutationSummary | None = None
-        variants: MutationVariantPlan | None = None
+        outcome = self._run_cold_variant_rounds(plan, pre_dirty)
+        if isinstance(outcome, McpToolResult):
+            return outcome
+        return self._complete_cold_campaign(plan, outcome)
+
+    def _run_cold_variant_rounds(
+        self,
+        plan: MutationRunPlan,
+        pre_dirty: set[str] | None,
+    ) -> ColdVariantOutcome | McpToolResult:
+        creator_prompt = self._build_creator_prompt()
+        retry_prompt = ""
         creator_elapsed = 0.0
         tester_elapsed = 0.0
-        creator_prompt = self._build_creator_prompt()
-        retry_prompt: str | None = None
-
+        last_specs: list[MutationSpec] = []
+        last_summary: MutationSummary | None = None
+        last_failure: VerificationOutcome | None = None
         for round_idx in range(1, self.MAX_VERIFICATION_ROUNDS + 1):
-            self.emit_progress(f"proposal round {round_idx}/{self.MAX_VERIFICATION_ROUNDS}")
-            new_specs, elapsed, creator_error = self._proposal_round(
-                plan,
-                creator_prompt if round_idx == 1 else (retry_prompt or ""),
-                round_idx,
-                pre_dirty,
-            )
-            if creator_error is not None:
-                return creator_error
-            creator_elapsed += elapsed
-            if not new_specs:
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text="creator agent returned no parseable mutation specs",
-                    detail=_failure_detail(
-                        phase="creator_output",
-                        reason="creator agent returned no parseable mutation specs",
-                        specs=[],
-                        work_dir=plan.work_dir,
-                        verification_rounds=round_idx,
-                    ),
-                )
-            specs = new_specs
-            self._canonicalize_spec_paths(specs, plan.work_dir)
-            variants, proposal_error = self._resolve_proposals(specs, plan)
-            if proposal_error:
-                last_outcome = self._proposal_failure(round_idx, proposal_error)
-                retry_prompt = self._build_retry_prompt(last_outcome)
+            prompt = creator_prompt if round_idx == 1 else retry_prompt
+            prepared = self._prepare_mutation_round(plan, prompt, round_idx, pre_dirty)
+            creator_elapsed += prepared.creator_elapsed
+            if prepared.error is not None:
+                return prepared.error
+            last_specs = prepared.specs
+            if prepared.variants is None:
+                last_failure = prepared.failure
+                retry_prompt = prepared.retry_prompt
                 continue
-            assert variants is not None
 
-            results, elapsed, infra = self._run_variant_sweep(plan, specs, variants)
+            variants = prepared.variants
+            results, elapsed, infra = self._run_variant_sweep(plan, prepared.specs, variants)
             tester_elapsed += elapsed
-            last_summary = MutationSummary(specs=specs, results=results)
+            last_summary = MutationSummary(specs=prepared.specs, results=results)
             if infra:
-                return self._variant_infra_error(plan, specs, round_idx, infra, last_summary)
-            if last_summary.invalid_count:
-                invalid = "; ".join(
-                    f"#{result.index}: {result.sim_output_snippet}"
-                    for result in results
-                    if result.invalid
-                )
-                last_outcome = self._proposal_failure(
+                return self._variant_infra_error(
+                    plan,
+                    prepared.specs,
                     round_idx,
-                    f"isolated variant(s) did not compile or yield a verdict: {invalid}",
+                    infra,
+                    last_summary,
+                    variants=variants,
                 )
-                retry_prompt = self._build_retry_prompt(last_outcome)
+            if last_summary.invalid_count:
+                last_failure = self._invalid_variant_failure(round_idx, results)
+                retry_prompt = self._build_retry_prompt(last_failure)
                 continue
-            break
+            return ColdVariantOutcome(
+                specs=prepared.specs,
+                summary=last_summary,
+                variants=variants,
+                creator_elapsed=creator_elapsed,
+                tester_elapsed=tester_elapsed,
+                verification_rounds=round_idx,
+            )
+        return self._proposal_rounds_exhausted(plan, last_specs, last_summary, last_failure)
 
-        if variants is None or last_summary is None or last_summary.invalid_count:
-            return self._proposal_rounds_exhausted(plan, specs, last_summary, last_outcome)
+    def _prepare_mutation_round(
+        self,
+        plan: MutationRunPlan,
+        prompt: str,
+        round_idx: int,
+        pre_dirty: set[str] | None,
+    ) -> PreparedMutationRound:
+        self.emit_progress(f"proposal round {round_idx}/{self.MAX_VERIFICATION_ROUNDS}")
+        specs, elapsed, error = self._proposal_round(plan, prompt, round_idx, pre_dirty)
+        if error is not None:
+            return PreparedMutationRound([], None, elapsed, error=error)
+        if not specs:
+            return PreparedMutationRound(
+                [], None, elapsed, error=self._creator_output_error(plan, round_idx)
+            )
+        self._canonicalize_spec_paths(specs, plan.work_dir)
+        variants, reason = self._resolve_proposals(specs, plan)
+        if not reason:
+            return PreparedMutationRound(specs, variants, elapsed)
+        failure = self._proposal_failure(round_idx, reason)
+        return PreparedMutationRound(
+            specs,
+            None,
+            elapsed,
+            retry_prompt=self._build_retry_prompt(failure),
+            failure=failure,
+        )
 
-        self._persist_lock(plan, specs)
+    @staticmethod
+    def _creator_output_error(plan: MutationRunPlan, round_idx: int) -> McpToolResult:
+        reason = "creator agent returned no parseable mutation specs"
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=reason,
+            detail=_failure_detail(
+                phase="creator_output",
+                reason=reason,
+                specs=[],
+                work_dir=plan.work_dir,
+                verification_rounds=round_idx,
+            ),
+        )
+
+    def _invalid_variant_failure(
+        self,
+        round_idx: int,
+        results: list[MutationResult],
+    ) -> VerificationOutcome:
+        invalid = "; ".join(
+            f"#{result.index}: {result.sim_output_snippet}" for result in results if result.invalid
+        )
+        return self._proposal_failure(
+            round_idx,
+            f"isolated variant(s) did not compile or yield a verdict: {invalid}",
+        )
+
+    def _complete_cold_campaign(
+        self,
+        plan: MutationRunPlan,
+        outcome: ColdVariantOutcome,
+    ) -> McpToolResult:
+        self._persist_lock(plan, outcome.specs)
         self._clear_session_id(self.SESSION_KEY)
-        evidence = self._variant_evidence(variants)
-        coverage_gap = self._is_variant_coverage_gap(last_summary, plan.min_detected)
+        summary = outcome.summary
         self.emit_progress(
-            f"cold done: {last_summary.detected_count}/"
-            f"{last_summary.detected_count + last_summary.not_detected_count} detected"
+            f"cold done: {summary.detected_count}/"
+            f"{summary.detected_count + summary.not_detected_count} detected"
         )
         persisted = lock_mod.load_lock()
         return self._build_run_result(
             plan,
             RunResultInputs(
-                summary=last_summary,
-                count=len(specs),
-                tester_elapsed=tester_elapsed,
-                creator_elapsed=creator_elapsed,
+                summary=summary,
+                count=len(outcome.specs),
+                tester_elapsed=outcome.tester_elapsed,
+                creator_elapsed=outcome.creator_elapsed,
                 reused_lock=False,
                 lock_created_at=persisted.created_at if persisted else None,
-                verification_rounds=round_idx,
+                verification_rounds=outcome.verification_rounds,
                 build_cached=False,
-                variants=variants,
-                coverage_gap=coverage_gap,
-                evidence=evidence,
+                variants=outcome.variants,
+                coverage_gap=self._is_variant_coverage_gap(summary, plan.min_detected),
+                evidence=self._variant_evidence(outcome.variants),
             ),
         )
 
@@ -1341,20 +1430,42 @@ replacement must differ, and every proposal must remain a single source edit.
         round_idx: int,
         reason: str,
         summary: MutationSummary,
+        *,
+        variants: MutationVariantPlan | None = None,
     ) -> McpToolResult:
+        variants = variants or MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
+        detail = _failure_detail(
+            phase="variant_infrastructure",
+            reason=reason,
+            specs=specs,
+            work_dir=plan.work_dir,
+            summary=summary,
+            min_detected=plan.min_detected,
+            count=plan.count,
+            verification_rounds=round_idx,
+        )
+        inputs = RunResultInputs(
+            summary=summary,
+            count=len(specs),
+            tester_elapsed=0.0,
+            creator_elapsed=0.0,
+            reused_lock=round_idx == 0,
+            lock_created_at=None,
+            verification_rounds=round_idx,
+            build_cached=False,
+            variants=variants,
+            evidence=self._variant_evidence(variants),
+        )
+        self._attach_campaign_artifacts(plan, inputs, detail)
+        report_text = f"mutation campaign produced no trustworthy verdict: {reason}"
+        artifact_lines = self._artifact_display_lines(detail)
+        if artifact_lines:
+            report_text += "\n\nArtifacts:\n" + "\n".join(f"  {line}" for line in artifact_lines)
         return McpToolResult(
             exit_code=EXIT_ERROR,
-            report_text=f"mutation campaign produced no trustworthy verdict: {reason}",
-            detail=_failure_detail(
-                phase="variant_infrastructure",
-                reason=reason,
-                specs=specs,
-                work_dir=plan.work_dir,
-                summary=summary,
-                min_detected=plan.min_detected,
-                count=plan.count,
-                verification_rounds=round_idx,
-            ),
+            report_text=report_text,
+            detail=detail,
+            display_lines=artifact_lines,
         )
 
     def _proposal_rounds_exhausted(
@@ -1460,7 +1571,14 @@ replacement must differ, and every proposal must remain a single source edit.
         results, tester_elapsed, infra = self._run_variant_sweep(plan, specs, variants)
         summary = MutationSummary(specs=specs, results=results)
         if infra:
-            return self._variant_infra_error(plan, specs, 0, infra, summary)
+            return self._variant_infra_error(
+                plan,
+                specs,
+                0,
+                infra,
+                summary,
+                variants=variants,
+            )
         if summary.invalid_count:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -1846,15 +1964,21 @@ replacement must differ, and every proposal must remain a single source edit.
                     test_name=unit.display_name,
                     process=proc,
                     output=(proc.stdout or "") + (proc.stderr or ""),
+                    requires_cocotb_results=batched,
                 )
             except subprocess.TimeoutExpired as exc:
                 return MutationTestRun(
                     test_name=unit.display_name,
                     timed_out=True,
                     output=_timeout_output(exc),
+                    requires_cocotb_results=batched,
                 )
             except (OSError, subprocess.SubprocessError) as exc:
-                return MutationTestRun(test_name=unit.display_name, error=str(exc))
+                return MutationTestRun(
+                    test_name=unit.display_name,
+                    error=str(exc),
+                    requires_cocotb_results=batched,
+                )
 
         return list(campaign.execute(_run_unit, batched=batched).values)
 
@@ -1867,48 +1991,105 @@ replacement must differ, and every proposal must remain a single source edit.
     def _suite_inconclusive_reason(runs: list[MutationTestRun]) -> str:
         """Reject outcomes that cannot establish pass or fail for every test."""
         for run in runs:
-            if reason := MutationTesterSpecialist._run_inconclusive_reason(
-                run, timeout_is_inconclusive=True
-            ):
-                return reason
+            verdict = MutationTesterSpecialist._classify_mutation_run(
+                run,
+                timeout_is_inconclusive=True,
+            )
+            if verdict.inconclusive_reason:
+                return verdict.inconclusive_reason
         return ""
 
     @staticmethod
-    def _run_inconclusive_reason(
+    def _classify_mutation_run(
         run: MutationTestRun,
         *,
         timeout_is_inconclusive: bool,
-    ) -> str:
-        prefix = f"{run.test_name}: "
-        if run.error:
-            reason = run.error
-        elif run.timed_out and timeout_is_inconclusive:
-            reason = "simulation timed out"
-        elif run.process is not None and (infra := _infra_failure_reason(run.process)):
-            reason = infra
-        else:
-            reason = MutationTesterSpecialist._cocotb_inconclusive_reason(run)
-        return prefix + reason if reason else ""
+    ) -> VariantSuiteVerdict:
+        early = MutationTesterSpecialist._preclassify_mutation_run(
+            run,
+            timeout_is_inconclusive=timeout_is_inconclusive,
+        )
+        if early is not None:
+            return early
+        parsed = parse_results_line(run.output)
+        if parsed is not None:
+            return MutationTesterSpecialist._classify_cocotb_run(run, parsed)
+        if run.requires_cocotb_results:
+            return VariantSuiteVerdict(
+                inconclusive_reason=f"{run.test_name}: cocotb result line is missing or malformed"
+            )
+        assert run.process is not None
+        return VariantSuiteVerdict(
+            detected=run.process.returncode != 0,
+            first_killing_test=run.test_name if run.process.returncode != 0 else "",
+        )
 
     @staticmethod
-    def _cocotb_inconclusive_reason(run: MutationTestRun) -> str:
-        parsed = parse_results_line(run.output)
-        if parsed is None:
-            return ""
+    def _preclassify_mutation_run(
+        run: MutationTestRun,
+        *,
+        timeout_is_inconclusive: bool,
+    ) -> VariantSuiteVerdict | None:
+        prefix = f"{run.test_name}: "
+        if run.error:
+            return VariantSuiteVerdict(inconclusive_reason=prefix + run.error)
+        if run.timed_out:
+            if timeout_is_inconclusive:
+                return VariantSuiteVerdict(inconclusive_reason=prefix + "simulation timed out")
+            return VariantSuiteVerdict(detected=True, first_killing_test=run.test_name)
+        if run.process is None:
+            return VariantSuiteVerdict(
+                inconclusive_reason=prefix + "runner produced no process result"
+            )
+        if infra := _infra_failure_reason(run.process):
+            return VariantSuiteVerdict(inconclusive_reason=prefix + infra)
+        return None
+
+    @staticmethod
+    def _classify_cocotb_run(
+        run: MutationTestRun,
+        parsed: CocotbResults,
+    ) -> VariantSuiteVerdict:
+        prefix = f"{run.test_name}: "
         if parsed.state != STATE_OK:
-            return f"cocotb result state is {parsed.state}"
+            return VariantSuiteVerdict(
+                inconclusive_reason=prefix + f"cocotb result state is {parsed.state}"
+            )
         unresolved = [
             test.name for test in parsed.tests if test.status not in (VERDICT_PASS, VERDICT_FAIL)
         ]
         if unresolved:
-            return f"no verdict for {', '.join(unresolved)}"
-        if (
-            run.process is not None
-            and run.process.returncode != 0
-            and not any(test.status == VERDICT_FAIL for test in parsed.tests)
-        ):
-            return "runner exited non-zero without a failing test"
-        return ""
+            return VariantSuiteVerdict(
+                inconclusive_reason=prefix + f"no verdict for {', '.join(unresolved)}"
+            )
+        failed = next(
+            (test.name for test in parsed.tests if test.status == VERDICT_FAIL),
+            "",
+        )
+        if failed:
+            return VariantSuiteVerdict(detected=True, first_killing_test=failed)
+        if run.process.returncode != 0:
+            return VariantSuiteVerdict(
+                inconclusive_reason=prefix + "runner exited non-zero without a failing test"
+            )
+        return VariantSuiteVerdict()
+
+    @staticmethod
+    def _classify_variant_suite(runs: list[MutationTestRun]) -> VariantSuiteVerdict:
+        """Classify one mutant once so status and first-kill evidence cannot drift."""
+        verdicts = [
+            MutationTesterSpecialist._classify_mutation_run(
+                run,
+                timeout_is_inconclusive=False,
+            )
+            for run in runs
+        ]
+        reasons = [
+            verdict.inconclusive_reason for verdict in verdicts if verdict.inconclusive_reason
+        ]
+        if reasons:
+            return VariantSuiteVerdict(inconclusive_reason="; ".join(reasons))
+        return next((verdict for verdict in verdicts if verdict.detected), VariantSuiteVerdict())
 
     @staticmethod
     def _baseline_suite_passed(runs: list[MutationTestRun]) -> bool:
@@ -1923,29 +2104,6 @@ replacement must differ, and every proposal must remain a single source edit.
                 and run.process.returncode == 0
             ),
         )
-
-    @staticmethod
-    def _first_killing_test(runs: list[MutationTestRun]) -> str:
-        """Return the first public test that produced a real kill verdict."""
-        for run in runs:
-            if run.timed_out:
-                return run.test_name
-            parsed = parse_results_line(run.output)
-            if parsed is not None:
-                failed = next(
-                    (test.name for test in parsed.tests if test.status == VERDICT_FAIL),
-                    "",
-                )
-                if failed:
-                    return failed
-                continue
-            if (
-                run.process is not None
-                and not _infra_failure_reason(run.process)
-                and run.process.returncode != 0
-            ):
-                return run.test_name
-        return ""
 
     def _persist_mutant_log(self, index: int, output: str) -> str:
         """Write one isolated variant's simulator output."""
@@ -1992,34 +2150,6 @@ replacement must differ, and every proposal must remain a single source edit.
         with contextlib.suppress(OSError):
             shutil.rmtree(lock_mod.mutant_logs_dir(), ignore_errors=True)
 
-    @staticmethod
-    def _variant_suite_inconclusive_reason(runs: list[MutationTestRun]) -> str:
-        """Return why a mutant lacks a verdict; a mutant timeout is a kill."""
-        for run in runs:
-            if reason := MutationTesterSpecialist._run_inconclusive_reason(
-                run, timeout_is_inconclusive=False
-            ):
-                return reason
-        return ""
-
-    @staticmethod
-    def _variant_detected(runs: list[MutationTestRun]) -> bool:
-        for run in runs:
-            if run.timed_out:
-                return True
-            parsed = parse_results_line(run.output)
-            if parsed is not None:
-                if any(test.status == VERDICT_FAIL for test in parsed.tests):
-                    return True
-                continue
-            if (
-                run.process is not None
-                and not _infra_failure_reason(run.process)
-                and run.process.returncode != 0
-            ):
-                return True
-        return False
-
     def _run_variant_sweep(
         self,
         plan: MutationRunPlan,
@@ -2030,52 +2160,62 @@ replacement must differ, and every proposal must remain a single source edit.
         start = time.monotonic()
         self._reset_mutant_logs()
         results: list[MutationResult] = []
+        inconclusive: list[str] = []
         for spec in specs:
             self.emit_progress(f"build and test mutation {spec.index}/{len(specs)}")
-            build_path = lock_mod.variant_build_dir(spec.index)
-            shutil.rmtree(build_path, ignore_errors=True)
-            build_path.mkdir(parents=True, exist_ok=True)
-            with variants.applied(spec.index):
-                elab = self._run_elab(plan.target, plan.work_dir, build_path)
-                elab_output = (elab.stdout or "") + (elab.stderr or "")
-                if elab.returncode != 0:
-                    results.append(
-                        MutationResult(
-                            index=spec.index,
-                            invalid=True,
-                            sim_output_snippet="variant did not elaborate: "
-                            + _tail(elab_output, 5)[-200:],
-                            log_path=self._persist_mutant_log(spec.index, elab_output),
-                        )
-                    )
-                    continue
-                runs = self._run_target_test_suite(
-                    plan.target,
-                    plan.work_dir,
-                    build_path,
-                    self.args.tb_top,
+            result, reason = self._run_one_variant(plan, spec, variants)
+            results.append(result)
+            if reason:
+                inconclusive.append(f"mutation #{spec.index}: {reason}")
+        return results, time.monotonic() - start, "; ".join(inconclusive)
+
+    def _run_one_variant(
+        self,
+        plan: MutationRunPlan,
+        spec: MutationSpec,
+        variants: MutationVariantPlan,
+    ) -> tuple[MutationResult, str]:
+        build_path = lock_mod.variant_build_dir(spec.index)
+        shutil.rmtree(build_path, ignore_errors=True)
+        build_path.mkdir(parents=True, exist_ok=True)
+        with variants.applied(spec.index):
+            elab = self._run_elab(plan.target, plan.work_dir, build_path)
+            elab_output = (elab.stdout or "") + (elab.stderr or "")
+            if elab.returncode != 0:
+                return (
+                    MutationResult(
+                        index=spec.index,
+                        invalid=True,
+                        sim_output_snippet="variant did not elaborate: "
+                        + _tail(elab_output, 5)[-200:],
+                        log_path=self._persist_mutant_log(spec.index, elab_output),
+                    ),
+                    "",
                 )
-            combined = self._suite_output(runs)
-            inconclusive = self._variant_suite_inconclusive_reason(runs)
-            detected = self._variant_detected(runs)
-            snippet = (
-                f"sim outcome inconclusive: {inconclusive}"
-                if inconclusive
-                else _tail(combined, 5)[-200:]
+            runs = self._run_target_test_suite(
+                plan.target,
+                plan.work_dir,
+                build_path,
+                self.args.tb_top,
             )
-            results.append(
-                MutationResult(
-                    index=spec.index,
-                    invalid=bool(inconclusive),
-                    detected=detected,
-                    sim_output_snippet=snippet,
-                    log_path=self._persist_mutant_log(spec.index, combined),
-                    first_killing_test=(self._first_killing_test(runs) if detected else ""),
-                )
-            )
-            if inconclusive:
-                return results, time.monotonic() - start, inconclusive
-        return results, time.monotonic() - start, ""
+        combined = self._suite_output(runs)
+        verdict = self._classify_variant_suite(runs)
+        snippet = (
+            f"sim outcome inconclusive: {verdict.inconclusive_reason}"
+            if verdict.inconclusive_reason
+            else _tail(combined, 5)[-200:]
+        )
+        return (
+            MutationResult(
+                index=spec.index,
+                invalid=bool(verdict.inconclusive_reason),
+                detected=verdict.detected,
+                sim_output_snippet=snippet,
+                log_path=self._persist_mutant_log(spec.index, combined),
+                first_killing_test=verdict.first_killing_test,
+            ),
+            verdict.inconclusive_reason,
+        )
 
     def _verify_clean_worktree(self, owned_files: set[str] | None = None) -> bool:
         """True if the sweep left no residue in the files it is responsible for.

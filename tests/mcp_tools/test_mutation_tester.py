@@ -24,6 +24,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.sim.cocotb_run import _parse_args as parse_cocotb_run_args
 from booley.specialists.mutation_tester import (
     MutationResult,
+    MutationRunPlan,
     MutationSpec,
     MutationSummary,
     MutationTesterSpecialist,
@@ -739,6 +740,49 @@ def _assert_durable_campaign(tmp_path: Path, result: McpToolResult) -> None:
 
 
 class TestColdStart:
+    def test_inconclusive_campaign_publishes_complete_manifest(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        scope = "rtl/mod_a.sv"
+        _prepare_scope_files(tmp_path, [scope])
+        specs = _sample_specs(2)
+        summary = MutationSummary(
+            specs=specs,
+            results=[
+                MutationResult(index=1, invalid=True, sim_output_snippet="missing results"),
+                MutationResult(index=2, detected=True, first_killing_test="corner"),
+            ],
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
+        monkeypatch.setattr(endpoint, "target_eda_tool", lambda *_args: "verilator")
+        plan = MutationRunPlan(
+            scope_files=[scope],
+            scope_hashes={},
+            work_dir=tmp_path,
+            target="lite",
+            report_dir=endpoint.args.report_dir,
+            min_detected=2,
+            count=2,
+            auto_mode=False,
+            formula_count=2,
+            complexity=None,
+        )
+
+        result = endpoint._variant_infra_error(
+            plan,
+            specs,
+            1,
+            "cocotb result line is missing or malformed",
+            summary,
+        )
+
+        assert len(result.detail["classified"]) == 2
+        manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert [row["status"] for row in manifest["mutants"]] == ["invalid", "detected"]
+
     def test_happy_path_writes_lock(self, tmp_path: Path, monkeypatch):
         scope = "rtl/mod_a.sv"
         _prepare_scope_files(tmp_path, [scope])
