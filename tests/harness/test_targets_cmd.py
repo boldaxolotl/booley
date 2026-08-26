@@ -38,6 +38,10 @@ _CORE = textwrap.dedent(
         flow_options: {tool: yosys, arch: xilinx}
         filesets: [rtl]
         toplevel: alpha
+      lint_selftest_bad:
+        flow: lint
+        flow_options: {tool: verilator, booley: {doctor_selftest: true}}
+        filesets: [rtl]
     """
 )
 
@@ -100,7 +104,15 @@ class TestTargetsListing:
 class TestTargetsDetail:
     def test_unknown_target_is_exit_2(self, project: Path, capsys):
         assert _run(project, "ghost") == 2
-        assert "Unknown target" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Unknown target" in err
+        assert "lint_selftest_bad" not in err
+
+    def test_doctor_selftest_target_is_not_public(self, project: Path, capsys):
+        assert _run(project, "lint_selftest_bad") == 2
+        err = capsys.readouterr().err
+        assert "Unknown target" in err
+        assert "selectable Targets: sim, synth" in err
 
     def test_detail_refuses_for_filter(self, project: Path, capsys):
         assert _run(project, "sim", "--for", "sim") == 2
