@@ -1,16 +1,15 @@
 """Ticket Scope policy -- the single owner of "what may this ticket commit?".
 
-A Ticket's ``scope:`` list is the authorization boundary for automatic commits.
-The Harness commits matching work, preserves other working-tree edits for
-explicit triage, and never lets unrelated dirt prevent authorized work from
-being saved.
+A Ticket's ``scope:`` list is the authorization boundary for Developer Agent
+commits. The Developer owns those commits; the Harness records committed Scope
+deviations and rejects a dirty handoff instead of creating a commit itself.
 
 Three tiers, in increasing severity:
 
 ``OWNED``
     The path matches the ticket's Scope.  Ordinary work, nothing recorded.
 ``ADVISORY``
-    Any other file in the worktree.  Preserved uncommitted and reported clearly
+    Any other authored file. If it reaches branch history, report it clearly
     for triage to adjudicate.
 ``FORBIDDEN``
     Harness bookkeeping and the configuration the run is graded against.  Still

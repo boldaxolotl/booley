@@ -12,7 +12,7 @@ Test matrix:
   3. Blocked -- agent writes _blocked_reason
   4. Agent timeout -- AgentResult.timed_out=True
   5. Crash recovery -- prior transcript triggers is_crash_recovery
-  6. Leftover-edit guardrail -- uncommitted files committed before handoff
+  6. Dirty-handoff guardrail -- uncommitted files block handoff
   7. Env vars -- BOOLEY_SLUG, BOOLEY_LOGS_DIR, BOOLEY_STATE_FILE passed
   8. Criteria expansion -- per-config criteria expanded correctly
 """
@@ -255,7 +255,7 @@ async def _run_developer_pipeline(
     Applies standard patches:
       - _launch_developer_agent
       - run_summary_agent (returns stub path)
-      - check_uncommitted_code_statuses + leftover-edit commit (configurable)
+      - check_uncommitted_code_statuses + dirty-handoff guardrail (configurable)
       - load_models_config (no-op)
 
     ``check_uncommitted_*`` args take plain path strings; they are converted
@@ -622,12 +622,12 @@ class TestDeveloperCrashRecovery:
 
 
 @pytest.mark.e2e
-class TestDeveloperGuardrailRollback:
-    """Developer Agent leaves uncommitted edits -- guardrail commits them."""
+class TestDeveloperDirtyHandoffGuardrail:
+    """Developer Agent leaves uncommitted edits -- guardrail blocks handoff."""
 
     SLUG = "e2e-orch-guardrail"
 
-    def test_developer_guardrail_commits_leftover_edits(
+    def test_developer_guardrail_blocks_uncommitted_edits(
         self,
         project_root,
         worktree_factory,
@@ -661,9 +661,8 @@ class TestDeveloperGuardrailRollback:
             state_updater=_set_all_met,
         )
 
-        # Simulate uncommitted files detected; track the guardrail commit.
-        # Dirty paths must be IN ticket scope -- out-of-scope rtl/ dirt is
-        # treated as scorer contamination and blocks instead of committing.
+        # Simulate uncommitted files detected. The Developer owns every commit;
+        # the Harness must not synthesize one after the Agent exits.
         commit_mock = MagicMock(return_value=None)
 
         asyncio.run(
@@ -680,17 +679,9 @@ class TestDeveloperGuardrailRollback:
             )
         )
 
-        assert commit_mock.called, "commit_scope should have committed the dirty worktree"
-        # The mocked dirty statuses must flow through scope matching into
-        # the commit -- proves the check_uncommitted_code_statuses patch
-        # is live (it broke silently once when prod switched functions).
-        committed_paths = commit_mock.call_args.args[1]
-        assert committed_paths == ["rtl/my_module.sv", "tb/my_module_tb.sv"], (
-            f"Expected in-scope dirty files committed, got {committed_paths}"
-        )
-
-        assert _ticket_in_dir(project_root, slug, "review"), (
-            "Run should move to review/ after leftover edits are committed"
+        commit_mock.assert_not_called()
+        assert _ticket_in_dir(project_root, slug, "blocked"), (
+            "Run should block when the Developer Agent leaves uncommitted edits"
         )
 
 

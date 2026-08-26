@@ -877,7 +877,7 @@ def _codex_resolve_structured(
         return None, False
     structured, structured_fallback = _codex_extract_structured(output)
     if structured_fallback and structured is not None:
-        logger.warning("Codex structured output recovered via last-segment extraction")
+        logger.info("Codex structured output recovered via last-segment extraction")
     elif structured is None:
         logger.warning("Codex structured output: JSON extraction failed")
     return structured, structured_fallback
