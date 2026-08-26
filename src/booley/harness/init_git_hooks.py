@@ -525,6 +525,56 @@ def _worktree_is_clean(project_root: Path) -> bool | None:
     return not proc.stdout.strip()
 
 
+def _tracked_phantom_paths(project_root: Path) -> tuple[list[str] | None, str | None]:
+    """Tracked paths reported dirty, or the contextual Git failure that blocked inspection."""
+    commands = (
+        ("status", "--porcelain", "-z", "--untracked-files=no"),
+        ("diff", "--quiet", "--ignore-submodules=none"),
+        ("diff", "--cached", "--quiet", "--ignore-submodules=none"),
+    )
+    results: list[subprocess.CompletedProcess[bytes]] = []
+    try:
+        for command in commands:
+            results.append(
+                subprocess.run(
+                    ["git", "-C", str(project_root), *command],
+                    capture_output=True,
+                    check=False,
+                    timeout=60,
+                )
+            )
+    except (subprocess.SubprocessError, OSError) as exc:
+        rendered = " ".join(command)
+        return None, f"`git -C {project_root} {rendered}` failed: {exc}"
+
+    status, unstaged, staged = results
+    expected_codes = ({0}, {0, 1}, {0, 1})
+    for command, result, expected in zip(commands, results, expected_codes, strict=True):
+        if result.returncode not in expected:
+            rendered = " ".join(command)
+            stderr = result.stderr.decode(errors="replace").strip() or "no stderr"
+            return (
+                None,
+                f"`git -C {project_root} {rendered}` exited {result.returncode}: {stderr}",
+            )
+    if not status.stdout.strip() or unstaged.returncode != 0 or staged.returncode != 0:
+        return [], None
+
+    paths: list[str] = []
+    for record in status.stdout.split(b"\0"):
+        if not record:
+            continue
+        if len(record) < 4 or record[:3] not in (b" M ", b"M  "):
+            return None, f"tracked status contained unsupported porcelain record {record!r}"
+        paths.append(os.fsdecode(record[3:]))
+    return paths, None
+
+
+def _tracked_status_is_phantom(project_root: Path) -> tuple[bool | None, str | None]:
+    paths, error = _tracked_phantom_paths(project_root)
+    return (None, error) if paths is None else (bool(paths), None)
+
+
 def _protected_index_paths(project_root: Path, paths: list[str]) -> list[str] | None:
     """Affected paths hidden from normal status by Git index flags."""
     try:
@@ -675,6 +725,114 @@ def _rewrite_from_stage(path: Path, replacement: Path, expected: bytes) -> str |
     return None
 
 
+def _refresh_normalized_index(
+    project_root: Path,
+    paths: list[str],
+    *,
+    require_clean_worktree: bool = True,
+) -> str | None:
+    """Refresh Git's stat cache for paths whose normalized content is unchanged."""
+    encoded_paths = b"\0".join(os.fsencode(name) for name in paths) + b"\0"
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "-C",
+                str(project_root),
+                "add",
+                "-u",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            input=encoded_paths,
+            capture_output=True,
+            check=False,
+            timeout=300,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return f"could not refresh normalized Git index entries: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.decode(errors="replace").strip() or "Git add failed"
+        return f"could not refresh normalized Git index entries: {detail}"
+    return _verify_refreshed_index(
+        project_root,
+        encoded_paths,
+        require_clean_worktree=require_clean_worktree,
+    )
+
+
+def _verify_refreshed_index(
+    project_root: Path,
+    encoded_paths: bytes,
+    *,
+    require_clean_worktree: bool,
+) -> str | None:
+    """Confirm the content-aware refresh changed metadata only."""
+    try:
+        staged = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "diff",
+                "--cached",
+                "--quiet",
+                "--ignore-submodules=none",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return f"could not verify the normalized Git index entries: {exc}"
+    if staged.returncode not in (0, 1):
+        detail = staged.stderr.decode(errors="replace").strip() or "Git diff failed"
+        return f"could not verify the normalized Git index entries: {detail}"
+    if staged.returncode == 1:
+        return _restore_unexpected_index_changes(project_root, encoded_paths)
+    if require_clean_worktree and _worktree_is_clean(project_root) is not True:
+        return "tracked files changed while Git index metadata was being refreshed"
+    return None
+
+
+def _restore_unexpected_index_changes(project_root: Path, encoded_paths: bytes) -> str:
+    """Restore affected index entries after a refresh produced staged content."""
+    try:
+        restored = subprocess.run(
+            [
+                "git",
+                "--literal-pathspecs",
+                "-C",
+                str(project_root),
+                "reset",
+                "-q",
+                "HEAD",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ],
+            input=encoded_paths,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return (
+            "normalization unexpectedly changed staged content and could not restore "
+            f"the affected index entries: {exc}"
+        )
+    if restored.returncode == 0:
+        return (
+            "normalization unexpectedly changed staged content; "
+            "restored the affected index entries"
+        )
+    detail = restored.stderr.decode(errors="replace").strip() or "Git reset failed"
+    return (
+        "normalization unexpectedly changed staged content and could not restore "
+        f"the affected index entries: {detail}"
+    )
+
+
 def _normalize_as_lf(
     project_root: Path, paths: list[str], snapshots: dict[str, bytes]
 ) -> str | None:
@@ -693,14 +851,52 @@ def _normalize_as_lf(
     staged, error = _stage_lf_files(project_root, paths)
     if error:
         return error
+    rewritten: list[str] = []
     try:
         for name in paths:
             error = _rewrite_from_stage(project_root / name, staged[name], snapshots[name])
             if error:
+                if rewritten:
+                    refresh_error = _refresh_normalized_index(
+                        project_root,
+                        rewritten,
+                        require_clean_worktree=False,
+                    )
+                    if refresh_error:
+                        return f"{error}; {refresh_error}"
                 return error
+            rewritten.append(name)
     finally:
         _cleanup_staged_files(staged)
-    return None
+    return _refresh_normalized_index(project_root, paths)
+
+
+def _finish_safe_line_endings_step(ctx: InitContext) -> None:
+    """Heal legacy stat-only dirtiness or report an already-safe LF checkout."""
+    phantom_paths, comparison_error = _tracked_phantom_paths(ctx.project_root)
+    if phantom_paths is None:
+        warn(
+            "could not compare tracked status with Git diffs — "
+            f"no files changed: {comparison_error}"
+        )
+        ctx.record("line_endings", "warn", "status comparison unreadable")
+        return
+    if not phantom_paths:
+        ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
+        ctx.record("line_endings", "ok", "no CRLF")
+        return
+    if ctx.check_only:
+        warn(f"would refresh stale Git index metadata for {len(phantom_paths)} tracked file(s)")
+        ctx.record("line_endings", "warn", "stale index metadata")
+        return
+
+    error = _refresh_normalized_index(ctx.project_root, phantom_paths)
+    if error:
+        warn(error)
+        ctx.record("line_endings", "warn", "index refresh failed")
+        return
+    ok(f"refreshed stale Git index metadata for {len(phantom_paths)} tracked file(s)")
+    ctx.record("line_endings", "ok", "index refreshed")
 
 
 def _step_line_endings(ctx: InitContext) -> None:
@@ -726,8 +922,7 @@ def _step_line_endings(ctx: InitContext) -> None:
         ctx.record("line_endings", "warn", "EOL scan unreadable")
         return
     if not crlf_paths and not autocrlf:
-        ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
-        ctx.record("line_endings", "ok", "no CRLF")
+        _finish_safe_line_endings_step(ctx)
         return
 
     snapshots, safety_error = _snapshot_candidates(ctx.project_root, crlf_paths)
