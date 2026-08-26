@@ -1283,9 +1283,9 @@ def _report_line_ending_index_metadata(
     """Report status-only dirtiness left by an earlier in-place LF repair."""
     from booley.harness.init_git_hooks import _tracked_status_is_phantom
 
-    phantom_status = _tracked_status_is_phantom(project_root)
+    phantom_status, comparison_error = _tracked_status_is_phantom(project_root)
     if phantom_status is None:
-        _skip("line endings: could not compare tracked status with Git diffs")
+        _skip(f"line endings: could not compare tracked status with Git diffs: {comparison_error}")
         return
     if phantom_status:
         _fail(
