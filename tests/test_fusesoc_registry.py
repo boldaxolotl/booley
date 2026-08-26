@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from booley.fusesoc import selftest_overlay
 from booley.fusesoc.fusesoc_registry import (
     DEFAULT_FUSESOC_CMD,
     STATE_CORES_SUBDIR,
@@ -32,6 +33,7 @@ from booley.fusesoc.fusesoc_registry import (
     core_target_eda_tool,
     core_target_flow,
     core_target_flow_option,
+    core_target_is_doctor_selftest,
     core_target_names,
     core_target_uses_legacy_fusesoc_api,
     discover_cores,
@@ -496,6 +498,25 @@ class TestAvailableTargets:
         _write_core(tmp_path / "ip")
         assert target_eda_tools(tmp_path) == {"sim": "verilator"}
 
+    def test_doctor_selftest_is_resolvable_but_not_public(self, tmp_path: Path, monkeypatch):
+        (tmp_path / "doctor.core").write_text(
+            "CAPI=2:\nname: ::doctor:0\ntargets:\n"
+            "  lint_selftest_bad:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator, booley: {doctor_selftest: true}}\n",
+            encoding="utf-8",
+        )
+
+        ref = resolve_ref(tmp_path, "lint_selftest_bad")
+        assert ref.doctor_selftest
+        assert available_targets(tmp_path) == []
+        assert target_eda_tools(tmp_path) == {}
+        with pytest.raises(UnknownTargetError, match="Unknown target"):
+            resolve_target_selection("lint_selftest_bad", tmp_path)
+
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        assert resolve_target_selection("lint_selftest_bad", tmp_path) == ["lint_selftest_bad"]
+
 
 class TestDoctorTargetMetadata:
     def test_selects_only_explicitly_marked_targets(self, tmp_path: Path):
@@ -519,6 +540,36 @@ class TestDoctorTargetMetadata:
         assert doctor_target_selectors(tmp_path, "elab") == ["sim_fast"]
         assert doctor_target_seed(tmp_path) == ["sim_fast", "synth_full"]
 
+    def test_doctor_selftest_metadata_is_independent_of_smoke_selection(self, tmp_path: Path):
+        core = tmp_path / "selftest.core"
+        core.write_text(
+            "CAPI=2:\nname: ::selftest:0\ntargets:\n"
+            "  lint_selftest_bad:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator, booley: {doctor_selftest: true}}\n",
+            encoding="utf-8",
+        )
+
+        doc = read_core(core)
+        assert core_schema_errors(core) == []
+        assert core_target_is_doctor_selftest(doc, "lint_selftest_bad")
+        assert core_target_doctor_flows(doc, "lint_selftest_bad") == ()
+
+    def test_schema_requires_doctor_selftests_in_a_dedicated_core(self, tmp_path: Path):
+        core = tmp_path / "mixed.core"
+        core.write_text(
+            "CAPI=2:\nname: ::mixed:0\ntargets:\n"
+            "  lint:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator}\n"
+            "  lint_selftest_bad:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator, booley: {doctor_selftest: true}}\n",
+            encoding="utf-8",
+        )
+
+        assert any("dedicated .core" in error for error in core_schema_errors(core))
+
     @pytest.mark.parametrize(
         "metadata,needle",
         [
@@ -526,6 +577,7 @@ class TestDoctorTargetMetadata:
             ("booley: {doctor: sim}", "doctor must be an array"),
             ("booley: {doctor: [fpga]}", "invalid Flow values"),
             ("booley: {doctor: [sim, sim]}", "must not contain duplicates"),
+            ("booley: {doctor_selftest: bad}", "doctor_selftest must be a boolean"),
             ("booley: {doctor: [sim], mystery: true}", "mystery is not a supported"),
         ],
     )

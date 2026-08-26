@@ -97,6 +97,10 @@ _BETA_CORE = textwrap.dedent(
           iverilog: {}
         filesets: [rtl]
         toplevel: beta
+      lint_selftest_bad:
+        flow: lint
+        flow_options: {tool: verilator, booley: {doctor_selftest: true}}
+        filesets: [rtl]
     """
 )
 
@@ -216,6 +220,12 @@ class TestCollectSurface:
         assert [g.vlnv for g in surface.groups] == ["acme:ip:alpha:1.0", "acme:ip:beta:1.0"]
         assert [e.ref.name for e in surface.groups[0].entries] == ["lint", "sim", "synth"]
         assert [e.ref.name for e in surface.groups[1].entries] == ["fpga", "lint", "smoke"]
+
+    def test_doctor_selftest_is_hidden_from_every_public_surface(self, project: Path):
+        assert fusesoc_registry.resolve_ref(project, "lint_selftest_bad").doctor_selftest
+        assert all(e.ref.name != "lint_selftest_bad" for e in collect_surface(project).entries())
+        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+            detail_payload(project, "lint_selftest_bad", resolve=False)
 
     def test_ambiguous_name_shows_qualified_selector(self, project: Path):
         surface = collect_surface(project)
