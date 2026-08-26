@@ -239,6 +239,8 @@ async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> No
     testbench = Path(observations["worktree"]) / "tb" / "tb_dut.sv"
     with testbench.open("a", encoding="utf-8") as stream:
         stream.write("\n// freshness probe\n")
+    _run_git(testbench.parents[1], "add", "tb/tb_dut.sv")
+    _run_git(testbench.parents[1], "commit", "-m", "test: add freshness probe")
     code, text = await driver.call("submit_run_report", _report_args(_OPTIONAL_REASON))
     assert code == 2 and "Newly stale" in text
     state = _load_state()

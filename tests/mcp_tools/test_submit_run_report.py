@@ -7,6 +7,7 @@ import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -19,6 +20,10 @@ from booley.dev_support.development_state import (
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.runtime import job_records as jobrec
+from booley.runtime.ticket_repositories import (
+    ProjectRepositoryChange,
+    TicketWorkspaceError,
+)
 
 
 @pytest.fixture
@@ -33,6 +38,20 @@ def state_file(tmp_path: Path) -> Path:
     return sf
 
 
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@test", "-c", "user.name=t", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q")
+
+
 def _run_endpoint(
     state_file: Path,
     report_dir: Path,
@@ -41,6 +60,17 @@ def _run_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[int, DevelopmentState]:
     """Invoke the endpoint via main(), returning (exit_code, reloaded_state)."""
+    argv = list(argv)
+    if "--work-dir" not in argv:
+        work_dir = report_dir / "worktree"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-q", str(work_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        argv.extend(["--work-dir", str(work_dir)])
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(report_dir))
     monkeypatch.setenv("BOOLEY_SLUG", "report-test")
@@ -48,6 +78,162 @@ def _run_endpoint(
     endpoint = SubmitRunReportMcpTool()
     exit_code = endpoint.main(argv)
     return exit_code, DevelopmentState.load(state_file)
+
+
+def _report_text(runtime_root: Path) -> str:
+    report = runtime_root / "runtime" / "mcp-tool-reports" / "submit_run_report.json"
+    return json.loads(report.read_text(encoding="utf-8"))["report_text"]
+
+
+def test_rejects_report_when_ticket_worktree_is_dirty(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    work_dir = tmp_path / "worktree"
+    _init_repo(work_dir)
+    (work_dir / "staged.sv").write_text("module staged; endmodule\n", encoding="utf-8")
+    _git(work_dir, "add", "staged.sv")
+    (work_dir / "untracked.sv").write_text(
+        "module untracked; endmodule\n",
+        encoding="utf-8",
+    )
+
+    exit_code, state = _run_endpoint(
+        state_file,
+        tmp_path,
+        "bugfix",
+        [
+            "--work-dir",
+            str(work_dir),
+            "--summary",
+            "Fixed the bug.",
+            "--root-cause",
+            "The finalization contract allowed dirty worktrees.",
+            "--uncertainties",
+            "None beyond the final commit.",
+        ],
+        monkeypatch,
+    )
+
+    assert exit_code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+    assert not (tmp_path / "REPORT.md").exists()
+    capsys.readouterr()
+    diagnostic = _report_text(tmp_path)
+    assert "uncommitted changes remain" in diagnostic
+    assert "staged.sv" in diagnostic
+    assert "untracked.sv" in diagnostic
+    assert "Commit or restore them" in diagnostic
+
+
+def test_rejects_report_when_paired_project_repository_is_dirty(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    with patch(
+        "booley.mcp.submit_run_report.pending_ticket_changes",
+        return_value=(ProjectRepositoryChange(".booley_project/cores/dut.core", " M"),),
+    ):
+        exit_code, state = _run_endpoint(
+            state_file,
+            tmp_path,
+            "bugfix",
+            [
+                "--summary",
+                "Fixed the bug.",
+                "--root-cause",
+                "The paired repository was not checked.",
+                "--uncertainties",
+                "None.",
+            ],
+            monkeypatch,
+        )
+
+    assert exit_code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+    flat = json.loads(
+        (runtime / "mcp-tool-reports" / "submit_run_report.json").read_text(encoding="utf-8")
+    )
+    assert ".booley_project/cores/dut.core" in flat["report_text"]
+
+
+def test_rejects_report_when_cleanliness_cannot_be_verified(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
+    with patch(
+        "booley.mcp.submit_run_report.pending_ticket_changes",
+        side_effect=TicketWorkspaceError("git status failed"),
+    ):
+        exit_code, state = _run_endpoint(
+            state_file,
+            tmp_path,
+            "bugfix",
+            [
+                "--summary",
+                "Fixed the bug.",
+                "--root-cause",
+                "Git status was not checked.",
+                "--uncertainties",
+                "None.",
+            ],
+            monkeypatch,
+        )
+
+    assert exit_code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+    flat = json.loads(
+        (runtime / "mcp-tool-reports" / "submit_run_report.json").read_text(encoding="utf-8")
+    )
+    assert "could not verify that the ticket worktree is clean" in flat["report_text"]
+
+
+def test_ticket_mode_cleanliness_uses_session_worktree(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticket_worktree = tmp_path / "ticket-worktree"
+    sibling_worktree = tmp_path / "sibling-worktree"
+    _init_repo(ticket_worktree)
+    _init_repo(sibling_worktree)
+    (ticket_worktree / "uncommitted.sv").write_text(
+        "module uncommitted; endmodule\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOOLEY_WORKTREE", str(ticket_worktree))
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+    exit_code, state = _run_endpoint(
+        state_file,
+        tmp_path,
+        "bugfix",
+        [
+            "--work-dir",
+            str(sibling_worktree),
+            "--summary",
+            "Fixed the bug.",
+            "--root-cause",
+            "The report checked the wrong worktree.",
+            "--uncertainties",
+            "None.",
+        ],
+        monkeypatch,
+    )
+
+    assert exit_code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+    assert "uncommitted.sv" in _report_text(tmp_path)
 
 
 def test_rejects_final_report_while_ticket_job_is_active(
@@ -90,14 +276,15 @@ def test_rejects_final_report_while_ticket_job_is_active(
     assert "outstanding ticket jobs" in capsys.readouterr().err
 
 
-def test_rejects_report_and_updates_ui_when_verification_became_stale(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    (tmp_path / "rtl").mkdir()
-    (tmp_path / "tb").mkdir()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
-    (tmp_path / "tb" / "tb.sv").write_text("module tb; endmodule\n")
+def _stale_sim_state(tmp_path: Path, work_dir: Path) -> Path:
+    work_dir = tmp_path / "worktree"
+    (work_dir / "rtl").mkdir(parents=True)
+    (work_dir / "tb").mkdir()
+    (work_dir / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
+    (work_dir / "tb" / "tb.sv").write_text("module tb; endmodule\n")
+    _git(work_dir, "init", "-q")
+    _git(work_dir, "add", ".")
+    _git(work_dir, "commit", "-qm", "initial sources")
     state_path = tmp_path / "state.json"
     state = DevelopmentState.load(state_path)
     state.slug = "stale-report"
@@ -108,12 +295,23 @@ def test_rejects_report_and_updates_ui_when_verification_became_stale(
         detail={
             SOURCE_FINGERPRINT_DETAIL_KEY: {
                 "categories": ["rtl", "tb"],
-                "fingerprint": compute_source_fingerprint(tmp_path),
+                "fingerprint": compute_source_fingerprint(work_dir),
             }
         },
     )
     state.save()
-    (tmp_path / "rtl" / "dut.sv").write_text("module dut; wire changed; endmodule\n")
+    (work_dir / "rtl" / "dut.sv").write_text("module dut; wire changed; endmodule\n")
+    _git(work_dir, "add", "rtl/dut.sv")
+    _git(work_dir, "commit", "-qm", "change source")
+    return state_path
+
+
+def test_rejects_report_and_updates_ui_when_verification_became_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_dir = tmp_path / "worktree"
+    state_path = _stale_sim_state(tmp_path, work_dir)
 
     exit_code, state = _run_endpoint(
         state_path,
@@ -121,7 +319,7 @@ def test_rejects_report_and_updates_ui_when_verification_became_stale(
         "bugfix",
         [
             "--work-dir",
-            str(tmp_path),
+            str(work_dir),
             "--summary",
             "Fixed the bug.",
             "--root-cause",
@@ -701,23 +899,12 @@ class TestReportResetsOnCodeChange:
 
 
 # ---------------------------------------------------------------------------
-# Submission receipt -- diff-stat + last-simulate echo in report_text
+# Submission receipt -- cleanliness + last-simulate echo in report_text
 # ---------------------------------------------------------------------------
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-c", "user.email=t@test", "-c", "user.name=t", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
-
-
 class TestSubmissionEcho:
-    """report_text is a receipt: what was written, worktree diff-stat, and
-    the last simulation verdict -- so the agent skips the manual pre-submit
-    sed/git-diff ritual. All echoes are best-effort."""
+    """report_text confirms the clean worktree and last simulation verdict."""
 
     @pytest.fixture
     def git_repo(self, tmp_path: Path) -> Path:
@@ -762,20 +949,6 @@ class TestSubmissionEcho:
         )
         return flat["report_text"]
 
-    def test_receipt_contains_diff_stat(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-        git_repo: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        (git_repo / "rtl.sv").write_text("module m2; endmodule\n", encoding="utf-8")
-        text = self._submit(tmp_path, state_file, git_repo, monkeypatch)
-        assert text.startswith("Wrote ")
-        assert "Captured with this submission:" in text
-        assert "worktree diff (git diff --stat):" in text
-        assert "rtl.sv" in text
-
     def test_receipt_reports_clean_worktree(
         self,
         tmp_path: Path,
@@ -784,18 +957,7 @@ class TestSubmissionEcho:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         text = self._submit(tmp_path, state_file, git_repo, monkeypatch)
-        assert "worktree diff: clean (no uncommitted changes)" in text
-
-    def test_receipt_diff_unavailable_outside_repo(
-        self,
-        tmp_path: Path,
-        state_file: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        plain = tmp_path / "plain"
-        plain.mkdir()
-        text = self._submit(tmp_path, state_file, plain, monkeypatch)
-        assert "worktree diff: unavailable" in text
+        assert "ticket worktree: clean (including staged and untracked files)" in text
 
     def test_receipt_includes_last_simulate_fingerprint(
         self,
@@ -830,28 +992,3 @@ class TestSubmissionEcho:
     ) -> None:
         text = self._submit(tmp_path, state_file, git_repo, monkeypatch)
         assert "last simulate" not in text
-
-    def test_diff_stat_elides_long_file_lists(
-        self,
-        git_repo: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        # 10 modified tracked files -> head + "... (N more)" + git's summary.
-        for i in range(10):
-            f = git_repo / f"mod_{i}.sv"
-            f.write_text("module a; endmodule\n", encoding="utf-8")
-        _git(git_repo, "add", "-A")
-        _git(git_repo, "commit", "-qm", "more files")
-        for i in range(10):
-            (git_repo / f"mod_{i}.sv").write_text("module b; endmodule\n", encoding="utf-8")
-
-        monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
-        endpoint = SubmitRunReportMcpTool()
-        endpoint.parse_args(
-            ["--work-dir", str(git_repo), "--summary", "s", "--uncertainties", "u"]
-        )
-        lines = endpoint._diff_stat_lines()
-        assert lines[0] == "worktree diff (git diff --stat):"
-        assert len(lines) <= endpoint._DIFF_STAT_MAX_LINES + 2  # header + elision marker
-        assert any("more)" in line for line in lines)
-        assert "files changed" in lines[-1]  # git's summary survives elision

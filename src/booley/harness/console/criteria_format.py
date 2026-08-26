@@ -76,6 +76,19 @@ def _format_synthesis_metric(d: dict, stale: bool) -> str:
     return " · ".join(parts) if parts else ""
 
 
+def _format_cycle_metric(d: dict, stale: bool) -> str:
+    """cycle_count metric: current count with optional baseline delta."""
+    if stale:
+        return "?"
+    current = as_int(d.get("cycles"))
+    baseline = as_int(d.get("baseline_cycles"))
+    if current is None:
+        return ""
+    if baseline is None:
+        return f"{current:,} cycles"
+    return f"{baseline:,} → {current:,} cycles ({current - baseline:+,})"
+
+
 def _format_metric(key: str, entry: object) -> str:  # noqa: PLR0911 — metric-type dispatch; each criterion kind is its own return branch
     """Short metric string from criterion detail/params."""
     entry = as_dict(entry, default={})
@@ -92,6 +105,9 @@ def _format_metric(key: str, entry: object) -> str:  # noqa: PLR0911 — metric-
 
     if key.startswith("synthesis_ok"):
         return _format_synthesis_metric(d, stale)
+
+    if key.startswith("cycle_count_"):
+        return _format_cycle_metric(d, stale)
 
     if key.startswith("mutation_score"):
         detected = as_int(d.get("detected"))

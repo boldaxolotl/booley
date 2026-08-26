@@ -146,6 +146,55 @@ def test_review_facts_include_every_waiver_with_justification(tmp_path: Path, mo
     assert waiver["justification"] == "The debug interface is required by the ticket."
 
 
+def test_cycle_comparison_is_prominent_and_discloses_workload_drift(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ctx = _context(tmp_path)
+    state_path = ctx.log_dir / ".runtime" / "booley_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["criteria"]["cycle_count_binding"] = {
+        "mandatory": True,
+        "met": True,
+        "detail": {
+            "cycle_comparison": {
+                "target": "sim_coremark",
+                "test": "coremark",
+                "baseline_ref": "a" * 40,
+                "baseline_cycles": 100,
+                "cycles": 90,
+                "delta_cycles": -10,
+                "delta_pct": -10.0,
+                "checks": [
+                    {
+                        "param": "cycle_count_reduce_at_least",
+                        "threshold": 5,
+                        "unit": "percent",
+                        "pass": True,
+                    }
+                ],
+                "workload_changed": True,
+                "known_input_changes": [
+                    {"path": "rtl/new.sv", "role": "rtl", "status": "modified"}
+                ],
+                "provenance_limitation": "ambient inputs are not observed",
+            }
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setattr(tp, "_usage_summary", lambda _ctx: "unavailable")
+
+    facts = tp.build_review_facts(ctx)
+    package = {**facts, "assessment": _assessment(), "html_path": None}
+    rendered = tp.render_review_briefing(package, [])
+
+    assert facts["cycle_comparisons"][0]["delta_cycles"] == -10
+    assert "#### Cycle Count comparisons" in rendered
+    assert "observed Cycle Count change" in rendered
+    assert "known workload inputs changed" in rendered
+    assert "[rtl/new.sv](" in rendered
+    assert "does not establish causality" in rendered
+
+
 def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
     project = ctx.worktree / ".booley_project"

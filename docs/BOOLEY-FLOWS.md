@@ -209,13 +209,44 @@ Only a true target-level `pass` satisfies `sim_pass_{target}`; an
 and configuration errors (bad `--target`, disabled Flow, unknown `--test`) are
 exit-2 Flow errors, outside the verdict vocabulary.
 
+### Per-test Cycle Count Criteria
+
+`cycle_count` is a specialized Simulation Criterion. Each list item binds one
+Target and registered test to one or more numeric thresholds:
+
+```yaml
+cycle_count:
+  - target: sim_coremark
+    test: coremark
+    cycle_count_max: 100000
+    cycle_count_reduce_at_least: 5
+    cycle_count_reduce_at_least_cycles: 2000
+```
+
+The named test must pass and emit exactly one
+`[SIM_CYCLES] <test> <non-negative-count>` record. Every threshold is ANDed;
+missing, duplicate, malformed, legacy unnamed, failed, or inconclusive evidence
+leaves the Criterion unmet. A passing named cocotb test may satisfy its Cycle
+Count Criterion even when another test in the same batch fails. With no
+`cycle_count` Criterion, Cycle Count records remain observational.
+
+Absolute `_max`/`_min` thresholds use the current run only. Percentage-relative
+and `_cycles` delta thresholds automatically run the same Target/test at the
+Ticket's immutable `base_sha` in an ephemeral worktree. A zero baseline cannot
+define a percentage and fails that check closed. Review reports call the result
+an **observed Cycle Count change** and disclose changes to known declared RTL,
+testbench, firmware, vectors, constraints, and other workload inputs. Such input
+changes do not block the numeric comparison, but they prevent Booley from
+claiming that RTL alone caused it.
+
 ### Reports and artifacts
 
 Every run writes a per-Target JSON report at
 `<runtime>/flow-reports/sim_{target}.json` carrying the resolved identity (`target`,
 `tb_top`, `eda_tool`), timing, the target `passed` flag, and a `tests`
 list: one entry per test with its `name`, `verdict`, `sva_errors`, and an
-`error_tail`. For native HDL Targets, every entry also carries
+`error_tail`. Entries also carry `cycles`, a typed `cycle_observation` status,
+and a workload fingerprint when resolved inputs are available. For native HDL Targets, every entry also carries
 `artifacts.run_log`, a work-directory-relative pointer to an atomic,
 unabridged copy of that test's simulator output. A grouped run preserves this
 copy before starting the next test, including for failed, timed-out, and

@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
 
+from booley.core.boundary import as_int
+
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum (``_test_verdict``): "pass" / "fail" map directly,
 # "inconclusive" sets the TestResult inconclusive flag.
@@ -151,6 +153,9 @@ class CocotbResults:
 
     detail: str = ""
     """Human-readable note for a non-OK state (e.g. the parse error)."""
+
+    skipped_unselected: int = 0
+    """Skipped XML entries omitted from the compact stdout transport."""
 
 
 def parse_results_xml(path: Path | str) -> CocotbResults:
@@ -368,8 +373,23 @@ def extra_tests(selected: list[str], results: CocotbResults) -> list[str]:
     return [t.name for t in results.tests if t.name not in wanted and t.status != "skipped"]
 
 
-def format_results_line(results: CocotbResults) -> str:
-    """Serialize *results* as the one-line ``[COCOTB_RESULTS]`` sentinel."""
+def results_payload(
+    results: CocotbResults,
+    *,
+    selected: list[str] | None = None,
+    verbosity: str = "full",
+) -> dict[str, object]:
+    """Serialize results for transport while retaining selected-test evidence."""
+    if verbosity not in {"compact", "full"}:
+        raise ValueError(f"unsupported Cocotb result verbosity: {verbosity}")
+    tests = results.tests
+    skipped_unselected = results.skipped_unselected
+    if verbosity == "compact" and selected is not None:
+        wanted = set(selected)
+        skipped_unselected = sum(
+            1 for test in tests if test.status == "skipped" and test.name not in wanted
+        )
+        tests = tuple(test for test in tests if test.name in wanted or test.status != "skipped")
     payload = {
         "state": results.state,
         "detail": results.detail,
@@ -381,9 +401,21 @@ def format_results_line(results: CocotbResults) -> str:
                 "failure": t.failure_text,
                 "elapsed_s": t.elapsed_s,
             }
-            for t in results.tests
+            for t in tests
         ],
+        "skipped_unselected": skipped_unselected,
     }
+    return payload
+
+
+def format_results_line(
+    results: CocotbResults,
+    *,
+    selected: list[str] | None = None,
+    verbosity: str = "full",
+) -> str:
+    """Serialize *results* as the one-line ``[COCOTB_RESULTS]`` sentinel."""
+    payload = results_payload(results, selected=selected, verbosity=verbosity)
     return COCOTB_RESULTS_PREFIX + json.dumps(payload, separators=(",", ":"))
 
 
@@ -418,5 +450,6 @@ def parse_results_line(output: str) -> CocotbResults | None:
             state=str(payload.get("state", STATE_UNPARSEABLE)),
             tests=tests,
             detail=str(payload.get("detail", "")),
+            skipped_unselected=as_int(payload.get("skipped_unselected"), 0) or 0,
         )
     return None

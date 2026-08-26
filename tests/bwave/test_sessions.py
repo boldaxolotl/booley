@@ -580,6 +580,44 @@ def test_register_missing_identity_warns_loudly(tmp_path, monkeypatch, capsys):
     assert "header-only" in err, err
 
 
+def test_trace_identity_reports_multiple_root_scopes(tmp_path, monkeypatch, capsys):
+    """A valid multi-root Cocotb trace must not be diagnosed as header-only."""
+    from booley.bwave import cli as bwave
+    from booley.bwave import sessions as bwave_sessions
+    from tests.conftest import MINIMAL_FST_BYTES
+
+    monkeypatch.setattr(bwave, "_bwave_cmd", lambda: ["bwave-bin"])
+    monkeypatch.setattr(bwave, "SESSION_FILE", tmp_path / "sessions.json")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "data": {
+                        "scope_prefix": "",
+                        "root_scopes": ["$rootio", "uart16550"],
+                        "signal_count": 148,
+                        "total_ticks": 1705,
+                    }
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    trace = tmp_path / "trace.fst"
+    trace.write_bytes(MINIMAL_FST_BYTES)
+
+    assert bwave_sessions._trace_identity(trace) == "$rootio, uart16550"
+    bwave.cmd_register(argparse.Namespace(sim_dir=str(trace), alias="dut"))
+    err = capsys.readouterr().err
+    assert "top scopes: $rootio, uart16550" in err
+    assert "header-only" not in err
+
+
 def test_unknown_alias_error():
     _write_sessions({"baseline": _make_entry(str(BWAVE.resolve()))})
     r = _query("@nonexistent", "--wave", "-t", "1:5")

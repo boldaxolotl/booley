@@ -16,7 +16,6 @@ import asyncio
 import json as _json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -1148,10 +1147,11 @@ def _run_post_guardrails(
     from booley.runtime.ticket_repositories import TicketWorkspaceError
 
     from .colors import yellow
-    from .scope_policy import ScopeTier, classify_path, is_restore_artifact
+    from .scope_policy import is_restore_artifact
 
-    # Leftover uncommitted edits are fine to have, but review/merge only sees
-    # committed branch history, so commit them before handoff.
+    # The Developer Agent owns its commits. submit_run_report normally catches
+    # dirt while the Agent can still correct it; this remains the backstop for
+    # report-disabled runs and Agents that stop without finalizing.
     if ctx.worktree_path:
         try:
             dirty = _check_ticket_dirty_statuses(ctx)
@@ -1168,51 +1168,32 @@ def _run_post_guardrails(
             # on the block path is exactly when a missing file is most confusing.
             _report_scope_deviations(ctx)
             return True
-        # A deletion under a `` [new]`` glob is worktree fallout, not work, so it
-        # is dropped before tiering rather than committed. Dropping one the
-        # scorer reads is a different matter: the criteria were measured on a
-        # tree missing that file and the branch still carries it, so the result
-        # is not reproducible and the ticket must stop.
+        # A deletion under a `` [new]`` glob can be worktree fallout rather than
+        # authored work. If the scorer reads it, preserve the more specific
+        # reproducibility diagnosis before the general dirty-handoff block.
         artifacts = [e.path for e in dirty if is_restore_artifact(ctx.scope_raw, e.path, e.status)]
         scorer_artifacts = [path for path in artifacts if _is_scorer_consumed_path(path)]
         if scorer_artifacts and _guard_scorer_restore_artifacts(
             ctx, state_path, scorer_artifacts, run_index
         ):
             return True
-        if artifacts:
-            logger.info(
-                "Ignoring %d worktree restore artifact(s): %s",
-                len(artifacts),
-                ", ".join(artifacts[:5]),
+        if dirty:
+            preview = ", ".join(
+                f"{entry.status.strip() or entry.status} {entry.path}" for entry in dirty[:5]
             )
-        tiers = [
-            (entry.path, classify_path(ctx.scope_raw, entry.path, entry.status))
-            for entry in dirty
-            if entry.path not in artifacts
-        ]
-        committable = [path for path, tier in tiers if tier is ScopeTier.OWNED]
-        advisory = [path for path, tier in tiers if tier is ScopeTier.ADVISORY]
-        forbidden = [path for path, tier in tiers if tier is ScopeTier.FORBIDDEN]
-        if forbidden:
-            # Deliberately left uncommitted rather than blocking: the pre-commit
-            # hook already rejects any intentional attempt to stage these, and a
-            # stray dirty bookkeeping file should not fail an otherwise good run.
             logger.warning(
-                "Leaving %d harness-owned dirty file(s) uncommitted: %s",
-                len(forbidden),
-                ", ".join(forbidden[:5]),
+                "Developer Agent stopped with %d uncommitted file(s): %s",
+                len(dirty),
+                preview,
             )
-        if advisory:
-            logger.warning(
-                "Leaving %d out-of-scope file(s) uncommitted for triage: %s",
-                len(advisory),
-                ", ".join(advisory[:5]),
+            block_ticket(
+                ctx,
+                "Developer Agent stopped with uncommitted changes. Commit or restore "
+                f"every file before handoff: {preview}",
+                "developer",
+                run_index=run_index,
             )
-            terminal.raw(
-                f"  {yellow('[WARN]')} leaving {len(advisory)} out-of-scope "
-                f"file(s) uncommitted for triage: {', '.join(advisory[:5])}"
-            )
-        if committable and _commit_leftover_edits(ctx, committable, state_path, run_index):
+            terminal.raw(f"  {yellow('[BLOCK]')} uncommitted changes remain at handoff")
             _report_scope_deviations(ctx)
             return True
 
@@ -1306,141 +1287,6 @@ def _guard_live_rtl_output(ctx: TicketContext, run_index: int) -> bool:
         terminal.raw(f"  {yellow('[BLOCK]')} no live RTL output")
         return True
     return False
-
-
-# Ticket type -> conventional-commit type. Anything unrecognised is housekeeping.
-_TICKET_TYPE_TO_COMMIT_TYPE = {
-    "feature": "feat",
-    "bugfix": "fix",
-    "refactor": "refactor",
-    "verification": "test",
-}
-
-# Fallback used when the composed message trips commit-message validation
-# (banned terms in a ticket title, an odd slug, a repo-specific body cap).
-# Blocking a finished ticket over its own commit subject would be absurd.
-_LEFTOVER_FALLBACK_MESSAGE = "fix: commit leftover edits"
-
-# Conservative slug shape: the commit-message scope grammar allows only these.
-_COMMIT_SCOPE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
-
-
-def _leftover_commit_message(ctx: TicketContext, committable: list[str]) -> str:
-    """Compose an informative subject for the terminal leftover-edits commit.
-
-    The Developer Agent does not commit during a run — code-modifying Specialists
-    commit on its behalf — so anything it edited with its own file operations lands
-    in this one catch-all commit at handoff. "fix: commit leftover edits" told
-    a reviewer nothing about what it contains (F-52), so name the ticket and
-    how much it swept up. The file names themselves are already in the commit.
-
-    Falls back to the old fixed message if the composed one fails validation.
-    """
-    from booley.dev_support.validate_commit_msg import MAX_SUMMARY_LEN, validate_message
-
-    commit_type = _TICKET_TYPE_TO_COMMIT_TYPE.get(ctx.ticket_type, "chore")
-    scope = f"({ctx.slug})" if _COMMIT_SCOPE_RE.match(ctx.slug or "") else ""
-
-    title = (ctx.summary or ctx.slug or "ticket").strip().replace("\n", " ")
-    count = f" ({len(committable)} file{'s' if len(committable) != 1 else ''})"
-    budget = MAX_SUMMARY_LEN - len(count)
-    if len(title) > budget:
-        title = title[: budget - 1].rstrip() + "…"
-
-    message = f"{commit_type}{scope}: {title}{count}"
-    if validate_message(message):
-        logger.warning(
-            "Composed leftover-edit subject failed validation, using the generic one: %r",
-            message,
-        )
-        return _LEFTOVER_FALLBACK_MESSAGE
-    return message
-
-
-def _commit_leftover_edits(
-    ctx: TicketContext,
-    committable: list[str],
-    state_path: Path,
-    run_index: int,
-) -> bool:
-    """Commit leftover edits and verify none remain. True => block.
-
-    *committable* contains only paths authorized by the ticket Scope. Other
-    dirty paths remain in the worktree for explicit triage.
-    """
-    from booley.runtime.ticket_repositories import TicketWorkspaceError
-
-    from .blocking import BlockingError
-    from .colors import yellow
-    from .scope_policy import ScopeTier, classify_path
-
-    logger.warning(
-        "Committing %d leftover edited file(s): %s", len(committable), ", ".join(committable[:5])
-    )
-    terminal.raw(f"  {yellow('LEFTOVER EDITS')} committing {len(committable)} file(s)")
-    try:
-        _commit_ticket_paths(ctx, committable, _leftover_commit_message(ctx, committable))
-    except BlockingError as exc:
-        logger.warning("Leftover-edit commit failed for %s: %s", ctx.slug, exc)
-        block_ticket(
-            ctx,
-            f"Leftover edits could not be committed: {exc}",
-            "developer",
-            run_index=run_index,
-        )
-        terminal.raw(f"  {yellow('[BLOCK]')} leftover edits could not be committed")
-        return True
-
-    try:
-        remaining = _check_ticket_dirty_statuses(ctx)
-    except TicketWorkspaceError as exc:
-        logger.warning("Cannot recheck leftover edits for %s: %s", ctx.slug, exc)
-        block_ticket(
-            ctx,
-            f"Cannot recheck leftover edits after scoped commit: {exc}",
-            "developer",
-            run_index=run_index,
-        )
-        terminal.raw(f"  {yellow('[BLOCK]')} cannot recheck leftover edits")
-        return True
-    # Only authorized paths were meant to be committed. Out-of-scope and
-    # harness-owned leftovers are intentionally preserved for triage.
-    still_dirty = [
-        entry.path
-        for entry in remaining
-        if classify_path(ctx.scope_raw, entry.path, entry.status) is ScopeTier.OWNED
-    ]
-    if not still_dirty:
-        return False
-
-    logger.warning(
-        "Scoped commit left %d uncommitted file(s): %s",
-        len(still_dirty),
-        ", ".join(still_dirty[:5]),
-    )
-    # An authorized scorer path still being dirty means the scoped commit did
-    # not take. Preserve the existing detailed dirty-output diagnosis.
-    scorer_dirty = [path for path in still_dirty if _is_scorer_consumed_path(path)]
-    if scorer_dirty:
-        reason, all_done = _record_scorer_dirty_guardrail(
-            ctx,
-            state_path,
-            scorer_dirty,
-            run_index=run_index,
-        )
-        block_ticket(ctx, reason, "developer", run_index=run_index)
-        label = "[DONE_BUT_DIRTY]" if all_done else "[BLOCK]"
-        terminal.raw(f"  {yellow(label)} scorer files dirty after commit")
-        return True
-
-    block_ticket(
-        ctx,
-        f"Uncommitted files remain after scoped commit: {', '.join(still_dirty[:5])}",
-        "developer",
-        run_index=run_index,
-    )
-    terminal.raw(f"  {yellow('[BLOCK]')} uncommitted edits remain")
-    return True
 
 
 async def _prepare_review_handoff(
@@ -2021,6 +1867,10 @@ async def _launch_developer_agent(
 
     endpoint_env = {
         "BOOLEY_SLUG": slug,
+        "BOOLEY_WORKTREE": str(cwd),
+        "BOOLEY_PAIRED_PROJECT_REPOSITORY": (
+            "1" if _paired_project_repository_required(cwd, project_root) else ""
+        ),
         "BOOLEY_TICKET_TYPE": ticket_type,
         "BOOLEY_TICKET_FILE": str(logs_dir / "ticket.md"),
         "BOOLEY_LOGS_DIR": str(logs_dir),
@@ -2067,6 +1917,18 @@ async def _launch_developer_agent(
         backend_kwargs["developer_budget"] = developer_budget
     with scoped_environment(endpoint_env):
         return await cfg.active_backend.call(params, **backend_kwargs)
+
+
+def _paired_project_repository_required(cwd: Path, project_root: Path | None) -> bool:
+    """Whether this Developer session must retain a paired project checkout."""
+    from booley.runtime.ticket_repositories import (
+        paired_project_repository,
+        resolve_inner_project_repo,
+    )
+
+    if paired_project_repository(cwd) is not None:
+        return True
+    return project_root is not None and resolve_inner_project_repo(project_root) is not None
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:

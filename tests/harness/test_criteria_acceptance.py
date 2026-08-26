@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.dev_support.criteria import cycle_count_criterion_key
 from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
@@ -597,6 +598,64 @@ class TestCheckCriteriaAcceptance:
         assert verdict.unmet_mandatory == ["sim_pass_default"]
         state = DevelopmentState.load(state_path)
         assert state.criteria["sim_pass_default"].detail["stale_source_categories"] == ["tb"]
+
+    def test_changed_declared_cycle_workload_hook_is_stale_unmet(self, tmp_path: Path):
+        work_dir = tmp_path / "work"
+        project_dir = work_dir / ".booley_project"
+        (work_dir / "rtl").mkdir(parents=True)
+        (work_dir / "tb").mkdir()
+        (work_dir / "tools").mkdir()
+        (work_dir / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
+        (work_dir / "tb" / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
+        hook = work_dir / "tools" / "prepare.py"
+        hook.write_text("print('baseline')\n", encoding="utf-8")
+        (work_dir / "design.core").write_text(
+            "CAPI=2:\n"
+            "name: ::design:0\n"
+            "filesets:\n"
+            "  rtl: {files: [rtl/dut.sv]}\n"
+            "  tb: {files: [tb/tb.sv], tags: [tb]}\n"
+            "targets:\n"
+            "  sim: {filesets: [rtl, tb], toplevel: tb}\n",
+            encoding="utf-8",
+        )
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            '[flows.sim]\npre_run_commands = ["python tools/prepare.py"]\n',
+            encoding="utf-8",
+        )
+        key = cycle_count_criterion_key("sim", "smoke")
+        state_path = tmp_path / "logs" / "booley_state.json"
+        state = DevelopmentState.load(state_path)
+        state.slug = "cycle-workload-freshness"
+        state.work_dir = str(work_dir)
+        state.init_criteria(
+            {key: True, "_report_submitted": True},
+            criterion_params={key: {"target": "sim", "test": "smoke", "cycle_count_max": 10}},
+        )
+        state.set_criterion(
+            key,
+            True,
+            detail={
+                "cycles": 5,
+                SOURCE_FINGERPRINT_DETAIL_KEY: {
+                    "categories": ["rtl", "tb", "campaign", "workload"],
+                    "target": "sim",
+                    "fingerprint": compute_source_fingerprint(work_dir, target="sim"),
+                },
+            },
+        )
+        state.set_criterion("_report_submitted", True)
+        state.save()
+        hook.write_text("print('changed')\n", encoding="utf-8")
+
+        verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
+
+        assert verdict.disposition == "failed"
+        assert verdict.unmet_mandatory == [key]
+        entry = DevelopmentState.load(state_path).criteria[key]
+        assert entry.stale is True
+        assert entry.detail["stale_source_categories"] == ["workload"]
 
     @pytest.mark.parametrize(
         ("criterion", "changed_path", "category"),

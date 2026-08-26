@@ -40,6 +40,12 @@ criteria:
       - tb/file1_tb.sv @ config1 @ all @ pass -> pass   # tb @ config @ test @ current -> expected
       - tb/file1_tb.sv @ config1 @ smoke @ fail -> pass  # single named test
       - tb/file2_tb.sv @ config2 @ all @ pass -> pass    # multiple TBs supported
+    cycle_count:                             # -> sim Flow; per Target + named test
+      - target: sim_coremark
+        test: coremark
+        cycle_count_max: 100000              # absolute inclusive cap
+        cycle_count_reduce_at_least: 5       # ≥5% reduction vs base_sha
+        cycle_count_reduce_at_least_cycles: 2000  # ≥2000-cycle reduction vs base_sha
     synthesis_ok:                            # -> synth Flow
       targets: [target1, target2]            # per-target expansion (scoping key is `targets`)
       cell_count_max: 500                    # absolute cap (optional)
@@ -51,16 +57,16 @@ criteria:
 
     # --- Review (global) ---------------------------------------------------
     # Each review focus is a separate criterion. --focus is required.
-    review_rtl_bugs_done: true         # -> terminal advisory review; report, do not fix
-    review_tb_quality_done: true       # -> terminal advisory review; report, do not fix
+    review_rtl_bugs: true              # -> corrective _clean review
+    review_tb_quality: true            # -> corrective _clean review
 
   optional:
     # --- More review focuses (opt-in per ticket) ---------------------------
-    review_rtl_spec_done: true          # -> reviewer --category rtl --focus spec (RTL vs ticket/spec)
-    review_rtl_protocol_done: true      # -> reviewer --category rtl --focus protocol
-    review_rtl_security_done: true      # -> reviewer --category rtl --focus security
-    review_rtl_optimization_done: true  # -> reviewer --category rtl --focus optimization
-    review_rtl_code_style_done: true    # -> reviewer --category rtl --focus code_style
+    review_rtl_spec: true          # -> corrective reviewer --category rtl --focus spec
+    review_rtl_protocol: true      # -> corrective reviewer --category rtl --focus protocol
+    review_rtl_security: true      # -> corrective reviewer --category rtl --focus security
+    review_rtl_optimization: true  # -> corrective reviewer --category rtl --focus optimization
+    review_rtl_code_style: true    # -> corrective reviewer --category rtl --focus code_style
 
     # --- Mutation (per Target; all runnable Target tests are implicit) -----
     # SVA is authored inline as part of TB authoring — no separate criterion.
