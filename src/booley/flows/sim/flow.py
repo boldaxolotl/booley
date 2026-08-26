@@ -23,8 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
-from booley.core.boundary import as_str_list
+from booley.core.boundary import BoundaryError, as_str_list
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -207,6 +208,7 @@ _INCONCLUSIVE_NO_WAVEFORM = (
 # artifact five directory levels deep under .runtime/edalize/simulate/ and
 # findable only by someone who already knew the convention (F-35).
 _TRACE_OK_RE = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
+_TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
 
 # Max failure-excerpt lines per test inside report_text. The MCP server
 # tail-truncates the whole EDA-tool stdout to ~12KB (keeping the END), so one
@@ -254,6 +256,9 @@ class TestResult:
     # waveform, so it rides the first entry.
     trace_path: str = ""
     trace_bytes: int = 0
+    trace_top_scope: str = ""
+    trace_signal_count: int = 0
+    trace_total_ticks: int = 0
     # Work-dir-relative immutable copy of this test's complete simulator
     # output. Empty only when no simulator output was available or no report
     # directory was requested.
@@ -775,12 +780,33 @@ def _trace_artifact(combined: str, work_dir: Path | str) -> tuple[str, int]:
     return display, size
 
 
+def _trace_metadata(combined: str) -> tuple[str, int, int]:
+    """Return ``(top_scope, signal_count, total_ticks)`` from the run-half."""
+    matches = _TRACE_METADATA_RE.findall(combined)
+    if not matches:
+        return "", 0, 0
+    try:
+        metadata = decode_trace_metadata(matches[-1])
+        return metadata.display_scope, metadata.signal_count, metadata.total_ticks
+    except (BoundaryError, json.JSONDecodeError):
+        return "", 0, 0
+
+
 def _trace_line(test: TestResult) -> str | None:
     """The ``trace:`` report line for *test*, or None when it produced none."""
     if not test.trace_path:
         return None
-    size = f" ({_format_bytes(test.trace_bytes)})" if test.trace_bytes else ""
-    return f"  trace: {test.trace_path}{size}"
+    details = []
+    if test.trace_bytes:
+        details.append(_format_bytes(test.trace_bytes))
+    if test.trace_signal_count:
+        details.append(f"{test.trace_signal_count} signals")
+    if test.trace_top_scope:
+        details.append(f"scope {test.trace_top_scope}")
+    if test.trace_total_ticks:
+        details.append(f"{test.trace_total_ticks} ticks")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"  trace: {test.trace_path}{suffix}"
 
 
 def _build_display_lines(
@@ -848,6 +874,9 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
     if test.trace_path:
         entry["trace_path"] = test.trace_path
         entry["trace_bytes"] = test.trace_bytes
+        entry["trace_top_scope"] = test.trace_top_scope
+        entry["trace_signal_count"] = test.trace_signal_count
+        entry["trace_total_ticks"] = test.trace_total_ticks
     if test.run_log_path:
         entry["artifacts"] = {"run_log": test.run_log_path}
     if not test.test_validated:
@@ -1145,6 +1174,12 @@ class SimulateFlow(BooleyFlow):
             "--trace",
             action="store_true",
             help="Enable waveform trace (debugging only — do not use for pass/fail checks)",
+        )
+        parser.add_argument(
+            "--result-verbosity",
+            choices=["compact", "full"],
+            default="compact",
+            help="Cocotb result detail on stdout; full XML/JSON artifacts are always retained",
         )
         # --trace-scope left the surface (ADR 0022, 2026-06-23): the --trace
         # overlay .core traces the full hierarchy at a fixed depth, so there is no
@@ -1831,16 +1866,10 @@ class SimulateFlow(BooleyFlow):
         module: str,
         tests: list[str],
         plusargs: list[str] | None = None,
+        *,
+        trace_scope: str = "",
     ) -> list[str]:
-        """Build the ``booley.sim.cocotb_run`` invocation for one batched run.
-
-        The cocotb mirror of :meth:`_verilator_run_cmd` / :meth:`_icarus_run_cmd`
-        (B1): one invocation carries the whole selected set — the run-half
-        builds ``COCOTB_TEST_FILTER`` from the ``--test`` names and computes the
-        ``cocotb-config``-derived env in-sandbox at run time. No sentinel args:
-        Simulation Sentinels do not apply to Cocotb Targets (decision 6); the
-        verdict comes from ``results.xml``.
-        """
+        """Build one batched Cocotb run-half invocation (ADR 0034)."""
         cmd = [
             "python3",
             "-m",
@@ -1858,6 +1887,7 @@ class SimulateFlow(BooleyFlow):
         # cocotb names can be arbitrary, and a two-token value starting with
         # ``-`` would parse as a new runner option.
         cmd += [f"--test={t}" for t in tests]
+        cmd += ["--result-verbosity", self.args.result_verbosity]
         # F-25: the frozen-simulator-clock watchdog's grace, forwarded so the
         # knob crosses into the sandbox with the run-half invocation.
         cmd += [
@@ -1869,7 +1899,7 @@ class SimulateFlow(BooleyFlow):
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
-            cmd.append("--trace")
+            cmd += ["--trace", "--expected-trace-scope", trace_scope]
         for plusarg in plusargs or []:
             cmd.append(f"--plusarg={plusarg}")
         return cmd
@@ -1941,7 +1971,16 @@ class SimulateFlow(BooleyFlow):
         is_icarus = eda_tool == "icarus"
         marker = "iverilog compilation failed" if is_icarus else "Verilator elaboration failed"
         plusargs = self._target_parameter_plusargs(resolved.parameters)
-        run_line = shlex.join(self._cocotb_run_cmd(rel, eda_tool, module, tests, plusargs))
+        run_line = shlex.join(
+            self._cocotb_run_cmd(
+                rel,
+                eda_tool,
+                module,
+                tests,
+                plusargs,
+                trace_scope=resolved.toplevel,
+            )
+        )
         return [
             "sh",
             "-c",
@@ -2059,7 +2098,16 @@ class SimulateFlow(BooleyFlow):
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         eda_tool = self._eda_tool_for_target(target)
         module = self._cocotb_module_for_target(target) or ""
-        run_line = shlex.join(self._cocotb_run_cmd(rel, eda_tool, module, tests))
+        trace_scope = tb_top_for_target(target, self.args.work_dir, resolved=None)
+        run_line = shlex.join(
+            self._cocotb_run_cmd(
+                rel,
+                eda_tool,
+                module,
+                tests,
+                trace_scope=trace_scope,
+            )
+        )
         # Dry-run parity (ADR 0039): the batch's Pre-Run Commands fire once,
         # between resolution/setup and the build+run — mirrored here.
         pre_lines = self._pre_run_preview_lines(
@@ -2239,6 +2287,9 @@ class SimulateFlow(BooleyFlow):
         trace_path, trace_bytes = (
             _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
         )
+        trace_top_scope, trace_signal_count, trace_total_ticks = (
+            _trace_metadata(combined) if self.args.trace else ("", 0, 0)
+        )
 
         return TestResult(
             name=test_name or target,
@@ -2258,6 +2309,9 @@ class SimulateFlow(BooleyFlow):
             elab_failed=elab_failed,
             trace_path=trace_path,
             trace_bytes=trace_bytes,
+            trace_top_scope=trace_top_scope,
+            trace_signal_count=trace_signal_count,
+            trace_total_ticks=trace_total_ticks,
         )
 
     def _build_error_tail(
@@ -2677,6 +2731,7 @@ class SimulateFlow(BooleyFlow):
             log=log_dir / RUN_LOG_NAME,
             result=log_dir / "result.json",
             results_xml=log_dir / "results.xml",
+            cocotb_results_json=log_dir / "cocotb_results.json",
             # The run-half reports the store it actually produced; fall back to
             # the conventional name when this run parsed no TRACE_OK marker.
             trace=traces[0] if traces else log_dir / "trace.fst",
@@ -3046,6 +3101,9 @@ class SimulateFlow(BooleyFlow):
         trace_path, trace_bytes = (
             _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
         )
+        trace_top_scope, trace_signal_count, trace_total_ticks = (
+            _trace_metadata(combined) if self.args.trace else ("", 0, 0)
+        )
         cycle_sentinels = _resolve_cycle_sentinels(self.args.work_dir)
         test_results: list[TestResult] = []
         for i, (name, verdict, detail) in enumerate(verdicts):
@@ -3087,6 +3145,9 @@ class SimulateFlow(BooleyFlow):
                     elab_failed=elab_failed,
                     trace_path=trace_path if i == 0 else "",
                     trace_bytes=trace_bytes if i == 0 else 0,
+                    trace_top_scope=trace_top_scope if i == 0 else "",
+                    trace_signal_count=trace_signal_count if i == 0 else 0,
+                    trace_total_ticks=trace_total_ticks if i == 0 else 0,
                 )
             )
 

@@ -66,6 +66,7 @@ from .reporting import (
 from .scanner import _load_state_data
 from .validation import (
     format_validate_logs_report,
+    owned_draft_dirty_paths,
     validate_logs,
     validate_ticket_fields,
 )
@@ -184,6 +185,7 @@ def _cmd_validate_ticket(tio, args):
         check_files=True,
         check_git=args.check_git,
         project_root=str(detect_project_root()),
+        allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
     )
     warnings = [e for e in results if e.startswith("[warning] ")]
     errors = [e for e in results if not e.startswith("[warning] ")]

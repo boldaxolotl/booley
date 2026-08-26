@@ -436,6 +436,25 @@ class TestCocotbBatching:
         assert "booley.sim.cocotb_run" in script
         assert script.count("--test=") == 3
         assert "--cocotb-module test_counter" in script
+        assert "--result-verbosity compact" in script
+
+    def test_full_result_verbosity_reaches_the_run_half(self, tmp_path: Path):
+        flow = _make_cocotb_flow(tmp_path, extra_args=["--result-verbosity", "full"])
+        cmd = flow._cocotb_run_cmd("build/ccfg", "icarus", "test_counter", ["test_reset"])
+        index = cmd.index("--result-verbosity")
+        assert cmd[index + 1] == "full"
+
+    def test_trace_scope_reaches_the_run_half(self, tmp_path: Path):
+        flow = _make_cocotb_flow(tmp_path, extra_args=["--trace"])
+        cmd = flow._cocotb_run_cmd(
+            "build/ccfg",
+            "icarus",
+            "test_counter",
+            ["test_reset"],
+            trace_scope="counter",
+        )
+        index = cmd.index("--expected-trace-scope")
+        assert cmd[index + 1] == "counter"
 
     def test_substr_filter_prunes_the_selected_set(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "count"])

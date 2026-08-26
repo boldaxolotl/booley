@@ -626,7 +626,14 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = None):
+def _do_merge(
+    slug,
+    entry,
+    *,
+    cleanup: bool = True,
+    project_root: Path | None = None,
+    allowed_unstaged_rename: tuple[Path, Path] | None = None,
+):
     """Perform the merge step of op_complete. Returns True on success.
 
     ``merge_into`` is usually the branch checked out in the primary worktree
@@ -655,7 +662,12 @@ def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = 
 
     merge_msg = f"merge({slug}): {'integration' if is_integration else 'feature'} completed"
 
-    if not _merge_outer_repository(merge_into, merge_from, merge_msg):
+    if not _merge_outer_repository(
+        merge_into,
+        merge_from,
+        merge_msg,
+        allowed_unstaged_rename=allowed_unstaged_rename,
+    ):
         return False
     if project_root is not None:
         ok, detail = TicketWorkspace.retire(
@@ -673,13 +685,22 @@ def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = 
     return not cleanup or _cleanup_merged_branch(merge_from)
 
 
-def _merge_outer_repository(merge_into: str, merge_from: str, merge_msg: str) -> bool:
+def _merge_outer_repository(
+    merge_into: str,
+    merge_from: str,
+    merge_msg: str,
+    *,
+    allowed_unstaged_rename: tuple[Path, Path] | None = None,
+) -> bool:
     """Merge the RTL feature branch in an existing or temporary checkout."""
     checkout = find_checkout_of_branch(merge_into)
     if checkout:
         # Merge in the existing checkout. Git itself refuses to clobber
         # uncommitted changes, but check first for a clearer error.
-        if not worktree_is_clean(checkout):
+        if not worktree_is_clean(
+            checkout,
+            allowed_unstaged_rename=allowed_unstaged_rename,
+        ):
             print(
                 f"Error: cannot merge into '{merge_into}': its checkout at "
                 f"{checkout} has uncommitted changes",
@@ -805,6 +826,10 @@ def op_complete(
         entry,
         cleanup=on_success.cleanup,
         project_root=tio._project_root,
+        allowed_unstaged_rename=(
+            tio.tickets_dir / "board" / "queue" / Path(str(entry["file"])).name,
+            tio.tickets_dir / str(entry["file"]),
+        ),
     ):
         print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
         return False
