@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
 from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
+from booley.flows.implementation_comparison import ImplementationTargetPair
 from booley.flows.recipe_evidence import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
@@ -131,6 +133,38 @@ def test_relative_ticket_criterion_auto_applies_pinned_baseline(
 
     assert flow._apply_ticket_baseline(["default"]) is None
     assert flow.args.baseline == base_sha
+
+
+def test_paired_baseline_runs_baseline_target_and_keys_candidate(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    flow = _flow(tmp_path, state_file, "--baseline", "v1.0")
+    calls: list[str] = []
+    metrics = FpgaMetrics(lut_count=10, ff_count=20)
+
+    @contextmanager
+    def fake_worktree(_project_root, _ref):
+        baseline = tmp_path / ".booley_project" / ".baseline-wt-test"
+        baseline.mkdir(parents=True, exist_ok=True)
+        yield baseline
+
+    with (
+        patch("booley.flows.fpga.flow.baseline_worktree", fake_worktree),
+        patch("booley.flows.fpga.flow.git_short_sha", return_value="abc1234"),
+        patch.object(
+            flow,
+            "_run_single_target",
+            side_effect=lambda target: calls.append(target) or metrics,
+        ),
+    ):
+        results, short_sha = flow._run_baseline_configs(
+            (ImplementationTargetPair("fpga_before", "fpga_after"),)
+        )
+
+    assert calls == ["fpga_before"]
+    assert short_sha == "abc1234"
+    assert list(results) == ["fpga_after"]
 
 
 def test_changed_fpga_recipe_is_evidence_not_a_rejection(

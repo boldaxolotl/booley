@@ -94,11 +94,13 @@ retry cap as permission to waive a finding silently.
 
 _BASELINE_QOR_RULE = """\
 **BASELINE QoR CRITERIA**: For baseline-relative `synthesis_ok` and \
-`fpga_impl_ok` criteria, the sealed Target recipe is immutable. Booley runs \
-both `base_sha` and the ticket head with that identical recipe. Never alter a \
-Target, constraint, parameter, or build hook during execution. A missing or \
-incorrect recipe requires a `target-contract-change-required` block and a \
-proposal in the run report; it is not a reason to skip comparisons.
+`fpga_impl_ok` criteria, every baseline/candidate Target pair is sealed and \
+immutable. For a plain Target name, the sealed Target recipe is immutable: run \
+both `base_sha` and the ticket head with that identical recipe. An explicit pair \
+may name different frozen Targets. Never alter either Target, constraint, \
+parameter, or build hook during execution. A missing or incorrect Target \
+requires a `target-contract-change-required` block and a proposal in the run \
+report; it is not a reason to skip comparisons.
 
 """
 

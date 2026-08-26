@@ -18,11 +18,12 @@ priority: medium
 
 # -- Seal fields (written only by contract-seal; never author these) --------
 target_contract:
-  schema: 1
+  schema: 2
   outer_sha: <exact outer contract commit>
   project_sha: <exact paired project-data commit or empty>
   surface_digest: <normalized Target/control-plane SHA-256>
   targets: [<every criterion Target>]
+  bindings: [<canonical directed criterion Target bindings>]
 base_sha: <identical to target_contract.outer_sha>
 
 # -- Acceptance criteria ------------------------------------------------
@@ -41,11 +42,13 @@ criteria:
       - tb/file1_tb.sv @ config1 @ smoke @ fail -> pass  # single named test
       - tb/file2_tb.sv @ config2 @ all @ pass -> pass    # multiple TBs supported
     synthesis_ok:                            # -> synth Flow
-      targets: [target1, target2]            # per-target expansion (scoping key is `targets`)
+      targets:                               # strings use one Target at both revisions
+        - target1
+        - {baseline: target2_before, candidate: target2_after}  # relative thresholds only
       cell_count_max: 500                    # absolute cap (optional)
       cell_count_reduce_at_least: 10         # require ≥10% reduction vs base_sha (optional)
     fpga_impl_ok:                            # -> fpga Flow
-      targets: [target1, target2]            # per-target expansion
+      targets: [target1, target2]            # paired mapping form is also supported
       lut_count_max: 100000                  # FPGA LUT budget (optional)
       ff_count_max: 100000                   # FPGA flip-flop budget (optional)
 

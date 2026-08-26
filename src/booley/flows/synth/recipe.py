@@ -15,6 +15,7 @@ from booley.yosys.syn_core import (
     resolve_frontend,
     resolve_slang_options,
 )
+from booley.yosys.syn_discovery import resolve_liberty_lenient
 
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
@@ -168,6 +169,8 @@ def synthesis_recipe_snapshot(
             digest = None
         constraints.append({"name": sdc_file.name, "sha256": digest})
 
+    synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
+    liberty, _found = resolve_liberty_lenient(None)
     return {
         "schema": 1,
         "target": target,
@@ -177,6 +180,10 @@ def synthesis_recipe_snapshot(
         "recipe_args": synthesis_recipe_args(resolved.flow_options, args, target=target),
         "constraints": constraints,
         "default_clock_ps": getattr(args, "default_clock", None),
+        "technology": {
+            "liberty": liberty.as_posix(),
+            "physical_pdk": "nangate45" if synth_mode == SynthMode.PHYSICAL else None,
+        },
     }
 
 

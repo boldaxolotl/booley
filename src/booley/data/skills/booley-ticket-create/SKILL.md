@@ -262,6 +262,11 @@ absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_
 mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" table, also in
 `docs/USAGE.md`); it is generated from the validator, so it never drifts.
 
+For a relative threshold, use a plain Target name when baseline and candidate are the same.
+When the ticket intentionally needs different frozen Targets, put
+`{baseline: <before>, candidate: <after>}` in `targets:`. Author both Targets before sealing;
+the candidate determines the expanded Criterion name.
+
 ### Rules
 
 - ≥1 mandatory criterion required
@@ -276,7 +281,8 @@ mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" tabl
   configuration, selected constraint, generator, and build hook is immutable
   after sealing.
 - A future non-relative Target may reference missing RTL/TB paths only when every
-  path is declared Scope `[new]`. A relative-QoR Target must resolve and dry-run
-  completely at the sealed baseline.
+  path is declared Scope `[new]`. For relative QoR, the baseline Target must resolve and
+  dry-run completely at the sealed baseline; a distinct frozen candidate may defer only
+  its Scope `[new]` RTL/TB paths.
 - If a blocked ticket needs a different Target recipe, use `revise-contract`; it
   archives the old identity, discards execution evidence, and restarts authoring.

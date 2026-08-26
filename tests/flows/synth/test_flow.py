@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.dev_support.criteria import BASELINE_TARGET_PARAM
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming, make_clock_timing
@@ -1898,6 +1899,10 @@ class TestBaselineFlow:
             ]
         )
         flow.read_state()
+        flow.state.init_criteria(
+            {"synthesis_ok_lite": True},
+            criterion_params={"synthesis_ok_lite": {BASELINE_TARGET_PARAM: "synth_before"}},
+        )
         infra_metrics = SynthMetrics(
             returncode=2,
             infra_error="FuseSoC could not resolve submodule source vendor/ip/top.sv",
@@ -1921,9 +1926,12 @@ class TestBaselineFlow:
             result = flow._run()
 
         assert result.exit_code == EXIT_ERROR
-        assert "synth baseline lite: infrastructure error" in result.report_text
+        assert (
+            "synth baseline synth_before for candidate lite: infrastructure error"
+            in result.report_text
+        )
         assert "FuseSoC could not resolve submodule source" in result.report_text
-        assert calls == ["lite"]
+        assert calls == ["synth_before"]
 
     def test_aggregate_cannot_report_pass_with_baseline_infra_error(self, flow_and_state):
         flow, _ = flow_and_state

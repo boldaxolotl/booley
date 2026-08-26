@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,6 +73,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FPGA QoR intake pins the same sealed-recipe evidence as synthesis."""
+    from booley.dev_support.criteria import BASELINE_TARGET_PARAM
     from booley.flows.recipe_evidence import (
         BASELINE_REF_PARAM,
         RECIPE_FINGERPRINT_PARAM,
@@ -100,6 +102,13 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
         "resolve_target",
         lambda *_args, **_kwargs: resolved,
     )
+    from booley.flows import baseline_worktree as baseline_module
+
+    @contextmanager
+    def fake_baseline_worktree(project_root, _ref):
+        yield Path(project_root)
+
+    monkeypatch.setattr(baseline_module, "baseline_worktree", fake_baseline_worktree)
     ctx = TicketContext(
         slug="fpga-qor",
         ticket_path=tmp_path / "ticket.md",
@@ -110,17 +119,23 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
         worktree_path=tmp_path,
         base_sha="a" * 40,
     )
-    params = {"fpga_impl_ok_fpga_core": {"lut_count_increase_at_most": 10}}
+    params = {
+        "fpga_impl_ok_fpga_after": {
+            "lut_count_increase_at_most": 10,
+            BASELINE_TARGET_PARAM: "fpga_before",
+        }
+    }
 
     _freeze_fpga_recipe_fingerprints(
         ctx,
-        {"fpga_impl_ok_fpga_core": True},
+        {"fpga_impl_ok_fpga_after": True},
         params,
     )
 
-    frozen = params["fpga_impl_ok_fpga_core"]
+    frozen = params["fpga_impl_ok_fpga_after"]
     assert frozen[BASELINE_REF_PARAM] == "a" * 40
     assert frozen[RECIPE_FINGERPRINT_PARAM]
+    assert frozen[RECIPE_SNAPSHOT_PARAM]["target"] == "fpga_before"
     assert frozen[RECIPE_SNAPSHOT_PARAM]["flow_options"]["part"] == "xc7a35tcpg236-1"
 
 

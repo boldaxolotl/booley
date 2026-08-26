@@ -16,12 +16,44 @@ BASELINE_RECIPE_FINGERPRINT_DETAIL = "_baseline_recipe_fingerprint"
 BASELINE_RECIPE_SNAPSHOT_DETAIL = "_baseline_recipe_snapshot"
 BASELINE_REF_PARAM = "_baseline_ref"
 BASELINE_REF_DETAIL = "_baseline_ref"
+BASELINE_TARGET_DETAIL = "_baseline_target"
+CANDIDATE_TARGET_DETAIL = "_candidate_target"
 
 
 def recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
     """Hash one normalized implementation-recipe snapshot."""
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def implementation_comparison_basis(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Project the measurement methodology that a paired comparison must share.
+
+    Parameters, defines, and filesets deliberately stay outside this projection:
+    changing those design inputs is the reason Target pairs exist. Technology,
+    constraints, top identity, and Flow methodology remain comparison inputs.
+    """
+    if snapshot.get("flow") == "fpga":
+        flow_options = snapshot.get("flow_options")
+        options = flow_options if isinstance(flow_options, Mapping) else {}
+        return {
+            "flow": "fpga",
+            "vlnv": snapshot.get("vlnv"),
+            "toplevel": snapshot.get("toplevel"),
+            "eda_tool": snapshot.get("eda_tool"),
+            "part": options.get("part"),
+            "out_of_context": options.get("out_of_context", False),
+            "constraints": jsonable(snapshot.get("constraints", [])),
+        }
+    return {
+        "flow": "synth",
+        "vlnv": snapshot.get("vlnv"),
+        "toplevel": snapshot.get("toplevel"),
+        "recipe_args": jsonable(snapshot.get("recipe_args", [])),
+        "constraints": jsonable(snapshot.get("constraints", [])),
+        "default_clock_ps": snapshot.get("default_clock_ps"),
+        "technology": jsonable(snapshot.get("technology")),
+    }
 
 
 def recipe_changes(

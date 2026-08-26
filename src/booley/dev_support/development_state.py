@@ -16,14 +16,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.dev_support.criteria import BASELINE_TARGET_PARAM
 from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
     BASELINE_REF_PARAM,
+    BASELINE_TARGET_DETAIL,
+    CANDIDATE_TARGET_DETAIL,
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_DETAIL,
     RECIPE_SNAPSHOT_PARAM,
+    implementation_comparison_basis,
     recipe_changes,
 )
 from booley.flows.source_fingerprint import (  # noqa: F401  # compatibility re-export
@@ -488,8 +492,29 @@ class DevelopmentState:
             )
         baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
         current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
+        candidate_target = detail.get(CANDIDATE_TARGET_DETAIL)
+        baseline_target = detail.get(BASELINE_TARGET_DETAIL) or entry.params.get(
+            BASELINE_TARGET_PARAM,
+            candidate_target,
+        )
         if isinstance(baseline_snapshot, dict):
             complete = complete and isinstance(current_snapshot, dict)
+            if isinstance(baseline_target, str):
+                complete = complete and baseline_snapshot.get("target") == baseline_target
+        if isinstance(current_snapshot, dict) and isinstance(candidate_target, str):
+            complete = complete and current_snapshot.get("target") == candidate_target
+        basis_changes: list[dict[str, Any]] = []
+        if (
+            isinstance(baseline_snapshot, dict)
+            and isinstance(current_snapshot, dict)
+            and isinstance(baseline_target, str)
+            and isinstance(candidate_target, str)
+            and baseline_target != candidate_target
+        ):
+            baseline_basis = implementation_comparison_basis(baseline_snapshot)
+            current_basis = implementation_comparison_basis(current_snapshot)
+            basis_changes = recipe_changes(baseline_basis, current_basis)
+            complete = complete and not basis_changes
         changes = (
             recipe_changes(baseline_snapshot, current_snapshot)
             if isinstance(baseline_snapshot, dict) and isinstance(current_snapshot, dict)
@@ -500,11 +525,14 @@ class DevelopmentState:
             "target": current_snapshot.get("target")
             if isinstance(current_snapshot, dict)
             else None,
+            "baseline_target": baseline_target,
+            "candidate_target": candidate_target,
             "baseline_ref": expected_ref,
             "baseline_fingerprint": expected_recipe,
             "current_fingerprint": actual_recipe,
             "changed": actual_recipe != expected_recipe,
             "changes": changes,
+            "comparison_basis_changes": basis_changes,
         }
         checks.append(
             {
@@ -512,7 +540,7 @@ class DevelopmentState:
                 "expected": expected_ref or expected_recipe,
                 "actual": actual_ref or actual_recipe,
                 "pass": complete,
-                "detail": "baseline and current evidence match the sealed recipe"
+                "detail": "baseline and candidate evidence match the sealed Target pair"
                 if complete
                 else "implementation recipe comparison evidence is incomplete",
             }

@@ -8,11 +8,13 @@ from booley.dev_support.criteria import (
     CriteriaTemplate,
     CriterionDef,
     CriterionSpec,
+    TargetPair,
     _param_base_metric,
     _split_clock_scope,
     _validate_criterion_params,
     eligible_eda_tool_criterion_families,
     expand_criteria_defs,
+    parse_target_pair,
 )
 
 
@@ -35,6 +37,33 @@ class TestCriterionSpec:
         spec = CriterionSpec("lint_clean", per_target=True)
         result = spec.expand([])
         assert result == [("lint_clean", True)]
+
+
+class TestTargetPair:
+    def test_string_is_equal_pair(self):
+        assert parse_target_pair("synth_default") == TargetPair(
+            baseline="synth_default",
+            candidate="synth_default",
+        )
+
+    def test_mapping_names_both_roles(self):
+        assert parse_target_pair(
+            {"baseline": "synth_before", "candidate": "synth_after"}
+        ) == TargetPair(baseline="synth_before", candidate="synth_after")
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            {"baseline": "synth_before"},
+            {"candidate": "synth_after"},
+            {"baseline": "synth_before", "candidate": ""},
+            {"baseline": "synth_before", "candidate": "synth_after", "extra": True},
+        ],
+    )
+    def test_rejects_malformed_pair(self, value):
+        with pytest.raises(ValueError):
+            parse_target_pair(value)
 
 
 class TestCriteriaTemplateDefaults:
@@ -437,6 +466,95 @@ class TestSynthesisOkParsing:
         synth_spec = next(s for s in t.specs if s.name == "synthesis_ok")
         assert synth_spec.params["cell_count_max"] == 500
         assert synth_spec.params["area_reduce_at_least"] == 10
+
+    def test_paired_target_expands_by_candidate(self):
+        yaml_section = {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                    "area_reduce_at_least": 10,
+                }
+            }
+        }
+
+        template = CriteriaTemplate.from_yaml(yaml_section)
+
+        assert template.expand([]) == {"synthesis_ok_synth_after": True}
+        assert template.expand_params([])["synthesis_ok_synth_after"] == {
+            "area_reduce_at_least": 10,
+            "_baseline_target": "synth_before",
+        }
+
+    def test_mixed_legacy_and_paired_targets(self):
+        yaml_section = {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": [
+                        "synth_default",
+                        {"baseline": "synth_before", "candidate": "synth_after"},
+                    ],
+                    "area_reduce_at_least": 10,
+                }
+            }
+        }
+
+        template = CriteriaTemplate.from_yaml(yaml_section)
+
+        assert template.expand([]) == {
+            "synthesis_ok_synth_default": True,
+            "synthesis_ok_synth_after": True,
+        }
+        assert template.expand_params([])["synthesis_ok_synth_default"] == {
+            "area_reduce_at_least": 10
+        }
+
+    def test_pair_requires_relative_threshold(self):
+        yaml_section = {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                    "cell_count_max": 500,
+                }
+            }
+        }
+
+        with pytest.raises(ValueError, match="relative threshold"):
+            CriteriaTemplate.from_yaml(yaml_section)
+
+    def test_conflicting_candidate_baselines_are_rejected(self):
+        yaml_section = {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": [
+                        {"baseline": "synth_a", "candidate": "synth_after"},
+                        {"baseline": "synth_b", "candidate": "synth_after"},
+                    ],
+                    "area_reduce_at_least": 10,
+                }
+            }
+        }
+
+        with pytest.raises(ValueError, match="conflicting baselines"):
+            CriteriaTemplate.from_yaml(yaml_section)
+
+    def test_conflicting_pair_across_sections_is_rejected(self):
+        yaml_section = {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_a", "candidate": "synth_after"}],
+                    "area_reduce_at_least": 10,
+                }
+            },
+            "optional": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_b", "candidate": "synth_after"}],
+                    "area_reduce_at_least": 5,
+                }
+            },
+        }
+
+        with pytest.raises(ValueError, match="across criteria sections"):
+            CriteriaTemplate.from_yaml(yaml_section)
 
 
 class TestClockScopedParamValidation:

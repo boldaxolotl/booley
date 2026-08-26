@@ -341,11 +341,17 @@ def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) 
                 f"chore({slug}): seal project Target contract",
             )
         outer_sha = _commit_changes(outer, outer_changes, f"chore({slug}): seal Target contract")
+        criterion_bindings = criterion_targets(fields.get("criteria"))
         contract = build_contract(
             outer,
             outer_sha=outer_sha,
             project_sha=project_sha,
-            targets=(binding.target for binding in criterion_targets(fields.get("criteria"))),
+            targets=(
+                target
+                for binding in criterion_bindings
+                for target in (binding.target, binding.baseline)
+            ),
+            bindings=criterion_bindings,
         )
         update_frontmatter(
             ticket,
