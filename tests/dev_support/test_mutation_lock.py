@@ -129,6 +129,12 @@ class TestLockValidity:
         m.schema_version = "0.0"
         assert lm.is_lock_valid(m, ["a.sv"], {"a.sv": "sha256:x"}) is False
 
+    def test_runtime_mux_lock_is_invalidated(self):
+        m = self._meta(["a.sv"], {"a.sv": "sha256:x"})
+        m.schema_version = "1.4"
+
+        assert lm.is_lock_valid(m, ["a.sv"], {"a.sv": "sha256:x"}) is False
+
 
 # ---------------------------------------------------------------------------
 # Wipe
