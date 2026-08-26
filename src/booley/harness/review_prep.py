@@ -24,7 +24,7 @@ from booley.core.models import AgentCallParams, AgentResult
 from booley.dev_support.development_state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.paths import skills_dir
-from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
     project_repository_expected,
@@ -232,7 +232,7 @@ def _resolve_context(
     worktree = Path(checkout).resolve()
     head_sha = _git(worktree, "rev-parse", "HEAD").strip()
     base_sha = _resolve_base_sha(worktree, entry, head_sha)
-    project_repository = _resolve_project_review_repository(worktree, slug)
+    project_repository = _resolve_project_review_repository(project_root, worktree, slug)
     return ReviewPrepContext(
         project_root=project_root,
         slug=slug,
@@ -249,12 +249,19 @@ def _resolve_context(
 
 
 def _resolve_project_review_repository(
-    worktree: Path, slug: str
+    project_root: Path, worktree: Path, slug: str
 ) -> ProjectReviewRepository | None:
     repository = paired_project_repository(worktree)
     if repository is None:
         if project_repository_expected(worktree):
-            raise ReviewPrepError("configured project repository has no paired ticket checkout")
+            try:
+                configured_project_dir = resolve_project_dir(project_root)
+            except FileNotFoundError:
+                configured_project_dir = None
+            if configured_project_dir is None or (configured_project_dir / ".git").exists():
+                raise ReviewPrepError(
+                    "configured project repository has no paired ticket checkout"
+                )
         return None
     feature_branch = _git(repository.worktree, "branch", "--show-current").strip()
     expected = f"booley-ticket/{slug}"

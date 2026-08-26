@@ -153,6 +153,64 @@ def test_resolve_context_accepts_blocked_ticket(tmp_path: Path, monkeypatch):
     assert ctx.ticket_path == tmp_path / "tickets" / "board/blocked/demo.md"
 
 
+def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
+    tmp_path: Path, monkeypatch
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_dir = project_root / rp.PROJECT_DIR_NAME
+    project_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+
+    checkout = tmp_path / "worktree"
+    head_sha = _create_git_snapshot(checkout, {"source.txt": "committed\n"})
+    (checkout / rp.PROJECT_DIR_NAME).mkdir()
+    exclude = checkout / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as stream:
+        stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
+
+    class FakeTicketIO:
+        logs_dir = project_dir / "tickets" / "logs"
+
+        def find_ticket(self, _slug):
+            return {
+                "status": "review",
+                "file": "board/review/demo.md",
+                "feature_branch": "demo",
+                "base_sha": head_sha,
+                "on_success": {"triage_report": False},
+            }
+
+    monkeypatch.setattr(rp, "tickets_dir_from_project_root", lambda _root: project_dir / "tickets")
+    monkeypatch.setattr(rp, "TicketIO", lambda *_args, **_kwargs: FakeTicketIO())
+    monkeypatch.setattr(rp, "_find_checkout", lambda *_args: checkout)
+
+    ctx = rp._resolve_context(project_root, "demo", allow_report_disabled=True)
+
+    assert ctx.worktree == checkout.resolve()
+    assert ctx.project_repository is None
+
+
+def test_project_review_repository_rejects_missing_pair_for_standalone_project_repo(
+    tmp_path: Path, monkeypatch
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_dir = project_root / rp.PROJECT_DIR_NAME
+    _create_git_snapshot(project_dir, {"ticket-data.txt": "committed\n"})
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+
+    checkout = tmp_path / "worktree"
+    _create_git_snapshot(checkout, {"source.txt": "committed\n"})
+    (checkout / rp.PROJECT_DIR_NAME).mkdir()
+    exclude = checkout / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as stream:
+        stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
+
+    with pytest.raises(rp.ReviewPrepError, match="has no paired ticket checkout"):
+        rp._resolve_project_review_repository(project_root, checkout, "demo")
+
+
 def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: Path):
     ctx = _ctx(tmp_path)
     assessment = _assessment()
