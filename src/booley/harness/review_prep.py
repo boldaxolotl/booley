@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -100,6 +100,7 @@ class ReviewPrepOutcome:
     status: str
     message: str
     html_path: Path | None = None
+    package_path: Path | None = None
 
     @property
     def ready(self) -> bool:
@@ -279,6 +280,12 @@ def _prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
+def _review_prompt(ctx: ReviewPrepContext) -> tuple[str, str]:
+    """Return prompt text and freshness identity without loading it when disabled."""
+    prompt = _prompt_text() if ctx.triage_report_enabled else ""
+    return prompt, _prompt_hash(prompt)
+
+
 def _manifest_path(ctx: ReviewPrepContext) -> Path:
     return ctx.runtime_dir / "manifest.json"
 
@@ -407,7 +414,7 @@ def _fresh_outcome(
         if html_path is not None
         else "existing review briefing is current; HTML is unavailable"
     )
-    return ReviewPrepOutcome("fresh", message, html_path)
+    return ReviewPrepOutcome("fresh", message, html_path, briefing_path)
 
 
 def _base_manifest(
@@ -950,29 +957,89 @@ def _failure_status(exc: Exception) -> str:
 
 async def _resolve_stable_context(project_root: Path, slug: str) -> ReviewPrepContext:
     """Resolve review inputs after any detached ticket jobs have drained."""
-    ctx = _resolve_context(project_root, slug)
+    ctx = _resolve_context(project_root, slug, allow_report_disabled=True)
     if await wait_for_ticket_jobs(ctx.log_dir):
-        return _resolve_context(project_root, slug)
+        return _resolve_context(project_root, slug, allow_report_disabled=True)
     return ctx
 
 
-async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and auditable
+def _no_agent_assessment(facts: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the conservative assessment used when semantic review is disabled."""
+    scope = facts.get("scope", {})
+    deviations = scope.get("deviations", []) if isinstance(scope, Mapping) else []
+    return {
+        "recommendation": "hold",
+        "reason": "the ticket opted out of agent-prepared review assessment",
+        "decision_blockers": ["Human review is required before approval."],
+        "scope_deviations": [
+            {
+                "path": path,
+                "classification": "Needs review",
+                "reason": "No report agent was requested for this ticket.",
+            }
+            for path in deviations
+        ],
+        "developer_summary": "Agent-prepared summary disabled by ticket configuration.",
+        "uncertainties": "Inspect the prepared diffs and developer report manually.",
+        "optional_omissions": "HTML explanation and semantic assessment.",
+        "findings": [],
+    }
+
+
+def _prepare_no_agent_package(
+    ctx: ReviewPrepContext,
+    prompt_sha: str,
+    source_sha: str,
+    started: float,
+) -> ReviewPrepOutcome:
+    """Persist the same typed package without making the optional report-agent call."""
+    facts = build_review_facts(ctx)
+    _write_json(ctx.runtime_dir / "facts.json", facts)
+    briefing_path = write_triage_package(
+        ctx,
+        facts,
+        _no_agent_assessment(facts),
+        None,
+        None,
+    )
+    source_sha = _source_fingerprint(ctx)
+    duration = time.monotonic() - started
+    manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
+    manifest.update(
+        {
+            "briefing_path": str(briefing_path),
+            "briefing_sha256": _file_sha256(briefing_path),
+            "duration_s": round(duration, 2),
+            "html_path": None,
+            "html_error": "agent-prepared HTML explanation disabled by ticket configuration",
+        }
+    )
+    _write_json(_manifest_path(ctx), manifest)
+    return ReviewPrepOutcome(
+        "ready",
+        "deterministic review package prepared; HTML explanation disabled",
+        package_path=briefing_path,
+    )
+
+
+async def prepare_review(  # noqa: PLR0912, PLR0915 - lifecycle remains linear and auditable
     project_root: Path, slug: str, *, force: bool = False
 ) -> ReviewPrepOutcome:
-    """Prepare one ticket's HTML explanation; failures are returned, never raised."""
+    """Prepare one ticket's review package; failures are returned, never raised."""
     started = time.monotonic()
     call_recorded = False
     try:
         resolved_root = project_root.resolve()
         ctx = await _resolve_stable_context(resolved_root, slug)
-        exact_prompt = _prompt_text()
-        prompt_sha = _prompt_hash(exact_prompt)
+        exact_prompt, prompt_sha = _review_prompt(ctx)
         source_sha = _source_fingerprint(ctx)
         if not force and (
             fresh := _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
         ):
             return fresh
         _write_json(_manifest_path(ctx), _base_manifest(ctx, prompt_sha, source_sha, "running"))
+        if not ctx.triage_report_enabled:
+            return _prepare_no_agent_package(ctx, prompt_sha, source_sha, started)
         evidence = _collect_git_evidence(ctx)
         facts = build_review_facts(ctx)
         _write_json(ctx.runtime_dir / "facts.json", facts)
@@ -1031,9 +1098,11 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
         _write_json(_manifest_path(ctx), manifest)
         if html_path is None:
             return ReviewPrepOutcome(
-                "ready", "review briefing prepared; HTML explanation unavailable"
+                "ready",
+                "review briefing prepared; HTML explanation unavailable",
+                package_path=briefing_path,
             )
-        return ReviewPrepOutcome("ready", "review package prepared", html_path)
+        return ReviewPrepOutcome("ready", "review package prepared", html_path, briefing_path)
     except Exception as exc:
         duration = time.monotonic() - started
         if "ctx" not in locals():
@@ -1064,8 +1133,13 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
 
 def verify_review_handoff(project_root: Path, slug: str) -> ReviewPrepOutcome:
     """Return the current ready package or reject review handoff."""
-    ctx = _resolve_context(project_root.resolve(), slug, require_review=False)
-    prompt_sha = _prompt_hash(_prompt_text())
+    ctx = _resolve_context(
+        project_root.resolve(),
+        slug,
+        require_review=False,
+        allow_report_disabled=True,
+    )
+    _prompt, prompt_sha = _review_prompt(ctx)
     source_sha = _source_fingerprint(ctx)
     outcome = _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
     if outcome is None:
@@ -1079,7 +1153,12 @@ async def prepare_review_command(
     """Prepare a review package for a review or blocked ticket."""
     try:
         load_models_config(project_root)
-        _resolve_context(project_root.resolve(), slug, require_review=True)
+        _resolve_context(
+            project_root.resolve(),
+            slug,
+            require_review=True,
+            allow_report_disabled=True,
+        )
     except Exception as exc:
         logger.exception("Manual triage report setup failed for %s", slug)
         _write_early_failure(project_root.resolve(), slug, exc)
@@ -1101,27 +1180,9 @@ def review_briefing_command(
         )
         if not ctx.triage_report_enabled:
             facts = build_review_facts(ctx)
-            scope = facts.get("scope", {})
-            deviations = scope.get("deviations", []) if isinstance(scope, dict) else []
             package_value = {
                 **facts,
-                "assessment": {
-                    "recommendation": "hold",
-                    "reason": "the ticket opted out of agent-prepared review assessment",
-                    "decision_blockers": ["Human review is required before approval."],
-                    "scope_deviations": [
-                        {
-                            "path": path,
-                            "classification": "Needs review",
-                            "reason": "No report agent was requested for this ticket.",
-                        }
-                        for path in deviations
-                    ],
-                    "developer_summary": "Agent-prepared summary disabled by ticket configuration.",
-                    "uncertainties": "Inspect the prepared diffs and developer report manually.",
-                    "optional_omissions": "HTML explanation and semantic assessment.",
-                    "findings": [],
-                },
+                "assessment": _no_agent_assessment(facts),
                 "html_path": None,
                 "explanation": None,
             }

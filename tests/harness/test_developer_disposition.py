@@ -75,6 +75,17 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
         "archive": patch("booley.ticket_board.archive.op_archive"),
     }
     mocks = {name: p.start() for name, p in patches.items()}
+    mocks["handoff"].return_value = True
+    mocks["prepare_review"].return_value = ReviewPrepOutcome(
+        "ready",
+        "prepared",
+        package_path=Path("/tmp/review-package.json"),
+    )
+    mocks["verify_review"].return_value = ReviewPrepOutcome(
+        "fresh",
+        "current",
+        package_path=Path("/tmp/review-package.json"),
+    )
     return mocks, patches
 
 
@@ -92,15 +103,23 @@ class TestResolveTicketDisposition:
         verdict = CriteriaVerdict(disposition="review")
         mocks, patches = _patch_disposition_collaborators(verdict)
         mocks["prepare_review"].return_value = ReviewPrepOutcome(
-            "ready", "HTML explanation prepared", tmp_path / "report.html"
+            "ready",
+            "HTML explanation prepared",
+            tmp_path / "report.html",
+            tmp_path / "review-package.json",
         )
+        mocks["verify_review"].return_value = mocks["prepare_review"].return_value
         try:
-            await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
+            result = await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
             assert mocks["handoff"].call_count == 1
             assert mocks["prepare_review"].await_count == 1
             assert mocks["block"].call_count == 0
             assert mocks["fail"].call_count == 0
             assert mocks["archive"].call_count == 0
+            assert result is not None
+            assert result.slug == ctx.slug
+            assert result.review_package_path == tmp_path / "review-package.json"
+            assert result.html_path == tmp_path / "report.html"
         finally:
             _stop_all(patches)
 
@@ -115,7 +134,12 @@ class TestResolveTicketDisposition:
             status = json.loads(status_path.read_text(encoding="utf-8"))
             assert status["step"] == "post-processing"
             assert mocks["handoff"].call_count == 0
-            return ReviewPrepOutcome("ready", "prepared", tmp_path / "report.html")
+            return ReviewPrepOutcome(
+                "ready",
+                "prepared",
+                tmp_path / "report.html",
+                tmp_path / "review-package.json",
+            )
 
         mocks["prepare_review"].side_effect = prepare
         try:
@@ -131,7 +155,9 @@ class TestResolveTicketDisposition:
         verdict = CriteriaVerdict(disposition="review")
         mocks, patches = _patch_disposition_collaborators(verdict)
         mocks["prepare_review"].return_value = ReviewPrepOutcome(
-            "ready", "review briefing prepared; HTML explanation unavailable"
+            "ready",
+            "review briefing prepared; HTML explanation unavailable",
+            package_path=tmp_path / "review-package.json",
         )
         try:
             await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 3)
@@ -163,14 +189,17 @@ class TestResolveTicketDisposition:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "on_success",
+        ("on_success", "expected_preparations"),
         [
-            OnSuccess(triage_report=False),
-            OnSuccess(destination="done", triage_report=True),
+            (OnSuccess(triage_report=False), 1),
+            (OnSuccess(destination="done", triage_report=True), 0),
         ],
     )
-    async def test_review_skips_preparation_when_not_applicable(
-        self, tmp_path: Path, on_success: OnSuccess
+    async def test_review_prepares_package_only_when_landing_in_review(
+        self,
+        tmp_path: Path,
+        on_success: OnSuccess,
+        expected_preparations: int,
     ):
         ctx = _make_ctx(tmp_path)
         ctx.on_success = on_success
@@ -178,7 +207,7 @@ class TestResolveTicketDisposition:
         try:
             await _resolve_ticket_disposition(ctx, tmp_path / "state.json", tmp_path, 0)
             assert mocks["handoff"].call_count == 1
-            assert mocks["prepare_review"].await_count == 0
+            assert mocks["prepare_review"].await_count == expected_preparations
         finally:
             _stop_all(patches)
 

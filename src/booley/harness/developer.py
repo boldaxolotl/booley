@@ -77,8 +77,40 @@ from .worktree_health import check_worktree_health
 
 if TYPE_CHECKING:
     from .developer_guardrails import DirtyFile
+    from .review_prep import ReviewPrepOutcome
 
 logger = logging.getLogger(__name__)
+
+RUN_RESULT_PREFIX = "BOOLEY_RUN_RESULT "
+
+
+@dataclass(frozen=True)
+class TicketRunResult:
+    """Stable command-line handoff emitted when a ticket enters review."""
+
+    slug: str
+    review_package_path: Path
+    html_path: Path | None = None
+    disposition: str = "review"
+    version: int = 1
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "slug": self.slug,
+            "disposition": self.disposition,
+            "review_package_path": str(self.review_package_path),
+            "html_path": str(self.html_path) if self.html_path is not None else None,
+        }
+
+    def to_cli_line(self) -> str:
+        """Return a greppable JSON record that can coexist with normal run logs."""
+        return RUN_RESULT_PREFIX + _json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Lightweight helpers that replace Checkpoint
@@ -155,7 +187,7 @@ async def run_ticket(
     *,
     save_transcripts: bool = True,
     use_console: bool = False,
-) -> None:
+) -> TicketRunResult | None:
     """Execute the full developer flow for a ticket.
 
     Args:
@@ -172,9 +204,8 @@ async def run_ticket(
         project_root = Path.cwd()
 
     if use_console:
-        await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
-    else:
-        await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
+        return await _run_with_console(ticket_path_or_slug, project_root, save_transcripts)
+    return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
 
 
 async def _prepare_ticket(
@@ -208,14 +239,14 @@ async def _run_log_mode(
     ticket_path_or_slug: str,
     project_root: Path,
     save_transcripts: bool,
-) -> None:
+) -> TicketRunResult | None:
     """Original (no-TUI) flow: prepare, then run the ticket body inline."""
     exec_start = time.monotonic()
     ctx = await _prepare_ticket(ticket_path_or_slug, project_root, save_transcripts)
     setup_file_logging(ticket_human_log_file(ctx.logs_dir, "harness.log"))
     open_log(ticket_human_log_file(ctx.logs_dir, "run.log"))
     try:
-        await _run_ticket_body(ctx, project_root, exec_start)
+        return await _run_ticket_body(ctx, project_root, exec_start)
     finally:
         close_log()
         teardown_file_logging()
@@ -281,7 +312,11 @@ def _log_final_cost(ctx: TicketContext, exec_start: float) -> None:
     terminal.run_totals(exec_elapsed, cost)
 
 
-async def _run_ticket_body(ctx: TicketContext, project_root: Path, exec_start: float) -> None:
+async def _run_ticket_body(
+    ctx: TicketContext,
+    project_root: Path,
+    exec_start: float,
+) -> TicketRunResult | None:
     """Inner execution body -- separated so teardown_file_logging always runs."""
     logger.debug(
         "Execution started for %s (type=%s, branch=%s)", ctx.slug, ctx.ticket_type, ctx.branch
@@ -299,7 +334,7 @@ async def _run_ticket_body(ctx: TicketContext, project_root: Path, exec_start: f
         setup_blocked = await _run_setup_step(ctx, project_root)
         if setup_blocked:
             await _prepare_blocked_triage(ctx, project_root)
-            return
+            return None
 
     # A blocked ticket may have received an expanded scope during triage while
     # retaining its worktree and completed setup marker. Refresh the persisted
@@ -316,7 +351,7 @@ async def _run_ticket_body(ctx: TicketContext, project_root: Path, exec_start: f
             )
         except OSError as exc:
             fail_ticket(ctx, f"scope guard refresh failed: {exc}", "setup")
-            return
+            return None
 
     # Setup created the worktree -- refresh the click-link resolver so
     # post-setup file clicks resolve against the worktree copy with a
@@ -334,13 +369,14 @@ async def _run_ticket_body(ctx: TicketContext, project_root: Path, exec_start: f
         fail_ticket(
             ctx, f"worktree cleanup failed: {type(e).__name__}: {e}", ctx.current_step or "setup"
         )
-        return
+        return None
 
     # ---- Developer Agent (criteria-based) ----
-    await _run_developer_path(ctx, project_root)
+    result = await _run_developer_path(ctx, project_root)
 
     set_current_step("")
     _log_final_cost(ctx, exec_start)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +388,7 @@ async def _run_with_console(
     ticket_path_or_slug: str,
     project_root: Path,
     save_transcripts: bool,
-) -> None:
+) -> TicketRunResult | None:
     """Run the full ticket flow inside the Console TUI.
 
     The Textual app launches FIRST, with a placeholder header; preflight
@@ -371,8 +407,7 @@ async def _run_with_console(
         from .console.widgets import TicketHeader
     except ImportError:
         logger.warning("Textual not available, falling back to log mode")
-        await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
-        return
+        return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
 
     from .blocking import UserQuitError
 
@@ -383,9 +418,10 @@ async def _run_with_console(
     worker_error: list[BaseException] = []
     harness_started = False
     harness_completed = False
+    ticket_result: TicketRunResult | None = None
 
     async def harness_work() -> None:
-        nonlocal harness_started, harness_completed
+        nonlocal harness_started, harness_completed, ticket_result
         harness_started = True
         exec_start = time.monotonic()
         try:
@@ -413,7 +449,7 @@ async def _run_with_console(
                 # Setup is finished — we're now in the ticket-execution loop.
                 # Past this point MCP endpoint/Criteria/Agent events route normally.
                 app.transition_to(ConsolePhase.RUNNING)
-                await _run_ticket_body(ctx, project_root, exec_start)
+                ticket_result = await _run_ticket_body(ctx, project_root, exec_start)
                 harness_completed = True
             finally:
                 close_log()
@@ -436,8 +472,7 @@ async def _run_with_console(
         app.transition_to(ConsolePhase.EXITED)
         # If the worker never started, we can still retry in log mode.
         if not harness_started:
-            await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
-            return
+            return await _run_log_mode(ticket_path_or_slug, project_root, save_transcripts)
         if not harness_completed:
             logger.error("Console crashed mid-run -- harness was in progress, cannot safely retry")
     finally:
@@ -449,6 +484,7 @@ async def _run_with_console(
 
     if getattr(app, "_user_quit", False) and not harness_completed:
         raise UserQuitError("User quit Console TUI")
+    return ticket_result
 
 
 # ---------------------------------------------------------------------------
@@ -1411,8 +1447,8 @@ async def _prepare_review_handoff(
     ctx: TicketContext,
     project_root: Path,
     run_index: int,
-) -> bool:
-    """Prepare enabled review artifacts; block and return False on failure."""
+) -> ReviewPrepOutcome | None:
+    """Prepare review artifacts; block and return no outcome on failure."""
     from .colors import dim, green, yellow
     from .review_prep import prepare_review
 
@@ -1424,27 +1460,30 @@ async def _prepare_review_handoff(
         outcome = await prepare_review(project_root, ctx.slug)
     finally:
         _console_activity("")
-    if outcome.ready:
-        detail = str(outcome.html_path) if outcome.html_path is not None else outcome.message
+    if outcome.ready and outcome.package_path is not None:
+        detail = str(outcome.package_path)
         terminal.raw(f"  {green('review artifacts ready')} {dim(detail)}")
-        return True
+        return outcome
 
-    reason = f"Review post-processing did not complete: {outcome.message}"
+    detail = (
+        outcome.message if not outcome.ready else f"{outcome.message}: package path unavailable"
+    )
+    reason = f"Review post-processing did not complete: {detail}"
     logger.warning("Review post-processing failed for %s: %s", ctx.slug, outcome.message)
     block_ticket(ctx, reason, "post-processing", run_index=run_index)
     terminal.raw(f"  {yellow('[BLOCK]')} review post-processing failed")
-    return False
+    return None
 
 
-async def _resolve_ticket_disposition(
+async def _resolve_ticket_disposition(  # noqa: PLR0912 - lifecycle routing stays explicit
     ctx: TicketContext,
     state_path: Path,
     project_root: Path,
     run_index: int,
-) -> None:
+) -> TicketRunResult | None:
     """Read final state, check criteria acceptance, and transition the ticket."""
     if _block_changed_target_contract(ctx, run_index):
-        return
+        return None
     from booley.ticket_board.criteria_acceptance import (
         build_criteria_summary_lines,
         check_criteria_acceptance,
@@ -1474,25 +1513,38 @@ async def _resolve_ticket_disposition(
         terminal.raw(f"  {yellow('[BLOCK]')} {verdict.blocked_reason}")
     elif verdict.disposition == "review":
         logger.info("All mandatory criteria met for %s", ctx.slug)
-        if ctx.on_success.destination == "review" and ctx.on_success.triage_report:
-            if not await _prepare_review_handoff(ctx, project_root, run_index):
-                return
+        review_outcome = None
+        if ctx.on_success.destination == "review":
+            review_outcome = await _prepare_review_handoff(ctx, project_root, run_index)
+            if review_outcome is None:
+                return None
             terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
         else:
             terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
-        if ctx.on_success.destination == "review" and ctx.on_success.triage_report:
+        if ctx.on_success.destination == "review":
             from .review_prep import ReviewPrepError, verify_review_handoff
 
             try:
-                verify_review_handoff(project_root, ctx.slug)
+                review_outcome = verify_review_handoff(project_root, ctx.slug)
             except ReviewPrepError as exc:
                 reason = f"Review package changed before handoff: {exc}"
                 logger.warning("Review handoff verification failed for %s: %s", ctx.slug, exc)
                 block_ticket(ctx, reason, "post-processing", run_index=run_index)
                 terminal.raw(f"  {yellow('[BLOCK]')} review package verification failed")
-                return
+                return None
         ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
-        ticket_cli.handoff(project_root, ctx.slug, **ownership)
+        handed_off = ticket_cli.handoff(project_root, ctx.slug, **ownership)
+        if (
+            handed_off
+            and ctx.on_success.destination == "review"
+            and review_outcome is not None
+            and review_outcome.package_path is not None
+        ):
+            return TicketRunResult(
+                slug=ctx.slug,
+                review_package_path=review_outcome.package_path,
+                html_path=review_outcome.html_path,
+            )
     elif verdict.disposition == "failed":
         fail_ticket(
             ctx,
@@ -1507,6 +1559,7 @@ async def _resolve_ticket_disposition(
             f"Unknown criteria verdict disposition {verdict.disposition!r} for "
             f"{ctx.slug} — expected one of: review, blocked, failed"
         )
+    return None
 
 
 def _block_changed_target_contract(ctx: TicketContext, run_index: int) -> bool:
@@ -1621,7 +1674,7 @@ def _write_developer_prompt_snapshot(
 async def _run_developer_path(
     ctx: TicketContext,
     project_root: Path,
-) -> None:
+) -> TicketRunResult | None:
     """Run the developer agent for criteria-based tickets.
 
     Flow: detect crash recovery -> build prompt -> launch agent ->
@@ -1692,7 +1745,7 @@ async def _run_developer_path(
             budget,
         )
         if result is None:
-            return
+            return None
 
         await _drain_outstanding_ticket_jobs(ctx, budget)
 
@@ -1702,7 +1755,7 @@ async def _run_developer_path(
         guardrail_blocked = _run_post_guardrails(ctx, state_path, run_index)
         budget.raise_if_exhausted()
         if guardrail_blocked:
-            return
+            return None
 
         hook_blocked = _run_post_developer_hook(
             ctx,
@@ -1713,8 +1766,8 @@ async def _run_developer_path(
         )
         budget.raise_if_exhausted()
         if hook_blocked:
-            return
-        await run_with_developer_budget(
+            return None
+        return await run_with_developer_budget(
             _resolve_ticket_disposition(ctx, state_path, project_root, run_index),
             budget,
         )
