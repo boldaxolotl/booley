@@ -14,7 +14,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from booley.fusesoc.fusesoc_registry import enumerate_targets, read_core
+from booley.fusesoc import selftest_overlay
+from booley.fusesoc.fusesoc_registry import (
+    available_targets,
+    core_schema_errors,
+    enumerate_targets,
+    read_core,
+    resolve_target,
+)
+from booley.harness import doctor
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
 from booley.harness.init_common import InitContext
 from booley.harness.init_scaffold import (
@@ -25,6 +33,7 @@ from booley.harness.init_scaffold import (
     step_scaffold,
 )
 from booley.runtime.project_dir import reset_cache
+from booley.targets.target_surface import collect_surface
 
 
 def _choices(**overrides) -> ScaffoldChoices:
@@ -63,6 +72,10 @@ def _core(files: dict[str, str]) -> dict:
     return yaml.safe_load(files["my_ip.core"])
 
 
+def _selftest_core(files: dict[str, str]) -> dict:
+    return yaml.safe_load(files["verif/booley_doctor_selftest.core"])
+
+
 # ---------------------------------------------------------------------------
 # Generators — per-combo shapes
 # ---------------------------------------------------------------------------
@@ -75,9 +88,12 @@ def test_default_combo_files_and_shapes() -> None:
         "rtl/my_ip.sv",
         "tb/tb_my_ip.sv",
         "my_ip.core",
+        "verif/booley_doctor_selftest.core",
+        "verif/booley_doctor_selftest/lint_bad.sv",
         "constraints/my_ip.sdc",
         ".booley_project/booley.toml",
         ".booley_project/tests.toml",
+        ".booley_project/selftest/sim/bad-overlay/my_ip.sv",
     }
 
     core = _core(files)
@@ -138,6 +154,120 @@ def test_default_combo_files_and_shapes() -> None:
     rtl = files["rtl/my_ip.sv"]
     assert "`timescale 1ns / 1ps" in rtl
     assert "`timescale 1ns / 1ps" in tb
+
+
+def test_sim_bad_overlay_only_injects_the_reset_defect() -> None:
+    files = scaffold_files(_choices())
+    good_rtl = files["rtl/my_ip.sv"]
+    bad_rtl = files[".booley_project/selftest/sim/bad-overlay/my_ip.sv"]
+    good_body = good_rtl[good_rtl.index("`timescale") :]
+    bad_body = bad_rtl[bad_rtl.index("`timescale") :]
+
+    assert bad_body == good_body.replace(
+        "count <= '0;", "count <= '1;  // Deliberate Doctor self-test defect."
+    )
+
+
+@pytest.mark.parametrize("lint_eda_tool", ["verilator", "verible"])
+def test_scaffold_supplies_doctor_fail_path_fixtures(tmp_path: Path, lint_eda_tool: str) -> None:
+    files = scaffold_files(_choices(lint_eda_tool=lint_eda_tool))
+
+    sim_overlay = ".booley_project/selftest/sim/bad-overlay/my_ip.sv"
+    lint_bad_source = "verif/booley_doctor_selftest/lint_bad.sv"
+    lint_bad_core = "verif/booley_doctor_selftest.core"
+    assert sim_overlay in files
+    assert lint_bad_source in files
+    assert lint_bad_core in files
+
+    for rel, content in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    project_dir = tmp_path / ".booley_project"
+    project = doctor.ProjectAudit(
+        project_root=tmp_path,
+        project_dir=project_dir,
+        booley_toml=tomllib.loads((project_dir / "booley.toml").read_text(encoding="utf-8")),
+        configs_toml=tomllib.loads((project_dir / "tests.toml").read_text(encoding="utf-8")),
+        first_target="sim",
+    )
+    warnings: list[str] = []
+
+    sim_plan = doctor._selftest_plan(project, "sim", warnings.append)
+    lint_plan = doctor._selftest_plan(project, "lint", warnings.append)
+
+    assert warnings == []
+    assert sim_plan is not None
+    assert sim_plan.good.target == sim_plan.bad.target == "sim"
+    assert lint_plan is not None
+    assert lint_plan.good.target == "lint"
+    assert lint_plan.bad.target == "lint_selftest_bad"
+
+    core = _core(files)
+    assert "lint_selftest_bad" not in core["targets"]
+    assert "lint_selftest_bad" not in core["filesets"]
+
+    selftest_core = _selftest_core(files)
+    lint_bad = selftest_core["targets"]["lint_selftest_bad"]
+    assert lint_bad["flow"] == "lint"
+    assert lint_bad["flow_options"] == {
+        "tool": lint_eda_tool,
+        "booley": {"doctor_selftest": True},
+    }
+    assert lint_bad["filesets"] == ["lint_selftest_bad"]
+    assert lint_bad["toplevel"] == "my_ip_lint_selftest_bad"
+    assert selftest_core["filesets"]["lint_selftest_bad"]["files"] == [
+        {"booley_doctor_selftest/lint_bad.sv": {"file_type": "systemVerilogSource"}}
+    ]
+
+    assert core_schema_errors(tmp_path / lint_bad_core) == []
+    assert "lint_selftest_bad" in enumerate_targets(tmp_path)
+    assert "lint_selftest_bad" not in available_targets(tmp_path)
+    assert "lint_selftest_bad" not in {e.ref.name for e in collect_surface(tmp_path).entries()}
+
+
+def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> None:
+    pytest.importorskip("fusesoc")
+    files = scaffold_files(_choices())
+    for rel, content in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    resolved = resolve_target("sim", project_root=tmp_path, build_root=tmp_path / "build")
+    staged_rtl = resolved.build_root / "my_ip.sv"
+    assert staged_rtl.read_text(encoding="utf-8") == files["rtl/my_ip.sv"]
+
+    copied = selftest_overlay.stage_bad_overlay(
+        tmp_path / ".booley_project", "sim", resolved.build_root
+    )
+
+    assert copied == 1
+    assert (
+        staged_rtl.read_text(encoding="utf-8")
+        == files[".booley_project/selftest/sim/bad-overlay/my_ip.sv"]
+    )
+
+
+def test_scaffold_lint_bad_target_resolves_from_dedicated_core(tmp_path: Path) -> None:
+    pytest.importorskip("fusesoc")
+    files = scaffold_files(_choices())
+    for rel, content in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    resolved = resolve_target(
+        "lint_selftest_bad", project_root=tmp_path, build_root=tmp_path / "build"
+    )
+
+    assert resolved.vlnv == "::my_ip_booley_doctor_selftest:0"
+    assert resolved.eda_tool == "verilator"
+    assert len(resolved.rtl_source_files) == 1
+    source = resolved.rtl_source_files[0]
+    assert source.name.endswith("/booley_doctor_selftest/lint_bad.sv")
+    assert source.absolute(resolved.build_root).is_file()
 
 
 def test_asic_scaffold_sdc_excludes_clock_and_asynchronous_reset_from_data_timing() -> None:
@@ -274,6 +404,8 @@ def test_every_combo_parses_with_booleys_own_readers(
     targets = enumerate_targets(tmp_path)
     expected = {"sim", "lint", "synth", "fpga"}
     assert expected <= set(targets)
+    assert "lint_selftest_bad" in targets
+    assert "lint_selftest_bad" not in available_targets(tmp_path)
     reset_cache()
 
 
@@ -389,9 +521,12 @@ def test_step_writes_everything_in_fresh_repo(tmp_path: Path, monkeypatch, capsy
         "rtl/my_ip.sv",
         "tb/tb_my_ip.sv",
         "my_ip.core",
+        "verif/booley_doctor_selftest.core",
+        "verif/booley_doctor_selftest/lint_bad.sv",
         "constraints/my_ip.sdc",
         ".booley_project/booley.toml",
         ".booley_project/tests.toml",
+        ".booley_project/selftest/sim/bad-overlay/my_ip.sv",
     ):
         assert (tmp_path / rel).is_file(), rel
     reset_cache()
