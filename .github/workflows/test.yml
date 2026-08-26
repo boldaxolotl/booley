@@ -189,9 +189,7 @@ jobs:
       - name: Fetch pull-request base for changed-line coverage
         if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'
         shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+        run: git fetch --no-tags --unshallow origin
 
       - name: Enforce 90% changed-line coverage
         if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'

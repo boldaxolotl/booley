@@ -167,6 +167,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "--cov-fail-under=0" in command
     rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["test"]["steps"])
     assert "coverage report --fail-under=80" in rendered_steps
+    assert "git fetch --no-tags --unshallow origin" in rendered_steps
     assert "diff-cover coverage.xml" in rendered_steps
     assert "--fail-under=90" in rendered_steps
 
