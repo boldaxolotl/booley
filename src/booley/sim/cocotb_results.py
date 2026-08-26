@@ -39,6 +39,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
 
+from booley.core.boundary import as_int
+
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum (``_test_verdict``): "pass" / "fail" map directly,
 # "inconclusive" sets the TestResult inconclusive flag.
@@ -448,6 +450,6 @@ def parse_results_line(output: str) -> CocotbResults | None:
             state=str(payload.get("state", STATE_UNPARSEABLE)),
             tests=tests,
             detail=str(payload.get("detail", "")),
-            skipped_unselected=int(payload.get("skipped_unselected", 0) or 0),
+            skipped_unselected=as_int(payload.get("skipped_unselected"), 0) or 0,
         )
     return None

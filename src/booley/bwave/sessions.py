@@ -36,7 +36,9 @@ import json
 import sys
 from pathlib import Path
 
+from booley.bwave.contract import decode_list_metadata
 from booley.bwave.contract import exit_usage as _exit_usage
+from booley.core.boundary import BoundaryError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 
@@ -161,16 +163,9 @@ def _trace_identity(trace: Path) -> str:
     if result.returncode != 0:
         return ""
     try:
-        data = json.loads(result.stdout)["data"]
-        common = str(data.get("scope_prefix") or "").strip()
-        if common:
-            return common
-        roots = [str(scope).strip() for scope in data.get("root_scopes", [])]
-        identity = ", ".join(scope for scope in roots if scope)
-        return identity or (
-            "<top-level signals>" if int(data.get("signal_count", 0) or 0) > 0 else ""
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        metadata = decode_list_metadata(result.stdout)
+        return metadata.display_scope if metadata.signal_count > 0 else ""
+    except (BoundaryError, json.JSONDecodeError):
         return ""
 
 

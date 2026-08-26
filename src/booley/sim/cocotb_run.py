@@ -52,7 +52,7 @@ import re
 import shutil
 import subprocess
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
 from booley.sim.cocotb_results import (
     STATE_OK,
     VERDICT_PASS,
+    CocotbResults,
     find_import_failure,
     format_results_line,
     parse_results_xml,
@@ -361,6 +362,26 @@ def _recover_partial_timeout_results(results, output: str, timed_out: bool, test
     return results
 
 
+@dataclass(frozen=True)
+class _VerdictAssessment:
+    """All inputs needed to emit and persist one Cocotb batch verdict."""
+
+    selected: tuple[str, ...]
+    verdicts: tuple[tuple[str, str, str], ...]
+    sva_errors: int
+    passed: bool
+    inconclusive: bool
+    infrastructure_error: str
+
+
+@dataclass(frozen=True)
+class _TraceFinalization:
+    """Trace markers plus any infrastructure failure they establish."""
+
+    output: str = ""
+    failure_reason: str = ""
+
+
 def _persist_result_transport(
     results,
     work_dir: Path,
@@ -389,6 +410,90 @@ def _selected_verdicts(tests: list[str], results) -> tuple[bool, list[str], list
     return focused, selected, reconcile(selected, results)
 
 
+def _load_cocotb_results(
+    results_file: Path,
+    output: str,
+    timed_out: bool,
+    tests: list[str],
+) -> CocotbResults:
+    """Load current results and replace generic missing-file diagnostics."""
+    results = _recover_partial_timeout_results(
+        parse_results_xml(results_file), output, timed_out, tests
+    )
+    if results.state == STATE_OK:
+        return results
+    detail = find_import_failure(output) or find_sim_time_stall(output)
+    return replace(results, detail=detail) if detail else results
+
+
+def _assess_verdict(
+    results: CocotbResults,
+    output: str,
+    returncode: int,
+    timed_out: bool,
+    tests: list[str],
+    infrastructure_error: str,
+) -> tuple[bool, _VerdictAssessment]:
+    """Reconcile selected tests and classify the batch outcome."""
+    focused, selected, verdicts = _selected_verdicts(tests, results)
+    sva_errors = count_sva_errors(output)
+    all_pass = bool(verdicts) and all(v == VERDICT_PASS for _, v, _ in verdicts)
+    result_inconclusive = results.state != STATE_OK or any(
+        verdict == "inconclusive" for _, verdict, _ in verdicts
+    )
+    trace_inconclusive = bool(infrastructure_error) and all_pass and sva_errors == 0
+    inconclusive = (result_inconclusive or trace_inconclusive) and not timed_out
+    passed = (
+        all_pass
+        and sva_errors == 0
+        and not timed_out
+        and returncode == 0
+        and not infrastructure_error
+    )
+    return focused, _VerdictAssessment(
+        selected=tuple(selected),
+        verdicts=tuple(verdicts),
+        sva_errors=sva_errors,
+        passed=passed,
+        inconclusive=inconclusive,
+        infrastructure_error=infrastructure_error,
+    )
+
+
+def _print_verdict(
+    assessment: _VerdictAssessment,
+    results: CocotbResults,
+    timed_out: bool,
+    skipped_unselected: int,
+) -> None:
+    """Print one unambiguous human Cocotb verdict."""
+    selected = assessment.selected
+    if assessment.passed:
+        skipped_note = f"; {skipped_unselected} skipped" if skipped_unselected else ""
+        print(f"\ncocotb sim PASSED ({len(selected)} tests{skipped_note})")
+    elif timed_out:
+        print("\ncocotb sim FAILED (timed out)")
+    elif assessment.inconclusive:
+        detail = assessment.infrastructure_error or results.detail
+        print(f"\ncocotb sim INCONCLUSIVE ({detail or 'selected tests unresolved'})")
+    else:
+        failed = [name for name, verdict, _ in assessment.verdicts if verdict != VERDICT_PASS]
+        reason = f"{len(failed)}/{len(selected)} tests failed"
+        if assessment.sva_errors:
+            reason += f", {assessment.sva_errors} SVA assertion errors"
+        print(f"\ncocotb sim FAILED ({reason})")
+
+
+def _first_failure(assessment: _VerdictAssessment) -> str:
+    """Return the most actionable durable failure detail."""
+    if assessment.infrastructure_error and assessment.inconclusive:
+        return assessment.infrastructure_error
+    for name, verdict, detail in assessment.verdicts:
+        if verdict != VERDICT_PASS and detail:
+            return f"{name}: {detail}"
+    return assessment.infrastructure_error
+
+
 def _evaluate_verdict(
     output: str,
     returncode: int,
@@ -397,6 +502,7 @@ def _evaluate_verdict(
     results_file: Path,
     tests: list[str],
     result_verbosity: str = "compact",
+    infrastructure_error: str = "",
 ) -> tuple[str, bool]:
     """Parse results.xml, print the verdict sentinels, persist result files.
 
@@ -406,84 +512,37 @@ def _evaluate_verdict(
     scanning (``parse_sim_verdict``) is deliberately absent — sentinels do not
     apply to Cocotb Targets.
     """
-    results = _recover_partial_timeout_results(
-        parse_results_xml(results_file), output, timed_out, tests
+    results = _load_cocotb_results(results_file, output, timed_out, tests)
+    focused, assessment = _assess_verdict(
+        results, output, returncode, timed_out, tests, infrastructure_error
     )
-    # An import failure kills cocotb before it writes any XML — and still exits
-    # 0 — so the parser can only report the symptom ("results.xml not found"),
-    # which it then stamps onto every selected test. The cause is a CRITICAL
-    # line on the console and nowhere but run.log. Promote it to the detail the
-    # user actually sees, or they go debugging the results file (F-6).
-    if results.state != STATE_OK:
-        import_failure = find_import_failure(output)
-        stall = find_sim_time_stall(output)
-        if import_failure:
-            results = replace(results, detail=import_failure)
-        elif stall:
-            # F-25: same promotion for a frozen run loop — "results.xml not
-            # found" is true and useless; the guard already wrote the cause.
-            results = replace(results, detail=stall)
-
-    # No selected list (a Target without tests.toml): every XML test is the
-    # selected set — cocotb ran the module's full suite.
-    focused, selected, verdicts = _selected_verdicts(tests, results)
-
-    sva_errors = count_sva_errors(output)
-    all_pass = bool(verdicts) and all(v == VERDICT_PASS for _, v, _ in verdicts)
-    inconclusive = (
-        results.state != STATE_OK or any(v == "inconclusive" for _, v, _ in verdicts)
-    ) and not timed_out
-    passed = all_pass and sva_errors == 0 and not timed_out and returncode == 0
-
     results_line, skipped_unselected = _persist_result_transport(
         results,
         work_dir,
-        selected,
+        list(assessment.selected),
         focused,
         result_verbosity,
     )
     summary = format_summary(
-        passed,
-        sva_errors,
-        inconclusive=inconclusive and not passed,
+        assessment.passed,
+        assessment.sva_errors,
+        inconclusive=assessment.inconclusive and not assessment.passed,
     )
     print(results_line)
     print(summary)
-    if passed:
-        skipped_note = f"; {skipped_unselected} skipped" if skipped_unselected else ""
-        print(f"\ncocotb sim PASSED ({len(selected)} tests{skipped_note})")
-    elif timed_out:
-        print("\ncocotb sim FAILED (timed out)")
-    elif inconclusive:
-        print(
-            f"\ncocotb sim INCONCLUSIVE ({results.state}: {results.detail})"
-            if results.state != STATE_OK
-            else "\ncocotb sim INCONCLUSIVE (selected tests unresolved)"
-        )
-    else:
-        failed = [n for n, v, _ in verdicts if v != VERDICT_PASS]
-        reason = f"{len(failed)}/{len(selected)} tests failed"
-        if sva_errors:
-            reason += f", {sva_errors} SVA assertion errors"
-        print(f"\ncocotb sim FAILED ({reason})")
-
-    first_err = ""
-    if not passed:
-        for name, verdict, detail in verdicts:
-            if verdict != VERDICT_PASS and detail:
-                first_err = f"{name}: {detail}"
-                break
+    _print_verdict(assessment, results, timed_out, skipped_unselected)
+    effective_returncode = 1 if infrastructure_error and returncode == 0 else returncode
     write_result_json(
         work_dir,
-        passed,
-        sva_errors,
-        first_err,
-        returncode,
-        inconclusive=inconclusive and not passed,
+        assessment.passed,
+        assessment.sva_errors,
+        _first_failure(assessment),
+        effective_returncode,
+        inconclusive=assessment.inconclusive and not assessment.passed,
     )
     output = f"{output}\n{results_line}\n{summary}"
     write_run_log(work_dir, output)
-    return output, passed
+    return output, assessment.passed
 
 
 def _prepare_invocation(
@@ -547,6 +606,14 @@ def _report_infra_failure(work_dir: Path, detail: str) -> None:
     write_run_log(work_dir, f"{msg}\n{format_infra_error(detail)}")
 
 
+def _reset_result_transports(work_dir: Path) -> Path:
+    """Remove verdict transports that must never survive into a new run."""
+    results_file = work_dir / RESULTS_XML_NAME
+    results_file.unlink(missing_ok=True)
+    (work_dir / FULL_RESULTS_JSON_NAME).unlink(missing_ok=True)
+    return results_file
+
+
 def _print_run_banner(
     env: dict[str, str],
     cmd: list[str],
@@ -584,6 +651,7 @@ def run_cocotb_sim(
     max_rundir_bytes: int = 0,
     sim_time_grace_s: float = DEFAULT_SIM_TIME_GRACE_S,
     result_verbosity: str = "compact",
+    expected_trace_scope: str = "",
 ) -> int:
     """Run the edalize-built cocotb sim once; return the process exit code.
 
@@ -600,9 +668,15 @@ def run_cocotb_sim(
     run_cwd = Path(run_cwd).resolve() if run_cwd is not None else build_dir
     work_dir = Path(work_dir).resolve() if work_dir is not None else build_dir
     work_dir.mkdir(parents=True, exist_ok=True)
-    results_file = work_dir / RESULTS_XML_NAME
-    results_file.unlink(missing_ok=True)  # never parse a stale run's verdicts
+    results_file = _reset_result_transports(work_dir)
     tests = list(tests or [])
+    if vcd and not expected_trace_scope.strip():
+        _report_infra_failure(
+            work_dir,
+            "trace requested without an expected DUT scope; the waveform identity "
+            "cannot be validated",
+        )
+        return 1
 
     prepared = _prepare_invocation(
         build_dir=build_dir,
@@ -618,7 +692,7 @@ def run_cocotb_sim(
         return 1
     env, cmd = prepared
 
-    trace = TraceSession(work_dir, None, backend="iverilog") if vcd else None
+    trace = TraceSession(work_dir, expected_trace_scope, backend="iverilog") if vcd else None
     if trace:
         trace.reset_for_run((run_cwd / _DEFAULT_VCD_NAME,))
 
@@ -639,6 +713,10 @@ def run_cocotb_sim(
         hb.stop()
 
     output = "".join(lines)
+    trace_result = _finalize_cocotb_trace(trace, run_cwd, proc) if trace else _TraceFinalization()
+    if trace_result.output:
+        print(trace_result.output)
+        output = f"{output}\n{trace_result.output}"
     output, passed = _evaluate_verdict(
         output,
         proc.returncode,
@@ -647,15 +725,18 @@ def run_cocotb_sim(
         results_file,
         tests,
         result_verbosity,
+        trace_result.failure_reason,
     )
 
-    trace_usable = _finalize_cocotb_trace(trace, run_cwd, proc) if trace else True
-
-    return 0 if passed and trace_usable else 1
+    return 0 if passed else 1
 
 
-def _finalize_cocotb_trace(trace: TraceSession, run_cwd: Path, proc) -> bool:
-    """Postprocess and validate one Cocotb waveform before claiming success."""
+def _finalize_cocotb_trace(
+    trace: TraceSession,
+    run_cwd: Path,
+    proc,
+) -> _TraceFinalization:
+    """Postprocess and validate one Cocotb waveform before any verdict."""
     trace.postprocess(run_cwd / _DEFAULT_VCD_NAME)
     inspection = trace.inspect(trace.find())
     if not inspection.usable:
@@ -663,14 +744,13 @@ def _finalize_cocotb_trace(trace: TraceSession, run_cwd: Path, proc) -> bool:
             f"trace requested but no queryable waveform was produced: {inspection.failure_reason}"
         )
         incident = trace.write_incident(reason, sim_proc=proc)
-        print(f"ERROR: {reason}")
-        print(f"TRACE_INCIDENT: {incident}")
-        return False
+        return _TraceFinalization(
+            output=f"ERROR: {reason}\nTRACE_INCIDENT: {incident}",
+            failure_reason=reason,
+        )
     artifact = inspection.artifact
     assert artifact is not None
-    print(f"TRACE_OK: {artifact.path}")
-    print(artifact.metadata_line())
-    return True
+    return _TraceFinalization(output=f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}")
 
 
 def _positive_int(value: str) -> int:
@@ -750,6 +830,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="compact",
         help="Cocotb result transport detail (full results always remain in artifacts)",
     )
+    p.add_argument(
+        "--expected-trace-scope",
+        default="",
+        help="resolved DUT toplevel required to validate a requested trace",
+    )
     return p.parse_args(argv)
 
 
@@ -768,6 +853,7 @@ def main(argv: list[str] | None = None) -> int:
         max_rundir_bytes=args.max_rundir_bytes,
         sim_time_grace_s=args.sim_time_grace_s,
         result_verbosity=args.result_verbosity,
+        expected_trace_scope=args.expected_trace_scope,
     )
 
 

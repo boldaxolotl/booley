@@ -23,8 +23,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
-from booley.core.boundary import as_str_list
+from booley.core.boundary import BoundaryError, as_str_list
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -785,13 +786,9 @@ def _trace_metadata(combined: str) -> tuple[str, int, int]:
     if not matches:
         return "", 0, 0
     try:
-        payload = json.loads(matches[-1])
-        return (
-            str(payload.get("top_scope") or ""),
-            int(payload.get("signal_count", 0) or 0),
-            int(payload.get("total_ticks", 0) or 0),
-        )
-    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        metadata = decode_trace_metadata(matches[-1])
+        return metadata.display_scope, metadata.signal_count, metadata.total_ticks
+    except (BoundaryError, json.JSONDecodeError):
         return "", 0, 0
 
 
@@ -1868,16 +1865,10 @@ class SimulateFlow(BooleyFlow):
         module: str,
         tests: list[str],
         plusargs: list[str] | None = None,
+        *,
+        trace_scope: str = "",
     ) -> list[str]:
-        """Build the ``booley.sim.cocotb_run`` invocation for one batched run.
-
-        The cocotb mirror of :meth:`_verilator_run_cmd` / :meth:`_icarus_run_cmd`
-        (B1): one invocation carries the whole selected set — the run-half
-        builds ``COCOTB_TEST_FILTER`` from the ``--test`` names and computes the
-        ``cocotb-config``-derived env in-sandbox at run time. No sentinel args:
-        Simulation Sentinels do not apply to Cocotb Targets (decision 6); the
-        verdict comes from ``results.xml``.
-        """
+        """Build one batched Cocotb run-half invocation (ADR 0034)."""
         cmd = [
             "python3",
             "-m",
@@ -1907,7 +1898,7 @@ class SimulateFlow(BooleyFlow):
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
-            cmd.append("--trace")
+            cmd += ["--trace", "--expected-trace-scope", trace_scope]
         for plusarg in plusargs or []:
             cmd.append(f"--plusarg={plusarg}")
         return cmd
@@ -1979,7 +1970,16 @@ class SimulateFlow(BooleyFlow):
         is_icarus = eda_tool == "icarus"
         marker = "iverilog compilation failed" if is_icarus else "Verilator elaboration failed"
         plusargs = self._target_parameter_plusargs(resolved.parameters)
-        run_line = shlex.join(self._cocotb_run_cmd(rel, eda_tool, module, tests, plusargs))
+        run_line = shlex.join(
+            self._cocotb_run_cmd(
+                rel,
+                eda_tool,
+                module,
+                tests,
+                plusargs,
+                trace_scope=resolved.toplevel,
+            )
+        )
         return [
             "sh",
             "-c",
@@ -2097,7 +2097,16 @@ class SimulateFlow(BooleyFlow):
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         eda_tool = self._eda_tool_for_target(target)
         module = self._cocotb_module_for_target(target) or ""
-        run_line = shlex.join(self._cocotb_run_cmd(rel, eda_tool, module, tests))
+        trace_scope = tb_top_for_target(target, self.args.work_dir, resolved=None)
+        run_line = shlex.join(
+            self._cocotb_run_cmd(
+                rel,
+                eda_tool,
+                module,
+                tests,
+                trace_scope=trace_scope,
+            )
+        )
         # Dry-run parity (ADR 0039): the batch's Pre-Run Commands fire once,
         # between resolution/setup and the build+run — mirrored here.
         pre_lines = self._pre_run_preview_lines(

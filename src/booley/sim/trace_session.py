@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from booley.bwave.contract import BWaveListMetadata, decode_list_metadata
+from booley.core.boundary import BoundaryError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 
@@ -142,6 +144,94 @@ def _bwave_valid(path: Path) -> bool:
             return _has_value_change_block(f, size)
     except OSError:
         return False
+
+
+def _read_bwave_metadata(candidate: Path) -> tuple[BWaveListMetadata | None, str]:
+    """Run the bounded hierarchy probe and decode its JSON metadata."""
+    stdout, failure_reason = _run_bwave_list_probe(candidate)
+    if stdout is None:
+        return None, failure_reason
+    try:
+        return decode_list_metadata(stdout), ""
+    except (BoundaryError, json.JSONDecodeError) as exc:
+        return None, f"B-Wave returned malformed trace metadata: {exc}"
+
+
+def _run_bwave_list_probe(candidate: Path) -> tuple[str | None, str]:
+    """Return stdout from one bounded B-Wave hierarchy query."""
+    from booley.sim.bwave_fifo import _find_bwave_bin
+
+    bwave_bin = _find_bwave_bin()
+    if not bwave_bin:
+        return None, "native B-Wave binary is unavailable for trace validation"
+    try:
+        result = subprocess.run(
+            [bwave_bin, "list", str(candidate), "--format", "json", "--limit", "1"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"B-Wave hierarchy probe failed: {exc}"
+    if result.returncode == 0:
+        return result.stdout, ""
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    suffix = f": {detail[-1]}" if detail else ""
+    return None, f"B-Wave could not read the retained trace (rc={result.returncode}){suffix}"
+
+
+def _inspect_trace_candidate(
+    candidate: Path | None,
+    expected_scope: str | None,
+) -> TraceInspection:
+    """Validate one candidate through the native query boundary."""
+    if candidate is None:
+        return TraceInspection(None, "no retained trace artifact was found")
+    if candidate.suffix.lower() != ".fst":
+        return TraceInspection(
+            None,
+            f"retained trace is raw {candidate.suffix or 'data'}, not a queryable FST store",
+        )
+    metadata, failure_reason = _read_bwave_metadata(candidate)
+    if metadata is None:
+        return TraceInspection(None, failure_reason)
+    validation_failure = _trace_metadata_failure(metadata, expected_scope)
+    if validation_failure:
+        return TraceInspection(None, validation_failure)
+    return _trace_artifact(candidate, metadata)
+
+
+def _trace_metadata_failure(
+    metadata: BWaveListMetadata,
+    expected_scope: str | None,
+) -> str:
+    """Return why decoded metadata cannot prove this requested trace."""
+    if metadata.signal_count <= 0:
+        return "retained trace has no signals"
+    if expected_scope and not metadata.contains_scope(expected_scope):
+        return (
+            f"retained trace scope {metadata.display_scope!r} does not contain "
+            f"expected DUT scope {expected_scope!r}"
+        )
+    return ""
+
+
+def _trace_artifact(candidate: Path, metadata: BWaveListMetadata) -> TraceInspection:
+    """Materialize validated metadata with the current on-disk size."""
+    try:
+        size_bytes = candidate.stat().st_size
+    except OSError as exc:
+        return TraceInspection(None, f"retained trace became unreadable: {exc}")
+    return TraceInspection(
+        TraceArtifact(
+            path=candidate,
+            size_bytes=size_bytes,
+            top_scope=metadata.display_scope,
+            signal_count=metadata.signal_count,
+            total_ticks=metadata.total_ticks,
+        )
+    )
 
 
 def _has_value_change_block(f: IO[bytes], size: int) -> bool:
@@ -514,35 +604,11 @@ class TraceSession:
         ``bwave list`` hierarchy query, so malformed and zero-signal stores
         cannot earn ``TRACE_OK`` merely because they contain a value block.
         """
-        candidate = path or self.find()
-        if candidate is None:
-            return TraceInspection(None, "no retained trace artifact was found")
-        if candidate.suffix.lower() != ".fst":
-            return TraceInspection(
-                None,
-                f"retained trace is raw {candidate.suffix or 'data'}, not a queryable FST store",
-            )
-
-        data, failure_reason = self._read_bwave_metadata(candidate)
-        if data is None:
-            return TraceInspection(None, failure_reason)
-        top_scope = str(data["scope_prefix"])
-        if not top_scope:
-            top_scope = ", ".join(str(scope) for scope in data["root_scopes"])
-        signal_count = int(data["signal_count"])
-        total_ticks = int(data["total_ticks"])
-        if signal_count <= 0:
-            return TraceInspection(None, "retained trace has no signals")
-        if not top_scope:
-            top_scope = "<top-level signals>"
-
-        artifact = TraceArtifact(
-            path=candidate,
-            size_bytes=candidate.stat().st_size,
-            top_scope=top_scope,
-            signal_count=signal_count,
-            total_ticks=total_ticks,
-        )
+        inspection = _inspect_trace_candidate(path or self.find(), self._trace_scope)
+        if not inspection.usable:
+            return inspection
+        artifact = inspection.artifact
+        assert artifact is not None
         self._status["current_status"] = "usable"
         self._status["trace_metadata"] = {
             "path": str(artifact.path),
@@ -551,63 +617,11 @@ class TraceSession:
             "signal_count": artifact.signal_count,
             "total_ticks": artifact.total_ticks,
         }
-        self.record_event("validated", f"{signal_count} signals under {top_scope}")
-        return TraceInspection(artifact)
-
-    @staticmethod
-    def _read_bwave_metadata(candidate: Path) -> tuple[dict[str, object] | None, str]:
-        """Run the bounded hierarchy probe and decode its JSON data object."""
-        from booley.sim.bwave_fifo import _find_bwave_bin
-
-        bwave_bin = _find_bwave_bin()
-        if not bwave_bin:
-            return None, "native B-Wave binary is unavailable for trace validation"
-        try:
-            result = subprocess.run(
-                [bwave_bin, "list", str(candidate), "--format", "json", "--limit", "1"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return None, f"B-Wave hierarchy probe failed: {exc}"
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip().splitlines()
-            suffix = f": {detail[-1]}" if detail else ""
-            return (
-                None,
-                f"B-Wave could not read the retained trace (rc={result.returncode}){suffix}",
-            )
-        try:
-            payload = json.loads(result.stdout)
-            raw_data = payload["data"]
-            if not isinstance(raw_data, dict):
-                raise TypeError("data is not an object")
-            root_scopes = [
-                str(scope).strip()
-                for scope in raw_data.get("root_scopes", [])
-                if str(scope).strip()
-            ]
-            if not root_scopes:
-                root_scopes = sorted(
-                    {
-                        str(signal.get("name", "")).split(".", 1)[0]
-                        for signal in raw_data.get("signals", [])
-                        if isinstance(signal, dict) and "." in str(signal.get("name", ""))
-                    }
-                )
-            data = {
-                "scope_prefix": str(raw_data.get("scope_prefix") or "").strip(),
-                "root_scopes": root_scopes,
-                "signal_count": int(
-                    raw_data.get("signal_count", len(raw_data.get("signals", []))) or 0
-                ),
-                "total_ticks": int(raw_data.get("total_ticks", 0) or 0),
-            }
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            return None, f"B-Wave returned malformed trace metadata: {exc}"
-        return data, ""
+        self.record_event(
+            "validated",
+            f"{artifact.signal_count} signals under {artifact.top_scope}",
+        )
+        return inspection
 
     def reset_for_run(self, raw_trace_paths: tuple[Path, ...] = ()) -> None:
         """Remove generated stores that could masquerade as this run's trace.

@@ -53,6 +53,7 @@ def test_trace_enabled_cocotb_run_rejects_a_store_with_no_readable_hierarchy(
             tests=["test_uart"],
             work_dir=tmp_path,
             vcd=True,
+            expected_trace_scope="uart16550",
         )
 
     stdout = capsys.readouterr().out
@@ -77,6 +78,13 @@ def test_trace_enabled_cocotb_run_rejects_a_store_with_no_readable_hierarchy(
     # multiple roots and therefore no single common scope prefix.
     assert rc == 1
     assert "TRACE_OK:" not in stdout
+    assert "cocotb sim PASSED" not in stdout
+    assert "cocotb sim INCONCLUSIVE" in stdout
+    result = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert result["passed"] is False
+    assert result["inconclusive"] is True
+    assert "no queryable waveform" in result["first_error"]
+    assert "[SIM_RESULT] PASSED" not in (tmp_path / "run.log").read_text(encoding="utf-8")
     session = TraceSession(tmp_path)
     assert session.inspect(session.find()).usable is False
 

@@ -94,6 +94,7 @@ class TestTraceStatusManifest:
                     {
                         "data": {
                             "scope_prefix": "tb.dut",
+                            "root_scopes": ["tb"],
                             "signal_count": 42,
                             "total_ticks": 900,
                             "signals": [{"name": "clk"}],
@@ -147,6 +148,36 @@ class TestTraceStatusManifest:
         assert inspection.artifact is not None
         assert inspection.artifact.top_scope == "$rootio, uart16550"
         assert inspection.artifact.signal_count == 148
+
+    def test_inspection_rejects_a_different_dut_scope(self, tmp_path, monkeypatch):
+        trace = tmp_path / "trace.fst"
+        trace.write_bytes(MINIMAL_FST_BYTES)
+        monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "scope_prefix": "other_dut",
+                            "root_scopes": ["other_dut"],
+                            "signal_count": 12,
+                            "total_ticks": 20,
+                            "signals": [{"name": "clk"}],
+                        }
+                    }
+                ),
+                stderr="",
+            ),
+        )
+
+        inspection = TraceSession(tmp_path, trace_scope="uart16550").inspect(trace)
+
+        assert inspection.usable is False
+        assert "expected DUT scope 'uart16550'" in inspection.failure_reason
 
     def test_postprocess_retries_unscoped_when_scoped_build_writes_no_cache(
         self,

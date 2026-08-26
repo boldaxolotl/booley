@@ -600,6 +600,7 @@ def test_trace_identity_reports_multiple_root_scopes(tmp_path, monkeypatch, caps
                         "scope_prefix": "",
                         "root_scopes": ["$rootio", "uart16550"],
                         "signal_count": 148,
+                        "total_ticks": 1705,
                     }
                 }
             ),
