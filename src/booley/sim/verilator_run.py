@@ -351,8 +351,10 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
             progress.idle_s, len(lines)
         )
 
+    stdout = proc.stdout
     try:
-        for line in proc.stdout:
+        assert stdout is not None
+        for line in stdout:
             print(line, end="")
             lines.append(line)
             progress.observe(lines)
@@ -399,6 +401,8 @@ def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeli
             raise
         return lines, proc
     finally:
+        if stdout is not None:
+            stdout.close()
         watchdog.cancel()
         guard.stop()
         progress.final_flush(lines)

@@ -513,7 +513,7 @@ def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
 
     run = tmp_path / "run"
     run.mkdir()
-    crun._stream_output(
+    _lines, proc, _timed_out = crun._stream_output(
         [sys.executable, "-c", "pass"],
         run,
         os.environ.copy(),
@@ -521,3 +521,5 @@ def test_disk_baseline_is_taken_before_the_spawn(tmp_path: Path, monkeypatch):
         max_rundir_bytes=1 << 20,
     )
     assert order == ["baseline", "spawn"]
+    assert proc.stdout is not None
+    assert proc.stdout.closed

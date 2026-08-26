@@ -267,11 +267,6 @@ filterwarnings = [
     # Boundary tests deliberately exercise an explicit-but-not-yet-created
     # BOOLEY_PROJECT_DIR. The warning is the behavior under test, not test debt.
     "ignore:BOOLEY_PROJECT_DIR=.* does not exist; using anyway:UserWarning",
-    # CPython finalizer timing makes these existing cleanup warnings depend on
-    # garbage-collection order. Keep every deterministic warning strict while
-    # the subprocess/file cleanup debt is fixed under dedicated tests.
-    "ignore:subprocess [0-9]+ is still running:ResourceWarning",
-    "ignore:Exception ignored while (finalizing file|calling deallocator).*:pytest.PytestUnraisableExceptionWarning",
 ]
 
 # ---------------------------------------------------------------------------

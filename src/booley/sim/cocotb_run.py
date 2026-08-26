@@ -290,9 +290,10 @@ def _stream_output(
     stall_guard = SimTimeStallGuard(proc, sim_time_grace_s)
     stall_guard.start()
     readmemh_error = ""
+    stdout = proc.stdout
     try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
+        assert stdout is not None
+        for line in stdout:
             print(line, end="")
             lines.append(line)
             # F-25: track the simulator's own clock, so a cocotb/simulator
@@ -308,6 +309,8 @@ def _stream_output(
                 break
         proc.wait()
     finally:
+        if stdout is not None:
+            stdout.close()
         timer.cancel()
         guard.stop()
         stall_guard.stop()

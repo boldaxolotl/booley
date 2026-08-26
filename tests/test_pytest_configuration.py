@@ -183,6 +183,13 @@ def test_image_pytest_commands_install_configured_plugins() -> None:
         if "pytest" in command and "docker run" in command:
             assert "pytest-asyncio" in command, validation["name"]
 
+    host_install = next(
+        step
+        for step in workflow["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Install host-side test dependencies"
+    )
+    assert "pytest-asyncio" in host_install["run"]
+
 
 def test_matrix_uses_test_only_dependencies() -> None:
     """Compatibility legs do not install linting or mutation-only packages."""
