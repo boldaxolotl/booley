@@ -1814,6 +1814,10 @@ async def _launch_developer_agent(
 
     endpoint_env = {
         "BOOLEY_SLUG": slug,
+        "BOOLEY_WORKTREE": str(cwd),
+        "BOOLEY_PAIRED_PROJECT_REPOSITORY": (
+            "1" if _paired_project_repository_required(cwd, project_root) else ""
+        ),
         "BOOLEY_TICKET_TYPE": ticket_type,
         "BOOLEY_TICKET_FILE": str(logs_dir / "ticket.md"),
         "BOOLEY_LOGS_DIR": str(logs_dir),
@@ -1860,6 +1864,18 @@ async def _launch_developer_agent(
         backend_kwargs["developer_budget"] = developer_budget
     with scoped_environment(endpoint_env):
         return await cfg.active_backend.call(params, **backend_kwargs)
+
+
+def _paired_project_repository_required(cwd: Path, project_root: Path | None) -> bool:
+    """Whether this Developer session must retain a paired project checkout."""
+    from booley.runtime.ticket_repositories import (
+        paired_project_repository,
+        resolve_inner_project_repo,
+    )
+
+    if paired_project_repository(cwd) is not None:
+        return True
+    return project_root is not None and resolve_inner_project_repo(project_root) is not None
 
 
 def _load_endpoint_config(project_root: Path) -> tuple[dict, dict]:

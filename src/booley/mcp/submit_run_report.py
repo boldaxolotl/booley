@@ -217,6 +217,15 @@ class SubmitRunReportMcpTool(McpTool):
         if gate is not None:
             return gate
 
+        return self._submit_report(ticket_type, unmet_optional)
+
+    def _submit_report(
+        self,
+        ticket_type: str,
+        unmet_optional: list[str],
+    ) -> McpToolResult:
+        """Write and record a report after all finalization gates pass."""
+
         _cli_arg, _attr, heading = _TYPE_FIELD[ticket_type]
         type_specific_value = self._type_specific_value(ticket_type)
 
@@ -257,7 +266,10 @@ class SubmitRunReportMcpTool(McpTool):
     def _clean_worktree_gate(self) -> McpToolResult | None:
         """Reject finalization until every repository in the Ticket Workspace is clean."""
         try:
-            changes = pending_ticket_changes(Path(self.args.work_dir))
+            changes = pending_ticket_changes(
+                self._submission_worktree(),
+                require_paired=os.environ.get("BOOLEY_PAIRED_PROJECT_REPOSITORY") == "1",
+            )
         except TicketWorkspaceError as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -283,13 +295,18 @@ class SubmitRunReportMcpTool(McpTool):
             ),
         )
 
+    def _submission_worktree(self) -> Path:
+        """Return the session ticket checkout, falling back to CLI scope in human mode."""
+        ticket_worktree = os.environ.get("BOOLEY_WORKTREE", "").strip()
+        return Path(ticket_worktree) if ticket_worktree else Path(self.args.work_dir)
+
     def _criteria_freshness_gate(self) -> McpToolResult | None:
         """Refresh source stamps and reject submission while mandatory work is unmet."""
         from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
 
         stale = refresh_verification_freshness(
             self.state,
-            work_dir=Path(self.args.work_dir),
+            work_dir=self._submission_worktree(),
         )
         if stale:
             _emit_criteria_update(self.state)

@@ -38,6 +38,20 @@ def state_file(tmp_path: Path) -> Path:
     return sf
 
 
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@test", "-c", "user.name=t", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q")
+
+
 def _run_endpoint(
     state_file: Path,
     report_dir: Path,
@@ -66,6 +80,11 @@ def _run_endpoint(
     return exit_code, DevelopmentState.load(state_file)
 
 
+def _report_text(runtime_root: Path) -> str:
+    report = runtime_root / "runtime" / "mcp-tool-reports" / "submit_run_report.json"
+    return json.loads(report.read_text(encoding="utf-8"))["report_text"]
+
+
 def test_rejects_report_when_ticket_worktree_is_dirty(
     tmp_path: Path,
     state_file: Path,
@@ -75,21 +94,9 @@ def test_rejects_report_when_ticket_worktree_is_dirty(
     runtime = tmp_path / "runtime"
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
     work_dir = tmp_path / "worktree"
-    work_dir.mkdir()
-    subprocess.run(
-        ["git", "init", "-q", str(work_dir)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    _init_repo(work_dir)
     (work_dir / "staged.sv").write_text("module staged; endmodule\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "add", "staged.sv"],
-        cwd=work_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    _git(work_dir, "add", "staged.sv")
     (work_dir / "untracked.sv").write_text(
         "module untracked; endmodule\n",
         encoding="utf-8",
@@ -116,10 +123,7 @@ def test_rejects_report_when_ticket_worktree_is_dirty(
     assert not state.is_met("_report_submitted")
     assert not (tmp_path / "REPORT.md").exists()
     capsys.readouterr()
-    flat = json.loads(
-        (runtime / "mcp-tool-reports" / "submit_run_report.json").read_text(encoding="utf-8")
-    )
-    diagnostic = flat["report_text"]
+    diagnostic = _report_text(tmp_path)
     assert "uncommitted changes remain" in diagnostic
     assert "staged.sv" in diagnostic
     assert "untracked.sv" in diagnostic
@@ -194,6 +198,44 @@ def test_rejects_report_when_cleanliness_cannot_be_verified(
     assert "could not verify that the ticket worktree is clean" in flat["report_text"]
 
 
+def test_ticket_mode_cleanliness_uses_session_worktree(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticket_worktree = tmp_path / "ticket-worktree"
+    sibling_worktree = tmp_path / "sibling-worktree"
+    _init_repo(ticket_worktree)
+    _init_repo(sibling_worktree)
+    (ticket_worktree / "uncommitted.sv").write_text(
+        "module uncommitted; endmodule\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BOOLEY_WORKTREE", str(ticket_worktree))
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+    exit_code, state = _run_endpoint(
+        state_file,
+        tmp_path,
+        "bugfix",
+        [
+            "--work-dir",
+            str(sibling_worktree),
+            "--summary",
+            "Fixed the bug.",
+            "--root-cause",
+            "The report checked the wrong worktree.",
+            "--uncertainties",
+            "None.",
+        ],
+        monkeypatch,
+    )
+
+    assert exit_code == EXIT_ERROR
+    assert not state.is_met("_report_submitted")
+    assert "uncommitted.sv" in _report_text(tmp_path)
+
+
 def test_rejects_final_report_while_ticket_job_is_active(
     tmp_path: Path,
     state_file: Path,
@@ -234,10 +276,7 @@ def test_rejects_final_report_while_ticket_job_is_active(
     assert "outstanding ticket jobs" in capsys.readouterr().err
 
 
-def test_rejects_report_and_updates_ui_when_verification_became_stale(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _stale_sim_state(tmp_path: Path, work_dir: Path) -> Path:
     work_dir = tmp_path / "worktree"
     (work_dir / "rtl").mkdir(parents=True)
     (work_dir / "tb").mkdir()
@@ -264,6 +303,15 @@ def test_rejects_report_and_updates_ui_when_verification_became_stale(
     (work_dir / "rtl" / "dut.sv").write_text("module dut; wire changed; endmodule\n")
     _git(work_dir, "add", "rtl/dut.sv")
     _git(work_dir, "commit", "-qm", "change source")
+    return state_path
+
+
+def test_rejects_report_and_updates_ui_when_verification_became_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_dir = tmp_path / "worktree"
+    state_path = _stale_sim_state(tmp_path, work_dir)
 
     exit_code, state = _run_endpoint(
         state_path,
@@ -853,15 +901,6 @@ class TestReportResetsOnCodeChange:
 # ---------------------------------------------------------------------------
 # Submission receipt -- cleanliness + last-simulate echo in report_text
 # ---------------------------------------------------------------------------
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-c", "user.email=t@test", "-c", "user.name=t", *args],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
 
 
 class TestSubmissionEcho:
