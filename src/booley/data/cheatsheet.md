@@ -49,7 +49,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
-| `mutation_tester` | Lock-based mutation testing: creator designs muxed RTL once, tester runs deterministic sim loop | `mutation_score` | — |
+| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `mutation_score` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `review_*` | — |
 
 #### `reviewer`
@@ -71,7 +71,7 @@ Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews onl
 
 #### `mutation_tester`
 
-Read-only, lock-based mutation testing. An LLM creator inserts output-observable single-point RTL mutations once; deterministic baseline and mutant simulations then measure how many the Target's complete test suite detects. The creator can target operator/comparison/polarity/bit-select changes, reset values, FSM next-state logic, and LHS/signal swaps.
+Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
 
 **Mutation campaign modes:**
 
@@ -79,16 +79,16 @@ Read-only, lock-based mutation testing. An LLM creator inserts output-observable
 |----------|-----------------------------------------|------------------------|
 | Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |
 | Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |
-| Complexity-scaled | add `auto: true` — choose 3-25 mutations from RTL complexity and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
+| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
 
-Standalone `--dry-run` prints the complexity breakdown and proposed auto count without running mutations.
+Standalone `--dry-run` prints the source-size breakdown and proposed auto count without running mutations.
 
-Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can override module discovery with `--dut-top`, `--dut-files`, and `--tb-top`.
+Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can supply `--dut-files`, `--dut-top` as a prompt hint, and `--tb-top` for classic simulator Targets.
 <!-- END GENERATED: specialists -->
 
-Booley verifies the literal selector-zero default before compiling and emits a
-self-contained campaign manifest with durable baseline/per-mutant logs and the
-first public test that killed each detected mutant.
+Booley validates exact replacements and compiles each in isolation. It emits a
+self-contained campaign manifest with durable baseline/per-mutant logs, source
+variants, and the first public test that killed each detected mutant.
 
 ### Criteria
 

@@ -322,9 +322,9 @@ block.
 
 Specialists that expose durable evidence follow the same convention. For
 example, `mutation_tester` stages one self-contained campaign directory in its
-numbered report invocation. Its atomic manifest cites the selector-zero log,
+numbered report invocation. Its atomic manifest cites the pristine baseline log,
 one log per mutant, verification rounds, mutation specifications, results, and
-instrumented RTL; the `mutant_logs` role points at the durable invocation copy,
+isolated source variants; the `mutant_logs` role points at the durable invocation copy,
 not the reusable runtime lock.
 
 ### `satisfies` and `satisfies_args`

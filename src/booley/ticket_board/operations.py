@@ -1063,20 +1063,27 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
         transitions_path.write_text(transition_history, encoding="utf-8")
 
 
-def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
-    """Reset under the ticket lock, publishing queue state only at the end."""
+def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
+    """Resolve a resettable ticket after the caller acquires its lock."""
     from .io import find_ticket_file
 
-    with tio._ticket_lock(slug):
-        file_path, _ = find_ticket_file(tio.tickets_dir, slug)
-        if file_path is None:
-            print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
-            return False
+    if not _reset_jobs_inactive(tio, slug):
+        return None
+    file_path, _ = find_ticket_file(tio.tickets_dir, slug)
+    if file_path is None:
+        print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+        return None
+    return file_path if _queue_destination_available(tio, file_path) else None
 
-        # Queue is the externally visible promise that reset completed. Check
-        # its destination up front, then publish that state only after stale
-        # runtime evidence has been removed successfully.
-        if not _queue_destination_available(tio, file_path):
+
+def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
+    """Reset under the ticket lock, publishing queue state only at the end."""
+    with tio._ticket_lock(slug):
+        # Recheck after waiting for the ticket lock. This closes the stale
+        # pre-lock observation that could otherwise erase a job which became
+        # active while reset was blocked on another ticket operation.
+        file_path = _locked_reset_candidate(tio, slug)
+        if file_path is None:
             return False
 
         try:
@@ -1181,7 +1188,5 @@ def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     # alias directory while leaving the real run state intact.
     canonical_slug = Path(entry["file"]).stem
     if not _reset_owner_available(tio, canonical_slug, force):
-        return False
-    if not _reset_jobs_inactive(tio, canonical_slug):
         return False
     return _perform_reset(tio, canonical_slug, entry)

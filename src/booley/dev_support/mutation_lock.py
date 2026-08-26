@@ -1,20 +1,17 @@
-"""Mutation tester lock state — persistent muxed RTL + spec list across invocations.
+"""Mutation tester proposal lock and isolated build paths.
 
 The mutation tester writes a *lock* on first cold-start that captures the
-creator-agent-designed mutation set, the muxed RTL source files, and the
-booley_mut_pkg.sv harness package.  Subsequent invocations with the same
-scope (by content hash) reuse the lock and skip the creator agent entirely
-— only the deterministic sim loop runs.
+creator-agent-designed exact replacement set. Subsequent invocations with
+the same scope reuse the proposals, but rebuild the pristine baseline and
+each isolated source variant.
 
 Layout under ``$BOOLEY_RUNTIME_DIR/mutation_tester/lock/``::
 
     lock/
     ├── lock.json
-    ├── booley_mut_pkg.sv
-    ├── muxed_<file>.sv          # one per scope file
-    ├── build/
-    │   ├── build_meta.json      # muxed-file hashes + sim-input hashes + docker_digest
-    │   └── verilator/ or iverilog/
+    ├── builds/
+    │   ├── baseline/
+    │   └── mutant_<N>/
     └── verification_rounds/
         ├── round_1.log          # cold-start sim logs (if retries happened)
         └── ...
@@ -25,7 +22,6 @@ Mutation Tester version bump. Operator override: ``--regen-lock`` wipes the dir.
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import logging
@@ -65,12 +61,9 @@ __all__ = [
 ]
 
 # Bump when the on-disk layout or semantics change in an incompatible way.
-# 1.4 — classic Verilog DUTs use an in-module Verilog reader rather than an
-# incompatible SystemVerilog package; existing mux locks must be regenerated.
-# 1.3 — harness body changed: the package now inherits the DUT's timescale
-# (SETUP-F-37) and the plusarg reader echoes the selected MUT_ID (SETUP-F-38),
-# so muxed files locked by 1.2 must be regenerated.
-LOCK_SCHEMA_VERSION = "1.4"
+# 2.0 stores read-only exact replacement proposals. It deliberately
+# invalidates selector-mux locks from 1.x.
+LOCK_SCHEMA_VERSION = "2.0"
 
 # Package + plusarg-reader filename constants (centralised here so other
 # layers don't hardcode strings).
@@ -86,8 +79,8 @@ MUT_PKG_FILENAME = "booley_mut_pkg.sv"
 class LockMeta:
     """In-memory representation of ``lock.json``.
 
-    Mirrors the on-disk schema 1:1.  Round-trip via ``to_dict`` / ``from_dict``;
-    don't add fields without bumping ``LOCK_SCHEMA_VERSION``.
+    The core proposal fields mirror schema 2. Legacy 1.x attributes remain as
+    in-memory compatibility shims but :meth:`to_dict` does not persist them.
     """
 
     schema_version: str = LOCK_SCHEMA_VERSION
@@ -102,7 +95,20 @@ class LockMeta:
     docker_digest: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        """Serialize only the schema-2 proposal identity.
+
+        Legacy attributes remain on the Python object for callers that still
+        construct 1.x fixtures, but they are deliberately absent from new lock
+        files: isolated campaigns persist no mux, package, image, or build cache.
+        """
+        return {
+            "schema_version": self.schema_version,
+            "created_at": self.created_at,
+            "scope": self.scope,
+            "scope_hashes": self.scope_hashes,
+            "count": self.count,
+            "mutations": self.mutations,
+        }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LockMeta:
@@ -161,16 +167,37 @@ def lock_dir(logs_dir: Path | str | None = None) -> Path:
 
 
 def build_dir(logs_dir: Path | str | None = None) -> Path:
-    """Return the build-cache subdirectory inside the lock dir."""
-    return lock_dir(logs_dir) / "build"
+    """Compatibility alias for the pristine baseline build directory."""
+    return baseline_build_dir(logs_dir)
+
+
+def builds_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the root containing independent baseline and mutant builds."""
+    return lock_dir(logs_dir) / "builds"
+
+
+def baseline_build_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the pristine source build directory."""
+    return builds_dir(logs_dir) / "baseline"
+
+
+def variant_build_dir(index: int, logs_dir: Path | str | None = None) -> Path:
+    """Return the build directory for one isolated source replacement."""
+    if index < 1:
+        raise ValueError("mutation index must be positive")
+    return builds_dir(logs_dir) / f"mutant_{index}"
+
+
+def variants_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the durable exact-source variant artifact directory."""
+    return lock_dir(logs_dir) / "variants"
 
 
 def mutant_logs_dir(logs_dir: Path | str | None = None) -> Path:
     """Return the per-mutant simulator-log directory inside the lock dir.
 
-    Every mutant re-runs the SAME prebuilt binary in the SAME build dir, so
-    nothing on disk distinguishes one mutant's run from the next — the sweep
-    used to keep a 200-char snippet in memory and drop the rest. A surviving
+    Each mutant has its own compiled image, while this directory keeps the
+    simulator transcript independent from build-tool layout. A surviving
     (not-detected) mutant is the whole point of the Specialist, and it is exactly the
     case with no failure text to read, so each run's full output is persisted
     here as ``mutant_<mut_id>.log``.
@@ -179,7 +206,7 @@ def mutant_logs_dir(logs_dir: Path | str | None = None) -> Path:
 
 
 def baseline_log_path(logs_dir: Path | str | None = None) -> Path:
-    """Return the current campaign's selector-zero simulator log path."""
+    """Return the current campaign's pristine-baseline simulator log path."""
     return lock_dir(logs_dir) / "baseline.log"
 
 
