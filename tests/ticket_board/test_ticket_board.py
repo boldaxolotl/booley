@@ -2487,6 +2487,15 @@ class TestOpReset:
         assert "queued:reset" in content
         assert "user reset ticket" in content
 
+    def test_reset_logs_the_correction_reason(self, tmp_path):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "review", "my-ticket", extra_fields={"step": "summary"})
+
+        assert op_reset(tio, "my-ticket", reason="review found an invalid protocol fix")
+
+        trans_file = human_log_file(tio.logs_dir, "my-ticket", "transitions.log")
+        assert "review found an invalid protocol fix" in trans_file.read_text(encoding="utf-8")
+
 
 # ============================================================================
 # MoveAndUpdate tests
@@ -2591,6 +2600,38 @@ class TestMoveAndUpdate:
         assert status == "running"
         assert load_progress(tio.logs_dir, "t1")["execution_id"] == "new-run"
         assert "execution changed concurrently" in capsys.readouterr().err
+
+    def test_requeue_rejects_review_ticket(self, tmp_path, capsys):
+        from booley.ticket_board.operations import op_requeue
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "review", "t1")
+        make_progress(tio, "t1", {"step": "summary"})
+
+        assert not op_requeue(tio, "t1")
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "review"
+        assert "illegal ticket transition review -> queued" in capsys.readouterr().err
+
+    def test_requeue_refuses_while_a_live_process_owns_the_ticket(self, tmp_path):
+        import os
+
+        from booley.ticket_board.io import migrate_runtime_file
+        from booley.ticket_board.logs import ticket_log_dir
+        from booley.ticket_board.operations import op_requeue
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "active", "t1")
+        make_progress(tio, "t1", {"step": "implementation"})
+        lock_path = migrate_runtime_file(ticket_log_dir(tio.logs_dir, "t1"), "ticket.lock")
+        lock_path.write_text(str(os.getppid()), encoding="utf-8")
+
+        assert not op_requeue(tio, "t1")
+
+        _path, status = find_ticket_file(tio.tickets_dir, "t1")
+        assert status == "running"
+        assert load_progress(tio.logs_dir, "t1")["step"] == "implementation"
 
 
 class TestClassifyWithReview:
@@ -2770,6 +2811,30 @@ class TestCLIMoveTicket:
             rc = main(argv=["move-ticket", "t1", "--to", "active"])
         assert rc == 0
         assert (tickets_dir / "board" / "active" / "t1.md").exists()
+
+    def test_move_ticket_cannot_bypass_review_reset(self, tmp_path, capsys):
+        tickets_dir = tmp_path / "tickets"
+        for directory in (
+            "drafts",
+            "queue",
+            "waiting",
+            "active",
+            "blocked",
+            "review",
+            "done",
+            "archived",
+        ):
+            (tickets_dir / directory).mkdir(parents=True, exist_ok=True)
+        (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
+        tio = TicketIO(tickets_dir)
+        make_ticket_file(tio, "review", "t1")
+
+        with patch("booley.ticket_board.cli.detect_tickets_dir", return_value=tickets_dir):
+            rc = main(argv=["move-ticket", "t1", "--to", "queue"])
+
+        assert rc == 1
+        assert (tickets_dir / "board" / "review" / "t1.md").exists()
+        assert "Use 'reset' for a clean run" in capsys.readouterr().err
 
 
 class TestCLIUsageEndToEnd:

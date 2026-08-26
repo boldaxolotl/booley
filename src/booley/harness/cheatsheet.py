@@ -32,6 +32,7 @@ class Section:
 
 SECTIONS: tuple[Section, ...] = (
     Section("commands", "Commands", "Public `booley` subcommands"),
+    Section("board", "Ticket Board", "Ticket lifecycle and valid transitions"),
     Section("flows", "Booley Flows", "Deterministic end-to-end orchestration"),
     Section(
         "specialists",

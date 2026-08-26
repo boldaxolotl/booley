@@ -116,6 +116,21 @@ def test_triage_treats_all_review_modes_as_freshness_sensitive():
         assert required in contract
 
 
+def test_triage_review_distinguishes_direct_fix_from_clean_reset():
+    review = _skill_text("booley-ticket-triage", "steps/03-review.md")
+    contract = " ".join(review.split())
+
+    for required in (
+        "Ask: **approve** / **fix here** / **reset** / **archive** / **skip**",
+        "Do not hand it back to the Runner for partial rework",
+        "This is a clean start",
+        "Do not selectively retain reviewed work",
+        "never resumes through an ordinary move to `queued`",
+        '--reason "<correction reason>"',
+    ):
+        assert required in contract
+
+
 def test_ticket_create_defaults_every_review_to_corrective_mode():
     skill = _skill_text("booley-ticket-create")
     template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")

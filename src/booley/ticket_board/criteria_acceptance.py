@@ -14,6 +14,7 @@ never archives (deletes) tickets. Archive is a human-only operation
 from __future__ import annotations
 
 import logging
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,8 +47,8 @@ class CriteriaVerdict:
     mandatory_met: int = 0
     unmet_mandatory: list[str] = field(default_factory=list)
     blocked_reason: str = ""
-    # Criteria that declared a "fail -> pass" transition but were only ever
-    # observed passing — see unverified_transitions_note() (F-53).
+    # Legacy criteria that declared a "fail -> pass" transition but were only
+    # ever observed passing — strict Ticket states reject them before verdict.
     unverified_transitions: list[str] = field(default_factory=list)
 
     @property
@@ -101,6 +102,7 @@ def check_criteria_acceptance(
         )
 
     refresh_verification_freshness(state, work_dir=work_dir)
+    _enforce_acceptance_evidence(state, work_dir=work_dir)
     stats = _compute_criteria_stats(state.criteria)
     verdict = _determine_disposition(state, stats)
     verdict.unverified_transitions = _find_unverified_transitions(state.criteria)
@@ -110,17 +112,190 @@ def check_criteria_acceptance(
     return verdict
 
 
-def _find_unverified_transitions(criteria: dict) -> list[str]:
-    """Criteria that promised a fail->pass transition but never saw the fail.
+def _load_test_registry(
+    work_dir: Path | None,
+) -> tuple[dict[str, dict], str | None]:
+    """Load normalized tests.toml data and report invalid external input."""
+    if work_dir is None:
+        return {}, None
+    from booley.config.project_config import normalize_tests_toml
+    from booley.runtime.project_dir import resolve_checkout_project_dir
 
-    Design note (F-53): the transition is *reported*, not *enforced*. Enforcing
-    it would mean refusing to accept a ticket whose test was green on the first
-    run, which an unattended runner cannot recover from — the agent would have
-    to un-fix the bug to prove it existed. The ticket-authoring validator has
-    always treated the `fail` leg as advisory (a warning, never a hard error),
-    so hard-failing at acceptance time would also contradict the contract the
-    ticket was written against. What was wrong before was not the leniency but
-    the silence: the degraded contract left no trace anywhere.
+    try:
+        path = resolve_checkout_project_dir(work_dir) / "tests.toml"
+        if not path.exists():
+            return {}, None
+        with path.open("rb") as stream:
+            return normalize_tests_toml(tomllib.load(stream)), None
+    except (FileNotFoundError, OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        reason = f"tests.toml acceptance registry is invalid: {exc}"
+        logger.warning("Could not load %s", reason, exc_info=True)
+        return {}, reason
+
+
+def _sim_evidence_sets(
+    detail: dict,
+) -> tuple[set[str], set[str], set[str], set[str]] | None:
+    """Normalize selected/pass/fail/skip names from one simulation record."""
+    selected_raw = detail.get("selected_tests")
+    if not isinstance(selected_raw, list) or not all(
+        isinstance(name, str) for name in selected_raw
+    ):
+        return None
+    selected = set(selected_raw)
+    passed_raw = detail.get("passed_tests")
+    if isinstance(passed_raw, list) and all(isinstance(name, str) for name in passed_raw):
+        passed = set(passed_raw)
+    elif detail.get("tests_passed") == len(selected_raw):
+        passed = set(selected)
+    else:
+        passed = set()
+    failed = set(as_str_list(detail.get("failed_tests")))
+    skipped = set(as_str_list(detail.get("skipped_tests")))
+    return selected, passed, failed, skipped
+
+
+def _sim_contract_requirements(
+    key: str,
+    entry,
+    registry: dict[str, dict],
+    selected: set[str],
+) -> tuple[set[str], int | None]:
+    """Resolve required names and minimum count from a sealed simulation criterion."""
+    from booley.config.project_config import lookup_target_section
+    from booley.dev_support.criteria_actions import criterion_target
+
+    params = entry.params or {}
+    target = criterion_target(key, entry, "sim_pass")
+    section = lookup_target_section(registry, target) if target else None
+    registered = set(section.get("tests", [])) if isinstance(section, dict) else set()
+    selector = params.get("test_selector") or params.get("selector") or "all"
+    required_raw = params.get("required_tests")
+    if isinstance(required_raw, list) and all(isinstance(name, str) for name in required_raw):
+        required = set(required_raw)
+    elif selector == "all" and registered:
+        required = registered
+    elif isinstance(selector, str) and selector not in {"", "all"}:
+        required = {selector}
+    else:
+        required = set(selected)
+    minimum_total = params.get("minimum_total", len(required))
+    if not isinstance(minimum_total, int) or isinstance(minimum_total, bool):
+        minimum_total = None
+    return required, minimum_total
+
+
+def _sim_evidence_error(key: str, entry, registry: dict[str, dict]) -> str | None:
+    """Return why a passing simulation record does not satisfy its contract."""
+    detail = entry.detail or {}
+    params = entry.params or {}
+    expected_subject = params.get("subject") or params.get("verification_subject") or "dut"
+    actual_subject = detail.get("verification_subject")
+    if actual_subject in {"dut", "model"} and actual_subject != expected_subject:
+        return (
+            f"verification subject is {actual_subject!r}, but this Criterion "
+            f"requires {expected_subject!r} evidence"
+        )
+    evidence = _sim_evidence_sets(detail)
+    if evidence is None:
+        return "simulation evidence does not identify the selected tests"
+    selected, passed, failed, skipped = evidence
+    required, minimum_total = _sim_contract_requirements(key, entry, registry, selected)
+    if minimum_total is None:
+        return "simulation Criterion has an invalid minimum_total"
+    errors: list[str] = []
+    missing_selected = sorted(required - selected)
+    if missing_selected:
+        errors.append("required tests were not selected: " + ", ".join(missing_selected))
+    missing_passed = sorted(required - passed)
+    if missing_passed:
+        errors.append("required tests did not pass: " + ", ".join(missing_passed))
+    if len(selected) < minimum_total:
+        errors.append(f"selected {len(selected)} tests, fewer than minimum_total={minimum_total}")
+    if failed:
+        errors.append("simulation evidence contains failed tests: " + ", ".join(sorted(failed)))
+    required_skips = sorted(required & skipped)
+    if required_skips:
+        errors.append("required tests were skipped: " + ", ".join(required_skips))
+    return errors[0] if errors else None
+
+
+def _has_matching_failing_evidence(entry) -> bool:
+    """Whether a fail -> pass criterion retained its own fingerprinted red run."""
+    params = entry.params or {}
+    required_raw = params.get("required_tests")
+    if isinstance(required_raw, list) and all(isinstance(name, str) for name in required_raw):
+        required = set(required_raw)
+    else:
+        selector = params.get("test_selector") or params.get("selector")
+        required = (
+            {selector} if isinstance(selector, str) and selector not in {"", "all"} else set()
+        )
+
+    for record in getattr(entry, "transition_evidence", []) or []:
+        if not isinstance(record, dict) or record.get("met") is not False:
+            continue
+        detail = record.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        stamp = detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
+        if not isinstance(stamp, dict) or not isinstance(stamp.get("fingerprint"), str):
+            continue
+        failed_raw = detail.get("failed_tests")
+        if not isinstance(failed_raw, list) or not all(
+            isinstance(name, str) for name in failed_raw
+        ):
+            continue
+        failed = set(failed_raw)
+        if failed and (not required or failed & required):
+            return True
+    return False
+
+
+def _enforce_acceptance_evidence(state, *, work_dir: Path | None) -> list[str]:
+    """Fail closed on evidence that cannot satisfy a sealed Ticket contract."""
+    if not getattr(state, "strict_criteria", False):
+        return []
+    registry, registry_error = _load_test_registry(work_dir)
+    now = utc_now_rfc3339()
+    rejected: list[str] = []
+    for key, entry in state.criteria.items():
+        if key.startswith("_") or not entry.met:
+            continue
+        reason: str | None = None
+        if (entry.params or {}).get("from_state") == "fail" and not (
+            _has_matching_failing_evidence(entry)
+        ):
+            reason = (
+                "sealed fail -> pass transition has no matching fingerprinted failing evidence"
+            )
+        elif key.startswith("sim_pass"):
+            reason = registry_error or _sim_evidence_error(key, entry, registry)
+        if reason is None:
+            continue
+        entry.met = False
+        entry.updated_at = now
+        entry.detail = dict(entry.detail or {})
+        entry.detail["acceptance_error"] = reason
+        rejected.append(key)
+
+    if rejected:
+        _invalidate_submitted_report(state, now=now)
+        state.save()
+        logger.warning(
+            "Rejected insufficient acceptance evidence for %s: %s",
+            state.slug,
+            ", ".join(rejected),
+        )
+    return rejected
+
+
+def _find_unverified_transitions(criteria: dict) -> list[str]:
+    """Legacy criteria that promised fail->pass but never saw the fail.
+
+    Strict Ticket states are marked unmet by ``_enforce_acceptance_evidence``
+    before this compatibility diagnostic runs. Older state files keep the
+    historical warning so an upgrade does not silently change their outcome.
     """
     unverified = []
     for key, entry in criteria.items():
