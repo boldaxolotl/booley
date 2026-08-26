@@ -7,6 +7,7 @@ out of prompt construction so every TB focus uses the same contract.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -51,6 +52,46 @@ def _matches_scope(
     return scope.issubset({_normalize(path) for path in candidates})
 
 
+def _candidate_refs(
+    project_root: Path,
+    declarations: Mapping[str, list[fusesoc_registry.TargetRef]],
+    *,
+    category: str,
+    target_hint: str | None,
+) -> list[tuple[str, fusesoc_registry.TargetRef]]:
+    if target_hint:
+        selected = fusesoc_registry.resolve_target_selection(target_hint, project_root)
+        if category == "tb" and len(selected) != 1:
+            raise ReviewContractError("TB review requires exactly one --target selector")
+        return [
+            (selector, fusesoc_registry.resolve_ref(project_root, selector))
+            for selector in selected
+        ]
+    return [
+        (fusesoc_registry.minimal_selector(ref, bucket), ref)
+        for bucket in declarations.values()
+        for ref in bucket
+    ]
+
+
+def _target_contract(
+    matches: list[tuple[str, fusesoc_registry.TargetRef]],
+    *,
+    category: str,
+) -> ReviewTargetContract:
+    kinds = {"cocotb" if ref.cocotb_module else "hdl" for _, ref in matches}
+    selectors = tuple(sorted(selector for selector, _ in matches))
+    if len(kinds) == 1:
+        return ReviewTargetContract(selectors, next(iter(kinds)))
+    if category == "rtl":
+        return ReviewTargetContract(selectors, "none")
+    candidates = ", ".join(selector for selector, _ in matches)
+    raise ReviewContractError(
+        "Review scope matches Targets with conflicting TB verdict contracts "
+        f"({candidates}); pass --target <selector>"
+    )
+
+
 def resolve_review_target(
     project_root: Path,
     scope: list[str],
@@ -68,18 +109,12 @@ def resolve_review_target(
     normalized_scope = {_normalize(path) for path in scope}
     declarations = fusesoc_registry.target_declarations(project_root)
 
-    refs: list[tuple[str, fusesoc_registry.TargetRef]] = []
-    if target_hint:
-        selected = fusesoc_registry.resolve_target_selection(target_hint, project_root)
-        if category == "tb" and len(selected) != 1:
-            raise ReviewContractError("TB review requires exactly one --target selector")
-        for selector in selected:
-            refs.append((selector, fusesoc_registry.resolve_ref(project_root, selector)))
-    else:
-        for bucket in declarations.values():
-            for ref in bucket:
-                refs.append((fusesoc_registry.minimal_selector(ref, bucket), ref))
-
+    refs = _candidate_refs(
+        project_root,
+        declarations,
+        category=category,
+        target_hint=target_hint,
+    )
     matches = [
         (selector, ref)
         for selector, ref in refs
@@ -97,19 +132,4 @@ def resolve_review_target(
             )
         return ReviewTargetContract((), "none")
 
-    kinds = {"cocotb" if ref.cocotb_module else "hdl" for _, ref in matches}
-    if len(kinds) != 1:
-        if category == "rtl":
-            return ReviewTargetContract(
-                tuple(sorted(selector for selector, _ in matches)),
-                "none",
-            )
-        candidates = ", ".join(selector for selector, _ in matches)
-        raise ReviewContractError(
-            "Review scope matches Targets with conflicting TB verdict contracts "
-            f"({candidates}); pass --target <selector>"
-        )
-    return ReviewTargetContract(
-        tuple(sorted(selector for selector, _ in matches)),
-        next(iter(kinds)),
-    )
+    return _target_contract(matches, category=category)

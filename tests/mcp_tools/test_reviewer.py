@@ -24,6 +24,7 @@ from booley.specialists.reviewer import (
     ReviewDiff,
     ReviewerSpecialist,
     ReviewIssue,
+    _finding_record,
     _validate_finding_dict,
     _validate_issue_dict,
     check_gate,
@@ -90,6 +91,9 @@ def _make_issue_dict(
         "severity": severity,
         "confidence": "HIGH",
         "category": category,
+        "kind": "code_defect",
+        "disposition": "current",
+        "ticket_clause": "Reviewed source must satisfy the current Ticket requirements.",
         "file": file,
         "line": line,
         "summary": summary,
@@ -213,6 +217,21 @@ class TestIssueSchema:
         errs = _validate_issue_dict(d)
         assert any("confidence" in e for e in errs)
 
+    @pytest.mark.parametrize("field", ["kind", "disposition", "ticket_clause"])
+    def test_ticket_contract_metadata_is_required(self, field: str):
+        issue = _make_issue_dict("MAJOR")
+        del issue[field]
+
+        errors = _validate_issue_dict(issue)
+
+        assert any(field in error for error in errors)
+
+    def test_finding_ids_distinguish_defects_on_the_same_ticket_clause(self) -> None:
+        first = ReviewIssue.from_dict(_make_issue_dict(summary="Reset polarity is inverted"))
+        second = ReviewIssue.from_dict(_make_issue_dict(summary="Enable polarity is inverted"))
+
+        assert _finding_record(first)["finding_id"] != _finding_record(second)["finding_id"]
+
     def test_empty_file_rejected(self):
         d = _make_issue_dict("MAJOR", file="")
         errs = _validate_issue_dict(d)
@@ -322,6 +341,9 @@ class TestIssueSchema:
             '      "severity": "MAJOR",\n'
             '      "confidence": "HIGH",\n'
             '      "category": "spec",\n'
+            '      "kind": "spec_ambiguity",\n'
+            '      "disposition": "current",\n'
+            '      "ticket_clause": "JALR target uses rs1",\n'
             '      "file": "rtl/static_branch_predict.sv",\n'
             '      "line": 67,\n'
             '      "summary": "JALR target omits rs1",\n'
@@ -333,6 +355,9 @@ class TestIssueSchema:
             '      "severity": "MAJOR",\n'
             '      "confidence": "HIGH",\n'
             '      "category": "spec",\n'
+            '      "kind": "spec_ambiguity",\n'
+            '      "disposition": "current",\n'
+            '      "ticket_clause": "predict_branch_pc_o is the target.",\n'
             '      "file": "rtl/static_branch_predict.sv",\n'
             '      "line": 58,\n'
             '      "summary": "Inactive PC forced to zero",\n'
@@ -358,7 +383,9 @@ class TestIssueSchema:
             "Initial thought: something like { a stray { unbalanced ref }\n"
             "Actually here is the review:\n"
             '{"issues": [{"severity": "MINOR", "confidence": "LOW", '
-            '"category": "quality", "file": "a.sv", "line": 1, '
+            '"category": "quality", "kind": "code_defect", '
+            '"disposition": "advisory", "ticket_clause": "Keep names clear.", '
+            '"file": "a.sv", "line": 1, '
             '"summary": "nit"}]}'
         )
         result = parse_review_output(agent_output)
@@ -520,8 +547,7 @@ class TestReportFindingsCapture:
     """End-to-end: review agent reports via the native ReportFindings endpoint."""
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_confirmed_finding_fails_gate(self, mock_agent, state_file: Path):
-        """A CONFIRMED ReportFindings entry blocks the gate (exit 1, recorded)."""
+    def test_confirmed_finding_needs_canonical_metadata(self, mock_agent, state_file: Path):
         mock_agent.return_value = _make_report_findings_result(
             [
                 {
@@ -546,11 +572,8 @@ class TestReportFindingsCapture:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0  # _done completed; findings are reported separately
-        assert result.detail["issues"] == 1
-        st = DevelopmentState.load(state_file)
-        # Criterion recorded as performed (not a Specialist error).
-        assert st.has_criterion("review_rtl_bugs_done")
+        assert result.exit_code == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_report_is_clean_pass(self, mock_agent, state_file: Path):
@@ -581,7 +604,7 @@ class TestReportFindingsCapture:
         assert st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_plausible_only_passes_gate(self, mock_agent, state_file: Path):
+    def test_plausible_finding_needs_canonical_metadata(self, mock_agent, state_file: Path):
         mock_agent.return_value = _make_report_findings_result(
             [
                 {
@@ -606,9 +629,8 @@ class TestReportFindingsCapture:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0  # PLAUSIBLE -> MINOR -> does not block
-        assert result.detail["issues"] == 1
-        assert result.detail[SEVERITY_MINOR] == 1
+        assert result.exit_code == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
 
 _CRITICAL_TEXT_ISSUE = {
@@ -617,6 +639,9 @@ _CRITICAL_TEXT_ISSUE = {
             "severity": "CRITICAL",
             "confidence": "HIGH",
             "category": "bugs",
+            "kind": "code_defect",
+            "disposition": "current",
+            "ticket_clause": "Reviewed source must satisfy the current Ticket requirements.",
             "file": "rtl/mod_a.sv",
             "line": 42,
             "summary": "FMAX polarity inverted — returns the minimum",
@@ -647,12 +672,12 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0
-        assert result.criterion_met is True  # _done records review completion
+        assert result.exit_code == 1
+        assert result.criterion_met is False
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
         st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done")
+        assert not st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_empty_endpoint_call_and_prose_only_is_endpoint_error(
@@ -673,8 +698,12 @@ class TestChannelDisagreement:
         assert not st.is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_endpoint_findings_win_when_text_is_silent(self, mock_agent, state_file: Path):
-        """Non-empty agent-capability channel is still usable with no text JSON at all."""
+    def test_endpoint_findings_without_metadata_mirror_are_rejected(
+        self,
+        mock_agent,
+        state_file: Path,
+    ):
+        """ReportFindings cannot replace the canonical Ticket-bound JSON."""
         mock_agent.return_value = _make_report_findings_result(
             [{"file": "rtl/mod_a.sv", "line": 3, "summary": "latch", "verdict": "CONFIRMED"}],
             output="see the agent-capability call",
@@ -684,8 +713,37 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 1
+        assert result.exit_code == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
+
+    @patch("booley.specialists.specialist._call_agent_sync")
+    def test_tied_channels_preserve_canonical_ticket_metadata(
+        self,
+        mock_agent,
+        state_file: Path,
+    ):
+        canonical = _make_issue_dict("MAJOR", summary="latch")
+        mock_agent.return_value = _make_report_findings_result(
+            [
+                {
+                    "file": canonical["file"],
+                    "line": canonical["line"],
+                    "summary": canonical["summary"],
+                    "verdict": "CONFIRMED",
+                }
+            ],
+            output=json.dumps({"issues": [canonical]}),
+        )
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(_review_args())
+        endpoint.read_state()
+
+        result = endpoint._run()
+
+        assert result.exit_code == 1
+        assert result.detail["issue_list"][0]["kind"] == "code_defect"
+        assert result.detail["issue_list"][0]["disposition"] == "current"
+        assert result.detail["issue_list"][0]["ticket_clause"] == canonical["ticket_clause"]
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_more_severe_text_channel_wins_over_advisory_endpoint_channel(
@@ -703,14 +761,17 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         # Text channel taken whole — not merged with the agent-capability channel.
         assert result.detail["issues"] == 1
         assert result.detail[SEVERITY_CRITICAL] == 1
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_endpoint_channel_wins_when_text_is_clean(self, mock_agent, state_file: Path):
-        """Blocking endpoint finding + '{"issues": []}' text: the agent-capability channel still blocks."""
+    def test_endpoint_finding_missing_from_text_is_contract_error(
+        self,
+        mock_agent,
+        state_file: Path,
+    ):
         mock_agent.return_value = _make_report_findings_result(
             [{"file": "rtl/mod_a.sv", "line": 3, "summary": "latch", "verdict": "CONFIRMED"}],
             output='{"issues": []}',
@@ -720,9 +781,8 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 1
-        assert result.detail[SEVERITY_MAJOR] == 1
+        assert result.exit_code == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_all_issues_rejected_is_not_a_clean_pass(self, mock_agent, state_file: Path):
@@ -798,16 +858,12 @@ class TestChannelDisagreement:
         assert "gate_passed: true" not in capsys.readouterr().out.lower()
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_rejected_text_channel_with_blocking_endpoint_findings_still_fails(
+    def test_rejected_text_channel_cannot_be_replaced_by_endpoint_findings(
         self,
         mock_agent,
         state_file: Path,
     ):
-        """A agent-capability channel that already fails the gate is reported, not discarded.
-
-        No false PASS is possible here, and a concrete FAIL is more actionable
-        than a bare Specialist error.
-        """
+        """Even blocking capability findings lack the required Ticket contract."""
         mock_agent.return_value = _make_report_findings_result(
             [{"file": "rtl/mod_a.sv", "line": 3, "summary": "latch", "verdict": "CONFIRMED"}],
             output=json.dumps(
@@ -830,10 +886,8 @@ class TestChannelDisagreement:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0
-        assert result.detail["issues"] == 1
-        assert result.detail[SEVERITY_MAJOR] == 1
-        assert result.detail["gate_passed"] is False
+        assert result.exit_code == 2
+        assert not DevelopmentState.load(state_file).is_met("review_rtl_bugs_done")
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_rejected_text_channel_with_empty_endpoint_call_is_a_endpoint_error(
@@ -869,6 +923,9 @@ class TestChannelDisagreement:
                             "severity": "MINOR",
                             "confidence": "LOW",
                             "category": "bugs",
+                            "kind": "code_defect",
+                            "disposition": "advisory",
+                            "ticket_clause": "Keep names clear.",
                             "file": "rtl/mod_a.sv",
                             "line": 5,
                             "summary": "cosmetic",
@@ -883,7 +940,8 @@ class TestChannelDisagreement:
         result = endpoint._run()
 
         assert result.exit_code == 0
-        assert result.detail["issues"] == 1
+        assert result.detail["issues"] == 0
+        assert result.detail["observation_count"] == 1
         assert result.detail["gate_passed"] is True
 
     def test_output_instructions_teach_the_endpoint_contract(self):
@@ -1734,8 +1792,7 @@ class TestFullRtlReview:
         assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_critical_issues_done_met(self, mock_agent, state_file: Path, capsys):
-        """Critical issues fail the verdict but satisfy completed-review _done."""
+    def test_corrective_issues_keep_done_unmet(self, mock_agent, state_file: Path, capsys):
         mock_agent.return_value = _make_agent_result(
             [
                 _make_issue_dict("CRITICAL"),
@@ -1755,19 +1812,18 @@ class TestFullRtlReview:
         )
         endpoint.read_state()
         result = endpoint._run()
-        assert result.exit_code == 0
-        assert result.criterion_met is True
+        assert result.exit_code == 1
+        assert result.criterion_met is False
         assert result.criterion_key == "review_rtl_bugs_done"
         st = DevelopmentState.load(state_file)
-        assert st.is_met("review_rtl_bugs_done") is True
+        assert st.is_met("review_rtl_bugs_done") is False
         assert st.criteria["review_rtl_bugs_done"].detail["gate_passed"] is False
         captured = capsys.readouterr()
         assert "RESULT: REVIEWED WITH FINDINGS" in captured.out
         assert "critical" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_findings_complete_done_review_and_replay(self, mock_agent, state_file: Path):
-        """A finding-bearing _done review completes and only replays afterward."""
+    def test_corrective_done_findings_remain_open_and_rerun(self, mock_agent, state_file: Path):
         common = ["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "bugs"]
 
         mock_agent.return_value = _make_agent_result([_make_issue_dict("CRITICAL")])
@@ -1775,21 +1831,20 @@ class TestFullRtlReview:
         t1.parse_args(common)
         t1.read_state()
         first = t1._run()
-        assert first.exit_code == 0
-        assert first.criterion_met is True
+        assert first.exit_code == 1
+        assert first.criterion_met is False
 
         t2 = ReviewerSpecialist()
         t2.parse_args(common)
         t2.read_state()
-        replay = t2._run()
-        assert replay.exit_code == 0
-        assert replay.criterion_met is True
-        assert "already completed" in replay.report_text
-        assert "RESULT: REVIEWED WITH FINDINGS" in replay.report_text
-        assert mock_agent.call_count == 1
+        rerun = t2._run()
+        assert rerun.exit_code == 1
+        assert rerun.criterion_met is False
+        assert "Change the criterion to `_clean`" in rerun.report_text
+        assert mock_agent.call_count == 2
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_steering_does_not_reopen_completed_done_review(
+    def test_steering_does_not_hide_open_done_correction(
         self,
         mock_agent,
         state_file: Path,
@@ -1806,14 +1861,13 @@ class TestFullRtlReview:
         t2 = ReviewerSpecialist()
         t2.parse_args([*common, "--steer", "attempt 1"])
         t2.read_state()
-        replay = t2._run()
-        assert replay.exit_code == 0
-        assert "_clean" in replay.report_text
-        assert mock_agent.call_count == 1
+        rerun = t2._run()
+        assert rerun.exit_code == 1
+        assert "_clean" in rerun.report_text
+        assert mock_agent.call_count == 2
 
     @patch("booley.specialists.specialist._call_agent_sync")
-    def test_minor_only_passes(self, mock_agent, state_file: Path, capsys):
-        """Minor-only issues => PASS, criterion_met=True."""
+    def test_current_minor_findings_remain_corrective(self, mock_agent, state_file: Path, capsys):
         mock_agent.return_value = _make_agent_result(
             [
                 _make_issue_dict("MINOR"),
@@ -1833,8 +1887,9 @@ class TestFullRtlReview:
         )
         endpoint.read_state()
         result = endpoint._run()
-        assert result.exit_code == 0
-        assert result.criterion_met is True
+        assert result.exit_code == 1
+        assert result.criterion_met is False
+        assert result.detail["gate_passed"] is True
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_single_focus_security(self, mock_agent, state_file: Path, capsys):
@@ -3556,10 +3611,10 @@ class TestDeadEndMessagesNameARealAction:
         endpoint.read_state()
         result = endpoint._run()
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "triage" not in result.report_text.lower()
         assert "_clean" in result.report_text
-        assert mock_agent.call_count == 1
+        assert mock_agent.call_count == 2
 
     def test_replay_message(self):
         from booley.specialists import reviewer as reviewer_mod

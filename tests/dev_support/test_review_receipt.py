@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from booley.dev_support.review_receipt import (
+    ReviewInvocation,
+    ReviewTicketError,
     build_review_contract_detail,
     finalize_review_detail,
     review_receipt_drift,
@@ -18,13 +22,15 @@ def _contract(tmp_path: Path, monkeypatch) -> dict:
     (logs / "ticket.md").write_text("Current: implement UART registers.\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     return build_review_contract_detail(
-        work_dir=tmp_path,
-        category="rtl",
-        focus="bugs",
-        scope=["rtl/uart.sv"],
-        mode="clean",
-        targets=(),
-        target_kind="none",
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="clean",
+            targets=(),
+            target_kind="none",
+        )
     )
 
 
@@ -59,3 +65,50 @@ def test_ticket_and_target_edits_stale_receipt(tmp_path: Path, monkeypatch) -> N
         encoding="utf-8",
     )
     assert review_receipt_drift(detail, tmp_path) == ["ticket", "target_surface"]
+
+
+def test_explicit_ticket_source_is_reused_without_logs_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ticket = tmp_path / "interactive-ticket.md"
+    ticket.write_text("Implement UART registers.\n", encoding="utf-8")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="done",
+            targets=(),
+            target_kind="none",
+            ticket_path=ticket,
+        )
+    )
+
+    assert review_receipt_drift({"contract": contract}, tmp_path) == []
+    ticket.write_text("Implement changed UART registers.\n", encoding="utf-8")
+    assert review_receipt_drift({"contract": contract}, tmp_path) == ["ticket"]
+
+
+def test_missing_binding_ticket_fails_loud(tmp_path: Path, monkeypatch) -> None:
+    ticket = tmp_path / "interactive-ticket.md"
+    ticket.write_text("Implement UART registers.\n", encoding="utf-8")
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="done",
+            targets=(),
+            target_kind="none",
+            ticket_path=ticket,
+        )
+    )
+    ticket.unlink()
+
+    with pytest.raises(ReviewTicketError, match="Ticket context"):
+        review_receipt_drift({"contract": contract}, tmp_path)

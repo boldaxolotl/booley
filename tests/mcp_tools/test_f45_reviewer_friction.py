@@ -317,3 +317,58 @@ def test_explicit_advisory_done_observation_completes(tmp_path, monkeypatch):
     assert result.criterion_met is True
     assert detail["issue_list"][0]["status"] == "advisory"
     assert detail["receipt_id"]
+
+
+def test_clean_verify_preserves_superseded_observations(tmp_path, monkeypatch):
+    """Final rediscovery retains lifecycle evidence for absent observations."""
+    rtl = tmp_path / "rtl" / "uart.sv"
+    rtl.parent.mkdir()
+    rtl.write_text("module uart; endmodule\n")
+    state_file = _state(tmp_path, monkeypatch, "review_rtl_bugs_clean")
+    corrective = _issue("bugs", "rtl/uart.sv", "Reset behavior violates the Ticket")
+    advisory = _issue("bugs", "rtl/uart.sv", "Consider a clearer local signal name")
+    advisory["severity"] = "MINOR"
+    advisory["disposition"] = "advisory"
+    verify_fixed = MagicMock(
+        output=json.dumps(
+            {
+                "findings": [
+                    {
+                        "index": 1,
+                        "status": "FIXED",
+                        "evidence": "rtl/uart.sv:1 — reset behavior corrected",
+                    }
+                ]
+            }
+        ),
+        structured=None,
+    )
+
+    with (
+        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
+        patch(
+            "booley.specialists.specialist._call_agent_sync",
+            side_effect=[_agent_result(corrective, advisory), verify_fixed, _agent_result()],
+        ) as agent,
+    ):
+        argv = [
+            "--work-dir",
+            str(tmp_path),
+            "--scope",
+            "rtl/uart.sv",
+            "--category",
+            "rtl",
+            "--focus",
+            "bugs",
+        ]
+        first = _run_review(argv)
+        rtl.write_text("module uart; wire fixed; endmodule\n")
+        second = _run_review(argv)
+
+    detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_clean"].detail
+    assert agent.call_count == 3
+    assert first.criterion_met is False
+    assert second.criterion_met is True
+    assert len(detail["observations"]) == 1
+    assert detail["observations"][0]["summary"] == advisory["summary"]
+    assert detail["observations"][0]["status"] == "superseded"

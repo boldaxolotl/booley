@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,33 +16,70 @@ _TICKET_FILE = "ticket.md"
 _DECISIONS_FILE = "answered_questions.md"
 
 
+class ReviewTicketError(OSError):
+    """The persisted Ticket context can no longer be read."""
+
+
+@dataclass(frozen=True)
+class ReviewInvocation:
+    """Inputs whose identity determines one Reviewer contract."""
+
+    work_dir: Path
+    category: str
+    focus: str
+    scope: tuple[str, ...]
+    mode: str
+    targets: tuple[str, ...]
+    target_kind: str
+    ticket_path: Path | None = None
+
+
 def _digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _read(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-
-
-def ticket_context_digest(ticket_path: Path | None = None) -> str:
-    """Hash the mounted Ticket and accepted decisions as one scope snapshot."""
+def _ticket_source(work_dir: Path, ticket_path: Path | None) -> dict[str, str]:
+    """Resolve and persist the documents which bind a review to its Ticket."""
     logs = Path(os.environ["BOOLEY_LOGS_DIR"]) if os.environ.get("BOOLEY_LOGS_DIR") else None
-    resolved_ticket = (logs / _TICKET_FILE) if logs else ticket_path
-    decisions = (
-        (logs / _DECISIONS_FILE)
-        if logs
-        else (resolved_ticket.parent / _DECISIONS_FILE if resolved_ticket else None)
-    )
-    return _digest(
-        {
-            "ticket": _read(resolved_ticket) if resolved_ticket else "",
-            "accepted_decisions": _read(decisions) if decisions else "",
-        }
-    )
+    resolved_ticket = logs / _TICKET_FILE if logs else ticket_path
+    if resolved_ticket is not None and not resolved_ticket.is_absolute():
+        resolved_ticket = work_dir / resolved_ticket
+    decisions = logs / _DECISIONS_FILE if logs else None
+    if decisions is None and resolved_ticket is not None:
+        decisions = resolved_ticket.parent / _DECISIONS_FILE
+    return {
+        "ticket": str(resolved_ticket.resolve()) if resolved_ticket else "",
+        "accepted_decisions": str(decisions.resolve()) if decisions else "",
+    }
+
+
+def _optional_document(path_value: object) -> str:
+    if not isinstance(path_value, str) or not path_value:
+        return ""
+    path = Path(path_value)
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _ticket_context_digest(source: Mapping[str, object]) -> str:
+    """Hash one persisted Ticket source without consulting ambient state."""
+    try:
+        ticket_value = source.get("ticket")
+        ticket = ""
+        if isinstance(ticket_value, str) and ticket_value:
+            ticket = Path(ticket_value).read_text(encoding="utf-8", errors="replace")
+        return _digest(
+            {
+                "ticket": ticket,
+                "accepted_decisions": _optional_document(source.get("accepted_decisions")),
+            }
+        )
+    except OSError as exc:
+        raise ReviewTicketError(
+            f"Could not read persisted Reviewer Ticket context: {exc}"
+        ) from exc
 
 
 def target_surface_digest(work_dir: Path) -> str:
@@ -56,27 +94,19 @@ def target_surface_digest(work_dir: Path) -> str:
     return _digest(rows)
 
 
-def build_review_contract_detail(
-    *,
-    work_dir: Path,
-    category: str,
-    focus: str,
-    scope: list[str],
-    mode: str,
-    targets: tuple[str, ...],
-    target_kind: str,
-    ticket_path: Path | None = None,
-) -> dict[str, Any]:
+def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]:
     """Build the canonical persisted identity for a Reviewer invocation."""
+    ticket_source = _ticket_source(invocation.work_dir, invocation.ticket_path)
     return {
-        "category": category,
-        "focus": focus,
-        "scope": sorted(path.replace("\\", "/") for path in scope),
-        "mode": mode,
-        "targets": list(targets),
-        "target_kind": target_kind,
-        "ticket_digest": ticket_context_digest(ticket_path),
-        "target_surface_digest": target_surface_digest(work_dir),
+        "category": invocation.category,
+        "focus": invocation.focus,
+        "scope": sorted(path.replace("\\", "/") for path in invocation.scope),
+        "mode": invocation.mode,
+        "targets": list(invocation.targets),
+        "target_kind": invocation.target_kind,
+        "ticket_source": ticket_source,
+        "ticket_digest": _ticket_context_digest(ticket_source),
+        "target_surface_digest": target_surface_digest(invocation.work_dir),
     }
 
 
@@ -101,7 +131,10 @@ def review_receipt_drift(detail: Mapping[str, Any], work_dir: Path) -> list[str]
     if not isinstance(contract, Mapping):
         return []
     changed: list[str] = []
-    if contract.get("ticket_digest") != ticket_context_digest():
+    source = contract.get("ticket_source")
+    if not isinstance(source, Mapping):
+        source = _ticket_source(work_dir, None)
+    if contract.get("ticket_digest") != _ticket_context_digest(source):
         changed.append("ticket")
     if contract.get("target_surface_digest") != target_surface_digest(work_dir):
         changed.append("target_surface")
