@@ -104,7 +104,9 @@ def _nested_source_repositories(tmp_path: Path) -> tuple[Path, str, str, str]:
     _git(source, "commit", "-m", "source old")
     baseline = _git(source, "rev-parse", "HEAD").stdout.strip()
     _git(nested_source, "checkout", "--detach", new_middle)
-    _git(nested_source / "deps/leaf", "checkout", "--detach", new_leaf)
+    nested_leaf = nested_source / "deps/leaf"
+    _git(nested_leaf, "checkout", "--detach", new_leaf)
+    (nested_leaf / "source.sv").write_bytes(b"leaf-new\r\n")
     _git(source, "add", "vendor/middle")
     _git(source, "commit", "-m", "source new")
     return source, baseline, old_middle, old_leaf

@@ -179,6 +179,7 @@ def _repository_is_dirty(repository: Path) -> bool:
         "diff-files",
         "--quiet",
         "--ignore-cr-at-eol",
+        "--ignore-submodules=dirty",
         "--",
         check=False,
     )
