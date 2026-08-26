@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -60,6 +61,44 @@ def _run_review(argv: list[str]):
     reviewer.parse_args(argv)
     reviewer.read_state()
     return reviewer._run()
+
+
+def _commit_all(repo: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=Booley Test",
+            "commit",
+            "-qm",
+            "test: commit reviewed source",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+
+def _submit_report(work_dir: Path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
+    report = SubmitRunReportMcpTool()
+    report.parse_args(
+        [
+            "--work-dir",
+            str(work_dir),
+            "--summary",
+            "Changed UART.",
+            "--root-cause",
+            "Test reproduction.",
+            "--uncertainties",
+            "None.",
+        ]
+    )
+    report.read_state()
+    return report._run()
 
 
 def test_cocotb_target_rejects_false_sim_result_requirement(tmp_path, monkeypatch):
@@ -186,22 +225,8 @@ def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
         rtl.write_text("module uart; wire changed; endmodule\n")
         second = _run_review(common)
 
-    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
-    report = SubmitRunReportMcpTool()
-    report.parse_args(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--summary",
-            "Changed UART.",
-            "--root-cause",
-            "Test reproduction.",
-            "--uncertainties",
-            "None.",
-        ]
-    )
-    report.read_state()
-    report_result = report._run()
+    _commit_all(tmp_path)
+    report_result = _submit_report(tmp_path, monkeypatch)
     refreshed = DevelopmentState.load(state_file)
 
     observed = (

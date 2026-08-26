@@ -13,6 +13,7 @@ from booley.harness.setup.project_worktree import ProjectWorktreeError, prepare_
 from booley.runtime.project_dir import reset_cache
 from booley.runtime.ticket_repositories import (
     TicketWorkspace,
+    TicketWorkspaceError,
     TicketWorkspaceRequest,
     WorkspaceDisposition,
     WorkspaceMode,
@@ -157,6 +158,25 @@ def test_inner_repo_is_observable_even_without_project_scope(
     assert [entry.path for entry in _check_ticket_dirty_statuses(ctx)] == [
         ".booley_project/cores/dut.core"
     ]
+
+
+@pytest.mark.parametrize("damage", ["missing", "non_file"])
+def test_pending_changes_fail_when_paired_checkout_cannot_be_inspected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    ctx = _make_ticket(tmp_path, monkeypatch)
+    workspace = _workspace(ctx)
+    nested = workspace.prepare()
+    assert nested is not None
+    git_pointer = nested / ".git"
+    git_pointer.unlink()
+    if damage == "non_file":
+        git_pointer.mkdir()
+
+    with pytest.raises(TicketWorkspaceError, match="paired project"):
+        workspace.pending_changes()
 
 
 def test_outer_and_project_edits_commit_to_separate_repositories(

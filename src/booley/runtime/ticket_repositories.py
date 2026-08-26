@@ -164,7 +164,10 @@ class TicketWorkspace:
 
     def pending_changes(self) -> tuple[ProjectRepositoryChange, ...]:
         """Return dirty paths across every repository in Ticket coordinates."""
-        return pending_ticket_changes(self.request.worktree)
+        require_paired = bool(self.request.expected_sha) or (
+            resolve_inner_project_repo(self.request.project_root) is not None
+        )
+        return pending_ticket_changes(self.request.worktree, require_paired=require_paired)
 
     def commit(self, paths: list[str], message: str) -> None:
         """Commit selected Ticket paths to their owning repositories."""
@@ -299,27 +302,48 @@ def paired_project_repository(ticket_worktree: Path) -> TicketRepository | None:
         return None
     result = _git(nested, "rev-parse", "--show-toplevel")
     if result.returncode != 0:
-        return None
+        detail = (result.stderr or result.stdout).strip()
+        raise TicketWorkspaceError(
+            f"paired project repository is unavailable at {nested}: {detail}"
+        )
     try:
         top = Path(result.stdout.strip()).resolve()
-    except OSError:
-        return None
-    if top != nested.resolve():
-        return None
+        expected = nested.resolve()
+    except OSError as exc:
+        raise TicketWorkspaceError(
+            f"paired project repository cannot be resolved at {nested}: {exc}"
+        ) from exc
+    if top != expected:
+        raise TicketWorkspaceError(
+            f"paired project repository has unexpected root {top}; expected {expected}"
+        )
     return TicketRepository(nested, PROJECT_DIR_NAME)
 
 
-def ticket_repositories(ticket_worktree: Path) -> tuple[TicketRepository, ...]:
+def ticket_repositories(
+    ticket_worktree: Path,
+    *,
+    require_paired: bool = False,
+) -> tuple[TicketRepository, ...]:
     """Return every repository whose dirty state belongs to one ticket."""
     outer = TicketRepository(ticket_worktree)
     project = paired_project_repository(ticket_worktree)
+    if project is None and require_paired:
+        raise TicketWorkspaceError(
+            f"paired project repository is expected but unavailable at "
+            f"{ticket_project_worktree(ticket_worktree)}"
+        )
     return (outer, project) if project is not None else (outer,)
 
 
-def pending_ticket_changes(ticket_worktree: Path) -> tuple[ProjectRepositoryChange, ...]:
+def pending_ticket_changes(
+    ticket_worktree: Path,
+    *,
+    require_paired: bool = False,
+) -> tuple[ProjectRepositoryChange, ...]:
     """Inspect every repository without exposing path-prefix routing to callers."""
     changes: list[ProjectRepositoryChange] = []
-    for repository in ticket_repositories(ticket_worktree):
+    for repository in ticket_repositories(ticket_worktree, require_paired=require_paired):
         changes.extend(
             ProjectRepositoryChange(repository.ticket_path(change.path), change.status)
             for change in _repository_changes(repository.worktree)
