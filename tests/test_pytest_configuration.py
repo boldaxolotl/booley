@@ -167,6 +167,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert "--cov-fail-under=0" in command
     rendered_steps = "\n".join(str(step) for step in workflow["jobs"]["test"]["steps"])
     assert "coverage report --fail-under=80" in rendered_steps
+    assert "git fetch --no-tags --unshallow origin" in rendered_steps
     assert "diff-cover coverage.xml" in rendered_steps
     assert "--fail-under=90" in rendered_steps
 
@@ -182,6 +183,14 @@ def test_image_pytest_commands_install_configured_plugins() -> None:
         command = validation["run"]
         if "pytest" in command and "docker run" in command:
             assert "pytest-asyncio" in command, validation["name"]
+
+    host_install = next(
+        step
+        for step in workflow["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Install host-side test dependencies"
+    )
+    assert "pytest==9.0.2" in host_install["run"]
+    assert "pytest-asyncio" in host_install["run"]
 
 
 def test_matrix_uses_test_only_dependencies() -> None:

@@ -507,6 +507,9 @@ def test_child_death_kwargs_kill_the_simulator_when_its_parent_dies():
     finally:
         if sup.poll() is None:
             sup.kill()
+            sup.wait(timeout=10)
+        if sup.stdout is not None:
+            sup.stdout.close()
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
@@ -566,6 +569,7 @@ def test_parent_death_guard_kills_the_whole_tree(monkeypatch):
     proc = _FakeProc()
     rg._supervised_children.clear()
     rg.supervise_child(proc)
+    monkeypatch.setattr(rg.os, "getppid", lambda: 2)
     monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", killed.append)
     try:
         rg.install_parent_death_guard()

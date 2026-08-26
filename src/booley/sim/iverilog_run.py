@@ -185,9 +185,10 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     guard.start()
     progress = RunLogProgress(work_dir, time.monotonic())
     readmemh_error = ""
+    stdout = proc.stdout
     try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
+        assert stdout is not None
+        for line in stdout:
             print(line, end="")
             lines.append(line)
             progress.observe(lines)  # F-18: run.log shows a live tail mid-run
@@ -200,6 +201,8 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
                 break
         proc.wait()
     finally:
+        if stdout is not None:
+            stdout.close()
         timer.cancel()
         guard.stop()
         progress.final_flush(lines)
