@@ -37,9 +37,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from xml.etree import ElementTree
 
-from booley.core.boundary import as_int
+from booley.core.boundary import as_dict, as_int
 
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum (``_test_verdict``): "pass" / "fail" map directly,
@@ -223,7 +224,7 @@ def recover_timeout_progress(
             ),
             None,
         )
-    tests = []
+    tests: list[CocotbTest] = []
     for name in selected:
         parsed_entry = parsed_by_name.get(name)
         if name in passed or (parsed_entry is not None and parsed_entry.status == VERDICT_PASS):
@@ -390,7 +391,7 @@ def results_payload(
             1 for test in tests if test.status == "skipped" and test.name not in wanted
         )
         tests = tuple(test for test in tests if test.name in wanted or test.status != "skipped")
-    payload = {
+    payload: dict[str, object] = {
         "state": results.state,
         "detail": results.detail,
         "tests": [
@@ -430,25 +431,35 @@ def parse_results_line(output: str) -> CocotbResults | None:
         if not line.startswith(COCOTB_RESULTS_PREFIX):
             continue
         try:
-            payload = json.loads(line[len(COCOTB_RESULTS_PREFIX) :])
+            raw_payload: object = json.loads(line[len(COCOTB_RESULTS_PREFIX) :])
         except json.JSONDecodeError:
             return None
-        if not isinstance(payload, dict):
+        payload = as_dict(raw_payload)
+        if payload is None:
             return None
-        tests = tuple(
-            CocotbTest(
-                name=str(t.get("name", "")),
-                module=str(t.get("module", "")),
-                status=str(t.get("status", "")),
-                failure_text=str(t.get("failure", "")),
-                elapsed_s=float(t.get("elapsed_s", 0) or 0),
-            )
-            for t in payload.get("tests", [])
-            if isinstance(t, dict)
-        )
+        raw_tests = payload.get("tests", [])
+        if not isinstance(raw_tests, list):
+            return None
+        tests: list[CocotbTest] = []
+        try:
+            for raw_test in cast(list[object], raw_tests):
+                test = as_dict(raw_test)
+                if test is None:
+                    continue
+                tests.append(
+                    CocotbTest(
+                        name=str(test.get("name", "")),
+                        module=str(test.get("module", "")),
+                        status=str(test.get("status", "")),
+                        failure_text=str(test.get("failure", "")),
+                        elapsed_s=float(test.get("elapsed_s", 0) or 0),
+                    )
+                )
+        except (TypeError, ValueError):
+            return None
         return CocotbResults(
             state=str(payload.get("state", STATE_UNPARSEABLE)),
-            tests=tests,
+            tests=tuple(tests),
             detail=str(payload.get("detail", "")),
             skipped_unselected=as_int(payload.get("skipped_unselected"), 0) or 0,
         )

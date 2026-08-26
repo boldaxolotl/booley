@@ -1,0 +1,153 @@
+name: Scheduled deep tests
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mutation:
+    name: Harness setup mutation campaign
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install pinned mutation environment
+        run: pip install -e ".[dev]"
+
+      - name: Record mutation toolchain
+        shell: bash
+        run: |
+          mkdir -p mutation-evidence
+          python --version | tee mutation-evidence/versions.txt
+          mutmut --version | tee -a mutation-evidence/versions.txt
+          python -m pytest --version | tee -a mutation-evidence/versions.txt
+
+      - name: Run bounded mutation campaign
+        shell: bash
+        run: |
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s 35m mutmut run --max-children 4 \
+            2>&1 | tee mutation-evidence/run.log
+
+      - name: Record and enforce mutation results
+        if: always()
+        shell: bash
+        run: |
+          mutmut results --all true | tee mutation-evidence/results.txt
+          grep -Eq ': .+$' mutation-evidence/results.txt
+          grep -Eq ': killed$' mutation-evidence/results.txt
+          if grep -Ev ': killed$' mutation-evidence/results.txt | grep -Eq ': .+$'; then
+            echo "Mutation campaign left non-killed mutants" >&2
+            exit 1
+          fi
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-evidence
+          path: |
+            mutation-evidence/
+            mutants/
+          if-no-files-found: warn
+          retention-days: 30
+
+  bwave-fuzz:
+    name: B-Wave parser fuzz and differential tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: nightly-2026-08-20
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            crates/bwave
+            crates/bwave/fuzz
+
+      - name: Install pinned fuzz and differential dependencies
+        run: |
+          cargo install cargo-fuzz --version 0.13.2 --locked
+          pip install -e ".[dev]"
+
+      - name: Record fuzz toolchain
+        shell: bash
+        run: |
+          mkdir -p fuzz-evidence
+          rustc --version | tee fuzz-evidence/versions.txt
+          cargo --version | tee -a fuzz-evidence/versions.txt
+          cargo fuzz --version | tee -a fuzz-evidence/versions.txt
+
+      - name: Build B-Wave oracle target
+        run: cargo build --release --locked --manifest-path crates/bwave/Cargo.toml
+
+      - name: Replay every committed fuzz regression
+        shell: bash
+        run: |
+          count=0
+          while IFS= read -r -d '' input; do
+            cargo fuzz run vcd_parser "${input}" --fuzz-dir crates/bwave/fuzz -- -runs=1
+            count=$((count + 1))
+          done < <(find crates/bwave/fuzz/corpus/vcd_parser -type f -print0)
+          test "${count}" -gt 0
+          echo "Replayed ${count} committed parser inputs" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Run time-bounded VCD parser fuzzing
+        shell: bash
+        run: |
+          mkdir -p crates/bwave/fuzz/artifacts/vcd_parser
+          timeout --signal=INT --kill-after=30s 6m \
+            cargo fuzz run vcd_parser \
+            crates/bwave/fuzz/corpus/vcd_parser crates/bwave/tests/fixtures \
+            --fuzz-dir crates/bwave/fuzz -- \
+            -max_total_time=300 \
+            -artifact_prefix=crates/bwave/fuzz/artifacts/vcd_parser/ \
+            -max_len=1048576
+
+      - name: Run existing simulator oracle differential suite
+        env:
+          BOOLEY_BWAVE_BIN: ${{ github.workspace }}/crates/bwave/target/release/bwave
+        run: >-
+          pytest crates/bwave/tests/simulator_ground_truth_test.py -q --tb=short -rs
+          --junitxml="${RUNNER_TEMP}/bwave-differential.xml"
+
+      - name: Assert differential tests executed without skips
+        run: >-
+          python .github/scripts/assert_junit.py "${RUNNER_TEMP}/bwave-differential.xml"
+          --label "B-Wave simulator differential" --min-tests 1 --max-skips 0
+          --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload fuzz crashes and differential evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bwave-fuzz-evidence
+          path: |
+            crates/bwave/fuzz/artifacts/
+            fuzz-evidence/
+            ${{ runner.temp }}/bwave-differential.xml
+          if-no-files-found: warn
+          retention-days: 30

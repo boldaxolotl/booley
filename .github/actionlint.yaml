@@ -1,0 +1,7 @@
+# actionlint 1.7.12 predates GitHub's native `parallel` step group. Keep the
+# compatibility exception scoped to the one workflow that uses that syntax;
+# YAML, expressions, shells, and every other workflow remain fully checked.
+paths:
+  .github/workflows/test.yml:
+    ignore:
+      - 'step must run script with "run" section or run action with "uses" section'

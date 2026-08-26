@@ -224,6 +224,22 @@ class TestResultsLineRoundTrip:
     def test_malformed_line_returns_none_not_pass(self):
         assert cr.parse_results_line(f"{cr.COCOTB_RESULTS_PREFIX}{{broken") is None
 
+    def test_non_object_or_non_list_payload_returns_none(self):
+        for payload in ("[]", '"payload"', '{"tests": {}}'):
+            assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+
+    def test_non_object_test_entries_are_ignored(self):
+        parsed = cr.parse_results_line(
+            cr.COCOTB_RESULTS_PREFIX
+            + '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}'
+        )
+        assert parsed is not None
+        assert [test.name for test in parsed.tests] == ["kept"]
+
+    def test_invalid_elapsed_time_returns_none(self):
+        payload = '{"tests":[{"name":"bad","elapsed_s":"not-a-number"}]}'
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+
     def test_last_line_wins(self, tmp_path: Path):
         res = cr.parse_results_xml(_write(tmp_path, _XML_MIXED))
         older = cr.format_results_line(cr.CocotbResults(state=cr.STATE_EMPTY))

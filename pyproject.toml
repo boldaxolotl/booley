@@ -40,7 +40,7 @@ dependencies = [
     # MCP 2.x removes Server.list_tools(), which mcp_server._build_server() uses.
     "mcp>=1.8,<2",  # streamable-HTTP session manager (Interactive Mode transport)
     "mdit-py-plugins>=0.5",
-    "mutmut>=3.0",
+    "mutmut==3.7.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.0",
@@ -69,6 +69,10 @@ dev = [
     # Exact pin: pytest-cov owns xdist data collection/combining, while its
     # subprocess support depends on coverage.py's configured patch mechanism.
     "pytest-cov==7.1.0",
+    # CI quality gates. Exact pins keep local and hosted results reproducible;
+    # workflows install the same dev extra rather than repeating versions.
+    "diff-cover==10.5.1",
+    "pyright==1.1.411",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
@@ -234,14 +238,20 @@ docstring-code-format = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+strict_config = true
+strict_markers = true
 markers = [
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
 ]
 filterwarnings = [
+    "error",
     # CPython 3.14's tomllib raises this from its own parser on malformed input;
     # our code only *catches* TOMLDecodeError, it never constructs one. Not ours to fix.
     "ignore:Free-form arguments for TOMLDecodeError are deprecated:DeprecationWarning",
+    # Boundary tests deliberately exercise an explicit-but-not-yet-created
+    # BOOLEY_PROJECT_DIR. The warning is the behavior under test, not test debt.
+    "ignore:BOOLEY_PROJECT_DIR=.* does not exist; using anyway:UserWarning",
 ]
 
 # ---------------------------------------------------------------------------
@@ -250,19 +260,53 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["booley"]
 omit = ["tests/*"]
+branch = true
 # pytest-cov 7 removed its implicit .pth subprocess hook. Coverage.py's patch
 # starts measurement in Python child processes and writes combinable data.
 patch = ["subprocess"]
 
 [tool.coverage.report]
-fail_under = 60
+# Measured on origin/main at batch-2 start: 82.84% statements, 74.40%
+# branches, 80.72% combined. Keep modest environment headroom while ratcheting
+# the former 60% statement-only floor.
+fail_under = 80
 show_missing = true
 skip_empty = true
+
+# ---------------------------------------------------------------------------
+# Pyright — incremental strict boundary checking
+# ---------------------------------------------------------------------------
+[tool.pyright]
+pythonVersion = "3.11"
+# Incremental adoption: the rest of the source tree is intentionally deferred
+# until each package can be enabled without a blanket baseline or suppressions.
+typeCheckingMode = "basic"
+include = [
+    # Analyze the complete core package so new boundary modules cannot
+    # silently fall out of the checked surface.
+    "src/booley/core",
+    "src/booley/runtime/project_dir.py",
+    "src/booley/sim/cocotb_results.py",
+    "src/booley/sim/sim_result.py",
+]
+strict = [
+    # External-input coercion and the project-directory trust boundary.
+    "src/booley/core/boundary.py",
+    "src/booley/runtime/project_dir.py",
+    # Persisted simulator-result structures and verdict parsing.
+    "src/booley/sim/cocotb_results.py",
+    "src/booley/sim/sim_result.py",
+]
 
 # ---------------------------------------------------------------------------
 # Mutmut
 # ---------------------------------------------------------------------------
 [tool.mutmut]
-paths_to_mutate = "src/booley/harness/stages/"
-tests_dir = "tests/harness/"
-runner = "python -m pytest tests/harness/ --ignore=tests/integration -x -q --tb=no --no-header"
+# The historical `harness/stages` package was renamed to `harness/setup`;
+# keeping the stale path made the configured campaign exercise zero files.
+source_paths = ["src/"]
+only_mutate = ["src/booley/harness/setup/*.py"]
+pytest_add_cli_args = ["-x", "-q", "--tb=no", "--no-header"]
+pytest_add_cli_args_test_selection = [
+    "tests/harness/",
+]

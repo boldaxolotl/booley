@@ -1,0 +1,23 @@
+[package]
+name = "bwave-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+bwave = { path = ".." }
+libfuzzer-sys = "0.4"
+rustc-hash = "2"
+
+[[bin]]
+name = "vcd_parser"
+path = "fuzz_targets/vcd_parser.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

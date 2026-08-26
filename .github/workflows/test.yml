@@ -1,6 +1,7 @@
 name: Tests
 
 on:
+  workflow_call:
   push:
     branches: [main]
   # Run on stacked PRs as well as PRs targeting main. Each optimization phase
@@ -81,17 +82,47 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Pinned so a new ruff release with new rules can't break CI out of the
-      # blue; bump deliberately (and re-run `ruff check .` locally first).
-      # Must stay in lockstep with the `ruff==` pin in pyproject.toml's dev extra.
-      - name: Install ruff
-        run: pip install ruff==0.16.4
+      - name: Install pinned CI quality tools
+        run: pip install -e ".[dev]"
+
+      - name: Install actionlint v1.7.12
+        shell: bash
+        env:
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --silent --show-error --location \
+            --output "${archive}" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check --strict
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}" actionlint
+
+      - name: Validate GitHub Actions workflows
+        run: ${RUNNER_TEMP}/actionlint -color
 
       - name: Ruff check
         run: ruff check .
 
       - name: Ruff format check
         run: ruff format --check .
+
+      # Put a deliberate error inside an included package and run Pyright with
+      # no path arguments. Seeing the probe fail proves pyproject's include
+      # configuration is active rather than accidentally analyzing zero files.
+      - name: Prove Pyright include scope is active
+        shell: bash
+        run: |
+          probe=src/booley/core/_pyright_scope_probe.py
+          trap 'rm -f "${probe}"' EXIT
+          echo 'scope_probe: int = "must fail"' > "${probe}"
+          if pyright --outputjson > "${RUNNER_TEMP}/pyright-probe.json"; then
+            echo "Pyright accepted the deliberate include-scope error" >&2
+            exit 1
+          fi
+          grep -Fq "_pyright_scope_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
+
+      - name: Pyright strict boundary checks
+        run: pyright
 
   test:
     needs: changes
@@ -137,13 +168,37 @@ jobs:
         run: |
           pytest tests/ -q --tb=short -n 4 --dist=loadscope \
             --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave" \
-            --cov=booley --cov-report= --cov-fail-under=60 \
+            --cov=booley --cov-report=term-missing --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov --cov-fail-under=0 \
             --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
-          # pytest-cov gates its worker aggregate as pytest exits. coverage.py
-          # then combines configured subprocess shards and re-gates the exact
-          # finalized database used to produce the XML artifact.
-          coverage report --fail-under=60
-          coverage xml -o coverage.xml
+
+      - name: Summarize pytest execution and skips
+        if: always()
+        shell: bash
+        run: >-
+          python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
+          --label "${{ matrix.os }} / Python ${{ matrix.python }}"
+          --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Enforce measured global branch-coverage ratchet
+        if: env.COVERAGE_LEG == 'true'
+        run: coverage report --fail-under=80
+
+      - name: Fetch pull-request base for changed-line coverage
+        if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "${BASE_SHA}"
+
+      - name: Enforce 90% changed-line coverage
+        if: env.COVERAGE_LEG == 'true' && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: >-
+          diff-cover coverage.xml --compare-branch="${BASE_SHA}" --fail-under=90
+          --format html:diff-cover.html,markdown:diff-cover.md
 
       - name: Upload test timing data
         if: always()
@@ -154,11 +209,16 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload coverage artifact
-        if: env.COVERAGE_LEG == 'true'
+        if: always() && env.COVERAGE_LEG == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
-          path: coverage.xml
+          path: |
+            coverage.xml
+            htmlcov/
+            diff-cover.html
+            diff-cover.md
+          if-no-files-found: warn
 
   rust-test:
     needs: changes
@@ -250,24 +310,21 @@ jobs:
           pytest crates/bwave/tests/test_*.py -q --tb=short -rs \
             --durations=30 --junitxml="${RUNNER_TEMP}/bwave-crate.xml"
 
+      - name: Assert B-Wave crate tests executed without skips
+        run: >-
+          python .github/scripts/assert_junit.py "${RUNNER_TEMP}/bwave-crate.xml"
+          --label "B-Wave crate integration" --min-tests 1 --max-skips 0
+          --summary "${GITHUB_STEP_SUMMARY}"
+
       - name: Run native B-Wave wrapper and contract tests
         shell: bash
         run: |
           test -x crates/bwave/target/debug/bwave
           pytest tests/ -m native_bwave -q --tb=short -rs \
             --durations=30 --junitxml="${RUNNER_TEMP}/bwave-native.xml"
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          from xml.etree import ElementTree
-
-          root = ElementTree.parse(Path(os.environ["RUNNER_TEMP"]) / "bwave-native.xml").getroot()
-          suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
-          executed = sum(int(suite.attrib["tests"]) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
-          assert executed == 11, f"expected 11 native B-Wave tests, executed {executed}"
-          assert skipped == 0, f"native B-Wave tests skipped unexpectedly: {skipped}"
-          PY
+          python .github/scripts/assert_junit.py "${RUNNER_TEMP}/bwave-native.xml" \
+            --label "native B-Wave contracts" --min-tests 11 --max-skips 0 \
+            --summary "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload B-Wave timing data
         if: always()

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 __all__ = [
     "BoundaryError",
@@ -58,18 +58,18 @@ class BoundaryError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def as_dict(value: Any, *, default: dict | None = None) -> dict | None:
+def as_dict(value: Any, *, default: dict[Any, Any] | None = None) -> dict[Any, Any] | None:
     """Return *value* as a plain dict if it is a Mapping, else *default*."""
     if isinstance(value, Mapping):
-        return dict(value)
+        return dict(cast(Mapping[Any, Any], value))
     return default
 
 
-def require_dict(value: Any, *, field: str = "value") -> dict:
+def require_dict(value: Any, *, field: str = "value") -> dict[Any, Any]:
     """Return *value* as a plain dict, or raise if it is not a Mapping."""
     if not isinstance(value, Mapping):
         raise BoundaryError(f"{field} must be a mapping, got {type(value).__name__}")
-    return dict(value)
+    return dict(cast(Mapping[Any, Any], value))
 
 
 def require_list(value: Any, *, field: str = "value") -> list:
@@ -124,7 +124,9 @@ def is_str_list(value: Any) -> bool:
     is NOT a list, and one non-string element rejects the whole value. Use this
     to *validate*; use :func:`as_str_list` to *coerce* lenient input.
     """
-    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    return isinstance(value, list) and all(
+        isinstance(item, str) for item in cast(list[object], value)
+    )
 
 
 def as_str_list(value: Any, *, default: list[str] | None = None) -> list[str]:
@@ -141,7 +143,7 @@ def as_str_list(value: Any, *, default: list[str] | None = None) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
-        strings = [item for item in value if isinstance(item, str)]
+        strings = [item for item in cast(list[object], value) if isinstance(item, str)]
         return strings or fallback
     return fallback
 
