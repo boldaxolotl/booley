@@ -40,7 +40,6 @@ dependencies = [
     # MCP 2.x removes Server.list_tools(), which mcp_server._build_server() uses.
     "mcp>=1.8,<2",  # streamable-HTTP session manager (Interactive Mode transport)
     "mdit-py-plugins>=0.5",
-    "mutmut==3.7.0",
     "pydantic>=2.0",
     "pydantic-settings>=2.15.0",
     "python-dotenv>=1.0",
@@ -52,6 +51,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-xdist>=3.8",
+    "pytest-timeout>=2.3",
+    "pytest-cov==7.1.0",
+    "diff-cover==10.5.1",
+]
+quality = [
+    "pyright==1.1.411",
+    "ruff==0.16.4",
+]
+mutation = [
+    "mutmut==3.7.0",
+]
 dev = [
     # `booley init` shells out to `python -m build` for the sandbox-image wheel
     # (init_docker_image._docker_build_wheel); without it a fresh dev venv fails
@@ -70,9 +84,10 @@ dev = [
     # subprocess support depends on coverage.py's configured patch mechanism.
     "pytest-cov==7.1.0",
     # CI quality gates. Exact pins keep local and hosted results reproducible;
-    # workflows install the same dev extra rather than repeating versions.
+    # the quality extra repeats these pins for a smaller hosted install.
     "diff-cover==10.5.1",
     "pyright==1.1.411",
+    "mutmut==3.7.0",
     # Exact pin, kept in lockstep with the `pip install ruff==...` step in
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
@@ -252,6 +267,11 @@ filterwarnings = [
     # Boundary tests deliberately exercise an explicit-but-not-yet-created
     # BOOLEY_PROJECT_DIR. The warning is the behavior under test, not test debt.
     "ignore:BOOLEY_PROJECT_DIR=.* does not exist; using anyway:UserWarning",
+    # CPython finalizer timing makes these existing cleanup warnings depend on
+    # garbage-collection order. Keep every deterministic warning strict while
+    # the subprocess/file cleanup debt is fixed under dedicated tests.
+    "ignore:subprocess [0-9]+ is still running:ResourceWarning",
+    "ignore:Exception ignored while (finalizing file|calling deallocator).*:pytest.PytestUnraisableExceptionWarning",
 ]
 
 # ---------------------------------------------------------------------------

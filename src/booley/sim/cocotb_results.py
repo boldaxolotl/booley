@@ -40,7 +40,14 @@ from pathlib import Path
 from typing import cast
 from xml.etree import ElementTree
 
-from booley.core.boundary import as_dict, as_int
+from booley.core.boundary import (
+    BoundaryError,
+    as_str,
+    require_dict,
+    require_finite_number,
+    require_int,
+    require_list,
+)
 
 # Verdict vocabulary for a reconciled test — a strict subset of simulate's
 # per-test verdict enum (``_test_verdict``): "pass" / "fail" map directly,
@@ -57,6 +64,8 @@ STATE_OK = "ok"
 STATE_MISSING = "missing"
 STATE_UNPARSEABLE = "unparseable"
 STATE_EMPTY = "empty"
+_RESULT_STATES = frozenset({STATE_OK, STATE_MISSING, STATE_UNPARSEABLE, STATE_EMPTY})
+_TEST_STATUSES = frozenset({VERDICT_PASS, VERDICT_FAIL, "skipped", "not_run"})
 
 # Structured per-test results line the cocotb run-half prints next to
 # [SIM_SUMMARY]; simulate scrapes it to fan out per-test report entries.
@@ -420,6 +429,52 @@ def format_results_line(
     return COCOTB_RESULTS_PREFIX + json.dumps(payload, separators=(",", ":"))
 
 
+def _transport_string(payload: dict[str, object], key: str, *, default: str = "") -> str:
+    """Read one string field without inventing text from another JSON type."""
+    value = as_str(payload.get(key, default))
+    if value is None:
+        raise BoundaryError(f"{key} must be a string")
+    return value
+
+
+def _transport_test(raw_test: object) -> CocotbTest:
+    """Validate one test transported across the stdout JSON boundary."""
+    test = cast(dict[str, object], require_dict(raw_test, field="test"))
+    status = _transport_string(test, "status")
+    if status not in _TEST_STATUSES:
+        raise BoundaryError(f"unknown test status: {status!r}")
+    elapsed_s = require_finite_number(test.get("elapsed_s", 0), field="elapsed_s")
+    if elapsed_s < 0:
+        raise BoundaryError(f"elapsed_s must be non-negative, got {elapsed_s!r}")
+    return CocotbTest(
+        name=_transport_string(test, "name"),
+        module=_transport_string(test, "module"),
+        status=status,
+        failure_text=_transport_string(test, "failure"),
+        elapsed_s=elapsed_s,
+    )
+
+
+def _transport_results(raw_payload: object) -> CocotbResults:
+    """Validate the complete results sentinel payload."""
+    payload = cast(dict[str, object], require_dict(raw_payload, field="COCOTB_RESULTS"))
+    state = _transport_string(payload, "state", default=STATE_UNPARSEABLE)
+    if state not in _RESULT_STATES:
+        raise BoundaryError(f"unknown results state: {state!r}")
+    tests = tuple(_transport_test(test) for test in require_list(payload.get("tests", [])))
+    skipped_unselected = require_int(
+        payload.get("skipped_unselected", 0), field="skipped_unselected"
+    )
+    if skipped_unselected < 0:
+        raise BoundaryError("skipped_unselected must be non-negative")
+    return CocotbResults(
+        state=state,
+        tests=tests,
+        detail=_transport_string(payload, "detail"),
+        skipped_unselected=skipped_unselected,
+    )
+
+
 def parse_results_line(output: str) -> CocotbResults | None:
     """Extract the last ``[COCOTB_RESULTS]`` line from captured output.
 
@@ -434,33 +489,8 @@ def parse_results_line(output: str) -> CocotbResults | None:
             raw_payload: object = json.loads(line[len(COCOTB_RESULTS_PREFIX) :])
         except json.JSONDecodeError:
             return None
-        payload = as_dict(raw_payload)
-        if payload is None:
-            return None
-        raw_tests = payload.get("tests", [])
-        if not isinstance(raw_tests, list):
-            return None
-        tests: list[CocotbTest] = []
         try:
-            for raw_test in cast(list[object], raw_tests):
-                test = as_dict(raw_test)
-                if test is None:
-                    continue
-                tests.append(
-                    CocotbTest(
-                        name=str(test.get("name", "")),
-                        module=str(test.get("module", "")),
-                        status=str(test.get("status", "")),
-                        failure_text=str(test.get("failure", "")),
-                        elapsed_s=float(test.get("elapsed_s", 0) or 0),
-                    )
-                )
-        except (TypeError, ValueError):
+            return _transport_results(raw_payload)
+        except BoundaryError:
             return None
-        return CocotbResults(
-            state=str(payload.get("state", STATE_UNPARSEABLE)),
-            tests=tuple(tests),
-            detail=str(payload.get("detail", "")),
-            skipped_unselected=as_int(payload.get("skipped_unselected"), 0) or 0,
-        )
     return None

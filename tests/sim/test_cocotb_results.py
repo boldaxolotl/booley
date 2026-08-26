@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from booley.sim import cocotb_results as cr
 
 
@@ -228,16 +230,37 @@ class TestResultsLineRoundTrip:
         for payload in ("[]", '"payload"', '{"tests": {}}'):
             assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
 
-    def test_non_object_test_entries_are_ignored(self):
-        parsed = cr.parse_results_line(
-            cr.COCOTB_RESULTS_PREFIX
-            + '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}'
-        )
-        assert parsed is not None
-        assert [test.name for test in parsed.tests] == ["kept"]
+    def test_non_object_test_entries_reject_the_transport(self):
+        payload = '{"state":"ok","tests":[null,{"name":"kept","status":"pass"}]}'
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
 
-    def test_invalid_elapsed_time_returns_none(self):
-        payload = '{"tests":[{"name":"bad","elapsed_s":"not-a-number"}]}'
+    @pytest.mark.parametrize(
+        "testcase",
+        [
+            '{"name":{},"module":"m","status":"pass"}',
+            '{"name":"bad","module":[],"status":"pass"}',
+            '{"name":"bad","module":"m","status":true}',
+            '{"name":"bad","module":"m","status":"pass","failure":7}',
+            '{"name":"bad","module":"m","status":"pass","elapsed_s":true}',
+            '{"name":"bad","module":"m","status":"pass","elapsed_s":-1}',
+            '{"name":"bad","module":"m","status":"pass","elapsed_s":1e999}',
+        ],
+    )
+    def test_invalid_test_fields_reject_the_transport(self, testcase):
+        payload = f'{{"state":"ok","tests":[{testcase}]}}'
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            '{"state":7,"tests":[]}',
+            '{"state":"unknown","tests":[]}',
+            '{"detail":{},"tests":[]}',
+            '{"skipped_unselected":true,"tests":[]}',
+            '{"skipped_unselected":-1,"tests":[]}',
+        ],
+    )
+    def test_invalid_result_fields_reject_the_transport(self, payload):
         assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload) is None
 
     def test_last_line_wins(self, tmp_path: Path):

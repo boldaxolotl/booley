@@ -83,7 +83,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install pinned CI quality tools
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[quality]"
 
       - name: Install actionlint v1.7.12
         shell: bash
@@ -98,7 +98,7 @@ jobs:
           tar -xzf "${archive}" -C "${RUNNER_TEMP}" actionlint
 
       - name: Validate GitHub Actions workflows
-        run: ${RUNNER_TEMP}/actionlint -color
+        run: '"${RUNNER_TEMP}/actionlint" -color'
 
       - name: Ruff check
         run: ruff check .
@@ -128,7 +128,7 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['test']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 5
     env:
       COVERAGE_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
     strategy:
@@ -144,8 +144,8 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
 
-      - name: Install package with dev deps
-        run: pip install -e ".[dev]"
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]"
 
       # Every compatibility leg runs across four workers with module/class
       # affinity. pytest-cov combines worker and configured subprocess data.
@@ -156,6 +156,7 @@ jobs:
         run: >-
           pytest tests/ -q --tb=short -n 4 --dist=loadscope
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
+          --timeout=60
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
 
       # Fold the former standalone coverage job into the existing Linux/3.13
@@ -168,6 +169,7 @@ jobs:
         run: |
           pytest tests/ -q --tb=short -n 4 --dist=loadscope \
             --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave" \
+            --timeout=60 \
             --cov=booley --cov-report=term-missing --cov-report=xml:coverage.xml \
             --cov-report=html:htmlcov --cov-fail-under=0 \
             --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
@@ -300,8 +302,8 @@ jobs:
       - name: Build bwave (debug)
         run: cargo build --locked --manifest-path crates/bwave/Cargo.toml
 
-      - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
+      - name: Install package with test dependencies
+        run: pip install -e ".[test]"
 
       - name: Run B-Wave crate Python tests
         shell: bash
@@ -575,7 +577,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
-              booley-test bash -c "pip install --break-system-packages pytest &&
+              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
               python -m pytest /work/tests/sim/test_bwave_fifo_pipeline.py
               -v -k 'not slow' -o cache_dir=/validation-tmp/pytest-cache"
 
@@ -603,7 +605,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               -e TMPDIR=/validation-tmp
-              booley-test bash -c "pip install --break-system-packages pytest &&
+              booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
               python -m pytest /work/crates/bwave/tests/simulator_ground_truth_test.py
               -q --tb=short -o cache_dir=/validation-tmp/pytest-cache"
 
