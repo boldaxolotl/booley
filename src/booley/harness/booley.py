@@ -881,7 +881,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
             render_specialists_reference(project_mcp_tools_dir=project_mcp_tools_dir),
             name="specialists",
         )
-    except Exception:  # noqa: BLE001 — best-effort live splice; fall back to committed block so cheat still renders
+    except (
+        Exception  # noqa: BLE001 — best-effort live splice; fall back to committed block
+    ):
         # Markers absent, registry unavailable, or optional deps missing:
         # fall back to the committed block so `booley cheat` always renders.
         pass

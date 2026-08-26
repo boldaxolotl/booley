@@ -2174,7 +2174,7 @@ class SimulateFlow(BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate per-test setup failure; recorded as a failed TestResult
+        except Exception as exc:  # isolate per-test setup failure; recorded as a failed TestResult
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -3019,7 +3019,7 @@ class SimulateFlow(BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3047,7 +3047,7 @@ class SimulateFlow(BooleyFlow):
                 "rtl": list(sources.rtl_source_files),
                 "tb": list(sources.tb_files),
             }
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -3125,7 +3125,7 @@ class SimulateFlow(BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate setup failure; recorded as a failed batch
+        except Exception as exc:  # isolate setup failure; recorded as a failed batch
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(
