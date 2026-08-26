@@ -1051,10 +1051,12 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     if not outcome.ready:
         print(f"ERROR: {outcome.message}", file=sys.stderr)
         return 2
-    if outcome.html_path is None:
-        print(f"Review briefing ready: {outcome.message}")
-    else:
-        print(f"Review package ready: {outcome.html_path}")
+    if outcome.package_path is None:
+        print(f"ERROR: {outcome.message}: package path unavailable", file=sys.stderr)
+        return 2
+    print(f"Review package ready: {outcome.package_path}")
+    if outcome.html_path is not None:
+        print(f"HTML explanation ready: {outcome.html_path}")
     return 0
 
 

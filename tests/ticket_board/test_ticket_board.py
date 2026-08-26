@@ -2327,6 +2327,50 @@ class TestOpReset:
         _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
         assert status == "queued"
 
+    def test_reset_force_refuses_while_a_detached_job_is_active(self, tmp_path):
+        """Force cannot archive the runtime directory beneath an endpoint job."""
+        from types import SimpleNamespace
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "active", "my-ticket")
+        make_progress(tio, "my-ticket", {"step": "implementation"})
+        active = SimpleNamespace(endpoint="mutation_tester", run_id="mutation-47")
+
+        with patch("booley.harness.job_fence.active_ticket_jobs", return_value=[active]):
+            assert op_reset(tio, "my-ticket", force=True) is False
+
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "running"
+        assert load_progress(tio.logs_dir, "my-ticket")["step"] == "implementation"
+
+    def test_reset_rechecks_detached_jobs_after_acquiring_ticket_lock(self, tmp_path):
+        """A job appearing while reset waits for the ticket lock must win."""
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "active", "my-ticket")
+        make_progress(tio, "my-ticket", {"step": "implementation"})
+        events: list[str] = []
+
+        @contextmanager
+        def observed_lock(_slug):
+            events.append("locked")
+            yield
+            events.append("unlocked")
+
+        def active_jobs(_log_dir):
+            assert events == ["locked"]
+            return [SimpleNamespace(endpoint="mutation_tester", run_id="mutation-48")]
+
+        tio._ticket_lock = observed_lock
+        with patch("booley.harness.job_fence.active_ticket_jobs", active_jobs):
+            assert op_reset(tio, "my-ticket", force=True) is False
+
+        assert events == ["locked", "unlocked"]
+        _path, status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert status == "running"
+
     def test_reset_proceeds_when_the_recorded_pid_is_dead(self, tmp_path, monkeypatch):
         """A crashed run leaves a stale lock; that must not block recovery."""
         from booley.ticket_board import helpers
@@ -2725,6 +2769,66 @@ class TestValidateCriteriaField:
         }
         errors = validate_ticket_fields(fields, "## Description\ntext")
         assert any("unknown top-level" in e for e in errors)
+
+    def test_relative_qor_target_pair_is_valid(self):
+        fields = {
+            "summary": "x",
+            "type": "feature",
+            "branch": "m",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                        "area_reduce_at_least": 10,
+                    }
+                }
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\ntext")
+
+        assert not any("baseline/candidate" in error for error in errors)
+
+    def test_target_pair_without_relative_threshold_is_rejected(self):
+        fields = {
+            "summary": "x",
+            "type": "feature",
+            "branch": "m",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                        "cell_count_max": 500,
+                    }
+                }
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\ntext")
+
+        assert any("require a relative threshold" in error for error in errors)
+
+    def test_malformed_target_pair_is_rejected(self):
+        fields = {
+            "summary": "x",
+            "type": "feature",
+            "branch": "m",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": [{"baseline": "synth_before"}],
+                        "area_reduce_at_least": 10,
+                    }
+                }
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\ntext")
+
+        assert any("exactly 'baseline' and 'candidate'" in error for error in errors)
 
 
 class TestResumeDetectTypeFallback:

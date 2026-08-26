@@ -1707,10 +1707,8 @@ def _tables_read_by_shell_scripts() -> dict[str, str]:
     shell scripts.
 
     Scoped to scripts that name booley.toml, so a heredoc parsing some other
-    TOML can't inject its keys into this list. Only ``worktree_create.sh``
-    qualifies today; it is also the only reader of ``[submodules].paths``, which
-    is precisely why an audit that scanned Python alone declared the allowlist
-    complete while doctor still warned that knob was ignored.
+    TOML can't inject its keys into this list. This complements the Python
+    scanner for configuration still consumed by setup shell helpers.
     """
     import booley
 
@@ -1750,13 +1748,8 @@ class TestKnownTablesMatchLiveConfig:
         assert unknown == {}, f"live booley.toml tables doctor calls ignored: {unknown}"
 
     def test_every_table_read_by_a_shell_script_is_recognized(self):
-        """Scanning Python alone is how ``[submodules].paths`` stayed unlisted:
-        its only reader is a tomllib heredoc inside worktree_create.sh."""
+        """Configuration read by setup shell helpers remains recognized."""
         tables = _tables_read_by_shell_scripts()
-        assert "submodules" in tables, (
-            "worktree_create.sh's [submodules].paths reader is no longer visible "
-            "to the scanner - the heredoc shape changed"
-        )
 
         unknown = {
             table: where
@@ -1764,6 +1757,10 @@ class TestKnownTablesMatchLiveConfig:
             if table not in project_schema.KNOWN_BOOLEY_TOML_TABLES
         }
         assert unknown == {}, f"live booley.toml tables doctor calls ignored: {unknown}"
+
+    def test_submodule_table_is_read_by_python_setup(self):
+        tables = _tables_read_by_production_code()
+        assert "submodules" in tables
 
     @pytest.mark.parametrize("asic", [True, False])
     @pytest.mark.parametrize("fpga_part", [None, "xc7a35tcpg236-1"])

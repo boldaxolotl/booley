@@ -62,6 +62,16 @@ class ContractWorktrees:
         }
 
 
+@dataclass(frozen=True)
+class _SealInputs:
+    ticket: Path
+    fields: dict
+    outer: Path
+    outer_changes: list[str]
+    project: Path | None
+    project_changes: list[str]
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -305,8 +315,7 @@ def _changed_targets(
     return selectors
 
 
-def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) -> TargetContract:
-    """Validate, commit all repositories, then atomically publish ticket metadata."""
+def _prepare_seal(project_root: Path | str, ticket_path: Path | str, slug: str) -> _SealInputs:
     root = Path(project_root).resolve()
     ticket = Path(ticket_path)
     fields, body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
@@ -327,6 +336,18 @@ def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) 
     )
     if errors:
         raise ContractOperationError("contract validation failed: " + "; ".join(errors))
+    return _SealInputs(ticket, fields, outer, outer_changes, project, project_changes)
+
+
+def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) -> TargetContract:
+    """Validate, commit all repositories, then atomically publish ticket metadata."""
+    prepared = _prepare_seal(project_root, ticket_path, slug)
+    ticket = prepared.ticket
+    fields = prepared.fields
+    outer = prepared.outer
+    outer_changes = prepared.outer_changes
+    project = prepared.project
+    project_changes = prepared.project_changes
     outer_start = _full_commit(outer, "HEAD")
     project_start = _full_commit(project, "HEAD") if project is not None else ""
     outer_sha = outer_start
@@ -339,11 +360,17 @@ def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) 
                 f"chore({slug}): seal project Target contract",
             )
         outer_sha = _commit_changes(outer, outer_changes, f"chore({slug}): seal Target contract")
+        criterion_bindings = criterion_targets(fields.get("criteria"))
         contract = build_contract(
             outer,
             outer_sha=outer_sha,
             project_sha=project_sha,
-            targets=(binding.target for binding in criterion_targets(fields.get("criteria"))),
+            targets=(
+                target
+                for binding in criterion_bindings
+                for target in (binding.target, binding.baseline)
+            ),
+            bindings=criterion_bindings,
         )
         update_frontmatter(
             ticket,

@@ -232,11 +232,10 @@ def _render_mutation_tester_reference() -> list[str]:
     return [
         "#### `mutation_tester`",
         "",
-        "Read-only, lock-based mutation testing. An LLM creator inserts "
-        "output-observable single-point RTL mutations once; deterministic "
-        "baseline and mutant simulations then measure how many the Target's "
-        "complete test suite detects. The creator can target operator/comparison/polarity/bit-select "
-        "changes, reset values, FSM next-state logic, and LHS/signal swaps.",
+        "Proposal-locked mutation testing. A read-only LLM creator returns exact "
+        "source replacements; Booley runs a pristine baseline, then compiles and "
+        "tests each replacement in isolation. It does not parse HDL or inject "
+        "runtime selectors.",
         "",
         "**Mutation campaign modes:**",
         "",
@@ -244,17 +243,17 @@ def _render_mutation_tester_reference() -> list[str]:
         "|----------|-----------------------------------------|------------------------|",
         "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |",
         "| Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |",
-        "| Complexity-scaled | add `auto: true` — choose 3-25 mutations from RTL complexity and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |",
+        "| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |",
         "",
-        "Standalone `--dry-run` prints the complexity breakdown and proposed "
+        "Standalone `--dry-run` prints the source-size breakdown and proposed "
         "auto count without running mutations.",
         "",
         "Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; "
         "`--target <sim-target>` chooses the complete runnable Target suite; "
         "`--steer <context>` biases mutation selection. A valid lock "
         "is reused on later runs, so new steering takes effect only with "
-        "`--regen-lock`. Standalone calls can override module discovery with "
-        "`--dut-top`, `--dut-files`, and `--tb-top`.",
+        "`--regen-lock`. Standalone calls can supply `--dut-files`, `--dut-top` "
+        "as a prompt hint, and `--tb-top` for classic simulator Targets.",
     ]
 
 

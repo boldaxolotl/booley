@@ -151,6 +151,7 @@ class BooleyFlow(McpTool):
 
     def _pre_state_gate(self) -> McpToolResult | None:
         """Reject a changed Target/control-plane surface before any Flow runs."""
+        self._target_contract = None
         location_error = runtime_context.container_only_error(f"booley flow {self.name}")
         if location_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=location_error)
@@ -161,10 +162,12 @@ class BooleyFlow(McpTool):
         ticket_file = os.environ.get("BOOLEY_TICKET_FILE", "")
         if not ticket_file:
             return None
+        from booley.ticket_board.frontmatter import parse_frontmatter
         from booley.ticket_board.target_contract import (
             CONTRACT_BLOCK_REASON,
             TargetContractError,
             load_ticket_contract,
+            validate_contract_fields,
             verify_surface,
         )
 
@@ -173,7 +176,13 @@ class BooleyFlow(McpTool):
             if contract is None:
                 logger.warning("Legacy ticket Flow run has no immutable Target contract")
                 return None
-            verify_surface(contract, Path(self.args.work_dir))
+            self._target_contract = contract
+            work_dir = Path(self.args.work_dir)
+            verify_surface(contract, work_dir)
+            fields, _body = parse_frontmatter(Path(ticket_file).read_text(encoding="utf-8"))
+            errors = validate_contract_fields(fields, work_dir)
+            if errors:
+                raise TargetContractError("; ".join(errors))
         except (OSError, TargetContractError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,

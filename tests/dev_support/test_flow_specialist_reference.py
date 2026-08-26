@@ -148,7 +148,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     )
     assert "| Default fixed |" in rendered
     assert "| Explicit fixed |" in rendered
-    assert "| Complexity-scaled |" in rendered
+    assert "| Size-scaled |" in rendered
     assert "Mutation goals in a ticket" not in rendered
     assert "Direct goal controls" not in rendered
     assert "Target campaign with `target` + `scope`" in rendered

@@ -244,6 +244,10 @@ def _recipe_comparisons(state: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "criterion": name,
                 "flow": flow,
                 "target": comparison.get("target") or name.removeprefix(prefix),
+                "baseline_target": comparison.get("baseline_target"),
+                "candidate_target": comparison.get("candidate_target")
+                or comparison.get("target")
+                or name.removeprefix(prefix),
                 "changed": comparison.get("changed") is True,
                 "baseline_ref": comparison.get("baseline_ref"),
                 "baseline_fingerprint": comparison.get("baseline_fingerprint"),
@@ -908,8 +912,15 @@ def _render_recipe_comparisons(lines: list[str], package: Mapping[str, Any]) -> 
         relation = "changed" if row.get("changed") else "unchanged"
         baseline = str(row.get("baseline_fingerprint") or "unavailable")[:12]
         current = str(row.get("current_fingerprint") or "unavailable")[:12]
+        baseline_target = row.get("baseline_target") or row["target"]
+        candidate_target = row.get("candidate_target") or row["target"]
+        target_label = (
+            str(candidate_target)
+            if baseline_target == candidate_target
+            else f"{baseline_target} → {candidate_target}"
+        )
         lines.append(
-            f"- `{row.get('flow', 'implementation')}:{row['target']}` — **{relation}** "
+            f"- `{row.get('flow', 'implementation')}:{target_label}` — **{relation}** "
             f"(baseline `{baseline}`, current `{current}`)"
         )
         for change in row.get("changes", []):

@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from booley.core.boundary import as_positive_int
+from booley.core.boundary import BoundaryError, as_positive_int, is_str_list, require_dict
 from booley.core.config_paths import resolve_booley_toml
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,34 @@ def _load_booley_toml(project_root: Path) -> dict:
         raise EdaConfigError(migration)
     parse_eda_config(data.get("eda"))
     return data
+
+
+class SubmoduleConfigError(ValueError):
+    """The Project's submodule selection configuration is invalid."""
+
+
+@dataclass(frozen=True)
+class SubmoduleConfig:
+    """Configured top-level submodule allowlist; ``None`` selects every gitlink."""
+
+    paths: tuple[str, ...] | None = None
+
+
+def load_submodule_config(project_root: Path) -> SubmoduleConfig:
+    """Load and strictly validate the Project's ``[submodules]`` configuration."""
+    raw_section = _load_booley_toml(project_root).get("submodules")
+    if raw_section is None:
+        return SubmoduleConfig()
+    try:
+        section = require_dict(raw_section, field="[submodules]")
+    except BoundaryError as exc:
+        raise SubmoduleConfigError(str(exc)) from exc
+    if "paths" not in section:
+        return SubmoduleConfig()
+    raw_paths = section["paths"]
+    if not is_str_list(raw_paths):
+        raise SubmoduleConfigError("[submodules].paths must be an array of strings")
+    return SubmoduleConfig(paths=tuple(raw_paths))
 
 
 # --- [interactive] config (ADR 0018) ---

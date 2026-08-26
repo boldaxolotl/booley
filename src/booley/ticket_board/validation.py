@@ -214,6 +214,43 @@ def _validate_criterion_dict(section_name, key, value, errors):
         )
     if key in TARGET_CAMPAIGN_CRITERIA and not _valid_campaign_scope(value.get("scope")):
         errors.append(f"criteria.{section_name}.{key}.scope must be a non-empty list[str]")
+    if isinstance(targets, list):
+        from booley.dev_support.criteria import (
+            has_relative_qor_threshold,
+            parse_target_pair,
+        )
+
+        pair_entries = [item for item in targets if isinstance(item, dict)]
+        if pair_entries and key not in {"synthesis_ok", "fpga_impl_ok"}:
+            errors.append(
+                f"criteria.{section_name}.{key}.targets: baseline/candidate mappings "
+                "are only supported for synthesis_ok and fpga_impl_ok"
+            )
+        params = {name: item for name, item in value.items() if name != "targets"}
+        if pair_entries and not has_relative_qor_threshold(params):
+            errors.append(
+                f"criteria.{section_name}.{key}.targets: baseline/candidate mappings "
+                "require a relative threshold"
+            )
+        baselines_by_candidate: dict[str, str] = {}
+        for index, item in enumerate(targets):
+            try:
+                pair = parse_target_pair(
+                    item,
+                    field=f"criteria.{section_name}.{key}.targets[{index}]",
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
+            prior = baselines_by_candidate.get(pair.candidate)
+            if prior is not None and prior != pair.baseline:
+                errors.append(
+                    f"criteria.{section_name}.{key}.targets assigns conflicting "
+                    f"baselines {prior!r} and {pair.baseline!r} to candidate "
+                    f"{pair.candidate!r}"
+                )
+            else:
+                baselines_by_candidate[pair.candidate] = pair.baseline
 
 
 def _validate_criterion_value(section_name, key, value, errors):
@@ -1139,6 +1176,9 @@ def validate_ticket_fields(
     errors.extend(_validate_on_success(fields.get("on_success")))
     from .target_contract import validate_contract_fields
 
+    # Generic Ticket Board validation may run from the destination branch,
+    # while the sealed Targets exist only in the ticket's contract worktree.
+    # Direction is resolved there by intake and every Flow gate.
     errors.extend(validate_contract_fields(fields))
 
     scope_errors, _scope = _validate_scope(fields, check_files, project_root)

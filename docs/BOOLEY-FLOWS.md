@@ -112,9 +112,12 @@ from unstructured output.
 ### Ticket Target contracts
 
 Ticket Mode treats the Target recipe as acceptance input, not implementation
-work. Before enqueue, ticket creation records schema 1 with exact outer and
+work. Before enqueue, ticket creation records schema 2 with exact outer and
 optional project-data commits, the criterion Targets, and a normalized SHA-256
-digest; compatibility `base_sha` equals the outer commit.
+digest; compatibility `base_sha` equals the outer commit. Schema 2 also seals
+each Criterion's directed Target Pair using canonical Target identities. Schema
+1 remains readable for legacy tickets whose baseline and candidate are the same
+Target.
 
 The digest covers every `.core`, the test registry, Target-selecting Flow
 configuration, selected SDC/XDC, and referenced generators or hooks. Paths are
@@ -123,9 +126,14 @@ part of the identity. RTL and testbench contents remain editable.
 Contract metadata is published only after every repository validates and
 commits. Execution starts from those commits, and intake, each Flow, the commit
 guard, and review handoff reject drift as `target-contract-change-required`.
-Relative synth/FPGA Targets must fully resolve at the seal so baseline and final
-use one recipe; a future non-relative Target may omit only sources declared
-Scope `[new]`.
+For relative synth/FPGA Criteria, a plain Target name uses that frozen Target at
+both revisions. An explicit `{baseline, candidate}` Target Pair runs the
+baseline Target at `base_sha` and the candidate Target at the ticket head. The
+baseline must fully resolve at sealing; a distinct candidate may defer only
+missing RTL/TB sources declared Scope `[new]`. Both Targets remain immutable,
+and their measurement basis (technology/part, Flow methodology, top, and
+constraints) must match. A future non-relative Target may likewise omit only
+sources declared Scope `[new]`.
 
 Revision archives the old identity, clears execution evidence, and restarts
 from the destination baseline without transplanting implementation commits.

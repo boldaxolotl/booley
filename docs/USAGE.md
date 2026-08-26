@@ -279,7 +279,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
-| `mutation_tester` | Lock-based mutation testing: creator designs muxed RTL once, tester runs deterministic sim loop | `mutation_score` | — |
+| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `mutation_score` | — |
 | `reviewer` | Single-focus code review: reports issues by severity | `review_*` | — |
 
 #### `reviewer`
@@ -301,7 +301,7 @@ Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews onl
 
 #### `mutation_tester`
 
-Read-only, lock-based mutation testing. An LLM creator inserts output-observable single-point RTL mutations once; deterministic baseline and mutant simulations then measure how many the Target's complete test suite detects. The creator can target operator/comparison/polarity/bit-select changes, reset values, FSM next-state logic, and LHS/signal swaps.
+Proposal-locked mutation testing. A read-only LLM creator returns exact source replacements; Booley runs a pristine baseline, then compiles and tests each replacement in isolation. It does not parse HDL or inject runtime selectors.
 
 **Mutation campaign modes:**
 
@@ -309,12 +309,17 @@ Read-only, lock-based mutation testing. An LLM creator inserts output-observable
 |----------|-----------------------------------------|------------------------|
 | Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal options)_ — the same 10-of-10 campaign |
 | Explicit fixed | add `total: N` and `min_detected: K` | `--count N` requires all N; add `--min-detected K` to require K |
-| Complexity-scaled | add `auto: true` — choose 3-25 mutations from RTL complexity and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
+| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `--count auto`; add `--min-detected K` for an explicit threshold |
 
-Standalone `--dry-run` prints the complexity breakdown and proposed auto count without running mutations.
+Standalone `--dry-run` prints the source-size breakdown and proposed auto count without running mutations.
 
-Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can override module discovery with `--dut-top`, `--dut-files`, and `--tb-top`.
+Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target <sim-target>` chooses the complete runnable Target suite; `--steer <context>` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `--regen-lock`. Standalone calls can supply `--dut-files`, `--dut-top` as a prompt hint, and `--tb-top` for classic simulator Targets.
 <!-- END GENERATED: flows -->
+
+Booley validates each proposal as one exact replacement, compiles it in
+isolation, and restores the pristine source. A completed run publishes one
+atomic campaign manifest with a durable baseline log, every mutant log, each
+source variant, and the first public test that killed each detected mutant.
 
 The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `coverage_analyst` and `tb_coder` also exist but are hidden until they mature (see [ROADMAP.md](ROADMAP.md)); the Developer Agent authors testbenches itself.
 
@@ -598,7 +603,9 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 
 Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
 
-In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs `base_sha` and the ticket head with the same normalized Target recipe. Developer execution cannot change contract controls; a missing or incorrect recipe blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
+For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
+
+In Ticket Mode, ticket creation seals an immutable Target contract before enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs the pair's baseline Target at `base_sha` and its candidate Target at the ticket head. Both Targets and their directed binding are sealed. Developer execution cannot change contract controls; a missing or incorrect Target blocks as `target-contract-change-required` for revision and resealing. Missing or mismatched baseline evidence never skips a relative check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -679,18 +686,24 @@ on_success:
   destination: review     # review (default) | done
   merge: true             # merge the ticket branch into its base
   cleanup: true           # remove the worktree and branch afterwards
-  triage_report: true     # prepare rich HTML explanation before review
+  triage_report: true     # add an LLM-generated HTML explanation to the review package
 ```
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
-With `triage_report: true` (the default), Booley uses the configured agent
-backend after criteria acceptance to prepare a self-contained HTML explanation
-under the ticket log directory before moving the ticket to review. The triage
-skill presents its deterministic briefing directly in chat instead of writing
-another summary report. Set `triage_report` to `false` to skip the extra agent
-call. A generation failure is recorded but does not block an otherwise
-successful ticket; `booley board prepare-review <slug> --force` retries it.
+Every review-bound run persists a versioned, machine-readable JSON package at
+`logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views
+are rendered from that same package, so a command-line client can inspect the
+complete review input without scraping a presentation format. With
+`triage_report: true`
+(the default), Booley uses the configured model backend after criteria
+acceptance to add a self-contained HTML explanation under the ticket log
+directory. The triage skill presents its deterministic briefing directly in
+chat instead of writing another summary report. Set `triage_report` to `false`
+to skip the extra model call; Booley still writes the deterministic JSON
+package, with a conservative deterministic assessment and no HTML explanation.
+A generation failure is recorded but does not block an otherwise successful ticket;
+`booley board prepare-review <slug> --force` retries it.
 The same command supports tickets in `blocked/`: generating the full review
 package for partial or blocked work is a normal way to inspect its diff,
 criteria, scope deviations, and blockers before deciding whether to reset or
@@ -700,6 +713,17 @@ Session-Runtime path. Open that link, then select **Show Preview** in the HTML
 editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
+
+After a ticket enters review, `booley run` emits one stable JSON record even
+when the full-screen Console was used:
+
+```text
+BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
+```
+
+Normal progress output may surround this line. Command-line clients should scan
+for the `BOOLEY_RUN_RESULT ` prefix; one record is emitted per review-bound
+ticket. `html_path` is `null` when no HTML explanation was produced.
 
 **Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
 

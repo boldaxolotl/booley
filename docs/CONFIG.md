@@ -1371,18 +1371,18 @@ stalls at time zero, follow the diagnosis and recovery in
 
 ### Submodules
 
-Ticket Mode runs each ticket in its own git worktree, and a worktree cannot
-initialize submodules the normal way — `git submodule update --init` there fails
-with *"reference repository '.' as a linked checkout is not supported yet"*, and
-even where it works it re-clones from the recorded URL, which the sandbox has no
-network to reach.
+Ticket Mode and baseline-relative Flows run in isolated git worktrees. Booley
+does not run `git submodule update` there: doing so may re-clone from a private
+SSH URL that the Session Runtime cannot reach.
 
-So Booley doesn't clone. It **copies each submodule's working tree out of your
-main repo** into the new worktree and rewrites the submodule's `.git` pointer to
-an absolute path, then turns off submodule recursion in that worktree
-(`submodule.recurse false`). Nothing goes over the network, and an SSH-only
-submodule URL is irrelevant. Paths come from your `.gitmodules`, so the normal
-case needs no configuration at all.
+After the ticket's final branch or the Flow's baseline ref is selected, Booley
+reads that revision's exact gitlinks and reconstructs each submodule from the
+initialized repository at the **same path** in the main Project. It transfers
+the pinned commit's local Git objects into a standalone detached repository;
+it does not copy a working tree, share a `.git` pointer, configure a remote, or
+consult the URL in `.gitmodules`. Recursive submodules use the same rule at
+each level. Consequently, SSH-only URLs are harmless once the source hierarchy
+is initialized locally.
 
 What this asks of you, once, on the host:
 
@@ -1390,16 +1390,22 @@ What this asks of you, once, on the host:
 git submodule update --init --recursive
 ```
 
-Every submodule must be **present and clean** in the main repo before a ticket
-starts. Worktree setup hard-errors otherwise, naming the submodule and telling
-you which of the two it is:
+Every selected submodule must be **present, clean, and non-shallow** in the main
+Project before a ticket or baseline Flow starts. Its local object database must
+also contain the complete object closure for the destination's pinned commit.
+Worktree setup hard-errors when one of these preconditions is not met, for
+example:
 
-- `submodule <path> not found in main repo — run 'git submodule update --init' first`
-- `submodule <path> is dirty in main repo — commit or stash changes first`
+- `submodule <path> not found in source Project; initialize it first`
+- `submodule <path> is dirty`
+- `submodule <path> is shallow; fetch its complete history first`
+- `local objects for submodule <path> are incomplete`
 
-The "clean" rule is not fussiness: the copy is a snapshot, so uncommitted
-submodule work would be silently duplicated into every ticket worktree with no
-way back.
+The destination gitlink is authoritative: if the main Project currently has a
+newer submodule checkout, Booley still materializes the historical pin. A
+matching clean destination is accepted on resume. If a later recursive step
+fails, repositories created by that attempt are rolled back; pre-existing
+content is never removed.
 
 To copy only some of the submodules (a big docs or FPGA-board submodule nothing
 builds against), list the ones you want:
@@ -1409,8 +1415,15 @@ builds against), list the ones you want:
 paths = ["deps/bus_pkg", "deps/axi_verif"]
 ```
 
-The list replaces `.gitmodules` discovery entirely — anything you leave out is
-simply absent from ticket worktrees.
+When `paths` is absent, all top-level gitlinks in the selected destination
+revision are materialized. An explicit empty list selects none. A non-empty
+list is an allowlist intersected with that revision's top-level gitlinks;
+anything omitted remains an empty gitlink directory in the worktree. Nested
+gitlinks below a selected entry are always reconstructed recursively.
+
+Submodules inside a separately paired `.booley_project` repository are not
+currently materialized; keep build inputs in the outer Project's submodule
+tree.
 
 ## Doctor waivers (`doctor-waivers.toml`)
 
