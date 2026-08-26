@@ -68,14 +68,14 @@ Three ways in, ordered by how much you want to invest:
 
 ### Level 1: Watch
 
-Four videos show me driving Booley on a demo project end to end, so you can see the workflow before touching anything:
+Four videos show an engineer driving Booley on a demo project end to end, so viewers can see the workflow before touching anything:
 
 1. **[Design Optimization](https://youtu.be/zHuvU4QJbvE)** (12:43)
 2. **[Finding and Fixing Bugs](https://youtu.be/hsYHHZcx82w)** (9:40)
 3. **[Feature Ticket Creation](https://youtu.be/sy1KMCHYnEw)** (10:36)
 4. **[Ticket Results Review](https://youtu.be/nHOgd5Jz6Eo)** (11:21)
 
-I recorded all four videos myself, then replaced my narration with text-to-speech to preserve my anonymity for now.
+The project's author recorded all four videos, then replaced the original narration with text-to-speech to preserve anonymity for now.
 
 ### Level 2: Try the demo yourself
 
@@ -98,6 +98,7 @@ Current integrations:
 - **ASIC synthesis** (PPA estimate, not tape-out) — logical Yosys or physical Yosys + OpenROAD
 - **Waveform debug** — `bwave` (+ VaporView GUI in VS Code)
 - **FPGA implementation** — AMD Vivado
+- **Coming soon** — Synopsys VCS, Cadence Xcelium
 
 For exact versions, provisioning, trace support, and platform constraints, see
 **[SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/SUPPORTED-EDA-TOOLS.md)**.
