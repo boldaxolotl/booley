@@ -35,30 +35,7 @@ from typing import Any
 
 from booley.runtime.timefmt import utc_now_rfc3339
 
-# re-exported for backward compatibility — the SV source-editing engine was
-# extracted into ``mut_harness_inject`` (principle 8 / Single Responsibility),
-# but importers still resolve these names off ``mutation_lock`` (see __all__).
-from .mut_harness_inject import (
-    MUT_ECHO_PREFIX,
-    MutHarnessInjectionError,
-    generate_mut_pkg,
-    generate_plusarg_reader_snippet,
-    inject_mut_harness,
-    remove_mut_harness,
-)
-
 logger = logging.getLogger(__name__)
-
-# Re-exports from ``mut_harness_inject``, kept in the public namespace so
-# existing importers of ``mutation_lock`` keep resolving them.
-__all__ = [
-    "MUT_ECHO_PREFIX",
-    "MutHarnessInjectionError",
-    "generate_mut_pkg",
-    "generate_plusarg_reader_snippet",
-    "inject_mut_harness",
-    "remove_mut_harness",
-]
 
 # Bump when the on-disk layout or semantics change in an incompatible way.
 # 2.0 stores read-only exact replacement proposals. It deliberately
@@ -77,30 +54,17 @@ MUT_PKG_FILENAME = "booley_mut_pkg.sv"
 
 @dataclass
 class LockMeta:
-    """In-memory representation of ``lock.json``.
-
-    The core proposal fields mirror schema 2. Legacy 1.x attributes remain as
-    in-memory compatibility shims but :meth:`to_dict` does not persist them.
-    """
+    """In-memory representation of the schema-2 ``lock.json``."""
 
     schema_version: str = LOCK_SCHEMA_VERSION
     created_at: str = ""
     scope: list[str] = field(default_factory=list)
     scope_hashes: dict[str, str] = field(default_factory=dict)
     count: int = 0
-    host_file: str = ""
     mutations: list[dict[str, Any]] = field(default_factory=list)
-    muxed_files: list[str] = field(default_factory=list)
-    pkg_file: str = MUT_PKG_FILENAME
-    docker_digest: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize only the schema-2 proposal identity.
-
-        Legacy attributes remain on the Python object for callers that still
-        construct 1.x fixtures, but they are deliberately absent from new lock
-        files: isolated campaigns persist no mux, package, image, or build cache.
-        """
+        """Serialize the schema-2 proposal identity."""
         return {
             "schema_version": self.schema_version,
             "created_at": self.created_at,
@@ -120,11 +84,7 @@ class LockMeta:
             scope=list(d.get("scope", [])),
             scope_hashes=dict(d.get("scope_hashes", {})),
             count=int(d.get("count", 0)),
-            host_file=d.get("host_file", ""),
             mutations=list(d.get("mutations", [])),
-            muxed_files=list(d.get("muxed_files", [])),
-            pkg_file=d.get("pkg_file", MUT_PKG_FILENAME),
-            docker_digest=d.get("docker_digest", ""),
         )
 
 
@@ -441,18 +401,6 @@ def is_build_cache_valid(
     if meta.get("build_inputs") != (build_inputs or {}):
         return False
     return meta.get("docker_digest") == docker_digest
-
-
-# ---------------------------------------------------------------------------
-# SV harness injection (source-editing engine)
-# ---------------------------------------------------------------------------
-#
-# The SystemVerilog source-editing engine (harness text generation + RTL
-# rewrite) lives in ``mut_harness_inject`` — extracted per principle 8
-# (Single Responsibility).  Its public names are re-exported at module top
-# for backward compatibility so existing importers keep resolving them off
-# ``mutation_lock``.  See the ``from .mut_harness_inject import ...`` line
-# in the import block above.
 
 
 # ---------------------------------------------------------------------------

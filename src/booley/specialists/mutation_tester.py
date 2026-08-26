@@ -41,7 +41,7 @@ from typing import Any, ClassVar
 from urllib.parse import quote
 
 from booley.config import project_config
-from booley.core.boundary import as_int
+from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
 from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
@@ -182,14 +182,17 @@ class MutationSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MutationSpec:
+        detectability_argument = as_str(d.get("detectability_argument", ""))
+        if detectability_argument is None:
+            raise BoundaryError("detectability_argument must be a string")
         return cls(
-            index=d.get("index", 0),
-            category=d.get("category", "unknown"),
-            file=d.get("file", ""),
-            line=d.get("line", 0),
-            original_code=d.get("original_code", ""),
-            mutated_code=d.get("mutated_code", ""),
-            detectability_argument=d.get("detectability_argument", ""),
+            index=require_int(d.get("index"), field="mutation index"),
+            category=require_str(d, "category"),
+            file=require_str(d, "file"),
+            line=require_int(d.get("line"), field="mutation line"),
+            original_code=require_str(d, "original_code"),
+            mutated_code=require_str(d, "mutated_code"),
+            detectability_argument=detectability_argument,
         )
 
 
@@ -295,7 +298,7 @@ class MutationSummary:
 # ---------------------------------------------------------------------------
 
 
-def compute_rtl_complexity(scope_files: list[str], work_dir: Path) -> dict:
+def compute_source_size_budget(scope_files: list[str], work_dir: Path) -> dict:
     """Choose an auto budget from source size without interpreting HDL syntax."""
     MIN_COUNT = 3
     MAX_COUNT = 25
@@ -339,7 +342,7 @@ def parse_creator_output(output: str) -> list[MutationSpec]:
         if isinstance(item, dict):
             try:
                 specs.append(MutationSpec.from_dict(item))
-            except (KeyError, TypeError):
+            except (BoundaryError, KeyError, TypeError):
                 logger.warning("Skipping malformed mutation spec: %s", item)
     return specs
 
@@ -570,7 +573,7 @@ class MutationRunPlan:
     count: int
     auto_mode: bool
     formula_count: int
-    complexity: dict | None
+    source_size_budget: dict | None
 
 
 @dataclass
@@ -703,7 +706,7 @@ class MutationTesterSpecialist(Specialist):
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="Compute complexity score and print breakdown without running mutations",
+            help="Compute the source-size budget without running mutations",
         )
         parser.add_argument(
             "--regen-lock",
@@ -994,19 +997,19 @@ replacement must differ, and every proposal must remain a single source edit.
     ) -> tuple[int, dict | None, int, bool]:
         """Resolve the mutation count (int | "auto").
 
-        Returns ``(count, complexity, formula_count, auto_mode)`` and emits the
+        Returns ``(count, source_size_budget, formula_count, auto_mode)`` and emits the
         matching progress line for either the auto-scaled or fixed-count path.
         """
         if self.args.count == "auto":
-            complexity = compute_rtl_complexity(scope_files, work_dir)
-            formula_count = complexity["formula_count"]
+            source_size_budget = compute_source_size_budget(scope_files, work_dir)
+            formula_count = source_size_budget["formula_count"]
             timeout = getattr(self.args, "timeout", 1800)
             budget_cap = max(3, timeout // 150)
             count = min(formula_count, budget_cap)
             auto_mode = True
         else:
             count = self.args.count
-            complexity = None
+            source_size_budget = None
             formula_count = count
             budget_cap = count
             auto_mode = False
@@ -1014,99 +1017,94 @@ replacement must differ, and every proposal must remain a single source edit.
         if auto_mode:
             self.emit_progress(
                 f"auto-scaled: {count} mutations "
-                f"(complexity {formula_count}, budget cap {budget_cap})",
+                f"(source-size formula {formula_count}, budget cap {budget_cap})",
             )
         else:
             self.emit_progress(f"target: {count} mutations")
-        return count, complexity, formula_count, auto_mode
+        return count, source_size_budget, formula_count, auto_mode
 
     def _run(self) -> McpToolResult:
         if campaign_error := self._apply_campaign_defaults():
             return campaign_error
+        prepared = self._prepare_run_plan()
+        if isinstance(prepared, McpToolResult):
+            return prepared
+        existing_lock = self._load_reusable_lock(prepared)
+        if existing_lock is not None:
+            return self._run_warm(existing_lock, prepared)
+        return self._run_cold(prepared)
+
+    def _prepare_run_plan(self) -> MutationRunPlan | McpToolResult:
         work_dir = self.args.work_dir
-        report_dir = self.args.report_dir
         target = self.args.target
         scope_files = self._scope_files()
+        if validation_error := self._validate_run_inputs(target, work_dir, scope_files):
+            return validation_error
+        count, source_size_budget, formula_count, auto_mode = self._resolve_count(
+            scope_files,
+            work_dir,
+        )
+        if getattr(self.args, "dry_run", False):
+            budget = source_size_budget or compute_source_size_budget(scope_files, work_dir)
+            output = json.dumps(budget, indent=2)
+            print(output)
+            return McpToolResult(exit_code=EXIT_SUCCESS, report_text=output)
+        self.args.count = count
+        return MutationRunPlan(
+            scope_files=scope_files,
+            scope_hashes=lock_mod.compute_scope_hashes(scope_files, work_dir),
+            work_dir=work_dir,
+            target=target,
+            report_dir=self.args.report_dir,
+            min_detected=(self.args.min_detected if self.args.min_detected is not None else count),
+            count=count,
+            auto_mode=auto_mode,
+            formula_count=formula_count,
+            source_size_budget=source_size_budget,
+        )
 
-        # Fail fast: a --scope path that isn't a resolved source of --target
-        # (e.g. a stealth-cores mirror) would elaborate to nothing, but only
-        # after a full creator round. Reject it in <1s before any agent work.
-        scope_err = self._validate_scope_against_target(scope_files)
-        if scope_err is not None:
-            return scope_err
-
-        # Resolve the run-half up front (a subprocess-free .core read): an
-        # undrivable Target must cost one YAML parse, never three creator
-        # rounds ending in a misattributed "baseline broken" (SETUP-F-40).
+    def _validate_run_inputs(
+        self,
+        target: str,
+        work_dir: Path,
+        scope_files: list[str],
+    ) -> McpToolResult | None:
+        if scope_error := self._validate_scope_against_target(scope_files):
+            return scope_error
         try:
             self._validate_target_runner(target, work_dir)
             self.cocotb_target(target, work_dir)
             self._target_test_suite(target)
         except UnsupportedSimTargetError as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        return None
 
-        # --- Resolve count (int | "auto") ---
-        count, complexity, formula_count, auto_mode = self._resolve_count(
-            scope_files,
-            work_dir,
-        )
-
-        # --- Dry-run early exit ---
-        if getattr(self.args, "dry_run", False):
-            if complexity is None:
-                complexity = compute_rtl_complexity(scope_files, work_dir)
-            output = json.dumps(complexity, indent=2)
-            print(output)
-            return McpToolResult(exit_code=EXIT_SUCCESS, report_text=output)
-
-        min_detected = self.args.min_detected if self.args.min_detected is not None else count
-        self.args.count = count  # stamp resolved value for prompt + telemetry
-
-        # --- Cold vs warm decision ---
+    def _load_reusable_lock(self, plan: MutationRunPlan) -> lock_mod.LockMeta | None:
         if getattr(self.args, "regen_lock", False):
             logger.info("--regen-lock requested: wiping existing lock dir")
             lock_mod.wipe_lock()
             self._clear_session_id(self.SESSION_KEY)
-
-        scope_hashes = lock_mod.compute_scope_hashes(scope_files, work_dir)
         existing_lock = lock_mod.load_lock()
-        is_warm = existing_lock is not None and lock_mod.is_lock_valid(
-            existing_lock, scope_files, scope_hashes
-        )
-        if existing_lock is not None and not is_warm:
+        if existing_lock is None:
+            return None
+        if not lock_mod.is_lock_valid(
+            existing_lock,
+            plan.scope_files,
+            plan.scope_hashes,
+        ):
             logger.info("mutation proposal lock is stale — wiping before cold start")
             lock_mod.wipe_lock()
-            existing_lock = None
-
-        # The runtime choice of N is bounded by what the proposal lock contains.
-        # Force regeneration when the locked set is smaller.
-        if is_warm and existing_lock.count < count:
+            return None
+        if existing_lock.count < plan.count:
             logger.info(
                 "lock has %d mutations but %d requested — forcing cold start",
                 existing_lock.count,
-                count,
+                plan.count,
             )
             lock_mod.wipe_lock()
             self._clear_session_id(self.SESSION_KEY)
-            existing_lock = None
-            is_warm = False
-
-        plan = MutationRunPlan(
-            scope_files=scope_files,
-            scope_hashes=scope_hashes,
-            work_dir=work_dir,
-            target=target,
-            report_dir=report_dir,
-            min_detected=min_detected,
-            count=count,
-            auto_mode=auto_mode,
-            formula_count=formula_count,
-            complexity=complexity,
-        )
-        if is_warm:
-            return self._run_warm(existing_lock, plan)
-
-        return self._run_cold(plan)
+            return None
+        return existing_lock
 
     # ------------------------------------------------------------------
     # Cold start
@@ -1555,11 +1553,11 @@ replacement must differ, and every proposal must remain a single source edit.
         self.emit_progress(
             f"warm reuse: proposal lock from {lock.created_at}, {lock.count} mutations"
         )
-        specs = [MutationSpec.from_dict(item) for item in lock.mutations][: plan.count]
-        self._canonicalize_spec_paths(specs, plan.work_dir)
         try:
+            specs = [MutationSpec.from_dict(item) for item in lock.mutations][: plan.count]
+            self._canonicalize_spec_paths(specs, plan.work_dir)
             variants = MutationVariantPlan.resolve(specs, plan.work_dir, plan.scope_files)
-        except MutationVariantError as exc:
+        except (BoundaryError, MutationVariantError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"mutation proposal lock is stale or invalid: {exc}; use --regen-lock",
@@ -2356,10 +2354,10 @@ replacement must differ, and every proposal must remain a single source edit.
     ) -> McpToolResult:
         # Unpack the plan config + run outcome the assembly below reads.
         min_detected, target = plan.min_detected, plan.target
-        auto_mode, formula_count, complexity = (
+        auto_mode, formula_count, source_size_budget = (
             plan.auto_mode,
             plan.formula_count,
-            plan.complexity,
+            plan.source_size_budget,
         )
         summary, count = inputs.summary, inputs.count
         reused_lock, lock_created_at = inputs.reused_lock, inputs.lock_created_at
@@ -2383,7 +2381,7 @@ replacement must differ, and every proposal must remain a single source edit.
             detail["auto"] = True
             detail["formula_count"] = formula_count
             detail["budget_capped"] = count < formula_count
-            detail["complexity"] = complexity
+            detail["source_size_budget"] = source_size_budget
         if inputs.evidence:
             detail["evidence"] = inputs.evidence
         if inputs.coverage_gap:
@@ -2474,9 +2472,9 @@ replacement must differ, and every proposal must remain a single source edit.
         campaign_dir: Path,
         variants: dict[int, Path],
     ) -> dict[str, Path | None]:
-        if plan.complexity and not inputs.reused_lock:
-            (staging_dir / "complexity-breakdown.json").write_text(
-                json.dumps(plan.complexity, indent=2), encoding="utf-8"
+        if plan.source_size_budget and not inputs.reused_lock:
+            (staging_dir / "source-size-budget.json").write_text(
+                json.dumps(plan.source_size_budget, indent=2), encoding="utf-8"
             )
         baseline_log = self._copy_campaign_file(
             lock_mod.baseline_log_path(), staging_dir / "baseline.log"

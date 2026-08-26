@@ -12,6 +12,7 @@ import contextlib
 import json
 from pathlib import Path
 
+from booley.dev_support import mut_harness_inject as mh
 from booley.dev_support import mutation_lock as lm
 
 # ---------------------------------------------------------------------------
@@ -53,11 +54,7 @@ class TestLockPersistence:
             scope=["rtl/a.sv"],
             scope_hashes={"rtl/a.sv": "sha256:abc"},
             count=3,
-            host_file="rtl/a.sv",
             mutations=[{"index": 1, "category": "x"}],
-            muxed_files=["muxed_a.sv"],
-            pkg_file=lm.MUT_PKG_FILENAME,
-            docker_digest="sha256:img",
         )
         lm.save_lock(meta)
         loaded = lm.load_lock()
@@ -66,6 +63,7 @@ class TestLockPersistence:
         assert loaded.count == 3
         assert loaded.mutations[0]["index"] == 1
         persisted = json.loads(lm.lock_json_path().read_text(encoding="utf-8"))
+        assert "host_file" not in persisted
         assert "muxed_files" not in persisted
         assert "pkg_file" not in persisted
         assert "docker_digest" not in persisted
@@ -237,30 +235,30 @@ class TestHarnessInjection:
         path = tmp_path / "dut_top.v"
         path.write_text(source, encoding="utf-8")
 
-        package, reader = lm.inject_mut_harness(path, "dut_top")
+        package, reader = mh.inject_mut_harness(path, "dut_top")
 
         text = path.read_text(encoding="utf-8")
         assert not package and reader
         assert "package booley_mut_pkg" not in text
         assert "integer mut_id = 0" in text
-        assert lm.remove_mut_harness(path)
+        assert mh.remove_mut_harness(path)
         assert path.read_text(encoding="utf-8") == source
 
     def test_round_trip(self, tmp_path: Path):
         f = tmp_path / "dut_top.sv"
         f.write_text(_DUT_SOURCE, encoding="utf-8")
-        pkg, reader = lm.inject_mut_harness(f, "dut_top")
+        pkg, reader = mh.inject_mut_harness(f, "dut_top")
         assert pkg and reader
         txt = f.read_text(encoding="utf-8")
         assert "package booley_mut_pkg" in txt
         assert "$value$plusargs" in txt
 
         # Idempotent re-call.
-        pkg2, reader2 = lm.inject_mut_harness(f, "dut_top")
+        pkg2, reader2 = mh.inject_mut_harness(f, "dut_top")
         assert not pkg2 and not reader2
 
         # Strip cleanly.
-        assert lm.remove_mut_harness(f) is True
+        assert mh.remove_mut_harness(f) is True
         txt = f.read_text(encoding="utf-8")
         assert "package booley_mut_pkg" not in txt
         assert "$value$plusargs" not in txt
@@ -278,7 +276,7 @@ endmodule
         f = tmp_path / "dut_top.sv"
         f.write_text(src, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         header_end = txt.index(");") + 2
@@ -290,8 +288,8 @@ endmodule
         f = tmp_path / "broken.sv"
         f.write_text("// no module here\n", encoding="utf-8")
         try:
-            lm.inject_mut_harness(f, "nonexistent_top")
-        except lm.MutHarnessInjectionError:
+            mh.inject_mut_harness(f, "nonexistent_top")
+        except mh.MutHarnessInjectionError:
             return
         raise AssertionError("expected MutHarnessInjectionError")
 
@@ -301,9 +299,9 @@ endmodule
         # byte-identical to an unmutated one.
         f = tmp_path / "dut_top.sv"
         f.write_text(_DUT_SOURCE, encoding="utf-8")
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
         txt = f.read_text(encoding="utf-8")
-        assert f'$display("{lm.MUT_ECHO_PREFIX}%0d active", mut_id)' in txt
+        assert f'$display("{mh.MUT_ECHO_PREFIX}%0d active", mut_id)' in txt
         assert "if (mut_id != 0) $display" in txt
 
     def test_partial_rollback_on_missing_module(self, tmp_path: Path):
@@ -313,8 +311,8 @@ endmodule
         src = "module other_top();\nendmodule\n"
         f = tmp_path / "x.sv"
         f.write_text(src, encoding="utf-8")
-        with contextlib.suppress(lm.MutHarnessInjectionError):
-            lm.inject_mut_harness(f, "missing_top")
+        with contextlib.suppress(mh.MutHarnessInjectionError):
+            mh.inject_mut_harness(f, "missing_top")
         assert f.read_text(encoding="utf-8") == src
 
 
@@ -334,7 +332,7 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text(src, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         pkg = txt[txt.index("package booley_mut_pkg") : txt.index("endpackage")]
@@ -345,7 +343,7 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text("timeunit 1ns / 10ps;\n" + _DUT_SOURCE, encoding="utf-8")
 
-        assert lm.generate_mut_pkg(f.read_text(encoding="utf-8")) == (
+        assert mh.generate_mut_pkg(f.read_text(encoding="utf-8")) == (
             "package booley_mut_pkg;\n"
             "  timeunit 1ns;\n"
             "  timeprecision 10ps;\n"
@@ -359,7 +357,7 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text("`timescale 1ns / 1ps\n" + _DUT_SOURCE, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         assert txt.index("`timescale 1ns / 1ps") < txt.index("package booley_mut_pkg")
@@ -372,12 +370,12 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text(_DUT_SOURCE, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         assert "/* verilator lint_off DECLFILENAME */" in txt
         assert "/* verilator lint_on DECLFILENAME */" in txt
-        assert lm.remove_mut_harness(f) is True
+        assert mh.remove_mut_harness(f) is True
         assert f.read_text(encoding="utf-8") == _DUT_SOURCE
 
     def test_reader_goes_below_in_module_time_declarations(self, tmp_path: Path):
@@ -394,19 +392,19 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text(src, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         assert txt.index("timeprecision 1ps;") < txt.index("__BOOLEY_MUT_READER_BEGIN__")
         assert txt.index("__BOOLEY_MUT_READER_END__") < txt.index("logic q;")
-        assert lm.remove_mut_harness(f) is True
+        assert mh.remove_mut_harness(f) is True
         assert f.read_text(encoding="utf-8") == src
 
     def test_untimed_design_gets_no_timescale(self, tmp_path: Path):
         f = tmp_path / "dut_top.sv"
         f.write_text(_DUT_SOURCE, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         assert "timeunit" not in txt
@@ -420,9 +418,9 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text(src, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
-        assert lm.inject_mut_harness(f, "dut_top") == (False, False)
-        assert lm.remove_mut_harness(f) is True
+        mh.inject_mut_harness(f, "dut_top")
+        assert mh.inject_mut_harness(f, "dut_top") == (False, False)
+        assert mh.remove_mut_harness(f) is True
         assert f.read_text(encoding="utf-8") == src
 
     def test_included_timescale_header_still_covers_the_package(self, tmp_path: Path):
@@ -432,7 +430,7 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text('`include "timescale.vh"\n' + _DUT_SOURCE, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         txt = f.read_text(encoding="utf-8")
         assert txt.index("`timescale 1ns / 1ps") < txt.index("package booley_mut_pkg")
@@ -443,9 +441,9 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text(src, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
-        assert lm.inject_mut_harness(f, "dut_top") == (False, False)
-        assert lm.remove_mut_harness(f) is True
+        mh.inject_mut_harness(f, "dut_top")
+        assert mh.inject_mut_harness(f, "dut_top") == (False, False)
+        assert mh.remove_mut_harness(f) is True
         assert f.read_text(encoding="utf-8") == src
 
     def test_unrelated_include_is_not_guessed_at(self, tmp_path: Path):
@@ -454,7 +452,7 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text('`include "defines.vh"\n' + _DUT_SOURCE, encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         assert "`timescale" not in f.read_text(encoding="utf-8")
 
@@ -464,7 +462,7 @@ class TestPackageTimescale:
         f = tmp_path / "dut_top.sv"
         f.write_text(_DUT_SOURCE + '`include "timescale.vh"\n', encoding="utf-8")
 
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
 
         assert "`timescale 1ns / 1ps" not in f.read_text(encoding="utf-8")
 
@@ -475,10 +473,10 @@ class TestPackageTimescale:
             encoding="utf-8",
         )
 
-        assert lm.generate_mut_pkg(f.read_text(encoding="utf-8")) == (
+        assert mh.generate_mut_pkg(f.read_text(encoding="utf-8")) == (
             "package booley_mut_pkg;\n  int mut_id = 0;\nendpackage\n"
         )
-        lm.inject_mut_harness(f, "dut_top")
+        mh.inject_mut_harness(f, "dut_top")
         txt = f.read_text(encoding="utf-8")
         assert txt.index("`timescale 10ps / 1ps") < txt.index("package booley_mut_pkg")
 
