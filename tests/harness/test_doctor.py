@@ -6733,6 +6733,46 @@ class TestLineEndingsCheck:
 
         assert c.passed and not c.warned and not c.failed
 
+    def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="true")
+        self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
+        (tmp_path / "a.v").unlink()
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "--", "a.v"],
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
+            capture_output=True,
+            check=True,
+        )
+        (tmp_path / "a.v").write_bytes(b"module a;\nendmodule\n")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            == " M a.v\n"
+        )
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "diff", "--quiet"],
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+        c = _Collector()
+
+        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
+
+        assert len(c.failed) == 1
+        assert "stale" in c.failed[0][0]
+        assert "booley init" in c.failed[0][1]
+
     def test_crlf_tree_fails_with_the_init_remediation(self, tmp_path: Path):
         # Ticket Mode is broken right now: the container reads every one of
         # these as modified.

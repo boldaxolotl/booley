@@ -1218,11 +1218,12 @@ def _check_line_endings(
     and worktrees — so this is worth re-asking every run, not only at init.
 
     Reports a *present* problem only. CRLF on disk FAILs (Ticket Mode is broken
-    now); ``autocrlf=true`` with a clean tree WARNs (the next checkout will
-    break it). A missing ``.gitattributes`` rule is deliberately silent: it is
-    harmless on the host doing the asking, and most vendored upstream repos
-    (the pristine picorv32 among them) will never carry one — flagging it would
-    be the unfollowable advice :func:`_owned_core_files` exists to avoid.
+    now); status-only dirtiness from an earlier repair also FAILs;
+    ``autocrlf=true`` with a clean tree WARNs (the next checkout will break it).
+    A missing ``.gitattributes`` rule is deliberately silent: it is harmless on
+    the host doing the asking, and most vendored upstream repos (the pristine
+    picorv32 among them) will never carry one — flagging it would be the
+    unfollowable advice :func:`_owned_core_files` exists to avoid.
     """
     _warn = _warning_sink(_warn, "git.autocrlf-risk")
 
@@ -1268,6 +1269,29 @@ def _check_line_endings(
             "core.autocrlf=true — the tree is LF today, but the next clone or "
             "checkout will re-create it with CRLF and break Ticket Mode",
             f"git -C {project_root} config core.autocrlf false   (or re-run `booley init`)",
+        )
+        return
+    _report_line_ending_index_metadata(project_root, _pass, _skip, _fail)
+
+
+def _report_line_ending_index_metadata(
+    project_root: Path,
+    _pass: Check,
+    _skip: Check,
+    _fail: Fail,
+) -> None:
+    """Report status-only dirtiness left by an earlier in-place LF repair."""
+    from booley.harness.init_git_hooks import _tracked_status_is_phantom
+
+    phantom_status = _tracked_status_is_phantom(project_root)
+    if phantom_status is None:
+        _skip("line endings: could not compare tracked status with Git diffs")
+        return
+    if phantom_status:
+        _fail(
+            "tracked files have stale Git index metadata after line-ending repair — "
+            "status reports modifications although staged and unstaged diffs are empty",
+            "booley init   (refreshes the affected tracked index entries)",
         )
         return
     _pass("working tree is container-safe (no CRLF checkouts, autocrlf off)")

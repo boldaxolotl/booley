@@ -52,6 +52,12 @@ Session Runtime split is described in [ARCHITECTURE.md](ARCHITECTURE.md#overview
 > in Container); `booley init` refuses inside the container, where there is no
 > Docker. Either side fails fast with a message naming the fix.
 
+> **For an existing project, start from a fresh clone when practical and run
+> `booley init` before making local edits.** A clean tracked tree gives the
+> bootstrap an unambiguous baseline for line-ending repair and other Git
+> checks, minimizing avoidable setup conflicts. If you must use an existing
+> checkout, commit or stash tracked changes first.
+
 The command depends on your path:
 
 ```bash
