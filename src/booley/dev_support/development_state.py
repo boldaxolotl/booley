@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.dev_support.criterion_categories import CATEGORY_RTL, CATEGORY_TB
+from booley.dev_support.cycle_count import build_cycle_comparison
+from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS, evaluate_cycle_threshold
 from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -117,10 +120,6 @@ class CriterionEntry:
         )
 
 
-# Category tags for criteria invalidation
-CATEGORY_RTL = "rtl"
-CATEGORY_TB = "tb"
-
 # Well-known category prefixes: criteria whose key starts with these
 # are auto-tagged into the corresponding categories.
 # A prefix may map to multiple categories — e.g. sim_ criteria depend on
@@ -131,6 +130,7 @@ _CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
     "synthesis_": frozenset({CATEGORY_RTL}),
     "fpga_impl_": frozenset({CATEGORY_RTL}),
     "sim_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
+    "cycle_count_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
     "coverage_": frozenset({CATEGORY_RTL}),
     # Exact key (prefix matching still applies): the standalone-elaboration
     # sweep is an RTL structural check, so an RTL edit must reset its met
@@ -446,20 +446,32 @@ class DevelopmentState:
         for param_key, threshold in params.items():
             if param_key.startswith("_"):
                 continue
-            result = self._check_single_threshold(
-                param_key,
-                threshold,
-                detail,
-                baseline,
-                metric_map,
-                min_allowed,
-            )
+            if param_key in {"target", "test"}:
+                continue
+            if param_key in CYCLE_COUNT_PARAMS:
+                result = evaluate_cycle_threshold(
+                    param_key,
+                    threshold,
+                    current=detail.get("cycles"),
+                    baseline=detail.get("baseline_cycles"),
+                )
+            else:
+                result = self._check_single_threshold(
+                    param_key,
+                    threshold,
+                    detail,
+                    baseline,
+                    metric_map,
+                    min_allowed,
+                )
             if result is not None:
                 checks.append(result)
                 if not result["pass"]:
                     all_pass = False
 
         detail["checks"] = checks
+        if any(param in CYCLE_COUNT_PARAMS for param in params):
+            detail["cycle_comparison"] = build_cycle_comparison(params, detail, checks)
         if not all_pass:
             entry.met = False
             entry.ever_met = False

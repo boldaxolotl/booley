@@ -177,6 +177,14 @@ _Avoid_: check, gate, acceptance test
 A Criterion satisfied by a passing simulation Booley Flow run. Any Ticket that authorizes RTL or testbench edits must include at least one Simulation Criterion; otherwise the Ticket shape is invalid before development. The required testbench may already exist or be created during ticket execution when Scope permits it.
 _Avoid_: optional sim, smoke test
 
+**Cycle Count**:
+A non-negative integer emitted by one named test for one execution of its declared workload on a Target. It is a performance measurement whose desired direction is supplied by a Criterion; lower is not inherently better.
+_Avoid_: cycle time, runtime, performance score
+
+**Cycle Count Criterion**:
+A specialized Simulation Criterion for one Target and named test, satisfied only when the test passes and its Cycle Count meets every declared threshold. A mandatory Cycle Count Criterion fulfills the simulation requirement for that test without requiring a duplicate Simulation Criterion.
+_Avoid_: cycle budget, synthesis criterion, benchmark score
+
 **Ticket Board**:
 The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog

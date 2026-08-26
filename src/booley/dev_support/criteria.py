@@ -32,8 +32,10 @@ from booley.core.boundary import (
     BoundaryError,
     as_positive_int,
     is_str_list,
+    require_bool,
     require_finite_number,
 )
+from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,8 @@ class CriterionDef:
     per_target: bool
     category: str  # rtl | tb | none
     group: str  # functional family for docs grouping (see criteria_reference)
+    # True for a family whose public binding is one Target and one named test.
+    per_test: bool = False
     # Omitted from the generated reference/cheatsheet, but still fully usable if a
     # ticket declares it. For criteria whose producing Flow is de-registered, so
     # listing them would advertise a criterion nothing can currently satisfy.
@@ -130,6 +134,11 @@ def _parse_criteria_toml(data: dict[str, Any], source: str) -> list[CriterionDef
                     source,
                 )
         per_target = section.get("per_target", False)
+        per_test = require_bool(
+            section,
+            "per_test",
+            field=f"criterion {name!r} per_test",
+        )
         category = section.get("category", "none")
         group = section.get("group", "other")
         hidden = bool(section.get("hidden", False))
@@ -159,6 +168,7 @@ def _parse_criteria_toml(data: dict[str, Any], source: str) -> list[CriterionDef
                 per_target=per_target,
                 category=category,
                 group=group,
+                per_test=per_test,
                 hidden=hidden,
             )
         )
@@ -224,9 +234,9 @@ def merge_criteria_defs(
 # a sim Target not for ``synthesis_ok_*``, etc. Drives off the EDA tool Booley reads
 # from the ``.core`` (``fusesoc_registry.target_eda_tools``).
 EDA_TOOL_CRITERION_FAMILIES: dict[str, frozenset[str]] = {
-    "verilator": frozenset({"sim_pass", "lint_clean"}),
-    "icarus": frozenset({"sim_pass"}),
-    "iverilog": frozenset({"sim_pass"}),
+    "verilator": frozenset({"sim_pass", "cycle_count", "lint_clean"}),
+    "icarus": frozenset({"sim_pass", "cycle_count"}),
+    "iverilog": frozenset({"sim_pass", "cycle_count"}),
     "yosys": frozenset({"synthesis_ok"}),
     "vivado": frozenset({"fpga_impl_ok"}),
 }
@@ -437,6 +447,7 @@ TARGET_CAMPAIGN_CRITERIA: frozenset[str] = frozenset(_TARGET_CAMPAIGN_PARAM_REGI
 _CRITERION_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str, str]]]] = {
     "synthesis_ok": (SYNTHESIS_OK_PARAMS, SYNTHESIS_OK_MUTEX_PAIRS),
     "fpga_impl_ok": (FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS),
+    "cycle_count": (CYCLE_COUNT_PARAMS, []),
     **_TARGET_CAMPAIGN_PARAM_REGISTRY,
 }
 
@@ -516,7 +527,19 @@ def _extract_sim_criterion_fields(criteria: dict[str, Any], key: str) -> list[st
 
 def extract_sim_targets(criteria: dict[str, Any]) -> list[str]:
     """Extract unique target names from sim structured entries."""
-    return _extract_sim_criterion_fields(criteria, "target")
+    result = _extract_sim_criterion_fields(criteria, "target")
+    seen = set(result)
+    for section_name in ("mandatory", "optional"):
+        section = criteria.get(section_name, {})
+        entries = section.get("cycle_count", []) if isinstance(section, dict) else []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            target = entry.get("target") if isinstance(entry, dict) else None
+            if isinstance(target, str) and target and target not in seen:
+                seen.add(target)
+                result.append(target)
+    return result
 
 
 def extract_tb_paths(criteria: dict[str, Any]) -> list[str]:
@@ -595,6 +618,7 @@ PER_TARGET_CRITERIA: frozenset[str] = (
         spec.name for specs in TEMPLATE_REGISTRY.values() for spec in specs if spec.per_target
     )
     | TARGET_CAMPAIGN_CRITERIA
+    | {"cycle_count"}
 )
 
 
@@ -630,10 +654,19 @@ class CriteriaTemplate:
                     total: 10
         """
         specs: list[CriterionSpec] = []
+        cycle_bindings: set[tuple[str, str]] = set()
         for key, value in criteria_section.get("mandatory", {}).items():
-            specs.extend(_parse_criterion_entry(key, value, mandatory=True))
+            specs.extend(
+                _parse_cycle_count_entries(value, True, cycle_bindings)
+                if key == "cycle_count"
+                else _parse_criterion_entry(key, value, mandatory=True)
+            )
         for key, value in criteria_section.get("optional", {}).items():
-            specs.extend(_parse_criterion_entry(key, value, mandatory=False))
+            specs.extend(
+                _parse_cycle_count_entries(value, False, cycle_bindings)
+                if key == "cycle_count"
+                else _parse_criterion_entry(key, value, mandatory=False)
+            )
         return cls(specs=specs)
 
     def expand(self, targets: list[str]) -> dict[str, bool]:
@@ -742,6 +775,57 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
     if isinstance(value, int):
         return [CriterionSpec(key, mandatory=mandatory, params={"min_pct": value})]
     return [CriterionSpec(key, mandatory=mandatory)]
+
+
+def encode_criterion_component(value: str) -> str:
+    """Encode one arbitrary name as a stable collision-free key component."""
+    encoded = value.encode("utf-8").hex()
+    return f"u{len(encoded)}x{encoded}"
+
+
+def cycle_count_criterion_key(target: str, test: str) -> str:
+    """Return the stable Criterion key for one Target/test binding."""
+    return f"cycle_count_{encode_criterion_component(target)}_{encode_criterion_component(test)}"
+
+
+def _parse_cycle_count_entries(
+    value: Any,
+    mandatory: bool,
+    seen: set[tuple[str, str]],
+) -> list[CriterionSpec]:
+    """Parse the dedicated list-of-mappings Cycle Count grammar."""
+    if not isinstance(value, list) or not value:
+        raise ValueError("cycle_count must be a non-empty list of mappings")
+    specs: list[CriterionSpec] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"cycle_count[{index}] must be a mapping")
+        target = item.get("target")
+        test = item.get("test")
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError(f"cycle_count[{index}].target must be a non-empty string")
+        if not isinstance(test, str) or not test.strip():
+            raise ValueError(f"cycle_count[{index}].test must be a non-empty string")
+        binding = (target, test)
+        if binding in seen:
+            raise ValueError(
+                f"duplicate cycle_count Target/test binding: target={target!r}, test={test!r}"
+            )
+        seen.add(binding)
+        thresholds = {name: raw for name, raw in item.items() if name not in {"target", "test"}}
+        if not thresholds:
+            raise ValueError(
+                f"cycle_count[{index}] must declare at least one Cycle Count threshold"
+            )
+        _validate_criterion_params("cycle_count", thresholds)
+        specs.append(
+            CriterionSpec(
+                cycle_count_criterion_key(target, test),
+                mandatory=mandatory,
+                params={"target": target, "test": test, **thresholds},
+            )
+        )
+    return specs
 
 
 def _parse_list_criterion(
@@ -887,6 +971,8 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
         )
     for param, value in params.items():
         _validate_criterion_param_value(key, param, value)
+    if key == "cycle_count":
+        _validate_cycle_count_bounds(params)
     if (
         key == "mutation_score"
         and {"min_detected", "total"} <= params.keys()
@@ -908,6 +994,9 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
 
 def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
     """Validate one registered criterion parameter value."""
+    if key == "cycle_count":
+        _validate_cycle_count_value(param, value)
+        return
     if param == "scope":
         if not is_str_list(value) or not value or not all(path.strip() for path in value):
             raise ValueError(f"{key} param 'scope' must be a non-empty list[str]")
@@ -934,5 +1023,66 @@ def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
         raise ValueError(
             f"{key} param {param!r} must be a positive number, got {value!r}"
         ) from None
-    if number <= 0:
-        raise ValueError(f"{key} param {param!r} must be a positive number, got {value!r}")
+    if number < 0:
+        raise ValueError(f"{key} param {param!r} must be a positive number or zero, got {value!r}")
+
+
+def _validate_cycle_count_value(param: str, value: Any) -> None:
+    """Validate one Cycle Count threshold under the settled numeric rules."""
+    integer = param.endswith(("_max", "_min", "_cycles"))
+    if integer:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(
+                f"cycle_count param {param!r} must be a non-negative integer, got {value!r}"
+            )
+        return
+    try:
+        number = require_finite_number(value, field=f"cycle_count param {param!r}")
+    except BoundaryError:
+        raise ValueError(
+            f"cycle_count param {param!r} must be a non-negative finite number, got {value!r}"
+        ) from None
+    if number < 0:
+        raise ValueError(
+            f"cycle_count param {param!r} must be a non-negative finite number, got {value!r}"
+        )
+    if param == "cycle_count_reduce_at_least" and number > 100:
+        raise ValueError(f"cycle_count param {param!r} cannot exceed 100, got {value!r}")
+
+
+def _validate_cycle_count_bounds(params: dict[str, Any]) -> None:
+    """Reject same-unit Cycle Count bounds that can never be satisfied."""
+    absolute_lower = params.get("cycle_count_min")
+    absolute_upper = params.get("cycle_count_max")
+    if (
+        absolute_lower is not None
+        and absolute_upper is not None
+        and absolute_lower > absolute_upper
+    ):
+        raise ValueError("cycle_count has contradictory absolute min/max bounds")
+    _validate_signed_bounds(params, unit="percent", suffix="")
+    _validate_signed_bounds(params, unit="cycles", suffix="_cycles")
+
+
+def _validate_signed_bounds(params: dict[str, Any], *, unit: str, suffix: str) -> None:
+    """Validate composable signed lower/upper relative bounds for one unit."""
+    lower = [
+        params.get(f"cycle_count_increase_at_least{suffix}"),
+        (
+            -params[f"cycle_count_reduce_at_most{suffix}"]
+            if f"cycle_count_reduce_at_most{suffix}" in params
+            else None
+        ),
+    ]
+    upper = [
+        params.get(f"cycle_count_increase_at_most{suffix}"),
+        (
+            -params[f"cycle_count_reduce_at_least{suffix}"]
+            if f"cycle_count_reduce_at_least{suffix}" in params
+            else None
+        ),
+    ]
+    lower_values = [value for value in lower if value is not None]
+    upper_values = [value for value in upper if value is not None]
+    if lower_values and upper_values and max(lower_values) > min(upper_values):
+        raise ValueError(f"cycle_count has contradictory relative {unit} bounds")

@@ -72,6 +72,7 @@ def test_every_visible_criterion_is_rendered() -> None:
 def test_per_target_criteria_use_target_placeholder() -> None:
     rendered = render_criteria_reference()
     assert "sim_pass_{target}" in rendered
+    assert "cycle_count_{target,test}" in rendered
     assert "{cfg}" not in rendered
 
 
@@ -114,3 +115,12 @@ def test_every_threshold_param_is_documented() -> None:
             f"threshold param {param!r} (metric {metric!r}) is missing from the "
             f"rendered flavours block"
         )
+
+
+def test_every_cycle_count_threshold_param_is_documented() -> None:
+    """The per-test table spells every public Cycle Count parameter exactly."""
+    from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
+
+    rendered = render_criteria_params_reference()
+    for param in CYCLE_COUNT_PARAMS:
+        assert f"`{param}`" in rendered

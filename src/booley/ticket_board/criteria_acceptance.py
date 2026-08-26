@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import as_str_list
+from booley.dev_support.criterion_categories import (
+    verification_fingerprint_categories as _verification_fingerprint_categories,
+)
 
 # NOTE: DevelopmentState is imported function-locally (not here) because the
 # test suite patches ``booley.dev_support.development_state.DevelopmentState`` at
@@ -538,21 +541,6 @@ def _stale_verification_entry(
         current=current,
     )
     return True
-
-
-def _verification_fingerprint_categories(key: str) -> set[str]:
-    """Return source categories a verification criterion must fingerprint."""
-    if key.startswith("review_rtl_"):
-        return {"rtl"}
-    if key.startswith("review_tb_"):
-        return {"tb"}
-    if key.startswith(("mutation_score_", "coverage_")):
-        return {"rtl", "tb", "campaign"}
-    if key.startswith(("sim_", "elab_")):
-        return {"rtl", "tb"}
-    if key.startswith(("lint_", "synthesis_", "fpga_impl_")):
-        return {"rtl"}
-    return set()
 
 
 def _mark_verification_stale(
