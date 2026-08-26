@@ -25,9 +25,11 @@ from typing import Any, ClassVar
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
 from booley.dev_support.development_state import compute_source_fingerprint
+from booley.dev_support.review_receipt import ReviewInvocation, build_review_contract_detail
 from booley.dev_support.workspace_isolation import (
     filter_state_file_for_category,
 )
+from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -37,7 +39,9 @@ from booley.mcp.base import (
 )
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section
+from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
 
+from .review_contract import ReviewContractError, ReviewTargetContract, resolve_review_target
 from .specialist import Specialist
 
 logger = logging.getLogger(__name__)
@@ -90,7 +94,24 @@ VERIFY_STATUS_STILL_PRESENT = "STILL_PRESENT"
 ALL_VERIFY_STATUSES = frozenset(
     {VERIFY_STATUS_FIXED, VERIFY_STATUS_WAIVED, VERIFY_STATUS_STILL_PRESENT}
 )
-REVIEW_DETAIL_VERSION = 2
+REVIEW_DETAIL_VERSION = 3
+
+DISPOSITION_CURRENT = "current"
+DISPOSITION_ADVISORY = "advisory"
+DISPOSITION_DEFERRED = "deferred"
+DISPOSITION_OUT_OF_SCOPE = "out_of_scope"
+ALL_DISPOSITIONS = frozenset(
+    {
+        DISPOSITION_CURRENT,
+        DISPOSITION_ADVISORY,
+        DISPOSITION_DEFERRED,
+        DISPOSITION_OUT_OF_SCOPE,
+    }
+)
+ALL_ISSUE_KINDS = frozenset({"code_defect", "proof_gap", "spec_ambiguity"})
+_NON_CORRECTIVE_DISPOSITIONS = frozenset(
+    {DISPOSITION_ADVISORY, DISPOSITION_DEFERRED, DISPOSITION_OUT_OF_SCOPE}
+)
 
 # RTL source prefixes — derived from the authored .core filesets.
 _RTL_PREFIXES_DEFAULT = ("rtl/", "rtl\\", "fw/", "fw\\")
@@ -538,6 +559,47 @@ def _source_has_tb_dump_call(work_dir: str, source_file: str) -> bool | None:
     return bool(_TB_DUMP_CALL_RE.search(_strip_sv_comments(text)))
 
 
+def _ticket_clause_section_disposition(ticket_text: str, clause: str) -> str | None:
+    """Return the structural disposition of an exact Ticket clause.
+
+    ``None`` means the clause is not present.  Only explicit Markdown headings
+    carry deterministic semantics; prose in other sections remains the
+    reviewer's classification responsibility.
+    """
+    wanted = " ".join(clause.split())
+    heading = ""
+    for raw_line in ticket_text.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().casefold()
+            continue
+        if wanted and wanted == " ".join(stripped.split()):
+            if any(word in heading for word in ("deferred", "future work", "out of scope")):
+                return (
+                    DISPOSITION_OUT_OF_SCOPE if "out of scope" in heading else DISPOSITION_DEFERRED
+                )
+            return DISPOSITION_CURRENT
+    return None
+
+
+def _classify_issue_scope(issue: ReviewIssue, scope_text: str) -> str:
+    """Return ``keep``, ``observe``, or ``drop`` for Ticket-bound scope."""
+    has_contract_fields = bool(issue.kind or issue.disposition or issue.ticket_clause)
+    if (
+        scope_text
+        and has_contract_fields
+        and not (issue.kind and issue.disposition and issue.ticket_clause)
+    ):
+        return "drop"
+    if issue.ticket_clause and scope_text:
+        structural = _ticket_clause_section_disposition(scope_text, issue.ticket_clause)
+        if structural is None:
+            return "drop"
+        if structural in _NON_CORRECTIVE_DISPOSITIONS:
+            issue.disposition = structural
+    return "observe" if issue.disposition in _NON_CORRECTIVE_DISPOSITIONS else "keep"
+
+
 @dataclass
 class ReviewIssue:
     """Single issue found during code review."""
@@ -549,6 +611,9 @@ class ReviewIssue:
     line: int
     summary: str
     fix_suggestion: str = ""
+    kind: str = ""
+    disposition: str = ""
+    ticket_clause: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -561,6 +626,12 @@ class ReviewIssue:
         }
         if self.fix_suggestion:
             d["fix_suggestion"] = self.fix_suggestion
+        if self.kind:
+            d["kind"] = self.kind
+        if self.disposition:
+            d["disposition"] = self.disposition
+        if self.ticket_clause:
+            d["ticket_clause"] = self.ticket_clause
         return d
 
     @classmethod
@@ -573,15 +644,78 @@ class ReviewIssue:
             line=d.get("line", 0),
             summary=d.get("summary", ""),
             fix_suggestion=d.get("fix_suggestion", ""),
+            kind=str(d.get("kind", "")),
+            disposition=str(d.get("disposition", "")).lower(),
+            ticket_clause=str(d.get("ticket_clause", "")),
         )
+
+
+@dataclass(frozen=True)
+class _DoneReviewOutcome:
+    issues: list[ReviewIssue]
+    records: list[dict[str, Any]]
+    corrective_records: list[dict[str, Any]]
+    counts: dict[str, int]
+    gate_passed: bool
+
+    @property
+    def mode_ok(self) -> bool:
+        return not self.corrective_records
 
 
 def _finding_record(issue: ReviewIssue) -> dict[str, Any]:
     """Return one persisted finding with a stable content-derived identifier."""
     record = issue.to_dict()
-    identity = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    identity_fields = {
+        "category": issue.category,
+        "file": issue.file.replace("\\", "/"),
+        "line": issue.line,
+        "kind": issue.kind or "legacy",
+        "ticket_clause": " ".join(issue.ticket_clause.split()),
+        "summary": " ".join(issue.summary.casefold().split()),
+    }
+    identity = json.dumps(identity_fields, sort_keys=True, separators=(",", ":"))
     record["finding_id"] = hashlib.sha256(identity.encode()).hexdigest()[:16]
+    record["status"] = issue.disposition or DISPOSITION_CURRENT
     return record
+
+
+def _merge_finding_records(
+    current: list[dict[str, Any]],
+    prior: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge advisory history without silently clearing corrective findings."""
+    merged = {str(item.get("finding_id", "")): dict(item) for item in current}
+    for old in prior:
+        finding_id = str(old.get("finding_id", ""))
+        if not finding_id:
+            continue
+        if finding_id in merged:
+            if old.get("disposition") == DISPOSITION_CURRENT:
+                merged[finding_id]["disposition"] = DISPOSITION_CURRENT
+                merged[finding_id]["status"] = DISPOSITION_CURRENT
+            continue
+        historical = dict(old)
+        if historical.get("disposition") == DISPOSITION_CURRENT:
+            historical["status"] = DISPOSITION_CURRENT
+        else:
+            historical["status"] = "superseded"
+        merged[finding_id] = historical
+    return list(merged.values())
+
+
+def _review_observations(
+    existing_detail: dict[str, Any],
+    current: list[ReviewIssue],
+    *,
+    rediscovered: bool,
+) -> list[dict[str, Any]]:
+    prior = [
+        dict(item) for item in existing_detail.get("observations", []) if isinstance(item, dict)
+    ]
+    if not rediscovered:
+        return prior
+    return _merge_finding_records([_finding_record(issue) for issue in current], prior)
 
 
 def _validate_issue_dict(d: Any, allowed_category: str | None = None) -> list[str]:
@@ -622,6 +756,15 @@ def _validate_issue_dict(d: Any, allowed_category: str | None = None) -> list[st
     summary = d.get("summary")
     if not isinstance(summary, str) or not summary.strip():
         errs.append(f"summary must be a non-empty string (got {summary!r})")
+    kind = d.get("kind")
+    if not isinstance(kind, str) or kind not in ALL_ISSUE_KINDS:
+        errs.append(f"kind must be one of {sorted(ALL_ISSUE_KINDS)} (got {kind!r})")
+    disposition = d.get("disposition")
+    if not isinstance(disposition, str) or disposition.lower() not in ALL_DISPOSITIONS:
+        errs.append(f"disposition must be one of {sorted(ALL_DISPOSITIONS)} (got {disposition!r})")
+    ticket_clause = d.get("ticket_clause")
+    if not isinstance(ticket_clause, str) or not ticket_clause.strip():
+        errs.append("ticket_clause must be a non-empty string")
     return errs
 
 
@@ -1021,6 +1164,8 @@ class ReviewerSpecialist(Specialist):
         super().__init__()
         self._review_diff: ReviewDiff | None = None
         self._tb_project_policy: TbProjectPolicy | None = None
+        self._target_contract: ReviewTargetContract | None = None
+        self._non_corrective_issues: list[ReviewIssue] = []
 
     def _workspace_isolation_category(self) -> str | None:
         """Hide opposite-category sources only inside the private snapshot."""
@@ -1152,6 +1297,55 @@ class ReviewerSpecialist(Specialist):
         focus = next(iter(self._parse_focus()), "")
         return f"review_{self.args.category}_{focus}"
 
+    def _resolve_target_contract(self) -> str | None:
+        """Resolve Target-specific review behavior once per invocation."""
+        if self._target_contract is not None:
+            return None
+        try:
+            self._target_contract = resolve_review_target(
+                Path(self.args.work_dir),
+                self._parse_scope(),
+                category=self.args.category,
+                target_hint=self.args.target,
+            )
+        except (FuseSocError, ReviewContractError, OSError) as exc:
+            return str(exc)
+        return None
+
+    def _review_contract_detail(self) -> dict[str, Any]:
+        target = self._target_contract or ReviewTargetContract((), "none")
+        ticket_arg = getattr(self.args, "ticket", None)
+        return build_review_contract_detail(
+            ReviewInvocation(
+                work_dir=Path(self.args.work_dir),
+                category=self.args.category,
+                focus=next(iter(self._parse_focus()), ""),
+                scope=tuple(self._parse_scope()),
+                mode="clean" if self._is_clean_mode() else "done",
+                targets=target.selectors,
+                target_kind=target.kind,
+                ticket_path=Path(ticket_arg) if ticket_arg else None,
+            )
+        )
+
+    def _invalidate_changed_invocation_contract(self, crit_key: str) -> None:
+        """Invalidate a met receipt when this invocation asks a new question."""
+        if not self.state or not self.state.is_met(crit_key):
+            return
+        entry = self.state.criteria.get(crit_key)
+        if entry is None:
+            return
+        previous = (entry.detail or {}).get("contract")
+        current = self._review_contract_detail()
+        if not isinstance(previous, dict) or previous == current:
+            return
+        entry.met = False
+        entry.stale = True
+        entry.detail = dict(entry.detail or {})
+        entry.detail["stale_reason"] = "Reviewer scope or Target selection changed; re-running."
+        entry.detail["current_review_contract"] = current
+        self.state.save()
+
     # --- System prompt construction ---
 
     @staticmethod
@@ -1199,7 +1393,12 @@ match the strength of the evidence.
             guide_name = "protocol-cdc" if focus == "protocol" else focus
             guide_path = f"{gp['rtl_guide_dir']}/{guide_name}.md"
         else:
-            guide_path = gp["tb_guide"]
+            guide_name = (
+                "cocotb-tb-review.md"
+                if self._target_contract and self._target_contract.is_cocotb
+                else "tb-review.md"
+            )
+            guide_path = f"{gp['tb_guide_dir']}/{guide_name}"
 
         guide_content = self._read_guide(guide_path)
         if guide_content:
@@ -1274,6 +1473,10 @@ match the strength of the evidence.
         sections.append(f"## Focus: {focus_header}")
         sections.append("")
 
+        ticket_section = self._build_ticket_scope_section()
+        if ticket_section:
+            sections.append(ticket_section)
+
         # Inline the spec for spec focus (ADR 0038, guarded in _run) and for
         # every TB review: the TB checklist asks whether the testbench encodes
         # the spec's own numbers and whether its expected-value model is
@@ -1313,6 +1516,20 @@ match the strength of the evidence.
             sections.append(f"## Developer Agent Context\n{steer_text}\n")
 
         return "\n".join(sections)
+
+    def _build_ticket_scope_section(self) -> str:
+        """Inline the complete staged Ticket for every review focus."""
+        ticket_text, source = _load_ticket_text(getattr(self.args, "ticket", None))
+        if not ticket_text:
+            return ""
+        return (
+            f"## Staged Ticket (binding scope; source: {source})\n\n"
+            "Review only behavior required by this Ticket and the accepted "
+            "decisions below. Preserve explicitly deferred, future, and "
+            "out-of-scope work. Every finding must quote the exact Ticket or "
+            "accepted-decision clause that makes it current.\n\n"
+            f"{_truncate_spec(ticket_text, label=source)}\n"
+        )
 
     def _build_spec_section(self) -> str:
         """Build the inlined ``## Specification`` section for spec-focus prompts.
@@ -1456,6 +1673,9 @@ schema are dropped upstream. Fields (all required unless noted):
   - severity:       "CRITICAL" | "MAJOR" | "MINOR"   (uppercase)
   - confidence:     "HIGH" | "MEDIUM" | "LOW"        (uppercase)
   - category:       "{focus}"                        (active focus)
+  - kind:           "code_defect" | "proof_gap" | "spec_ambiguity"
+  - disposition:    "current" | "advisory" | "deferred" | "out_of_scope"
+  - ticket_clause:  exact clause from the staged Ticket or accepted decisions
   - file:           non-empty path string
   - line:           non-negative integer
   - summary:        non-empty one-line description
@@ -1468,6 +1688,9 @@ schema are dropped upstream. Fields (all required unless noted):
       "severity": "CRITICAL",
       "confidence": "HIGH",
       "category": "{focus}",
+      "kind": "code_defect",
+      "disposition": "current",
+      "ticket_clause": "Exact current requirement from the staged Ticket",
       "file": "{example_file}",
       "line": 42,
       "summary": "Description of the issue",
@@ -1567,6 +1790,24 @@ object, even after calling the capability.
                     f"Scope files not found: {names}. "
                     "Code the missing files before running this review."
                 ),
+            )
+
+        target_error = self._resolve_target_contract()
+        if target_error:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"Target review contract error: {target_error}",
+            )
+
+        self._invalidate_changed_invocation_contract(crit_key)
+
+        # Refresh before either mode's idempotency guard.  Report submission
+        # uses this same operation, so Reviewer cannot replay a verdict which
+        # the acceptance path will immediately call stale.
+        if self.state:
+            refresh_verification_freshness(
+                self.state,
+                work_dir=Path(self.args.work_dir),
             )
 
         diff_error = self._prepare_diff_boundary()
@@ -2276,65 +2517,23 @@ Schema enforcement (applied upstream by the harness):
 
         text_parsed = parse_review_output(result.output, allowed_category=focus)
         if not text_parsed.json_present:
-            # Agent-capability channel is the only contract the agent honored. Non-empty
-            # is usable; empty + no JSON is an agent that reported nothing at
-            # all through either channel, which must not read as a clean pass.
-            if capability_issues:
-                return capability_issues
             logger.error(
-                "Review agent for %s/%s called %s with zero findings and "
-                "emitted no issues JSON — refusing to treat as a clean review",
+                "Review agent for %s/%s called %s but emitted no canonical issues JSON",
                 self.args.category,
                 focus,
                 REPORT_FINDINGS_CAPABILITY,
             )
             output_lines.append(
-                f"ERROR: empty {REPORT_FINDINGS_CAPABILITY} call and no issues JSON "
-                "in the agent's final message — not a clean pass",
+                f"ERROR: {REPORT_FINDINGS_CAPABILITY} is only a mirror; the final message "
+                "must contain issues JSON with Ticket disposition metadata",
             )
             return None
 
         if self._note_rejected_issues(text_parsed, focus, output_lines):
-            return self._resolve_unusable_text_channel(capability_issues, focus, output_lines)
+            return None
         return self._pick_review_channel(
             capability_issues, text_parsed.issues, focus, output_lines
         )
-
-    def _resolve_unusable_text_channel(
-        self,
-        capability_issues: list[ReviewIssue],
-        focus: str,
-        output_lines: list[str],
-    ) -> list[ReviewIssue] | None:
-        """Decide the verdict when every text-channel issue died on the schema.
-
-        Such a channel is *unknown*, not clean, so it must never be outvoted
-        into a PASS. It used to be, whenever the agent-capability channel said anything at
-        all (``... and not capability_issues``): ReportFindings severities cap at
-        MAJOR/MINOR, so one ``PLAUSIBLE`` cosmetic nit mapped to MINOR, won the
-        channel pick, and reported ``gate_passed: true`` in the same output
-        that said every reported issue had been thrown away — with the agent's
-        CRITICAL among them (residual SETUP-F-33).
-
-        Returning issues is only allowed when they already fail the gate: a
-        concrete FAIL is more actionable than a bare Specialist error and cannot be
-        the false PASS this guards against. Everything else is a Specialist error.
-        """
-        if capability_issues and not check_gate(count_by_severity(capability_issues)):
-            output_lines.append(
-                f"WARN: text channel unusable (all entries schema-rejected) — reporting the "
-                f"{len(capability_issues)} {REPORT_FINDINGS_CAPABILITY} issue(s), which already fail the gate",
-            )
-            return capability_issues
-        logger.error(
-            "Review agent for %s/%s: text channel entirely schema-rejected and the %s "
-            "channel (%d issue(s)) does not block — refusing to report a clean pass",
-            self.args.category,
-            focus,
-            REPORT_FINDINGS_CAPABILITY,
-            len(capability_issues),
-        )
-        return None
 
     def _note_rejected_issues(
         self,
@@ -2375,23 +2574,21 @@ Schema enforcement (applied upstream by the harness):
         text_issues: list[ReviewIssue],
         focus: str,
         output_lines: list[str],
-    ) -> list[ReviewIssue]:
-        """Resolve a agent-capability-channel / text-channel disagreement, fail-closed.
+    ) -> list[ReviewIssue] | None:
+        """Use canonical text metadata unless the capability channel is more severe.
 
-        The two channels are two renderings of the same review, so they are
-        not merged (that would double-count every issue reported twice).
-        Instead the channel with the more severe verdict wins — a
-        disagreement can only ever make the gate stricter, never turn a
-        reported defect into a PASS. Ties go to the agent-capability channel, which
-        carries the agent's structured fields.
+        ReportFindings cannot carry Ticket disposition fields. The final JSON
+        is therefore canonical. A more-severe capability verdict indicates a
+        broken mirror and fails the Specialist instead of persisting an
+        unbound finding.
         """
         capability_rank = _channel_severity_rank(capability_issues)
         text_rank = _channel_severity_rank(text_issues)
-        if text_rank <= capability_rank:
-            return capability_issues
+        if capability_rank <= text_rank:
+            return text_issues
         logger.error(
             "Review channel disagreement for %s/%s: %s reported %d issue(s) "
-            "but the text JSON reported %d — taking the text channel (fail-closed)",
+            "but the canonical text JSON reported %d with a weaker verdict",
             self.args.category,
             focus,
             REPORT_FINDINGS_CAPABILITY,
@@ -2399,10 +2596,10 @@ Schema enforcement (applied upstream by the harness):
             len(text_issues),
         )
         output_lines.append(
-            f"WARN: {REPORT_FINDINGS_CAPABILITY} reported {len(capability_issues)} issue(s) but the "
-            f"text JSON reported {len(text_issues)} — using the more severe text channel",
+            f"ERROR: {REPORT_FINDINGS_CAPABILITY} reported a more severe verdict than its "
+            "canonical issues JSON mirror",
         )
-        return text_issues
+        return None
 
     def _interpret_review_parse(
         self,
@@ -2442,6 +2639,7 @@ Schema enforcement (applied upstream by the harness):
         """
         focus = next(iter(self._parse_focus()))
         output_lines = [f"[review] {self.args.category}/{focus}"]
+        self._non_corrective_issues = []
 
         # Strip opposite-category detail from booley_state.json for the
         # duration of the agent run (see workspace_isolation comments).
@@ -2516,37 +2714,138 @@ Schema enforcement (applied upstream by the harness):
     ) -> list[ReviewIssue]:
         """Enforce diff and project-policy boundaries on agent findings."""
         kept: list[ReviewIssue] = []
-        diff_dropped = 0
-        policy_dropped = 0
         work_dir = Path(self.args.work_dir)
         policy = self._tb_policy() if self.args.category == "tb" else TbProjectPolicy()
+        ticket_text, _ = _load_ticket_text(getattr(self.args, "ticket", None))
+        decisions_text, _ = resolve_documented_assumptions()
+        scope_text = "\n\n".join(part for part in (ticket_text, decisions_text) if part)
+        dropped = {"diff": 0, "policy": 0, "scope": 0}
         for issue in issues:
-            issue_dict = issue.to_dict()
-            if self._review_diff is not None and not self._review_diff.contains(
-                issue.file,
-                issue.line,
-                work_dir,
-            ):
-                diff_dropped += 1
-                continue
-            if policy.trace_files and _issue_rejects_tb_owned_trace(issue_dict):
-                policy_dropped += 1
-                continue
-            if policy.has_custom_sentinels and _issue_requires_builtin_sentinel(issue_dict):
-                policy_dropped += 1
-                continue
-            kept.append(issue)
-        if diff_dropped:
+            action = self._review_issue_action(issue, work_dir, policy, scope_text)
+            if action in dropped:
+                dropped[action] += 1
+            elif action == "observe":
+                self._non_corrective_issues.append(issue)
+            else:
+                kept.append(issue)
+        self._append_filter_summary(output_lines, dropped)
+        return kept
+
+    def _review_issue_action(
+        self,
+        issue: ReviewIssue,
+        work_dir: Path,
+        policy: TbProjectPolicy,
+        scope_text: str,
+    ) -> str:
+        issue_dict = issue.to_dict()
+        if self._review_diff is not None and not self._review_diff.contains(
+            issue.file,
+            issue.line,
+            work_dir,
+        ):
+            return "diff"
+        rejects_trace = policy.trace_files and _issue_rejects_tb_owned_trace(issue_dict)
+        rejects_sentinel = _issue_requires_builtin_sentinel(issue_dict) and (
+            policy.has_custom_sentinels
+            or (
+                self.args.category == "tb"
+                and self._target_contract is not None
+                and self._target_contract.is_cocotb
+            )
+        )
+        if rejects_trace or rejects_sentinel:
+            return "policy"
+        action = _classify_issue_scope(issue, scope_text)
+        return "scope" if action == "drop" else action
+
+    def _append_filter_summary(
+        self,
+        output_lines: list[str],
+        dropped: dict[str, int],
+    ) -> None:
+        if dropped["diff"]:
             output_lines.append(
-                f"INFO: ignored {diff_dropped} finding(s) on unchanged baseline lines "
+                f"INFO: ignored {dropped['diff']} finding(s) on unchanged baseline lines "
                 f"outside --diff-ref {self.args.diff_ref}"
             )
-        if policy_dropped:
+        if dropped["policy"]:
             output_lines.append(
-                f"INFO: ignored {policy_dropped} finding(s) that conflict with the "
+                f"INFO: ignored {dropped['policy']} finding(s) that conflict with the "
                 "project's configured sentinel/trace contract"
             )
-        return kept
+        if dropped["scope"]:
+            output_lines.append(
+                f"INFO: ignored {dropped['scope']} finding(s) whose Ticket clause "
+                "was not an exact staged requirement"
+            )
+        if self._non_corrective_issues:
+            output_lines.append(
+                f"INFO: preserved {len(self._non_corrective_issues)} advisory/deferred "
+                "observation(s) without gating this review"
+            )
+
+    def _done_finding_records(
+        self,
+        all_issues: list[ReviewIssue],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        # Schema-3 rows state whether they are corrective. Fail closed if a
+        # non-canonical channel somehow reaches persistence without metadata.
+        for issue in all_issues:
+            if not issue.disposition:
+                issue.disposition = DISPOSITION_CURRENT
+        current_records = [
+            _finding_record(issue) for issue in [*all_issues, *self._non_corrective_issues]
+        ]
+        crit_key = self._criterion_key()
+        prior_records: list[dict[str, Any]] = []
+        if self.state and crit_key in self.state.criteria:
+            raw_prior = self.state.criteria[crit_key].detail.get("issue_list", [])
+            if isinstance(raw_prior, list):
+                prior_records = [dict(row) for row in raw_prior if isinstance(row, dict)]
+        records = _merge_finding_records(current_records, prior_records)
+        corrective_records = [
+            row
+            for row in records
+            if row.get("disposition") == DISPOSITION_CURRENT
+            and row.get("status") == DISPOSITION_CURRENT
+        ]
+        return records, corrective_records
+
+    def _done_detail(
+        self,
+        outcome: _DoneReviewOutcome,
+        *,
+        elapsed: float,
+    ) -> dict[str, Any]:
+        return {
+            "review_detail_version": REVIEW_DETAIL_VERSION,
+            "issues": len(outcome.issues),
+            "observation_count": len(outcome.records),
+            "issue_list": outcome.records,
+            **outcome.counts,
+            "elapsed_s": round(elapsed, 1),
+            "gate_passed": outcome.gate_passed,
+            "review_outcome": (
+                "corrective"
+                if outcome.corrective_records
+                else "advisory"
+                if outcome.records
+                else "no_findings"
+            ),
+            "contract": self._review_contract_detail(),
+        }
+
+    def _done_outcome(self, all_issues: list[ReviewIssue]) -> _DoneReviewOutcome:
+        records, corrective_records = self._done_finding_records(all_issues)
+        counts = count_by_severity(all_issues)
+        return _DoneReviewOutcome(
+            issues=all_issues,
+            records=records,
+            corrective_records=corrective_records,
+            counts=counts,
+            gate_passed=check_gate(counts),
+        )
 
     def _build_result(
         self,
@@ -2556,41 +2855,34 @@ Schema enforcement (applied upstream by the harness):
         elapsed: float,
     ) -> McpToolResult:
         """Compute gate, set criterion, and format display lines (_done mode)."""
-        counts = count_by_severity(all_issues)
-        gate_passed = check_gate(counts)
-
-        _status, count_str = _format_status_and_counts(counts, gate_passed)
-        outcome = "REVIEWED WITH FINDINGS" if all_issues else "REVIEWED — NO FINDINGS"
-        result_line = f"\nRESULT: {outcome} ({count_str})"
-        output_lines.append(result_line)
-
+        done_outcome = self._done_outcome(all_issues)
+        _status, count_str = _format_status_and_counts(
+            done_outcome.counts,
+            done_outcome.gate_passed,
+        )
+        result_label = "REVIEWED WITH FINDINGS" if all_issues else "REVIEWED — NO FINDINGS"
+        output_lines.append(f"\nRESULT: {result_label} ({count_str})")
         report_text = "\n".join(output_lines)
-        # Print concise result summary to stdout (consumed by callers and tests)
         print(report_text)
-
+        detail = self._done_detail(done_outcome, elapsed=elapsed)
         crit_key = self._criterion_key()
-        # _done means that a valid review completed. Keep the independent
-        # cleanliness verdict in detail for reporting; _clean is the criterion
-        # that blocks until MAJOR/CRITICAL findings are resolved.
-        detail = {
-            "review_detail_version": REVIEW_DETAIL_VERSION,
-            "issues": len(all_issues),
-            "issue_list": [_finding_record(iss) for iss in all_issues],
-            **counts,
-            "elapsed_s": round(elapsed, 1),
-            "gate_passed": gate_passed,
-            "review_outcome": "findings" if all_issues else "no_findings",
-        }
-        self.set_criterion(crit_key, True, detail=detail)
-
-        lines = [f"{count_str}, review completed"]
-        for issue in all_issues:
-            lines.append(f"  {_format_issue_line(issue)}")
-
+        self.set_criterion(crit_key, done_outcome.mode_ok, detail=detail)
+        lines = [
+            f"{count_str}, review {'completed' if done_outcome.mode_ok else 'requires _clean'}"
+        ]
+        lines.extend(f"  {_format_issue_line(issue)}" for issue in all_issues)
+        if not done_outcome.mode_ok:
+            diagnostic = (
+                "This Ticket requested advisory `_done` review, but Reviewer returned "
+                "current corrective work. Change the criterion to `_clean` and resolve "
+                "or explicitly waive the finding."
+            )
+            report_text = f"{report_text}\n\n{diagnostic}"
+            lines.append(diagnostic)
         return McpToolResult(
-            exit_code=EXIT_SUCCESS,
+            exit_code=EXIT_SUCCESS if done_outcome.mode_ok else EXIT_FAILURE,
             criterion_key=crit_key,
-            criterion_met=True,
+            criterion_met=done_outcome.mode_ok,
             display_lines=lines,
             detail=detail,
             report_text=report_text,
@@ -2627,9 +2919,11 @@ Schema enforcement (applied upstream by the harness):
             "issues": len(issues),
             "pending": [_finding_record(iss) for iss in issues],
             "resolved": [],
+            "observations": [_finding_record(iss) for iss in self._non_corrective_issues],
             **counts,
             "elapsed_s": round(elapsed, 1),
             "review_source_digest": self._review_source_digest(),
+            "contract": self._review_contract_detail(),
         }
 
         if gate_passed:
@@ -2678,6 +2972,7 @@ Schema enforcement (applied upstream by the harness):
         )
         source_digest = str(existing_detail.get("review_source_digest", ""))
         rediscovery = self._rediscover_after_source_change(existing_detail, pending)
+        rediscovered = rediscovery is not None
         if rediscovery is not None:
             discovered, discovery_lines, source_digest = rediscovery
             if discovered is None:
@@ -2690,6 +2985,11 @@ Schema enforcement (applied upstream by the harness):
             remaining = discovered
             pending = [_finding_record(issue) for issue in discovered]
             original_issues += len(discovered)
+        observations = _review_observations(
+            existing_detail,
+            self._non_corrective_issues,
+            rediscovered=rediscovered,
+        )
 
         counts = count_by_severity(remaining)
         gate_passed = not pending
@@ -2716,12 +3016,14 @@ Schema enforcement (applied upstream by the harness):
             "issues": len(remaining),
             "pending": pending,
             "resolved": resolved,
+            "observations": observations,
             **counts,
             "verify_attempts": verify_attempts,
             "total_verify_cycles": total_cycles,
             "original_issues": original_issues,
             "elapsed_s": round(elapsed, 1),
             "review_source_digest": source_digest,
+            "contract": self._review_contract_detail(),
         }
 
         met = gate_passed

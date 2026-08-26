@@ -777,8 +777,8 @@ class TestModifiesCategory:
 
 
 class TestCriteriaInvalidation:
-    def test_tb_resets_sim_not_coverage_or_review(self, state_file, instruction_file, work_dir):
-        """TB category resets sim but not coverage, reviews, or RTL criteria."""
+    def test_tb_resets_sim_and_tb_review_only(self, state_file, instruction_file, work_dir):
+        """TB edits invalidate sim/TB review while preserving RTL evidence."""
         endpoint = _make_endpoint(
             state_file,
             instruction_file,
@@ -791,7 +791,7 @@ class TestCriteriaInvalidation:
         assert "sim_pass_lite" in reset
         assert "coverage_toggle" not in reset
         assert "coverage_branch" not in reset
-        assert "review_tb_quality_done" not in reset
+        assert "review_tb_quality_done" in reset
         assert "lint_clean_lite" not in reset
         assert "review_rtl_bugs_done" not in reset
         assert "synthesis_ok_lite" not in reset

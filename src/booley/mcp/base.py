@@ -471,8 +471,13 @@ class McpTool(ABC):
         *,
         source_target: str | None,
     ) -> dict[str, Any] | None:
-        """Attach source freshness metadata to passing verification criteria."""
+        """Attach source freshness metadata to verification criteria.
+
+        Failed criteria retain actionable evidence, so every verification
+        outcome receives the same atomic source/contract receipt.
+        """
         categories = _verification_fingerprint_categories(key)
+        is_review = key.startswith(("review_rtl_", "review_tb_"))
         if not categories:
             return detail
         stamped = dict(detail or {})
@@ -490,7 +495,12 @@ class McpTool(ABC):
                 exc,
             )
             return stamped
-        stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = freshness.to_detail()
+        source_detail = freshness.to_detail()
+        if is_review and stamped.get("review_detail_version") == 3:
+            from booley.dev_support.review_receipt import finalize_review_detail
+
+            return finalize_review_detail(stamped, source_detail)
+        stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = source_detail
         return stamped
 
     def emit_progress(self, line: str) -> None:
