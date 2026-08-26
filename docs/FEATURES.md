@@ -133,7 +133,7 @@ The shipped reviewer is read-only: it reports issues by severity, and the Develo
 
 ## Mutation Testing
 
-Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. A creator agent designs targeted mutations (subtle bugs a good testbench should detect) and writes them into the RTL behind a mutation-select mux, so the design compiles once with every mutation in place. The checking side involves no LLM at all: the harness deterministically simulates each mutation by selecting its ID and counts which ones the testbench catches. The detection rate is measured against a configurable threshold, confirming the testbench actually verifies behavior instead of passing by coincidence.
+Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. A read-only creator agent proposes targeted, exact source replacements—subtle bugs a good testbench should detect. Booley validates the proposal bytes, runs an untouched baseline, then applies and compiles one isolated replacement at a time. It does not parse SystemVerilog or inject runtime selectors; the project's configured compiler decides whether each variant is valid. The deterministic harness counts which variants the testbench catches and measures the detection rate against a configurable threshold.
 
 ## Lint Triage
 

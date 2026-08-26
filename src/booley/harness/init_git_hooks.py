@@ -30,6 +30,7 @@ from booley.harness.init_common import (
     WriteOutcome,
     guarded_write,
     info,
+    note,
     ok,
     skip,
     warn,
@@ -927,8 +928,13 @@ def _step_line_endings(ctx: InitContext) -> None:
 
     snapshots, safety_error = _snapshot_candidates(ctx.project_root, crlf_paths)
     clean = _worktree_is_clean(ctx.project_root)
-    _report_line_ending_findings(len(crlf_paths), autocrlf)
     if ctx.check_only:
+        _report_line_ending_findings(
+            len(crlf_paths),
+            autocrlf,
+            crlf_repaired=False,
+            autocrlf_repaired=False,
+        )
         _report_line_endings_plan(ctx, autocrlf, len(crlf_paths), clean, safety_error)
         ctx.record("line_endings", "warn", "CRLF working tree")
         return
@@ -948,17 +954,28 @@ def _is_git_repository(project_root: Path) -> bool:
     return probe.returncode == 0
 
 
-def _report_line_ending_findings(crlf_count: int, autocrlf: bool) -> None:
+def _report_line_ending_findings(
+    crlf_count: int,
+    autocrlf: bool,
+    *,
+    crlf_repaired: bool,
+    autocrlf_repaired: bool,
+) -> None:
+    """Report repaired findings as notes and unresolved findings as warnings."""
     if crlf_count:
-        warn(
-            f"{crlf_count} tracked file(s) are checked out with CRLF — the "
+        emit = note if crlf_repaired else warn
+        prefix = "detected " if crlf_repaired else ""
+        emit(
+            f"{prefix}{crlf_count} tracked file(s) are checked out with CRLF — the "
             "Session Runtime container will see every one as modified "
             "(phantom diffs break the dirty-tree check, scope enforcement, "
             "and ticket worktrees)"
         )
     if autocrlf:
-        warn(
-            "core.autocrlf=true (Git for Windows' installer default) "
+        emit = note if autocrlf_repaired else warn
+        prefix = "detected " if autocrlf_repaired else ""
+        emit(
+            f"{prefix}core.autocrlf=true (Git for Windows' installer default) "
             "re-creates CRLF checkouts on every clone/checkout"
         )
 
@@ -972,8 +989,11 @@ def _apply_line_ending_repairs(
     safety_error: str | None,
 ) -> None:
     fixed: list[str] = []
-    if autocrlf and _disable_autocrlf(ctx.project_root):
-        fixed.append("autocrlf")
+    autocrlf_repaired = not autocrlf
+    if autocrlf:
+        autocrlf_repaired = _disable_autocrlf(ctx.project_root)
+        if autocrlf_repaired:
+            fixed.append("autocrlf")
     status, detail = (
         ("ok", "")
         if not crlf_paths
@@ -981,9 +1001,18 @@ def _apply_line_ending_repairs(
     )
     if _apply_gitattributes_rule(ctx.project_root):
         fixed.append("gitattributes")
+    _report_line_ending_findings(
+        len(crlf_paths),
+        autocrlf,
+        crlf_repaired=status == "ok",
+        autocrlf_repaired=autocrlf_repaired,
+    )
     if status == "ok":
-        detail = detail or "+".join(fixed)
-        if not detail:
+        if not autocrlf_repaired:
+            status, detail = "warn", "autocrlf update failed"
+        else:
+            detail = detail or "+".join(fixed)
+        if status == "ok" and not detail:
             status, detail = "warn", "no fix applied"
     ctx.record("line_endings", status, detail)
 

@@ -1062,6 +1062,23 @@ def _reset_owner_available(tio: Any, slug: str, force: bool) -> bool:
     return False
 
 
+def _reset_jobs_inactive(tio: Any, slug: str) -> bool:
+    """Refuse to archive runtime state while a detached endpoint owns it."""
+    from booley.harness.job_fence import active_ticket_jobs
+
+    active = active_ticket_jobs(ticket_log_dir(tio.logs_dir, slug))
+    if not active:
+        return True
+    jobs = ", ".join(f"{record.endpoint} ({record.run_id})" for record in active)
+    print(
+        f"Error: ticket '{slug}' still has active endpoint jobs: {jobs}.\n"
+        "  Wait for them to finish or cancel them before resetting; --force "
+        "does not override active job leases.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _reset_runtime_state(tio: Any, slug: str) -> None:
     """Archive active run state and establish an empty current runtime."""
     log_dir = ticket_log_dir(tio.logs_dir, slug)
@@ -1083,20 +1100,27 @@ def _reset_runtime_state(tio: Any, slug: str) -> None:
         transitions_path.write_text(transition_history, encoding="utf-8")
 
 
-def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> bool:
-    """Reset under the ticket lock, publishing queue state only at the end."""
+def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
+    """Resolve a resettable ticket after the caller acquires its lock."""
     from .io import find_ticket_file
 
-    with tio._ticket_lock(slug):
-        file_path, _ = find_ticket_file(tio.tickets_dir, slug)
-        if file_path is None:
-            print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
-            return False
+    if not _reset_jobs_inactive(tio, slug):
+        return None
+    file_path, _ = find_ticket_file(tio.tickets_dir, slug)
+    if file_path is None:
+        print(f"Error: ticket '{slug}' not found after lock", file=sys.stderr)
+        return None
+    return file_path if _queue_destination_available(tio, file_path) else None
 
-        # Queue is the externally visible promise that reset completed. Check
-        # its destination up front, then publish that state only after stale
-        # runtime evidence has been removed successfully.
-        if not _queue_destination_available(tio, file_path):
+
+def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> bool:
+    """Reset under the ticket lock, publishing queue state only at the end."""
+    with tio._ticket_lock(slug):
+        # Recheck after waiting for the ticket lock. This closes the stale
+        # pre-lock observation that could otherwise erase a job which became
+        # active while reset was blocked on another ticket operation.
+        file_path = _locked_reset_candidate(tio, slug)
+        if file_path is None:
             return False
 
         try:

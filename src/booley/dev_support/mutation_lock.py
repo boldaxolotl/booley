@@ -1,20 +1,17 @@
-"""Mutation tester lock state — persistent muxed RTL + spec list across invocations.
+"""Mutation tester proposal lock and isolated build paths.
 
 The mutation tester writes a *lock* on first cold-start that captures the
-creator-agent-designed mutation set, the muxed RTL source files, and the
-booley_mut_pkg.sv harness package.  Subsequent invocations with the same
-scope (by content hash) reuse the lock and skip the creator agent entirely
-— only the deterministic sim loop runs.
+creator-agent-designed exact replacement set. Subsequent invocations with
+the same scope reuse the proposals, but rebuild the pristine baseline and
+each isolated source variant.
 
 Layout under ``$BOOLEY_RUNTIME_DIR/mutation_tester/lock/``::
 
     lock/
     ├── lock.json
-    ├── booley_mut_pkg.sv
-    ├── muxed_<file>.sv          # one per scope file
-    ├── build/
-    │   ├── build_meta.json      # muxed-file hashes + sim-input hashes + docker_digest
-    │   └── verilator/ or iverilog/
+    ├── builds/
+    │   ├── baseline/
+    │   └── mutant_<N>/
     └── verification_rounds/
         ├── round_1.log          # cold-start sim logs (if retries happened)
         └── ...
@@ -25,7 +22,6 @@ Mutation Tester version bump. Operator override: ``--regen-lock`` wipes the dir.
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import logging
@@ -39,38 +35,12 @@ from typing import Any
 
 from booley.runtime.timefmt import utc_now_rfc3339
 
-# re-exported for backward compatibility — the SV source-editing engine was
-# extracted into ``mut_harness_inject`` (principle 8 / Single Responsibility),
-# but importers still resolve these names off ``mutation_lock`` (see __all__).
-from .mut_harness_inject import (
-    MUT_ECHO_PREFIX,
-    MutHarnessInjectionError,
-    generate_mut_pkg,
-    generate_plusarg_reader_snippet,
-    inject_mut_harness,
-    remove_mut_harness,
-)
-
 logger = logging.getLogger(__name__)
 
-# Re-exports from ``mut_harness_inject``, kept in the public namespace so
-# existing importers of ``mutation_lock`` keep resolving them.
-__all__ = [
-    "MUT_ECHO_PREFIX",
-    "MutHarnessInjectionError",
-    "generate_mut_pkg",
-    "generate_plusarg_reader_snippet",
-    "inject_mut_harness",
-    "remove_mut_harness",
-]
-
 # Bump when the on-disk layout or semantics change in an incompatible way.
-# 1.4 — classic Verilog DUTs use an in-module Verilog reader rather than an
-# incompatible SystemVerilog package; existing mux locks must be regenerated.
-# 1.3 — harness body changed: the package now inherits the DUT's timescale
-# (SETUP-F-37) and the plusarg reader echoes the selected MUT_ID (SETUP-F-38),
-# so muxed files locked by 1.2 must be regenerated.
-LOCK_SCHEMA_VERSION = "1.4"
+# 2.0 stores read-only exact replacement proposals. It deliberately
+# invalidates selector-mux locks from 1.x.
+LOCK_SCHEMA_VERSION = "2.0"
 
 # Package + plusarg-reader filename constants (centralised here so other
 # layers don't hardcode strings).
@@ -84,25 +54,25 @@ MUT_PKG_FILENAME = "booley_mut_pkg.sv"
 
 @dataclass
 class LockMeta:
-    """In-memory representation of ``lock.json``.
-
-    Mirrors the on-disk schema 1:1.  Round-trip via ``to_dict`` / ``from_dict``;
-    don't add fields without bumping ``LOCK_SCHEMA_VERSION``.
-    """
+    """In-memory representation of the schema-2 ``lock.json``."""
 
     schema_version: str = LOCK_SCHEMA_VERSION
     created_at: str = ""
     scope: list[str] = field(default_factory=list)
     scope_hashes: dict[str, str] = field(default_factory=dict)
     count: int = 0
-    host_file: str = ""
     mutations: list[dict[str, Any]] = field(default_factory=list)
-    muxed_files: list[str] = field(default_factory=list)
-    pkg_file: str = MUT_PKG_FILENAME
-    docker_digest: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        """Serialize the schema-2 proposal identity."""
+        return {
+            "schema_version": self.schema_version,
+            "created_at": self.created_at,
+            "scope": self.scope,
+            "scope_hashes": self.scope_hashes,
+            "count": self.count,
+            "mutations": self.mutations,
+        }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LockMeta:
@@ -114,11 +84,7 @@ class LockMeta:
             scope=list(d.get("scope", [])),
             scope_hashes=dict(d.get("scope_hashes", {})),
             count=int(d.get("count", 0)),
-            host_file=d.get("host_file", ""),
             mutations=list(d.get("mutations", [])),
-            muxed_files=list(d.get("muxed_files", [])),
-            pkg_file=d.get("pkg_file", MUT_PKG_FILENAME),
-            docker_digest=d.get("docker_digest", ""),
         )
 
 
@@ -161,21 +127,47 @@ def lock_dir(logs_dir: Path | str | None = None) -> Path:
 
 
 def build_dir(logs_dir: Path | str | None = None) -> Path:
-    """Return the build-cache subdirectory inside the lock dir."""
-    return lock_dir(logs_dir) / "build"
+    """Compatibility alias for the pristine baseline build directory."""
+    return baseline_build_dir(logs_dir)
+
+
+def builds_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the root containing independent baseline and mutant builds."""
+    return lock_dir(logs_dir) / "builds"
+
+
+def baseline_build_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the pristine source build directory."""
+    return builds_dir(logs_dir) / "baseline"
+
+
+def variant_build_dir(index: int, logs_dir: Path | str | None = None) -> Path:
+    """Return the build directory for one isolated source replacement."""
+    if index < 1:
+        raise ValueError("mutation index must be positive")
+    return builds_dir(logs_dir) / f"mutant_{index}"
+
+
+def variants_dir(logs_dir: Path | str | None = None) -> Path:
+    """Return the durable exact-source variant artifact directory."""
+    return lock_dir(logs_dir) / "variants"
 
 
 def mutant_logs_dir(logs_dir: Path | str | None = None) -> Path:
     """Return the per-mutant simulator-log directory inside the lock dir.
 
-    Every mutant re-runs the SAME prebuilt binary in the SAME build dir, so
-    nothing on disk distinguishes one mutant's run from the next — the sweep
-    used to keep a 200-char snippet in memory and drop the rest. A surviving
+    Each mutant has its own compiled image, while this directory keeps the
+    simulator transcript independent from build-tool layout. A surviving
     (not-detected) mutant is the whole point of the Specialist, and it is exactly the
     case with no failure text to read, so each run's full output is persisted
     here as ``mutant_<mut_id>.log``.
     """
     return lock_dir(logs_dir) / "mutant_logs"
+
+
+def baseline_log_path(logs_dir: Path | str | None = None) -> Path:
+    """Return the current campaign's pristine-baseline simulator log path."""
+    return lock_dir(logs_dir) / "baseline.log"
 
 
 def verification_rounds_dir(logs_dir: Path | str | None = None) -> Path:
@@ -409,18 +401,6 @@ def is_build_cache_valid(
     if meta.get("build_inputs") != (build_inputs or {}):
         return False
     return meta.get("docker_digest") == docker_digest
-
-
-# ---------------------------------------------------------------------------
-# SV harness injection (source-editing engine)
-# ---------------------------------------------------------------------------
-#
-# The SystemVerilog source-editing engine (harness text generation + RTL
-# rewrite) lives in ``mut_harness_inject`` — extracted per principle 8
-# (Single Responsibility).  Its public names are re-exported at module top
-# for backward compatibility so existing importers keep resolving them off
-# ``mutation_lock``.  See the ``from .mut_harness_inject import ...`` line
-# in the import block above.
 
 
 # ---------------------------------------------------------------------------
