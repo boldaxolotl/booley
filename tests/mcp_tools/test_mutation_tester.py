@@ -233,6 +233,29 @@ class TestCreatorOutputParsing:
     def test_empty_mutations(self):
         assert parse_creator_output('{"mutations": []}') == []
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("index", "1"),
+            ("line", "42"),
+            ("original_code", 7),
+            ("mutated_code", False),
+        ],
+    )
+    def test_rejects_wrongly_typed_proposal_fields(self, field: str, value: object):
+        proposal = {
+            "index": 1,
+            "category": "operator_change",
+            "file": "rtl/mod_a.sv",
+            "line": 42,
+            "original_code": "a + b",
+            "mutated_code": "a - b",
+            "detectability_argument": "changes arithmetic",
+        }
+        proposal[field] = value
+
+        assert parse_creator_output(json.dumps({"mutations": [proposal]})) == []
+
 
 class TestExtractJson:
     def test_direct(self):
@@ -767,7 +790,7 @@ class TestColdStart:
             count=2,
             auto_mode=False,
             formula_count=2,
-            complexity=None,
+            source_size_budget=None,
         )
 
         result = endpoint._variant_infra_error(
@@ -845,6 +868,37 @@ class TestColdStart:
         criterion_detail = endpoint.state.criteria[result.criterion_key].detail
         assert criterion_detail["artifacts"]["results"] == result.detail["artifacts"]["results"]
         assert criterion_detail["variant_files"] == variants
+
+    def test_auto_count_publishes_source_size_budget(self, tmp_path: Path, monkeypatch):
+        scope = "rtl/mod_a.sv"
+        _prepare_scope_files(tmp_path, [scope])
+        _write_dut_top(tmp_path)
+        specs = _sample_specs(6)
+        _patch_invoke_agent(
+            monkeypatch,
+            [FakeAgentResult(output=_sample_creator_json(specs))],
+        )
+        _patch_sim_runner(monkeypatch, sim_returncode=0)
+        endpoint = _make_endpoint(
+            tmp_path,
+            monkeypatch,
+            scope=scope,
+            count="auto",
+            min_detected=0,
+        )
+
+        with patch(
+            "booley.specialists.mutation_tester.hide_opposite_sources",
+            side_effect=lambda *args, **kwargs: _NoopCtx(),
+        ):
+            result = endpoint._run()
+
+        budget = result.detail["source_size_budget"]
+        assert budget["method"] == "language_neutral_source_size"
+        assert "complexity" not in result.detail
+        manifest_path = tmp_path / result.detail["artifacts"]["manifest"]
+        assert (manifest_path.parent / "source-size-budget.json").is_file()
+        assert not (manifest_path.parent / "complexity-breakdown.json").exists()
 
     def test_warm_lock_reuses_only_proposals_and_rebuilds_variants(
         self,
