@@ -20,6 +20,7 @@ import fnmatch
 import gzip
 import hashlib
 import io
+import json
 import os
 import re
 import subprocess
@@ -362,6 +363,24 @@ def inspect_worktree(repo: Path, config: GuardConfig) -> list[Finding]:
     return findings
 
 
+def inspect_pull_request_event(event: object, config: GuardConfig) -> list[Finding]:
+    """Inspect public PR metadata from GitHub's trusted event payload."""
+    if not isinstance(event, dict) or not isinstance(event.get("pull_request"), dict):
+        raise GuardError("the GitHub event has no pull-request object")
+    pull_request = event["pull_request"]
+    title = pull_request.get("title")
+    body = pull_request.get("body")
+    head = pull_request.get("head")
+    if not isinstance(title, str) or (body is not None and not isinstance(body, str)):
+        raise GuardError("the pull-request title or body has an invalid type")
+    if not isinstance(head, dict) or not isinstance(head.get("ref"), str):
+        raise GuardError("the pull-request head ref has an invalid type")
+    findings = _scan_text(title, "pull request title", config)
+    _add_limited(findings, _scan_text(body or "", "pull request body", config))
+    _add_limited(findings, _scan_text(head["ref"], "pull request head ref", config))
+    return findings
+
+
 def _commit_facts(repo: Path, sha: str) -> tuple[str, str, str, str, str]:
     fmt = "%an%x00%ae%x00%cn%x00%ce%x00%B"
     raw = _run_git(repo, ["show", "-s", f"--format={fmt}", sha])
@@ -556,6 +575,23 @@ def pre_push_hook_main(repo: Path | str | None = None, stdin: TextIO = sys.stdin
     return 0
 
 
+def pull_request_main(repo: Path | str, event_path: Path) -> int:
+    """Inspect PR title, body, and head ref without executing pull-request code."""
+    root = Path(repo).resolve()
+    try:
+        config = load_config(root)
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        findings = inspect_pull_request_event(event, config)
+    except (GuardError, OSError, json.JSONDecodeError) as exc:
+        error = exc if isinstance(exc, GuardError) else GuardError("the GitHub event is invalid")
+        return _guard_failure(error, sys.stderr)
+    if findings:
+        _print_findings(findings, config, sys.stderr)
+        return 1
+    print("Confidential-content pull-request metadata guard: clean.")
+    return 0
+
+
 def audit_main(repo: Path | str, revisions: list[str], *, include_worktree: bool = False) -> int:
     root = Path(repo).resolve()
     try:
@@ -582,6 +618,10 @@ def _parser() -> argparse.ArgumentParser:
     commit_parser = subparsers.add_parser("commit-msg", help="inspect a pending commit")
     commit_parser.add_argument("message_file", type=Path)
     subparsers.add_parser("pre-push", help="consume Git pre-push records on stdin")
+    pull_request_parser = subparsers.add_parser(
+        "pull-request", help="inspect GitHub pull-request metadata"
+    )
+    pull_request_parser.add_argument("--event", required=True, type=Path)
     audit_parser = subparsers.add_parser("audit", help="inspect full ancestry of revisions")
     audit_parser.add_argument("--rev", action="append", default=[], help="revision to inspect")
     audit_parser.add_argument(
@@ -596,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
         return commit_message_hook_main(parsed.message_file, parsed.repo)
     if parsed.command == "pre-push":
         return pre_push_hook_main(parsed.repo)
+    if parsed.command == "pull-request":
+        return pull_request_main(parsed.repo, parsed.event)
     revisions = parsed.rev or ["HEAD"]
     return audit_main(parsed.repo, revisions, include_worktree=parsed.worktree)
 

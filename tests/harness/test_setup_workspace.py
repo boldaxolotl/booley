@@ -11,6 +11,58 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+
+def _init_git_repository(repository: Path) -> None:
+    repository.mkdir()
+    _git(repository, "init")
+    _git(repository, "config", "user.name", "Test User")
+    _git(repository, "config", "user.email", "test@example.com")
+
+
+def _submodule_project(tmp_path: Path) -> tuple[Path, Path]:
+    dependency = tmp_path / "dependency"
+    _init_git_repository(dependency)
+    (dependency / "dep.txt").write_text("dependency\n", encoding="utf-8")
+    _git(dependency, "add", "dep.txt")
+    _git(dependency, "commit", "-m", "dependency")
+    project_root = tmp_path / "repo"
+    _init_git_repository(project_root)
+    added = _git(
+        project_root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(dependency),
+        "vendor/ip core",
+    )
+    assert added.returncode == 0, added.stderr
+    _git(project_root, "commit", "-am", "add submodule")
+    project_data = project_root / ".booley_project"
+    project_data.mkdir()
+    (project_data / "booley.toml").write_text(
+        '[submodules]\npaths = ["vendor/ip core"]\n', encoding="utf-8"
+    )
+    return project_root, project_data
+
+
+def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedProcess[str]:
+    from booley.runtime.paths import dev_support_dir
+    from booley.runtime.platform_paths import bash_bin
+
+    env = {k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"}
+    env["BOOLEY_PYTHON"] = sys.executable
+    return subprocess.run(
+        [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
+        input=json.dumps({"name": name, "cwd": str(project_root)}),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        env=env,
+    )
+
+
 # ===========================================================================
 # Branch creation logic
 # ===========================================================================
@@ -208,52 +260,9 @@ class TestWorktreeCreateScript:
 
     def test_leaves_gitlink_with_space_for_python_materialization(self, tmp_path: Path):
         """The shell creates only the outer worktree; Python fills gitlinks later."""
-        from booley.runtime.paths import dev_support_dir
-        from booley.runtime.platform_paths import bash_bin
+        project_root, project_data = _submodule_project(tmp_path)
 
-        dependency = tmp_path / "dependency"
-        dependency.mkdir()
-        _git(dependency, "init")
-        _git(dependency, "config", "user.name", "Test User")
-        _git(dependency, "config", "user.email", "test@example.com")
-        (dependency / "dep.txt").write_text("dependency\n", encoding="utf-8")
-        _git(dependency, "add", "dep.txt")
-        _git(dependency, "commit", "-m", "dependency")
-
-        project_root = tmp_path / "repo"
-        project_root.mkdir()
-        _git(project_root, "init")
-        _git(project_root, "config", "user.name", "Test User")
-        _git(project_root, "config", "user.email", "test@example.com")
-        added = _git(
-            project_root,
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            str(dependency),
-            "vendor/ip core",
-        )
-        assert added.returncode == 0, added.stderr
-        _git(project_root, "commit", "-am", "add submodule")
-        project_data = project_root / ".booley_project"
-        project_data.mkdir()
-        (project_data / "booley.toml").write_text(
-            '[submodules]\npaths = ["vendor/ip core"]\n', encoding="utf-8"
-        )
-
-        result = subprocess.run(
-            [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
-            input=json.dumps({"name": "security-audit", "cwd": str(project_root)}),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"},
-                "BOOLEY_PYTHON": sys.executable,
-            },
-        )
+        result = _run_worktree_create(project_root, "security-audit")
 
         assert result.returncode == 0, result.stderr
         placeholder = project_data / "worktrees" / "security-audit" / "vendor" / "ip core"
@@ -450,7 +459,8 @@ class TestWorkspaceRun:
         assert result.metadata["worktree"] == str(wt)
         assert result.metadata["branch"] == ctx.slug
         for call in mock_sub.call_args_list:
-            assert "bash" not in str(call), "Should reuse, not create via script"
+            argv = call.args[0]
+            assert not any(str(arg).endswith("worktree_create.sh") for arg in argv)
 
     @pytest.mark.asyncio
     @patch("subprocess.run")

@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from booley.config.settings import _load_booley_toml
+from booley.config.settings import SubmoduleConfigError, load_submodule_config
 from booley.runtime.filesystem_utils import safe_rmtree
 
 _TIMEOUT_S = 300
@@ -58,10 +58,10 @@ def _materialize_tree(
         destination = destination_root / full_relative
         commit = _gitlink_commit(destination_repo, relative)
         _assert_link_free_path(destination, destination_root, "destination")
+        _validate_source(source, source_root, full_relative)
         if _accept_existing(destination, commit):
             _materialize_tree(source_root, destination, destination_root, full_relative, created)
             continue
-        _validate_source(source, source_root, full_relative)
         had_placeholder = _remove_empty_placeholder(destination, destination_root)
         created.append((destination, had_placeholder))
         _create_repository(source, destination, commit, full_relative)
@@ -70,13 +70,13 @@ def _materialize_tree(
 
 def _selected_top_level_paths(source_root: Path, destination_root: Path) -> list[Path]:
     discovered = _submodule_paths(destination_root)
-    section = _load_booley_toml(source_root).get("submodules")
-    if not isinstance(section, dict) or "paths" not in section:
+    try:
+        configured_paths = load_submodule_config(source_root).paths
+    except SubmoduleConfigError as exc:
+        raise SubmoduleMaterializationError(str(exc)) from exc
+    if configured_paths is None:
         return discovered
-    raw_paths = section["paths"]
-    if not isinstance(raw_paths, list) or any(not isinstance(path, str) for path in raw_paths):
-        raise SubmoduleMaterializationError("[submodules].paths must be an array of strings")
-    configured = [Path(path) for path in raw_paths]
+    configured = [Path(path) for path in configured_paths]
     for path in configured:
         _validate_relative_path(path)
     configured_values = {path.as_posix() for path in configured}
@@ -84,23 +84,22 @@ def _selected_top_level_paths(source_root: Path, destination_root: Path) -> list
 
 
 def _submodule_paths(repository: Path) -> list[Path]:
-    modules = repository / ".gitmodules"
-    if not modules.is_file():
-        return []
-    result = _run_git(
-        repository,
-        "config",
-        "--null",
-        "--file",
-        ".gitmodules",
-        "--get-regexp",
-        r"^submodule\..*\.path$",
-        check=False,
-    )
-    if result.returncode not in (0, 1):
-        _raise_git("reading .gitmodules", result)
+    result = _run_git(repository, "ls-files", "--stage", "-z")
     records = [record for record in result.stdout.split("\0") if record]
-    paths = [Path(record.partition("\n")[2]) for record in records]
+    paths: list[Path] = []
+    for record in records:
+        if not record.startswith("160000 "):
+            continue
+        metadata, separator, raw_path = record.partition("\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise SubmoduleMaterializationError("Git index contains an invalid entry")
+        mode, _object_id, stage = fields
+        if mode != "160000":
+            continue
+        if stage != "0":
+            raise SubmoduleMaterializationError(f"Git index has a conflicted gitlink: {raw_path}")
+        paths.append(Path(raw_path))
     if len(paths) != len(set(paths)):
         raise SubmoduleMaterializationError(".gitmodules contains duplicate submodule paths")
     for path in paths:
@@ -143,10 +142,12 @@ def _accept_existing(destination: Path, commit: str) -> bool:
         return False
     if destination.is_dir() and not any(destination.iterdir()):
         return False
-    if not (destination / ".git").exists():
-        raise SubmoduleMaterializationError(f"submodule destination is not empty: {destination}")
-    status = _run_git(destination, "status", "--porcelain", "--untracked-files=all")
-    if status.stdout:
+    git_dir = destination / ".git"
+    if git_dir.is_symlink() or _is_junction(git_dir) or not git_dir.is_dir():
+        raise SubmoduleMaterializationError(
+            f"submodule destination is not a standalone repository: {destination}"
+        )
+    if _repository_is_dirty(destination):
         raise SubmoduleMaterializationError(f"submodule {destination} is dirty")
     actual = _run_git(destination, "rev-parse", "HEAD").stdout.strip()
     if actual != commit:
@@ -167,9 +168,28 @@ def _validate_source(source: Path, source_root: Path, relative: Path) -> None:
         raise SubmoduleMaterializationError(
             f"submodule {relative.as_posix()} is shallow; fetch its complete history first"
         )
-    status = _run_git(source, "status", "--porcelain", "--untracked-files=all")
-    if status.stdout:
+    if _repository_is_dirty(source):
         raise SubmoduleMaterializationError(f"submodule {relative.as_posix()} is dirty")
+
+
+def _repository_is_dirty(repository: Path) -> bool:
+    staged = _run_git(repository, "diff-index", "--cached", "--quiet", "HEAD", "--", check=False)
+    unstaged = _run_git(
+        repository,
+        "diff-files",
+        "--quiet",
+        "--ignore-cr-at-eol",
+        "--",
+        check=False,
+    )
+    for action, result in (
+        ("checking staged files", staged),
+        ("checking worktree files", unstaged),
+    ):
+        if result.returncode not in (0, 1):
+            _raise_git(action, result)
+    untracked = _run_git(repository, "ls-files", "--others", "--exclude-standard", "-z")
+    return staged.returncode == 1 or unstaged.returncode == 1 or bool(untracked.stdout)
 
 
 def _remove_empty_placeholder(destination: Path, root: Path) -> bool:

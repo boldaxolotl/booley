@@ -49,6 +49,20 @@ def _add_submodule(parent: Path, dependency: Path, relative: str) -> None:
     )
 
 
+def _add_worktree(source: Path, destination: Path, ref: str | None = None) -> None:
+    args = [
+        "-c",
+        "submodule.recurse=false",
+        "worktree",
+        "add",
+        "--detach",
+        str(destination),
+    ]
+    if ref is not None:
+        args.append(ref)
+    _git(source, *args)
+
+
 def _set_submodule_url(parent: Path, name: str) -> None:
     _git(
         parent,
@@ -58,6 +72,42 @@ def _set_submodule_url(parent: Path, name: str) -> None:
         f"submodule.{name}.url",
         f"git@example.invalid:private/{name}.git",
     )
+
+
+def _nested_source_repositories(tmp_path: Path) -> tuple[Path, str, str, str]:
+    leaf = tmp_path / "leaf"
+    _init_repo(leaf)
+    old_leaf = _commit_file(leaf, "leaf-old\n", "leaf old")
+    new_leaf = _commit_file(leaf, "leaf-new\n", "leaf new")
+    middle = tmp_path / "middle"
+    _init_repo(middle)
+    _add_submodule(middle, leaf, "deps/leaf")
+    _git(middle / "deps/leaf", "checkout", "--detach", old_leaf)
+    _set_submodule_url(middle, "deps/leaf")
+    _git(middle, "add", ".gitmodules", "deps/leaf")
+    _git(middle, "commit", "-m", "middle old")
+    old_middle = _git(middle, "rev-parse", "HEAD").stdout.strip()
+    _git(middle / "deps/leaf", "checkout", "--detach", new_leaf)
+    _git(middle, "add", "deps/leaf")
+    _git(middle, "commit", "-m", "middle new")
+    new_middle = _git(middle, "rev-parse", "HEAD").stdout.strip()
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, middle, "vendor/middle")
+    _set_submodule_url(source, "vendor/middle")
+    nested_source = source / "vendor/middle"
+    _git(nested_source, "config", "submodule.deps/leaf.url", str(leaf))
+    _git(nested_source, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+    _git(nested_source, "checkout", "--detach", old_middle)
+    _git(nested_source / "deps/leaf", "checkout", "--detach", old_leaf)
+    _git(source, "add", ".gitmodules", "vendor/middle")
+    _git(source, "commit", "-m", "source old")
+    baseline = _git(source, "rev-parse", "HEAD").stdout.strip()
+    _git(nested_source, "checkout", "--detach", new_middle)
+    _git(nested_source / "deps/leaf", "checkout", "--detach", new_leaf)
+    _git(source, "add", "vendor/middle")
+    _git(source, "commit", "-m", "source new")
+    return source, baseline, old_middle, old_leaf
 
 
 def test_materializes_historical_pin_without_using_ssh(
@@ -91,16 +141,7 @@ def test_materializes_historical_pin_without_using_ssh(
     _git(source, "commit", "-qm", "new pin")
 
     destination = tmp_path / "destination"
-    _git(
-        source,
-        "-c",
-        "submodule.recurse=false",
-        "worktree",
-        "add",
-        "--detach",
-        str(destination),
-        baseline_sha,
-    )
+    _add_worktree(source, destination, baseline_sha)
     monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
 
     materialize_submodules(source, destination)
@@ -132,16 +173,7 @@ def test_explicit_empty_configuration_materializes_nothing(tmp_path: Path) -> No
     _git(source, "commit", "-qm", "configured submodule")
 
     destination = tmp_path / "destination"
-    _git(
-        source,
-        "-c",
-        "submodule.recurse=false",
-        "worktree",
-        "add",
-        "--detach",
-        str(destination),
-        "HEAD",
-    )
+    _add_worktree(source, destination, "HEAD")
 
     materialize_submodules(source, destination)
 
@@ -170,6 +202,26 @@ def test_rejects_unsafe_configured_path_before_touching_destination(tmp_path: Pa
     assert sentinel.read_text(encoding="utf-8") == "keep\n"
 
 
+@pytest.mark.parametrize(
+    "configuration",
+    ['submodules = "invalid"\n', '[submodules]\npaths = "vendor/ip"\n'],
+)
+def test_rejects_invalid_submodule_configuration(
+    tmp_path: Path, configuration: str
+) -> None:
+    source = tmp_path / "source"
+    _init_repo(source)
+    _commit_file(source, "root\n", "root")
+    project_dir = source / ".booley_project"
+    project_dir.mkdir()
+    (project_dir / "booley.toml").write_text(configuration, encoding="utf-8")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+
+    with pytest.raises(SubmoduleMaterializationError, match=r"\[submodules\]"):
+        materialize_submodules(source, destination)
+
+
 def test_configuration_selects_only_matching_top_level_gitlinks(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -188,7 +240,7 @@ def test_configuration_selects_only_matching_top_level_gitlinks(tmp_path: Path) 
         '[submodules]\npaths = ["vendor/second", "not/a/gitlink"]\n', encoding="utf-8"
     )
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
 
     materialize_submodules(source, destination)
 
@@ -197,59 +249,9 @@ def test_configuration_selects_only_matching_top_level_gitlinks(tmp_path: Path) 
 
 
 def test_materializes_nested_historical_gitlinks_by_same_path(tmp_path: Path) -> None:
-    leaf = tmp_path / "leaf"
-    _init_repo(leaf)
-    old_leaf = _commit_file(leaf, "leaf-old\n", "leaf old")
-    new_leaf = _commit_file(leaf, "leaf-new\n", "leaf new")
-
-    middle = tmp_path / "middle"
-    _init_repo(middle)
-    _add_submodule(middle, leaf, "deps/leaf")
-    _git(middle / "deps/leaf", "checkout", "--detach", old_leaf)
-    _set_submodule_url(middle, "deps/leaf")
-    _git(middle, "add", ".gitmodules", "deps/leaf")
-    _git(middle, "commit", "-m", "middle old")
-    old_middle = _git(middle, "rev-parse", "HEAD").stdout.strip()
-    _git(middle / "deps/leaf", "checkout", "--detach", new_leaf)
-    _git(middle, "add", "deps/leaf")
-    _git(middle, "commit", "-m", "middle new")
-    new_middle = _git(middle, "rev-parse", "HEAD").stdout.strip()
-
-    source = tmp_path / "source"
-    _init_repo(source)
-    _add_submodule(source, middle, "vendor/middle")
-    _set_submodule_url(source, "vendor/middle")
-    nested_source = source / "vendor/middle"
-    _git(nested_source, "config", "submodule.deps/leaf.url", str(leaf))
-    _git(
-        nested_source,
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "update",
-        "--init",
-    )
-    _git(nested_source, "checkout", "--detach", old_middle)
-    _git(nested_source / "deps/leaf", "checkout", "--detach", old_leaf)
-    _git(source, "add", ".gitmodules", "vendor/middle")
-    _git(source, "commit", "-m", "source old")
-    baseline = _git(source, "rev-parse", "HEAD").stdout.strip()
-    _git(nested_source, "checkout", "--detach", new_middle)
-    _git(nested_source / "deps/leaf", "checkout", "--detach", new_leaf)
-    _git(source, "add", "vendor/middle")
-    _git(source, "commit", "-m", "source new")
-
+    source, baseline, old_middle, old_leaf = _nested_source_repositories(tmp_path)
     destination = tmp_path / "destination"
-    _git(
-        source,
-        "-c",
-        "submodule.recurse=false",
-        "worktree",
-        "add",
-        "--detach",
-        str(destination),
-        baseline,
-    )
+    _add_worktree(source, destination, baseline)
 
     materialize_submodules(source, destination)
 
@@ -280,7 +282,7 @@ def test_failure_rolls_back_only_directories_created_by_this_call(tmp_path: Path
     _git(source, "update-index", "--add", "--cacheinfo", f"160000,{commit},z/missing")
     _git(source, "commit", "-m", "two submodules")
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
 
     with pytest.raises(SubmoduleMaterializationError, match=r"z/missing.*initialize"):
         materialize_submodules(source, destination)
@@ -300,7 +302,7 @@ def test_rejects_broken_destination_symlink_without_following_it(tmp_path: Path)
     _add_submodule(source, dependency, "vendor/ip")
     _git(source, "commit", "-am", "add submodule")
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
     placeholder = destination / "vendor/ip"
     placeholder.rmdir()
     placeholder.symlink_to(tmp_path / "missing-target", target_is_directory=True)
@@ -321,7 +323,7 @@ def test_rejects_dirty_source_without_mutating_destination(tmp_path: Path) -> No
     _git(source, "commit", "-am", "add submodule")
     (source / "vendor/ip/source.sv").write_text("dirty\n", encoding="utf-8")
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
 
     with pytest.raises(SubmoduleMaterializationError, match=r"vendor/ip.*dirty"):
         materialize_submodules(source, destination)
@@ -349,7 +351,7 @@ def test_rejects_source_path_that_crosses_a_symlink(tmp_path: Path) -> None:
     _git(source, "update-index", "--add", "--cacheinfo", f"160000,{commit},vendor/ip")
     _git(source, "commit", "-m", "linked source")
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
 
     with pytest.raises(SubmoduleMaterializationError, match="source crosses a link"):
         materialize_submodules(source, destination)
@@ -379,7 +381,7 @@ def test_rejects_shallow_source_repository(tmp_path: Path) -> None:
     _git(source, "add", ".gitmodules", "vendor/ip")
     _git(source, "commit", "-m", "shallow submodule")
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
 
     assert _git(source / "vendor/ip", "rev-parse", "HEAD").stdout.strip() == commit
     with pytest.raises(SubmoduleMaterializationError, match="is shallow"):
@@ -409,16 +411,7 @@ def test_reports_incomplete_local_objects_without_trying_a_remote(tmp_path: Path
     _git(source, "add", "vendor/ip")
     _git(source, "commit", "-m", "unrelated replacement")
     destination = tmp_path / "destination"
-    _git(
-        source,
-        "-c",
-        "submodule.recurse=false",
-        "worktree",
-        "add",
-        "--detach",
-        str(destination),
-        baseline,
-    )
+    _add_worktree(source, destination, baseline)
 
     with pytest.raises(SubmoduleMaterializationError, match=r"local objects.*incomplete"):
         materialize_submodules(source, destination)
@@ -435,9 +428,86 @@ def test_materialization_is_idempotent_for_matching_clean_checkout(tmp_path: Pat
     _add_submodule(source, dependency, "ip core")
     _git(source, "commit", "-am", "add submodule")
     destination = tmp_path / "destination"
-    _git(source, "-c", "submodule.recurse=false", "worktree", "add", str(destination))
+    _add_worktree(source, destination)
 
     materialize_submodules(source, destination)
     materialize_submodules(source, destination)
 
     assert _git(destination / "ip core", "rev-parse", "HEAD").stdout.strip() == commit
+
+
+def test_resume_revalidates_source_repository(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    _commit_file(dependency, "stable\n", "stable")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, dependency, "vendor/ip")
+    _git(source, "commit", "-am", "add submodule")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    materialize_submodules(source, destination)
+    (source / "vendor/ip/source.sv").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(SubmoduleMaterializationError, match=r"vendor/ip.*dirty"):
+        materialize_submodules(source, destination)
+
+
+def test_resume_rejects_destination_with_shared_git_pointer(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    _commit_file(dependency, "stable\n", "stable")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, dependency, "vendor/ip")
+    _git(source, "commit", "-am", "add submodule")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+    materialize_submodules(source, destination)
+    materialized = destination / "vendor/ip"
+    shared_git = tmp_path / "shared-git"
+    (materialized / ".git").rename(shared_git)
+    (materialized / ".git").write_text(f"gitdir: {shared_git}\n", encoding="utf-8")
+
+    with pytest.raises(SubmoduleMaterializationError, match="standalone"):
+        materialize_submodules(source, destination)
+
+
+def test_accepts_source_with_only_crlf_checkout_smudge(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    _commit_file(dependency, "first\nsecond\n", "stable")
+    source = tmp_path / "source"
+    _init_repo(source)
+    _add_submodule(source, dependency, "vendor/ip")
+    _git(source, "commit", "-am", "add submodule")
+    (source / "vendor/ip/source.sv").write_bytes(b"first\r\nsecond\r\n")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+
+    materialize_submodules(source, destination)
+
+    assert (destination / "vendor/ip/source.sv").read_bytes() == b"first\nsecond\n"
+
+
+def test_discovers_index_gitlinks_instead_of_stale_gitmodules(tmp_path: Path) -> None:
+    dependency = tmp_path / "dependency"
+    _init_repo(dependency)
+    commit = _commit_file(dependency, "indexed\n", "indexed")
+    source = tmp_path / "source"
+    _init_repo(source)
+    (source / "vendor").mkdir()
+    _git(source / "vendor", "clone", str(dependency), "indexed")
+    (source / ".gitmodules").write_text(
+        '[submodule "stale"]\n\tpath = vendor/stale\n\turl = ssh://private/stale\n',
+        encoding="utf-8",
+    )
+    _git(source, "add", ".gitmodules")
+    _git(source, "update-index", "--add", "--cacheinfo", f"160000,{commit},vendor/indexed")
+    _git(source, "commit", "-m", "index is authoritative")
+    destination = tmp_path / "destination"
+    _add_worktree(source, destination)
+
+    materialize_submodules(source, destination)
+
+    assert (destination / "vendor/indexed/source.sv").read_text() == "indexed\n"
