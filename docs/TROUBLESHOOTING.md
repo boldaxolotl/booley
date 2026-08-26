@@ -187,19 +187,21 @@ first-run traps:
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
   tree, init stages Git-filtered LF replacements, verifies that the affected
-  files have not changed since inspection, then rewrites their content in place.
-  This preserves filesystem metadata and leaves untracked and unaffected tracked
-  files alone. Init refuses dirty trees, Git-protected affected paths, and
-  hard-linked candidates; commit or stash changes and rerun:
+  files have not changed since inspection, then rewrites their content in place
+  and reconciles Git's cached metadata for only those paths. This preserves
+  filesystem metadata, leaves the index content unchanged, and leaves untracked
+  and unaffected tracked files alone. Init refuses dirty trees, Git-protected
+  affected paths, and hard-linked candidates; commit or stash changes and rerun:
 
   ```bash
   booley init
   ```
 
-  `booley doctor` re-asks every run, so a config reset or a fresh clone that
-  drifts back to CRLF gets caught rather than surfacing as phantom diffs in the
-  container. The old `--fix-line-endings` option remains accepted for CLI
-  compatibility but is no longer required for a clean tree.
+  `booley doctor` re-asks every run, so a config reset, a fresh clone that
+  drifts back to CRLF, or stale index metadata left by an earlier repair gets
+  caught rather than surfacing as phantom diffs in the container. The old
+  `--fix-line-endings` option remains accepted for CLI compatibility but is no
+  longer required for a clean tree.
 
   (Doing this by hand is fiddlier than it looks: `git checkout -- .` on its own
   is **not** enough. With the clean filter in place the worktree files already
