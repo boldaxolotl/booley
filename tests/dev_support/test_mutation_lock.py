@@ -9,6 +9,7 @@ and the build-cache validity helpers.
 from __future__ import annotations
 
 import contextlib
+import json
 from pathlib import Path
 
 from booley.dev_support import mutation_lock as lm
@@ -64,6 +65,10 @@ class TestLockPersistence:
         assert loaded.scope == ["rtl/a.sv"]
         assert loaded.count == 3
         assert loaded.mutations[0]["index"] == 1
+        persisted = json.loads(lm.lock_json_path().read_text(encoding="utf-8"))
+        assert "muxed_files" not in persisted
+        assert "pkg_file" not in persisted
+        assert "docker_digest" not in persisted
 
     def test_corrupt_lock_treated_as_missing(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
@@ -122,6 +127,12 @@ class TestLockValidity:
     def test_tool_version_mismatch(self):
         m = self._meta(["a.sv"], {"a.sv": "sha256:x"})
         m.schema_version = "0.0"
+        assert lm.is_lock_valid(m, ["a.sv"], {"a.sv": "sha256:x"}) is False
+
+    def test_runtime_mux_lock_is_invalidated(self):
+        m = self._meta(["a.sv"], {"a.sv": "sha256:x"})
+        m.schema_version = "1.4"
+
         assert lm.is_lock_valid(m, ["a.sv"], {"a.sv": "sha256:x"}) is False
 
 
