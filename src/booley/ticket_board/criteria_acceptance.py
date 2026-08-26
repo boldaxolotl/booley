@@ -311,16 +311,68 @@ def _find_unverified_transitions(criteria: dict) -> list[str]:
     return unverified
 
 
-def _refresh_verification_entry(
-    key: str,
+def _mark_review_receipt_stale(
+    entry,
+    *,
+    categories: list[str],
+    now: str,
+    reason: str,
+    dimensions: list[str],
+) -> bool:
+    _mark_verification_stale(
+        entry,
+        now=now,
+        reason=reason,
+        changed_categories=categories,
+        current={},
+    )
+    entry.detail["stale_review_dimensions"] = dimensions
+    return True
+
+
+def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], now: str) -> bool:
+    from booley.dev_support.review_receipt import ReviewTicketError, review_receipt_drift
+
+    try:
+        changed = review_receipt_drift(entry.detail or {}, work_dir)
+    except ReviewTicketError as exc:
+        return _mark_review_receipt_stale(
+            entry,
+            categories=categories,
+            now=now,
+            reason=str(exc),
+            dimensions=["ticket"],
+        )
+    except (FuseSocError, OSError) as exc:
+        return _mark_review_receipt_stale(
+            entry,
+            categories=categories,
+            now=now,
+            reason=f"Reviewer Target contract can no longer be resolved: {exc}",
+            dimensions=["target_surface"],
+        )
+    if not changed:
+        return False
+    return _mark_review_receipt_stale(
+        entry,
+        categories=categories,
+        now=now,
+        reason=(
+            "Reviewer contract changed after the recorded verdict "
+            f"({', '.join(changed)}); re-run Reviewer."
+        ),
+        dimensions=changed,
+    )
+
+
+def _source_evidence_is_stale(
     entry,
     *,
     work_dir: Path,
     fingerprints: dict[str | None, dict],
+    categories: list[str],
     now: str,
 ) -> bool:
-    """Refresh one passing criterion; unresolved Target config is stale evidence."""
-    categories = _verification_fingerprint_categories(key)
     stamp = (entry.detail or {}).get(SOURCE_FINGERPRINT_DETAIL_KEY)
     target = stamp.get("target") if isinstance(stamp, dict) else None
     target = target if isinstance(target, str) and target else None
@@ -351,6 +403,32 @@ def _refresh_verification_entry(
     )
 
 
+def _refresh_verification_entry(
+    key: str,
+    entry,
+    *,
+    work_dir: Path,
+    fingerprints: dict[str | None, dict],
+    now: str,
+) -> bool:
+    """Refresh one passing criterion against its receipt and source evidence."""
+    categories = _verification_fingerprint_categories(key)
+    if key.startswith(("review_rtl_", "review_tb_")) and _review_receipt_is_stale(
+        entry,
+        work_dir=work_dir,
+        categories=categories,
+        now=now,
+    ):
+        return True
+    return _source_evidence_is_stale(
+        entry,
+        work_dir=work_dir,
+        fingerprints=fingerprints,
+        categories=categories,
+        now=now,
+    )
+
+
 def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]:
     """Persistently invalidate passing checks whose source fingerprint drifted."""
     resolved_work_dir = work_dir
@@ -363,9 +441,9 @@ def refresh_verification_freshness(state, *, work_dir: Path | None) -> list[str]
     stale_keys: list[str] = []
     fingerprints: dict[str | None, dict] = {}
     for key, entry in state.criteria.items():
-        if key.startswith("_") or not entry.met:
-            continue
         is_review = key.startswith(("review_rtl_", "review_tb_"))
+        if key.startswith("_") or (not entry.met and not is_review):
+            continue
         if not entry.mandatory and not is_review:
             continue
         if not _verification_fingerprint_categories(key):

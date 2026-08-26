@@ -127,7 +127,7 @@ class TargetSurface:
 
 
 def collect_surface(project_root: Path | str) -> TargetSurface:
-    """Build the full Target surface for *project_root* — YAML reads only."""
+    """Build the public Target surface for *project_root* — YAML reads only."""
     root = Path(project_root)
     declarations = fusesoc_registry.target_declarations(root)
 
@@ -142,10 +142,11 @@ def collect_surface(project_root: Path | str) -> TargetSurface:
 
     grouped: dict[tuple[str, Path], list[TargetEntry]] = {}
     for bucket in declarations.values():
-        for ref in bucket:
+        public_bucket = [ref for ref in bucket if not ref.doctor_selftest]
+        for ref in public_bucket:
             entry = TargetEntry(
                 ref=ref,
-                selector=fusesoc_registry.minimal_selector(ref, bucket),
+                selector=fusesoc_registry.minimal_selector(ref, public_bucket),
                 toplevel=declared_toplevel(ref),
                 doctor_flows=ref.doctor_flows,
                 drivable_by=tuple(b for b in TARGET_AWARE_FLOWS if flow_can_drive(b, ref)),
@@ -274,7 +275,7 @@ def detail_payload(
     :func:`fusesoc_registry.resolve_target` (e.g. ``runner`` for tests).
     """
     root = Path(project_root)
-    ref = fusesoc_registry.resolve_ref(root, token)
+    ref = fusesoc_registry.resolve_public_ref(root, token)
     surface = collect_surface(root)
     entry = next(e for e in surface.entries() if e.ref == ref)
 

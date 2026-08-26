@@ -133,14 +133,15 @@ _SELFTEST_FOOTPRINT_NOTE = {
         ".booley_project/selftest/sim/bad-overlay/; Doctor applies that overlay "
         "only to its bad run."
     ),
-    # lint has no pre_run_commands hook, so its bad Target must resolve through
-    # the tracked .core -> a small known-bad source file really does land in the
-    # tree. Say it plainly rather than letting the user discover it mid-setup.
+    # lint has no pre_run_commands hook, so its bad Target resolves through a
+    # dedicated tracked .core. ``doctor_selftest`` metadata keeps the broken
+    # Target out of the public Target surface while Doctor can still resolve it.
     "lint": (
-        "Footprint: lint's conventional 'lint_selftest_bad' must be a real .core "
-        "Target - a small known-bad source file will be committed to the "
-        "repo. If that footprint is unacceptable, prove the fail path by hand and "
-        "record the decision; this stays a WARN, never a FAIL."
+        "Footprint: lint's conventional 'lint_selftest_bad' must live in a "
+        "dedicated tracked .core with booley.doctor_selftest metadata, alongside "
+        "a small known-bad source file. Booley hides it from ordinary Target "
+        "listings and selection. If that footprint is unacceptable, prove the "
+        "fail path by hand and record the decision; this stays a WARN, never a FAIL."
     ),
 }
 # Flow exit-code contract (mirror booley.dev_support.base EXIT_SUCCESS/EXIT_FAILURE):
@@ -6125,7 +6126,10 @@ def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     if flow_name == "sim":
         requirement = "add at least one file beneath .booley_project/selftest/sim/bad-overlay/"
     else:
-        requirement = f"add a known-bad .core Target named {_LINT_SELFTEST_BAD_TARGET!r}"
+        requirement = (
+            f"add a known-bad Target named {_LINT_SELFTEST_BAD_TARGET!r} in a dedicated "
+            ".core with booley.doctor_selftest metadata"
+        )
     _warning_sink(_warn, "flow.fail-path-unvalidated", subject=flow_name)(
         f"{flow_name} fail-path unvalidated - {requirement} so --deep proves a "
         "known-bad grades as a failure (not a false pass). The setup agent authors "
@@ -6154,8 +6158,11 @@ def _selftest_plan(
             bad=_SelftestCase(target, test, f"{display} + bad overlay"),
         )
     try:
-        fusesoc_registry.resolve_ref(project.project_root, _LINT_SELFTEST_BAD_TARGET)
+        bad_ref = fusesoc_registry.resolve_ref(project.project_root, _LINT_SELFTEST_BAD_TARGET)
     except fusesoc_registry.FuseSocError:
+        _warn_unvalidated_selftest(flow_name, _warn)
+        return None
+    if not bad_ref.doctor_selftest:
         _warn_unvalidated_selftest(flow_name, _warn)
         return None
     return _SelftestPlan(

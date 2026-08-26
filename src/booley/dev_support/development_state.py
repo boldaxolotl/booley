@@ -136,17 +136,14 @@ _CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
     # sweep is an RTL structural check, so an RTL edit must reset its met
     # status — a stale green would defeat the every-attempt re-verification.
     "elaborate_standalone": frozenset({CATEGORY_RTL}),
-    # review_rtl / review_tb are invalidated by persisted source fingerprints
-    # at the acceptance boundary rather than by endpoint-local prefix resets.
+    # review_rtl / review_tb are handled through _REVIEW_CATEGORY below so
+    # their persisted receipt/findings survive synchronous invalidation.
 }
 
-# Review criteria belong to a category but are excluded from
-# _CATEGORY_PREFIXES because final source-fingerprint validation owns their
-# met-status freshness. However, _clean review criteria track
-# verify_attempts in their detail dict, and those counters MUST be
-# cleared when the underlying code changes — otherwise the reviewer is
-# permanently blocked after exhausting attempts even though the coder
-# has since fixed the issues.
+# Review criteria belong to a category but are kept separate from ordinary
+# prefix resets because their receipt/findings remain useful after they become
+# stale. `_clean` reviews also track verify_attempts, which must be cleared when
+# the underlying code changes.
 _REVIEW_CATEGORY: dict[str, str] = {
     "review_tb_": CATEGORY_TB,
     "review_rtl_": CATEGORY_RTL,
@@ -681,6 +678,11 @@ class DevelopmentState:
                 belongs = category == override
             else:
                 belongs = category in _infer_categories(key)
+                if not belongs:
+                    belongs = any(
+                        key.startswith(prefix) and review_category == category
+                        for prefix, review_category in _REVIEW_CATEGORY.items()
+                    )
             if belongs and entry.met:
                 entry.met = False
                 entry.stale = True
@@ -693,7 +695,7 @@ class DevelopmentState:
             # verify counter must be refreshed when code changes).
             # total_verify_cycles is NOT cleared — it tracks cumulative
             # attempts across all coder fixes to detect stale-finding impasses.
-            if not belongs and not entry.met and entry.detail.get("verify_attempts"):
+            if belongs and not entry.met and entry.detail.get("verify_attempts"):
                 for prefix, cat in _REVIEW_CATEGORY.items():
                     if key.startswith(prefix) and cat == category:
                         entry.detail.pop("verify_attempts", None)
