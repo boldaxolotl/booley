@@ -113,11 +113,17 @@ def test_submodule_sources_are_checked_out_at_baseline_revision(
     repo.mkdir()
     _init_repo(repo)
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
-    _git(repo, "submodule", "add", str(submodule), "vendor/ip")
+    (repo / ".gitmodules").write_text(
+        '[submodule "ip"]\n\tpath = vendor/ip\n\turl = git@example.invalid:private/ip.git\n',
+        encoding="utf-8",
+    )
+    (repo / "vendor").mkdir()
+    _git(repo / "vendor", "clone", str(submodule), "ip")
     _git(repo / "vendor/ip", "checkout", "-q", old_submodule_sha)
     _commit_all(repo, "add baseline submodule")
     _git(repo / "vendor/ip", "checkout", "-q", "master")
     _commit_all(repo, "update submodule")
+    monkeypatch.setenv("GIT_SSH", "/definitely/no/ssh")
 
     with baseline_worktree(repo, "HEAD~1") as wt:
         source = wt / "vendor" / "ip" / "f.txt"

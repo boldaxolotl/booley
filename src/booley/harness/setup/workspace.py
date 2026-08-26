@@ -18,6 +18,10 @@ from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_submodules,
+)
 from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
 
 from ..models import StepResult, TicketContext
@@ -600,6 +604,18 @@ def _prepare_branch(
     )
 
 
+def _materialize_worktree_submodules(
+    project_root: Path,
+    worktree_path: Path,
+) -> StepResult | None:
+    """Populate the selected branch's gitlinks from local Project objects."""
+    try:
+        materialize_submodules(project_root, worktree_path)
+    except SubmoduleMaterializationError as exc:
+        return StepResult(block_reason=f"Submodule setup failed: {exc}")
+    return None
+
+
 def _load_flow_enablement(project_root: Path | None = None) -> tuple[bool, bool]:
     """Load Simulation and ASIC Synthesis Flow enablement from project config.
 
@@ -777,7 +793,9 @@ async def run(ctx: TicketContext) -> StepResult:
     logger.info("Worktree ready")
 
     # Branch setup: ensure base, create feature branch
-    fail = _prepare_branch(ctx, worktree_path, base_ref)
+    fail = _prepare_branch(ctx, worktree_path, base_ref) or _materialize_worktree_submodules(
+        project_root, worktree_path
+    )
     if fail:
         return fail
 

@@ -206,85 +206,8 @@ class TestWorktreeCreateScript:
         assert "must be the Git repository root" in result.stderr
         assert not (tmp_path / ".booley_project").exists()
 
-    def test_rejects_traversing_configured_submodule(self, tmp_path: Path):
-        """Project config must not steer host-side rm/tar outside the worktree."""
-        from booley.runtime.paths import dev_support_dir
-        from booley.runtime.platform_paths import bash_bin
-
-        project_root = tmp_path / "repo"
-        project_root.mkdir()
-        _git(project_root, "init")
-        _git(project_root, "config", "user.name", "Test User")
-        _git(project_root, "config", "user.email", "test@example.com")
-        (project_root / "README.md").write_text("hello\n", encoding="utf-8")
-        _git(project_root, "add", "README.md")
-        _git(project_root, "commit", "-m", "init")
-        project_data = project_root / ".booley_project"
-        project_data.mkdir()
-        (project_data / "booley.toml").write_text(
-            '[submodules]\npaths = ["../../../victim"]\n', encoding="utf-8"
-        )
-        victim = tmp_path / "victim"
-        victim.mkdir()
-        sentinel = victim / "sentinel"
-        sentinel.write_text("keep\n", encoding="utf-8")
-
-        result = subprocess.run(
-            [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
-            input=json.dumps({"name": "security-audit", "cwd": str(project_root)}),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"},
-                "BOOLEY_PYTHON": sys.executable,
-            },
-        )
-
-        assert result.returncode == 1
-        assert "unsafe submodule path" in result.stderr
-        assert sentinel.read_text(encoding="utf-8") == "keep\n"
-
-    def test_rejects_configured_directory_that_is_not_gitlink(self, tmp_path: Path):
-        """A safe-looking path must still be an exact mode-160000 Git entry."""
-        from booley.runtime.paths import dev_support_dir
-        from booley.runtime.platform_paths import bash_bin
-
-        project_root = tmp_path / "repo"
-        project_root.mkdir()
-        _git(project_root, "init")
-        _git(project_root, "config", "user.name", "Test User")
-        _git(project_root, "config", "user.email", "test@example.com")
-        vendor = project_root / "vendor"
-        vendor.mkdir()
-        (vendor / "payload.txt").write_text("not a submodule\n", encoding="utf-8")
-        _git(project_root, "add", "vendor/payload.txt")
-        _git(project_root, "commit", "-m", "init")
-        project_data = project_root / ".booley_project"
-        project_data.mkdir()
-        (project_data / "booley.toml").write_text(
-            '[submodules]\npaths = ["vendor"]\n', encoding="utf-8"
-        )
-
-        result = subprocess.run(
-            [bash_bin(), str(dev_support_dir() / "worktree_create.sh")],
-            input=json.dumps({"name": "security-audit", "cwd": str(project_root)}),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-            env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"},
-                "BOOLEY_PYTHON": sys.executable,
-            },
-        )
-
-        assert result.returncode == 1
-        assert "not an exact Git submodule" in result.stderr
-
-    def test_accepts_exact_gitlink_with_space_in_path(self, tmp_path: Path):
-        """Confinement must preserve legitimate nested submodule paths."""
+    def test_leaves_gitlink_with_space_for_python_materialization(self, tmp_path: Path):
+        """The shell creates only the outer worktree; Python fills gitlinks later."""
         from booley.runtime.paths import dev_support_dir
         from booley.runtime.platform_paths import bash_bin
 
@@ -333,8 +256,9 @@ class TestWorktreeCreateScript:
         )
 
         assert result.returncode == 0, result.stderr
-        copied = project_data / "worktrees" / "security-audit" / "vendor" / "ip core"
-        assert (copied / "dep.txt").read_text(encoding="utf-8") == "dependency\n"
+        placeholder = project_data / "worktrees" / "security-audit" / "vendor" / "ip core"
+        assert placeholder.is_dir()
+        assert not any(placeholder.iterdir())
 
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
         """Host setup must survive a parent config polluted with /work."""
@@ -460,6 +384,30 @@ def _mock_success(**kwargs):
 
 class TestWorkspaceRun:
     """Call actual setup.workspace.run() — kills real mutants."""
+
+    @pytest.mark.asyncio
+    @patch("subprocess.run")
+    async def test_submodules_materialize_after_final_branch_selection(
+        self, mock_sub, project_root
+    ):
+        from booley.runtime.submodule_materialization import SubmoduleMaterializationError
+
+        ctx = _make_ctx(project_root, branch="master")
+        wt = project_root / ".booley_project" / "worktrees" / ctx.slug
+        _populate_wt(wt)
+        mock_sub.return_value = _mock_success()
+
+        with patch(
+            "booley.harness.setup.workspace.materialize_submodules",
+            side_effect=SubmoduleMaterializationError("local objects missing"),
+        ) as materialize:
+            from booley.harness.setup.workspace import run
+
+            result = await run(ctx)
+
+        assert ctx.feature_branch == ctx.slug
+        materialize.assert_called_once_with(project_root, wt)
+        assert result.block_reason == "Submodule setup failed: local objects missing"
 
     @pytest.mark.asyncio
     @patch("subprocess.run")

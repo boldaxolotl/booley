@@ -32,6 +32,10 @@ from pathlib import Path
 from typing import Any
 
 from booley.fusesoc.fusesoc_registry import state_cores_dir
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_submodules,
+)
 from booley.runtime.ticket_repositories import paired_project_repository
 
 from .recipe_evidence import BASELINE_REF_PARAM
@@ -129,6 +133,8 @@ def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
 
     add = _git(
         project_root,
+        "-c",
+        "submodule.recurse=false",
         "worktree",
         "add",
         "--detach",
@@ -145,7 +151,12 @@ def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
 
     paired_baseline: Path | None = None
     try:
-        _populate_submodules(wt_dir, ref)
+        try:
+            materialize_submodules(project_root, wt_dir)
+        except SubmoduleMaterializationError as exc:
+            raise BaselineWorktreeError(
+                f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"
+            ) from exc
         paired_baseline = _install_paired_project_baseline(project_root, wt_dir)
         if paired_baseline is None:
             _copy_stealth_cores(project_root, wt_dir, ref)
@@ -182,6 +193,8 @@ def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path |
     destination = wt_dir / ".booley_project"
     add = _git(
         repository.worktree,
+        "-c",
+        "submodule.recurse=false",
         "worktree",
         "add",
         "--detach",
@@ -256,32 +269,6 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
     marker = project_root / "FUSESOC_IGNORE"
     if marker.is_file():
         shutil.copy2(marker, wt_dir / marker.name)
-
-
-def _populate_submodules(wt_dir: Path, ref: str) -> None:
-    """Materialize the baseline ref's recursive gitlink source tree."""
-    if not (wt_dir / ".gitmodules").is_file():
-        return
-    try:
-        update = _git(
-            wt_dir,
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-            "--checkout",
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise BaselineWorktreeError(
-            f"initializing submodules for baseline ref {ref!r} timed out after 300s"
-        ) from exc
-    if update.returncode == 0:
-        return
-    detail = (update.stderr or update.stdout or "").strip()
-    raise BaselineWorktreeError(
-        f"initializing submodules for baseline ref {ref!r} failed: {detail or update.returncode}"
-    )
 
 
 def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
