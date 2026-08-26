@@ -304,13 +304,13 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.build-and-push.outputs.version }}
-          BASE_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
+          SANDBOX_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
           RISCV_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
           docker buildx imagetools create \
             --tag "${REGISTRY}/${IMAGE_NAME}:${VERSION}" \
             --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
-            "${REGISTRY}/${IMAGE_NAME}@${BASE_DIGEST}"
+            "${REGISTRY}/${IMAGE_NAME}@${SANDBOX_DIGEST}"
           docker buildx imagetools create \
             --tag "${REGISTRY}/${RISCV_IMAGE_NAME}:${VERSION}" \
             --tag "${REGISTRY}/${RISCV_IMAGE_NAME}:latest" \
