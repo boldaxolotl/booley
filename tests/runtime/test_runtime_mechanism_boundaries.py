@@ -107,8 +107,6 @@ def test_pid_liveness_consumers_import_the_runtime_module() -> None:
 def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
     allowed_calls = {
         _SOURCE_ROOT / "runtime" / "process_group.py",
-        # Whole-runtime orphan cleanup intentionally operates without an owner.
-        _SOURCE_ROOT / "runtime" / "zombie_cleanup.py",
         # A Specialist terminates its own inherited group, not an owned child.
         _SOURCE_ROOT / "specialists" / "specialist.py",
     }

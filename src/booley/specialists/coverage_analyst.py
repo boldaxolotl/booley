@@ -635,7 +635,7 @@ class CoverageAnalystSpecialist(Specialist):
                     self.args.work_dir,
                     resolved=None,
                 )
-            except Exception:  # noqa: BLE001 — fall through to the hard-require below
+            except Exception:  # fall through to the hard-require below
                 logger.debug("cocotb tb_top default failed", exc_info=True)
         if not getattr(self.args, "tb_top", None):
             return McpToolResult(
@@ -3114,11 +3114,8 @@ abort path". Omit this field or leave empty if all criteria are already met.
             report_text=f"Traced simulation failed (rc={proc.returncode}): {detail[-500:]}",
         )
 
-    def _ensure_trace(self, trace_dir: Path, work_dir: Path) -> McpToolResult | None:  # noqa: PLR0911 — each prerequisite check returns its own early error McpToolResult
+    def _ensure_trace(self, trace_dir: Path, work_dir: Path) -> McpToolResult | None:
         """Run traced simulation if no trace file exists. Returns error McpToolResult or None."""
-        from booley.flows.execution import resolve_execution
-        from booley.flows.sim.flow import SimulateFlow
-
         # Pre-flight: TB-level $dumpfile/$dumpvars hijack the +tracefile path
         # the harness sets up, so bwave finds nothing and the run dies with a
         # vague "no trace file" message.  Catch it early with a precise,
@@ -3127,10 +3124,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
         if err is not None:
             return err
 
-        selection = resolve_execution("sim", Path(self.args.work_dir))
-        selection_error = SimulateFlow.validate_execution(selection)
-        if selection_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=selection_error)
         trace_scope = self._derive_trace_scope()
         trace_timeout = max(int(self.args.timeout * 0.6), 300)
         # Both simulators trace through the edalize build + their EDA-tool-specific
@@ -3143,7 +3136,9 @@ abort path". Omit this field or leave empty if all criteria are already met.
                 trace_scope,
                 trace_timeout,
             )
-        except Exception as exc:  # noqa: BLE001 — isolate EDAM/configure failure and surface it as an error McpToolResult
+        except (
+            Exception
+        ) as exc:  # isolate EDAM/configure failure and surface it as an error McpToolResult
             logger.debug("coverage EDAM/configure failed for %s", self.args.target, exc_info=True)
             return McpToolResult(
                 exit_code=EXIT_ERROR,

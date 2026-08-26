@@ -178,7 +178,7 @@ A Criterion satisfied by a passing simulation Booley Flow run. Any Ticket that a
 _Avoid_: optional sim, smoke test
 
 **Ticket Board**:
-The filesystem-backed state machine that tracks ticket lifecycle. Each status is a directory; moving a ticket between directories constitutes a state transition. Directories live under `board/`. States (status string → directory): draft (`drafts/`), queued (`queue/`, ready for pickup), waiting (blocked on dependency tickets), running (`active/`), blocked (needs human input via escalation), review, done, archived. The status string and directory name diverge for three states: the code uses the status strings above, not `drafts`/`queue`/`active`.
+The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Scope**:
@@ -246,9 +246,6 @@ You will not need these unless you are reading older tickets, code, or docs; the
 - **"abandoned" / "failed"**: Removed ticket states. Use **archived** for tickets that won't be completed.
 - **"effort"**: Deprecated ticket/resource hint. Do not use it to decide Workflow Regions, Specialist requirements, or Developer Agent routing.
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
-- **`backend`** (and the combined spellings `builtin-sandbox` / `builtin-host` / `project-native-sandbox` / `project-native-host`): The `backend` knob is retired outright: there is one builder, Booley's FuseSoC/Edalize flow. Any `backend =` line fails config validation (and `booley doctor`) with the exact replacement: delete the line (`builtin`), `enabled = false` (`none`), or Pre-Run Commands / the built-in flow (`project-native` and the combined spellings). The `BOOLEY_PROJECT_NATIVE_BACKEND` env var is gone with the adapters.
-- **"project-native"** / **"adapter"**: Retired concept: the per-Booley Flow project adapter contract was dropped after port evidence showed its one irreducible use was a per-test firmware compile, now served by **Pre-Run Commands**. A simulator the built-in matrix doesn't support is out of scope for Ticket Mode, not something to adapt around.
-- **"Vivado Simple Host Backend"** / **`vivado-simple-host`**: Retired direct-host Vivado spelling. Use the ordinary FPGA Implementation **Booley Flow** with an authorized **Host-Provisioned Sandbox EDA Tool**.
 - **"Session ID"**: Never implemented. Branch names and worktree paths derive from the ticket slug, and container names from the workspace folder name; there is no stable per-runtime identity to refer to.
 - **"parameter override"** / **`-d`** / **`--define`**: Retired. There is no per-call build-time injection into a **Target**; declare the value in the Target, or use a different Target.
 - **"colon-free target names"**: Retired absolute. VLNV grammar (the FuseSoC Vendor:Library:Name:Version identifier) is permitted on Booley's surface: bare names when unambiguous, `vlnv#name` on collision.

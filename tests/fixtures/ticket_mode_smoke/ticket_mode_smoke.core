@@ -56,6 +56,6 @@ targets:
       frontend: sv2v
       ppa_profile: compact
       flatten: true
-      timing_engine: openroad
+      synth_mode: physical
     filesets: [rtl, constraints]
     toplevel: dut

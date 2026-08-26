@@ -26,8 +26,9 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
-from helpers.model import expected_after   # multi-file helpers: a package dir
-                                           # staged beside the module (copyto)
+from helpers.model import expected_after  # multi-file helpers: a package dir
+# staged beside the module (copyto)
+
 
 async def init(dut):
     """Shared bring-up: clock, reset, defaults."""
@@ -90,6 +91,7 @@ The sandbox image pins a curated set: `cocotb` 2.x, `numpy`, `cocotbext-axi`,
 
 ```python
 from cocotbext.axi import AxiLiteBus, AxiLiteMaster
+
 axil = AxiLiteMaster(AxiLiteBus.from_prefix(dut, "s_axil"), dut.clk, dut.rst)
 await axil.write_dword(0x0000, 0x1234_5678)
 ```

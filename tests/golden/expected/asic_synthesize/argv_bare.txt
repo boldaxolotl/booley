@@ -1,7 +1,7 @@
 python3
 -m
 booley.yosys.run_yosys_syn
-run
+configure
 -t
 dut
 --extra-rtl
@@ -19,8 +19,8 @@ WIDTH=8
 --flatten
 --ppa-profile
 balanced
---timing-engine
-openroad
+--synth-mode
+physical
 --frontend
 sv2v
 -w

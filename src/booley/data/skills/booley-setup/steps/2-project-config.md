@@ -523,9 +523,7 @@ What goes here:
   to wire a flow now. Every Flow command runs in the Session Runtime; the EDA
   tool (verilator/iverilog/yosys/vivado) lives in the `.core` Target's
   `flow_options.tool`. Host-provisioned Vivado is requested separately with
-  `[eda.vivado]` and requires an exact Project Grant. Never write a `backend =`
-  line — the knob is retired and config validation rejects every
-  spelling with the exact replacement.
+  `[eda.vivado]` and requires an exact Project Grant.
 - **Every Flow call names its Target explicitly.** There is no target fallback
   in `booley.toml`. Select Doctor's matrix in each `.core` Target with
   `flow_options.booley.doctor: [sim, lint, synth, elab]`, listing only the

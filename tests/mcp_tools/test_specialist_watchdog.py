@@ -179,6 +179,6 @@ class TestDescendantPids:
 
     def test_is_the_shared_reaper_walk_not_a_second_copy(self):
         """One /proc walk in the codebase, not two that can drift apart."""
-        from booley.runtime import zombie_cleanup
+        from booley.runtime import process_tree
 
-        assert specialist._descendant_pids is zombie_cleanup._descendant_pids
+        assert specialist._descendant_pids is process_tree.descendant_pids

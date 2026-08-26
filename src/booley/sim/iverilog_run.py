@@ -10,8 +10,8 @@ a sibling ``<name>.scr``); Booley owns the *run* — it executes that image with
 This is the Icarus counterpart of :mod:`booley.sim.verilator_run` and the
 edalize successor to the legacy ``run_iverilog_sim`` / ``run_sim_batch`` Icarus
 runners. Like the Verilator run-half it is a **self-contained subprocess
-entry-point** (``python -m booley.sim.iverilog_run …``) so a Booley Flow can ship the
-whole run across the host/sandbox boundary via ``BooleyFlow._execute``.
+entry-point** (``python -m booley.sim.iverilog_run …``) so a Booley Flow can
+supervise the whole run through one Session Runtime subprocess.
 
 Empirically-nailed Icarus run-half facts (notes-unitA-edalize-trace-runmany.md):
 
@@ -309,9 +309,9 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
     from booley.runtime.heartbeat import Heartbeat
 
     # Resolve every path to absolute up front, while cwd is still the project
-    # root: --build-dir/--work-dir/--run-cwd arrive relative (so they cross the
-    # host/sandbox boundary), but vvp runs from --run-cwd — where a relative
-    # build-dir, image path, or trace dir would miss.
+    # root: --build-dir/--work-dir/--run-cwd arrive relative so the generated
+    # command is workspace-location independent. vvp runs from --run-cwd, where
+    # a relative build-dir, image path, or trace dir would miss.
     build_dir = Path(build_dir).resolve()
     run_cwd = Path(run_cwd).resolve() if run_cwd is not None else build_dir
     work_dir = Path(work_dir).resolve() if work_dir is not None else build_dir
@@ -442,7 +442,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="plusarg passed to vvp (repeatable; +-prefix optional)",
     )
     # Project-configured verdict sentinels (booley.toml [flows.sim]); the
-    # host side of simulate forwards these so a project keeps its own TB wording.
+    # The Simulation Flow forwards these so a project keeps its own TB wording.
     p.add_argument(
         "--pass-sentinel",
         action="append",

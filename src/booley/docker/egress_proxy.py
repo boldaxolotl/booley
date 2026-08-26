@@ -187,7 +187,9 @@ class EgressProxy:
             logger.debug("Proxy error from %s: %s", peer, e)
             try:
                 writer.close()
-            except Exception as close_err:  # noqa: BLE001 — best-effort writer teardown; close failure only logged
+            except (
+                Exception  # noqa: BLE001 — best-effort writer teardown; close failure only logged
+            ) as close_err:
                 logger.debug("Failed to close writer after error from %s: %s", peer, close_err)
 
     @staticmethod

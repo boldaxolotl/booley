@@ -340,7 +340,7 @@ def parse_cycles(
 def parse_build_seconds(output: str) -> float:
     """Extract the make-half wall time from the BOOLEY_BUILD_SECONDS echo.
 
-    0.0 when the marker is absent — host crossings and dry runs never emit it,
+    0.0 when the marker is absent — configuration-only dry runs never emit it,
     and a build that failed exits before the echo (its time is then reported
     as plain elapsed, which is accurate: nothing but the build ran).
     """
@@ -1372,8 +1372,8 @@ class SimulateFlow(BooleyFlow):
           * ``BOOLEY_TEST_NAMES`` — always; the run's list, space-joined.
           * ``BOOLEY_RUN_CWD`` — the directory the sim run executes in: the
             ``run_cwd`` knob resolved against the project root when set, else
-            *default_run_dir* (the project root on the sandbox path, the work
-            root on the boundary path — where the host EDA tools run from).
+            *default_run_dir* (the project root for direct Runtime execution,
+            or the work root for a generated boundary command).
           * ``BOOLEY_BUILD_ROOT`` — the resolved Edalize build tree.
           * ``BOOLEY_PROJECT_ROOT`` / ``BOOLEY_PROJECT_DIR``,
             ``BOOLEY_SIM_EDA_TOOL`` — the explicit EDA-selection variable
@@ -1626,8 +1626,9 @@ class SimulateFlow(BooleyFlow):
         ``cppSource`` main wired through ``--exe``), not files Booley generates.
         Defines are declared ``vlogdefine`` params (decision 8); ``config`` is
         the FuseSoC Target name (decision 10). The resolved build dir is
-        relocatable, so the ``make``/binary paths cross the host/sandbox boundary
-        unchanged. Raises on setup failure (caller records it).
+        relocatable, so the ``make``/binary paths are independent of the
+        Session Runtime's absolute workspace path. Raises on setup failure
+        (caller records it).
 
         Run-time test selection renders the Target's tests.toml ``select``
         plusarg template (decision 16) via ``_sim_plusargs`` — the default
@@ -1696,9 +1697,9 @@ class SimulateFlow(BooleyFlow):
             run_line = shlex.join(self._icarus_run_cmd(rel, plusargs))
         else:
             # Verilator: ship the run half through booley.sim.verilator_run so the
-            # FIFO/bwave trace lifecycle travels as one unit across the
-            # host/sandbox boundary (paths stay relative to the project root, the
-            # shell's start cwd, so they cross unchanged). It owns run_cwd
+            # FIFO/bwave trace lifecycle travels as one unit through the Runtime
+            # subprocess (paths stay relative to the project root, the shell's
+            # start cwd). It owns run_cwd
             # anchoring and re-emits the [SIM_SUMMARY] verdict sentinel.
             run_line = shlex.join(self._verilator_run_cmd(rel, resolved.toplevel, plusargs))
         return [
@@ -1710,9 +1711,10 @@ class SimulateFlow(BooleyFlow):
     def _rundir_budget_args(self) -> list[str]:
         """``--max-rundir-bytes`` flag from booley.toml (empty when disabled).
 
-        Forwarded to both builtin run-halves so the per-run disk guard (SETUP-25)
-        crosses the host→sandbox boundary. A budget of 0 disables the guard, so
-        the flag is omitted rather than passing an explicit off-switch.
+        Forwarded to both built-in run-halves so the per-run disk guard
+        (SETUP-25) applies to the supervised subprocess. A budget of 0 disables
+        the guard, so the flag is omitted rather than passing an explicit
+        off-switch.
         """
         budget = _resolve_max_rundir_bytes(self.args.work_dir)
         return ["--max-rundir-bytes", str(budget)] if budget > 0 else []
@@ -1720,8 +1722,8 @@ class SimulateFlow(BooleyFlow):
     def _sentinel_args(self) -> list[str]:
         """``--pass-sentinel`` / ``--fail-sentinel`` flags from booley.toml.
 
-        Forwarded to both builtin run-halves so the configured verdict wording
-        crosses the host→sandbox boundary and drives the run-half's parse.
+        Forwarded to both built-in run-halves so the configured verdict wording
+        drives the run-half's parse.
         The ``=`` form, like every selector-ish flag (F-12): a project's
         sentinel can plausibly start with ``-``, and the two-token form makes
         argparse read such a value as a new runner option. Also keeps the
@@ -1794,10 +1796,9 @@ class SimulateFlow(BooleyFlow):
         """Build the ``booley.sim.iverilog_run`` invocation for one sim run.
 
         The Icarus mirror of :meth:`_verilator_run_cmd`. ``--build-dir`` is the
-        edalize build dir (relative to the project root — the shipped shell's
-        cwd — so it crosses the host/sandbox boundary; iverilog_run resolves it
-        to absolute before changing cwd). The vvp image is discovered inside it,
-        so no ``--top`` is needed. ``--trace`` enables the runtime +trace →
+        edalize build dir relative to the project root (the generated shell's
+        cwd); iverilog_run resolves it to absolute before changing cwd. The vvp
+        image is discovered inside it, so no ``--top`` is needed. ``--trace`` enables the runtime +trace →
         $dumpvars → VCD→bwave lifecycle (the run-half adds the +trace plusarg
         itself). ``--timeout`` is the run budget in seconds (the EDA tool ``timeout``
         is in ms and bounds the whole make+run via ``_execute``).
@@ -2100,7 +2101,7 @@ class SimulateFlow(BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate per-test setup failure; recorded as a failed TestResult
+        except Exception as exc:  # isolate per-test setup failure; recorded as a failed TestResult
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -2335,11 +2336,7 @@ class SimulateFlow(BooleyFlow):
         otherwise ``(targets, test_names_map)`` for the caller to continue with.
         """
         # The Target owns its top and trace hierarchy; validate selection here.
-        selection = self._resolve_execution()
-        selection_error = self.validate_execution(selection)
-        if selection_error is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=selection_error)
-        if not selection.enabled:
+        if not self._flow_enabled():
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text="sim is disabled ([flows.sim].enabled = false).",
@@ -2559,6 +2556,14 @@ class SimulateFlow(BooleyFlow):
             or []
         )
         complete_suite = not self.args.test and (not declared or set(selected) == set(declared))
+        passed_tests = [test.name for test in target_result.tests if test.passed]
+        failed_tests = [
+            test.name for test in target_result.tests if not test.passed and not test.inconclusive
+        ]
+        skipped_tests = self._skipped_tests(
+            target_result.target,
+            getattr(self, "_test_names_map", None) or _get_test_names(),
+        )
         self.set_criterion(
             crit_key,
             target_result.passed,
@@ -2567,17 +2572,21 @@ class SimulateFlow(BooleyFlow):
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
+                "registry_tests": declared,
                 "selected_tests": selected,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "skipped_tests": skipped_tests,
             },
         )
 
     def _record_run_log_dir(self, target: str, build_root: Path | str) -> None:
         """Take ownership of *target*'s ``run.log`` for this invocation.
 
-        The sandbox run-halves write it into the resolved Edalize build dir
-        (next to result.json); the host path writes it Booley-side into the
-        same dir. Called at prepare time — the only moment the resolved build
-        dir is known — where it both remembers the dir (read back by
+        The run-half and Flow-side result paths both write it into the resolved
+        Edalize build directory next to result.json. Called at prepare time —
+        the only moment the resolved build dir is known — where it both
+        remembers the dir (read back by
         :meth:`_headline_lines`) and opens the log FRESH: until
         :func:`write_run_log` lands at the end of the run, the file otherwise
         still holds the previous run's bytes, and anyone tailing it during
@@ -2761,7 +2770,7 @@ class SimulateFlow(BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -2789,7 +2798,7 @@ class SimulateFlow(BooleyFlow):
                 "rtl": list(sources.rtl_source_files),
                 "tb": list(sources.tb_files),
             }
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -2867,7 +2876,7 @@ class SimulateFlow(BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate setup failure; recorded as a failed batch
+        except Exception as exc:  # isolate setup failure; recorded as a failed batch
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(

@@ -81,7 +81,7 @@ Current integrations:
 
 - **Simulate / elaborate** — Verilator, Icarus Verilog; cocotb testbenches supported
 - **Lint** — Verilator, Verible
-- **ASIC synthesis** (PPA estimate, not tape-out) — Yosys + OpenROAD/OpenSTA
+- **ASIC synthesis** (PPA estimate, not tape-out) — logical Yosys or physical Yosys + OpenROAD
 - **Waveform debug** — `bwave` (+ VaporView GUI in VS Code)
 - **FPGA implementation** — AMD Vivado
 

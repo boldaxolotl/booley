@@ -5,8 +5,8 @@ ADR 0034: FuseSoC+Edalize own the *build* (``fusesoc run --setup`` → ``make``
 bakes the VPI linkage from the ``.core`` flow options); Booley owns the *run*.
 This module is the cocotb sibling of :mod:`booley.sim.iverilog_run` /
 :mod:`booley.sim.verilator_run` — a self-contained subprocess entry-point
-(``python -m booley.sim.cocotb_run …``) shipped whole across the host/sandbox
-boundary — with the run-stage glue Edalize's bypassed ``Sim.run()`` would have
+(``python -m booley.sim.cocotb_run …``) supervised wholly inside the Session
+Runtime — with the run-stage glue Edalize's bypassed ``Sim.run()`` would have
 supplied (decision 9):
 
   * env: ``COCOTB_TEST_MODULES`` (+ legacy ``MODULE``), the test-selection

@@ -1,22 +1,8 @@
-#!/usr/bin/env python3
-"""
-Yosys Synthesis Script for RTL projects.
-Runs sv2v + Yosys for area estimation with parallel-safe isolated work directories.
+"""Resolve and render the built-in Yosys synthesis specification.
 
-CLI and orchestration layer — execution logic in syn_core.py.
-
-Two execution shapes live behind this CLI (ADR 0037 §8):
-
-* ``run`` — the legacy in-process path: sv2v/yosys/STA are spawned directly
-  with the stall-detecting synthesis watchdog attached.
-* ``configure`` — renders the scripts plus a generated ``Makefile`` (see
-  :mod:`booley.yosys.syn_make`) and stops. Execution is then a plain
-  ``make -C <build dir>`` in the Session Runtime; timeout enforcement is the caller's budget and stage
-  attribution comes from the BOOLEY_STAGE markers in the captured log.
-
-The builtin ``asic_synthesize`` Flow uses the configure half in-process (it
-never spawns this CLI); the ``run`` surface remains for legacy non-FuseSoC
-callers.
+The ASIC synthesis Flow parses this module's option surface in-process, renders
+a generated Makefile, and executes that Makefile through the Session Runtime
+boundary. This module does not execute EDA tools itself.
 """
 
 from __future__ import annotations
@@ -24,9 +10,7 @@ from __future__ import annotations
 import argparse
 import math
 import shutil
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
@@ -38,10 +22,10 @@ from booley.core.boundary import BoundaryError
 # Predefined configurations — imported from shared module (in parent dir)
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
-from booley.runtime.heartbeat import fmt_elapsed as fmt_time
 from booley.runtime.shared_infra import (
     check_paths as _check_paths,
 )
+from booley.synthesis.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.synthesis.profiles import DEFAULT_PPA_PROFILE, PPA_PROFILE_CHOICES
 from booley.yosys import ppa as ppa_options
 from booley.yosys import syn_make
@@ -50,24 +34,18 @@ from booley.yosys.syn_core import (  # Core synthesis functions
     PROJECT_ROOT,
     RTL_DIR,
     SYN_DIR,
-    TIMING_ENGINE_CHOICES,
     StaTimingConfig,
-    area_to_kge,
-    parse_area_from_stat,
     parse_params,
-    prepare_work_dir,
     resolve_liberty,
-    run_sv2v,
-    run_yosys,
-    scan_synth_logs,
     synth_timing_config,
 )
 
-# Standalone-synthesis result dirs land under the transient runtime tree, NOT
+# Explicit-source synthesis result dirs land under the transient runtime tree, NOT
 # the design repo's ``util/syn/`` namespace (which the project may legitimately
 # own) — this mirrors the Edalize build dirs at
 # ``.booley_project/.runtime/edalize/...``. Keyed on PROJECT_ROOT (``/work`` in
-# the sandbox) so it crosses the host/container boundary unchanged, and
+# the Session Runtime) so it remains stable across the generated boundary
+# command, and
 # ``.booley_project/.runtime/`` is already git-ignored and skipped by the
 # workspace-isolation scanner. (SETUP-27)
 SYN_RESULT_ROOT = PROJECT_ROOT / ".booley_project" / ".runtime" / "syn" / "syn_result"
@@ -77,28 +55,13 @@ SYN_RESULT_ROOT = PROJECT_ROOT / ".booley_project" / ".runtime" / "syn" / "syn_r
 # ============================================================================
 
 
-def _resolve_syn_sources(args: argparse.Namespace) -> list[Path]:
-    """Validate standalone-synthesis prerequisites and resolve include dirs.
-
-    RTL is supplied via ``--extra-rtl`` (the FuseSoC synth path forwards the
-    resolved filelist) with ``-t/--top`` naming the design; the caller reads
-    both straight off ``args``. Returns the resolved include dirs — the only
-    value this function actually computes.
-    """
-    if not args.extra_rtl:
-        sys.exit("ERROR: --extra-rtl is required (use with -t/--top to name the design).")
-    if not args.top:
-        sys.exit("ERROR: -t/--top is required.")
-
-    return _resolve_inc_dirs(args)
-
-
 def _resolve_extra_rtl(args: argparse.Namespace, root: Path | None = None) -> list[Path]:
     """Resolve and validate extra RTL files from CLI.
 
     Relative paths resolve against *root* (default ``PROJECT_ROOT`` — ``/work``
-    inside the sandbox); the in-process configure half (ADR 0037 §8) passes the
-    Flow's work_dir explicitly instead of relying on the import-time constant.
+    inside the Session Runtime); the in-process configure half (ADR 0037 §8)
+    passes the Flow's work_dir explicitly instead of relying on the import-time
+    constant.
     """
     base = root if root is not None else PROJECT_ROOT
     extra = []
@@ -116,8 +79,8 @@ def _resolve_inc_dirs(args: argparse.Namespace, root: Path | None = None) -> lis
     """Resolve include directories from CLI.
 
     Relative paths resolve against *root* (default ``PROJECT_ROOT``, ``/work``
-    inside the sandbox), so a path the caller relativized against the worktree
-    crosses the host/sandbox boundary unchanged — mirroring
+    inside the Session Runtime), so a path the caller relativized against the
+    worktree stays valid for the generated boundary command — mirroring
     :func:`_resolve_extra_rtl`. The FuseSoC synth path (asic_synthesize) passes
     the resolved ``rtl_include_dirs`` here.
     """
@@ -141,112 +104,6 @@ def _resolve_syn_workdir(
     suffix = "_".join(f"{k}{v}" for k, v in params.items()) if params else ""
     dir_name = f"standalone.{design_name}" + (f".{suffix}" if suffix else "")
     return SYN_RESULT_ROOT / dir_name
-
-
-def _print_syn_report(
-    work_dir: Path,
-    design_name: str,
-    t_sv2v: float,
-    t_yosys: float,
-    t_total: float,
-    wd_result: object,
-) -> None:
-    """Print synthesis results, area, timing, and watchdog summary."""
-    stat_file = work_dir / f"stat_{design_name}.txt"
-    area = parse_area_from_stat(stat_file)
-
-    print(f"\n{'=' * 60}")
-    print("Synthesis complete!")
-    print(f"{'=' * 60}")
-    print(f"Results: {work_dir}")
-
-    if stat_file.exists():
-        print(f"\n--- Area Report ({stat_file.name}) ---")
-        print(stat_file.read_text(encoding="utf-8"))
-    kge = area_to_kge(area)
-    if kge is not None:
-        print(f"Gate count: {kge:.1f} kGE (NAND2 equivalent)")
-
-    print("--- Timing ---")
-    print(f"sv2v:  {fmt_time(t_sv2v)}")
-    print(f"Yosys: {fmt_time(t_yosys)}")
-    print(f"Total: {fmt_time(t_total)}")
-
-    if wd_result:
-        _print_watchdog_summary(wd_result)
-
-
-def _print_watchdog_summary(wd_result: object) -> None:
-    """Print watchdog metrics if available."""
-    print("\n--- Watchdog ---")
-    if wd_result.peak_rss_mb:
-        print(f"Peak RSS:  {wd_result.peak_rss_mb:.0f} MB")
-    if wd_result.max_stall_s > 0:
-        print(f"Max stall: {wd_result.max_stall_s:.0f}s (during {wd_result.max_stall_stage})")
-    if wd_result.memory_growth_rate_mb_per_min is not None:
-        print(f"Mem growth: {wd_result.memory_growth_rate_mb_per_min:.1f} MB/min")
-    stages = {k: v for k, v in wd_result.stage_timings.items() if not k.startswith("_")}
-    if stages:
-        print("\nStage breakdown:")
-        for name, st in stages.items():
-            dur = st.get("duration_s")
-            if dur is not None:
-                print(f"  {name:<20} {dur:>8.1f}s")
-
-
-def _print_syn_config(
-    args: argparse.Namespace,
-    design_name: str,
-    liberty: Path,
-    extra_files: list[Path],
-    timing_engine: str,
-) -> None:
-    """Print synthesis configuration banner.
-
-    ``design_name``, ``liberty``, ``extra_files``, and ``timing_engine`` are
-    derived/computed values not directly on ``args`` (top defaults to a CLI
-    flag but ``design_name`` is validated/resolved beforehand; ``liberty`` is
-    resolved via ``resolve_liberty``; ``timing_engine`` is the resolved
-    ``timing.engine``, distinct from the raw ``args.timing_engine`` override).
-    Everything else is read straight off ``args`` — the single call site
-    (standalone synthesis) always used ``"standalone"`` as the config label.
-    """
-    params = parse_params(args.param)
-    print("Yosys Synthesis Script")
-    print(f"Project root: {PROJECT_ROOT}")
-    print("Config: standalone")
-    print(f"Frontend: {args.frontend}")
-    print(f"Top module: {design_name}")
-    print(f"Defines: {list(args.define)}")
-    print(f"Liberty: {liberty}")
-    print(f"Flatten: {args.flatten}")
-    if params:
-        print(f"Parameters: {params}")
-    if extra_files:
-        print(f"Extra RTL: {[str(f) for f in extra_files]}")
-    print(f"SDC: {args.sdc or 'disabled'}")
-    if args.sdc and getattr(args, "abc_delay_ps", None) is not None:
-        print(f"ABC delay target: {args.abc_delay_ps} ps")
-    print(f"Timing engine: {timing_engine}")
-
-
-# SETUP-26 source-provenance helpers moved to syn_make (the interpret half of
-# the ADR 0037 boundary split reuses them); re-exported here for the legacy
-# print-based surface and its tests.
-_converted_lineref = syn_make._converted_lineref
-_enclosing_module = syn_make._enclosing_module
-_source_file_for_module = syn_make._source_file_for_module
-
-
-def _report_source_provenance(work_dir: Path, files: list[Path]) -> None:
-    """Print a provenance hint when a yosys error references the sv2v output.
-
-    See :func:`booley.yosys.syn_make._source_provenance_text` — no-op when the
-    failure isn't about the concatenated sv2v output. (SETUP-26)
-    """
-    text = syn_make._source_provenance_text(work_dir, files)
-    if text:
-        print(text)
 
 
 def _resolve_ppa_settings(
@@ -314,23 +171,10 @@ def _validate_resolved_ppa(
         raise SystemExit("ERROR: repair_tns_percent must be between 0 and 100")
 
 
-def _resolve_syn_timing(
-    args: argparse.Namespace,
-    openroad: ppa_options.OpenRoadPpaSettings,
-    project_root: Path | None = None,
-) -> StaTimingConfig:
-    """Resolve the STA timing configuration for this run (ADR 0031 P1).
-
-    A synthesis run with no timing constraints must name its clock explicitly
-    - either a file_type:SDC fileset (forwarded as one or more --sta-sdc), an
-    explicit --period-ps, or the named --default-clock opt-in. The old silent
-    DEFAULT_STA_PERIOD_PS (~250 MHz) fallback re-buried the exact input the
-    whole measurement hangs on: a Target that dropped its SDC would report a
-    green PPA number against a period no one chose, indistinguishable from a
-    deliberately-constrained run.
-    """
+def _resolved_period_ps(args: argparse.Namespace, timing_required: bool) -> float | None:
+    """Resolve an explicit period, rejecting implicit physical-mode timing."""
     default_clock_ps = getattr(args, "default_clock", None)
-    if not args.sta_sdc and args.period_ps is None:
+    if timing_required and not args.sta_sdc and args.period_ps is None:
         if default_clock_ps is None:
             sys.exit(
                 "ERROR: no timing constraints for this synthesis run. Provide a "
@@ -340,14 +184,12 @@ def _resolve_syn_timing(
                 "Refusing to fabricate a default clock silently — a reported Fmax "
                 "would be measured against a period no one chose."
             )
-        # Explicit opt-in: the canned clock is now chosen and named, never implicit.
-        resolved_period_ps = default_clock_ps
-    else:
-        resolved_period_ps = args.period_ps
-    # The standalone CLI historically read utilization/repair from the legacy
-    # [flows.synth.timing] table. Ask synth_timing_config to honor those keys
-    # only when no generic profile was explicit. The Booley Flow always forwards its
-    # selected profile, so its deterministic profile semantics are unaffected.
+        return default_clock_ps
+    return args.period_ps if timing_required else args.period_ps or default_clock_ps
+
+
+def _legacy_timing_fallbacks(args: argparse.Namespace) -> tuple[bool, bool]:
+    """Return standalone-only legacy utilization and repair fallback flags."""
     profile_explicit = getattr(args, "ppa_profile", None) is not None
     legacy_utilization_fallback = (
         not profile_explicit and getattr(args, "utilization_pct", None) is None
@@ -357,8 +199,20 @@ def _resolve_syn_timing(
         and getattr(args, "repair_setup", None) is None
         and getattr(args, "repair_timing", None) is None
     )
+    return legacy_utilization_fallback, legacy_repair_fallback
+
+
+def _resolve_syn_timing(
+    args: argparse.Namespace,
+    openroad: ppa_options.OpenRoadPpaSettings,
+    project_root: Path | None = None,
+) -> StaTimingConfig:
+    """Resolve validated timing configuration for logical or physical synthesis."""
+    mode = SynthMode(args.synth_mode)
+    resolved_period_ps = _resolved_period_ps(args, mode.runs_openroad)
+    legacy_utilization_fallback, legacy_repair_fallback = _legacy_timing_fallbacks(args)
     return synth_timing_config(
-        engine=args.timing_engine,
+        mode=mode,
         clock=args.clock,
         period_ps=resolved_period_ps,
         input_delay_pct=args.input_delay_pct,
@@ -377,141 +231,25 @@ def _resolve_syn_timing(
     )
 
 
-def _run_sv2v_and_yosys(
-    args: argparse.Namespace,
-    design_name: str,
-    liberty: Path,
-    work_dir: Path,
-    files: list[Path],
-    inc_dirs: list[Path],
-    defines: list[str],
-    params: dict[str, str],
-    timing: StaTimingConfig,
-) -> tuple[object, float, float]:
-    """Run the sv2v -> yosys pipeline; exits the process on a yosys failure.
-
-    Returns ``(wd_result, t_sv2v, t_yosys)`` for the caller's final report.
-    With ``--frontend slang`` the sv2v transpile is skipped entirely (Yosys
-    0.67 reads the raw SystemVerilog natively via ``read_slang``), so ``t_sv2v``
-    is 0 and the raw sources / include dirs / defines are fed straight to Yosys.
-    """
-    frontend = args.frontend
-    # sv2v path: transpile to a single Verilog file, then read_verilog it.
-    # slang path: no transpile; read_slang consumes the raw sources directly.
-    t_sv2v = 0.0
-    if frontend == "sv2v":
-        t_sv2v_start = time.monotonic()
-        yosys_sources = [run_sv2v(files, inc_dirs, defines, work_dir)]
-        t_sv2v = time.monotonic() - t_sv2v_start
-        # sv2v already inlined includes and applied defines, so Yosys reads a
-        # self-contained file — no include dirs / defines forwarded onward.
-        yosys_inc_dirs: list[Path] = []
-        yosys_defines: list[str] = []
-    else:
-        print("FRONTEND: SLANG (read_slang; sv2v skipped)")
-        yosys_sources = files
-        yosys_inc_dirs = inc_dirs
-        yosys_defines = defines
-
-    profile, yosys_ppa, _openroad_ppa = _resolve_ppa_settings(args)
-    abc_recipe = yosys_ppa.abc_recipe
-    if abc_recipe == "default":
-        abc_recipe = None
-        print("ABC RECIPE: DEFAULT (YOSYS BUILT-IN)")
-    elif abc_recipe:
-        print(f"ABC RECIPE: {abc_recipe.upper()}")
-    print(f"PPA PROFILE: {profile}")
-
-    t_yosys_start = time.monotonic()
-    try:
-        wd_result = run_yosys(
-            yosys_sources,
-            design_name,
-            liberty,
-            work_dir,
-            flatten=args.flatten,
-            sdc=args.sdc,
-            tdelay=yosys_ppa.abc_delay_ps,
-            params=params,
-            abc_recipe=abc_recipe,
-            timing_config=timing,
-            frontend=frontend,
-            inc_dirs=yosys_inc_dirs,
-            defines=yosys_defines,
-            slang_options=list(getattr(args, "slang_option", []) or []),
-            generic_abc_before_mapping=yosys_ppa.generic_abc_before_mapping,
-            abc_script=yosys_ppa.abc_script,
-        )
-    except subprocess.CalledProcessError as e:
-        _report_source_provenance(work_dir, files)
-        sys.exit(e.returncode)
-    t_yosys = time.monotonic() - t_yosys_start
-    return wd_result, t_sv2v, t_yosys
-
-
-def do_run(args: argparse.Namespace) -> None:
-    """Full synthesis flow: sv2v -> yosys."""
-    inc_dirs = _resolve_syn_sources(args)
-    design_name = args.top
-    defines = list(args.define)
-    liberty = resolve_liberty(args.liberty)
-
-    extra_files = _resolve_extra_rtl(args)
-    files = list(extra_files)
-
-    params = parse_params(args.param)
-    _profile, _yosys_ppa, openroad_ppa = _resolve_ppa_settings(args)
-    timing = _resolve_syn_timing(args, openroad_ppa)
-    _print_syn_config(args, design_name, liberty, extra_files, timing.engine)
-
-    work_dir = _resolve_syn_workdir(args, design_name, params)
-    prepare_work_dir(work_dir)
-
-    t_total_start = time.monotonic()
-    wd_result, t_sv2v, t_yosys = _run_sv2v_and_yosys(
-        args,
-        design_name,
-        liberty,
-        work_dir,
-        files,
-        inc_dirs,
-        defines,
-        params,
-        timing,
-    )
-    t_total = time.monotonic() - t_total_start
-
-    # False-pass guard: yosys/ABC can emit ERROR: lines yet exit 0. Catch those
-    # so a partial-fail doesn't masquerade as a successful synthesis.
-    err_line = scan_synth_logs(work_dir)
-    if err_line:
-        print(f"\nERROR: synthesis log reports an error despite exit 0:\n  {err_line}")
-        _report_source_provenance(work_dir, files)
-        sys.exit(1)
-
-    _print_syn_report(work_dir, design_name, t_sv2v, t_yosys, t_total, wd_result)
-
-
 def resolve_spec(
     args: argparse.Namespace,
     *,
     project_root: Path | None = None,
     require_liberty: bool = True,
 ) -> syn_make.SynthSpec:
-    """Resolve the parsed ``run``/``configure`` options into a :class:`SynthSpec`.
+    """Resolve parsed configure options into a :class:`SynthSpec`.
 
-    The pure-resolution front of :func:`do_run`, shared with the boundary
-    split (ADR 0037 §8): sources / include dirs / SDC files are validated here
+    Sources / include dirs / SDC files are validated here
     (they live in the shared workspace and must exist at configure time), the
     timing config is resolved, and the liberty path is computed.
 
     *project_root* anchors relative paths and the booley.toml lookup
-    (``None`` = the legacy import-time ``PROJECT_ROOT``). *require_liberty*
-    keeps the legacy hard "Liberty file not found" error for runs that execute
-    immediately; ``False`` permits callers to render a diagnostic plan.
+    (``None`` = the import-time ``PROJECT_ROOT``). *require_liberty* keeps the
+    hard "Liberty file not found" error for direct configuration; ``False``
+    permits the Flow to render a diagnostic plan.
 
-    Exits with an ``ERROR:`` message on any validation failure, exactly like
-    the legacy CLI path; in-process callers catch ``SystemExit``.
+    Exits with an ``ERROR:`` message on any validation failure; in-process
+    callers catch ``SystemExit``.
     """
     from booley.yosys.syn_discovery import resolve_liberty_lenient
 
@@ -530,10 +268,9 @@ def resolve_spec(
     else:
         liberty, liberty_found = resolve_liberty_lenient(args.liberty)
 
-    # The legacy ABC-mode --sdc knob: existence-checked as config validation
-    # (relative to the project root, mirroring the subprocess cwd it used to
-    # resolve against). It has no effect on the rendered scripts — the current
-    # yosys script never consumed it beyond this check.
+    # The ABC-mode --sdc knob is existence-checked relative to the project root.
+    # It has no effect on the rendered scripts; the current Yosys script never
+    # consumed it beyond this check.
     if args.sdc:
         sdc_path = Path(args.sdc)
         sdc_resolved = sdc_path if sdc_path.is_absolute() else root / sdc_path
@@ -561,13 +298,12 @@ def resolve_spec(
     )
 
 
-def parse_run_argv(cmd: list[str]) -> argparse.Namespace:
-    """Parse a run_yosys_syn argv (as built by asic_synthesize) back into options.
+def parse_configure_argv(cmd: list[str]) -> argparse.Namespace:
+    """Parse the synth Flow's configure argv back into typed options.
 
-    The builtin asic_synthesize path keeps building the full spec argv
-    (``python3 -m booley.yosys.run_yosys_syn run …``) — it is the validated,
-    golden-snapshotted carrier of every recipe knob — but under ADR 0037 §8 it
-    is parsed back here in-process instead of being executed as a subprocess.
+    The built-in Flow builds a full configure argv as the validated,
+    golden-snapshotted carrier of every recipe knob, then parses it here
+    in-process instead of executing this module as a subprocess.
     Accepts the argv with or without the ``python3 -m <module>`` prefix.
     """
     tokens = list(cmd)
@@ -579,10 +315,8 @@ def parse_run_argv(cmd: list[str]) -> argparse.Namespace:
 def do_configure(args: argparse.Namespace) -> Path:
     """CLI ``configure`` action: render the make-driven build dir and stop.
 
-    The configure half of the ADR 0037 §8 split, exposed standalone: after it
-    returns, ``make -C <printed dir>`` runs the whole flow with only the EDA
-    binaries on PATH (no Booley, no in-process watchdog — the BOOLEY_STAGE
-    markers in the captured log carry stage attribution instead).
+    EDA execution remains the responsibility of the built-in Flow's Session
+    Runtime boundary command.
     """
     spec = resolve_spec(args)
     work_dir = _resolve_syn_workdir(args, args.top, spec.params)
@@ -590,7 +324,6 @@ def do_configure(args: argparse.Namespace) -> Path:
     for warning in plan.warnings:
         print(f"WARNING: {warning}")
     print(f"Configured: {work_dir}")
-    print(f"Run: make -C {work_dir}")
     return work_dir
 
 
@@ -619,18 +352,17 @@ def do_clean() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for Yosys synthesis."""
     parser = argparse.ArgumentParser(
-        description="Yosys synthesis runner with parallel-safe isolated work directories"
+        description="Render Yosys synthesis inputs in a parallel-safe isolated work directory"
     )
     parser.add_argument(
         "action",
         nargs="?",
-        default="run",
-        choices=["run", "configure", "clean", "check-paths"],
-        help="Action to perform (default: run). 'configure' renders the "
-        "scripts + Makefile for a make-driven run (ADR 0037) without "
-        "executing anything.",
+        default="configure",
+        choices=["configure", "clean", "check-paths"],
+        help="Action to perform (default: configure). 'configure' renders the "
+        "scripts + Makefile without executing EDA tools.",
     )
-    parser.add_argument("-t", "--top", help="Top-level module name for the standalone design")
+    parser.add_argument("-t", "--top", help="Top-level module name for explicit-source synthesis")
     parser.add_argument(
         "-d",
         "--define",
@@ -762,12 +494,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _add_timing_args(parser: argparse.ArgumentParser) -> None:
-    """Register OpenSTA/OpenROAD timing-engine arguments."""
+    """Register synthesis-mode and physical-mode timing arguments."""
     parser.add_argument(
-        "--timing-engine",
-        choices=list(TIMING_ENGINE_CHOICES),
-        default=None,
-        help="Timing source (default: openroad, or booley.toml timing.engine)",
+        "--synth-mode",
+        choices=list(SYNTH_MODE_CHOICES),
+        type=SynthMode,
+        default=SynthMode.PHYSICAL,
+        help="Synthesis depth: physical runs OpenROAD + STA; logical stops after Yosys",
     )
     parser.add_argument(
         "--clock", default=None, help="Clock port for STA (default: booley.toml or auto-detect)"
@@ -776,7 +509,7 @@ def _add_timing_args(parser: argparse.ArgumentParser) -> None:
         "--period-ps",
         type=float,
         default=None,
-        help="STA clock period in ps (an explicit design constraint override for standalone runs)",
+        help="STA clock period in ps (an explicit design constraint override)",
     )
     parser.add_argument(
         "--default-clock",
@@ -885,22 +618,6 @@ def _add_timing_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _do_run_locked(args: argparse.Namespace) -> None:
-    """Acquire the Yosys EDA-tool lock and run synthesis once.
-
-    Legacy CLI execution path only (ADR 0037 §8): the in-process synthesis
-    watchdog and this EDA-tool lock apply here and nowhere else — the make-driven
-    boundary path (``configure`` + ``make -C``) relies on the caller's
-    timeout budget and the BOOLEY_STAGE log markers instead. A wall-clock
-    timeout + tree-kill is enforced by whoever spawns this runner; the CLI
-    itself runs the flow exactly once with no retries.
-    """
-    from booley.runtime.eda_tool_lock import eda_tool_lock
-
-    with eda_tool_lock("yosys"):
-        do_run(args)
-
-
 def main() -> None:
     args = _build_parser().parse_args()
 
@@ -910,8 +627,6 @@ def main() -> None:
         do_check_paths()
     elif args.action == "configure":
         do_configure(args)
-    elif args.action == "run":
-        _do_run_locked(args)
 
 
 if __name__ == "__main__":

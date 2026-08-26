@@ -20,7 +20,6 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.flows.execution import ExecutionSelection
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
 
@@ -123,8 +122,8 @@ class TestNoTicketDryRun:
     )
     @patch.object(
         SimulateFlow,
-        "_resolve_execution",
-        return_value=ExecutionSelection(),
+        "_flow_enabled",
+        return_value=True,
     )
     def test_dry_run_succeeds_without_state_file(
         self,
@@ -482,7 +481,7 @@ class TestInitInteractive:
 
         pdk = tmp_path / "host-cache" / "pdk"
         pdk.mkdir(parents=True)
-        seen: list[Path | None | object] = []
+        seen: list[Path | object | None] = []
         monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: pdk)
         monkeypatch.setattr(
             init_cmd,

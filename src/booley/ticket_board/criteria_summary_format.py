@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from booley.dev_support.criteria_actions import planned_invocation
 from booley.flows.clock_timing import worst_fmax_from_json
 
 if TYPE_CHECKING:
@@ -314,7 +315,12 @@ def build_criteria_summary_lines(state_path: Path) -> tuple[list[str], str]:
         name_part = f"{key}{opt}{metric_str}"
         if _is_never_evaluated(entry):
             name_part = dim(name_part)
-        return f"{icon} {name_part}"
+        line = f"{icon} {name_part}"
+        if not entry.met:
+            invocation = planned_invocation(key, entry)
+            if invocation:
+                line += f"\n  next: {invocation}"
+        return line
 
     collapsed = _collapsed_groups(real)
     not_met_lines, met_lines = _partition_criteria_lines(real, collapsed, _fmt)

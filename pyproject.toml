@@ -73,7 +73,7 @@ dev = [
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
     # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
-    "ruff==0.15.18",
+    "ruff==0.16.4",
 ]
 
 [project.scripts]
@@ -155,6 +155,7 @@ ignore = [
     "N806",     # non-lowercase variable in function — class refs and constants
     "N811",     # constant-imported-as-non-constant — naming convention choice
     "PLR0913",  # too many arguments — legitimate deep-module APIs
+    "PLR0917",  # too many positional arguments — legitimate deep-module APIs
     "PLR2004",  # magic value in comparison — config/threshold code
     "PLW0603",  # global-statement — architectural pattern in development
     "SIM108",   # ternary instead of if/else — readability judgment call
@@ -201,10 +202,6 @@ known-first-party = ["booley"]
 #             (init_common/init_docker_image/init_git_hooks/init_skills) so
 #             existing importers and tests keep resolving them by their old
 #             ``init_cmd`` names; some re-exports are intentionally unused here.
-#   PLR0911 (openroad_timing) — run_openroad_timing is an ordered ladder of
-#             degrade gates (missing binary/netlist/clock/PDK, nonzero rc,
-#             unparseable slack); each early return is a documented OpenSTA
-#             fallback surface.
 #   PLR0915 (gen_xcelium_dialect_vcd) — main() is a standalone fixture-generator
 #             script emitting a VCD header + value blocks; intrinsically a long
 #             linear emit sequence, not shared production logic.

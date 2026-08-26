@@ -155,6 +155,34 @@ class TestHookArgv:
         assert sr.hook_argv("c1", spec["postCreateCommand"])[3:5] == ["bash", "-lc"]
 
 
+class TestExecArgv:
+    def test_non_tty_sets_dumb_terminal(self):
+        assert sr.exec_argv("c1", ["python3", "-V"], tty=False) == [
+            "docker",
+            "exec",
+            "-e",
+            "TERM=dumb",
+            "-i",
+            "c1",
+            "python3",
+            "-V",
+        ]
+
+    def test_injects_explicit_command_environment(self):
+        argv = sr.exec_argv("c1", ["booley", "doctor"], env={"BOOLEY_TEST": "bad"})
+        assert argv == [
+            "docker",
+            "exec",
+            "-t",
+            "-e",
+            "BOOLEY_TEST=bad",
+            "-i",
+            "c1",
+            "booley",
+            "doctor",
+        ]
+
+
 class TestContainerName:
     def test_derived_from_canonical_project(self, workspace: Path):
         assert sr.session_container_name(workspace) == (

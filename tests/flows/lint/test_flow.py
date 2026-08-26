@@ -1444,32 +1444,16 @@ class TestVeribleTargets:
 
 
 # ---------------------------------------------------------------------------
-# Execution selection (ADR 0037) — the backend/venue split
+# Session Runtime execution
 # ---------------------------------------------------------------------------
 
 
-def _write_lint_venue_config(tmp_path: Path, body: str) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
-    (project_dir / "booley.toml").write_text(body, encoding="utf-8")
-
-
-class TestExecutionSelection:
+class TestFlowEnablement:
     def test_command_runs_in_session_runtime(self, state_file: Path, tmp_path: Path):
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
         flow.read_state()
         assert flow._resolve_job_class() is None
-
-    def test_combined_backend_is_a_hard_migration(self, state_file: Path, tmp_path: Path):
-        _write_lint_venue_config(tmp_path, '[flows.lint]\nbackend = "builtin-sandbox"\n')
-        flow = LintFlow()
-        flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite"])
-        flow.read_state()
-        result = flow._run()
-        assert result.exit_code == EXIT_ERROR
-        assert "retired" in result.report_text
-        assert "Session Runtime" in result.report_text
 
     def test_verible_missing_message_names_runtime(self):
         from booley.flows.lint.flow import _verible_missing_msg

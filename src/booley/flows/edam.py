@@ -10,8 +10,8 @@ Booley keeps everything around it:
   * EDAM generation — built here, from a resolved Booley config (0019 dec. 3).
     Phase 2 (ADR 0022) supersedes this with ``fusesoc run --setup``; the
     flow-invocation half (``configure`` + command builders) stays.
-  * command execution — via the existing ``BooleyFlow._execute`` Docker/
-    local routing, so the sandbox boundary is unchanged (0019 dec. 5).
+  * command execution — via ``BooleyFlow._execute`` inside the Session Runtime
+    (0019 dec. 5).
   * result interpretation — sentinel scraping / metric extraction stays in each
     Flow (0019 dec. 4). This module is invocation only.
 
@@ -27,7 +27,7 @@ Flow-API model (edalize 0.6.8, empirically confirmed):
     # configure() writes <dir>/{Makefile, <name>.vc} — pure file generation,
     # in-process, inside the trust zone. Booley then runs `make` in <dir>.
 
-Security (0019 dec. 6 — the host-case analog of today's Jinja-hole discipline):
+Security (0019 dec. 6):
   * every file entry must resolve **under the workspace root** —
     ``EdamSecurityError`` otherwise;
   * free-form Edalize option fields (``verilator_options`` etc.) pass straight
@@ -156,19 +156,16 @@ def _confined_path(
 
     When *relative_to* is given (the Edalize ``work_root``), the returned name
     is **relative** to it. That makes the generated work dir relocatable: the
-    same ``.vc``/Makefile resolve identically on the host (where Edalize's
-    ``configure()`` runs in-process) and inside the sandbox at ``/work``
-    (where ``make`` runs) — no host→container path rewriting. Without it the
-    absolute resolved path is returned (human / non-sandbox use).
+    generated ``.vc``/Makefile remains relocatable within the Session Runtime
+    workspace. Without it the absolute resolved path is returned.
     """
     resolved = Path(path).resolve()
     root = Path(workspace_root).resolve()
     if not resolved.is_relative_to(root):
         raise EdamSecurityError(f"file {resolved} is outside the workspace root {root}")
     if relative_to is not None:
-        # Container-destined: this relative name lands in a .vc/Makefile that
-        # Edalize composes on the host but ``make`` consumes inside the Linux
-        # sandbox, so it must be POSIX-separated regardless of host OS.
+        # This relative name lands in a .vc/Makefile consumed inside the Linux
+        # Session Runtime, so it must use POSIX separators.
         return posix_relpath(resolved, Path(relative_to).resolve())
     return str(resolved)
 
@@ -283,7 +280,7 @@ def build_edam(
             validated against the whitelist.
         relative_to: When set (the Edalize ``work_root``), file ``name`` entries
             are emitted relative to it so the generated work dir is relocatable
-            across the host/sandbox boundary. See :func:`_confined_path`.
+            inside the Session Runtime workspace. See :func:`_confined_path`.
 
     Returns:
         An EDAM dict ready for :func:`configure`.
@@ -419,11 +416,9 @@ def work_root_for(
 def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:
     """Express *work_root* relative to *work_dir* for ``make -C``.
 
-    The relative form resolves identically on the host and inside the
-    sandbox (where the worktree is ``/work``), so the same command crosses
-    the boundary unchanged. The result is always POSIX-separated: it is
-    consumed inside the Linux sandbox, where a Windows host's backslash
-    separators would be meaningless.
+    The relative form keeps the generated command independent of the Runtime's
+    absolute workspace path. The result is POSIX-separated because it is
+    consumed inside the Linux Session Runtime.
     """
     return posix_relpath(Path(work_root).resolve(), Path(work_dir).resolve())
 
@@ -437,8 +432,8 @@ def make_command(
     """Build the ``make`` command that drives an Edalize work dir.
 
     Edalize's ``configure()`` emits a Makefile whose default target builds and
-    whose ``run`` target runs. Booley executes this command through its own
-    Docker/local routing, preserving the sandbox boundary.
+    whose ``run`` target runs. Booley executes this command locally inside the
+    Session Runtime.
     """
     cmd = ["make", "-C", str(work_root)]
     if target:

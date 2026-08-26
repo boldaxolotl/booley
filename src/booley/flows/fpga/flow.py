@@ -239,12 +239,10 @@ class FpgaImplFlow(BooleyFlow):
 
         baseline_error = self._apply_ticket_baseline(targets)
 
-        # Resolve enablement and retired configuration once per run.
-        selection = self._resolve_execution()
-        err = baseline_error or self.validate_execution(selection)
-        if err is not None:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=err)
-        if not selection.enabled:
+        # Resolve enablement once per run.
+        if baseline_error is not None:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=baseline_error)
+        if not self._flow_enabled():
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text="fpga is disabled ([flows.fpga].enabled = false).",
@@ -460,7 +458,9 @@ class FpgaImplFlow(BooleyFlow):
         try:
             prepared = self._prepare_fpga_command(target)
             run_cmd, work_root = prepared
-        except Exception as exc:  # noqa: BLE001 — isolate EDAM/configure failure; surfaced as returncode-2 infra_error
+        except (
+            Exception
+        ) as exc:  # isolate EDAM/configure failure; surfaced as returncode-2 infra_error
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")
 
@@ -659,7 +659,7 @@ class FpgaImplFlow(BooleyFlow):
         When *min_mtime* is given (the dispatch instant), files last modified
         before it are skipped: they belong to a previous run, not this one, and
         parsing them would fabricate a stale "cached" result when the current
-        host command produced no fresh reports.
+        boundary command produced no fresh reports.
 
         Returns the concatenated text only. Pointers to the individual files
         are no longer derived here — the report names the *directories* these

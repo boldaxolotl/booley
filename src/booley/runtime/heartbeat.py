@@ -1,9 +1,8 @@
 """Shared heartbeat timer for long-running subprocesses.
 
-Used by the sim run-halves (sim/run_iverilog_sim.py, sim/verilator_run.py),
-yosys/run_yosys_syn.py, and harness/booley.py to print periodic progress
-updates so the terminal doesn't appear stuck.  Each tick also refreshes the
-Session Runtime idle-reaper timestamp, so standalone long-running Booley Flows are
+Used by simulator run-halves and the harness to print periodic progress updates
+so the terminal does not appear stuck. Each tick also refreshes the Session
+Runtime idle-reaper timestamp, so interactive long-running Booley Flows count as
 activity just like ticket-driven runs.
 """
 

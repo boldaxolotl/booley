@@ -1,16 +1,11 @@
-"""Unit tests for run_yosys_syn.py — standalone Yosys synthesis CLI.
-
-Tests cover high-level action dispatch, do_run standalone mode, do_clean,
-and the retry wrapper delegation.
-Subprocess calls are mocked — no real EDA tools invoked.
-"""
+"""Unit tests for the non-executing Yosys synthesis configuration surface."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -25,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 def _make_args(**overrides) -> argparse.Namespace:
     defaults = {
-        "action": "run",
+        "action": "configure",
         "top": None,
         "define": [],
         "liberty": None,
@@ -37,7 +32,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         "tdelay": 4000,
         "abc_recipe": "balanced",
         "frontend": "sv2v",
-        "timing_engine": None,
+        "synth_mode": "physical",
         "clock": None,
         "period_ps": None,
         "default_clock": None,
@@ -72,7 +67,7 @@ class TestExtraRtlParsing:
 
         args = _build_parser().parse_args(
             [
-                "run",
+                "configure",
                 "-t",
                 "top",
                 "--extra-rtl",
@@ -91,7 +86,7 @@ class TestExtraRtlParsing:
 
         args = _build_parser().parse_args(
             [
-                "run",
+                "configure",
                 "-t",
                 "top",
                 "--extra-rtl",
@@ -105,19 +100,19 @@ class TestExtraRtlParsing:
     def test_no_flag_defaults_empty(self):
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top"])
+        args = _build_parser().parse_args(["configure", "-t", "top"])
         assert args.extra_rtl == []
 
     def test_frontend_defaults_sv2v(self):
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top"])
+        args = _build_parser().parse_args(["configure", "-t", "top"])
         assert args.frontend == "sv2v"
 
     def test_frontend_slang_parses(self):
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top", "--frontend", "slang"])
+        args = _build_parser().parse_args(["configure", "-t", "top", "--frontend", "slang"])
         assert args.frontend == "slang"
 
     def test_slang_option_joined_form_carries_flag_valued_token(self):
@@ -132,7 +127,7 @@ class TestExtraRtlParsing:
 
         args = _build_parser().parse_args(
             [
-                "run",
+                "configure",
                 "-t",
                 "top",
                 "--slang-option=--single-unit",
@@ -144,12 +139,12 @@ class TestExtraRtlParsing:
     def test_slang_option_defaults_empty(self):
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top"])
+        args = _build_parser().parse_args(["configure", "-t", "top"])
         assert args.slang_option == []
 
 
 # ---------------------------------------------------------------------------
-# Timing-engine arguments (OpenROAD)
+# Synthesis-mode arguments
 # ---------------------------------------------------------------------------
 
 
@@ -159,7 +154,7 @@ class TestTimingArgs:
 
         args = _build_parser().parse_args(
             [
-                "run",
+                "configure",
                 "-t",
                 "top",
                 "--ppa-profile",
@@ -180,22 +175,23 @@ class TestTimingArgs:
         from booley.yosys.run_yosys_syn import _build_parser, _resolve_ppa_settings
 
         args = _build_parser().parse_args(
-            ["run", "-t", "top", "--abc-recipe", "fast", "--abc-script", "+strash"]
+            ["configure", "-t", "top", "--abc-recipe", "fast", "--abc-script", "+strash"]
         )
         with pytest.raises(SystemExit, match="mutually exclusive"):
             _resolve_ppa_settings(args)
 
-    def test_timing_engine_openroad_parses(self):
+    @pytest.mark.parametrize("mode", ["physical", "logical"])
+    def test_synth_mode_parses(self, mode):
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top", "--timing-engine", "openroad"])
-        assert args.timing_engine == "openroad"
+        args = _build_parser().parse_args(["configure", "-t", "top", "--synth-mode", mode])
+        assert args.synth_mode == mode
 
     def test_utilization_and_no_repair_timing(self):
         from booley.yosys.run_yosys_syn import _build_parser
 
         args = _build_parser().parse_args(
-            ["run", "-t", "top", "--utilization-pct", "55", "--no-repair-timing"]
+            ["configure", "-t", "top", "--utilization-pct", "55", "--no-repair-timing"]
         )
         assert args.utilization_pct == 55.0
         assert args.repair_timing is False
@@ -204,7 +200,7 @@ class TestTimingArgs:
         """Absent --no-repair-timing must leave repair_timing None so TOML decides."""
         from booley.yosys.run_yosys_syn import _build_parser
 
-        args = _build_parser().parse_args(["run", "-t", "top"])
+        args = _build_parser().parse_args(["configure", "-t", "top"])
         assert args.repair_timing is None
         assert args.utilization_pct is None
 
@@ -220,11 +216,11 @@ class TestTimingArgs:
     def test_non_finite_openroad_override_rejected(self, option, value, field):
         from booley.yosys.run_yosys_syn import _build_parser, _resolve_ppa_settings
 
-        args = _build_parser().parse_args(["run", "-t", "top", f"{option}={value}"])
+        args = _build_parser().parse_args(["configure", "-t", "top", f"{option}={value}"])
         with pytest.raises(SystemExit, match=field):
             _resolve_ppa_settings(args)
 
-    def test_standalone_without_profile_preserves_legacy_timing_recipe(self, monkeypatch):
+    def test_explicit_source_without_profile_preserves_legacy_timing_recipe(self, monkeypatch):
         from booley.yosys import run_yosys_syn as mod
 
         monkeypatch.setattr(
@@ -233,8 +229,9 @@ class TestTimingArgs:
                 "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
             },
         )
-        monkeypatch.setattr("booley.yosys.syn_core._in_container", lambda: True)
-        args = mod._build_parser().parse_args(["run", "-t", "top", "--default-clock", "4000"])
+        args = mod._build_parser().parse_args(
+            ["configure", "-t", "top", "--default-clock", "4000"]
+        )
         _profile, _yosys, openroad = mod._resolve_ppa_settings(args)
         timing = mod._resolve_syn_timing(args, openroad)
         assert timing.utilization_pct == 55.0
@@ -250,10 +247,9 @@ class TestTimingArgs:
                 "flows": {"synth": {"timing": {"utilization_pct": 55, "repair_timing": False}}}
             },
         )
-        monkeypatch.setattr("booley.yosys.syn_core._in_container", lambda: True)
         args = mod._build_parser().parse_args(
             [
-                "run",
+                "configure",
                 "-t",
                 "top",
                 "--default-clock",
@@ -328,202 +324,3 @@ class TestSynResultRoot:
 
 
 # ---------------------------------------------------------------------------
-# do_run — standalone mode
-# ---------------------------------------------------------------------------
-
-
-class TestDoRunStandalone:
-    def test_standalone_requires_extra_rtl(self):
-        from booley.yosys import run_yosys_syn as mod
-
-        args = _make_args(config=None, extra_rtl=None, top="my_top")
-        with pytest.raises(SystemExit):
-            mod.do_run(args)
-
-    def test_standalone_requires_top(self):
-        from booley.yosys import run_yosys_syn as mod
-
-        args = _make_args(config=None, extra_rtl=["file.sv"], top=None)
-        with pytest.raises(SystemExit):
-            mod.do_run(args)
-
-    @patch("booley.yosys.run_yosys_syn.resolve_liberty", return_value=Path("/lib.lib"))
-    def test_no_constraints_is_hard_error(self, _mock_liberty, tmp_path):
-        """ADR 0031: no --sta-sdc, no --period-ps, no --default-clock → hard
-        error rather than a silent DEFAULT_STA_PERIOD_PS (~250 MHz) fallback."""
-        from booley.yosys import run_yosys_syn as mod
-
-        extra = tmp_path / "m.sv"
-        extra.write_text("module m; endmodule", encoding="utf-8")
-        args = _make_args(config=None, extra_rtl=[str(extra)], top="m")
-        with pytest.raises(SystemExit, match="no timing constraints"):
-            mod.do_run(args)
-
-    @patch("booley.yosys.run_yosys_syn.run_yosys")
-    @patch("booley.yosys.run_yosys_syn.run_sv2v")
-    @patch("booley.yosys.run_yosys_syn.prepare_work_dir")
-    @patch("booley.yosys.run_yosys_syn.resolve_liberty")
-    @patch("booley.yosys.run_yosys_syn.parse_area_from_stat")
-    @patch("booley.yosys.run_yosys_syn.area_to_kge")
-    def test_standalone_flow(
-        self, mock_kge, mock_area, mock_liberty, mock_prep, mock_sv2v, mock_yosys, tmp_path
-    ):
-        from booley.yosys import run_yosys_syn as mod
-
-        extra_file = tmp_path / "extra.sv"
-        extra_file.write_text("module m; endmodule", encoding="utf-8")
-        mock_liberty.return_value = Path("/lib.lib")
-        mock_sv2v.return_value = tmp_path / "sv2v_converted.v"
-        mock_yosys.return_value = MagicMock(
-            peak_rss_mb=100,
-            max_stall_s=5,
-            max_stall_stage="abc",
-            memory_growth_rate_mb_per_min=1.0,
-            stage_timings={},
-        )
-        mock_area.return_value = 100.0
-        mock_kge.return_value = 1.0
-        with patch.object(mod, "SYN_RESULT_ROOT", tmp_path / "syn_result"):
-            args = _make_args(
-                config=None,
-                extra_rtl=[str(extra_file)],
-                top="my_mod",
-                # ADR 0031: a constraint-less run must name its clock; this
-                # standalone flow opts into the canned clock explicitly.
-                default_clock=4000.0,
-            )
-            mod.do_run(args)
-        # sv2v frontend (default): the transpile step ran and read_verilog fed
-        # yosys the converted file.
-        mock_sv2v.assert_called_once()
-
-    @patch("booley.yosys.run_yosys_syn.run_yosys")
-    @patch("booley.yosys.run_yosys_syn.run_sv2v")
-    @patch("booley.yosys.run_yosys_syn.prepare_work_dir")
-    @patch("booley.yosys.run_yosys_syn.resolve_liberty")
-    @patch("booley.yosys.run_yosys_syn.parse_area_from_stat")
-    @patch("booley.yosys.run_yosys_syn.area_to_kge")
-    def test_standalone_flow_slang_skips_sv2v(
-        self, mock_kge, mock_area, mock_liberty, mock_prep, mock_sv2v, mock_yosys, tmp_path
-    ):
-        """--frontend slang runs read_slang directly: sv2v is NOT invoked, and
-        the raw sources + include dirs + defines reach run_yosys."""
-        from booley.yosys import run_yosys_syn as mod
-
-        extra_file = tmp_path / "extra.sv"
-        extra_file.write_text("module m; endmodule", encoding="utf-8")
-        inc_dir = tmp_path / "include"
-        inc_dir.mkdir()
-        mock_liberty.return_value = Path("/lib.lib")
-        mock_yosys.return_value = MagicMock(
-            peak_rss_mb=100,
-            max_stall_s=5,
-            max_stall_stage="abc",
-            memory_growth_rate_mb_per_min=1.0,
-            stage_timings={},
-        )
-        mock_area.return_value = 100.0
-        mock_kge.return_value = 1.0
-        with patch.object(mod, "SYN_RESULT_ROOT", tmp_path / "syn_result"):
-            args = _make_args(
-                config=None,
-                extra_rtl=[str(extra_file)],
-                inc_dir=[str(inc_dir)],
-                define=["SYNTHESIS"],
-                top="my_mod",
-                frontend="slang",
-                default_clock=4000.0,
-            )
-            mod.do_run(args)
-        mock_sv2v.assert_not_called()
-        _, kwargs = mock_yosys.call_args
-        assert kwargs["frontend"] == "slang"
-        # Raw sources (not a sv2v output) are the first positional arg.
-        assert extra_file in mock_yosys.call_args[0][0]
-        assert [str(p) for p in kwargs["inc_dirs"]] == [str(inc_dir)]
-        assert kwargs["defines"] == ["SYNTHESIS"]
-
-
-# ---------------------------------------------------------------------------
-# SETUP-26: attribute a concatenated sv2v_converted.v error to its source core
-# ---------------------------------------------------------------------------
-
-
-class TestSourceProvenance:
-    def _make_converted(self, work_dir: Path) -> None:
-        # A flat concatenation of two modules; the "error" lands inside bar.
-        (work_dir / "sv2v_converted.v").write_text(
-            "module foo (input a);\nendmodule\n"  # lines 1-2
-            "module bar (input b);\n"  # line 3
-            "  wire bad = ;\n"  # line 4 (the offender)
-            "endmodule\n",  # line 5
-            encoding="utf-8",
-        )
-
-    def test_pinpoints_module_and_source_file(self, tmp_path, capsys):
-        from booley.yosys import run_yosys_syn as mod
-
-        work_dir = tmp_path / "wd"
-        work_dir.mkdir()
-        self._make_converted(work_dir)
-        (work_dir / "yosys.log").write_text(
-            "ERROR: syntax error, unexpected ';' at sv2v_converted.v:4\n",
-            encoding="utf-8",
-        )
-        foo_src = tmp_path / "foo.sv"
-        foo_src.write_text("module foo (input a); endmodule\n", encoding="utf-8")
-        bar_src = tmp_path / "bar.sv"
-        bar_src.write_text("module bar (input b); /*...*/ endmodule\n", encoding="utf-8")
-
-        mod._report_source_provenance(work_dir, [foo_src, bar_src])
-        out = capsys.readouterr().out
-        assert "module 'bar'" in out
-        assert str(bar_src) in out
-        assert str(foo_src) not in out  # not the offending core
-
-    def test_falls_back_to_candidate_list_when_unmapped(self, tmp_path, capsys):
-        from booley.yosys import run_yosys_syn as mod
-
-        work_dir = tmp_path / "wd"
-        work_dir.mkdir()
-        self._make_converted(work_dir)
-        (work_dir / "yosys.log").write_text(
-            "ERROR: something at sv2v_converted.v:4\n",
-            encoding="utf-8",
-        )
-        # Source file does not declare 'bar' → cannot map; still names candidates.
-        other = tmp_path / "other.sv"
-        other.write_text("module baz; endmodule\n", encoding="utf-8")
-        mod._report_source_provenance(work_dir, [other])
-        out = capsys.readouterr().out
-        assert "candidate cores" in out
-        assert str(other) in out
-
-    def test_noop_when_error_not_about_converted_file(self, tmp_path, capsys):
-        from booley.yosys import run_yosys_syn as mod
-
-        work_dir = tmp_path / "wd"
-        work_dir.mkdir()
-        (work_dir / "yosys.log").write_text(
-            "ERROR: Can't open liberty file /nope.lib\n",
-            encoding="utf-8",
-        )
-        mod._report_source_provenance(work_dir, [tmp_path / "foo.sv"])
-        assert capsys.readouterr().out == ""
-
-
-# ---------------------------------------------------------------------------
-# _do_run_locked — runs do_run once under the Yosys EDA-tool lock (no retries)
-# ---------------------------------------------------------------------------
-
-
-class TestDoRunLocked:
-    @patch("booley.yosys.run_yosys_syn.do_run")
-    @patch("booley.runtime.eda_tool_lock.eda_tool_lock")
-    def test_runs_do_run_once_under_lock(self, mock_lock, mock_do_run):
-        from booley.yosys import run_yosys_syn as mod
-
-        args = _make_args(top="my_top")
-        mod._do_run_locked(args)
-        mock_lock.assert_called_once_with("yosys")
-        mock_do_run.assert_called_once_with(args)

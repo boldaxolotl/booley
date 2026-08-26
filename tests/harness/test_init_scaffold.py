@@ -140,6 +140,16 @@ def test_default_combo_files_and_shapes() -> None:
     assert "`timescale 1ns / 1ps" in tb
 
 
+def test_asic_scaffold_sdc_excludes_clock_and_asynchronous_reset_from_data_timing() -> None:
+    sdc = scaffold_files(_choices())["constraints/my_ip.sdc"]
+
+    assert "set_input_delay  -clock clk 0.0 [get_ports en]" in sdc
+    assert "set_output_delay -clock clk 0.0 [get_ports count]" in sdc
+    assert "set_false_path -from [get_ports rst_n]" in sdc
+    assert "[all_inputs]" not in sdc
+    assert "[all_outputs]" not in sdc
+
+
 def test_icarus_combo_uses_g2012() -> None:
     core = _core(scaffold_files(_choices(sim_eda_tool="icarus")))
     opts = core["targets"]["sim"]["flow_options"]

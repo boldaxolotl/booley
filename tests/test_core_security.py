@@ -142,7 +142,7 @@ class TestFpgaHooks:
 
     def test_unsupported_sim_hook_is_not_classified_as_host_execution(self):
         # Xcelium is no longer a supported execution path. Core validation
-        # therefore must not retain the retired host-venue classification;
+        # therefore must not retain any host execution classification;
         # unsupported-target rejection belongs to the Flow eligibility gate.
         doc = _doc(
             """\

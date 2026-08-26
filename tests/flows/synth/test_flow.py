@@ -6,9 +6,7 @@ import dataclasses
 import json
 import os
 import re
-import shutil
 import subprocess
-import sys
 import time
 import tomllib
 from contextlib import contextmanager
@@ -32,7 +30,7 @@ from booley.flows.synth.flow import (
     _is_io_bound_critical,
     _parse_area,
     _parse_per_clock_sta,
-    _parse_post_opt_area,
+    _parse_physical_area,
     _parse_process_count,
     _parse_reg2reg_fmax,
     _parse_reg2reg_slack,
@@ -47,7 +45,6 @@ from booley.flows.synth.flow import (
 )
 from booley.flows.synth.recipe import BASELINE_REF_PARAM
 from booley.fusesoc import fusesoc_registry
-from booley.harness import nangate_pdk
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.yosys import syn_make
 from booley.yosys.syn_core import StaTimingConfig
@@ -267,7 +264,10 @@ def _fake_synth_resolved(
     # Many boundary tests use booley.toml as a compact way to author the fake
     # Target recipe. Production never reads these keys there; Doctor has
     # separate migration tests that reject them in booley.toml.
-    recipe: dict = {"tool": "yosys"}  # upstream FuseSoC flow_options field
+    recipe: dict = {
+        "tool": "yosys",
+        "synth_mode": "logical",
+    }  # upstream FuseSoC flow_options fields
     config_path = Path(work_dir) / ".booley_project" / "booley.toml"
     if config_path.is_file():
         with config_path.open("rb") as config_file:
@@ -275,9 +275,12 @@ def _fake_synth_resolved(
         for key in (
             "flatten",
             "frontend",
+            "advanced_settings_openroad",
+            "advanced_settings_yosys",
             "openroad",
             "ppa_profile",
             "slang_options",
+            "synth_mode",
             "timing_engine",
             "yosys",
         ):
@@ -293,6 +296,17 @@ def _fake_synth_resolved(
         parameters=params,
         build_root=build_root,
         edam_path=build_root / "syn_demo_0.eda.yml",
+    )
+
+
+def _with_synth_mode(
+    resolved: fusesoc_registry.ResolvedTarget,
+    mode: str,
+) -> fusesoc_registry.ResolvedTarget:
+    """Return a fake Target with an explicit synthesis mode."""
+    return dataclasses.replace(
+        resolved,
+        flow_options={**resolved.flow_options, "synth_mode": mode},
     )
 
 
@@ -327,9 +341,6 @@ def _write_syn_demo_project(work_dir: Path) -> None:
 # Captured before the autouse fixture below patches the attribute, so the
 # real-fusesoc e2e can reach the genuine resolver.
 _REAL_RESOLVE = fusesoc_registry.resolve_target
-# Same for the configure half — the real-toolchain host-contract e2e renders
-# the actual build dir instead of the canned _stub_plan.
-_REAL_CONFIGURE = AsicSynthesizeFlow._configure_synth
 
 
 @pytest.fixture(autouse=True)
@@ -355,7 +366,7 @@ def _stub_plan(
     work_dir: Path,
     target: str,
     *,
-    engine: str = "none",
+    mode: str = "logical",
     design: str = "dut",
 ) -> syn_make.SynthPlan:
     """A minimal configured SynthPlan under *target*'s real build dir."""
@@ -375,7 +386,7 @@ def _stub_plan(
         abc_recipe=None,
         frontend="sv2v",
         timing=StaTimingConfig(
-            engine=engine,
+            mode=mode,
             clock=None,
             period_ps=4000.0,
             input_delay_pct=30.0,
@@ -398,7 +409,8 @@ def _stub_configure_synth():
     """
 
     def fake_configure(self, target, cmd):
-        return _stub_plan(Path(self.args.work_dir), target)
+        mode = cmd[cmd.index("--synth-mode") + 1]
+        return _stub_plan(Path(self.args.work_dir), target, mode=mode)
 
     with patch.object(AsicSynthesizeFlow, "_configure_synth", fake_configure):
         yield
@@ -608,37 +620,56 @@ class TestParseReg2Reg:
 
 
 # ===========================================================================
-# OpenROAD post-repair area (informational)
+# Mode-specific canonical area
 # ===========================================================================
 
 
-class TestParsePostOptArea:
+class TestModeSpecificArea:
     def test_marker(self):
         output = "OPENROAD_DESIGN_AREA_UM2: 1234.500\n"
-        assert _parse_post_opt_area(output) == 1234.5
+        assert _parse_physical_area(output) == 1234.5
 
-    def test_absent_when_opensta_path(self):
-        # OpenSTA path emits no OpenROAD area marker.
-        assert _parse_post_opt_area("STA_CRITICAL_PATH_PS: 1250.0\n") is None
+    def test_absent_when_logical_path(self):
+        assert _parse_physical_area("Chip area for top module '\\top': 500.0\n") is None
 
-    def test_populated_in_synth_metrics(self):
+    def test_physical_uses_openroad_area(self):
         output = (
             "Number of cells: 100\n"
             "Chip area for top module '\\top': 500.0\n"
             "STA_CRITICAL_PATH_PS: 1250.0\n"
             "OPENROAD_DESIGN_AREA_UM2: 640.250\n"
         )
-        metrics = _parse_synth_output(output, elapsed_s=1.0)
-        assert metrics.post_opt_area_um2 == 640.25
-        # Contractual area stays Yosys stat area, not the OpenROAD placed area.
-        assert metrics.area_um2 == 500.0
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
+        assert metrics.area_um2 == 640.25
+        assert metrics.area_source == "openroad_post_optimization"
 
-    def test_repair_incomplete_flag(self):
-        # ADR 0029 D2: the salvage marker sets repair_incomplete; absent → False.
-        clean = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
-        assert _parse_synth_output(clean, 1.0).repair_incomplete is False
-        salvaged = clean + "STA_REPAIR_INCOMPLETE: repair did not complete\n"
-        assert _parse_synth_output(salvaged, 1.0).repair_incomplete is True
+    def test_logical_uses_yosys_area(self):
+        output = "Number of cells: 100\nChip area for top module '\\top': 500.0\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
+        assert metrics.area_um2 == 500.0
+        assert metrics.area_source == "yosys_mapped"
+
+
+# ===========================================================================
+# Logical-mode ABC frequency estimate
+# ===========================================================================
+
+
+class TestLogicalEstimatedFmax:
+    def test_uses_slowest_positive_mapped_partition(self):
+        output = "YOSYS_ABC_LOGIC_DELAY_PS: 125.000\nYOSYS_ABC_LOGIC_DELAY_PS: 400.000\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
+        assert metrics.estimated_fmax_mhz == pytest.approx(2500.0)
+
+    def test_zero_or_missing_delay_has_no_estimate(self):
+        output = "YOSYS_ABC_LOGIC_DELAY_PS: 0.000\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="logical")
+        assert metrics.estimated_fmax_mhz is None
+
+    def test_physical_mode_does_not_publish_abc_estimate(self):
+        output = "YOSYS_ABC_LOGIC_DELAY_PS: 250.000\nOPENROAD_DESIGN_AREA_UM2: 15.0\n"
+        metrics = _parse_synth_output(output, elapsed_s=1.0, synth_mode="physical")
+        assert metrics.estimated_fmax_mhz is None
 
 
 # ===========================================================================
@@ -987,6 +1018,11 @@ class TestFormatting:
         cur = SynthMetrics(cells=10, wns_ns=-1.5)
         assert "setup slack -1.500 ns" in AsicSynthesizeFlow._format_qor_line("k", cur)
 
+    def test_qor_line_labels_logical_frequency_as_estimated(self):
+        cur = SynthMetrics(cells=10, synth_mode="logical", estimated_fmax_mhz=2950.25)
+        line = AsicSynthesizeFlow._format_qor_line("k", cur)
+        assert "estimated Fmax 2950 MHz" in line
+
 
 # ===========================================================================
 # SETUP-28: I/O-bound critical-path diagnostic
@@ -1082,7 +1118,7 @@ class TestDryRun:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "dry-run" in result.report_text
-        # Per-config label keeps the config name visible (standalone cmd has no -c).
+        # Per-config label keeps the config name visible (explicit-source mode has no -c).
         assert "(lite)" in result.report_text
         assert "(full)" in result.report_text
 
@@ -1091,7 +1127,7 @@ class TestDryRun:
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir(exist_ok=True)
         (project_dir / "booley.toml").write_text(
-            '[flows.synth]\nflatten = true\nsdc = true\ntiming_engine = "none"\n',
+            '[flows.synth]\nflatten = true\nsdc = true\nsynth_mode = "logical"\n',
             encoding="utf-8",
         )
         flow = AsicSynthesizeFlow()
@@ -1116,7 +1152,7 @@ class TestDryRun:
         # argument in run_yosys_syn and would crash argparse); SDC is already
         # run_yosys_syn's default, so no flag is expected.
         assert "--sdc" not in result.report_text
-        assert "--timing-engine none" in result.report_text
+        assert "--synth-mode logical" in result.report_text
 
 
 # ===========================================================================
@@ -1179,24 +1215,23 @@ class TestSingleConfigRun:
         st = DevelopmentState.load(state_file)
         assert st.is_met("synthesis_ok_lite")
 
-    def test_no_timing_warns_but_stays_exit_success(self, flow_and_state):
-        # A structurally clean run that reported no timing at all (A-1): the
-        # usual cause is a silently degraded SDC read (a non-portable command
-        # aborts the constraint parse). Exit stays 0 — timing does not gate
-        # synthesis — but the headline must not read as an unqualified PASS.
+    def test_physical_mode_without_timing_fails(self, flow_and_state):
         flow, _ = flow_and_state
         metrics = SynthMetrics(
             area_um2=52_480.0,
+            area_source="openroad_post_optimization",
             area_kge=65.8,
             cells=12_345,
             elapsed_s=4.2,
-            timing_engine="opensta",
+            synth_mode="physical",
+            timing_complete=False,
+            ppa_complete=False,
         )
         result = flow._aggregate_results(["lite"], {"lite": metrics}, {}, None)
 
-        assert result.exit_code == EXIT_SUCCESS
-        assert "RESULT: WARN -- timing unavailable" in result.report_text
-        assert "no timing was reported" in result.report_text
+        assert result.exit_code == EXIT_FAILURE
+        assert "RESULT: FAIL" in result.report_text
+        assert "PARTIAL" in result.report_text
 
     def test_violated_slack_warns_but_stays_exit_success(self, flow_and_state):
         # Negative worst slack == timing VIOLATED. syn_core does not fail synth
@@ -1315,6 +1350,9 @@ class TestSingleConfigRun:
         assert data["passed"] is True
         assert data["area_kge"] == pytest.approx(6400.0 / KGE_DIVISOR)
         assert data["area_um2"] == 6400.0
+        assert data["area_source"] == "yosys_mapped"
+        assert "mapped_area_um2" not in data
+        assert "post_opt_area_um2" not in data
         assert data["cells"] == 100
         assert data["conditions"]["has_critical"] is False
         # No per-file map: the artifacts block is the two entry points plus the
@@ -1436,12 +1474,12 @@ class TestSingleConfigRun:
 
 
 # ===========================================================================
-# Execution selection and retired backend migration
+# Session Runtime execution
 # ===========================================================================
 
 
-class TestExecutionSelection:
-    """Retired backend keys fail closed."""
+class TestFlowEnablement:
+    """The built-in Flow uses the heavy Session Runtime job class."""
 
     @staticmethod
     def _flow(tmp_path: Path) -> AsicSynthesizeFlow:
@@ -1450,161 +1488,20 @@ class TestExecutionSelection:
         flow.read_state()
         return flow
 
-    def test_combined_backend_string_fails_with_migration_lines(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        # The retired combined spelling is a HARD migration error (no alias):
-        # the message carries the exact two replacement lines to write.
-        _write_execution_config(tmp_path, 'backend = "builtin-sandbox"\n')
-        result = self._flow(tmp_path)._run()
+    def test_job_class_is_heavy(self, state_file: Path, tmp_path: Path):
+        from booley.runtime import job_slots
 
-        assert result.exit_code == EXIT_ERROR
-        assert "retired" in result.report_text
-        assert "Session Runtime" in result.report_text
-
-    def test_legacy_yosys_backend_fails_with_migration_lines(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        # Pre-ADR-0022 EDA-tool-named spelling chains through builtin-sandbox to
-        # the same pair-replacement migration error.
-        _write_execution_config(tmp_path, 'backend = "yosys"\n')
-        result = self._flow(tmp_path)._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "'yosys'" in result.report_text
-        assert "Session Runtime" in result.report_text
-
-
-# ===========================================================================
-# Host-contract e2e: real toolchain, bare make, no Booley on the far side
-# ===========================================================================
-
-# This non-mocked host-contract test can use the setup-managed cache when it is
-# present. The library is intentionally not a repository or package fixture.
-_SETUP_LIBERTY = (
-    nangate_pdk.cache_root() / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
-)
-
-_host_eda_toolchain_missing = not (
-    shutil.which("yosys")
-    and shutil.which("sv2v")
-    and shutil.which("make")
-    and _SETUP_LIBERTY.is_file()
-)
-
-
-@pytest.mark.skipif(
-    _host_eda_toolchain_missing,
-    reason="host EDA toolchain or setup-managed Nangate liberty is unavailable",
-)
-class TestHostContractRealEdaToolchain:
-    """Non-mocked guard for builtin+host synth (ADR 0037 §8).
-
-    The host venue's whole contract is: the configure half renders a build
-    dir whose ``make`` runs *outside* Booley — only the EDA binaries on
-    PATH, results as files. The unit tests above mock the executor; this
-    one renders the real build dir for the syn_demo fixture and executes
-    the boundary command as a bare subprocess with a minimal environment
-    (no venv, no BOOLEY_*), exactly what the Host MCP daemon does — so a
-    template/recipe regression (e.g. a broken shell continuation) fails
-    here instead of on a user's host run.
-    """
-
-    def test_rendered_build_dir_runs_on_bare_path(
-        self, state_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-
-        work_dir = tmp_path / "proj"
-        _write_syn_demo_project(work_dir)
-        # Give the empty fixture DUT some sequential logic so area/cell
-        # metrics are non-trivial and the clocked SDC constrains real paths.
-        (work_dir / "rtl" / "dut.sv").write_text(
-            "module dut #(parameter WIDTH=8)(\n"
-            "  input logic clk,\n"
-            "  input logic [WIDTH-1:0] a, b,\n"
-            "  output logic [WIDTH-1:0] y\n"
-            ");\n"
-            "  always_ff @(posedge clk) y <= a + b;\n"
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        # Liberty via PRJ_LIB_DIR -> the setup-managed host cache.
-        lib_dir = tmp_path / "pdk" / "cell" / "lib"
-        lib_dir.mkdir(parents=True)
-        shutil.copy(_SETUP_LIBERTY, lib_dir / _SETUP_LIBERTY.name)
-        monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
-
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "syn", "--work-dir", str(work_dir)])
-        flow.read_state()
-
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        with patch.object(
-            fusesoc_registry,
-            "resolve_target",
-            side_effect=lambda *a, **k: _REAL_RESOLVE(*a, **{**k, "fusesoc_cmd": fusesoc_cmd}),
-        ):
-            cmd = flow._build_synth_cmd("syn")
-        plan = _REAL_CONFIGURE(flow, "syn", cmd)
-
-        make_cmd = flow._synth_boundary_cmd(plan)
-        # The crossing argv honors run_host_command's regex (contract §5).
-        assert _HOST_COMMAND_RE.fullmatch(" ".join(make_cmd))
-
-        # Execute like the daemon would: bare subprocess, minimal env — the
-        # EDA binaries' dirs plus the standard shell utilities, nothing else.
-        eda_dirs = {
-            str(Path(shutil.which(b)).parent)
-            for b in ("yosys", "sv2v", "make", "sta", "opensta", "openroad")
-            if shutil.which(b)
-        }
-        env = {
-            "PATH": os.pathsep.join([*eda_dirs, "/usr/bin", "/bin"]),
-            "HOME": str(tmp_path),
-        }
-        start = time.monotonic()
-        proc = subprocess.run(
-            make_cmd,
-            cwd=work_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-        result = SubprocessResult(
-            returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            duration_s=time.monotonic() - start,
-        )
-        result.dispatched_unix = time.time() - result.duration_s
-
-        metrics, output = flow._interpret_boundary_run("syn", plan, result, result.duration_s)
-        assert proc.returncode == 0, f"boundary make failed:\n{output[-4000:]}"
-        assert metrics.returncode == 0
-        # Real yosys numbers out of the build dir's files, not stdout.
-        assert metrics.area_um2 and metrics.area_um2 > 0
-        assert metrics.cells and metrics.cells > 0
+        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_HEAVY
 
 
 # ===========================================================================
 # Boundary command + file-based interpretation (ADR 0037 §8)
 # ===========================================================================
 
-# run_host_command's parameter regex — the Boundary Command Contract's literal
-# enforcement point (ADR 0037 §5). Mirrored here so the builtin synth argv is
-# proven crossable without spinning up the host executor.
-_HOST_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
+# Boundary Command Contract parameter regex (ADR 0037 §5). Mirrored here so
+# the built-in synth argv is proven safe without coupling this test to the
+# executor implementation.
+_BOUNDARY_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
 
 
 class TestBoundaryCommand:
@@ -1635,9 +1532,9 @@ class TestBoundaryCommand:
         assert not Path(rel).is_absolute()
         assert rel.endswith("synth/lite/synth")
         # No python, no booley module invocation — and the joined command
-        # passes run_host_command's regex (the contract's enforcement point).
+        # passes the boundary command contract's regex.
         assert "python3" not in cmd
-        assert _HOST_COMMAND_RE.fullmatch(" ".join(cmd))
+        assert _BOUNDARY_COMMAND_RE.fullmatch(" ".join(cmd))
 
 
 class TestFileBasedInterpretation:
@@ -1736,14 +1633,14 @@ class TestFileBasedInterpretation:
         st = DevelopmentState.load(state_file)
         assert not st.is_met("synthesis_ok_lite")
 
-    def test_timing_markers_rederived_from_sta_log(self, flow_and_state, tmp_path: Path):
+    def test_timing_markers_rederived_from_openroad_log(self, flow_and_state, tmp_path: Path):
         """The Python-derived Fmax/critical-path markers (legacy in-process
         prints) are reconstructed from the STA log file at interpret time."""
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
         def fake_configure(target, cmd):
-            return _stub_plan(tmp_path, target, engine="opensta")
+            return _stub_plan(tmp_path, target, mode="physical")
 
         def mock_execute(cmd, **_kwargs):
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -1751,14 +1648,14 @@ class TestFileBasedInterpretation:
                 "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
                 encoding="utf-8",
             )
-            # Raw Tcl-emitted markers, as the sta stage's log captures them.
-            (build_dir / "sta.log").write_text(
+            (build_dir / "openroad.log").write_text(
                 "STA_WORST_SLACK_NS: 2.000000\n"
-                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n",
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=2.000000 whs_ns=0.1\n"
+                "Design area 7000 u^2 50% utilization.\n",
                 encoding="utf-8",
             )
             fresh = time.time() + 1
-            for stage_log in (build_dir / "yosys.log", build_dir / "sta.log"):
+            for stage_log in (build_dir / "yosys.log", build_dir / "openroad.log"):
                 os.utime(stage_log, (fresh, fresh))
             return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
 
@@ -1774,6 +1671,43 @@ class TestFileBasedInterpretation:
         assert "crit path 2,000 ps" in result.report_text
         assert "Fmax 500 MHz" in result.report_text
         assert "slack +2.000 ns" in result.report_text
+
+    def test_physical_all_na_clock_row_is_incomplete(self, flow_and_state, tmp_path: Path):
+        """A clock label without numeric setup/hold evidence cannot complete PPA."""
+        flow, state_file = flow_and_state
+        build_dir = self._build_dir(tmp_path)
+
+        def mock_execute(cmd, **_kwargs):
+            build_dir.mkdir(parents=True, exist_ok=True)
+            (build_dir / "yosys.log").write_text(
+                "Chip area for top module '\\dut': 6400.0\nNumber of cells: 100\n",
+                encoding="utf-8",
+            )
+            (build_dir / "openroad.log").write_text(
+                "STA_PERCLOCK: name=clk period_ns=4.000000 wns_ns=NA whs_ns=NA\n"
+                "Design area 7000 u^2 50% utilization.\n",
+                encoding="utf-8",
+            )
+            fresh = time.time() + 1
+            for stage_log in (build_dir / "yosys.log", build_dir / "openroad.log"):
+                os.utime(stage_log, (fresh, fresh))
+            return SubprocessResult(returncode=0, stdout="", stderr="", duration_s=1.0)
+
+        with (
+            patch.object(
+                flow,
+                "_configure_synth",
+                side_effect=lambda target, cmd: _stub_plan(tmp_path, target, mode="physical"),
+            ),
+            patch.object(flow, "_execute", side_effect=mock_execute),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert "PARTIAL" in result.report_text
+        assert result.detail["lite"]["timing_complete"] is False
+        assert result.detail["lite"]["ppa_complete"] is False
+        assert not DevelopmentState.load(state_file).is_met("synthesis_ok_lite")
 
 
 # ===========================================================================
@@ -2122,9 +2056,10 @@ class TestBuildSynthCmd:
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir(exist_ok=True)
         (project_dir / "booley.toml").write_text(
-            '[flows.synth]\nppa_profile = "compact"\n'
-            "[flows.synth.yosys]\nabc_delay_ps = 3333\n"
-            "[flows.synth.openroad]\nplacement_density = 0.72\nrepair_hold = true\n",
+            '[flows.synth]\nppa_profile = "compact"\nsynth_mode = "physical"\n'
+            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
+            "[flows.synth.advanced_settings_openroad]\n"
+            "placement_density = 0.72\nrepair_hold = true\n",
             encoding="utf-8",
         )
         flow = AsicSynthesizeFlow()
@@ -2145,7 +2080,8 @@ class TestBuildSynthCmd:
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir(exist_ok=True)
         (project_dir / "booley.toml").write_text(
-            '[flows.synth]\nppa_profile = "compact"\n[flows.synth.yosys]\nabc_recipe = "fast"\n',
+            '[flows.synth]\nppa_profile = "compact"\n'
+            '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n',
             encoding="utf-8",
         )
         flow = AsicSynthesizeFlow()
@@ -2191,7 +2127,7 @@ class TestBuildSynthCmd:
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir(exist_ok=True)
         (project_dir / "booley.toml").write_text(
-            f"[flows.synth.yosys]\n{config_line}\n",
+            f"[flows.synth.advanced_settings_yosys]\n{config_line}\n",
             encoding="utf-8",
         )
         flow = AsicSynthesizeFlow()
@@ -2206,14 +2142,14 @@ class TestBuildSynthCmd:
         assert present in cmd
         assert absent not in cmd
 
-    def test_resolves_to_standalone_command(self, flow_and_state, tmp_path: Path):
-        """FuseSoC resolution drives a standalone run_yosys_syn command.
+    def test_resolves_to_configure_command(self, flow_and_state, tmp_path: Path):
+        """FuseSoC resolution drives the run_yosys_syn configure surface.
 
         The resolved RTL sources go to ``--extra-rtl`` (relative to the worktree
         so they cross the sandbox boundary), include headers to ``--inc-dir``,
         the top to ``-t`` (decision 12), and typed params to ``-d``/``-p``.
-        Standalone mode carries no ``-c`` — the legacy config-mode resolution is
-        bypassed (decision 4).
+        The configure argv carries no ``-c`` because Target resolution already
+        supplied the complete design specification (decision 4).
         """
         flow, _ = flow_and_state
         with patch.object(
@@ -2222,8 +2158,8 @@ class TestBuildSynthCmd:
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
-        assert "run" in cmd
-        assert "-c" not in cmd  # standalone — no config-mode resolution
+        assert "configure" in cmd
+        assert "-c" not in cmd
         assert cmd[cmd.index("-t") + 1] == "dut"  # resolved toplevel
         extra = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--extra-rtl"]
         assert any(e.endswith("rtl/dut.sv") for e in extra)
@@ -2234,8 +2170,8 @@ class TestBuildSynthCmd:
         # Typed params: vlogdefine -> bare -d NAME, vlogparam -> -p NAME=VALUE.
         assert cmd[cmd.index("-d") + 1] == "SYNTHESIS"
         assert "WIDTH=8" in cmd
-        # Relative paths only — absolute worktree paths would not survive the
-        # host/sandbox boundary.
+        # Relative paths only — absolute worktree paths would not satisfy the
+        # relocatable Session Runtime contract.
         assert not any(Path(e).is_absolute() for e in extra)
 
     def test_sta_sdc_forwarded_from_fileset(self, flow_and_state, tmp_path: Path):
@@ -2245,7 +2181,9 @@ class TestBuildSynthCmd:
         with patch.object(
             fusesoc_registry,
             "resolve_target",
-            side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
+            side_effect=lambda *a, **k: _with_synth_mode(
+                _fake_synth_resolved(tmp_path), "physical"
+            ),
         ):
             cmd = flow._build_synth_cmd("lite")
         sta = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--sta-sdc"]
@@ -2265,6 +2203,7 @@ class TestBuildSynthCmd:
             no_sdc,
             files=tuple(f for f in no_sdc.files if f.file_type != "SDC"),
         )
+        no_sdc = _with_synth_mode(no_sdc, "physical")
         with (
             patch.object(
                 fusesoc_registry,
@@ -2295,6 +2234,7 @@ class TestBuildSynthCmd:
             no_sdc,
             files=tuple(f for f in no_sdc.files if f.file_type != "SDC"),
         )
+        no_sdc = _with_synth_mode(no_sdc, "physical")
         with patch.object(
             fusesoc_registry,
             "resolve_target",
@@ -2481,8 +2421,8 @@ class TestBuildSynthCmd:
     def test_result_dir_keyed_on_target_not_toplevel(self, flow_and_state, tmp_path: Path):
         """Even without a suffix, ``-w`` keys the result dir on the target name.
 
-        Regression (data-loss footgun): without ``-w`` the run falls back to
-        run_yosys_syn's default ``syn_result/standalone.<toplevel>/``, so two
+        Regression (data-loss footgun): without ``-w`` configuration uses the
+        default ``syn_result/standalone.<toplevel>/`` directory, so two
         targets that share a toplevel module (scalar vs parallel configs of one
         DUT) silently overwrite each other's reports.
         """
@@ -2518,6 +2458,7 @@ class TestBuildSynthCmd:
                 ),
             ),
         )
+        resolved = _with_synth_mode(resolved, "physical")
         with patch.object(
             fusesoc_registry,
             "resolve_target",
@@ -2589,10 +2530,10 @@ class TestBuildSynthCmd:
 
 
 class TestFlowConfigBoundary:
-    """Wrong-typed ``[flows.synth]`` knobs fail loudly on the host.
+    """Wrong-typed ``[flows.synth]`` knobs fail before EDA execution.
 
     The ca5adaf class: an untyped config read leaks a stringified Python value
-    into the sandbox argv (``timing_engine = true`` → ``--timing-engine True``)
+    into the sandbox argv (``synth_mode = true`` → ``--synth-mode True``)
     and dies as an opaque argparse crash inside the container. Every knob read
     in ``_build_synth_cmd`` is now routed through ``core.boundary`` and must
     reject wrong types with an actionable message instead.
@@ -2611,21 +2552,57 @@ class TestFlowConfigBoundary:
         flow.read_state()
         return flow
 
-    def test_bool_timing_engine_rejected(self, state_file: Path, tmp_path: Path):
-        """`timing_engine = true` must not become ``--timing-engine True``."""
-        flow = self._flow_with_config(tmp_path, "timing_engine = true\n")
-        with pytest.raises(BoundaryError, match="timing_engine"):
+    def test_bool_synth_mode_rejected(self, state_file: Path, tmp_path: Path):
+        """`synth_mode = true` must not become ``--synth-mode True``."""
+        flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
+        with pytest.raises(BoundaryError, match="synth_mode"):
             flow._build_synth_cmd("lite")
 
-    def test_string_timing_engine_forwarded(self, state_file: Path, tmp_path: Path):
-        flow = self._flow_with_config(tmp_path, 'timing_engine = "opensta"\n')
+    def test_string_synth_mode_forwarded(self, state_file: Path, tmp_path: Path):
+        flow = self._flow_with_config(tmp_path, 'synth_mode = "logical"\n')
         cmd = flow._build_synth_cmd("lite")
-        assert cmd[cmd.index("--timing-engine") + 1] == "opensta"
+        assert cmd[cmd.index("--synth-mode") + 1] == "logical"
 
-    def test_unknown_timing_engine_rejected(self, state_file: Path, tmp_path: Path):
+    def test_unknown_synth_mode_rejected(self, state_file: Path, tmp_path: Path):
         """Typos are caught host-side with the valid choices in the message."""
-        flow = self._flow_with_config(tmp_path, 'timing_engine = "openstar"\n')
+        flow = self._flow_with_config(tmp_path, 'synth_mode = "placed"\n')
         with pytest.raises(BoundaryError, match="must be one of"):
+            flow._build_synth_cmd("lite")
+
+    def test_retired_timing_engine_rejected(self, state_file: Path, tmp_path: Path):
+        flow = self._flow_with_config(tmp_path, 'timing_engine = "opensta"\n')
+        with pytest.raises(BoundaryError, match="timing_engine is retired"):
+            flow._build_synth_cmd("lite")
+
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [
+            ("yosys", "advanced_settings_yosys"),
+            ("openroad", "advanced_settings_openroad"),
+        ],
+    )
+    def test_retired_expert_table_names_are_hard_errors(
+        self,
+        state_file: Path,
+        tmp_path: Path,
+        old: str,
+        new: str,
+    ):
+        flow = self._flow_with_config(tmp_path, f"[flows.synth.{old}]\n")
+        with pytest.raises(BoundaryError, match=rf"{old} is retired.*{new}"):
+            flow._build_synth_cmd("lite")
+
+    def test_logical_mode_rejects_nonempty_openroad_settings(
+        self,
+        state_file: Path,
+        tmp_path: Path,
+    ):
+        flow = self._flow_with_config(
+            tmp_path,
+            'synth_mode = "logical"\n'
+            "[flows.synth.advanced_settings_openroad]\nplacement_density = 0.72\n",
+        )
+        with pytest.raises(BoundaryError, match=r"cannot be set.*logical"):
             flow._build_synth_cmd("lite")
 
     def test_non_bool_flatten_rejected(self, state_file: Path, tmp_path: Path):
@@ -2641,7 +2618,8 @@ class TestFlowConfigBoundary:
     def test_non_bool_openroad_override_rejected(self, state_file: Path, tmp_path: Path):
         flow = self._flow_with_config(
             tmp_path,
-            '[flows.synth.openroad]\nrepair_hold = "yes"\n',
+            'synth_mode = "physical"\n'
+            '[flows.synth.advanced_settings_openroad]\nrepair_hold = "yes"\n',
         )
         with pytest.raises(BoundaryError, match="repair_hold"):
             flow._build_synth_cmd("lite")
@@ -2649,7 +2627,7 @@ class TestFlowConfigBoundary:
     def test_conflicting_yosys_abc_controls_rejected(self, state_file: Path, tmp_path: Path):
         flow = self._flow_with_config(
             tmp_path,
-            '[flows.synth.yosys]\nabc_recipe = "fast"\nabc_script = "+strash"\n',
+            '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\nabc_script = "+strash"\n',
         )
         with pytest.raises(BoundaryError, match="cannot set both"):
             flow._build_synth_cmd("lite")
@@ -2657,7 +2635,7 @@ class TestFlowConfigBoundary:
     def test_fractional_abc_delay_rejected(self, state_file: Path, tmp_path: Path):
         flow = self._flow_with_config(
             tmp_path,
-            "[flows.synth.yosys]\nabc_delay_ps = 3333.5\n",
+            "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333.5\n",
         )
         with pytest.raises(BoundaryError, match="positive integer"):
             flow._build_synth_cmd("lite")
@@ -2665,8 +2643,8 @@ class TestFlowConfigBoundary:
     @pytest.mark.parametrize(
         ("section", "setting"),
         [
-            ("yosys", 'abc_recip = "fast"'),
-            ("openroad", "repair_setp = false"),
+            ("advanced_settings_yosys", 'abc_recip = "fast"'),
+            ("advanced_settings_openroad", "repair_setp = false"),
         ],
     )
     def test_unknown_backend_setting_rejected(
@@ -2674,7 +2652,8 @@ class TestFlowConfigBoundary:
     ):
         flow = self._flow_with_config(
             tmp_path,
-            f"[flows.synth.{section}]\n{setting}\n",
+            ('synth_mode = "physical"\n' if section == "advanced_settings_openroad" else "")
+            + f"[flows.synth.{section}]\n{setting}\n",
         )
         with pytest.raises(BoundaryError, match="unknown setting"):
             flow._build_synth_cmd("lite")
@@ -2686,19 +2665,19 @@ class TestFlowConfigBoundary:
     ):
         """The run path reports a config error like a resolution failure
         (returncode-2 infra error), not an unhandled crash of the Flow."""
-        flow = self._flow_with_config(tmp_path, "timing_engine = true\n")
+        flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
         metrics, output = flow._run_single_config("lite")
         assert metrics.returncode == 2
-        assert "timing_engine" in (metrics.infra_error or "")
-        assert "timing_engine" in output
+        assert "synth_mode" in (metrics.infra_error or "")
+        assert "synth_mode" in output
 
     def test_dry_run_surfaces_config_error(self, state_file: Path, tmp_path: Path):
         """Dry-run exists to vet the command — a config error must fail it."""
-        flow = self._flow_with_config(tmp_path, "timing_engine = true\n")
+        flow = self._flow_with_config(tmp_path, "synth_mode = true\n")
         result = flow._dry_run(["lite"])
         assert result.exit_code == EXIT_ERROR
         assert "config error" in result.report_text
-        assert "timing_engine" in result.report_text
+        assert "synth_mode" in result.report_text
 
 
 # ===========================================================================
@@ -2707,9 +2686,11 @@ class TestFlowConfigBoundary:
 
 
 class TestTimingOutputFormat:
-    def test_area_only_target_labels_timing_disabled(self, flow_and_state):
+    def test_logical_target_labels_estimate_and_warns(self, flow_and_state):
         flow, _ = flow_and_state
-        synth_output = "Chip area for top module '\\t': 6400.0\n"
+        synth_output = (
+            "Chip area for top module '\\t': 6400.0\nYOSYS_ABC_LOGIC_DELAY_PS: 500.000\n"
+        )
         with patch.object(
             flow,
             "_execute",
@@ -2721,25 +2702,31 @@ class TestTimingOutputFormat:
             ),
         ):
             result = flow._run()
-        assert "timing off" in result.report_text
+        assert "logical estimate" in result.report_text
+        assert "estimated Fmax 2000 MHz" in result.report_text
+        assert "estimated Fmax is probably inaccurate" in result.report_text
+        assert "excludes placement and wire delays" in result.report_text
         assert "-- ps" not in result.report_text
 
-    def test_timing_disabled_is_labelled_without_false_sdc_warning(self, flow_and_state):
+    def test_logical_is_labelled_without_false_sdc_warning(self, flow_and_state):
         flow, _ = flow_and_state
         metrics = SynthMetrics(
+            area_um2=126_880.0,
+            area_source="yosys_mapped",
             area_kge=158.6,
             cells=82_463,
             elapsed_s=97.8,
-            timing_engine="none",
+            synth_mode="logical",
         )
 
         result = flow._aggregate_results(["lite"], {"lite": metrics}, {}, None)
 
-        assert "timing off" in result.report_text
+        assert "logical estimate" in result.report_text
         assert "-- ps" not in result.report_text
         assert "no timing was reported" not in result.report_text
         assert "RESULT: PASS" in result.report_text
-        assert result.detail["lite"]["timing_engine"] == "none"
+        assert result.detail["lite"]["synth_mode"] == "logical"
+        assert result.detail["lite"]["area_source"] == "yosys_mapped"
 
 
 # ===========================================================================
@@ -3020,7 +3007,7 @@ class TestSynthResolution:
             flow._build_synth_cmd("lite")
         assert captured["target"] == "lite"
         assert captured["project_root"] == tmp_path
-        # build_root is a host Path (backslash-separated on Windows); compare POSIX.
+        # Compare build_root in POSIX form for Windows portability.
         assert (
             captured["build_root"]
             .as_posix()
@@ -3032,7 +3019,7 @@ class TestSynthResolution:
 
         Proves the RTL sources/top/typed-params resolve, the build dir is
         relocatable, and asic_synthesize feeds the resolved filelist + include
-        dir + defines to a standalone run_yosys_syn command.
+        dir + defines to the run_yosys_syn configure surface.
         """
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
@@ -3069,8 +3056,8 @@ class TestSynthResolution:
             cmd = flow._build_synth_cmd("syn")
 
         joined = " ".join(cmd)
-        # Standalone run_yosys_syn over the resolved sources (no -c).
-        assert cmd[:4] == ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
+        # Configuration over the resolved sources (no legacy config selector).
+        assert cmd[:4] == ["python3", "-m", "booley.yosys.run_yosys_syn", "configure"]
         assert "-c" not in cmd
         assert cmd[cmd.index("-t") + 1] == "dut"
         # Resolved RTL sources are forwarded as relative (sandbox-safe) paths.
@@ -3414,29 +3401,24 @@ class TestResultLine:
     def test_fail_outranks_every_warn(self):
         from booley.flows.synth.flow import _result_line
 
-        line = _result_line(["lite: boom"], "self-compare", ["lite: -1 ns"], ["full"])
+        line = _result_line(["lite: boom"], "self-compare", ["lite: -1 ns"])
         assert line == "RESULT: FAIL (lite: boom)"
 
     def test_selfcompare_outranks_timing(self):
         from booley.flows.synth.flow import _result_line
 
-        line = _result_line([], "identical sources", ["lite: -1 ns"], [])
+        line = _result_line([], "identical sources", ["lite: -1 ns"])
         assert "baseline delta not meaningful" in line
 
-    def test_violated_outranks_missing_timing(self):
+    def test_timing_violation_warns(self):
         from booley.flows.synth.flow import _result_line
 
-        assert "timing VIOLATED" in _result_line([], None, ["lite: -1 ns"], ["full"])
-
-    def test_missing_timing_is_still_not_a_pass(self):
-        from booley.flows.synth.flow import _result_line
-
-        assert "timing unavailable" in _result_line([], None, [], ["full"])
+        assert "timing VIOLATED" in _result_line([], None, ["lite: -1 ns"])
 
     def test_clean_run_passes(self):
         from booley.flows.synth.flow import _result_line
 
-        assert _result_line([], None, [], []) == "RESULT: PASS"
+        assert _result_line([], None, []) == "RESULT: PASS"
 
 
 class TestAggregateDetailIsSelfContained:
