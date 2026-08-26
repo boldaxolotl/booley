@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -71,6 +72,27 @@ def _scan(
     )
 
 
+def _scan_pull_request(repo: Path, event: dict) -> subprocess.CompletedProcess[str]:
+    event_path = repo / "event.json"
+    event_path.write_text(json.dumps(event), encoding="utf-8")
+    env = os.environ | {"BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config()}
+    return subprocess.run(
+        [
+            sys.executable,
+            str(SCANNER),
+            "--repo",
+            str(repo),
+            "pull-request",
+            "--event",
+            str(event_path),
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+
+
 def test_clean_commit_passes(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     (repo / "clean.txt").write_text("ordinary public content\n", encoding="utf-8")
@@ -103,3 +125,44 @@ def test_missing_secret_fails_closed(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "could not complete" in result.stderr
+
+
+def test_pull_request_metadata_is_blocked_without_echoing_term(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    event = {
+        "pull_request": {
+            "title": "ordinary title",
+            "body": f"private context: {SENTINEL}",
+            "head": {"ref": "topic"},
+        }
+    }
+
+    result = _scan_pull_request(repo, event)
+
+    assert result.returncode == 1
+    assert "pull request body" in result.stderr
+    assert SENTINEL not in result.stderr
+
+
+def test_pull_request_metadata_clean_event_passes(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    event = {
+        "pull_request": {
+            "title": "ordinary title",
+            "body": "ordinary description",
+            "head": {"ref": "topic"},
+        }
+    }
+
+    result = _scan_pull_request(repo, event)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_workflow_scans_metadata_on_pr_edits() -> None:
+    workflow = (SCANNER.parent.parent / "workflows/confidential-content.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "types: [opened, synchronize, reopened, ready_for_review, edited]" in workflow
+    assert "pull-request --event" in workflow

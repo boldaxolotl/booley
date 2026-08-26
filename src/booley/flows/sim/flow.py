@@ -2862,8 +2862,9 @@ class SimulateFlow(BooleyFlow):
         run_cwd = _resolve_run_cwd(work_dir)
         normalized_run_cwd = ""
         if run_cwd is not None:
+            resolved_run_cwd = (work_dir / run_cwd).resolve()
             try:
-                normalized_run_cwd = run_cwd.resolve().relative_to(work_dir).as_posix()
+                normalized_run_cwd = resolved_run_cwd.relative_to(work_dir).as_posix()
             except ValueError:
                 normalized_run_cwd = "<outside-worktree>"
         controls = {

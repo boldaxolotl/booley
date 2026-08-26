@@ -18,6 +18,10 @@ from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_submodules,
+)
 from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
 
 from ..models import StepResult, TicketContext
@@ -600,6 +604,18 @@ def _prepare_branch(
     )
 
 
+def _materialize_worktree_submodules(
+    project_root: Path,
+    worktree_path: Path,
+) -> StepResult | None:
+    """Populate the selected branch's gitlinks from local Project objects."""
+    try:
+        materialize_submodules(project_root, worktree_path)
+    except SubmoduleMaterializationError as exc:
+        return StepResult(block_reason=f"Submodule setup failed: {exc}")
+    return None
+
+
 def _load_flow_enablement(project_root: Path | None = None) -> tuple[bool, bool]:
     """Load Simulation and ASIC Synthesis Flow enablement from project config.
 
@@ -754,14 +770,9 @@ def _build_setup_result(ctx: TicketContext) -> StepResult:
     return StepResult(metadata=meta)
 
 
-async def run(ctx: TicketContext) -> StepResult:
-    """Create isolated worktree and set up feature branch."""
+def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
     project_root = ctx.project_root
-
-    # Clean up locks from dead processes before attempting worktree creation.
     _prune_stale_worktree_locks(project_root)
-
-    # Worktree: reuse or create fresh
     expected_wt = (
         resolve_project_dir(project_root) / "worktrees" / ctx.slug
         if ctx.target_contract is not None
@@ -771,18 +782,19 @@ async def run(ctx: TicketContext) -> StepResult:
         fail = _create_fresh_worktree(ctx, expected_wt)
         if fail:
             return fail
-
     worktree_path = ctx.worktree_path
     base_ref = ctx.target_contract.outer_sha if ctx.target_contract is not None else ctx.branch
     logger.info("Worktree ready")
+    return _prepare_branch(ctx, worktree_path, base_ref) or _materialize_worktree_submodules(
+        project_root, worktree_path
+    )
 
-    # Branch setup: ensure base, create feature branch
-    fail = _prepare_branch(ctx, worktree_path, base_ref)
-    if fail:
-        return fail
 
+def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | None:
     from .project_worktree import ProjectWorktreeError, prepare_project_worktree
 
+    project_root = ctx.project_root
+    worktree_path = ctx.worktree_path
     try:
         project_worktree = prepare_project_worktree(ctx)
     except ProjectWorktreeError as exc:
@@ -796,15 +808,24 @@ async def run(ctx: TicketContext) -> StepResult:
             project_root=project_root,
             contract_surface_root=worktree_path,
         )
-    sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
+    return None
 
-    # Project hook + commit any files it staged
+
+async def run(ctx: TicketContext) -> StepResult:
+    """Create isolated outer/Project worktrees and finish ticket setup."""
+    fail = _prepare_outer_worktree(ctx)
+    if fail:
+        return fail
+    fail = _prepare_project_worktree_and_scopes(ctx)
+    if fail:
+        return fail
+    project_root = ctx.project_root
+    worktree_path = ctx.worktree_path
+    sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
     hook_fail = _run_project_hook(ctx, sim_flow_enabled)
     if hook_fail is not None:
         return hook_fail
     _commit_hook_files(ctx)
-
-    # Final verification and baseline freeze
     fail = _verify_project_paths(
         worktree_path, synth_flow_enabled, ctx.has_synth
     ) or _freeze_synth_baseline(ctx)
