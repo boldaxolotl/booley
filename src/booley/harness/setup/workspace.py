@@ -607,10 +607,10 @@ def _load_flow_enablement(project_root: Path | None = None) -> tuple[bool, bool]
     the CWD cache; otherwise harness runs that span multiple projects in one
     process can mix configs.
     """
-    from booley.flows.execution import resolve_execution
+    from booley.flows.execution import flow_enabled
 
-    sim_flow_enabled = resolve_execution("sim", project_root).enabled
-    synth_flow_enabled = resolve_execution("synth", project_root).enabled
+    sim_flow_enabled = flow_enabled("sim", project_root)
+    synth_flow_enabled = flow_enabled("synth", project_root)
     return sim_flow_enabled, synth_flow_enabled
 
 

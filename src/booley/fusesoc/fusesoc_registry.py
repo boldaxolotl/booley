@@ -1824,9 +1824,9 @@ class ResolvedTarget:
     def rtl_include_dirs(self) -> tuple[Path, ...]:
         """Directories holding non-TB ``include`` headers, de-duplicated.
 
-        Order follows EDAM file order (first occurrence wins). Each is absolute,
-        resolved against :attr:`build_root`, so it crosses the host/sandbox
-        boundary the same way the build dir does.
+        Order follows EDAM file order (first occurrence wins). Each is absolute
+        and resolved against :attr:`build_root`; generated commands later make
+        the path relative to the Session Runtime workspace where needed.
         """
         dirs: list[Path] = []
         for f in self.rtl_files:

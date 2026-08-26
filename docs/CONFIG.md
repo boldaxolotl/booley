@@ -52,6 +52,12 @@ detailed below, starting with the shared `enabled` flow setting.
 Every Booley Flow builds and executes its command inside the Session Runtime.
 `enabled = false` removes a Flow from agent and autonomous discovery.
 
+The former `backend`, `venue`, and `host_setup_commands` keys are retired and
+now produce hard migration errors. Delete them: execution location and runtime
+setup are no longer Project-configurable. Replace `backend = "none"` with
+`enabled = false`. Likewise, replace `[sandbox].passthrough_env` with a
+host-owned License Profile.
+
 The Target selects the concrete EDA tool. For an approved commercial tool, the
 Project can request only a provisioning source; the host owns the installation,
 mount, wrapper, environment, and any License Profile.
@@ -1222,7 +1228,7 @@ targets:
   sim_cocotb:
     flow: sim
     flow_options:
-      tool: icarus                   # icarus | verilator (sandbox-only)
+      tool: icarus                   # icarus | verilator
       cocotb_module: test_counter    # THIS is what makes it a Cocotb Target
       iverilog_options: [-g2012]     # SystemVerilog sources need -g2012
       timescale: 1ns/1ps
@@ -1452,7 +1458,7 @@ hatches that remain, and what each is for:
 A simulator outside the built-in matrix is out of scope for Ticket Mode by
 declared boundary; widening the matrix is the sanctioned extension axis
 (per EDA tool: Edalize wiring → output parser → criteria-map row → Doctor probe).
-The current matrix — sandbox image plus host EDA tools — is in
+The current matrix — image-bundled plus authorized host-provisioned EDA tools — is in
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md), and it grows over time.
 
 **Language:** Booley drives SystemVerilog/Verilog only — VHDL is unsupported in

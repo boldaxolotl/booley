@@ -238,10 +238,9 @@ predictable wrappers around EDA tools; **Specialists** are focused LLM agents.
 You normally do not call either one manually. Say *"run the reset test on the
 `sim_lite` Target"* or *"how much area did that cost?"*, and the agent picks the
 capability, Target, and flags. The table is worth a skim because it shows the
-complete set of built-in capabilities. **Execution** says whether a Booley Flow or Specialist can
-run in the container (`sandbox`), on your computer (`host`), or both; the agent
-normally uses the default. **Sets** names the acceptance criteria that the Booley Flow or Specialist
-can satisfy in a ticket.
+complete set of built-in capabilities. Every Booley Flow and Specialist runs
+inside the Session Runtime. **Sets** names the acceptance criteria that the
+Booley Flow or Specialist can satisfy in a ticket.
 
 Which EDA program runs underneath is determined by the Target. The currently
 supported programs are tracked in [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).

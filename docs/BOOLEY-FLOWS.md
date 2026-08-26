@@ -53,9 +53,9 @@ Metadata) that Booley reads rather than hand-assembles.
 **Command generation is delegated; result interpretation is not.** This split is what makes the evidence contracts below possible. The EDAM feeds Edalize, whose flows (`Sim`, `Lint`, `Vivado`, `Generic`) emit an EDA-tool-specific Makefile or TCL script: the *command*, never the verdict. Booley then runs that command and does all interpretation itself: the Simulation Flow appends a `[SIM_SUMMARY]` verdict sentinel (a machine-readable verdict line), the Lint Flow dedupes Verilator warnings, and the FPGA Implementation Flow extracts utilization/timing from Vivado reports. Edalize's flow options are whitelisted per flow (`src/booley/flows/edam.py`) and file paths must resolve under the workspace, so a `.core` Target cannot smuggle arbitrary command structure across the sandbox boundary.
 
 `synth` is the one exception: Edalize ships no Yosys ASIC-synthesis flow, only
-the FPGA-oriented `icestorm`/`trellis`, so it resolves the Target through FuseSoC
-for the filelist and toplevel, then invokes Booley's own `run_yosys_syn` wrapper
-directly.
+the FPGA-oriented `icestorm`/`trellis`, so it resolves the Target through
+FuseSoC, configures Booley's generated Yosys Makefile in-process, and executes
+that Makefile at the same Session Runtime boundary.
 
 ### Where configuration lives
 
@@ -157,7 +157,7 @@ read from the Target's `flow_options.tool`) picks the build-recipe shape.
 Whether the Target is a **cocotb** one (a Python testbench driving the DUT) is
 an independent property, read from the
 Target's `cocotb_module` flow option (never from `tests.toml`); cocotb Targets
-are sandbox-only in v1 and drive test selection through `COCOTB_TEST_FILTER`
+support Icarus and Verilator and drive test selection through `COCOTB_TEST_FILTER`
 rather than a plusarg.
 
 ### Configuration boundary
@@ -418,8 +418,8 @@ FPGA XDC is a Target fileset. The configuration shape and example live in
 A Target with **no** SDC fileset **and** no explicit clock is a **hard error**,
 not a silent default: the run fails loudly, naming the Target and the fix,
 rather than fabricating a clock the author never chose. The only way to a canned
-clock without SDC is the explicit per-run `--default-clock <ps>` opt-in (on the
-Flow CLI and on `python -m booley.yosys.run_yosys_syn` for standalone callers).
+clock without SDC is the explicit per-run `--default-clock <ps>` opt-in on the
+Flow CLI.
 When the Target's SDC declares its own `create_clock` / `set_input_delay` /
 `set_output_delay`, that fully owns the timing intent and the Fmax readout
 recovers the effective period from the SDC's `create_clock`, not a config scalar.
@@ -439,7 +439,7 @@ same static-timing math — OpenROAD **embeds** the OpenSTA engine — so the ax
 timing **fidelity**, i.e. how much physical context the timer sees, not two rival
 timing engines:
 
-- **`openroad`** (default, sandbox-only) runs a slice of the physical-design flow
+- **`openroad`** (default) runs a slice of the physical-design flow
   before timing: a quick floorplan, global placement, estimated wire parasitics
   (R and C), and a setup-repair resizer pass. Because it times a *placed* netlist
   with modelled wire delay, its Fmax is lower and more trustworthy — closer to

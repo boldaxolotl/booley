@@ -6,9 +6,7 @@ import dataclasses
 import json
 import os
 import re
-import shutil
 import subprocess
-import sys
 import time
 import tomllib
 from contextlib import contextmanager
@@ -47,7 +45,6 @@ from booley.flows.synth.flow import (
 )
 from booley.flows.synth.recipe import BASELINE_REF_PARAM
 from booley.fusesoc import fusesoc_registry
-from booley.harness import nangate_pdk
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.yosys import syn_make
 from booley.yosys.syn_core import StaTimingConfig
@@ -327,9 +324,6 @@ def _write_syn_demo_project(work_dir: Path) -> None:
 # Captured before the autouse fixture below patches the attribute, so the
 # real-fusesoc e2e can reach the genuine resolver.
 _REAL_RESOLVE = fusesoc_registry.resolve_target
-# Same for the configure half — the real-toolchain host-contract e2e renders
-# the actual build dir instead of the canned _stub_plan.
-_REAL_CONFIGURE = AsicSynthesizeFlow._configure_synth
 
 
 @pytest.fixture(autouse=True)
@@ -1082,7 +1076,7 @@ class TestDryRun:
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
         assert "dry-run" in result.report_text
-        # Per-config label keeps the config name visible (standalone cmd has no -c).
+        # Per-config label keeps the config name visible (explicit-source mode has no -c).
         assert "(lite)" in result.report_text
         assert "(full)" in result.report_text
 
@@ -1436,12 +1430,12 @@ class TestSingleConfigRun:
 
 
 # ===========================================================================
-# Execution selection and retired backend migration
+# Session Runtime execution
 # ===========================================================================
 
 
-class TestExecutionSelection:
-    """Retired backend keys fail closed."""
+class TestFlowEnablement:
+    """The built-in Flow uses the heavy Session Runtime job class."""
 
     @staticmethod
     def _flow(tmp_path: Path) -> AsicSynthesizeFlow:
@@ -1450,161 +1444,20 @@ class TestExecutionSelection:
         flow.read_state()
         return flow
 
-    def test_combined_backend_string_fails_with_migration_lines(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        # The retired combined spelling is a HARD migration error (no alias):
-        # the message carries the exact two replacement lines to write.
-        _write_execution_config(tmp_path, 'backend = "builtin-sandbox"\n')
-        result = self._flow(tmp_path)._run()
+    def test_job_class_is_heavy(self, state_file: Path, tmp_path: Path):
+        from booley.runtime import job_slots
 
-        assert result.exit_code == EXIT_ERROR
-        assert "retired" in result.report_text
-        assert "Session Runtime" in result.report_text
-
-    def test_legacy_yosys_backend_fails_with_migration_lines(
-        self,
-        state_file: Path,
-        tmp_path: Path,
-    ):
-        # Pre-ADR-0022 EDA-tool-named spelling chains through builtin-sandbox to
-        # the same pair-replacement migration error.
-        _write_execution_config(tmp_path, 'backend = "yosys"\n')
-        result = self._flow(tmp_path)._run()
-
-        assert result.exit_code == EXIT_ERROR
-        assert "'yosys'" in result.report_text
-        assert "Session Runtime" in result.report_text
-
-
-# ===========================================================================
-# Host-contract e2e: real toolchain, bare make, no Booley on the far side
-# ===========================================================================
-
-# This non-mocked host-contract test can use the setup-managed cache when it is
-# present. The library is intentionally not a repository or package fixture.
-_SETUP_LIBERTY = (
-    nangate_pdk.cache_root() / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
-)
-
-_host_eda_toolchain_missing = not (
-    shutil.which("yosys")
-    and shutil.which("sv2v")
-    and shutil.which("make")
-    and _SETUP_LIBERTY.is_file()
-)
-
-
-@pytest.mark.skipif(
-    _host_eda_toolchain_missing,
-    reason="host EDA toolchain or setup-managed Nangate liberty is unavailable",
-)
-class TestHostContractRealEdaToolchain:
-    """Non-mocked guard for builtin+host synth (ADR 0037 §8).
-
-    The host venue's whole contract is: the configure half renders a build
-    dir whose ``make`` runs *outside* Booley — only the EDA binaries on
-    PATH, results as files. The unit tests above mock the executor; this
-    one renders the real build dir for the syn_demo fixture and executes
-    the boundary command as a bare subprocess with a minimal environment
-    (no venv, no BOOLEY_*), exactly what the Host MCP daemon does — so a
-    template/recipe regression (e.g. a broken shell continuation) fails
-    here instead of on a user's host run.
-    """
-
-    def test_rendered_build_dir_runs_on_bare_path(
-        self, state_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        pytest.importorskip("fusesoc")
-        pytest.importorskip("edalize")
-
-        work_dir = tmp_path / "proj"
-        _write_syn_demo_project(work_dir)
-        # Give the empty fixture DUT some sequential logic so area/cell
-        # metrics are non-trivial and the clocked SDC constrains real paths.
-        (work_dir / "rtl" / "dut.sv").write_text(
-            "module dut #(parameter WIDTH=8)(\n"
-            "  input logic clk,\n"
-            "  input logic [WIDTH-1:0] a, b,\n"
-            "  output logic [WIDTH-1:0] y\n"
-            ");\n"
-            "  always_ff @(posedge clk) y <= a + b;\n"
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        # Liberty via PRJ_LIB_DIR -> the setup-managed host cache.
-        lib_dir = tmp_path / "pdk" / "cell" / "lib"
-        lib_dir.mkdir(parents=True)
-        shutil.copy(_SETUP_LIBERTY, lib_dir / _SETUP_LIBERTY.name)
-        monkeypatch.setenv("PRJ_LIB_DIR", str(tmp_path / "pdk"))
-
-        flow = AsicSynthesizeFlow()
-        flow.parse_args(["--target", "syn", "--work-dir", str(work_dir)])
-        flow.read_state()
-
-        if shutil.which("fusesoc"):
-            fusesoc_cmd = list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
-        else:
-            fusesoc_cmd = [sys.executable, "-c", "from fusesoc.main import main; main()"]
-        with patch.object(
-            fusesoc_registry,
-            "resolve_target",
-            side_effect=lambda *a, **k: _REAL_RESOLVE(*a, **{**k, "fusesoc_cmd": fusesoc_cmd}),
-        ):
-            cmd = flow._build_synth_cmd("syn")
-        plan = _REAL_CONFIGURE(flow, "syn", cmd)
-
-        make_cmd = flow._synth_boundary_cmd(plan)
-        # The crossing argv honors run_host_command's regex (contract §5).
-        assert _HOST_COMMAND_RE.fullmatch(" ".join(make_cmd))
-
-        # Execute like the daemon would: bare subprocess, minimal env — the
-        # EDA binaries' dirs plus the standard shell utilities, nothing else.
-        eda_dirs = {
-            str(Path(shutil.which(b)).parent)
-            for b in ("yosys", "sv2v", "make", "sta", "opensta", "openroad")
-            if shutil.which(b)
-        }
-        env = {
-            "PATH": os.pathsep.join([*eda_dirs, "/usr/bin", "/bin"]),
-            "HOME": str(tmp_path),
-        }
-        start = time.monotonic()
-        proc = subprocess.run(
-            make_cmd,
-            cwd=work_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            check=False,
-        )
-        result = SubprocessResult(
-            returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            duration_s=time.monotonic() - start,
-        )
-        result.dispatched_unix = time.time() - result.duration_s
-
-        metrics, output = flow._interpret_boundary_run("syn", plan, result, result.duration_s)
-        assert proc.returncode == 0, f"boundary make failed:\n{output[-4000:]}"
-        assert metrics.returncode == 0
-        # Real yosys numbers out of the build dir's files, not stdout.
-        assert metrics.area_um2 and metrics.area_um2 > 0
-        assert metrics.cells and metrics.cells > 0
+        assert self._flow(tmp_path)._resolve_job_class() == job_slots.CLASS_HEAVY
 
 
 # ===========================================================================
 # Boundary command + file-based interpretation (ADR 0037 §8)
 # ===========================================================================
 
-# run_host_command's parameter regex — the Boundary Command Contract's literal
-# enforcement point (ADR 0037 §5). Mirrored here so the builtin synth argv is
-# proven crossable without spinning up the host executor.
-_HOST_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
+# Boundary Command Contract parameter regex (ADR 0037 §5). Mirrored here so
+# the built-in synth argv is proven safe without coupling this test to the
+# executor implementation.
+_BOUNDARY_COMMAND_RE = re.compile(r"^make [^;&|<>$()\n\r\t\f\v\\\x60]*$")
 
 
 class TestBoundaryCommand:
@@ -1635,9 +1488,9 @@ class TestBoundaryCommand:
         assert not Path(rel).is_absolute()
         assert rel.endswith("synth/lite/synth")
         # No python, no booley module invocation — and the joined command
-        # passes run_host_command's regex (the contract's enforcement point).
+        # passes the boundary command contract's regex.
         assert "python3" not in cmd
-        assert _HOST_COMMAND_RE.fullmatch(" ".join(cmd))
+        assert _BOUNDARY_COMMAND_RE.fullmatch(" ".join(cmd))
 
 
 class TestFileBasedInterpretation:
@@ -1737,8 +1590,7 @@ class TestFileBasedInterpretation:
         assert not st.is_met("synthesis_ok_lite")
 
     def test_timing_markers_rederived_from_sta_log(self, flow_and_state, tmp_path: Path):
-        """The Python-derived Fmax/critical-path markers (legacy in-process
-        prints) are reconstructed from the STA log file at interpret time."""
+        """Fmax/critical-path markers are reconstructed from the STA log."""
         flow, _ = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
@@ -2206,14 +2058,14 @@ class TestBuildSynthCmd:
         assert present in cmd
         assert absent not in cmd
 
-    def test_resolves_to_standalone_command(self, flow_and_state, tmp_path: Path):
-        """FuseSoC resolution drives a standalone run_yosys_syn command.
+    def test_resolves_to_configure_command(self, flow_and_state, tmp_path: Path):
+        """FuseSoC resolution drives the run_yosys_syn configure surface.
 
         The resolved RTL sources go to ``--extra-rtl`` (relative to the worktree
         so they cross the sandbox boundary), include headers to ``--inc-dir``,
         the top to ``-t`` (decision 12), and typed params to ``-d``/``-p``.
-        Standalone mode carries no ``-c`` — the legacy config-mode resolution is
-        bypassed (decision 4).
+        The configure argv carries no ``-c`` because Target resolution already
+        supplied the complete design specification (decision 4).
         """
         flow, _ = flow_and_state
         with patch.object(
@@ -2222,8 +2074,8 @@ class TestBuildSynthCmd:
             side_effect=lambda *a, **k: _fake_synth_resolved(tmp_path),
         ):
             cmd = flow._build_synth_cmd("lite")
-        assert "run" in cmd
-        assert "-c" not in cmd  # standalone — no config-mode resolution
+        assert "configure" in cmd
+        assert "-c" not in cmd
         assert cmd[cmd.index("-t") + 1] == "dut"  # resolved toplevel
         extra = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--extra-rtl"]
         assert any(e.endswith("rtl/dut.sv") for e in extra)
@@ -2234,8 +2086,8 @@ class TestBuildSynthCmd:
         # Typed params: vlogdefine -> bare -d NAME, vlogparam -> -p NAME=VALUE.
         assert cmd[cmd.index("-d") + 1] == "SYNTHESIS"
         assert "WIDTH=8" in cmd
-        # Relative paths only — absolute worktree paths would not survive the
-        # host/sandbox boundary.
+        # Relative paths only — absolute worktree paths would not satisfy the
+        # relocatable Session Runtime contract.
         assert not any(Path(e).is_absolute() for e in extra)
 
     def test_sta_sdc_forwarded_from_fileset(self, flow_and_state, tmp_path: Path):
@@ -2481,8 +2333,8 @@ class TestBuildSynthCmd:
     def test_result_dir_keyed_on_target_not_toplevel(self, flow_and_state, tmp_path: Path):
         """Even without a suffix, ``-w`` keys the result dir on the target name.
 
-        Regression (data-loss footgun): without ``-w`` the run falls back to
-        run_yosys_syn's default ``syn_result/standalone.<toplevel>/``, so two
+        Regression (data-loss footgun): without ``-w`` configuration uses the
+        default ``syn_result/standalone.<toplevel>/`` directory, so two
         targets that share a toplevel module (scalar vs parallel configs of one
         DUT) silently overwrite each other's reports.
         """
@@ -2589,11 +2441,11 @@ class TestBuildSynthCmd:
 
 
 class TestFlowConfigBoundary:
-    """Wrong-typed ``[flows.synth]`` knobs fail loudly on the host.
+    """Wrong-typed ``[flows.synth]`` knobs fail before EDA execution.
 
     The ca5adaf class: an untyped config read leaks a stringified Python value
-    into the sandbox argv (``timing_engine = true`` → ``--timing-engine True``)
-    and dies as an opaque argparse crash inside the container. Every knob read
+    into the generated argv (``timing_engine = true`` → ``--timing-engine True``)
+    and dies as an opaque argparse crash during configuration. Every knob read
     in ``_build_synth_cmd`` is now routed through ``core.boundary`` and must
     reject wrong types with an actionable message instead.
     """
@@ -2623,7 +2475,7 @@ class TestFlowConfigBoundary:
         assert cmd[cmd.index("--timing-engine") + 1] == "opensta"
 
     def test_unknown_timing_engine_rejected(self, state_file: Path, tmp_path: Path):
-        """Typos are caught host-side with the valid choices in the message."""
+        """Typos are caught during configuration with valid choices in the message."""
         flow = self._flow_with_config(tmp_path, 'timing_engine = "openstar"\n')
         with pytest.raises(BoundaryError, match="must be one of"):
             flow._build_synth_cmd("lite")
@@ -3020,7 +2872,7 @@ class TestSynthResolution:
             flow._build_synth_cmd("lite")
         assert captured["target"] == "lite"
         assert captured["project_root"] == tmp_path
-        # build_root is a host Path (backslash-separated on Windows); compare POSIX.
+        # Compare build_root in POSIX form for Windows portability.
         assert (
             captured["build_root"]
             .as_posix()
@@ -3032,7 +2884,7 @@ class TestSynthResolution:
 
         Proves the RTL sources/top/typed-params resolve, the build dir is
         relocatable, and asic_synthesize feeds the resolved filelist + include
-        dir + defines to a standalone run_yosys_syn command.
+        dir + defines to the run_yosys_syn configure surface.
         """
         pytest.importorskip("fusesoc")
         pytest.importorskip("edalize")
@@ -3069,8 +2921,8 @@ class TestSynthResolution:
             cmd = flow._build_synth_cmd("syn")
 
         joined = " ".join(cmd)
-        # Standalone run_yosys_syn over the resolved sources (no -c).
-        assert cmd[:4] == ["python3", "-m", "booley.yosys.run_yosys_syn", "run"]
+        # Configuration over the resolved sources (no legacy config selector).
+        assert cmd[:4] == ["python3", "-m", "booley.yosys.run_yosys_syn", "configure"]
         assert "-c" not in cmd
         assert cmd[cmd.index("-t") + 1] == "dut"
         # Resolved RTL sources are forwarded as relative (sandbox-safe) paths.

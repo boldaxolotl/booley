@@ -374,10 +374,11 @@ When any endpoint declares `code_modifying = True`:
 ### Runtime Boundary
 
 For agent-facing MCP calls, the endpoint's Python orchestration runs inside the
-Session Runtime, as does any subprocess it starts. A direct diagnostic
-invocation may run the same Python class on the host, but agent-facing discovery
-does not expose a host execution path. There is no class-level execution-location
-contract for a custom endpoint.
+Session Runtime, as does any subprocess it starts. Booley Flows enforce that
+boundary even when their Python module is invoked directly. A non-Flow custom
+endpoint may support a host-side, read-only diagnostic entry point, but must not
+use it to expose Flow or EDA execution. There is no configurable
+execution-location contract for a custom endpoint.
 
 The entire project root is mounted at `/work` in Docker, so custom MCP tool files are accessible inside the container without additional mount configuration.
 

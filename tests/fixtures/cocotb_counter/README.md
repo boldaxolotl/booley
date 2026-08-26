@@ -5,7 +5,7 @@ A minimal Booley project with a cocotb Python testbench: an 8-bit counter DUT
 Six `.core` Targets share one build shape; only their `tests.toml` selected
 sets differ, so each G-case is one `simulate` invocation.
 
-The sandbox e2e runs **inside the sandbox image**, which pins cocotb. From the
+The e2e runs **inside the Session Runtime image**, which pins cocotb. From the
 repo root, with a freshly built image:
 
 ```bash
@@ -23,6 +23,5 @@ docker run --rm -v "$PWD/tests/fixtures/cocotb_counter":/work -w /work \
 | G11 timeout | `--target sim_hang --timeout 15000` | never pass; timeout verdict |
 | G12 elaborate | `python3 -m booley.flows.elab --work-dir /work --target sim_verilator` | PASS (build half untouched) |
 | G13 dry-run | `--target sim_icarus --dry-run` | one batched command: `fusesoc … --setup && make … && python3 -m booley.sim.cocotb_run … --test ×3` |
-| G13 host guard | set `venue = "host"` | fail-fast "cocotb is sandbox-only in v1" |
 | G14 trace | `--target sim_icarus --test count --trace` | TRACE_OK + queryable store; also on `sim_verilator` |
 | G15 mutation smoke | flip `count + 1'b1` → `count - 1'b1` in the DUT, rerun `sim_icarus` | FAIL (the mutant is killed through the cocotb Target) |
