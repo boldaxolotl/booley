@@ -302,40 +302,6 @@ class TestImageLabel:
 # ---------------------------------------------------------------------------
 
 
-class _ReleaseImageDocker:
-    """Docker boundary adapter for installed-package init tests."""
-
-    def __init__(
-        self,
-        *,
-        fingerprint: str | None,
-        oci_version: str | None = None,
-        pull_returncode: int = 0,
-    ) -> None:
-        self.fingerprint = fingerprint
-        self.oci_version = oci_version
-        self.pull_returncode = pull_returncode
-        self.commands: list[list[str]] = []
-
-    def run(self, command, **_kwargs):
-        self.commands.append(command)
-        if command == ["docker", "image", "inspect", init_docker_image.DOCKER_IMAGE]:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        if command[:3] == ["docker", "image", "inspect"]:
-            label = " ".join(command)
-            value = (
-                self.fingerprint
-                if init_docker_image.LABEL_FINGERPRINT in label
-                else self.oci_version
-            )
-            return subprocess.CompletedProcess(command, 0, f"{value or '<no value>'}\n", "")
-        if command[:2] == ["docker", "pull"]:
-            return subprocess.CompletedProcess(command, self.pull_returncode, "", "not found")
-        if command[:3] == ["docker", "system", "df"]:
-            return subprocess.CompletedProcess(command, 1, "", "")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-
 def _run_pip_image_step(tmp_path, monkeypatch, docker, *, check_only=False):
     docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
     monkeypatch.setattr(booley, "__version__", "0.2.6")
@@ -348,9 +314,11 @@ def _run_pip_image_step(tmp_path, monkeypatch, docker, *, check_only=False):
     return ctx
 
 
-def test_pip_install_refreshes_existing_image_from_old_release(tmp_path, monkeypatch):
+def test_pip_install_refreshes_existing_image_from_old_release(
+    tmp_path, monkeypatch, release_image_docker
+):
     """A pip install has no checkout fingerprint, but its release still pins the image."""
-    docker = _ReleaseImageDocker(fingerprint="pulled:0.2.3")
+    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.3"})
 
     ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
 
@@ -359,8 +327,13 @@ def test_pip_install_refreshes_existing_image_from_old_release(tmp_path, monkeyp
     assert ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"] in docker.commands
 
 
-def test_pip_install_warns_when_compatible_image_pull_fails(tmp_path, monkeypatch, capsys):
-    docker = _ReleaseImageDocker(fingerprint="pulled:0.2.3", pull_returncode=1)
+def test_pip_install_warns_when_compatible_image_pull_fails(
+    tmp_path, monkeypatch, capsys, release_image_docker
+):
+    docker = release_image_docker(
+        fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.3"},
+        pull_returncode=1,
+    )
 
     ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
 
@@ -372,8 +345,10 @@ def test_pip_install_warns_when_compatible_image_pull_fails(tmp_path, monkeypatc
     assert "may be incompatible" in output
 
 
-def test_pip_install_skips_image_from_matching_release(tmp_path, monkeypatch):
-    docker = _ReleaseImageDocker(fingerprint="pulled:0.2.6")
+def test_pip_install_skips_image_from_matching_release(
+    tmp_path, monkeypatch, release_image_docker
+):
+    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: "pulled:0.2.6"})
 
     ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
 
@@ -381,8 +356,13 @@ def test_pip_install_skips_image_from_matching_release(tmp_path, monkeypatch):
     assert not any(command[:2] == ["docker", "pull"] for command in docker.commands)
 
 
-def test_pip_install_uses_oci_version_when_pull_stamp_is_absent(tmp_path, monkeypatch):
-    docker = _ReleaseImageDocker(fingerprint="abc123", oci_version="0.2.3")
+def test_pip_install_uses_oci_version_when_pull_stamp_is_absent(
+    tmp_path, monkeypatch, release_image_docker
+):
+    docker = release_image_docker(
+        fingerprints={init_docker_image.DOCKER_IMAGE: "abc123"},
+        oci_versions={init_docker_image.DOCKER_IMAGE: "0.2.3"},
+    )
 
     ctx = _run_pip_image_step(tmp_path, monkeypatch, docker)
 
@@ -390,8 +370,10 @@ def test_pip_install_uses_oci_version_when_pull_stamp_is_absent(tmp_path, monkey
     assert ["docker", "pull", "ghcr.io/boldaxolotl/booley-sandbox:0.2.6"] in docker.commands
 
 
-def test_pip_install_check_only_warns_for_unverifiable_image(tmp_path, monkeypatch, capsys):
-    docker = _ReleaseImageDocker(fingerprint=None)
+def test_pip_install_check_only_warns_for_unverifiable_image(
+    tmp_path, monkeypatch, capsys, release_image_docker
+):
+    docker = release_image_docker(fingerprints={init_docker_image.DOCKER_IMAGE: None})
 
     ctx = _run_pip_image_step(tmp_path, monkeypatch, docker, check_only=True)
 

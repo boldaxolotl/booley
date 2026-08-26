@@ -11,7 +11,6 @@ visible, and the no-checkout fallbacks.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -251,44 +250,35 @@ class TestFlavorStaleness:
 class TestFlavorWithoutCheckout:
     """A pip-installed Booley refreshes release-mismatched flavors by version."""
 
-    def test_present_flavor_from_old_release_is_refreshed(self, tmp_path, monkeypatch):
+    def test_present_flavor_from_old_release_is_refreshed(
+        self, tmp_path, monkeypatch, release_image_docker
+    ):
         docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
-        commands: list[list[str]] = []
-
-        def fake_run(command, **_kwargs):
-            commands.append(command)
-            if command == ["docker", "image", "inspect", FLAVOR]:
-                return subprocess.CompletedProcess(command, 0, "", "")
-            if command[:3] == ["docker", "image", "inspect"]:
-                return subprocess.CompletedProcess(command, 0, "pulled:0.2.3\n", "")
-            return subprocess.CompletedProcess(command, 0, "", "")
+        docker = release_image_docker(fingerprints={FLAVOR: "pulled:0.2.3"})
 
         monkeypatch.setattr(booley, "__version__", "0.2.6")
         monkeypatch.setattr(idi, "docker_data_dir", lambda: docker_dir)
-        monkeypatch.setattr(idi.subprocess, "run", fake_run)
+        monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path)
 
         changed = idi.ensure_flavor_image(ctx, FLAVOR)
 
         assert changed is True
         assert ctx.results[-1].detail == f"flavor {FLAVOR} pulled"
-        assert ["docker", "pull", f"ghcr.io/boldaxolotl/{FLAVOR}:0.2.6"] in commands
+        assert ["docker", "pull", f"ghcr.io/boldaxolotl/{FLAVOR}:0.2.6"] in docker.commands
 
-    def test_unbuildable_old_flavor_warns_when_refresh_fails(self, tmp_path, monkeypatch, capsys):
+    def test_unbuildable_old_flavor_warns_when_refresh_fails(
+        self, tmp_path, monkeypatch, capsys, release_image_docker
+    ):
         docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
-
-        def fake_run(command, **_kwargs):
-            if command == ["docker", "image", "inspect", FLAVOR]:
-                return subprocess.CompletedProcess(command, 0, "", "")
-            if command[:3] == ["docker", "image", "inspect"]:
-                return subprocess.CompletedProcess(command, 0, "pulled:0.2.3\n", "")
-            if command[:2] == ["docker", "pull"]:
-                return subprocess.CompletedProcess(command, 1, "", "not found")
-            raise AssertionError(f"unexpected Docker command: {command}")
+        docker = release_image_docker(
+            fingerprints={FLAVOR: "pulled:0.2.3"},
+            pull_returncode=1,
+        )
 
         monkeypatch.setattr(booley, "__version__", "0.2.6")
         monkeypatch.setattr(idi, "docker_data_dir", lambda: docker_dir)
-        monkeypatch.setattr(idi.subprocess, "run", fake_run)
+        monkeypatch.setattr(idi.subprocess, "run", docker.run)
         ctx = InitContext(project_root=tmp_path)
 
         changed = idi.ensure_flavor_image(ctx, FLAVOR)
@@ -300,6 +290,65 @@ class TestFlavorWithoutCheckout:
         assert "v0.2.3" in output
         assert "Booley v0.2.6 requires sandbox image v0.2.6" in output
         assert "trusting it" not in output
+
+    def test_check_only_reports_release_pull_not_source_rebuild(
+        self, tmp_path, monkeypatch, capsys, release_image_docker
+    ):
+        docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
+        docker = release_image_docker(fingerprints={FLAVOR: "pulled:0.2.3"})
+        monkeypatch.setattr(booley, "__version__", "0.2.6")
+        monkeypatch.setattr(idi, "docker_data_dir", lambda: docker_dir)
+        monkeypatch.setattr(idi.subprocess, "run", docker.run)
+        ctx = InitContext(project_root=tmp_path, check_only=True)
+
+        changed = idi.ensure_flavor_image(ctx, FLAVOR)
+
+        output = capsys.readouterr().out
+        assert changed is False
+        assert ctx.results[-1].detail == "would pull compatible image"
+        assert f"would pull compatible image for the {FLAVOR} sandbox flavor" in output
+        assert "rebuild (stale)" not in output
+
+    def test_old_flavor_is_not_rebuilt_when_base_refresh_warns(
+        self, tmp_path, monkeypatch, capsys, release_image_docker
+    ):
+        docker_dir = tmp_path / "site-packages" / "booley" / "data" / "docker"
+        docker_dir.mkdir(parents=True)
+        (docker_dir / idi.FLAVOR_IMAGES[FLAVOR]).write_text(
+            f"FROM {idi.DOCKER_IMAGE}\n", encoding="utf-8"
+        )
+        docker = release_image_docker(
+            fingerprints={
+                FLAVOR: "pulled:0.2.3",
+                idi.DOCKER_IMAGE: "pulled:0.2.3",
+            },
+            pull_returncode=1,
+        )
+        built: list[str] = []
+        monkeypatch.setattr(booley, "__version__", "0.2.6")
+        monkeypatch.setattr(idi, "docker_data_dir", lambda: docker_dir)
+        monkeypatch.setattr(idi.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(idi.subprocess, "run", docker.run)
+        monkeypatch.setattr(
+            idi,
+            "_docker_build_image",
+            lambda _ctx, spec: built.append(spec.image) or 0,
+        )
+        ctx = InitContext(project_root=tmp_path)
+
+        changed = idi.ensure_flavor_image(
+            ctx,
+            FLAVOR,
+            ensure_base=lambda: idi._step_docker_image(ctx, FLAVOR),
+        )
+
+        output = capsys.readouterr().out
+        assert changed is False
+        assert not built
+        assert ctx.results[-1].status == "warn"
+        assert ctx.results[-1].detail == f"flavor {FLAVOR} compatible image pull failed"
+        assert f"{FLAVOR} is v0.2.3" in output
+        assert "may be incompatible" in output
 
     def test_present_flavor_is_trusted_when_dockerfile_is_absent(
         self, flavor_repo, monkeypatch, capsys
