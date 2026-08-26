@@ -8,8 +8,7 @@ setting the knob and watching nothing happen. This test is the mechanical
 ratchet: it extracts every knob CONFIG.md documents in a fenced ``toml`` block
 under a recognized booley.toml table and asserts the key appears as a config
 read in production code (Python string literal in a read-ish context, or a bare
-occurrence in a shell script — ``[submodules].paths`` is read from a tomllib
-heredoc in ``worktree_create.sh``).
+occurrence in a shell script).
 
 Known limitation, on purpose: matching is by key literal, not by (section, key)
 data flow, so a generic key name that any code mentions (``name``, ``image``,
