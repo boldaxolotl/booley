@@ -1,5 +1,5 @@
 #!/bin/bash
-# WorktreeCreate: creates a git worktree with submodule copy
+# WorktreeCreate: creates an outer git worktree for later Python setup
 # Reads JSON from stdin, outputs worktree absolute path to stdout.
 # All diagnostic messages go to stderr so they don't pollute stdout.
 #
@@ -256,13 +256,13 @@ echo "Creating worktree: $WORKTREE_DIR" >&2
 # stdout goes to stderr too: `git worktree add` prints "HEAD is now at ..."
 # on stdout, and this script's contract is worktree path ONLY on stdout.
 ADD_ERR="$LOCK_DIR/${NAME}.worktree-add.$$.err"
-if ! git -C "$CWD" worktree add "$WORKTREE_DIR" --detach >&2 2>"$ADD_ERR"; then
+if ! git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" --detach >&2 2>"$ADD_ERR"; then
     if grep -qi "missing but already registered worktree" "$ADD_ERR"; then
         echo "WARNING: Worktree registered but missing; pruning and retrying" >&2
         git -C "$CWD" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
         git -C "$CWD" worktree prune 2>/dev/null || true
         rm -rf "$WORKTREE_DIR"
-        git -C "$CWD" worktree add "$WORKTREE_DIR" --detach >&2
+        git -C "$CWD" -c submodule.recurse=false worktree add "$WORKTREE_DIR" --detach >&2
     else
         cat "$ADD_ERR" >&2
         rm -f "$ADD_ERR"
@@ -280,8 +280,7 @@ touch "$CREATING_MARKER"
 
 # If a target branch was specified, check it out
 if [ -n "$TARGET_BRANCH" ]; then
-    # Use --no-recurse-submodules: submodule dirs have broken gitdir
-    # pointers at this stage — they'll be replaced by the copy step below.
+    # Branch selection precedes Python's offline submodule materialization.
     if git -C "$WORKTREE_DIR" rev-parse --verify "$TARGET_BRANCH" >/dev/null 2>&1; then
         echo "Checking out branch: $TARGET_BRANCH" >&2
         git -C "$WORKTREE_DIR" -c submodule.recurse=false checkout "$TARGET_BRANCH" >&2
@@ -312,11 +311,6 @@ git_wt() {
     git --git-dir="$WORKTREE_GIT_DIR" --work-tree="$WORKTREE_DIR" "$@"
 }
 
-# Copy submodules from main repo instead of cloning.
-# git submodule update --init fails in worktrees with:
-#   "reference repository '.' as a linked checkout is not supported yet"
-# Plain copy is fine — worktrees are ephemeral agent workspaces.
-
 # Resolve project dir: env var -> sibling .booley_project/ -> legacy project/
 PIPELINE_DIR="$CWD/.booley"
 if [ -n "${BOOLEY_PROJECT_DIR:-}" ]; then
@@ -327,146 +321,14 @@ else
     BOOLEY_PROJECT_DIR_RESOLVED="$PIPELINE_DIR/project"
 fi
 
-# Read submodule paths from booley.toml [submodules].paths,
-# falling back to .gitmodules discovery.
-SUBMODULE_LINES=""
-for toml in "$BOOLEY_PROJECT_DIR_RESOLVED/booley.toml" "$BOOLEY_PROJECT_DIR_RESOLVED/pipeline.toml" "$PIPELINE_DIR/booley.toml" "$PIPELINE_DIR/pipeline.toml"; do
-    if [ -f "$toml" ]; then
-        # Pass TOML path as argv — no shell interpolation into the heredoc,
-        # so paths with quotes/backslashes/spaces can't break Python parsing
-        # or execute arbitrary code.
-        SUBMODULE_LINES=$("${PY[@]}" - "$toml" <<'PYEOF'
-import sys, tomllib
-with open(sys.argv[1], 'rb') as f:
-    cfg = tomllib.load(f)
-paths = cfg.get('submodules', {}).get('paths', [])
-if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
-    raise SystemExit("ERROR: [submodules].paths must be an array of strings")
-if any("\n" in path or "\r" in path for path in paths):
-    raise SystemExit("ERROR: submodule paths must not contain newlines")
-print('\n'.join(paths))
-PYEOF
-)
-        break
-    fi
-done
-if [ -z "$SUBMODULE_LINES" ] && [ -f "$CWD/.gitmodules" ]; then
-    # Fallback: parse .gitmodules
-    SUBMODULE_LINES=$(
-        git -C "$CWD" config --file .gitmodules --get-regexp '^submodule\..*\.path$' \
-            | while IFS= read -r line; do printf '%s\n' "${line#* }"; done
-    )
-fi
-
-# These paths feed host-side rm and tar commands.  Keep them lexical,
-# repository-relative POSIX paths; option-like and traversing values would
-# otherwise turn project config into arbitrary host reads or deletion.
-SUBMODULE_LINES=$("${PY[@]}" - "$SUBMODULE_LINES" <<'PYEOF'
-import sys
-from pathlib import PurePosixPath
-
-paths = sys.argv[1].splitlines() if sys.argv[1] else []
-for path in paths:
-    parts = path.split("/")
-    if (
-        not path
-        or path != path.strip()
-        or not path.isprintable()
-        or path.startswith("-")
-        or "\\" in path
-        or PurePosixPath(path).is_absolute()
-        or any(part in {"", ".", ".."} for part in parts)
-    ):
-        raise SystemExit(
-            f"ERROR: unsafe submodule path {path!r}; expected a repository-relative POSIX path"
-        )
-print("\n".join(paths))
-PYEOF
-)
-SUBMODULES=()
-if [ -n "$SUBMODULE_LINES" ]; then
-    mapfile -t SUBMODULES <<< "$SUBMODULE_LINES"
-    echo "Submodules: ${SUBMODULES[*]}" >&2
-fi
-if [ ${#SUBMODULES[@]} -eq 0 ]; then
-    echo "WARNING: No submodule paths found — skipping submodule copy" >&2
-fi
-
-# Verify submodules are clean in the main repo before copying
-echo "Checking submodules are clean..." >&2
-for sub in "${SUBMODULES[@]}"; do
-    # Config may select only real Git submodules, not an arbitrary directory.
-    # Besides preventing accidental copies, this proves that no symlinked
-    # project directory can redirect tar outside the repository.
-    GITLINK=$(git -C "$CWD" -c core.quotePath=false ls-files --stage -- "$sub")
-    if [[ "$GITLINK" != 160000\ *$'\t'"$sub" ]] || [[ "$GITLINK" == *$'\n'* ]]; then
-        echo "ERROR: configured submodule path is not an exact Git submodule: $sub" >&2
-        exit 1
-    fi
-    if [ ! -d "$CWD/$sub" ]; then
-        echo "ERROR: submodule $sub not found in main repo — run 'git submodule update --init' first" >&2
-        exit 1
-    fi
-    if [ -n "$(git -C "$CWD/$sub" status --porcelain 2>/dev/null)" ]; then
-        echo "ERROR: submodule $sub is dirty in main repo — commit or stash changes first" >&2
-        exit 1
-    fi
-done
-
-# Use `timeout` for tar if available (GNU coreutils); skip if not.
-# The parent process enforces a 300s total timeout as a backstop.
-# Windows ships TIMEOUT.EXE with incompatible syntax — require GNU version.
-TAR_TIMEOUT=""
-if timeout --version >/dev/null 2>&1; then
-    TAR_TIMEOUT="timeout 120"
-fi
-
-echo "Copying submodules from main repo..." >&2
-for sub in "${SUBMODULES[@]}"; do
-    # Remove empty placeholder dir left by git worktree add, then copy.
-    rm -rf "$WORKTREE_DIR/$sub"
-    mkdir -p "$(dirname "$WORKTREE_DIR/$sub")"
-    $TAR_TIMEOUT tar -C "$CWD" -cf - -- "$sub" \
-        | tar -C "$WORKTREE_DIR" -xf -
-
-    # Fix submodule .git pointer: the copied .git file has a relative path
-    # that only resolves from the main repo's directory structure, not from
-    # the worktree. Rewrite it to an absolute path so git commands work
-    # correctly in the worktree.
-    DOTGIT="$WORKTREE_DIR/$sub/.git"
-    if [ -f "$DOTGIT" ]; then
-        REL_PATH=$(sed 's/^gitdir: //' "$DOTGIT")
-        # Resolve relative gitdir path to absolute. Run from the original
-        # submodule dir (where the relative path is valid), not the worktree.
-        if ! ABS_PATH=$(cd "$CWD/$sub" && cd "$REL_PATH" 2>/dev/null && pwd); then
-            echo "ERROR: Cannot resolve .git pointer for submodule '$sub'" >&2
-            echo "  .git file: $DOTGIT" >&2
-            echo "  gitdir value: $REL_PATH" >&2
-            echo "  resolved from: $CWD/$sub" >&2
-            exit 1
-        fi
-        echo "gitdir: $ABS_PATH" > "$DOTGIT"
-    fi
-done
-
-# Verify all submodule directories are populated (not just registered)
-for sub in "${SUBMODULES[@]}"; do
-    if [ ! -d "$WORKTREE_DIR/$sub" ]; then
-        echo "ERROR: $sub/ missing after submodule copy — compilation will fail" >&2
-        exit 1
-    fi
-done
-
 # --- Critical section B: more parent .git/config writes ---
 # Enable per-worktree config and keep all worktree settings out of the shared
 # parent .git/config. Re-acquire the parent-git lock around this cluster because
 # enabling extensions.worktreeConfig still mutates the shared config.
 _parent_lock_acquire
 
-# Disable submodule recursion in the worktree.  The copied submodules have
-# .git pointers rewritten to absolute paths, but the worktree's git config
-# still references .git/modules/* (relative to main repo).  Any git command
-# that recurses into submodules will fail with "not a git repository."
+# Disable automatic submodule recursion. Python materializes exact gitlinks
+# after final branch selection without remotes or shared .git pointers.
 git -C "$CWD" config extensions.worktreeConfig true
 git_wt config --worktree core.worktree "$WORKTREE_DIR"
 git_wt config --worktree submodule.recurse false

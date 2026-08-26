@@ -32,6 +32,10 @@ from pathlib import Path
 from typing import Any
 
 from booley.fusesoc.fusesoc_registry import state_cores_dir
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    materialize_submodules,
+)
 from booley.runtime.ticket_repositories import paired_project_repository
 
 from .recipe_evidence import BASELINE_REF_PARAM
@@ -105,72 +109,68 @@ def resolve_ticket_baseline(
 
 @contextmanager
 def baseline_worktree(project_root: Path, ref: str) -> Iterator[Path]:
-    """Check out *ref* in a throwaway detached worktree; yield its path.
-
-    The worktree is created under ``<project_root>/.booley_project/`` with a
-    PID-suffixed name, so two baseline runs in the same project (e.g. concurrent
-    interactive sessions) never collide on the directory. ``--detach`` checks the
-    ref out as a detached HEAD, sidestepping git's "ref already checked out in
-    another worktree" error when *ref* is a branch already live elsewhere (a
-    ticket run, the main worktree). The worktree is force-removed and pruned on
-    exit whether or not the body raised.
-
-    Raises :class:`BaselineWorktreeError` if the baseline tree cannot be fully
-    created (bad ref, missing submodule source, not a git repository, ...).
-    """
+    """Yield a fully materialized detached worktree for *ref*, then remove it."""
     project_root = Path(project_root)
-    short = git_short_sha(ref, project_root)
-    wt_dir = project_root / ".booley_project" / f".baseline-wt-{os.getpid()}-{short}"
-    wt_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    # A crashed prior run can leave a stale worktree registration behind; prune
-    # first so ``add`` cannot fail on a dangling entry for this exact path.
-    _git(project_root, "worktree", "prune", timeout=30)
-
-    add = _git(
-        project_root,
-        "worktree",
-        "add",
-        "--detach",
-        "--force",
-        str(wt_dir),
-        ref,
-        timeout=120,
-    )
-    if add.returncode != 0:
-        detail = (add.stderr or add.stdout or "").strip()
-        raise BaselineWorktreeError(
-            f"git worktree add for baseline ref {ref!r} failed: {detail or add.returncode}"
-        )
-
+    wt_dir = _create_baseline_worktree(project_root, ref)
     paired_baseline: Path | None = None
     try:
-        _populate_submodules(wt_dir, ref)
+        _materialize_baseline_submodules(project_root, wt_dir, ref)
         paired_baseline = _install_paired_project_baseline(project_root, wt_dir)
         if paired_baseline is None:
             _copy_stealth_cores(project_root, wt_dir, ref)
         _copy_root_quarantine_marker(project_root, wt_dir)
         yield wt_dir
     finally:
-        if paired_baseline is not None:
-            _remove_paired_project_baseline(project_root, paired_baseline)
-        rm = _git(
-            project_root,
-            "worktree",
-            "remove",
-            "--force",
-            str(wt_dir),
-            timeout=60,
+        _cleanup_baseline_worktree(project_root, wt_dir, paired_baseline)
+
+
+def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
+    short = git_short_sha(ref, project_root)
+    worktree = project_root / ".booley_project" / f".baseline-wt-{os.getpid()}-{short}"
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    _git(project_root, "worktree", "prune", timeout=30)
+    result = _git(
+        project_root,
+        "-c",
+        "submodule.recurse=false",
+        "worktree",
+        "add",
+        "--detach",
+        "--force",
+        str(worktree),
+        ref,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise BaselineWorktreeError(
+            f"git worktree add for baseline ref {ref!r} failed: {detail or result.returncode}"
         )
-        if rm.returncode != 0:
-            # Leave the dir for `git worktree prune` to reap later rather than
-            # failing the run — the metrics are already collected by now.
-            logger.warning(
-                "baseline worktree cleanup failed for %s: %s",
-                wt_dir,
-                (rm.stderr or rm.stdout or "").strip(),
-            )
-        _git(project_root, "worktree", "prune", timeout=30)
+    return worktree
+
+
+def _materialize_baseline_submodules(project_root: Path, worktree: Path, ref: str) -> None:
+    try:
+        materialize_submodules(project_root, worktree)
+    except SubmoduleMaterializationError as exc:
+        raise BaselineWorktreeError(
+            f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"
+        ) from exc
+
+
+def _cleanup_baseline_worktree(
+    project_root: Path, worktree: Path, paired_baseline: Path | None
+) -> None:
+    if paired_baseline is not None:
+        _remove_paired_project_baseline(project_root, paired_baseline)
+    result = _git(project_root, "worktree", "remove", "--force", str(worktree), timeout=60)
+    if result.returncode != 0:
+        logger.warning(
+            "baseline worktree cleanup failed for %s: %s",
+            worktree,
+            (result.stderr or result.stdout or "").strip(),
+        )
+    _git(project_root, "worktree", "prune", timeout=30)
 
 
 def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path | None:
@@ -182,6 +182,8 @@ def _install_paired_project_baseline(project_root: Path, wt_dir: Path) -> Path |
     destination = wt_dir / ".booley_project"
     add = _git(
         repository.worktree,
+        "-c",
+        "submodule.recurse=false",
         "worktree",
         "add",
         "--detach",
@@ -256,32 +258,6 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
     marker = project_root / "FUSESOC_IGNORE"
     if marker.is_file():
         shutil.copy2(marker, wt_dir / marker.name)
-
-
-def _populate_submodules(wt_dir: Path, ref: str) -> None:
-    """Materialize the baseline ref's recursive gitlink source tree."""
-    if not (wt_dir / ".gitmodules").is_file():
-        return
-    try:
-        update = _git(
-            wt_dir,
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-            "--checkout",
-            timeout=300,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise BaselineWorktreeError(
-            f"initializing submodules for baseline ref {ref!r} timed out after 300s"
-        ) from exc
-    if update.returncode == 0:
-        return
-    detail = (update.stderr or update.stdout or "").strip()
-    raise BaselineWorktreeError(
-        f"initializing submodules for baseline ref {ref!r} failed: {detail or update.returncode}"
-    )
 
 
 def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:

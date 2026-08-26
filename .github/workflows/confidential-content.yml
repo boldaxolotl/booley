@@ -2,7 +2,7 @@ name: Confidential content
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
   workflow_dispatch:
@@ -46,6 +46,8 @@ jobs:
             refs/confidential-content/head "${HEAD_SHA}" \
             refs/heads/main "${BASE_SHA}" \
             | python .github/scripts/confidential_content_guard.py --repo . pre-push
+          python .github/scripts/confidential_content_guard.py \
+            --repo . pull-request --event "${GITHUB_EVENT_PATH}"
 
       - name: Scan complete main history
         if: github.event_name != 'pull_request_target'
