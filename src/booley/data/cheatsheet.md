@@ -40,6 +40,10 @@ invalid—the explicit reset is a clean start, never a resume of reviewed work.
 Inspect with `booley board show`; handle blocked and review decisions with
 `/booley-ticket-triage`.
 
+When `booley run` moves a Ticket to review, it prints a `BOOLEY_RUN_RESULT `
+JSON record containing the machine-readable review-package path and optional
+HTML path. One record is emitted per review-bound Ticket.
+
 ### Booley Flows
 
 <!-- BEGIN GENERATED: flows -->

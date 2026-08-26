@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -24,7 +24,7 @@ from booley.core.models import AgentCallParams, AgentResult
 from booley.dev_support.development_state import DevelopmentState
 from booley.runtime.agent import call_agent
 from booley.runtime.paths import skills_dir
-from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.ticket_repositories import (
     paired_project_repository,
     project_repository_expected,
@@ -100,6 +100,7 @@ class ReviewPrepOutcome:
     status: str
     message: str
     html_path: Path | None = None
+    package_path: Path | None = None
 
     @property
     def ready(self) -> bool:
@@ -231,7 +232,7 @@ def _resolve_context(
     worktree = Path(checkout).resolve()
     head_sha = _git(worktree, "rev-parse", "HEAD").strip()
     base_sha = _resolve_base_sha(worktree, entry, head_sha)
-    project_repository = _resolve_project_review_repository(worktree, slug)
+    project_repository = _resolve_project_review_repository(project_root, worktree, slug)
     return ReviewPrepContext(
         project_root=project_root,
         slug=slug,
@@ -248,12 +249,19 @@ def _resolve_context(
 
 
 def _resolve_project_review_repository(
-    worktree: Path, slug: str
+    project_root: Path, worktree: Path, slug: str
 ) -> ProjectReviewRepository | None:
     repository = paired_project_repository(worktree)
     if repository is None:
         if project_repository_expected(worktree):
-            raise ReviewPrepError("configured project repository has no paired ticket checkout")
+            try:
+                configured_project_dir = resolve_project_dir(project_root)
+            except FileNotFoundError:
+                configured_project_dir = None
+            if configured_project_dir is None or (configured_project_dir / ".git").exists():
+                raise ReviewPrepError(
+                    "configured project repository has no paired ticket checkout"
+                )
         return None
     feature_branch = _git(repository.worktree, "branch", "--show-current").strip()
     expected = f"booley-ticket/{slug}"
@@ -277,6 +285,12 @@ def _prompt_text() -> str:
 
 def _prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def _review_prompt(ctx: ReviewPrepContext) -> tuple[str, str]:
+    """Return prompt text and freshness identity without loading it when disabled."""
+    prompt = _prompt_text() if ctx.triage_report_enabled else ""
+    return prompt, _prompt_hash(prompt)
 
 
 def _manifest_path(ctx: ReviewPrepContext) -> Path:
@@ -407,7 +421,7 @@ def _fresh_outcome(
         if html_path is not None
         else "existing review briefing is current; HTML is unavailable"
     )
-    return ReviewPrepOutcome("fresh", message, html_path)
+    return ReviewPrepOutcome("fresh", message, html_path, briefing_path)
 
 
 def _base_manifest(
@@ -950,29 +964,152 @@ def _failure_status(exc: Exception) -> str:
 
 async def _resolve_stable_context(project_root: Path, slug: str) -> ReviewPrepContext:
     """Resolve review inputs after any detached ticket jobs have drained."""
-    ctx = _resolve_context(project_root, slug)
+    ctx = _resolve_context(project_root, slug, allow_report_disabled=True)
     if await wait_for_ticket_jobs(ctx.log_dir):
-        return _resolve_context(project_root, slug)
+        return _resolve_context(project_root, slug, allow_report_disabled=True)
     return ctx
 
 
-async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and auditable
-    project_root: Path, slug: str, *, force: bool = False
+def _report_disabled_assessment(facts: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the conservative assessment used when semantic review is disabled."""
+    scope = facts.get("scope", {})
+    deviations = scope.get("deviations", []) if isinstance(scope, Mapping) else []
+    return {
+        "recommendation": "hold",
+        "reason": "the ticket opted out of an LLM-generated review assessment",
+        "decision_blockers": ["Human review is required before approval."],
+        "scope_deviations": [
+            {
+                "path": path,
+                "classification": "Needs review",
+                "reason": "No LLM-generated report was requested for this ticket.",
+            }
+            for path in deviations
+        ],
+        "developer_summary": "LLM-generated summary disabled by ticket configuration.",
+        "uncertainties": "Inspect the prepared diffs and developer report manually.",
+        "optional_omissions": "HTML explanation and semantic assessment.",
+        "findings": [],
+    }
+
+
+def _prepare_report_disabled_package(
+    ctx: ReviewPrepContext,
+    prompt_sha: str,
+    source_sha: str,
+    started: float,
 ) -> ReviewPrepOutcome:
-    """Prepare one ticket's HTML explanation; failures are returned, never raised."""
-    started = time.monotonic()
-    call_recorded = False
+    """Persist the same typed package without making the optional model call."""
+    facts = build_review_facts(ctx)
+    _write_json(ctx.runtime_dir / "facts.json", facts)
+    briefing_path = write_triage_package(
+        ctx,
+        facts,
+        _report_disabled_assessment(facts),
+        None,
+        None,
+    )
+    source_sha = _source_fingerprint(ctx)
+    duration = time.monotonic() - started
+    manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
+    manifest.update(
+        {
+            "briefing_path": str(briefing_path),
+            "briefing_sha256": _file_sha256(briefing_path),
+            "duration_s": round(duration, 2),
+            "html_path": None,
+            "html_error": "LLM-generated HTML explanation disabled by ticket configuration",
+        }
+    )
+    _write_json(_manifest_path(ctx), manifest)
+    return ReviewPrepOutcome(
+        "ready",
+        "deterministic review package prepared; HTML explanation disabled",
+        package_path=briefing_path,
+    )
+
+
+def _write_ready_manifest(
+    ctx: ReviewPrepContext,
+    prompt_sha: str,
+    briefing_path: Path,
+    html_path: Path | None,
+    prepared: PreparedReviewOutput,
+    result: AgentResult,
+    duration: float,
+) -> None:
+    """Persist integrity metadata for one completed model-generated package."""
+    manifest = _base_manifest(ctx, prompt_sha, _source_fingerprint(ctx), "ready")
+    manifest.update(
+        {
+            "briefing_path": str(briefing_path),
+            "briefing_sha256": _file_sha256(briefing_path),
+            "duration_s": round(duration, 2),
+            "cost_usd": round(result.cost_usd, 4),
+            "model": get_backend_config().model_for_role("triage_report", "standard"),
+        }
+    )
+    if html_path is None:
+        manifest["html_path"] = None
+        manifest["html_error"] = prepared.html_error
+    else:
+        manifest["html_path"] = str(html_path)
+        manifest["html_sha256"] = _file_sha256(html_path)
+    if prepared.assessment_error is not None:
+        manifest["assessment_error"] = prepared.assessment_error
+    _write_json(_manifest_path(ctx), manifest)
+
+
+def _persist_model_review(
+    ctx: ReviewPrepContext,
+    prompt_sha: str,
+    facts: dict[str, Any],
+    prepared: PreparedReviewOutput,
+    result: AgentResult,
+    started: float,
+) -> ReviewPrepOutcome:
+    """Write the package, optional HTML, and their verified manifest."""
+    html_path = None
+    if prepared.explanation is not None:
+        html_path = ctx.log_dir / f"{datetime.now(UTC):%Y-%m-%d}-explanation-{ctx.slug}.html"
+    briefing_path = write_triage_package(
+        ctx,
+        facts,
+        prepared.assessment,
+        html_path,
+        prepared.explanation,
+    )
+    package = load_triage_package(briefing_path)
+    if html_path is not None and prepared.explanation is not None:
+        _atomic_write(html_path, render_explanation_html(prepared.explanation, package))
+    _write_ready_manifest(
+        ctx,
+        prompt_sha,
+        briefing_path,
+        html_path,
+        prepared,
+        result,
+        time.monotonic() - started,
+    )
+    if html_path is None:
+        return ReviewPrepOutcome(
+            "ready",
+            "review briefing prepared; HTML explanation unavailable",
+            package_path=briefing_path,
+        )
+    return ReviewPrepOutcome("ready", "review package prepared", html_path, briefing_path)
+
+
+async def _prepare_model_review(
+    ctx: ReviewPrepContext,
+    exact_prompt: str,
+    prompt_sha: str,
+    source_sha: str,
+    started: float,
+) -> ReviewPrepOutcome:
+    """Generate and persist the optional model-enriched review package."""
+    result, call_recorded = None, False
     try:
-        resolved_root = project_root.resolve()
-        ctx = await _resolve_stable_context(resolved_root, slug)
-        exact_prompt = _prompt_text()
-        prompt_sha = _prompt_hash(exact_prompt)
-        source_sha = _source_fingerprint(ctx)
-        if not force and (
-            fresh := _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
-        ):
-            return fresh
-        _write_json(_manifest_path(ctx), _base_manifest(ctx, prompt_sha, source_sha, "running"))
         evidence = _collect_git_evidence(ctx)
         facts = build_review_facts(ctx)
         _write_json(ctx.runtime_dir / "facts.json", facts)
@@ -994,78 +1131,93 @@ async def prepare_review(  # noqa: PLR0915 - lifecycle remains linear and audita
         duration = time.monotonic() - started
         _record_call(ctx, result, duration, exit_code=0)
         call_recorded = True
-        facts = build_review_facts(ctx)
-        html_path = None
-        if prepared.explanation is not None:
-            html_name = f"{datetime.now(UTC):%Y-%m-%d}-explanation-{ctx.slug}.html"
-            html_path = ctx.log_dir / html_name
-        briefing_path = write_triage_package(
+        return _persist_model_review(
             ctx,
-            facts,
-            prepared.assessment,
-            html_path,
-            prepared.explanation,
+            prompt_sha,
+            build_review_facts(ctx),
+            prepared,
+            result,
+            started,
         )
-        package = load_triage_package(briefing_path)
-        if html_path is not None and prepared.explanation is not None:
-            _atomic_write(html_path, render_explanation_html(prepared.explanation, package))
-        source_sha = _source_fingerprint(ctx)
-        manifest = _base_manifest(ctx, prompt_sha, source_sha, "ready")
-        manifest.update(
-            {
-                "briefing_path": str(briefing_path),
-                "briefing_sha256": _file_sha256(briefing_path),
-                "duration_s": round(duration, 2),
-                "cost_usd": round(result.cost_usd, 4),
-                "model": get_backend_config().model_for_role("triage_report", "standard"),
-            }
-        )
-        if html_path is not None:
-            manifest["html_path"] = str(html_path)
-            manifest["html_sha256"] = _file_sha256(html_path)
-        else:
-            manifest["html_path"] = None
-            manifest["html_error"] = prepared.html_error
-        if prepared.assessment_error is not None:
-            manifest["assessment_error"] = prepared.assessment_error
-        _write_json(_manifest_path(ctx), manifest)
-        if html_path is None:
-            return ReviewPrepOutcome(
-                "ready", "review briefing prepared; HTML explanation unavailable"
-            )
-        return ReviewPrepOutcome("ready", "review package prepared", html_path)
-    except Exception as exc:
-        duration = time.monotonic() - started
-        if "ctx" not in locals():
-            logger.exception("Triage report setup failed for %s", slug)
-            _write_early_failure(project_root.resolve(), slug, exc)
-            return ReviewPrepOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])
-        if "prompt_sha" not in locals():
-            prompt_sha = ""
-        if "source_sha" not in locals():
-            try:
-                source_sha = _source_fingerprint(ctx)
-            except (OSError, ReviewPrepError):
-                source_sha = ""
-        failed_result = (
-            result if "result" in locals() and isinstance(result, AgentResult) else None
-        )
+    except Exception as exc:  # noqa: BLE001 - all generation failures become outcomes
         return _failure_outcome(
             ctx,
             prompt_sha,
             source_sha,
             exc,
-            duration,
-            failed_result,
+            time.monotonic() - started,
+            result,
             status=_failure_status(exc),
             record_call=not call_recorded,
         )
 
 
+async def _prepare_resolved_review(
+    ctx: ReviewPrepContext,
+    exact_prompt: str,
+    prompt_sha: str,
+    source_sha: str,
+    started: float,
+    *,
+    force: bool,
+) -> ReviewPrepOutcome:
+    """Prepare a package after all Ticket and repository inputs resolve."""
+    try:
+        if not force and (
+            fresh := _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
+        ):
+            return fresh
+        _write_json(_manifest_path(ctx), _base_manifest(ctx, prompt_sha, source_sha, "running"))
+        if not ctx.triage_report_enabled:
+            return _prepare_report_disabled_package(ctx, prompt_sha, source_sha, started)
+    except Exception as exc:  # noqa: BLE001 - all package failures become outcomes
+        return _failure_outcome(
+            ctx,
+            prompt_sha,
+            source_sha,
+            exc,
+            time.monotonic() - started,
+            None,
+            status=_failure_status(exc),
+        )
+    return await _prepare_model_review(ctx, exact_prompt, prompt_sha, source_sha, started)
+
+
+async def prepare_review(
+    project_root: Path, slug: str, *, force: bool = False
+) -> ReviewPrepOutcome:
+    """Prepare one Ticket's review package; failures are returned, never raised."""
+    started = time.monotonic()
+    try:
+        ctx = await _resolve_stable_context(project_root.resolve(), slug)
+    except Exception as exc:
+        logger.exception("Triage report setup failed for %s", slug)
+        _write_early_failure(project_root.resolve(), slug, exc)
+        return ReviewPrepOutcome("failed", f"{type(exc).__name__}: {exc}"[:2000])
+    try:
+        exact_prompt, prompt_sha = _review_prompt(ctx)
+        source_sha = _source_fingerprint(ctx)
+    except Exception as exc:  # noqa: BLE001 - prompt failures become persisted outcomes
+        return _failure_outcome(ctx, "", "", exc, time.monotonic() - started, None)
+    return await _prepare_resolved_review(
+        ctx,
+        exact_prompt,
+        prompt_sha,
+        source_sha,
+        started,
+        force=force,
+    )
+
+
 def verify_review_handoff(project_root: Path, slug: str) -> ReviewPrepOutcome:
     """Return the current ready package or reject review handoff."""
-    ctx = _resolve_context(project_root.resolve(), slug, require_review=False)
-    prompt_sha = _prompt_hash(_prompt_text())
+    ctx = _resolve_context(
+        project_root.resolve(),
+        slug,
+        require_review=False,
+        allow_report_disabled=True,
+    )
+    _prompt, prompt_sha = _review_prompt(ctx)
     source_sha = _source_fingerprint(ctx)
     outcome = _fresh_outcome(ctx, _read_manifest(ctx), prompt_sha, source_sha)
     if outcome is None:
@@ -1079,7 +1231,12 @@ async def prepare_review_command(
     """Prepare a review package for a review or blocked ticket."""
     try:
         load_models_config(project_root)
-        _resolve_context(project_root.resolve(), slug, require_review=True)
+        _resolve_context(
+            project_root.resolve(),
+            slug,
+            require_review=True,
+            allow_report_disabled=True,
+        )
     except Exception as exc:
         logger.exception("Manual triage report setup failed for %s", slug)
         _write_early_failure(project_root.resolve(), slug, exc)
@@ -1090,7 +1247,7 @@ async def prepare_review_command(
 def review_briefing_command(
     project_root: Path, slug: str, *, open_diffs: bool = True
 ) -> ReviewBriefingOutcome:
-    """Render a current review or blocked-ticket briefing without invoking an agent."""
+    """Render a current review or blocked-Ticket briefing without a model call."""
     try:
         resolved_root = project_root.resolve()
         ctx = _resolve_context(
@@ -1101,27 +1258,9 @@ def review_briefing_command(
         )
         if not ctx.triage_report_enabled:
             facts = build_review_facts(ctx)
-            scope = facts.get("scope", {})
-            deviations = scope.get("deviations", []) if isinstance(scope, dict) else []
             package_value = {
                 **facts,
-                "assessment": {
-                    "recommendation": "hold",
-                    "reason": "the ticket opted out of agent-prepared review assessment",
-                    "decision_blockers": ["Human review is required before approval."],
-                    "scope_deviations": [
-                        {
-                            "path": path,
-                            "classification": "Needs review",
-                            "reason": "No report agent was requested for this ticket.",
-                        }
-                        for path in deviations
-                    ],
-                    "developer_summary": "Agent-prepared summary disabled by ticket configuration.",
-                    "uncertainties": "Inspect the prepared diffs and developer report manually.",
-                    "optional_omissions": "HTML explanation and semantic assessment.",
-                    "findings": [],
-                },
+                "assessment": _report_disabled_assessment(facts),
                 "html_path": None,
                 "explanation": None,
             }
@@ -1129,7 +1268,7 @@ def review_briefing_command(
             failures = open_package_diffs(package) if open_diffs else []
             return ReviewBriefingOutcome(
                 "ready",
-                "deterministic no-agent review briefing loaded",
+                "deterministic report-disabled review briefing loaded",
                 render_review_briefing(package, failures),
                 tuple(failures),
             )

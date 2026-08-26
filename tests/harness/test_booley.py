@@ -338,14 +338,16 @@ def test_prepare_review_command_accepts_html_free_briefing(tmp_path, monkeypatch
 
     async def prepare(*_args, **_kwargs):
         return review_prep.ReviewPrepOutcome(
-            "ready", "review briefing prepared; HTML explanation unavailable"
+            "ready",
+            "review briefing prepared; HTML explanation unavailable",
+            package_path=tmp_path / "briefing.json",
         )
 
     monkeypatch.setattr(review_prep, "prepare_review_command", prepare)
     args = tlr._build_parser().parse_args(["board", "prepare-review", "demo-ticket"])
 
     assert tlr._cmd_board_prepare_review(args, tmp_path) == 0
-    assert "Review briefing ready" in capsys.readouterr().out
+    assert f"Review package ready: {tmp_path / 'briefing.json'}" in capsys.readouterr().out
 
 
 def test_review_briefing_board_parser():

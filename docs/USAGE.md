@@ -686,18 +686,24 @@ on_success:
   destination: review     # review (default) | done
   merge: true             # merge the ticket branch into its base
   cleanup: true           # remove the worktree and branch afterwards
-  triage_report: true     # prepare rich HTML explanation before review
+  triage_report: true     # add an LLM-generated HTML explanation to the review package
 ```
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
-With `triage_report: true` (the default), Booley uses the configured agent
-backend after criteria acceptance to prepare a self-contained HTML explanation
-under the ticket log directory before moving the ticket to review. The triage
-skill presents its deterministic briefing directly in chat instead of writing
-another summary report. Set `triage_report` to `false` to skip the extra agent
-call. A generation failure is recorded but does not block an otherwise
-successful ticket; `booley board prepare-review <slug> --force` retries it.
+Every review-bound run persists a versioned, machine-readable JSON package at
+`logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views
+are rendered from that same package, so a command-line client can inspect the
+complete review input without scraping a presentation format. With
+`triage_report: true`
+(the default), Booley uses the configured model backend after criteria
+acceptance to add a self-contained HTML explanation under the ticket log
+directory. The triage skill presents its deterministic briefing directly in
+chat instead of writing another summary report. Set `triage_report` to `false`
+to skip the extra model call; Booley still writes the deterministic JSON
+package, with a conservative deterministic assessment and no HTML explanation.
+A generation failure is recorded but does not block an otherwise successful ticket;
+`booley board prepare-review <slug> --force` retries it.
 The same command supports tickets in `blocked/`: generating the full review
 package for partial or blocked work is a normal way to inspect its diff,
 criteria, scope deviations, and blockers before deciding whether to reset or
@@ -707,6 +713,17 @@ Session-Runtime path. Open that link, then select **Show Preview** in the HTML
 editor (or run **Live Preview: Show Preview** from the Command Palette). The
 workflow does not emit a `command:` link because VS Code intentionally
 disables command URIs in untrusted chat-authored Markdown.
+
+After a ticket enters review, `booley run` emits one stable JSON record even
+when the full-screen Console was used:
+
+```text
+BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
+```
+
+Normal progress output may surround this line. Command-line clients should scan
+for the `BOOLEY_RUN_RESULT ` prefix; one record is emitted per review-bound
+ticket. `html_path` is `null` when no HTML explanation was produced.
 
 **Ticket worktrees live under `.booley_project/worktrees/<slug>`, but they are registered by their in-container path.** Booley is container-only, so the project is `/work` from git's point of view and the registrations record `/work/.booley_project/worktrees/...`. On the host those paths don't exist, so `git worktree list` shows every live ticket worktree as `prunable`:
 
