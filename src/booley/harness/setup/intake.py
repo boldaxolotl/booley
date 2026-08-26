@@ -460,6 +460,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     category_overrides = template.category_overrides(targets)
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
+    _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
 
@@ -531,6 +532,26 @@ def _freeze_synthesis_recipe_fingerprints(
             target=target,
         ),
     )
+
+
+def _pin_cycle_count_baselines(
+    ctx: TicketContext,
+    criterion_params: dict[str, dict[str, Any]],
+) -> None:
+    """Pin every relative Cycle Count Criterion to the Ticket's base SHA."""
+    from booley.dev_support.thresholds import has_relative_threshold
+    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+
+    for key, params in criterion_params.items():
+        if not key.startswith("cycle_count_") or not has_relative_threshold(params):
+            continue
+        if not ctx.base_sha:
+            raise FatalError(
+                f"Simulation criterion {key!r} requires a baseline-relative "
+                "threshold, but the ticket has no base_sha",
+                slug=ctx.slug,
+            )
+        params[BASELINE_REF_PARAM] = ctx.base_sha
 
 
 def _freeze_fpga_recipe_fingerprints(
@@ -699,11 +720,9 @@ def _snapshot_intake_recipe(
 
 def _has_relative_threshold(params: dict[str, Any]) -> bool:
     """Whether criterion params require baseline metrics."""
-    return any(
-        key.endswith(("_increase_at_most", "_reduce_at_least"))
-        for key in params
-        if not key.startswith("_")
-    )
+    from booley.dev_support.thresholds import has_relative_threshold
+
+    return has_relative_threshold(params)
 
 
 def _criteria_state_needs_reinit(ctx: TicketContext) -> bool:

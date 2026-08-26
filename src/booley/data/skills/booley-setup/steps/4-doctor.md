@@ -78,13 +78,15 @@ over that severity bug with a project waiver.
   `fail-path unvalidated` until its conventional project-owned bad fixture
   exists. Doctor infers the good case from the first marked Doctor Target and
   adds two lines — `good` must pass, `bad` must be *graded a failure*. For lint,
-  author a `lint_selftest_bad` Target using an undeclared **RHS** reference (an
-  undeclared LHS is only an implicit-net warning). For simulation, mirror the
-  broken staged firmware or vectors under
-  `.booley_project/selftest/sim/bad-overlay/`; Doctor runs the same smoke test
-  normally and with that overlay. Do not add `[flows.<flow>.selftest]`; it is
-  retired. A `bad` that FALSE-PASSES or returns an infra error is a hard FAIL:
-  fix the Flow or fixture.
+  author a `lint_selftest_bad` Target in its own `.core`, mark it
+  `flow_options.booley.doctor_selftest: true`, and use an undeclared **RHS**
+  reference (an undeclared LHS is only an implicit-net warning). The marker
+  keeps the bad Target out of public listings and ordinary Flow selection while
+  Doctor retains access. For simulation, mirror the broken staged firmware or
+  vectors under `.booley_project/selftest/sim/bad-overlay/`; Doctor runs the
+  same smoke test normally and with that overlay. Do not add
+  `[flows.<flow>.selftest]`; it is retired. A `bad` that FALSE-PASSES or returns
+  an infra error is a hard FAIL: fix the Flow or fixture.
 
 ### Heaviest synthesis and memory calibration
 

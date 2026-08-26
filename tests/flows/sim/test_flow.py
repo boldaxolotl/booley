@@ -3135,6 +3135,8 @@ class TestTraceArtifactReported:
         flow = _make_flow(tmp_path, config="lite", extra_args=["--trace"])
         stdout = (
             f"TRACE_OK: {fst}\n"
+            'TRACE_METADATA: {"top_scope":"tb.dut","signal_count":42,'
+            '"total_ticks":900,"size_bytes":4096}\n'
             '[SIM_RESULT] PASSED\n[SIM_SUMMARY] {"passed":true,"sva_errors":0}\n'
         )
         with patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout, 0)):
@@ -3142,10 +3144,13 @@ class TestTraceArtifactReported:
 
         assert result.exit_code == EXIT_SUCCESS
         rel = ".booley_project/.runtime/edalize/sim/lite-trace/dump.fst"
-        assert f"trace: {rel} (4.0 KB)" in result.report_text
+        assert f"trace: {rel} (4.0 KB, 42 signals, scope tb.dut, 900 ticks)" in result.report_text
         report = json.loads((tmp_path / "reports" / "sim_lite.json").read_text())
         assert report["tests"][0]["trace_path"] == rel
         assert report["tests"][0]["trace_bytes"] == 4096
+        assert report["tests"][0]["trace_top_scope"] == "tb.dut"
+        assert report["tests"][0]["trace_signal_count"] == 42
+        assert report["tests"][0]["trace_total_ticks"] == 900
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)

@@ -204,6 +204,13 @@ class TargetRef:
     tuple means the Target is intentionally outside Doctor's smoke matrix.
     """
 
+    doctor_selftest: bool = False
+    """Whether the Target is an internal known-bad fixture for Doctor.
+
+    Doctor self-test Targets remain resolvable by the deep audit, but are not
+    part of Booley's public Target interface or ordinary Flow selection.
+    """
+
 
 _DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth", "elab"})
 
@@ -523,22 +530,28 @@ def _check_booley_target_metadata(
     if not isinstance(booley, Mapping):
         errors.append(f"{label} must be a mapping")
         return
-    for key in sorted(set(booley) - {"doctor"}):
+    for key in sorted(set(booley) - {"doctor", "doctor_selftest"}):
         errors.append(f"{label}.{key} is not a supported Booley Target key")
-    doctor = booley.get("doctor")
-    if not isinstance(doctor, list):
-        errors.append(f"{label}.doctor must be an array")
-        return
-    invalid = [
-        flow for flow in doctor if not isinstance(flow, str) or flow not in _DOCTOR_FLOW_NAMES
-    ]
-    if invalid:
-        allowed = ", ".join(sorted(_DOCTOR_FLOW_NAMES))
-        errors.append(
-            f"{label}.doctor contains invalid Flow values {invalid!r}; choose from {allowed}"
-        )
-    if len({str(flow) for flow in doctor}) != len(doctor):
-        errors.append(f"{label}.doctor must not contain duplicates")
+    if "doctor" in booley:
+        doctor = booley["doctor"]
+        if not isinstance(doctor, list):
+            errors.append(f"{label}.doctor must be an array")
+        else:
+            invalid = [
+                flow
+                for flow in doctor
+                if not isinstance(flow, str) or flow not in _DOCTOR_FLOW_NAMES
+            ]
+            if invalid:
+                allowed = ", ".join(sorted(_DOCTOR_FLOW_NAMES))
+                errors.append(
+                    f"{label}.doctor contains invalid Flow values {invalid!r}; "
+                    f"choose from {allowed}"
+                )
+            if len({str(flow) for flow in doctor}) != len(doctor):
+                errors.append(f"{label}.doctor must not contain duplicates")
+    if "doctor_selftest" in booley and not isinstance(booley["doctor_selftest"], bool):
+        errors.append(f"{label}.doctor_selftest must be a boolean")
 
 
 def core_schema_errors(core_file: Path | str) -> list[str]:
@@ -588,6 +601,16 @@ def core_schema_errors(core_file: Path | str) -> list[str]:
             _check_array_fields(tg, f"targets.{tg_name}", _CAPI2_TARGET_ARRAY_FIELDS)
             _check_booley_target_metadata(tg, f"targets.{tg_name}", errors)
 
+        selectable = core_target_names(doc)
+        selftests = [name for name in selectable if core_target_is_doctor_selftest(doc, name)]
+        public = [name for name in selectable if name not in selftests]
+        if selftests and public:
+            errors.append(
+                "Doctor self-test Targets "
+                f"({', '.join(selftests)}) must live in a dedicated .core without "
+                f"public Targets ({', '.join(public)})"
+            )
+
     return errors
 
 
@@ -628,6 +651,12 @@ def core_target_doctor_flows(core_doc: Mapping[str, Any], name: str) -> tuple[st
     if len(set(doctor)) != len(doctor):
         return ()
     return tuple(doctor)
+
+
+def core_target_is_doctor_selftest(core_doc: Mapping[str, Any], name: str) -> bool:
+    """Return whether one Target is reserved for Doctor's fail-path proof."""
+    booley = core_target_flow_option(core_doc, name, "booley")
+    return isinstance(booley, Mapping) and booley.get("doctor_selftest") is True
 
 
 def core_target_names(core_doc: Mapping[str, Any]) -> list[str]:
@@ -723,6 +752,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
                     flow=core_target_flow(doc, name),
                     cocotb_module=str(cocotb_module) if cocotb_module else None,
                     doctor_flows=core_target_doctor_flows(doc, name),
+                    doctor_selftest=core_target_is_doctor_selftest(doc, name),
                 )
             )
     return refs
@@ -739,6 +769,16 @@ def enumerate_targets(project_root: Path | str) -> dict[str, TargetRef]:
     enumerated (it is not a selectable config).
     """
     return {name: bucket[0] for name, bucket in _enumerate_all(project_root).items()}
+
+
+def enumerate_public_targets(project_root: Path | str) -> dict[str, TargetRef]:
+    """Map user-selectable Target names to their first public declaration."""
+    public: dict[str, TargetRef] = {}
+    for name, bucket in _enumerate_all(project_root).items():
+        ref = next((candidate for candidate in bucket if not candidate.doctor_selftest), None)
+        if ref is not None:
+            public[name] = ref
+    return public
 
 
 def target_declarations(project_root: Path | str) -> dict[str, list[TargetRef]]:
@@ -780,22 +820,12 @@ def _vlnv_matches(query: str, vlnv: str) -> bool:
     return len(q_segs) <= len(key_segs) and key_segs[-len(q_segs) :] == q_segs
 
 
-def resolve_ref(project_root: Path | str, token: str) -> TargetRef:
-    """Resolve a ``--target`` token to the one core that declares it (ADR 0030).
-
-    *token* is either a bare Target name — which must be declared by exactly one
-    core — or a ``vlnv#name`` qualifier whose VLNV may be shortened to any
-    unambiguous segment-suffix (``ibex_top#lint``). Raises
-    :class:`UnknownTargetError` when the name (or the qualified core) does not
-    exist, and :class:`AmbiguousTargetError` when a bare name — or a too-short
-    VLNV qualifier — matches more than one core, naming the candidates so the
-    caller can qualify further.
-    """
-    all_refs = _enumerate_all(project_root)
+def _resolve_from(declarations: Mapping[str, Sequence[TargetRef]], token: str) -> TargetRef:
+    """Resolve *token* against one already-filtered Target declaration view."""
     qualifier, name = _split_qualifier(token)
-    bucket = all_refs.get(name)
+    bucket = declarations.get(name)
     if not bucket:
-        known = ", ".join(sorted(all_refs)) or "(none authored)"
+        known = ", ".join(sorted(declarations)) or "(none authored)"
         raise UnknownTargetError(f"Unknown target {token!r}; selectable Targets: {known}")
     if qualifier is not None:
         matches = [r for r in bucket if _vlnv_matches(qualifier, r.vlnv)]
@@ -820,6 +850,29 @@ def resolve_ref(project_root: Path | str, token: str) -> TargetRef:
             f"{', '.join(cands)}; qualify it as 'vlnv#{name}' (e.g. {hint!r})."
         )
     return bucket[0]
+
+
+def resolve_ref(project_root: Path | str, token: str) -> TargetRef:
+    """Resolve a ``--target`` token to the one core that declares it (ADR 0030).
+
+    *token* is either a bare Target name — which must be declared by exactly one
+    core — or a ``vlnv#name`` qualifier whose VLNV may be shortened to any
+    unambiguous segment-suffix (``ibex_top#lint``). Raises
+    :class:`UnknownTargetError` when the name (or the qualified core) does not
+    exist, and :class:`AmbiguousTargetError` when a bare name — or a too-short
+    VLNV qualifier — matches more than one core, naming the candidates so the
+    caller can qualify further. This low-level view includes Doctor self-tests.
+    """
+    return _resolve_from(_enumerate_all(project_root), token)
+
+
+def resolve_public_ref(project_root: Path | str, token: str) -> TargetRef:
+    """Resolve one user-selectable Target without exposing Doctor self-tests."""
+    declarations = {
+        name: [ref for ref in refs if not ref.doctor_selftest]
+        for name, refs in _enumerate_all(project_root).items()
+    }
+    return _resolve_from({name: refs for name, refs in declarations.items() if refs}, token)
 
 
 def minimal_selector(ref: TargetRef, declaring: Sequence[TargetRef]) -> str:
@@ -850,7 +903,7 @@ def available_targets(project_root: Path | str) -> list[str]:
     ``configs.toml``-derived fallback (decision 23) was removed once every project
     migrated to ``.core``.
     """
-    return sorted(enumerate_targets(project_root))
+    return sorted(enumerate_public_targets(project_root))
 
 
 def doctor_target_selectors(project_root: Path | str, flow_name: str) -> list[str]:
@@ -881,7 +934,7 @@ def target_eda_tools(project_root: Path | str) -> dict[str, str | None]:
     transitional configs.toml world declares no per-Target EDA tool, so eligibility
     filtering is dormant until migration.
     """
-    return {name: ref.eda_tool for name, ref in enumerate_targets(project_root).items()}
+    return {name: ref.eda_tool for name, ref in enumerate_public_targets(project_root).items()}
 
 
 def target_cocotb_modules(project_root: Path | str) -> dict[str, str | None]:
@@ -893,7 +946,9 @@ def target_cocotb_modules(project_root: Path | str) -> dict[str, str | None]:
     detection reads the *resolved* flow options (ADR 0022 decision 6's
     enumerate-vs-resolve line), via :class:`ResolvedTarget.cocotb_module`.
     """
-    return {name: ref.cocotb_module for name, ref in enumerate_targets(project_root).items()}
+    return {
+        name: ref.cocotb_module for name, ref in enumerate_public_targets(project_root).items()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1660,7 +1715,9 @@ def resolve_target_selection(
     passes back to the ref-taking functions (which also route through
     :func:`resolve_ref`). An empty selection returns ``[]`` — there is **no**
     enumerate-all fallback (ADR 0030): a Booley Flow invoked with no ``--target``
-    refuses rather than sweeping every core. A resolvable
+    refuses rather than sweeping every core. Targets marked
+    ``flow_options.booley.doctor_selftest`` are accepted only during Doctor's
+    internal bad run and otherwise behave as unknown. A resolvable
     ``.core`` Target is a precondition for every Booley Flow (ADR 0039), so every
     token is validated unconditionally — the old zero-``.core`` transitional
     skip silently accepted any name and made mixed projects hard-fail later.
@@ -1668,8 +1725,14 @@ def resolve_target_selection(
     selected = [c.strip() for c in (target_arg or "").split(",") if c.strip()]
     if not selected:
         return []
+    from booley.fusesoc import selftest_overlay
+
+    doctor_selftest = (
+        os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
+    )
+    resolver = resolve_ref if doctor_selftest else resolve_public_ref
     for token in selected:
-        resolve_ref(project_root, token)  # raises on unknown / ambiguous
+        resolver(project_root, token)  # raises on unknown / ambiguous
     return selected
 
 

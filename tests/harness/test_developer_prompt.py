@@ -143,6 +143,8 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
 
         assert "`optional_criteria_justification`" in system
         assert "explaining why each one could not be completed" in system
+        assert "Commit every intended change" in system
+        assert "clean before calling `submit_run_report`" in system
 
     def test_disabled_run_report_requires_justification_only_when_optional_unmet(
         self, tmp_path: Path
@@ -167,6 +169,8 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         assert "any `_done` review" in system
         assert "optional_criteria_justification" in system
         assert "required in that case" in system
+        assert "Commit every intended change" in system
+        assert "clean before stopping" in system
 
     def test_criteria_freshness_rule_covers_terminal_reviews(self, tmp_path: Path):
         ticket = tmp_path / "ticket.md"

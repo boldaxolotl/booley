@@ -103,6 +103,8 @@ def test_launch_developer_agent_native_env_and_params(tmp_path, monkeypatch):
     # Env exported into os.environ during the call — REAL Runner paths.
     env = captured["env"]
     assert env["BOOLEY_SLUG"] == "my-ticket"
+    assert env["BOOLEY_WORKTREE"] == str(tmp_path)
+    assert env["BOOLEY_PAIRED_PROJECT_REPOSITORY"] == ""
     assert env["BOOLEY_TICKET_TYPE"] == "feature"
     assert env["BOOLEY_TICKET_FILE"] == str(logs_dir / "ticket.md")
     assert env["BOOLEY_LOGS_DIR"] == str(logs_dir)

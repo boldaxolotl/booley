@@ -405,12 +405,13 @@ class TestCriteriaOperations:
         # issue_list preserved for targeted re-verification
         assert "issue_list" in state.criteria["review_tb_quality_clean"].detail
 
-    def test_reset_tb_does_not_unmet_done_reviews(self, state: DevelopmentState):
-        """One-shot _done reviews must not have met status reset by code changes."""
+    def test_reset_tb_marks_done_review_stale(self, state: DevelopmentState):
+        """A code change immediately invalidates a completed advisory review."""
         state.set_criterion("review_tb_quality_done", True)
         reset = state.reset_category(CATEGORY_TB)
-        assert "review_tb_quality_done" not in reset
-        assert state.is_met("review_tb_quality_done") is True
+        assert "review_tb_quality_done" in reset
+        assert state.is_met("review_tb_quality_done") is False
+        assert state.criteria["review_tb_quality_done"].stale is True
 
     def test_reset_preserves_total_verify_cycles(self, state: DevelopmentState):
         """total_verify_cycles must survive reset_category — it tracks cumulative

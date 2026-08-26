@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from booley.dev_support.criteria import BASELINE_TARGET_PARAM
+from booley.dev_support.criterion_categories import CATEGORY_RTL, CATEGORY_TB
+from booley.dev_support.cycle_count import build_cycle_comparison
+from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS, evaluate_cycle_threshold
 from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -121,10 +124,6 @@ class CriterionEntry:
         )
 
 
-# Category tags for criteria invalidation
-CATEGORY_RTL = "rtl"
-CATEGORY_TB = "tb"
-
 # Well-known category prefixes: criteria whose key starts with these
 # are auto-tagged into the corresponding categories.
 # A prefix may map to multiple categories — e.g. sim_ criteria depend on
@@ -135,22 +134,20 @@ _CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
     "synthesis_": frozenset({CATEGORY_RTL}),
     "fpga_impl_": frozenset({CATEGORY_RTL}),
     "sim_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
+    "cycle_count_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
     "coverage_": frozenset({CATEGORY_RTL}),
     # Exact key (prefix matching still applies): the standalone-elaboration
     # sweep is an RTL structural check, so an RTL edit must reset its met
     # status — a stale green would defeat the every-attempt re-verification.
     "elaborate_standalone": frozenset({CATEGORY_RTL}),
-    # review_rtl / review_tb are invalidated by persisted source fingerprints
-    # at the acceptance boundary rather than by endpoint-local prefix resets.
+    # review_rtl / review_tb are handled through _REVIEW_CATEGORY below so
+    # their persisted receipt/findings survive synchronous invalidation.
 }
 
-# Review criteria belong to a category but are excluded from
-# _CATEGORY_PREFIXES because final source-fingerprint validation owns their
-# met-status freshness. However, _clean review criteria track
-# verify_attempts in their detail dict, and those counters MUST be
-# cleared when the underlying code changes — otherwise the reviewer is
-# permanently blocked after exhausting attempts even though the coder
-# has since fixed the issues.
+# Review criteria belong to a category but are kept separate from ordinary
+# prefix resets because their receipt/findings remain useful after they become
+# stale. `_clean` reviews also track verify_attempts, which must be cleared when
+# the underlying code changes.
 _REVIEW_CATEGORY: dict[str, str] = {
     "review_tb_": CATEGORY_TB,
     "review_rtl_": CATEGORY_RTL,
@@ -453,20 +450,32 @@ class DevelopmentState:
         for param_key, threshold in params.items():
             if param_key.startswith("_"):
                 continue
-            result = self._check_single_threshold(
-                param_key,
-                threshold,
-                detail,
-                baseline,
-                metric_map,
-                min_allowed,
-            )
+            if param_key in {"target", "test"}:
+                continue
+            if param_key in CYCLE_COUNT_PARAMS:
+                result = evaluate_cycle_threshold(
+                    param_key,
+                    threshold,
+                    current=detail.get("cycles"),
+                    baseline=detail.get("baseline_cycles"),
+                )
+            else:
+                result = self._check_single_threshold(
+                    param_key,
+                    threshold,
+                    detail,
+                    baseline,
+                    metric_map,
+                    min_allowed,
+                )
             if result is not None:
                 checks.append(result)
                 if not result["pass"]:
                     all_pass = False
 
         detail["checks"] = checks
+        if any(param in CYCLE_COUNT_PARAMS for param in params):
+            detail["cycle_comparison"] = build_cycle_comparison(params, detail, checks)
         if not all_pass:
             entry.met = False
             entry.ever_met = False
@@ -697,6 +706,11 @@ class DevelopmentState:
                 belongs = category == override
             else:
                 belongs = category in _infer_categories(key)
+                if not belongs:
+                    belongs = any(
+                        key.startswith(prefix) and review_category == category
+                        for prefix, review_category in _REVIEW_CATEGORY.items()
+                    )
             if belongs and entry.met:
                 entry.met = False
                 entry.stale = True
@@ -709,7 +723,7 @@ class DevelopmentState:
             # verify counter must be refreshed when code changes).
             # total_verify_cycles is NOT cleared — it tracks cumulative
             # attempts across all coder fixes to detect stale-finding impasses.
-            if not belongs and not entry.met and entry.detail.get("verify_attempts"):
+            if belongs and not entry.met and entry.detail.get("verify_attempts"):
                 for prefix, cat in _REVIEW_CATEGORY.items():
                     if key.startswith(prefix) and cat == category:
                         entry.detail.pop("verify_attempts", None)

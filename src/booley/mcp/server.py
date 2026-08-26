@@ -2877,6 +2877,8 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         work_units = target_count
 
     campaign_budget_s = sim_seconds * work_units
+    if _ticket_baseline_required("cycle_count_"):
+        campaign_budget_s *= 2
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
     call_margin_s = 0 if arguments.get("trace") else 30
     return max(default, campaign_budget_s) + trace_margin_s + call_margin_s

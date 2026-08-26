@@ -151,7 +151,10 @@ test it invoked, then puts the count in the MCP tool's per-test output and the
 JSON report's `tests[].cycles`. Configuring `cycle_sentinels` replaces the
 built-in cycle prefix; it does not affect the pass/fail verdict. For backward
 compatibility, a count-only record remains readable when it is the only cycle
-record in the log.
+record in the log. That legacy form and all named records remain observational
+unless the Ticket declares a `cycle_count` Criterion. Gated evidence requires
+exactly one named record for the invoked test; missing, duplicate, malformed,
+or wrong-test records fail closed.
 
 Cocotb Targets are the exception: they score from cocotb's `results.xml`, so
 pass/fail sentinel knobs don't apply. Named cycle records are still collected
@@ -839,9 +842,13 @@ that tree on an isolated simulation build variant of the default Target's
 first runnable test. Ordinary simulation never applies or reuses it, and no
 Doctor-only shell command belongs in `[flows.sim].pre_run_commands`.
 
-Lint's corresponding convention is a `.core` Target named
-`lint_selftest_bad`. Doctor uses the first lint Doctor Target as the good case
-and that conventional Target as the bad case. There is no
+Lint's corresponding convention is a Target named `lint_selftest_bad` in its
+own tracked `.core`, with `flow_options.booley.doctor_selftest: true`. Keep the
+known-bad source beside that dedicated core under ordinary tracked verification
+material. Booley omits Doctor self-test Targets from `booley targets`, its MCP
+equivalent, and ordinary Flow selection; Doctor can still resolve them for the
+bad case. Doctor uses the first lint Doctor Target as the good case and that
+conventional Target as the bad case. There is no
 `[flows.<flow>.selftest]` configuration table; legacy tables must be deleted.
 
 ### Feedback (`[feedback]`)

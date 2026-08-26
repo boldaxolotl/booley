@@ -48,7 +48,7 @@ Deterministic end-to-end orchestration; no LLM:
 | Booley Flow | Purpose | Sets |
 |--------|---------|------|
 | `elab` | Compile + elaborate RTL/TB for one or more Targets (no simulation) | `elab*` |
-| `sim` | Run RTL simulation for one or more Targets | `sim_pass` |
+| `sim` | Run RTL simulation for one or more Targets | — |
 | `lint` | Run lint for one or more Targets | `lint_clean` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
@@ -58,7 +58,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints com
 Key Flow-specific controls:
 
 - `elab`: `--standalone` also proves every RTL module elaborates from its declaring file
-- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run
+- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
@@ -140,6 +140,7 @@ Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target 
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
+| `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` | sim loop |
 | `sim_pass_{target}` | RTL simulation passes all tests | `sim` | sim loop |
 
 #### Verification Quality
@@ -156,7 +157,7 @@ Targeting and reuse: `--scope <rtl-file,...>` chooses mutation sites; `--target 
 | `synthesis_ok_{target}` | ASIC synthesis completes within area/timing budgets | `synth` | post-sim |
 <!-- END GENERATED: criteria -->
 
-**Synthesis / FPGA threshold flavours:**
+**Threshold parameters:**
 
 <!-- BEGIN GENERATED: criteria-params -->
 Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the ticket's `base_sha` baseline:
@@ -204,6 +205,29 @@ In Ticket Mode, ticket creation seals an immutable Target contract before enqueu
 | `lut_count` | ✓ | — | ✓ | ✓ |
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
+
+**Per-test `cycle_count`**
+
+Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the ticket's pinned `base_sha`.
+
+| Parameter | Baseline? | Unit | Passing relation |
+|-----------|:---------:|------|------------------|
+| `cycle_count_max` | no | cycles | current ≤ threshold |
+| `cycle_count_min` | no | cycles | current ≥ threshold |
+| `cycle_count_increase_at_least` | yes | percent | signed change ≥ +N% |
+| `cycle_count_increase_at_most` | yes | percent | signed change ≤ +N% |
+| `cycle_count_reduce_at_least` | yes | percent | signed change ≤ -N% |
+| `cycle_count_reduce_at_most` | yes | percent | signed change ≥ -N% |
+| `cycle_count_increase_at_least_cycles` | yes | cycles | current - baseline ≥ N |
+| `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
+| `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
+| `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
+
+Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.
+
+A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
+
+Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
 **Per-clock timing thresholds.** The timing metrics

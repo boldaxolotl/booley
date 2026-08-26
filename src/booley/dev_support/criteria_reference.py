@@ -11,8 +11,8 @@ Two generated blocks live here:
 
 * ``criteria`` — the acceptance-criteria table, split into functional groups
   (Build, Review, …) via each criterion's ``group`` field for readability.
-* ``criteria-params`` — the threshold "flavours" (absolute caps/floors and
-  baseline-relative bounds) that ``synthesis_ok`` / ``fpga_impl_ok`` accept,
+* ``criteria-params`` — the implementation-metric threshold flavours and the
+  complete per-test Cycle Count threshold table,
   rendered straight from the param registry in :mod:`booley.dev_support.criteria` so
   the docs can never drift from the validator.
 
@@ -62,7 +62,9 @@ def _clean(text: str) -> str:
 
 
 def _display_name(cdef) -> str:
-    """Backticked criterion name, with a Target suffix for per-target families."""
+    """Backticked criterion name with its expansion identity placeholders."""
+    if cdef.per_test:
+        return f"`{cdef.name}_{{target,test}}`"
     return f"`{cdef.name}_{{target}}`" if cdef.per_target else f"`{cdef.name}`"
 
 
@@ -148,7 +150,7 @@ def _param_flavours(params: frozenset[str]) -> dict[str, set[str]]:
 
 
 def render_criteria_params_reference() -> str:
-    """Render the ``synthesis_ok`` / ``fpga_impl_ok`` threshold flavours.
+    """Render implementation and per-test Cycle Count threshold references.
 
     Straight from the param registry in :mod:`booley.dev_support.criteria`, so the
     documented flavours can never drift from what the validator actually accepts.
@@ -159,6 +161,7 @@ def render_criteria_params_reference() -> str:
         SYNTHESIS_OK_MUTEX_PAIRS,
         SYNTHESIS_OK_PARAMS,
     )
+    from booley.dev_support.thresholds import CYCLE_COUNT_DESCRIPTORS
 
     flavour_cols = [
         ("max", "≤ cap"),
@@ -229,6 +232,47 @@ def render_criteria_params_reference() -> str:
             lines.append("")
             lines.append(f"> Mutually exclusive: `{a}` ⊕ `{b}`.")
         lines.append("")
+
+    lines += [
+        "**Per-test `cycle_count`**",
+        "",
+        "Use a list of mappings. Every item names one `target` and registered `test`, "
+        "plus one or more thresholds; all thresholds on the item must pass. Relative "
+        "forms automatically compare the same Target/test at the ticket's pinned `base_sha`.",
+        "",
+        "| Parameter | Baseline? | Unit | Passing relation |",
+        "|-----------|:---------:|------|------------------|",
+    ]
+    relations = {
+        "cycle_count_max": "current ≤ threshold",
+        "cycle_count_min": "current ≥ threshold",
+        "cycle_count_increase_at_least": "signed change ≥ +N%",
+        "cycle_count_increase_at_most": "signed change ≤ +N%",
+        "cycle_count_reduce_at_least": "signed change ≤ -N%",
+        "cycle_count_reduce_at_most": "signed change ≥ -N%",
+        "cycle_count_increase_at_least_cycles": "current - baseline ≥ N",
+        "cycle_count_increase_at_most_cycles": "current - baseline ≤ N",
+        "cycle_count_reduce_at_least_cycles": "baseline - current ≥ N",
+        "cycle_count_reduce_at_most_cycles": "baseline - current ≤ N",
+    }
+    for param, descriptor in CYCLE_COUNT_DESCRIPTORS.items():
+        baseline = "yes" if descriptor.relative else "no"
+        lines.append(f"| `{param}` | {baseline} | {descriptor.unit} | {relations[param]} |")
+    lines += [
+        "",
+        "Syntax (ticket criteria): "
+        "`cycle_count: [{target: sim_coremark, test: coremark, "
+        "cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.",
+        "",
+        "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
+        "that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, "
+        "or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing "
+        "Cycle Count records remain observational.",
+        "",
+        "Relative comparisons report an **observed Cycle Count change**. When declared "
+        "workload inputs differ, review reports disclose the changes and do not attribute "
+        "the result to RTL alone.",
+    ]
 
     return "\n".join(lines).rstrip("\n")
 

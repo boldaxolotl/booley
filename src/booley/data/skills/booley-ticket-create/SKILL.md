@@ -76,11 +76,11 @@ Build defaults from ticket type + configs (from `@config` segments in sim entrie
 > **Mandatory:**
 > 1. ✓ `lint_clean`: [configs] *(feature/refactor)*
 > 2. ✓ `sim_pass`: [tb @ config @ test @ cur -> exp, ...]
-> 3. ✓ `review_rtl_bugs_done` *(feature/refactor; terminal advisory review)*
-> 4. ✓ `review_tb_quality_done` *(feature/verification; terminal advisory review)*
+> 3. ✓ `review_rtl_bugs` *(feature/refactor; corrective review)*
+> 4. ✓ `review_tb_quality` *(feature/verification; corrective review)*
 >
 > **Optional:**
-> 5. ☐ `review_rtl_spec_done` *(feature tickets carrying a detailed spec)*
+> 5. ☐ `review_rtl_spec` *(feature tickets carrying a detailed spec)*
 > 6. ☐ `synthesis_ok` *(datapath/timing-critical)*
 > 7. ☐ `mutation_score`
 >
@@ -228,9 +228,10 @@ criteria:
 |------|---------|
 | Config list | `lint_clean: [<target_a>, <target_b>]` → per-Target expansion |
 | Sim-style | `sim_pass: [tb@config@test@cur->exp]` |
+| Per-test Cycle Count | `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000}]` |
 | Parameterized | `synthesis_ok: {targets: [<target>], cell_count_max: 500}` |
 | Parameterized | `fpga_impl_ok: {targets: [<target>], lut_count_max: 100000}` |
-| Scalar | Spell review criteria as `<key>_done` for the default terminal advisory review (report findings, do not fix). Use `<key>_clean` only when the user requests every finding fixed or explicitly waived with user-visible justification |
+| Scalar | Use the bare review key for the corrective default; it expands to `<key>_clean`. Spell `<key>_done` only when the user explicitly wants an advisory review whose findings are reported but do not belong to this ticket's correction loop |
 
 ### Defaults by Ticket Type
 
@@ -238,12 +239,12 @@ criteria:
 |-----------|:-------:|:------:|:--------:|:------------:|
 | `lint_clean` | **M** | — | **M** | — |
 | `sim_pass` | **M** | **M** | **M** | **M** |
-| `review_rtl_bugs_done` | **M** | — | **M** | — |
-| `review_tb_quality_done` | **M** | — | — | **M** |
+| `review_rtl_bugs` | **M** | — | **M** | — |
+| `review_tb_quality` | **M** | — | — | **M** |
 
 **M** = mandatory, — = not included.
 
-Opt-in suggestions: `review_rtl_spec_done` for feature tickets carrying a detailed spec (it
+Opt-in suggestions: `review_rtl_spec` for feature tickets carrying a detailed spec (it
 checks the RTL against the ticket body, or the external spec the `spec:` field points at);
 `coverage_*` and `mutation_score` for verification; `synthesis_ok` for
 datapath/timing-critical feature/refactor work; `fpga_impl_ok` for FPGA QoR/timing checks.
@@ -253,6 +254,12 @@ project-authored Verible style-lint Target (a `.core` lint Target with
 `flow_options: {tool: verible}`, typically `lint_style`) alongside the Verilator one — a
 project that authored it presumably wants it enforced. `lint_clean_<target>`
 means "clean under whatever linter that Target names"; there is no separate style criterion.
+
+`cycle_count` is a list of mappings, never a `sim_pass` numeric parameter. Every item must
+name one `target` and registered `test`, plus at least one threshold. Absolute
+`cycle_count_max` / `cycle_count_min` use the current run. Relative percentage and `_cycles`
+forms automatically compare the same Target/test at `base_sha`; consult
+`booley cheat --criteria` for the complete signed-bound vocabulary.
 
 `synthesis_ok` / `fpga_impl_ok` take threshold **params** in four flavours per metric:
 absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_at_least`
@@ -270,10 +277,10 @@ the candidate determines the expanded Criterion name.
 ### Rules
 
 - ≥1 mandatory criterion required
-- Every default review criterion uses the explicit `_done` suffix and runs after
-  code-changing work. `_clean` is opt-in only; never infer it merely because a
-  review is mandatory. Every `_clean` waiver must include a justification and is
-  shown to the user regardless of severity.
+- Every default review criterion uses its bare key, which expands to corrective
+  `_clean`, and runs after code-changing work. Use explicit `_done` only for
+  user-requested advisory review. Every `_clean` waiver includes a justification
+  and is shown to the user regardless of severity.
 - Custom criterion types allowed beyond the catalog
 - A criterion may name a new Target only when ticket creation authors it in the
   contract worktree before sealing. Do not put contract controls in developer

@@ -27,11 +27,89 @@ def _finding_row(
         "line": finding.get("line", 0),
         "summary": str(finding.get("summary", "")),
         "disposition": disposition,
+        "kind": str(finding.get("kind", "")),
+        "ticket_clause": str(finding.get("ticket_clause", "")),
         "evidence": str(finding.get("evidence", "")),
         "justification": str(finding.get("justification", "")),
         "exclusion_reason": str(finding.get("exclusion_reason", "")),
         "actor": str(finding.get("disposition_actor", "")),
     }
+
+
+def _done_rows(criterion: str, detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+    issues = detail.get("issue_list", [])
+    if not isinstance(issues, list):
+        return []
+    return [
+        _finding_row(
+            criterion,
+            finding,
+            str(finding.get("status", finding.get("disposition", "reported"))),
+        )
+        for finding in issues
+        if isinstance(finding, Mapping)
+    ]
+
+
+def _resolved_row(criterion: str, finding: Mapping[str, Any]) -> dict[str, Any]:
+    status = str(finding.get("status", "fixed"))
+    normalized = finding
+    if status in {"project_policy", "out_of_diff_scope"}:
+        status = "excluded"
+    elif status == "impasse_deferred":
+        status = "waived"
+        normalized = {
+            **finding,
+            "justification": (
+                finding.get("justification")
+                or "Legacy automatic impasse disposition; reassess before relying on it."
+            ),
+        }
+    return _finding_row(criterion, normalized, status)
+
+
+def _clean_rows(criterion: str, detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    pending = detail.get("pending", detail.get("issue_list", []))
+    if isinstance(pending, list):
+        rows.extend(
+            _finding_row(criterion, finding, "open")
+            for finding in pending
+            if isinstance(finding, Mapping)
+        )
+    resolved = detail.get("resolved", [])
+    if isinstance(resolved, list):
+        rows.extend(
+            _resolved_row(criterion, finding)
+            for finding in resolved
+            if isinstance(finding, Mapping)
+        )
+    observations = detail.get("observations", [])
+    if isinstance(observations, list):
+        rows.extend(
+            _finding_row(
+                criterion,
+                finding,
+                str(finding.get("status", finding.get("disposition", "advisory"))),
+            )
+            for finding in observations
+            if isinstance(finding, Mapping)
+        )
+    return rows
+
+
+def _deduplicate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduplicated: dict[tuple[str, str], dict[str, Any]] = {}
+    anonymous = 0
+    for row in rows:
+        finding_id = row["finding_id"]
+        if finding_id:
+            key = (row["criterion"], finding_id)
+        else:
+            anonymous += 1
+            key = (row["criterion"], f"legacy-{anonymous}")
+        deduplicated[key] = row
+    return list(deduplicated.values())
 
 
 def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -41,44 +119,12 @@ def collect_review_dispositions(criteria: Mapping[str, Any]) -> list[dict[str, A
         if not criterion.startswith("review_"):
             continue
         detail = _entry_detail(entry)
-        if criterion.endswith("_done"):
-            issues = detail.get("issue_list", [])
-            if isinstance(issues, list):
-                rows.extend(
-                    _finding_row(criterion, finding, "reported")
-                    for finding in issues
-                    if isinstance(finding, Mapping)
-                )
-            continue
-
-        pending = detail.get("pending", detail.get("issue_list", []))
-        if isinstance(pending, list):
-            rows.extend(
-                _finding_row(criterion, finding, "open")
-                for finding in pending
-                if isinstance(finding, Mapping)
-            )
-        resolved = detail.get("resolved", [])
-        if not isinstance(resolved, list):
-            continue
-        for finding in resolved:
-            if not isinstance(finding, Mapping):
-                continue
-            status = str(finding.get("status", "fixed"))
-            normalized_finding = finding
-            if status in {"project_policy", "out_of_diff_scope"}:
-                status = "excluded"
-            elif status == "impasse_deferred":
-                status = "waived"
-                normalized_finding = {
-                    **finding,
-                    "justification": (
-                        finding.get("justification")
-                        or "Legacy automatic impasse disposition; reassess before relying on it."
-                    ),
-                }
-            rows.append(_finding_row(criterion, normalized_finding, status))
-    return rows
+        rows.extend(
+            _done_rows(criterion, detail)
+            if criterion.endswith("_done")
+            else _clean_rows(criterion, detail)
+        )
+    return _deduplicate_rows(rows)
 
 
 def review_report_required(criteria: Mapping[str, Any]) -> bool:

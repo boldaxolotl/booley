@@ -130,6 +130,19 @@ def _format_sim_metric(d: dict, stale: bool) -> str | None:
     return "?" if stale else f"{passed}/{total} tests"
 
 
+def _format_cycle_metric(d: dict, stale: bool) -> str | None:
+    """Format current and optional baseline Cycle Counts."""
+    if stale:
+        return "?"
+    current = d.get("cycles")
+    baseline = d.get("baseline_cycles")
+    if current is None:
+        return None
+    if baseline is None:
+        return f"{current:,} cycles"
+    return f"{baseline:,} → {current:,} cycles ({current - baseline:+,})"
+
+
 def _format_finding_count_metric(  # noqa: PLR0911
     key: str, d: dict, stale: bool
 ) -> str | None:
@@ -197,6 +210,11 @@ def format_criterion_metric(key: str, entry) -> str:  # noqa: PLR0911 — metric
             return mutation
 
     # Simulation: tests passed / total
+    if key.startswith("cycle_count_"):
+        cycle = _format_cycle_metric(d, stale)
+        if cycle is not None:
+            return cycle
+
     if key.startswith("sim_pass"):
         sim = _format_sim_metric(d, stale)
         if sim is not None:

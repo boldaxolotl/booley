@@ -332,6 +332,8 @@ def test_stale_results_xml_removed_before_run(tmp_path: Path):
     # run-half deletes it before launching (missing binary aborts right after).
     stale = tmp_path / crun.RESULTS_XML_NAME
     stale.write_text("<testsuites/>")
+    stale_json = tmp_path / crun.FULL_RESULTS_JSON_NAME
+    stale_json.write_text('{"state":"ok","tests":[{"name":"old_pass"}]}')
     with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):
         crun.run_cocotb_sim(
             build_dir=tmp_path,
@@ -339,6 +341,7 @@ def test_stale_results_xml_removed_before_run(tmp_path: Path):
             cocotb_module="m",
         )
     assert not stale.exists()
+    assert not stale_json.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +371,12 @@ def test_parse_args_round_trip():
             "--max-rundir-bytes",
             "1000",
             "--trace",
+            "--expected-trace-scope",
+            "counter",
             "--plusarg",
             "verbose",
+            "--result-verbosity",
+            "full",
         ]
     )
     assert args.build_dir == "build/sim"
@@ -381,7 +388,9 @@ def test_parse_args_round_trip():
     assert args.timeout == 120
     assert args.max_rundir_bytes == 1000
     assert args.trace is True
+    assert args.expected_trace_scope == "counter"
     assert args.plusargs == ["verbose"]
+    assert args.result_verbosity == "full"
 
 
 def test_parse_args_requires_eda_tool_and_module():
