@@ -52,7 +52,7 @@ For the fastest orientation, start with `booley cheat`. It gives a compact
 overview of every public CLI command, the editable `.booley_project` files,
 Flows, Specialists, Criteria, Targets, skills, artifacts, and runtime commands.
 Print the whole sheet or use `booley cheat --list` and combine section flags,
-such as `booley cheat --commands --project`.
+such as `booley cheat --board` or `booley cheat --commands --project`.
 
 `booley doctor --deep` goes further and runs real smoke sims/lints/synthesis, but
 that one needs the Session Runtime; both it and the full command set are in the
@@ -258,7 +258,7 @@ Deterministic end-to-end orchestration; no LLM:
 | Booley Flow | Purpose | Sets |
 |--------|---------|------|
 | `elab` | Compile + elaborate RTL/TB for one or more Targets (no simulation) | `elab*` |
-| `sim` | Run RTL simulation for one or more Targets | `sim_pass` |
+| `sim` | Run RTL simulation for one or more Targets | — |
 | `lint` | Run lint for one or more Targets | `lint_clean` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
 | `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
@@ -268,7 +268,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints com
 Key Flow-specific controls:
 
 - `elab`: `--standalone` also proves every RTL module elaborates from its declaring file
-- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run
+- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
@@ -474,7 +474,7 @@ the complete CLI workflow in the packaged
 straight to the queue cannot bypass those checks. `booley run --ticket <slug>
 --dry-run` checks the resulting setup without executing it.
 
-**Directory names and status names are not the same word.** `booley board show` prints the ticket's *status*, while the file lives in a same-meaning but differently-named directory. Two of the eight differ:
+**Directory names and status names are not always the same word.** `booley board show` prints the ticket's *status*, while the file lives in a same-meaning but differently-named directory. Three of the eight differ:
 
 | Directory | Status shown by `board show` |
 |---|---|
@@ -489,9 +489,56 @@ straight to the queue cannot bypass those checks. `booley run --ticket <slug>
 
 So a ticket reported as `running` is the one sitting in `board/active/` — nothing is out of sync.
 
+### Ticket Board lifecycle
+
+A Ticket is one body of work with one branch, worktree, and evidence history. Its
+normal path is:
+
+```text
+draft ──► queued ──► running ──► review ──► done
+  │          ▲          │           └──────► archived
+  └─► waiting┘          └─► blocked ──► queued
+```
+
+- `waiting → queued` happens when dependency Tickets finish.
+- `running → blocked` records a question or failure that needs human input.
+  Resolving it returns the same Ticket to `queued`; the Runner later resumes its
+  existing workspace and evidence.
+- `running → queued` is an exceptional interruption-recovery move, not another
+  development attempt. Do not requeue while the Ticket still has an active job.
+- `running → review` is the default successful outcome. A Ticket configured with
+  `on_success.destination: done` deliberately takes the `running → done`
+  shortcut instead.
+
+`review` is a human decision point, not a partial-rework loop. The reviewer has
+three substantive choices:
+
+1. Approve the Ticket as `done`. Small corrections may be made directly in the
+   existing Ticket worktree, with the relevant Flows and Specialists invoked
+   there, before approval; the Ticket remains in `review` throughout.
+2. Reset it completely. This retires the Ticket worktree and branch, archives
+   the current runtime artifacts as prior-run history, clears the active state,
+   and returns the Ticket to `queued` as a clean run. It does not resume or
+   selectively retain the reviewed work.
+3. Archive it. If the remaining work needs a different contract, create a new
+   Ticket rather than sending this one back for rework.
+
+The ordinary `review → queued` move is therefore invalid. Only the explicit,
+destructive reset operation may put a reviewed Ticket back in the queue. Use
+`/booley-ticket-triage` for blocked and review decisions, `booley board show` to
+inspect state, and `booley cheat --board` for the compact transition reference.
+
 ### Acceptance Criteria
 
 A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
+
+Ticket Mode seals that criterion set at intake. A Flow/Target call that cannot
+bind one of the sealed criteria is rejected before job admission and shows the
+copyable pending invocation; use `--diagnostic` to run it deliberately without
+acceptance effects. Simulation acceptance compares the selected and passing
+test names with the Target registry instead of trusting an aggregate count,
+rejects explicitly model-only evidence for a DUT criterion, and requires a
+recorded failing run before a `fail -> pass` criterion can become green.
 
 The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
 
@@ -525,6 +572,7 @@ The supported criteria families are defined once in `criteria.toml` and listed b
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
+| `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` | sim loop |
 | `sim_pass_{target}` | RTL simulation passes all tests | `sim` | sim loop |
 
 #### Verification Quality
@@ -541,7 +589,7 @@ The supported criteria families are defined once in `criteria.toml` and listed b
 | `synthesis_ok_{target}` | ASIC synthesis completes within area/timing budgets | `synth` | post-sim |
 <!-- END GENERATED: criteria -->
 
-#### Synthesis / FPGA threshold flavours
+#### Threshold parameters
 
 <!-- BEGIN GENERATED: criteria-params -->
 Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **params**. Each takes a `targets:` list, the per-target scoping key naming which project Targets to check (the key is `targets`, never `configs`), plus one or more metric params. Four flavours per metric: two absolute, two relative to the ticket's `base_sha` baseline:
@@ -587,6 +635,29 @@ In Ticket Mode, ticket creation seals an immutable Target contract before enqueu
 | `lut_count` | ✓ | — | ✓ | ✓ |
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
+
+**Per-test `cycle_count`**
+
+Use a list of mappings. Every item names one `target` and registered `test`, plus one or more thresholds; all thresholds on the item must pass. Relative forms automatically compare the same Target/test at the ticket's pinned `base_sha`.
+
+| Parameter | Baseline? | Unit | Passing relation |
+|-----------|:---------:|------|------------------|
+| `cycle_count_max` | no | cycles | current ≤ threshold |
+| `cycle_count_min` | no | cycles | current ≥ threshold |
+| `cycle_count_increase_at_least` | yes | percent | signed change ≥ +N% |
+| `cycle_count_increase_at_most` | yes | percent | signed change ≤ +N% |
+| `cycle_count_reduce_at_least` | yes | percent | signed change ≤ -N% |
+| `cycle_count_reduce_at_most` | yes | percent | signed change ≥ -N% |
+| `cycle_count_increase_at_least_cycles` | yes | cycles | current - baseline ≥ N |
+| `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
+| `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
+| `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
+
+Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.
+
+A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
+
+Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
 **Per-clock timing thresholds.** Timing is reported per clock, so the timing
@@ -616,7 +687,7 @@ on_success:
   triage_report: true     # prepare rich HTML explanation before review
 ```
 
-`destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch** — `cleanup: true` is not ignored, it's deferred: it runs when you close the ticket with `booley board move <slug> done`. `destination: done` skips the pause and merges, cleans up, and closes in one step.
+`destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
 With `triage_report: true` (the default), Booley uses the configured agent
 backend after criteria acceptance to prepare a self-contained HTML explanation
@@ -772,6 +843,7 @@ booley cheat
 # Show one section of it (`--list` names them all)
 booley cheat --criteria
 booley cheat --flows --runtime
+booley cheat --board
 booley cheat --commands --project
 
 # Run diagnostics

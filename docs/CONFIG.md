@@ -151,7 +151,10 @@ test it invoked, then puts the count in the MCP tool's per-test output and the
 JSON report's `tests[].cycles`. Configuring `cycle_sentinels` replaces the
 built-in cycle prefix; it does not affect the pass/fail verdict. For backward
 compatibility, a count-only record remains readable when it is the only cycle
-record in the log.
+record in the log. That legacy form and all named records remain observational
+unless the Ticket declares a `cycle_count` Criterion. Gated evidence requires
+exactly one named record for the invoked test; missing, duplicate, malformed,
+or wrong-test records fail closed.
 
 Cocotb Targets are the exception: they score from cocotb's `results.xml`, so
 pass/fail sentinel knobs don't apply. Named cycle records are still collected
@@ -392,22 +395,33 @@ targets:
       frontend: sv2v            # sv2v (default) | slang
       # slang_options: [--single-unit]
       ppa_profile: balanced     # compact | balanced | max_frequency
+      synth_mode: physical      # physical (default) | logical
       flatten: true
-      timing_engine: openroad   # openroad | opensta | none
-      yosys:
+      advanced_settings_yosys:
         abc_recipe: balanced
         # generic_abc_before_mapping: false
         # abc_delay_ps: 3333
-      openroad:
+      advanced_settings_openroad:
         utilization_pct: 50
         placement_density: 0.75
     filesets: [rtl, timing_constraints]
     toplevel: top
 ```
 
-Timing intent belongs in the Target's SDC fileset. A Target with neither SDC
-nor an explicit per-run clock is rejected rather than synthesized against a
-silent default clock.
+`physical` runs Yosys followed by OpenROAD placement, optimization, parasitic
+estimation, and its embedded STA. Its `area_um2` is post-optimization area and
+`area_source` is `openroad_post_optimization`. Timing intent belongs in the
+Target's SDC fileset; a physical Target with neither SDC nor an explicit
+per-run clock is rejected rather than analyzed against a silent default.
+
+`logical` runs only Yosys mapping. It is much faster and gives a useful mapped
+area estimate plus `estimated_fmax_mhz`, calculated from ABC's longest mapped
+logic delay. The frequency is not STA and is probably inaccurate because it
+excludes placement and wire delays; Booley prints that warning with every
+logical estimate. Its `area_source` is `yosys_mapped`. SDC is not required or
+consumed in this mode. A non-empty
+`advanced_settings_openroad` table with `synth_mode: logical` is a configuration
+error because those settings could not affect the result.
 
 ```tcl
 # util/syn/sdc/block.sdc
@@ -417,11 +431,12 @@ set_output_delay -clock clk_i 0.0 [all_outputs]
 set_false_path -from [get_ports mode_i]
 ```
 
-For normal use, choose only `ppa_profile` and `flatten`. Profiles are
+For normal use, change `ppa_profile`; select `synth_mode: logical` only when the
+fast mapped-area / approximate-frequency trade-off is intentional. Profiles are
 EDA-tool-independent intent and can be translated by a future Genus backend as
-well as the built-in Yosys/OpenROAD backend. The Target's `yosys` and
-`openroad` subtables are expert overrides and deliberately remain
-backend-specific.
+well as the built-in Yosys/OpenROAD backend. The Target's
+`advanced_settings_yosys` and `advanced_settings_openroad` subtables are expert
+overrides and deliberately remain backend-specific.
 
 | Profile | Yosys mapping | OpenROAD utilization / density |
 | --- | --- | --- |
@@ -434,7 +449,11 @@ liberty-aware ABC pass. `--ppa-profile` and `--flatten`/`--no-flatten` override
 the Target defaults for one MCP tool call. Expert per-call flags override one
 backend setting after the profile is selected. An explicit per-call profile
 starts from that clean built-in profile (it does not inherit Target-level
-`yosys` or `openroad` overrides); per-call expert flags can then refine it.
+advanced-setting overrides); per-call expert flags can then refine it.
+
+The former `timing_engine`, `yosys`, and `openroad` Target keys are retired and
+produce migration errors rather than aliases. Replace them with `synth_mode`,
+`advanced_settings_yosys`, and `advanced_settings_openroad` respectively.
 
 **Upgrade note:** `balanced` is the new default and intentionally replaces the
 old implicit combination (generic ABC inside `synth`, default liberty ABC,
@@ -823,9 +842,13 @@ that tree on an isolated simulation build variant of the default Target's
 first runnable test. Ordinary simulation never applies or reuses it, and no
 Doctor-only shell command belongs in `[flows.sim].pre_run_commands`.
 
-Lint's corresponding convention is a `.core` Target named
-`lint_selftest_bad`. Doctor uses the first lint Doctor Target as the good case
-and that conventional Target as the bad case. There is no
+Lint's corresponding convention is a Target named `lint_selftest_bad` in its
+own tracked `.core`, with `flow_options.booley.doctor_selftest: true`. Keep the
+known-bad source beside that dedicated core under ordinary tracked verification
+material. Booley omits Doctor self-test Targets from `booley targets`, its MCP
+equivalent, and ordinary Flow selection; Doctor can still resolve them for the
+bad case. Doctor uses the first lint Doctor Target as the good case and that
+conventional Target as the bad case. There is no
 `[flows.<flow>.selftest]` configuration table; legacy tables must be deleted.
 
 ### Feedback (`[feedback]`)

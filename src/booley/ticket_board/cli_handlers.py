@@ -66,6 +66,7 @@ from .reporting import (
 from .scanner import _load_state_data
 from .validation import (
     format_validate_logs_report,
+    owned_draft_dirty_paths,
     validate_logs,
     validate_ticket_fields,
 )
@@ -184,6 +185,7 @@ def _cmd_validate_ticket(tio, args):
         check_files=True,
         check_git=args.check_git,
         project_root=str(detect_project_root()),
+        allowed_dirty_paths=owned_draft_dirty_paths(path, tio.tickets_dir),
     )
     warnings = [e for e in results if e.startswith("[warning] ")]
     errors = [e for e in results if not e.startswith("[warning] ")]
@@ -386,7 +388,7 @@ def _cmd_log_transition(tio, args):
 
 
 def _cmd_move_ticket(tio, args):
-    # Guard: only 'approve' command can move a review ticket to done
+    # Review exits go through operations that preserve their distinct semantics.
     entry = tio.find_ticket(args.slug)
     cur_status = entry.get("status", "") if entry else ""
     norm_to = normalize_dir(args.to)
@@ -394,6 +396,13 @@ def _cmd_move_ticket(tio, args):
         print(
             "Error: cannot move ticket from review to done via move-ticket. "
             "Use 'approve' command instead.",
+            file=sys.stderr,
+        )
+        return 1
+    if cur_status == "review" and norm_to == "board/queue":
+        print(
+            "Error: cannot move ticket from review to queue via move-ticket. "
+            "Use 'reset' for a clean run.",
             file=sys.stderr,
         )
         return 1
@@ -432,7 +441,12 @@ def _cmd_unblock(tio, args):
 
 
 def _cmd_reset(tio, args):
-    ok = op_reset(tio, args.slug, force=getattr(args, "force", False))
+    ok = op_reset(
+        tio,
+        args.slug,
+        force=getattr(args, "force", False),
+        reason=getattr(args, "reason", "user reset ticket"),
+    )
     return 0 if ok else 2
 
 

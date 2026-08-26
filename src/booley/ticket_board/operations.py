@@ -350,8 +350,18 @@ def op_fail(tio: Any, slug: str, error: str, step: str) -> bool:
 
 
 def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
-    """Requeue a ticket: atomically move to queue/, clear runtime state, log transition."""
-    _entry, old_status, old_step = _get_old_state(tio, slug)
+    """Requeue an interrupted run after proving no other process owns it."""
+    entry, old_status, old_step = _get_old_state(tio, slug)
+    if entry:
+        slug = Path(str(entry["file"])).stem
+    live_pid = _live_owner_pid(tio, slug)
+    if live_pid is not None:
+        print(
+            f"Error: ticket '{slug}' is owned by a live process (PID {live_pid}).\n"
+            "  Stop the active run before requeueing it.",
+            file=sys.stderr,
+        )
+        return False
 
     return _op_move_and_log(
         tio,
@@ -366,6 +376,7 @@ def op_requeue(tio: Any, slug: str, reason: str = "requeued") -> bool:
             "blocked_step": None,
         },
         (f"{old_status}:{old_step}", "queued:requeue", "loop-runner", reason),
+        expected_execution_id=str(entry.get("execution_id", "")) if entry else None,
     )
 
 
@@ -615,7 +626,14 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = None):
+def _do_merge(
+    slug,
+    entry,
+    *,
+    cleanup: bool = True,
+    project_root: Path | None = None,
+    allowed_unstaged_rename: tuple[Path, Path] | None = None,
+):
     """Perform the merge step of op_complete. Returns True on success.
 
     ``merge_into`` is usually the branch checked out in the primary worktree
@@ -644,7 +662,12 @@ def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = 
 
     merge_msg = f"merge({slug}): {'integration' if is_integration else 'feature'} completed"
 
-    if not _merge_outer_repository(merge_into, merge_from, merge_msg):
+    if not _merge_outer_repository(
+        merge_into,
+        merge_from,
+        merge_msg,
+        allowed_unstaged_rename=allowed_unstaged_rename,
+    ):
         return False
     if project_root is not None:
         ok, detail = TicketWorkspace.retire(
@@ -662,13 +685,22 @@ def _do_merge(slug, entry, *, cleanup: bool = True, project_root: Path | None = 
     return not cleanup or _cleanup_merged_branch(merge_from)
 
 
-def _merge_outer_repository(merge_into: str, merge_from: str, merge_msg: str) -> bool:
+def _merge_outer_repository(
+    merge_into: str,
+    merge_from: str,
+    merge_msg: str,
+    *,
+    allowed_unstaged_rename: tuple[Path, Path] | None = None,
+) -> bool:
     """Merge the RTL feature branch in an existing or temporary checkout."""
     checkout = find_checkout_of_branch(merge_into)
     if checkout:
         # Merge in the existing checkout. Git itself refuses to clobber
         # uncommitted changes, but check first for a clearer error.
-        if not worktree_is_clean(checkout):
+        if not worktree_is_clean(
+            checkout,
+            allowed_unstaged_rename=allowed_unstaged_rename,
+        ):
             print(
                 f"Error: cannot merge into '{merge_into}': its checkout at "
                 f"{checkout} has uncommitted changes",
@@ -794,6 +826,10 @@ def op_complete(
         entry,
         cleanup=on_success.cleanup,
         project_root=tio._project_root,
+        allowed_unstaged_rename=(
+            tio.tickets_dir / "board" / "queue" / Path(str(entry["file"])).name,
+            tio.tickets_dir / str(entry["file"]),
+        ),
     ):
         print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
         return False
@@ -1003,7 +1039,8 @@ def _live_owner_pid(tio: Any, slug: str) -> int | None:
 
     lock_path = existing_runtime_file(tio.tickets_dir / "logs", slug, "ticket.lock")
     pid = read_lock_pid(lock_path)
-    if pid is None or pid == os.getpid() or not is_pid_alive(pid):
+    caller_owner_pid = str(tio._resolve_developer_pid())
+    if pid is None or str(pid) == caller_owner_pid or not is_pid_alive(pid):
         return None
     return pid
 
@@ -1076,7 +1113,7 @@ def _locked_reset_candidate(tio: Any, slug: str) -> Path | None:
     return file_path if _queue_destination_available(tio, file_path) else None
 
 
-def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
+def _perform_reset(tio: Any, slug: str, entry: dict[str, Any], reason: str) -> bool:
     """Reset under the ticket lock, publishing queue state only at the end."""
     with tio._ticket_lock(slug):
         # Recheck after waiting for the ticket lock. This closes the stale
@@ -1105,7 +1142,7 @@ def _perform_reset(tio: Any, slug: str, entry: dict[str, Any]) -> bool:
             f"{entry.get('status', 'unknown')}:{entry.get('step', '')}",
             "queued:reset",
             "ticket-triage",
-            "user reset ticket",
+            reason,
         )
 
     return True
@@ -1158,7 +1195,12 @@ def _reset_ticket_branches(project_root: Path, slug: str, entry: dict[str, Any])
     return True
 
 
-def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
+def op_reset(
+    tio: Any,
+    slug: str,
+    force: bool = False,
+    reason: str = "user reset ticket",
+) -> bool:
     """Reset a ticket's state and artifacts, then move it to queue/.
 
     The queue move is the final publication step: a queued ticket therefore
@@ -1189,4 +1231,4 @@ def op_reset(tio: Any, slug: str, force: bool = False) -> bool:
     canonical_slug = Path(entry["file"]).stem
     if not _reset_owner_available(tio, canonical_slug, force):
         return False
-    return _perform_reset(tio, canonical_slug, entry)
+    return _perform_reset(tio, canonical_slug, entry, reason)

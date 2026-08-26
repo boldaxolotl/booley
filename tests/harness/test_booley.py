@@ -2257,6 +2257,11 @@ class TestBoardProjectRoot:
 
         assert not getattr(args, "project_root", "")
 
+    def test_reset_accepts_correction_reason(self):
+        args = self._parse(["board", "reset", "slug", "--reason", "review rejected it"])
+
+        assert args.reason == "review rejected it"
+
     def test_run_still_takes_it(self):
         assert self._parse(["run", "--project-root", "/tmp/proj"]).project_root == "/tmp/proj"
 

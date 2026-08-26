@@ -20,6 +20,7 @@ from mcp.client.stdio import stdio_client
 
 from booley.core.models import AgentCallParams, AgentResult
 from booley.dev_support.development_state import DevelopmentState
+from booley.harness.init_scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache
@@ -61,6 +62,58 @@ def _initialize_project(tmp_path: Path) -> Path:
     _run_git(project, "commit", "-m", "Initialize Ticket Mode smoke fixture")
     reset_cache()
     return project
+
+
+def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
+    project = tmp_path / "scaffold-project"
+    choices = ScaffoldChoices(
+        name="fixture",
+        sim_eda_tool="verilator",
+        tb_style="sv",
+        lint_eda_tool="verilator",
+        asic=True,
+        fpga_part=None,
+    )
+    for relative, content in scaffold_files(choices).items():
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _run_git(project, "init", "-b", "main")
+    _run_git(project, "config", "user.name", "Booley Smoke")
+    _run_git(project, "config", "user.email", "smoke@example.invalid")
+    _run_git(project, "add", ".")
+    _run_git(project, "commit", "-m", "Initialize scaffold smoke fixture")
+
+    report_dir = project / "reports"
+    env = os.environ.copy()
+    env["BOOLEY_PROJECT_DIR"] = str(project / ".booley_project")
+    result = subprocess.run(
+        [
+            "booley",
+            "flow",
+            "synth",
+            "--target",
+            "synth",
+            "--report-dir",
+            str(report_dir),
+        ],
+        cwd=project,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    output = f"{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0, output
+    assert "RESULT: PASS" in output
+    report = json.loads((report_dir / "synth_synth.json").read_text(encoding="utf-8"))
+    assert report["whs_ns"] >= 0
+    log = Path(report["artifacts"]["log"])
+    if not log.is_absolute():
+        log = project / log
+    assert "STA-0441" not in log.resolve().read_text(encoding="utf-8")
 
 
 def _write_ticket(project: Path, slug: str, criteria: dict[str, Any], scope: list[str]) -> None:
@@ -186,6 +239,8 @@ async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> No
     testbench = Path(observations["worktree"]) / "tb" / "tb_dut.sv"
     with testbench.open("a", encoding="utf-8") as stream:
         stream.write("\n// freshness probe\n")
+    _run_git(testbench.parents[1], "add", "tb/tb_dut.sv")
+    _run_git(testbench.parents[1], "commit", "-m", "test: add freshness probe")
     code, text = await driver.call("submit_run_report", _report_args(_OPTIONAL_REASON))
     assert code == 2 and "Newly stale" in text
     state = _load_state()
@@ -335,7 +390,8 @@ def _assert_board_state(project: Path, slug: str, expected: str) -> None:
 def _assert_openroad_criterion(state: DevelopmentState) -> None:
     entry = state.criteria["synthesis_ok_synth_smoke"]
     detail = entry.detail
-    assert entry.met and detail["timing_engine"] == "openroad"
+    assert entry.met and detail["synth_mode"] == "physical"
+    assert detail["area_source"] == "openroad_post_optimization"
     assert detail["ppa_complete"] is True and detail["timing_complete"] is True
     assert isinstance(detail["cells"], int) and detail["cells"] > 0
     clock = detail["per_clock"]["clk_i"]

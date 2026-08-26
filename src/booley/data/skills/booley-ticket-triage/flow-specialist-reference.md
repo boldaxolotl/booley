@@ -13,7 +13,8 @@ For triage, detect the execution path from ticket frontmatter or by checking for
 
 The `reset` command performs a full reset of the ticket back to queue. The old
 `reset-to` command (which accepted specific stage targets) has been removed. Use
-`python -m booley.ticket_board reset $SLUG` or `booley board reset $SLUG`.
+`python -m booley.ticket_board reset $SLUG --reason "<correction reason>"` or
+`booley board reset $SLUG --reason "<correction reason>"`.
 
 ## Available Booley Flows and Specialists
 

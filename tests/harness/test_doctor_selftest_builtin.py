@@ -135,21 +135,25 @@ def test_builtin_without_fixtures_warns(tmp_path, monkeypatch):
 def _lint_audit(tmp_path, *, fixture: bool = True):
     pd = tmp_path / ".booley_project"
     pd.mkdir(exist_ok=True)
-    bad_target = (
-        "  lint_selftest_bad:\n    flow: lint\n    flow_options: {tool: verilator}\n"
-        if fixture
-        else ""
-    )
     (tmp_path / "unit.core").write_text(
         "CAPI=2:\n"
         "name: booley::unit:0\n"
         "targets:\n"
         "  lint_core:\n"
         "    flow: lint\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
-        f"{bad_target}",
+        "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n",
         encoding="utf-8",
     )
+    if fixture:
+        (tmp_path / "doctor-selftest.core").write_text(
+            "CAPI=2:\n"
+            "name: booley::doctor-selftest:0\n"
+            "targets:\n"
+            "  lint_selftest_bad:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator, booley: {doctor_selftest: true}}\n",
+            encoding="utf-8",
+        )
     return doctor.ProjectAudit(
         project_root=tmp_path,
         project_dir=pd,
@@ -192,7 +196,28 @@ def test_lint_without_conventional_bad_target_warns(tmp_path, monkeypatch):
     warns = [m for level, m in rec.events if level == "warn"]
     lint_warn = next(m for m in warns if m.startswith("lint fail-path unvalidated"))
     assert "lint_selftest_bad" in lint_warn
-    assert "committed to the repo" in lint_warn
+    assert "dedicated tracked .core" in lint_warn
+
+
+def test_lint_unmarked_bad_target_warns(tmp_path, monkeypatch):
+    project = _lint_audit(tmp_path, fixture=False)
+    (tmp_path / "unmarked.core").write_text(
+        "CAPI=2:\nname: booley::unmarked:0\ntargets:\n"
+        "  lint_selftest_bad:\n"
+        "    flow: lint\n"
+        "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
+    _set_venue(monkeypatch, False)
+    rec = _Rec()
+
+    doctor._run_selftest_checks(project, _runtime(project, "docker"), rec.p, rec.w, rec.s, rec.f)
+
+    assert any(
+        "booley.doctor_selftest metadata" in message
+        for level, message in rec.events
+        if level == "warn"
+    )
 
 
 def test_disabled_flow_skips_silently(tmp_path, monkeypatch):

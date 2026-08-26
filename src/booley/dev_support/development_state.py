@@ -16,6 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.dev_support.criterion_categories import CATEGORY_RTL, CATEGORY_TB
+from booley.dev_support.cycle_count import build_cycle_comparison
+from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS, evaluate_cycle_threshold
 from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -76,6 +79,10 @@ class CriterionEntry:
     params: dict[str, Any] = field(default_factory=dict)
     # True when reset_category() invalidated this criterion (detail is stale)
     stale: bool = False
+    # Ordered, append-only evidence for criteria that explicitly require a
+    # fail -> pass transition. Unlike ever_failed, this retains the red detail
+    # after the green run replaces ``detail``.
+    transition_evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"met": self.met, "mandatory": self.mandatory}
@@ -93,6 +100,8 @@ class CriterionEntry:
             d["params"] = self.params
         if self.stale:
             d["stale"] = True
+        if self.transition_evidence:
+            d["transition_evidence"] = self.transition_evidence
         return d
 
     @classmethod
@@ -107,12 +116,9 @@ class CriterionEntry:
             detail=d.get("detail", {}),
             params=d.get("params", {}),
             stale=d.get("stale", False),
+            transition_evidence=d.get("transition_evidence", []),
         )
 
-
-# Category tags for criteria invalidation
-CATEGORY_RTL = "rtl"
-CATEGORY_TB = "tb"
 
 # Well-known category prefixes: criteria whose key starts with these
 # are auto-tagged into the corresponding categories.
@@ -124,22 +130,20 @@ _CATEGORY_PREFIXES: dict[str, frozenset[str]] = {
     "synthesis_": frozenset({CATEGORY_RTL}),
     "fpga_impl_": frozenset({CATEGORY_RTL}),
     "sim_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
+    "cycle_count_": frozenset({CATEGORY_RTL, CATEGORY_TB}),
     "coverage_": frozenset({CATEGORY_RTL}),
     # Exact key (prefix matching still applies): the standalone-elaboration
     # sweep is an RTL structural check, so an RTL edit must reset its met
     # status — a stale green would defeat the every-attempt re-verification.
     "elaborate_standalone": frozenset({CATEGORY_RTL}),
-    # review_rtl / review_tb are invalidated by persisted source fingerprints
-    # at the acceptance boundary rather than by endpoint-local prefix resets.
+    # review_rtl / review_tb are handled through _REVIEW_CATEGORY below so
+    # their persisted receipt/findings survive synchronous invalidation.
 }
 
-# Review criteria belong to a category but are excluded from
-# _CATEGORY_PREFIXES because final source-fingerprint validation owns their
-# met-status freshness. However, _clean review criteria track
-# verify_attempts in their detail dict, and those counters MUST be
-# cleared when the underlying code changes — otherwise the reviewer is
-# permanently blocked after exhausting attempts even though the coder
-# has since fixed the issues.
+# Review criteria belong to a category but are kept separate from ordinary
+# prefix resets because their receipt/findings remain useful after they become
+# stale. `_clean` reviews also track verify_attempts, which must be cleared when
+# the underlying code changes.
 _REVIEW_CATEGORY: dict[str, str] = {
     "review_tb_": CATEGORY_TB,
     "review_rtl_": CATEGORY_RTL,
@@ -164,6 +168,11 @@ class DevelopmentState:
 
     slug: str = ""
     ticket_type: str = ""
+    # Ticket runs seal their criteria at intake. In strict mode, endpoint
+    # results may update only those declared keys (or their aliases); silently
+    # inventing an optional key can otherwise hide a wrong-Target invocation.
+    # Standalone/human mode keeps the historical permissive behaviour.
+    strict_criteria: bool = False
     criteria: dict[str, CriterionEntry] = field(default_factory=dict)
     # Category overrides: criterion_key -> category string
     category_map: dict[str, str] = field(default_factory=dict)
@@ -194,6 +203,7 @@ class DevelopmentState:
             st = cls(
                 slug=data.get("slug", ""),
                 ticket_type=data.get("ticket_type", ""),
+                strict_criteria=data.get("strict_criteria", False),
                 criteria={
                     k: CriterionEntry.from_dict(v) for k, v in data.get("criteria", {}).items()
                 },
@@ -229,6 +239,7 @@ class DevelopmentState:
         d: dict[str, Any] = {
             "slug": self.slug,
             "ticket_type": self.ticket_type,
+            "strict_criteria": self.strict_criteria,
             "criteria": {k: v.to_dict() for k, v in self.criteria.items()},
             "category_map": self.category_map,
             "all_mandatory_met": self.all_mandatory_met(),
@@ -250,6 +261,7 @@ class DevelopmentState:
         category_overrides: dict[str, str] | None = None,
         flow_key_aliases: dict[str, list[str]] | None = None,
         criterion_params: dict[str, dict[str, Any]] | None = None,
+        strict: bool | None = None,
     ) -> None:
         """Initialize criteria from a {name: mandatory} dict. All start unmet.
 
@@ -271,6 +283,8 @@ class DevelopmentState:
             self.category_map.update(category_overrides)
         if flow_key_aliases:
             self.flow_key_aliases.update(flow_key_aliases)
+        if strict is not None:
+            self.strict_criteria = strict
 
     def set_criterion(
         self,
@@ -317,6 +331,14 @@ class DevelopmentState:
                 )
                 self._set_criterion_entry(base_key, met, detail=detail)
                 return
+
+        if self.strict_criteria:
+            logger.error(
+                "Rejecting undeclared criterion %r for sealed ticket %r",
+                key,
+                self.slug,
+            )
+            return
 
         # A Flow reported a criterion the ticket never declared (e.g. a bare
         # `simulate` run during setup/onboarding, where no `sim_pass_*` criterion
@@ -391,6 +413,14 @@ class DevelopmentState:
         # Threshold evaluation for criteria with params (synthesis_ok, fpga_impl_ok, etc.)
         if entry.params and detail:
             self._evaluate_thresholds(entry)
+        if entry.params.get("from_state") == "fail":
+            entry.transition_evidence.append(
+                {
+                    "met": entry.met,
+                    "recorded_at": now,
+                    "detail": dict(entry.detail or {}),
+                }
+            )
 
     # -- Threshold evaluation --------------------------------------------------
 
@@ -416,20 +446,32 @@ class DevelopmentState:
         for param_key, threshold in params.items():
             if param_key.startswith("_"):
                 continue
-            result = self._check_single_threshold(
-                param_key,
-                threshold,
-                detail,
-                baseline,
-                metric_map,
-                min_allowed,
-            )
+            if param_key in {"target", "test"}:
+                continue
+            if param_key in CYCLE_COUNT_PARAMS:
+                result = evaluate_cycle_threshold(
+                    param_key,
+                    threshold,
+                    current=detail.get("cycles"),
+                    baseline=detail.get("baseline_cycles"),
+                )
+            else:
+                result = self._check_single_threshold(
+                    param_key,
+                    threshold,
+                    detail,
+                    baseline,
+                    metric_map,
+                    min_allowed,
+                )
             if result is not None:
                 checks.append(result)
                 if not result["pass"]:
                     all_pass = False
 
         detail["checks"] = checks
+        if any(param in CYCLE_COUNT_PARAMS for param in params):
+            detail["cycle_comparison"] = build_cycle_comparison(params, detail, checks)
         if not all_pass:
             entry.met = False
             entry.ever_met = False
@@ -636,6 +678,11 @@ class DevelopmentState:
                 belongs = category == override
             else:
                 belongs = category in _infer_categories(key)
+                if not belongs:
+                    belongs = any(
+                        key.startswith(prefix) and review_category == category
+                        for prefix, review_category in _REVIEW_CATEGORY.items()
+                    )
             if belongs and entry.met:
                 entry.met = False
                 entry.stale = True
@@ -648,7 +695,7 @@ class DevelopmentState:
             # verify counter must be refreshed when code changes).
             # total_verify_cycles is NOT cleared — it tracks cumulative
             # attempts across all coder fixes to detect stale-finding impasses.
-            if not belongs and not entry.met and entry.detail.get("verify_attempts"):
+            if belongs and not entry.met and entry.detail.get("verify_attempts"):
                 for prefix, cat in _REVIEW_CATEGORY.items():
                     if key.startswith(prefix) and cat == category:
                         entry.detail.pop("verify_attempts", None)

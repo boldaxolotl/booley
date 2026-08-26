@@ -38,6 +38,8 @@ SELECTIVE_FLOW_KNOBS = {
 _MOVED_TARGET_RECIPE_KEYS = frozenset(
     {
         "base_defines",
+        "advanced_settings_openroad",
+        "advanced_settings_yosys",
         "flatten",
         "frontend",
         "openroad",
@@ -47,6 +49,7 @@ _MOVED_TARGET_RECIPE_KEYS = frozenset(
         "sdc",
         "slang_options",
         "strategy",
+        "synth_mode",
         "timing",
         "timing_engine",
         "yosys",
@@ -164,7 +167,8 @@ def _retired_flow_key_findings(
             fail_finding(
                 f"booley.toml [flows.{flow_name}.selftest] is retired",
                 "delete the table; Doctor now discovers simulation's bad-overlay "
-                "and lint's lint_selftest_bad Target by convention",
+                "and lint's dedicated, doctor_selftest-marked lint_selftest_bad Target "
+                "by convention",
             )
         )
     if "sandbox" in section:

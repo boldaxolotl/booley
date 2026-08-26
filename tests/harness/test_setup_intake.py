@@ -124,6 +124,56 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
     assert frozen[RECIPE_SNAPSHOT_PARAM]["flow_options"]["part"] == "xc7a35tcpg236-1"
 
 
+def test_cycle_count_relative_criterion_pins_ticket_baseline(tmp_path: Path) -> None:
+    from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+    from booley.harness.setup.intake import _pin_cycle_count_baselines
+
+    ctx = TicketContext(
+        slug="cycle-qor",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="feature",
+        branch="main",
+        summary="Cycle QoR",
+        project_root=tmp_path,
+        base_sha="a" * 40,
+    )
+    params = {
+        "cycle_count_binding": {
+            "target": "sim_core",
+            "test": "coremark",
+            "cycle_count_reduce_at_least": 5,
+        }
+    }
+
+    _pin_cycle_count_baselines(ctx, params)
+
+    assert params["cycle_count_binding"][BASELINE_REF_PARAM] == "a" * 40
+
+
+def test_cycle_count_absolute_criterion_needs_no_ticket_baseline(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _pin_cycle_count_baselines
+
+    ctx = TicketContext(
+        slug="cycle-cap",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="feature",
+        branch="main",
+        summary="Cycle cap",
+        project_root=tmp_path,
+    )
+    params = {
+        "cycle_count_binding": {
+            "target": "sim_core",
+            "test": "coremark",
+            "cycle_count_max": 100,
+        }
+    }
+
+    _pin_cycle_count_baselines(ctx, params)
+
+    assert "_baseline_ref" not in params["cycle_count_binding"]
+
+
 # ---------------------------------------------------------------------------
 # Resume action dispatch
 # ---------------------------------------------------------------------------

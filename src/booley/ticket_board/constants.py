@@ -124,6 +124,7 @@ RUNTIME_FIELDS = {
 
 # Maps criterion-key prefix → Booley Flow name for disabled-Flow coherence checks.
 CRITERION_FLOW_MAP = {
+    "cycle_count": "sim",
     "lint_": "lint",
     "synth": "synth",
     "fpga_impl_": "fpga",

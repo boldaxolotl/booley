@@ -51,7 +51,7 @@ of making container paths part of Project configuration.
 | `sim`, `elab` | Icarus Verilog | image | waveform | ships in the standard image; cocotb testbenches supported |
 | `lint` | Verilator | image | none | ships in the standard image |
 | `lint` | Verible (`verible-verilog-lint`, style/naming rules) | image | none | ships in the standard image |
-| `synth` | Yosys (+ OpenROAD/OpenSTA timing) | image + setup cache | none | tools ship in the standard image; `booley init` fetches the pinned Nangate45 liberty/PDK into a host cache mounted read-only at `/opt/pdk` |
+| `synth` | Yosys (+ OpenROAD in physical mode) | image + setup cache | none | tools ship in the standard image; `booley init` fetches the pinned Nangate45 liberty/PDK into a host cache mounted read-only at `/opt/pdk` |
 | `fpga` | AMD Vivado 2025.2 | host | none | supported on Linux x86-64 under an exact registration and Project Grant; floating FlexNet relay is experimental |
 
 ### Vivado host-provisioning policy
@@ -117,7 +117,7 @@ transpile step and handles SystemVerilog constructs sv2v can choke on (complex
 interfaces/modports, some casts), but needs a Yosys-0.67-or-newer image; on an
 older image `synth` fails fast with a message telling you to switch
 frontend or upgrade the image. Both frontends feed the same tech-mapping tail
-(dfflibmap → ABC → `stat`) and the same OpenROAD/OpenSTA timing path, so the
+(dfflibmap → ABC → `stat`) and the same optional OpenROAD physical path, so the
 choice affects only elaboration, not the PPA methodology.
 
 **Which to pick.** Stay on `sv2v` unless it fails. Reach for `slang` when the
@@ -135,7 +135,7 @@ failure signatures and workarounds.
 **Assertion behavior differs by frontend.** `sv2v` drops SVA, so a design full
 of `assert property` reaches Yosys assertion-free. `slang` instead lowers SVA
 into `$check` cells; the flow strips those cells before tech mapping, so they
-neither reach ABC nor corrupt the netlist handed to OpenSTA. If your design
+neither reach ABC nor corrupt the netlist handed to OpenROAD. If your design
 guards its assertions behind a define (`NO_ASSERTIONS` and friends), setting it
 on the ASIC Target is still the cleanest option because it keeps elaboration
 cheap.
@@ -157,7 +157,6 @@ may override the Python rows (see
 | Yosys | v0.67, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
 | sv2v | v0.0.12 |
 | OpenROAD | 2.0-17598-ga008522d8 (Precision-Innovations release 2024-12-14) |
-| OpenSTA | commit `4249ab7b98246180db361b340b43ccfe2053054a` (CUDD 3.0.0) |
 | Verible | v0.0-4080-ga0a8d8eb |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
 | cocotb | 2.0.1, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.1 |

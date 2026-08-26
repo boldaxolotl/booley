@@ -230,6 +230,36 @@ class TestResultsLineRoundTrip:
         newer = cr.format_results_line(res)
         assert cr.parse_results_line(f"{older}\n{newer}") == res
 
+    def test_compact_line_keeps_selected_and_aggregates_other_skips(self):
+        res = cr.CocotbResults(
+            state=cr.STATE_OK,
+            tests=(
+                cr.CocotbTest("selected", "m", "pass"),
+                cr.CocotbTest("skip_a", "m", "skipped"),
+                cr.CocotbTest("skip_b", "m", "skipped"),
+                cr.CocotbTest("unexpected", "m", "fail", "boom"),
+            ),
+        )
+        parsed = cr.parse_results_line(
+            cr.format_results_line(res, selected=["selected"], verbosity="compact")
+        )
+        assert parsed is not None
+        assert [test.name for test in parsed.tests] == ["selected", "unexpected"]
+        assert parsed.skipped_unselected == 2
+
+    def test_full_line_retains_unselected_skips(self):
+        res = cr.CocotbResults(
+            state=cr.STATE_OK,
+            tests=(
+                cr.CocotbTest("selected", "m", "pass"),
+                cr.CocotbTest("skip_a", "m", "skipped"),
+            ),
+        )
+        parsed = cr.parse_results_line(
+            cr.format_results_line(res, selected=["selected"], verbosity="full")
+        )
+        assert parsed == res
+
 
 # ---------------------------------------------------------------------------
 # F-36 — the <failure> attribute dialect varies by cocotb generation

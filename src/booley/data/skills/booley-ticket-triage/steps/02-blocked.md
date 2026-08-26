@@ -116,7 +116,8 @@ Two distinct retry paths — do NOT conflate them:
 
 Notes:
 - `blocked.md` is an append-only chronological log — read it from top to bottom for escalation history (blocks, failures, crashes, human responses).
-- Feedback lives in `blocked.md`; `unblock --feedback` appends to it. A `reset` wipes it.
+- Feedback lives in `blocked.md`; `unblock --feedback` appends to it. A `reset`
+  marks earlier entries as prior-run history.
 
 ## 6. Collect Feedback
 
@@ -128,7 +129,10 @@ For an unblock retry:
 ## 7. Execute
 
 - **Unblock (retry with feedback)**: `python -m booley.ticket_board unblock $SLUG --feedback "..."` — then print: `Unblocked -> queued. Run ticket execution to resume.`
-- **Reset (clean slate, no feedback)**: `python -m booley.ticket_board reset $SLUG` (or `booley board reset $SLUG`) — then print: `Reset -> queued. Run ticket execution to resume.`
+- **Reset (clean slate)**: confirm the correction reason, then run
+  `python -m booley.ticket_board reset $SLUG --reason "<correction reason>"`
+  (or `booley board reset $SLUG --reason "<correction reason>"`) — then print:
+  `Reset -> queued. Run ticket execution from a clean state.`
 - **Archive**: Confirm first, then `python -m booley.ticket_board archive $SLUG --force` (or `booley board archive $SLUG --force`). `--force` is required because the ticket is not `done`; archive also removes the worktree and branch itself, so no manual `git branch -D` is needed.
 - **Skip**: leave as-is.
 

@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from booley import __version__
 from booley.audit import config_common, design_size, project_schema, resource_policy
 from booley.fusesoc import selftest_overlay
 from booley.harness import devcontainer as dc
@@ -165,6 +166,7 @@ def _patch_environment(
     *,
     mcp_tools: list[str] | None = None,
     mcp_payload: dict | None = None,
+    runtime_booley_version: str = __version__,
 ) -> list[list[str]]:
     reset_cache()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
@@ -177,14 +179,22 @@ def _patch_environment(
     monkeypatch.setattr(doctor.shutil, "which", lambda name: runtime if name == runtime else None)
     monkeypatch.setattr(doctor, "_docker_image_exists", lambda: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
+
     # The broad Doctor fixture predates host issuance and keeps its concern on
     # orchestration. Exact stamp/authority behavior has dedicated tests below.
+    def check_issued_runtime_fixture(_project, docker_exe, passed, _skip, failed):
+        passed("Session Runtime spec has valid host issuance (fixture)")
+        doctor._check_runtime_booley_version(
+            docker_exe,
+            dc.SANDBOX_IMAGE,
+            passed,
+            failed,
+        )
+
     monkeypatch.setattr(
         doctor,
         "_check_issued_session_runtime",
-        lambda _project, _docker, passed, _skip, _fail: passed(
-            "Session Runtime spec has valid host issuance (fixture)"
-        ),
+        check_issued_runtime_fixture,
     )
     monkeypatch.setattr(
         doctor.session_runtime,
@@ -201,7 +211,7 @@ def _patch_environment(
 
     calls: list[list[str]] = []
 
-    def fake_run(cmd, **kwargs):  # noqa: PLR0911 — subprocess stub dispatches one return per mocked git/docker command
+    def fake_run(cmd, **kwargs):  # noqa: PLR0911,PLR0912 — external-command boundary fixture
         calls.append([str(part) for part in cmd])
         if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
@@ -227,6 +237,10 @@ def _patch_environment(
             )
         if cmd[1:3] == ["image", "inspect"] and "--format" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout="2099-01-01T00:00:00Z\n", stderr="")
+        if "import booley; print(booley.__version__)" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{runtime_booley_version}\n", stderr=""
+            )
         if "_discover_booley_mcp_tools" in " ".join(str(part) for part in cmd):
             payload = mcp_payload or {
                 "tools": mcp_tools
@@ -401,6 +415,27 @@ def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
     assert rc == 1
+    assert doctor_stamp.load_stamp(project_dir) is None
+
+
+def test_doctor_fails_when_issued_runtime_has_different_booley_version(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(
+        monkeypatch,
+        tmp_path,
+        project_dir,
+        runtime_booley_version="9.9.9",
+    )
+
+    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
+
+    output = capsys.readouterr().out
+    assert rc == 1
+    assert f"host Booley {__version__} != Session Runtime Booley 9.9.9" in output
     assert doctor_stamp.load_stamp(project_dir) is None
 
 
@@ -592,6 +627,36 @@ def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
     assert "booley-session-test" in deep_call
     assert "--dry-run" not in deep_call
     assert deep_call[deep_call.index("--target") + 1] == "sim_fast"
+
+
+def test_doctor_deep_surfaces_synthesis_warning_verdict(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    project_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, project_dir)
+    monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
+    base_run = doctor.subprocess.run
+
+    def run_with_synth_warning(cmd, **kwargs):
+        if "booley.flows.synth" in cmd and "--dry-run" not in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="RESULT: WARN -- timing VIOLATED (hold slack -0.182 ns)\n",
+                stderr="",
+            )
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", run_with_synth_warning)
+
+    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
+
+    output = capsys.readouterr().out
+    assert rc == 0
+    assert "WARN  synth deep check [synth_fast] returned a WARN verdict" in output
+    assert doctor_stamp.load_stamp(project_dir) is None
 
 
 def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
@@ -1982,6 +2047,18 @@ def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monk
     assert any("example-skill" in message and "missing" in message for message in rec.fails())
 
 
+def _runtime_probe_subprocess(other_stdout: str):
+    def run(argv, **_kwargs):
+        stdout = (
+            f"{__version__}\n"
+            if "import booley; print(booley.__version__)" in argv
+            else other_stdout
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    return run
+
+
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
     from booley.eda import runtime_spec
 
@@ -2007,11 +2084,8 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
     )
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
-    )
+
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess(""))
     project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
     rec = _Rec()
 
@@ -2142,11 +2216,8 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "runtime-1\n", ""),
-    )
+
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
 
     def inspect(argv):
         if argv[-1] == "{{json .Config.Labels}}":
@@ -2187,11 +2258,8 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
     spec_path.write_text(json.dumps(spec), encoding="utf-8")
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(
-        doctor.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "runtime-1\n", ""),
-    )
+
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
 
     def inspect(argv):
         if argv[-1] == "{{json .Config.Labels}}":
@@ -6664,6 +6732,46 @@ class TestLineEndingsCheck:
         doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
 
         assert c.passed and not c.warned and not c.failed
+
+    def test_lf_tree_with_stale_crlf_index_stat_fails(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="true")
+        self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
+        (tmp_path / "a.v").unlink()
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "--", "a.v"],
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
+            capture_output=True,
+            check=True,
+        )
+        (tmp_path / "a.v").write_bytes(b"module a;\nendmodule\n")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            == " M a.v\n"
+        )
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "diff", "--quiet"],
+                capture_output=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+        c = _Collector()
+
+        doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
+
+        assert len(c.failed) == 1
+        assert "stale" in c.failed[0][0]
+        assert "booley init" in c.failed[0][1]
 
     def test_crlf_tree_fails_with_the_init_remediation(self, tmp_path: Path):
         # Ticket Mode is broken right now: the container reads every one of

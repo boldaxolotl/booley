@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.5/crates/bwave/schema/bwave.json",
+  "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.6/crates/bwave/schema/bwave.json",
   "title": "B-Wave --format json envelope",
   "description": "Every `bwave <cmd> --format json` payload is wrapped in this envelope. Phase 2 of v0.2 implements `list`, `value`, `find`, and `stats`; other commands still emit text only.",
   "type": "object",
@@ -9,7 +9,7 @@
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "URL of the schema document this payload conforms to. Pinned to the v0.2.5 release tag."
+      "description": "URL of the schema document this payload conforms to. Pinned to the v0.2.6 release tag."
     },
     "command": {
       "type": "string",
@@ -51,12 +51,22 @@
   "$defs": {
     "listData": {
       "type": "object",
-      "required": ["scope_prefix", "clock", "total_ticks", "signals"],
+      "required": ["scope_prefix", "root_scopes", "signal_count", "clock", "total_ticks", "signals"],
       "additionalProperties": false,
       "properties": {
         "scope_prefix": {
           "type": "string",
           "description": "Common hierarchical prefix of all matched signals (without trailing dot). Empty when matches span multiple scopes or are top-level."
+        },
+        "root_scopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Distinct first-level scopes represented by the matched signals. Unlike scope_prefix, this remains populated when a trace has multiple roots."
+        },
+        "signal_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total matched signals before --limit is applied to the signals array."
         },
         "clock": {
           "anyOf": [

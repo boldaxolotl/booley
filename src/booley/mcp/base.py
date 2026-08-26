@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.dev_support.criterion_categories import verification_fingerprint_categories
 from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
@@ -45,7 +46,6 @@ from .diff_classify import (
     _RTL_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._RTL_DIRS
     _TB_DIRS,  # noqa: F401 — re-exported so tests can patch booley.dev_support.base._TB_DIRS
     _classify_files,
-    _verification_fingerprint_categories,
     read_source_dirs_from_toml,  # noqa: F401 — public API re-export; base itself never calls it
 )
 from .events import (
@@ -375,6 +375,14 @@ class McpTool(ABC):
             required=self.target_required,
             help=self.target_help,
         )
+        self._parser.add_argument(
+            "--diagnostic",
+            action="store_true",
+            help=(
+                "Run without satisfying Ticket criteria. In Ticket Mode this "
+                "is required for a Flow/Target combination outside the sealed contract."
+            ),
+        )
 
     @abstractmethod
     def _add_args(self, parser: argparse.ArgumentParser) -> None:
@@ -441,6 +449,9 @@ class McpTool(ABC):
         source_target: str | None = None,
     ) -> None:
         """Set a criterion and persist state. No-op when state has no file."""
+        if getattr(self.args, "diagnostic", False) and self.state.strict_criteria:
+            logger.info("Diagnostic run: not recording criterion %s", key)
+            return
         stamped_detail = self._stamp_source_fingerprint(
             key,
             met,
@@ -460,9 +471,14 @@ class McpTool(ABC):
         *,
         source_target: str | None,
     ) -> dict[str, Any] | None:
-        """Attach source freshness metadata to passing verification criteria."""
-        categories = _verification_fingerprint_categories(key)
-        if not met or not categories:
+        """Attach source freshness metadata to verification criteria.
+
+        Failed criteria retain actionable evidence, so every verification
+        outcome receives the same atomic source/contract receipt.
+        """
+        categories = verification_fingerprint_categories(key)
+        is_review = key.startswith(("review_rtl_", "review_tb_"))
+        if not categories:
             return detail
         stamped = dict(detail or {})
         try:
@@ -479,7 +495,12 @@ class McpTool(ABC):
                 exc,
             )
             return stamped
-        stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = freshness.to_detail()
+        source_detail = freshness.to_detail()
+        if is_review and stamped.get("review_detail_version") == 3:
+            from booley.dev_support.review_receipt import finalize_review_detail
+
+            return finalize_review_detail(stamped, source_detail)
+        stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = source_detail
         return stamped
 
     def emit_progress(self, line: str) -> None:
@@ -700,6 +721,91 @@ class McpTool(ABC):
                 if tb_top:
                     self.args.tb_top = tb_top
 
+    def _requested_targets(self) -> list[str]:
+        """Return normalized Target tokens without resolving or invoking EDA."""
+        raw = getattr(self.args, "target", "")
+        values = raw if isinstance(raw, list) else [raw]
+        targets: list[str] = []
+        for value in values:
+            targets.extend(part.strip() for part in str(value or "").split(",") if part.strip())
+        return targets
+
+    def _bound_criterion_keys(self, target: str) -> list[str]:
+        """Return sealed criteria this endpoint/Target invocation can update."""
+        selector = getattr(self.args, "test", None)
+        detail = {
+            "test_selector": selector or "all",
+            "selected_tests": [selector] if selector else [],
+        }
+        bound: list[str] = []
+        for family in self.satisfies:
+            generic_key = f"{family}_{target}"
+            if generic_key in self.state.criteria:
+                bound.append(generic_key)
+                continue
+            for alias in self.state.flow_key_aliases.get(generic_key, []):
+                if alias in self.state.criteria and self.state._alias_matches_run(alias, detail):
+                    bound.append(alias)
+            if family in self.state.criteria:
+                bound.append(family)
+            bound.extend(
+                key
+                for key, entry in self.state.criteria.items()
+                if key.startswith(f"{family}_")
+                and isinstance(entry.params, dict)
+                and entry.params.get("target") == target
+                and key not in bound
+            )
+        return bound
+
+    def _criterion_binding_gate(self) -> McpToolResult | None:
+        """Reject an unbound Ticket-mode Target before job admission/EDA."""
+        if (
+            not self.state.strict_criteria
+            or not self.satisfies
+            or getattr(self.args, "diagnostic", False)
+        ):
+            return None
+        targets = self._requested_targets()
+        if not targets:
+            return None
+        missing = [target for target in targets if not self._bound_criterion_keys(target)]
+        if not missing:
+            return None
+
+        from booley.dev_support.criteria_actions import planned_invocation
+
+        pending: list[str] = []
+        for key, entry in self.state.criteria.items():
+            if key.startswith("_") or not any(
+                key == family or key.startswith(f"{family}_") for family in self.satisfies
+            ):
+                continue
+            invocation = planned_invocation(key, entry)
+            pending.append(f"  {key} -> {invocation or self.name}")
+        pending_text = "\n".join(pending) if pending else "  (no compatible criterion declared)"
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            detail={
+                "acceptance_effect": "rejected_unbound",
+                "unbound_targets": missing,
+            },
+            report_text=(
+                f"{self.name}: Target(s) {', '.join(missing)} do not bind a sealed "
+                f"Ticket criterion.\nPending compatible criteria:\n{pending_text}\n"
+                "Use --diagnostic only when this is intentionally a non-acceptance run."
+            ),
+        )
+
+    def _apply_criterion_binding_gate(self, display_target: str | None) -> int | None:
+        """Render and persist a binding rejection before job admission."""
+        rejection = self._criterion_binding_gate()
+        if rejection is None:
+            return None
+        if rejection.report_text:
+            print(rejection.report_text, file=sys.stderr, flush=True)
+        return self._finish_main(rejection, display_target, started=None)
+
     def steering_text(self) -> str:
         """Return steering text from repeated ``--steer`` values."""
         raw = getattr(self.args, "steer", None)
@@ -722,6 +828,9 @@ class McpTool(ABC):
         stats for code-modifying endpoints. Specialist overrides this to also
         stamp accumulated token/cost data from sub-agent calls.
         """
+        if getattr(self.args, "diagnostic", False):
+            result.detail = dict(result.detail or {})
+            result.detail["acceptance_effect"] = "diagnostic"
         if self.code_modifying:
             self._stamp_git_diff_stats(result)
 
@@ -797,6 +906,8 @@ class McpTool(ABC):
         display_target = self._resolve_display_config()
 
         _write_display_event(_endpoint_start_event(self.name, display_target))
+        if (binding_exit := self._apply_criterion_binding_gate(display_target)) is not None:
+            return binding_exit
         slot_store: job_slots.SlotStore | None = None
         slot_token = None
         result = McpToolResult(exit_code=EXIT_ERROR)

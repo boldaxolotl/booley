@@ -765,7 +765,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
             )
     except ValueError:
         raise
-    except Exception:  # noqa: BLE001 — unreadable config falls back to empty config
+    except Exception:  # unreadable config falls back to empty config
         logger.debug("Failed to load endpoint config from booley.toml", exc_info=True)
     return {}, {}
 
@@ -1486,7 +1486,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]
         return payload
-    except Exception:  # noqa: BLE001 — best-effort enrichment; any failure means text-only
+    except Exception:  # best-effort enrichment; any failure means text-only
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -2877,6 +2877,8 @@ def _sim_mcp_tool_timeout_seconds(arguments: dict[str, Any], default: int) -> in
         work_units = target_count
 
     campaign_budget_s = sim_seconds * work_units
+    if _ticket_baseline_required("cycle_count_"):
+        campaign_budget_s *= 2
     trace_margin_s = _TRACE_CLEANUP_MARGIN_S * work_units if arguments.get("trace") else 0
     call_margin_s = 0 if arguments.get("trace") else 30
     return max(default, campaign_budget_s) + trace_margin_s + call_margin_s
@@ -3142,7 +3144,7 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # noqa: BLE001 — best-effort preload; a config hiccup must not block server startup
+    except Exception:  # best-effort preload; a config hiccup must not block server startup
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 

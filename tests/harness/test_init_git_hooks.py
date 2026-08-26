@@ -587,6 +587,19 @@ class TestLineEndingsAutoFix:
 
         assert _autocrlf(tmp_path) == "false"
         assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
+        tracked_status = subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        staged_diff = subprocess.run(
+            ["git", "-C", str(tmp_path), "diff", "--cached", "--quiet"],
+            capture_output=True,
+            check=False,
+        )
+        assert tracked_status.stdout == ""
+        assert staged_diff.returncode == 0
         assert ctx.results[-1].status == "ok"
 
     def test_fix_flag_rechecks_out_as_lf(self, tmp_path: Path):
@@ -599,6 +612,96 @@ class TestLineEndingsAutoFix:
 
         assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
         assert ctx.results[-1].status == "ok"
+
+    def test_rerun_heals_stale_index_from_earlier_normalization(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        self._crlf_repo(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
+            capture_output=True,
+            check=True,
+        )
+        (tmp_path / "a.v").write_bytes(b"module a;\nendmodule\n")
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            == " M a.v\n"
+        )
+
+        ctx = _ctx(tmp_path)
+        _step_line_endings(ctx)
+
+        assert (
+            subprocess.run(
+                ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            == ""
+        )
+        assert ctx.results[-1].status == "ok"
+        assert ctx.results[-1].detail == "index refreshed"
+
+    def test_partial_rewrite_refreshes_successful_paths(self, tmp_path: Path):
+        from booley.harness import init_git_hooks
+
+        self._crlf_repo(tmp_path)
+        TestLineEndingsStep._add_file(tmp_path, "b.v", b"module b;\nendmodule\n")
+        _git_commit(tmp_path)
+        (tmp_path / "b.v").unlink()
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "--", "b.v"],
+            capture_output=True,
+            check=True,
+        )
+        real_rewrite = init_git_hooks._rewrite_from_stage
+
+        def fail_second(path: Path, replacement: Path, expected: bytes) -> str | None:
+            if path.name == "b.v":
+                return "simulated second-file failure"
+            return real_rewrite(path, replacement, expected)
+
+        with patch.object(init_git_hooks, "_rewrite_from_stage", side_effect=fail_second):
+            ctx = _ctx(tmp_path)
+            init_git_hooks._step_line_endings(ctx)
+
+        assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
+        assert (tmp_path / "b.v").read_bytes() == b"module b;\r\nendmodule\r\n"
+        status = subprocess.run(
+            ["git", "-C", str(tmp_path), "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert status.stdout == ""
+        assert ctx.results[-1].status == "warn"
+
+        retry = _ctx(tmp_path)
+        init_git_hooks._step_line_endings(retry)
+
+        assert (tmp_path / "b.v").read_bytes() == b"module b;\nendmodule\n"
+        assert retry.results[-1].status == "ok"
+
+    def test_phantom_status_failure_includes_git_context(self, tmp_path: Path):
+        from booley.harness import init_git_hooks
+
+        with patch.object(
+            init_git_hooks.subprocess,
+            "run",
+            side_effect=OSError("git unavailable"),
+        ):
+            paths, error = init_git_hooks._tracked_phantom_paths(tmp_path)
+
+        assert paths is None
+        assert error is not None
+        assert f"git -C {tmp_path} status --porcelain" in error
+        assert "git unavailable" in error
 
     def test_fix_flag_ignores_init_created_untracked_gitattributes(self, tmp_path: Path):
         from booley.harness.init_git_hooks import _step_line_endings

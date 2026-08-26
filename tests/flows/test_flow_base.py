@@ -7,10 +7,12 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
 
+from booley.dev_support.criteria import cycle_count_criterion_key
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 
@@ -48,6 +50,47 @@ class EchoFlow(BooleyFlow):
 
 
 class TestBooleyFlowExecution:
+    def test_cycle_count_only_ticket_can_invoke_its_bound_target(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.dev_support.development_state import DevelopmentState
+        from booley.runtime import runtime_context
+
+        class CycleCountFlow(EchoFlow):
+            name = "sim"
+            satisfies: ClassVar[list[str]] = ["cycle_count"]
+
+        key = cycle_count_criterion_key("sim_core", "coremark")
+        state_file = tmp_path / "state.json"
+        state = DevelopmentState.load(state_file)
+        state.init_criteria(
+            {key: True},
+            criterion_params={
+                key: {
+                    "target": "sim_core",
+                    "test": "coremark",
+                    "cycle_count_max": 100,
+                }
+            },
+            strict=True,
+        )
+        state.save()
+        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+
+        flow = CycleCountFlow()
+        with (
+            patch.dict(os.environ, _env_with_state(state_file)),
+            patch.object(
+                flow,
+                "_run",
+                return_value=McpToolResult(exit_code=EXIT_SUCCESS, report_text="ok"),
+            ) as run,
+        ):
+            exit_code = flow.main(["--target", "sim_core", "--work-dir", str(tmp_path)])
+
+        assert exit_code == EXIT_SUCCESS
+        run.assert_called_once_with()
+
     def test_host_entry_is_rejected_before_flow_execution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:

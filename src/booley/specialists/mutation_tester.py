@@ -1640,7 +1640,9 @@ replacement must differ, and every proposal must remain a single source edit.
                 project_root=work_dir,
                 build_root=build_path,
             )
-        except Exception as exc:  # noqa: BLE001 — isolate resolve failure; surfaced as a returncode-1 CompletedProcess
+        except (
+            Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
+        ) as exc:
             return subprocess.CompletedProcess(
                 args=["fusesoc", "run", "--setup", "--target", target],
                 returncode=1,

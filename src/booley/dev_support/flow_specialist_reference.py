@@ -55,7 +55,9 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "lint": "`--scope <file,...>` filters reported findings to selected files",
     "sim": (
         "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
-        "and `--trace` captures waveforms for the simulation run"
+        "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
+        "output summarizes unselected skips; pass `--result-verbosity full` to print "
+        "every XML testcase entry (the complete XML and JSON artifacts are always retained)"
     ),
     "synth": (
         f"{_BASELINE_CONTROL}; `--default-clock <ps>` explicitly "

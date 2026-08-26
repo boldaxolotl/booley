@@ -150,3 +150,23 @@ def test_json_shape_round_trip_and_records_are_immutable() -> None:
         first.slug = "changed"  # type: ignore[misc]
     with pytest.raises(TypeError):
         first.health["dirty_worktree"] = ("changed",)  # type: ignore[index]
+
+
+def test_cycle_comparison_round_trips_as_typed_package_data() -> None:
+    value = _package()
+    value["cycle_comparisons"] = [
+        {
+            "criterion": "cycle_count_binding",
+            "target": "sim_coremark",
+            "test": "coremark",
+            "baseline_cycles": 100,
+            "cycles": 90,
+            "delta_cycles": -10,
+            "delta_pct": -10.0,
+            "checks": [],
+        }
+    ]
+
+    package = ReviewPackage.parse(value)
+
+    assert package.to_dict()["cycle_comparisons"][0]["delta_cycles"] == -10

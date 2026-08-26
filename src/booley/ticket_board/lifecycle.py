@@ -60,8 +60,9 @@ class TicketState(Enum):
 
         ``DONE`` (accepted/merged) and ``ARCHIVED`` are terminal. ``REVIEW`` is
         deliberately NOT terminal — it awaits a human decision and can still
-        move on to ``DONE`` or be requeued. See :data:`SETTLED_STATES` for the
-        "run has stopped, timing can close" notion that *does* include review.
+        move on to ``DONE`` or be reset through the separate destructive reset
+        operation. See :data:`SETTLED_STATES` for the "run has stopped, timing
+        can close" notion that *does* include review.
         """
         return self in (TicketState.DONE, TicketState.ARCHIVED)
 
@@ -127,9 +128,7 @@ TRANSITIONS: dict[TicketState, frozenset[TicketState]] = {
             TicketState.RUNNING,  # explicit ticket run resumes blocked work
         }
     ),
-    TicketState.REVIEW: frozenset(
-        {TicketState.DONE, TicketState.QUEUED}  # approve/complete; requeue
-    ),
+    TicketState.REVIEW: frozenset({TicketState.DONE}),  # approve/complete
     TicketState.DONE: frozenset({TicketState.ARCHIVED}),  # archive
     TicketState.ARCHIVED: frozenset(),  # terminal
 }

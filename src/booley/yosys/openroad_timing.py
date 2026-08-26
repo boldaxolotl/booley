@@ -1,10 +1,9 @@
-"""OpenROAD timing-script support for the built-in Yosys ASIC-synthesis Flow.
+"""OpenROAD physical mode for the built-in Yosys ASIC-synthesis flow.
 
-The generated script runs a quick floorplan + global placement inside OpenROAD,
-buffers/sizes the netlist
-(``repair_design``/``repair_timing``), estimates wire RC from placement, and then
-reports timing through OpenROAD's embedded OpenSTA. It emits the same stable
-markers as the generated OpenSTA path, plus two informational area markers.
+This runs a quick floorplan and global placement, buffers/sizes the netlist,
+estimates wire RC from placement, and reports timing through OpenROAD's embedded
+OpenSTA. A physical run is complete only when both timing and post-optimization
+area are available; there is no logical-netlist timing fallback.
 """
 
 from __future__ import annotations
@@ -67,8 +66,8 @@ def openroad_pdk_paths() -> OpenRoadPdk:
 def resolve_openroad_pdk() -> OpenRoadPdk | None:
     """Locate the setup-managed Nangate45 files (see :func:`openroad_pdk_paths`).
 
-    Returns ``None`` (with a WARNING) if any is missing, so the caller degrades
-    to OpenSTA instead of crashing.
+    Returns ``None`` (with a warning) if any is missing. Physical mode treats
+    that as a failed run.
     """
     pdk = openroad_pdk_paths()
     missing = [p for p in pdk if not p.exists()]
@@ -160,9 +159,8 @@ def write_openroad_script(
     headroom (``min(0.80, util/100 + 0.25)``). Setup and hold repair are
     independently controlled by ``config.repair_timing`` and
     ``config.repair_hold``. No trailing ``exit`` — the
-    ``-exit`` flag preserves the nonzero-on-error semantics we rely on for the
-    OpenSTA fallback.  Reports land at the same ``overall{,.csv}.rpt`` paths as
-    OpenSTA so ``STA_REPORT``/``STA_CSV_REPORT`` markers stay byte-compatible.
+    ``-exit`` flag preserves the nonzero-on-error semantics required by
+    physical mode. Reports land at stable ``overall{,.csv}.rpt`` paths.
     """
     script_path = work_dir / "run_openroad.tcl"
     util = config.utilization_pct
@@ -184,7 +182,6 @@ def write_openroad_script(
     pre_rpt = (report_dir / "pre_repair.rpt").as_posix()
     pre_csv = (report_dir / "pre_repair.csv.rpt").as_posix()
     pre_repair_block = _pre_repair_snapshot_tcl(config, pre_rpt, pre_csv)
-
     script = f"""
 read_lef {{{pdk.tech_lef.as_posix()}}}
 read_lef {{{pdk.stdcell_lef.as_posix()}}}
@@ -240,9 +237,8 @@ close $csv_out
 def parse_openroad_area(text: str) -> tuple[float | None, float | None]:
     """Parse ``report_design_area`` output → (area_um2, utilization_pct).
 
-    Matches e.g. ``Design area 235 u^2 33% utilization.``  Returns ``(None,
-    None)`` when the line is absent or unparseable — area is informational and
-    must never fail the timing run.
+    Matches e.g. ``Design area 235 u^2 33% utilization.`` Returns ``(None,
+    None)`` when the line is absent or unparseable.
     """
     m = _AREA_RE.search(text)
     if not m:

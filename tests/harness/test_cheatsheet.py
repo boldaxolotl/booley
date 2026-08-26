@@ -148,12 +148,22 @@ class TestCheatCommand:
         assert "Tips" not in out
         assert "Architecture" not in out
         assert (
-            out.index("Commands")
-            < out.index("Booley Flows")
-            < out.index("Specialists")
-            < out.index("Criteria")
-            < out.index("Project Files")
+            out.index("\nCommands\n")
+            < out.index("\nTicket Board\n")
+            < out.index("\nBooley Flows\n")
+            < out.index("\nSpecialists\n")
+            < out.index("\nCriteria\n")
+            < out.index("\nProject Files\n")
         )
+
+    def test_board_flag_explains_review_without_partial_rework(self, capsys):
+        assert tlr._cmd_cheat(self._parse(["cheat", "--board"]), Path.cwd()) == 0
+        out = " ".join(capsys.readouterr().out.split())
+        assert "review → archived" in out
+        assert "review ──full reset──► queued" in out
+        assert "Ordinary review → queued is invalid" in out
+        assert "clean start" in out
+        assert "Booley Flows" not in out
 
     def test_criteria_flag_narrows_output(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--criteria"]), Path.cwd()) == 0
@@ -176,7 +186,7 @@ class TestCheatCommand:
         assert "Target campaign with target + scope" in specialists_out
         assert "\n  sim " not in specialists_out
 
-    @pytest.mark.parametrize("section", ("commands", "project", "skills"))
+    @pytest.mark.parametrize("section", ("commands", "board", "project", "skills"))
     def test_compact_tables_fit_120_columns(self, capsys, section):
         """Keep the fixed-width table from wrapping its separator or rows."""
         assert tlr._cmd_cheat(self._parse(["cheat", f"--{section}"]), Path.cwd()) == 0
@@ -231,6 +241,7 @@ class TestCheatCommand:
             encoding="utf-8"
         )
         assert "start with `booley cheat`" in usage
+        assert "booley cheat --board" in usage
         assert "booley cheat --commands --project" in usage
 
     def test_missing_cheatsheet_is_reported(self, capsys, monkeypatch):

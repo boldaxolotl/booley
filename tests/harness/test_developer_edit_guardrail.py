@@ -1,4 +1,4 @@
-"""Tests for leftover-edit persistence in developer post guardrails."""
+"""Tests for dirty-worktree rejection in developer post guardrails."""
 
 from __future__ import annotations
 
@@ -8,11 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.dev_support.development_state import DevelopmentState
-from booley.dev_support.validate_commit_msg import MAX_SUMMARY_LEN, validate_message
 from booley.harness.blocking import BlockingError
 from booley.harness.developer import (
     _commit_ticket_paths,
-    _leftover_commit_message,
     _run_post_guardrails,
 )
 from booley.harness.developer_guardrails import (
@@ -35,11 +33,11 @@ def _make_ctx(tmp_path: Path) -> TicketContext:
     (wt / "rtl").mkdir(parents=True)
     (wt / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     return TicketContext(
-        slug="leftover-edits",
-        ticket_path=tmp_path / "leftover-edits.md",
+        slug="dirty-handoff",
+        ticket_path=tmp_path / "dirty-handoff.md",
         ticket_type="bugfix",
         branch="main",
-        summary="persist leftover edits",
+        summary="reject uncommitted edits",
         scope_raw=["rtl/dut.sv"],
         worktree_path=wt,
         project_root=tmp_path,
@@ -50,7 +48,7 @@ def _make_state(tmp_path: Path) -> Path:
     """Create an empty state file for debugger-count guardrail logic."""
     state_path = tmp_path / "booley_state.json"
     state = DevelopmentState.load(state_path)
-    state.slug = "leftover-edits"
+    state.slug = "dirty-handoff"
     state.save()
     return state_path
 
@@ -59,7 +57,7 @@ def _make_completed_state(tmp_path: Path) -> Path:
     """Create a state whose mandatory criteria are otherwise complete."""
     state_path = tmp_path / "booley_state.json"
     state = DevelopmentState.load(state_path)
-    state.slug = "leftover-edits"
+    state.slug = "dirty-handoff"
     state.init_criteria({"sim_pass_default": True})
     state.set_criterion("sim_pass_default", True)
     state.save()
@@ -103,7 +101,7 @@ def test_rename_origin_field_is_not_read_as_a_record(tmp_path: Path):
     assert dirty == [DirtyFile("rtl/new.sv", "R "), DirtyFile("tb/t.sv", " M")]
 
 
-def test_leftover_edits_are_committed_before_handoff(tmp_path: Path):
+def test_uncommitted_edits_block_handoff_without_an_automatic_commit(tmp_path: Path):
     ctx = _make_ctx(tmp_path)
     state_path = _make_state(tmp_path)
     commit = MagicMock(return_value=None)
@@ -111,7 +109,7 @@ def test_leftover_edits_are_committed_before_handoff(tmp_path: Path):
     with (
         patch(
             "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[[DirtyFile("rtl/dut.sv", " M")], []],
+            return_value=[DirtyFile("rtl/dut.sv", " M")],
         ),
         patch("booley.runtime.git.commit_scope", side_effect=commit),
         patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
@@ -120,14 +118,10 @@ def test_leftover_edits_are_committed_before_handoff(tmp_path: Path):
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is False
-    commit.assert_called_once_with(
-        ctx.worktree_path,
-        ["rtl/dut.sv"],
-        "fix(leftover-edits): persist leftover edits (1 file)",
-        literal=True,
-    )
-    block.assert_not_called()
+    assert blocked is True
+    commit.assert_not_called()
+    block.assert_called_once()
+    assert "Commit or restore every file" in block.call_args.args[1]
 
 
 def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
@@ -174,181 +168,9 @@ def test_repository_failure_does_not_skip_other_repository(tmp_path: Path):
     assert commit.call_args_list[1].args[1] == ["cores/dut.core"]
 
 
-def test_in_scope_file_still_dirty_after_commit_blocks(tmp_path: Path):
-    ctx = _make_ctx(tmp_path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[
-                [DirtyFile("rtl/dut.sv", " M")],
-                [DirtyFile("rtl/dut.sv", " M")],
-            ],
-        ),
-        patch("booley.runtime.git.commit_scope", return_value=None),
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is True
-    block.assert_called_once()
-
-
-def test_out_of_scope_files_are_left_for_triage(tmp_path: Path):
-    """Outside dirt does not prevent the authorized subset from committing."""
-    ctx = _make_ctx(tmp_path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[
-                [DirtyFile("rtl/dut.sv", " M"), DirtyFile("rtl/other.sv", " M")],
-                [DirtyFile("rtl/other.sv", " M")],
-            ],
-        ),
-        patch("booley.runtime.git.commit_scope", return_value=None) as commit,
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw") as terminal,
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is False
-    assert commit.call_args.args[1] == ["rtl/dut.sv"]
-    block.assert_not_called()
-    assert any(
-        "rtl/other.sv" in call.args[0] and "uncommitted for triage" in call.args[0]
-        for call in terminal.call_args_list
-    )
-
-
-def test_out_of_scope_file_still_dirty_after_commit_does_not_block(tmp_path: Path):
-    """The expected outside leftover is preserved for triage."""
-    ctx = _make_ctx(tmp_path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[
-                [DirtyFile("rtl/dut.sv", " M"), DirtyFile("README.md", " M")],
-                [DirtyFile("README.md", " M")],
-            ],
-        ),
-        patch("booley.runtime.git.commit_scope", return_value=None),
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is False
-    block.assert_not_called()
-
-
-def test_harness_owned_dirty_files_are_left_uncommitted(tmp_path: Path):
-    """Forbidden paths are skipped, not blocked on: the hook is the real gate."""
-    ctx = _make_ctx(tmp_path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[
-                [
-                    DirtyFile("rtl/dut.sv", " M"),
-                    DirtyFile(".booley_project/booley.toml", " M"),
-                ],
-                [DirtyFile(".booley_project/booley.toml", " M")],
-            ],
-        ),
-        patch("booley.runtime.git.commit_scope", return_value=None) as commit,
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is False
-    assert commit.call_args.args[1] == ["rtl/dut.sv"]
-    block.assert_not_called()
-
-
-def test_stealth_cores_are_ordinary_work_not_harness_owned(tmp_path: Path):
-    """A stealth core is triaged as ordinary outside work, not forbidden dirt."""
-    ctx = _make_ctx(tmp_path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[[DirtyFile(".booley_project/cores/dut.core", " M")], []],
-        ),
-        patch("booley.runtime.git.commit_scope", return_value=None) as commit,
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is False
-    commit.assert_not_called()
-    block.assert_not_called()
-
-
-def test_scoped_project_doc_is_committed_not_rejected(tmp_path: Path):
-    """A project-dir memory map is authored work, not harness bookkeeping."""
-    ctx = _make_ctx(tmp_path)
-    path = ".booley_project/docs/fw/memory-map.md"
-    ctx.scope_raw.append(path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            side_effect=[[DirtyFile(path, "M ")], []],
-        ),
-        patch("booley.runtime.git.commit_scope", return_value=None) as commit,
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw"),
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is False
-    assert commit.call_args.args[1] == [path]
-    block.assert_not_called()
-
-
-def test_out_of_scope_scorer_file_is_left_for_triage(tmp_path: Path):
-    """Even scorer paths need ticket authorization before Booley commits them."""
-    ctx = _make_ctx(tmp_path)
-    state_path = _make_state(tmp_path)
-
-    with (
-        patch(
-            "booley.harness.developer._check_ticket_dirty_statuses",
-            return_value=[DirtyFile("rtl/other.sv", " M")],
-        ),
-        patch("booley.runtime.git.commit_scope") as commit,
-        patch("booley.harness.developer.git_run", return_value=MagicMock(returncode=0, stdout="")),
-        patch("booley.harness.developer.block_ticket") as block,
-        patch("booley.harness.developer.terminal.raw") as terminal,
-    ):
-        blocked = _run_post_guardrails(ctx, state_path, run_index=0)
-
-    assert blocked is False
-    commit.assert_not_called()
-    block.assert_not_called()
-    assert any("rtl/other.sv" in call.args[0] for call in terminal.call_args_list)
-
-
-def test_duplicated_source_root_dirty_files_get_malformed_report(tmp_path: Path):
-    """The dirty-tree path: the commit did not take, and the path is malformed."""
+def test_duplicated_source_root_dirty_files_are_rejected_before_tree_validation(
+    tmp_path: Path,
+):
     ctx = _make_ctx(tmp_path)
     nested = ctx.worktree_path / "rtl" / "rtl"
     nested.mkdir(parents=True)
@@ -372,10 +194,10 @@ def test_duplicated_source_root_dirty_files_get_malformed_report(tmp_path: Path)
     assert blocked is True
     commit.assert_not_called()
     reason = block.call_args.args[1]
-    assert reason.startswith("MALFORMED_SCORER_OUTPUT")
-    assert "nested RTL source root" in reason
+    assert reason.startswith("Developer Agent stopped with uncommitted changes")
+    assert "rtl/rtl/other.sv" in reason
     report = ctx.logs_dir / ".runtime" / "malformed_rtl_output.json"
-    assert "rtl/rtl/other.sv" in report.read_text(encoding="utf-8")
+    assert not report.exists()
 
 
 def test_nested_rtl_is_caught_even_when_scope_names_no_rtl(tmp_path: Path):
@@ -425,7 +247,7 @@ def test_scorer_file_deleted_under_a_new_glob_blocks(tmp_path: Path):
     assert "rtl/legacy_fifo.sv" in block.call_args.args[1]
 
 
-def test_done_ticket_with_out_of_scope_scorer_file_still_handoffs(tmp_path: Path):
+def test_done_ticket_with_uncommitted_scorer_file_blocks_handoff(tmp_path: Path):
     ctx = _make_ctx(tmp_path)
     state_path = _make_completed_state(tmp_path)
 
@@ -441,13 +263,13 @@ def test_done_ticket_with_out_of_scope_scorer_file_still_handoffs(tmp_path: Path
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=2)
 
-    assert blocked is False
+    assert blocked is True
     commit.assert_not_called()
-    block.assert_not_called()
-    assert any("rtl/other.sv" in call.args[0] for call in terminal.call_args_list)
+    block.assert_called_once()
+    assert any("uncommitted changes" in call.args[0] for call in terminal.call_args_list)
 
 
-def test_deleted_files_under_new_scope_glob_do_not_block(tmp_path: Path):
+def test_deleted_files_under_new_scope_glob_block_dirty_handoff(tmp_path: Path):
     ctx = _make_ctx(tmp_path)
     ctx.scope_raw = ["rtl/dut.sv", "verif/lane1/*.sv [new]"]
     state_path = _make_state(tmp_path)
@@ -471,14 +293,9 @@ def test_deleted_files_under_new_scope_glob_do_not_block(tmp_path: Path):
     ):
         blocked = _run_post_guardrails(ctx, state_path, run_index=0)
 
-    assert blocked is False
-    commit.assert_called_once_with(
-        ctx.worktree_path,
-        ["rtl/dut.sv", "verif/lane1/new_tb.sv"],
-        "fix(leftover-edits): persist leftover edits (2 files)",
-        literal=True,
-    )
-    block.assert_not_called()
+    assert blocked is True
+    commit.assert_not_called()
+    block.assert_called_once()
 
 
 def test_git_status_error_blocks_handoff(tmp_path: Path):
@@ -545,64 +362,3 @@ def test_committed_nested_rtl_output_blocks_handoff(tmp_path: Path):
     assert "rtl/rtl/bad.sv" in reason
     report = ctx.logs_dir / ".runtime" / "malformed_rtl_output.json"
     assert "rtl/rtl/bad.sv" in report.read_text(encoding="utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Leftover-edit commit subject (F-52)
-# ---------------------------------------------------------------------------
-
-
-def _ctx_for_message(tmp_path: Path, **overrides) -> TicketContext:
-    ctx = _make_ctx(tmp_path)
-    for key, value in overrides.items():
-        setattr(ctx, key, value)
-    return ctx
-
-
-def test_leftover_commit_subject_names_ticket_and_file_count(tmp_path: Path):
-    """The catch-all commit must identify the ticket, not just say 'leftover'."""
-    ctx = _ctx_for_message(tmp_path)
-    msg = _leftover_commit_message(ctx, ["rtl/dut.sv", "rtl/other.sv"])
-    assert msg == "fix(leftover-edits): persist leftover edits (2 files)"
-    assert validate_message(msg) == []
-
-
-def test_leftover_commit_type_follows_ticket_type(tmp_path: Path):
-    ctx = _ctx_for_message(tmp_path)
-    for ticket_type, expected in (
-        ("feature", "feat"),
-        ("bugfix", "fix"),
-        ("refactor", "refactor"),
-        ("verification", "test"),
-        ("something-else", "chore"),
-    ):
-        ctx.ticket_type = ticket_type
-        assert _leftover_commit_message(ctx, ["rtl/dut.sv"]).startswith(f"{expected}(")
-
-
-def test_leftover_commit_subject_is_truncated_within_limit(tmp_path: Path):
-    """A long ticket title must not overflow the subject-length rule."""
-    ctx = _ctx_for_message(tmp_path, summary="x" * 300)
-    msg = _leftover_commit_message(ctx, ["rtl/dut.sv"])
-    summary = msg.split(": ", 1)[1]
-    assert len(summary) <= MAX_SUMMARY_LEN
-    assert summary.endswith("(1 file)")
-    assert validate_message(msg) == []
-
-
-def test_leftover_commit_falls_back_when_validation_fails(tmp_path: Path):
-    """A ticket title must never be able to block its own handoff commit."""
-    ctx = _ctx_for_message(tmp_path)
-    with patch(
-        "booley.dev_support.validate_commit_msg.validate_message",
-        return_value=["nope"],
-    ):
-        assert _leftover_commit_message(ctx, ["rtl/dut.sv"]) == "fix: commit leftover edits"
-
-
-def test_leftover_commit_drops_scope_for_unusable_slug(tmp_path: Path):
-    """A slug with characters the scope grammar rejects degrades to no scope."""
-    ctx = _ctx_for_message(tmp_path, slug="bad slug/with.chars")
-    msg = _leftover_commit_message(ctx, ["rtl/dut.sv"])
-    assert msg.startswith("fix: ")
-    assert validate_message(msg) == []

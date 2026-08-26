@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from booley.core.boundary import BoundaryError
 from booley.dev_support.criteria import (
     CriteriaTemplate,
     CriterionDef,
@@ -13,6 +14,7 @@ from booley.dev_support.criteria import (
     _validate_criterion_params,
     eligible_eda_tool_criterion_families,
     expand_criteria_defs,
+    load_project_criteria,
 )
 
 
@@ -35,6 +37,17 @@ class TestCriterionSpec:
         spec = CriterionSpec("lint_clean", per_target=True)
         result = spec.expand([])
         assert result == [("lint_clean", True)]
+
+
+def test_project_criteria_rejects_non_boolean_per_test(tmp_path) -> None:
+    criteria = tmp_path / "criteria.toml"
+    criteria.write_text(
+        '[custom]\ndescription = "Custom"\nper_target = false\nper_test = "false"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BoundaryError, match=r"custom.*per_test.*boolean"):
+        load_project_criteria(criteria)
 
 
 class TestCriteriaTemplateDefaults:
@@ -549,10 +562,14 @@ class TestCriterionEligibility:
     def test_eligible_families_per_tool(self):
         assert eligible_eda_tool_criterion_families("yosys") == frozenset({"synthesis_ok"})
         assert eligible_eda_tool_criterion_families("verilator") == frozenset(
-            {"sim_pass", "lint_clean"}
+            {"sim_pass", "cycle_count", "lint_clean"}
         )
-        assert eligible_eda_tool_criterion_families("icarus") == frozenset({"sim_pass"})
-        assert eligible_eda_tool_criterion_families("iverilog") == frozenset({"sim_pass"})
+        assert eligible_eda_tool_criterion_families("icarus") == frozenset(
+            {"sim_pass", "cycle_count"}
+        )
+        assert eligible_eda_tool_criterion_families("iverilog") == frozenset(
+            {"sim_pass", "cycle_count"}
+        )
         assert eligible_eda_tool_criterion_families("unknown_tool") == frozenset()
         # Unsupported commercial simulators have no criterion eligibility.
         assert eligible_eda_tool_criterion_families("xcelium") == frozenset()

@@ -430,7 +430,9 @@ def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str,
             mcp_tools if isinstance(mcp_tools, dict) else {},
             flows if isinstance(flows, dict) else {},
         )
-    except Exception as e:  # noqa: BLE001 — malformed/unreadable toml degrades to empty config so preflight continues
+    except (
+        Exception  # noqa: BLE001 — malformed TOML degrades to empty config so preflight continues
+    ) as e:
         logger.warning("Failed to load booley.toml: %s", e)
         return {}, {}
 

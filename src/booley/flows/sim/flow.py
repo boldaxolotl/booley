@@ -23,8 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
-from booley.core.boundary import as_str_list
+from booley.core.boundary import BoundaryError, as_str_list
+from booley.dev_support.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -43,6 +45,11 @@ from booley.targets.parameter_integrity import validate_top_parameter_intent
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
+from ..baseline_worktree import (
+    BaselineWorktreeError,
+    baseline_worktree,
+    git_full_sha,
+)
 from ..flow_config import (
     _load_flow_config,
     tb_top_for_target,
@@ -207,6 +214,7 @@ _INCONCLUSIVE_NO_WAVEFORM = (
 # artifact five directory levels deep under .runtime/edalize/simulate/ and
 # findable only by someone who already knew the convention (F-35).
 _TRACE_OK_RE = re.compile(r"^TRACE_OK:\s*(\S.*?)\s*$", re.MULTILINE)
+_TRACE_METADATA_RE = re.compile(r"^TRACE_METADATA:\s*(\{.*\})\s*$", re.MULTILINE)
 
 # Max failure-excerpt lines per test inside report_text. The MCP server
 # tail-truncates the whole EDA-tool stdout to ~12KB (keeping the END), so one
@@ -236,6 +244,9 @@ class TestResult:
     # the simulation itself took 0.1s.
     build_s: float = 0.0
     cycles: int | None = None
+    # Typed status of the named Cycle Count record. ``cycles`` remains the
+    # observational compatibility value; acceptance requires ``observed``.
+    cycle_status: str = "missing"
     sva_errors: int = 0
     error_tail: str = ""
     timed_out: bool = False
@@ -254,10 +265,14 @@ class TestResult:
     # waveform, so it rides the first entry.
     trace_path: str = ""
     trace_bytes: int = 0
+    trace_top_scope: str = ""
+    trace_signal_count: int = 0
+    trace_total_ticks: int = 0
     # Work-dir-relative immutable copy of this test's complete simulator
     # output. Empty only when no simulator output was available or no report
     # directory was requested.
     run_log_path: str = ""
+    workload_snapshot: dict[str, Any] | None = None
 
 
 @dataclass
@@ -274,6 +289,20 @@ class TargetResult:
     tests: list[TestResult] = field(default_factory=list)
     inconclusive: bool = False
     elab_failed: bool = False
+
+
+def _admissible_cycle_evidence(
+    test: TestResult | None,
+    revision: str,
+) -> tuple[bool, str]:
+    """Return whether one revision has passing, unambiguous named evidence."""
+    if test is None:
+        return False, f"{revision} named test result is missing"
+    if not test.passed:
+        return False, f"{revision} test did not pass"
+    if test.cycle_status != "observed" or test.cycles is None:
+        return False, f"{revision} Cycle Count observation is {test.cycle_status}"
+    return True, ""
 
 
 def _target_progress_detail(result: TargetResult) -> dict[str, Any]:
@@ -303,6 +332,70 @@ def _artifact_path_component(value: str) -> str:
     return f"~sha256-{digest}"
 
 
+@dataclass(frozen=True)
+class CycleObservation:
+    """Typed result of parsing Cycle Count records for one named test."""
+
+    status: str
+    value: int | None = None
+
+
+def _cycle_records(
+    output: str,
+    sentinels: list[str],
+) -> tuple[list[tuple[str, str]], list[str], bool]:
+    """Collect named and legacy payloads without deciding admissibility."""
+    named: list[tuple[str, str]] = []
+    legacy: list[str] = []
+    malformed = False
+    for line in output.splitlines():
+        matched = next((sentinel for sentinel in sentinels if sentinel in line), None)
+        if matched is None:
+            continue
+        parts = line.split(matched, 1)[1].strip().split()
+        if len(parts) == 1:
+            legacy.append(parts[0])
+        elif len(parts) >= 2:
+            named.append((" ".join(parts[:-1]), parts[-1]))
+        else:
+            malformed = True
+    return named, legacy, malformed
+
+
+def parse_cycle_observation(
+    output: str,
+    test_name: str,
+    cycle_sentinels: list[str] | None = None,
+) -> CycleObservation:
+    """Parse named/default/configured records without discarding ambiguity."""
+    sentinels = [s for s in (cycle_sentinels or [_DEFAULT_CYCLE_SENTINEL]) if s]
+    sentinels.sort(key=len, reverse=True)
+    named, legacy, malformed = _cycle_records(output, sentinels)
+
+    matches = [record for record in named if record[0] == test_name]
+    observation = CycleObservation("missing")
+    if malformed:
+        observation = CycleObservation("malformed")
+    elif len(matches) > 1:
+        observation = CycleObservation("duplicate")
+    elif len(matches) == 1:
+        count = matches[0][1]
+        if not re.fullmatch(r"[0-9]+", count):
+            observation = CycleObservation("malformed")
+        else:
+            observation = CycleObservation("observed", int(count))
+    elif named:
+        observation = CycleObservation("wrong_test")
+    elif len(legacy) > 1:
+        observation = CycleObservation("duplicate")
+    elif len(legacy) == 1:
+        if not re.fullmatch(r"[0-9]+", legacy[0]):
+            observation = CycleObservation("malformed")
+        else:
+            observation = CycleObservation("legacy", int(legacy[0]))
+    return observation
+
+
 def parse_cycles(
     output: str,
     test_name: str,
@@ -310,31 +403,11 @@ def parse_cycles(
     *,
     allow_legacy: bool = True,
 ) -> int | None:
-    """Extract the cycle count attributed to *test_name*.
-
-    The preferred record is ``<sentinel> <test-name> <cycles>`` with the count
-    as the line's final field. A single legacy ``<sentinel> <cycles>`` record
-    remains readable when unambiguous.
-    """
-    sentinels = [s for s in (cycle_sentinels or [_DEFAULT_CYCLE_SENTINEL]) if s]
-    sentinels.sort(key=len, reverse=True)
-    alternatives = "|".join(re.escape(sentinel) for sentinel in sentinels)
-    named_re = re.compile(
-        rf"(?:{alternatives})[ \t]+(.+?)[ \t]+(\d+)[ \t]*$",
-        re.MULTILINE,
-    )
-    named_records = named_re.findall(output)
-    for record_name, cycles in named_records:
-        if record_name == test_name:
-            return int(cycles)
-    if named_records:
-        return None
-
-    if not allow_legacy:
-        return None
-    legacy_re = re.compile(rf"(?:{alternatives})[ \t]+(\d+)\b")
-    legacy_records = legacy_re.findall(output)
-    return int(legacy_records[0]) if len(legacy_records) == 1 else None
+    """Compatibility value wrapper around :func:`parse_cycle_observation`."""
+    observation = parse_cycle_observation(output, test_name, cycle_sentinels)
+    if observation.status == "observed" or (allow_legacy and observation.status == "legacy"):
+        return observation.value
+    return None
 
 
 def parse_build_seconds(output: str) -> float:
@@ -775,12 +848,33 @@ def _trace_artifact(combined: str, work_dir: Path | str) -> tuple[str, int]:
     return display, size
 
 
+def _trace_metadata(combined: str) -> tuple[str, int, int]:
+    """Return ``(top_scope, signal_count, total_ticks)`` from the run-half."""
+    matches = _TRACE_METADATA_RE.findall(combined)
+    if not matches:
+        return "", 0, 0
+    try:
+        metadata = decode_trace_metadata(matches[-1])
+        return metadata.display_scope, metadata.signal_count, metadata.total_ticks
+    except (BoundaryError, json.JSONDecodeError):
+        return "", 0, 0
+
+
 def _trace_line(test: TestResult) -> str | None:
     """The ``trace:`` report line for *test*, or None when it produced none."""
     if not test.trace_path:
         return None
-    size = f" ({_format_bytes(test.trace_bytes)})" if test.trace_bytes else ""
-    return f"  trace: {test.trace_path}{size}"
+    details = []
+    if test.trace_bytes:
+        details.append(_format_bytes(test.trace_bytes))
+    if test.trace_signal_count:
+        details.append(f"{test.trace_signal_count} signals")
+    if test.trace_top_scope:
+        details.append(f"scope {test.trace_top_scope}")
+    if test.trace_total_ticks:
+        details.append(f"{test.trace_total_ticks} ticks")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f"  trace: {test.trace_path}{suffix}"
 
 
 def _build_display_lines(
@@ -841,6 +935,7 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
         "elapsed_s": round(test.elapsed_s, 3),
         "build_s": round(test.build_s, 1),
         "cycles": test.cycles,
+        "cycle_observation": test.cycle_status,
         "sva_errors": test.sva_errors,
         "error_tail": test.error_tail,
         "test_validated": test.test_validated,
@@ -848,8 +943,13 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
     if test.trace_path:
         entry["trace_path"] = test.trace_path
         entry["trace_bytes"] = test.trace_bytes
+        entry["trace_top_scope"] = test.trace_top_scope
+        entry["trace_signal_count"] = test.trace_signal_count
+        entry["trace_total_ticks"] = test.trace_total_ticks
     if test.run_log_path:
         entry["artifacts"] = {"run_log": test.run_log_path}
+    if test.workload_snapshot:
+        entry["workload_fingerprint"] = test.workload_snapshot.get("fingerprint")
     if not test.test_validated:
         entry["validation_note"] = "test name was not validated against configs.toml"
     return entry
@@ -1120,7 +1220,7 @@ class SimulateFlow(BooleyFlow):
         """Simulation is a heavy Session Runtime workload."""
         return job_slots.CLASS_HEAVY
 
-    satisfies: ClassVar[list[str]] = ["sim_pass"]
+    satisfies: ClassVar[list[str]] = ["sim_pass", "cycle_count"]
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
@@ -1145,6 +1245,12 @@ class SimulateFlow(BooleyFlow):
             "--trace",
             action="store_true",
             help="Enable waveform trace (debugging only — do not use for pass/fail checks)",
+        )
+        parser.add_argument(
+            "--result-verbosity",
+            choices=["compact", "full"],
+            default="compact",
+            help="Cocotb result detail on stdout; full XML/JSON artifacts are always retained",
         )
         # --trace-scope left the surface (ADR 0022, 2026-06-23): the --trace
         # overlay .core traces the full hierarchy at a fixed depth, so there is no
@@ -1666,6 +1772,7 @@ class SimulateFlow(BooleyFlow):
                 vlnv=resolve_vlnv,
             )
             validate_top_parameter_intent(resolved, flow="sim")
+            self._remember_resolved_target(target, resolved)
         finally:
             # The overlay is needed only until resolve copies its filesets into the
             # build root; the resolved dir is self-contained, so drop the transient
@@ -1831,16 +1938,10 @@ class SimulateFlow(BooleyFlow):
         module: str,
         tests: list[str],
         plusargs: list[str] | None = None,
+        *,
+        trace_scope: str = "",
     ) -> list[str]:
-        """Build the ``booley.sim.cocotb_run`` invocation for one batched run.
-
-        The cocotb mirror of :meth:`_verilator_run_cmd` / :meth:`_icarus_run_cmd`
-        (B1): one invocation carries the whole selected set — the run-half
-        builds ``COCOTB_TEST_FILTER`` from the ``--test`` names and computes the
-        ``cocotb-config``-derived env in-sandbox at run time. No sentinel args:
-        Simulation Sentinels do not apply to Cocotb Targets (decision 6); the
-        verdict comes from ``results.xml``.
-        """
+        """Build one batched Cocotb run-half invocation (ADR 0034)."""
         cmd = [
             "python3",
             "-m",
@@ -1858,6 +1959,7 @@ class SimulateFlow(BooleyFlow):
         # cocotb names can be arbitrary, and a two-token value starting with
         # ``-`` would parse as a new runner option.
         cmd += [f"--test={t}" for t in tests]
+        cmd += ["--result-verbosity", self.args.result_verbosity]
         # F-25: the frozen-simulator-clock watchdog's grace, forwarded so the
         # knob crosses into the sandbox with the run-half invocation.
         cmd += [
@@ -1869,7 +1971,7 @@ class SimulateFlow(BooleyFlow):
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
-            cmd.append("--trace")
+            cmd += ["--trace", "--expected-trace-scope", trace_scope]
         for plusarg in plusargs or []:
             cmd.append(f"--plusarg={plusarg}")
         return cmd
@@ -1916,6 +2018,7 @@ class SimulateFlow(BooleyFlow):
                 vlnv=resolve_vlnv,
             )
             validate_top_parameter_intent(resolved, flow="sim")
+            self._remember_resolved_target(target, resolved)
         finally:
             if overlay is not None:
                 overlay.cleanup()
@@ -1941,7 +2044,16 @@ class SimulateFlow(BooleyFlow):
         is_icarus = eda_tool == "icarus"
         marker = "iverilog compilation failed" if is_icarus else "Verilator elaboration failed"
         plusargs = self._target_parameter_plusargs(resolved.parameters)
-        run_line = shlex.join(self._cocotb_run_cmd(rel, eda_tool, module, tests, plusargs))
+        run_line = shlex.join(
+            self._cocotb_run_cmd(
+                rel,
+                eda_tool,
+                module,
+                tests,
+                plusargs,
+                trace_scope=resolved.toplevel,
+            )
+        )
         return [
             "sh",
             "-c",
@@ -2059,7 +2171,16 @@ class SimulateFlow(BooleyFlow):
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
         eda_tool = self._eda_tool_for_target(target)
         module = self._cocotb_module_for_target(target) or ""
-        run_line = shlex.join(self._cocotb_run_cmd(rel, eda_tool, module, tests))
+        trace_scope = tb_top_for_target(target, self.args.work_dir, resolved=None)
+        run_line = shlex.join(
+            self._cocotb_run_cmd(
+                rel,
+                eda_tool,
+                module,
+                tests,
+                trace_scope=trace_scope,
+            )
+        )
         # Dry-run parity (ADR 0039): the batch's Pre-Run Commands fire once,
         # between resolution/setup and the build+run — mirrored here.
         pre_lines = self._pre_run_preview_lines(
@@ -2101,7 +2222,7 @@ class SimulateFlow(BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate per-test setup failure; recorded as a failed TestResult
+        except Exception as exc:  # isolate per-test setup failure; recorded as a failed TestResult
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -2239,17 +2360,22 @@ class SimulateFlow(BooleyFlow):
         trace_path, trace_bytes = (
             _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
         )
+        trace_top_scope, trace_signal_count, trace_total_ticks = (
+            _trace_metadata(combined) if self.args.trace else ("", 0, 0)
+        )
 
+        cycle_observation = parse_cycle_observation(
+            combined,
+            test_name or target,
+            _resolve_cycle_sentinels(self.args.work_dir),
+        )
         return TestResult(
             name=test_name or target,
             passed=passed,
             elapsed_s=proc.duration_s,
             build_s=parse_build_seconds(combined),
-            cycles=parse_cycles(
-                combined,
-                test_name or target,
-                _resolve_cycle_sentinels(self.args.work_dir),
-            ),
+            cycles=cycle_observation.value,
+            cycle_status=cycle_observation.status,
             sva_errors=parse_sva_errors(combined),
             error_tail=error_tail,
             timed_out=proc.timed_out,
@@ -2258,6 +2384,9 @@ class SimulateFlow(BooleyFlow):
             elab_failed=elab_failed,
             trace_path=trace_path,
             trace_bytes=trace_bytes,
+            trace_top_scope=trace_top_scope,
+            trace_signal_count=trace_signal_count,
+            trace_total_ticks=trace_total_ticks,
         )
 
     def _build_error_tail(
@@ -2379,7 +2508,7 @@ class SimulateFlow(BooleyFlow):
 
         return None
 
-    def _run(self) -> McpToolResult:
+    def _run(self) -> McpToolResult:  # noqa: PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
         resolved = self._resolve_run_targets()
         if isinstance(resolved, McpToolResult):
@@ -2404,6 +2533,11 @@ class SimulateFlow(BooleyFlow):
         self.reserve_invocation_dir()
         self._write_progress_report(targets, all_results, phase="starting")
 
+        baseline_result = self._run_cycle_count_baselines(targets, test_names_map)
+        if isinstance(baseline_result, McpToolResult):
+            return baseline_result
+        self._baseline_results = baseline_result
+
         for target in targets:
             try:
                 target_result = self._run_target(
@@ -2417,6 +2551,7 @@ class SimulateFlow(BooleyFlow):
                 # design. Abandon the sweep and report a Flow error — every
                 # remaining Target would hit the same missing binary.
                 return self._missing_executable_result(exc, target)
+            self._attach_workload_snapshots(target_result)
             all_results.append(target_result)
             if not target_result.passed:
                 overall_pass = False
@@ -2441,6 +2576,17 @@ class SimulateFlow(BooleyFlow):
             "targets": len(all_results),
             "targets_passed": targets_passed,
             "elapsed_s": round(total_elapsed, 1),
+            "cycle_counts": [
+                {
+                    "target": result.target,
+                    "test": test.name,
+                    "verdict": _test_verdict(test),
+                    "cycles": test.cycles,
+                    "observation": test.cycle_status,
+                }
+                for result in all_results
+                for test in result.tests
+            ],
         }
         if any_elab_failed:
             detail["elab_failed"] = True
@@ -2474,6 +2620,78 @@ class SimulateFlow(BooleyFlow):
             detail=detail,
             report_text=report_text,
         )
+
+    def _cycle_baseline_selection(
+        self, targets: list[str]
+    ) -> tuple[str | None, list[str], str | None]:
+        """Return the pinned ref and selected Targets needing relative evidence."""
+        from booley.flows.recipe_evidence import BASELINE_REF_PARAM
+
+        refs: set[str] = set()
+        selected: list[str] = []
+        for key, entry in self.state.criteria.items():
+            params = entry.params or {}
+            target = params.get("target")
+            if not key.startswith("cycle_count_") or target not in targets:
+                continue
+            ref = params.get(BASELINE_REF_PARAM)
+            if not has_relative_threshold(params) or not isinstance(ref, str) or not ref:
+                continue
+            refs.add(ref)
+            if target not in selected:
+                selected.append(target)
+        if not refs:
+            return None, [], None
+        if len(refs) != 1:
+            return (
+                None,
+                selected,
+                "sim: selected Cycle Count criteria carry conflicting baseline refs",
+            )
+        ref = next(iter(refs))
+        resolved = git_full_sha(ref, Path(self.args.work_dir))
+        if resolved is None:
+            return (
+                ref,
+                selected,
+                "sim: Cycle Count ticket baseline ref cannot be resolved to a commit",
+            )
+        return resolved, selected, None
+
+    def _run_cycle_count_baselines(
+        self,
+        targets: list[str],
+        test_names_map: dict[str, list[str]],
+    ) -> dict[str, TargetResult] | McpToolResult:
+        """Run each relative Cycle Count Target once in a throwaway baseline tree."""
+        baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
+        if error is not None:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=error)
+        if baseline_ref is None:
+            return {}
+        project_root = Path(self.args.work_dir)
+        results: dict[str, TargetResult] = {}
+        try:
+            with baseline_worktree(project_root, baseline_ref) as worktree:
+                self.args.work_dir = worktree
+                try:
+                    for target in baseline_targets:
+                        results[target] = self._run_target(
+                            target,
+                            self._tb_top_for_target(target),
+                            test_names_map,
+                            [],
+                        )
+                        self._attach_workload_snapshots(results[target])
+                finally:
+                    self.args.work_dir = project_root
+        except MissingExecutableError as exc:
+            self.args.work_dir = project_root
+            return self._missing_executable_result(exc, baseline_targets[0])
+        except BaselineWorktreeError as exc:
+            self.args.work_dir = project_root
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
+        return results
 
     def _missing_executable_result(
         self,
@@ -2556,6 +2774,14 @@ class SimulateFlow(BooleyFlow):
             or []
         )
         complete_suite = not self.args.test and (not declared or set(selected) == set(declared))
+        passed_tests = [test.name for test in target_result.tests if test.passed]
+        failed_tests = [
+            test.name for test in target_result.tests if not test.passed and not test.inconclusive
+        ]
+        skipped_tests = self._skipped_tests(
+            target_result.target,
+            getattr(self, "_test_names_map", None) or _get_test_names(),
+        )
         self.set_criterion(
             crit_key,
             target_result.passed,
@@ -2564,9 +2790,98 @@ class SimulateFlow(BooleyFlow):
                 "tests_passed": sum(1 for t in target_result.tests if t.passed),
                 "tests_total": len(target_result.tests),
                 "test_selector": self.args.test or ("all" if complete_suite else "partial"),
+                "registry_tests": declared,
                 "selected_tests": selected,
+                "passed_tests": passed_tests,
+                "failed_tests": failed_tests,
+                "skipped_tests": skipped_tests,
             },
         )
+
+    def _record_cycle_count_criteria(self, target_result: TargetResult) -> None:
+        """Grade every declared Criterion bound to this Target and named test."""
+        if self.args.state_file is None:
+            return
+        tests = {test.name: test for test in target_result.tests}
+        baseline_result = getattr(self, "_baseline_results", {}).get(target_result.target)
+        baseline_tests = (
+            {test.name: test for test in baseline_result.tests}
+            if isinstance(baseline_result, TargetResult)
+            else {}
+        )
+        for key, entry in self.state.criteria.items():
+            params = entry.params or {}
+            if not key.startswith("cycle_count_") or params.get("target") != target_result.target:
+                continue
+            test_name = params.get("test")
+            current = tests.get(test_name) if isinstance(test_name, str) else None
+            relative = has_relative_threshold(params)
+            baseline = baseline_tests.get(test_name) if relative else None
+            met, reason = _admissible_cycle_evidence(current, "current")
+            if met and relative:
+                met, reason = _admissible_cycle_evidence(baseline, "baseline")
+            detail = {
+                "target": target_result.target,
+                "test": test_name,
+                "cycles": current.cycles if current is not None else None,
+                "baseline_cycles": baseline.cycles if baseline is not None else None,
+                "cycle_observation": current.cycle_status if current is not None else "missing",
+                "baseline_observation": (
+                    baseline.cycle_status
+                    if baseline is not None
+                    else ("not_required" if not relative else "missing")
+                ),
+                "workload_snapshot": (current.workload_snapshot if current is not None else None),
+                "baseline_workload_snapshot": (
+                    baseline.workload_snapshot if baseline is not None else None
+                ),
+            }
+            if reason:
+                detail["reason"] = reason
+            self.set_criterion(
+                key,
+                met,
+                source_target=target_result.target,
+                detail=detail,
+            )
+
+    def _remember_resolved_target(self, target: str, resolved: Any) -> None:
+        """Keep the resolved EDAM projection long enough to snapshot its inputs."""
+        if not hasattr(self, "_resolved_targets"):
+            self._resolved_targets: dict[str, Any] = {}
+        self._resolved_targets[target] = resolved
+
+    def _attach_workload_snapshots(self, result: TargetResult) -> None:
+        """Attach a stable declared-input snapshot to each named test result."""
+        from booley.flows.sim.workload import build_workload_snapshot
+
+        resolved = getattr(self, "_resolved_targets", {}).get(result.target)
+        if resolved is None:
+            return
+        work_dir = Path(self.args.work_dir).resolve()
+        run_cwd = _resolve_run_cwd(work_dir)
+        normalized_run_cwd = ""
+        if run_cwd is not None:
+            try:
+                normalized_run_cwd = run_cwd.resolve().relative_to(work_dir).as_posix()
+            except ValueError:
+                normalized_run_cwd = "<outside-worktree>"
+        controls = {
+            "cycle_sentinels": _resolve_cycle_sentinels(self.args.work_dir),
+            "pre_run_commands": _resolve_pre_run_commands(self.args.work_dir),
+            "run_cwd": normalized_run_cwd,
+            "environment": self._target_sim_env(result.target),
+            "select": lookup_target_section(_get_test_selects(), result.target),
+            "skip": list(lookup_target_section(_get_test_skips(), result.target) or []),
+        }
+        for test in result.tests:
+            test.workload_snapshot = build_workload_snapshot(
+                work_dir,
+                result.target,
+                test.name,
+                resolved,
+                controls=controls,
+            )
 
     def _record_run_log_dir(self, target: str, build_root: Path | str) -> None:
         """Take ownership of *target*'s ``run.log`` for this invocation.
@@ -2665,6 +2980,7 @@ class SimulateFlow(BooleyFlow):
             log=log_dir / RUN_LOG_NAME,
             result=log_dir / "result.json",
             results_xml=log_dir / "results.xml",
+            cocotb_results_json=log_dir / "cocotb_results.json",
             # The run-half reports the store it actually produced; fall back to
             # the conventional name when this run parsed no TRACE_OK marker.
             trace=traces[0] if traces else log_dir / "trace.fst",
@@ -2758,7 +3074,7 @@ class SimulateFlow(BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -2786,7 +3102,7 @@ class SimulateFlow(BooleyFlow):
                 "rtl": list(sources.rtl_source_files),
                 "tb": list(sources.tb_files),
             }
-        except Exception:  # noqa: BLE001 — observability only; never fail the run over it
+        except Exception:  # observability only; never fail the run over it
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -2864,7 +3180,7 @@ class SimulateFlow(BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate setup failure; recorded as a failed batch
+        except Exception as exc:  # isolate setup failure; recorded as a failed batch
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(
@@ -2952,7 +3268,7 @@ class SimulateFlow(BooleyFlow):
             elab_failed=any_elab_failed,
         )
 
-    def _interpret_cocotb_result(
+    def _interpret_cocotb_result(  # noqa: PLR0915 — one typed verdict fan-out pipeline
         self,
         combined: str,
         proc: Any,
@@ -3034,6 +3350,9 @@ class SimulateFlow(BooleyFlow):
         trace_path, trace_bytes = (
             _trace_artifact(combined, self.args.work_dir) if self.args.trace else ("", 0)
         )
+        trace_top_scope, trace_signal_count, trace_total_ticks = (
+            _trace_metadata(combined) if self.args.trace else ("", 0, 0)
+        )
         cycle_sentinels = _resolve_cycle_sentinels(self.args.work_dir)
         test_results: list[TestResult] = []
         for i, (name, verdict, detail) in enumerate(verdicts):
@@ -3053,6 +3372,13 @@ class SimulateFlow(BooleyFlow):
                 # failure doesn't repeat per test.
                 if tail and not any(not t.passed and t.error_tail for t in test_results):
                     error_tail = f"{detail}\n{tail}".strip()
+            cycle_observation = parse_cycle_observation(combined, name, cycle_sentinels)
+            cycle_value = (
+                cycle_observation.value
+                if cycle_observation.status == "observed"
+                or (cycle_observation.status == "legacy" and len(verdicts) == 1)
+                else None
+            )
             test_results.append(
                 TestResult(
                     name=name,
@@ -3061,12 +3387,8 @@ class SimulateFlow(BooleyFlow):
                     # Like the SVA count: the batch has exactly one build, so
                     # its wall time rides the first entry only.
                     build_s=parse_build_seconds(combined) if i == 0 else 0.0,
-                    cycles=parse_cycles(
-                        combined,
-                        name,
-                        cycle_sentinels,
-                        allow_legacy=len(verdicts) == 1,
-                    ),
+                    cycles=cycle_value,
+                    cycle_status=cycle_observation.status,
                     sva_errors=sva_errors if i == 0 else 0,
                     error_tail=error_tail,
                     timed_out=test_timed_out,
@@ -3075,6 +3397,9 @@ class SimulateFlow(BooleyFlow):
                     elab_failed=elab_failed,
                     trace_path=trace_path if i == 0 else "",
                     trace_bytes=trace_bytes if i == 0 else 0,
+                    trace_top_scope=trace_top_scope if i == 0 else "",
+                    trace_signal_count=trace_signal_count if i == 0 else 0,
+                    trace_total_ticks=trace_total_ticks if i == 0 else 0,
                 )
             )
 
@@ -3496,6 +3821,7 @@ class SimulateFlow(BooleyFlow):
         """Durably record one terminal Target before starting the next."""
         self._write_target_report(result)
         self._record_sim_criterion(result)
+        self._record_cycle_count_criteria(result)
         if self.state._file_path is not None:
             self.state.save()
 

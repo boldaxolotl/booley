@@ -62,6 +62,20 @@ class TestCriterionEntry:
         d = e.to_dict()
         assert "ever_met" not in d
 
+    def test_transition_evidence_round_trip(self):
+        evidence = [
+            {
+                "met": False,
+                "recorded_at": "2026-01-01T00:00:00Z",
+                "detail": {"failed_tests": ["test_uart"]},
+            }
+        ]
+        entry = CriterionEntry(transition_evidence=evidence)
+
+        restored = CriterionEntry.from_dict(entry.to_dict())
+
+        assert restored.transition_evidence == evidence
+
 
 class TestDevelopmentStateLoadSave:
     def test_load_nonexistent(self, tmp_path: Path):
@@ -74,6 +88,7 @@ class TestDevelopmentStateLoadSave:
         st = DevelopmentState.load(path)
         st.slug = "test-ticket"
         st.ticket_type = "feature"
+        st.strict_criteria = True
         st.init_criteria(
             {"lint_clean_lite": True, "sim_pass_lite": True, "review_rtl_bugs_done": True}
         )
@@ -83,6 +98,7 @@ class TestDevelopmentStateLoadSave:
         st2 = DevelopmentState.load(path)
         assert st2.slug == "test-ticket"
         assert st2.ticket_type == "feature"
+        assert st2.strict_criteria is True
         assert st2.is_met("lint_clean_lite") is True
         assert st2.criteria["lint_clean_lite"].detail == {"warnings": 0}
         assert st2.is_met("sim_pass_lite") is False
@@ -320,6 +336,13 @@ class TestCriteriaOperations:
         state.set_criterion("custom_check", True)
         assert state.criteria["custom_check"].mandatory is False
 
+    def test_strict_state_rejects_unknown_criterion(self, state: DevelopmentState):
+        state.strict_criteria = True
+
+        state.set_criterion("lint_clean_wrong_target", True)
+
+        assert "lint_clean_wrong_target" not in state.criteria
+
     def test_unknown_criterion_does_not_warn(
         self,
         state: DevelopmentState,
@@ -382,12 +405,13 @@ class TestCriteriaOperations:
         # issue_list preserved for targeted re-verification
         assert "issue_list" in state.criteria["review_tb_quality_clean"].detail
 
-    def test_reset_tb_does_not_unmet_done_reviews(self, state: DevelopmentState):
-        """One-shot _done reviews must not have met status reset by code changes."""
+    def test_reset_tb_marks_done_review_stale(self, state: DevelopmentState):
+        """A code change immediately invalidates a completed advisory review."""
         state.set_criterion("review_tb_quality_done", True)
         reset = state.reset_category(CATEGORY_TB)
-        assert "review_tb_quality_done" not in reset
-        assert state.is_met("review_tb_quality_done") is True
+        assert "review_tb_quality_done" in reset
+        assert state.is_met("review_tb_quality_done") is False
+        assert state.criteria["review_tb_quality_done"].stale is True
 
     def test_reset_preserves_total_verify_cycles(self, state: DevelopmentState):
         """total_verify_cycles must survive reset_category — it tracks cumulative
@@ -631,3 +655,24 @@ class TestEverFailedLatch:
         state.set_criterion("sim_pass_default", False)
         state.save()
         assert DevelopmentState.load(path).criteria["sim_pass_default"].ever_failed is True
+
+    def test_fail_to_pass_retains_red_detail_after_green(self, tmp_path):
+        state = DevelopmentState.load(tmp_path / "s.json")
+        state.init_criteria(
+            {"sim_pass_default": True},
+            criterion_params={"sim_pass_default": {"from_state": "fail"}},
+        )
+        state.set_criterion(
+            "sim_pass_default",
+            False,
+            detail={"failed_tests": ["test_uart"], "failure_kind": "test"},
+        )
+        state.set_criterion(
+            "sim_pass_default",
+            True,
+            detail={"passed_tests": ["test_uart"]},
+        )
+
+        evidence = state.criteria["sim_pass_default"].transition_evidence
+        assert [record["met"] for record in evidence] == [False, True]
+        assert evidence[0]["detail"]["failed_tests"] == ["test_uart"]

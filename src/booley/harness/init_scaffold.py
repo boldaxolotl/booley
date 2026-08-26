@@ -342,7 +342,15 @@ def _config_is_populated(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _rtl_source(c: ScaffoldChoices) -> str:
+def _counter_header(c: ScaffoldChoices, *, doctor_bad: bool) -> str:
+    if doctor_bad:
+        return f"""\
+// Doctor-only known-bad replacement for rtl/{c.name}.sv.
+//
+// This file is intentionally wrong: reset loads all ones instead of zero. It
+// is copied over the staged good RTL only for Doctor's bad simulation run, so
+// a clean scaffold proves that its Simulation Flow detects a behavioral bug.
+"""
     return f"""\
 // {c.name} — starter IP scaffolded by `booley init --scaffold`.
 //
@@ -353,6 +361,12 @@ def _rtl_source(c: ScaffoldChoices) -> str:
 //
 // The timescale must match the testbench's: Verilator 5 promotes a
 // mixed-presence timescale (TIMESCALEMOD) to an error under --timing.
+"""
+
+
+def _counter_body(c: ScaffoldChoices, *, doctor_bad: bool) -> str:
+    reset = "'1;  // Deliberate Doctor self-test defect." if doctor_bad else "'0;"
+    return f"""\
 `timescale 1ns / 1ps
 
 module {c.name} #(
@@ -364,17 +378,52 @@ module {c.name} #(
     output logic [WIDTH-1:0] count
 );
 
-  // Named constant instead of a bare 1'b1 so the adder operands share a width
-  // (a width-expansion lint finding on line one of a fresh project is a bad
-  // first impression).
+  // A named constant keeps the adder operands at the same width.
   localparam logic [WIDTH-1:0] STEP = 1;
 
   always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      count <= '0;
+      count <= {reset}
     end else if (en) begin
       count <= count + STEP;
     end
+  end
+
+endmodule
+"""
+
+
+def _counter_rtl(c: ScaffoldChoices, *, doctor_bad: bool) -> str:
+    """Render the shared counter, injecting only Doctor's deliberate reset defect."""
+    return _counter_header(c, doctor_bad=doctor_bad) + _counter_body(c, doctor_bad=doctor_bad)
+
+
+def _rtl_source(c: ScaffoldChoices) -> str:
+    return _counter_rtl(c, doctor_bad=False)
+
+
+def _sim_bad_overlay(c: ScaffoldChoices) -> str:
+    """A compiling RTL replacement whose reset behavior fails both scaffold tests."""
+    return _counter_rtl(c, doctor_bad=True)
+
+
+def _lint_bad_source(c: ScaffoldChoices) -> str:
+    """A known-bad source graded as a design finding by either scaffold linter."""
+    return f"""\
+// Doctor-only known-bad source for the lint_selftest_bad Target.
+//
+// The untyped parameter is a default Verible finding; Verilator rejects the
+// undeclared RHS. Keeping both in one tiny file lets either supported scaffold
+// linter prove that its Lint Flow rejects a known-bad design.
+module {c.name}_lint_selftest_bad #(
+    parameter WIDTH = 1
+) (
+    input  logic clk,
+    output logic value
+);
+
+  always_ff @(posedge clk) begin
+    value <= undeclared_rhs;
   end
 
 endmodule
@@ -544,29 +593,27 @@ async def test_count(dut):
 '''
 
 
-def _core_file(c: ScaffoldChoices) -> str:
-    # Testbench filesets use the Source-Isolation ``tb`` tag. The scaffold only
-    # emits Session-Runtime-supported simulators, so no vendor-specific tags or
-    # broker-specific wrapper plumbing are needed.
-    tb_tags = "[tb]"
+def _tb_fileset(c: ScaffoldChoices) -> str:
+    """Render the Source-Isolation-tagged testbench fileset."""
     if c.tb_style == "cocotb":
-        tb_fileset = f"""\
+        return f"""\
   tb:
     files:
       # Python TBs stage into the build root via copyto (ADR 0034 decision 4);
       # the basename MUST match flow_options.cocotb_module below.
       - tb/test_{c.name}.py: {{file_type: user, copyto: test_{c.name}.py}}
-    tags: {tb_tags}
+    tags: [tb]
 """
-    else:
-        tb_fileset = f"""\
+    return f"""\
   tb:
     files:
       - tb/tb_{c.name}.sv: {{file_type: systemVerilogSource}}
-    tags: {tb_tags}
+    tags: [tb]
 """
 
-    # Sim target: one shape per (EDA tool, tb_style) cell of the wizard matrix.
+
+def _sim_flow_options(c: ScaffoldChoices) -> tuple[str, str]:
+    """Return rendered simulation options and the matching toplevel."""
     sim_opts = [f"      tool: {c.sim_eda_tool}"]
     sim_opts.extend(["      booley:", "        doctor: [sim, elab]"])
     if c.tb_style == "cocotb":
@@ -585,59 +632,74 @@ def _core_file(c: ScaffoldChoices) -> str:
         elif c.sim_eda_tool == "icarus":
             sim_opts.append("      iverilog_options: [-g2012]")
         sim_toplevel = f"tb_{c.name}"  # a sim target's toplevel is its TB top
-    sim_flow_options = "\n".join(sim_opts)
+    return "\n".join(sim_opts), sim_toplevel
 
-    constraint_filesets = ""
+
+def _constraint_filesets(c: ScaffoldChoices) -> str:
+    rendered = ""
     if c.asic:
-        constraint_filesets += f"""\
+        rendered += f"""\
   constraints:
     files:
       - constraints/{c.name}.sdc: {{file_type: SDC}}
 """
     if c.fpga_part:
-        constraint_filesets += f"""\
+        rendered += f"""\
   xdc:
     files:
       - constraints/{c.name}.xdc: {{file_type: xdc}}
 """
+    return rendered
 
-    # Lint flow options mirror the sim branch's language-mode rule: the
-    # scaffold's RTL is SystemVerilog throughout, and iverilog defaults to
-    # Verilog-2005 — an icarus-driven target without -g2012 dies on the first
-    # `logic`/`always_ff` with a syntax error that reads like a design bug.
-    # LINT_EDA_TOOLS offers no icarus entry today, but non-sim targets used to be
-    # exactly where this flag got forgotten, so the rule lives here (keyed on
-    # the EDA tool, like the sim branch) rather than trusting the EDA-tool wizard menu.
+
+def _lint_language_option(c: ScaffoldChoices) -> str:
+    """Keep SystemVerilog mode explicit for any future Icarus lint Target."""
     sv_lang_flag = ", iverilog_options: [-g2012]" if c.lint_eda_tool == "icarus" else ""
-    lint_flow_options = f"{{tool: {c.lint_eda_tool}{sv_lang_flag}, booley: {{doctor: [lint]}}}}"
+    return sv_lang_flag
 
-    targets = f"""\
+
+def _sim_target(c: ScaffoldChoices) -> str:
+    flow_options, toplevel = _sim_flow_options(c)
+    return f"""\
   sim:
     flow: sim
     flow_options:
-{sim_flow_options}
+{flow_options}
     filesets: [rtl, tb]
-    toplevel: {sim_toplevel}
+    toplevel: {toplevel}
     parameters: [WIDTH]
+"""
+
+
+def _lint_target(c: ScaffoldChoices) -> str:
+    language_option = _lint_language_option(c)
+    return f"""\
   lint:
     flow: lint
-    flow_options: {lint_flow_options}
+    flow_options: {{tool: {c.lint_eda_tool}{language_option}, booley: {{doctor: [lint]}}}}
     filesets: [rtl]
     toplevel: {c.name}
 """
-    if c.asic:
-        targets += f"""\
+
+
+def _synth_target(c: ScaffoldChoices) -> str:
+    if not c.asic:
+        return ""
+    return f"""\
   synth:  # asic_synthesize
     flow: generic
-    # arch is REQUIRED: edalize's yosys backend refuses to configure without
-    # it. Booley's synth script overrides the pass, but keep the field.
+    # arch is required by Edalize's Yosys backend even though Booley overrides the pass.
     flow_options: {{tool: yosys, arch: xilinx, booley: {{doctor: [synth]}}}}
     filesets: [rtl, constraints]
     toplevel: {c.name}
     parameters: [WIDTH]
 """
-    if c.fpga_part:
-        targets += f"""\
+
+
+def _fpga_target(c: ScaffoldChoices) -> str:
+    if not c.fpga_part:
+        return ""
+    return f"""\
   fpga:  # fpga_impl
     flow: generic
     flow_options: {{tool: vivado, part: {c.fpga_part}, out_of_context: true}}
@@ -646,6 +708,11 @@ def _core_file(c: ScaffoldChoices) -> str:
     parameters: [WIDTH]
 """
 
+
+def _core_file(c: ScaffoldChoices) -> str:
+    """Render the public scaffold design description."""
+    filesets = _tb_fileset(c) + _constraint_filesets(c)
+    targets = _sim_target(c) + _lint_target(c) + _synth_target(c) + _fpga_target(c)
     return f"""\
 CAPI=2:
 name: ::{c.name}:0
@@ -654,13 +721,35 @@ description: {c.name} starter IP (scaffolded by booley init --scaffold)
 filesets:
   rtl:
     files:
-      - rtl/{c.name}.sv: {{file_type: systemVerilogSource}}
-{tb_fileset}{constraint_filesets}
-parameters:
+      # copyto gives Doctor's bad overlay a stable staged destination.
+      - rtl/{c.name}.sv: {{file_type: systemVerilogSource, copyto: {c.name}.sv}}
+{filesets}parameters:
   WIDTH: {{datatype: int, paramtype: vlogparam, default: 8}}
 
 targets:
 {targets}"""
+
+
+def _lint_selftest_core(c: ScaffoldChoices) -> str:
+    """Render Doctor's tracked, non-public lint fail-path Target."""
+    language_option = _lint_language_option(c)
+    return f"""\
+CAPI=2:
+name: ::{c.name}_booley_doctor_selftest:0
+description: Doctor-only fail-path fixture for {c.name}
+
+filesets:
+  lint_selftest_bad:
+    files:
+      - booley_doctor_selftest/lint_bad.sv: {{file_type: systemVerilogSource}}
+
+targets:
+  lint_selftest_bad:
+    flow: lint
+    flow_options: {{tool: {c.lint_eda_tool}{language_option}, booley: {{doctor_selftest: true}}}}
+    filesets: [lint_selftest_bad]
+    toplevel: {c.name}_lint_selftest_bad
+"""
 
 
 def _booley_toml(c: ScaffoldChoices) -> str:
@@ -743,8 +832,13 @@ def _sdc_file(c: ScaffoldChoices) -> str:
 # ADR 0031: a synth Target without an SDC fileset is a hard error — no silent
 # default clock. 10 ns = 100 MHz scaffold clock; keep in sync with the TB.
 create_clock -name clk -period 10.0 [get_ports clk]
-set_input_delay  -clock clk 0.0 [all_inputs]
-set_output_delay -clock clk 0.0 [all_outputs]
+# Only synchronous data ports carry clock-relative I/O delay. rst_n is an
+# asynchronous assertion/deassertion input in this starter and is intentionally
+# excluded from recovery/removal timing; replace this assumption when the reset
+# crosses into a real clock domain.
+set_input_delay  -clock clk 0.0 [get_ports en]
+set_output_delay -clock clk 0.0 [get_ports count]
+set_false_path -from [get_ports rst_n]
 """
 
 
@@ -763,8 +857,11 @@ def scaffold_files(c: ScaffoldChoices) -> dict[str, str]:
     files = {
         f"rtl/{c.name}.sv": _rtl_source(c),
         f"{c.name}.core": _core_file(c),
+        "verif/booley_doctor_selftest.core": _lint_selftest_core(c),
+        "verif/booley_doctor_selftest/lint_bad.sv": _lint_bad_source(c),
         ".booley_project/booley.toml": _booley_toml(c),
         ".booley_project/tests.toml": _tests_toml(c),
+        f".booley_project/selftest/sim/bad-overlay/{c.name}.sv": _sim_bad_overlay(c),
     }
     if c.tb_style == "cocotb":
         files[f"tb/test_{c.name}.py"] = _cocotb_testbench(c)

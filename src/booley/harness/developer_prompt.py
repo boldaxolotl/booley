@@ -112,7 +112,9 @@ real uncertainties (coverage gaps, assumptions, edge cases), and summarize \
 which edits you made and which Booley Flows or Specialists you used, and why. If \
 any optional criteria remain unmet, pass `optional_criteria_justification` \
 explaining why each one could not be completed. If code changes after the \
-report, submit a fresh report.
+report, submit a fresh report. Commit every intended change and leave every \
+ticket repository clean before calling `submit_run_report`; the report is a \
+finalization gate and rejects staged, modified, deleted, or untracked files.
 
 """
 
@@ -127,7 +129,9 @@ results must reach the user. Otherwise, when all criteria are met, stop without 
 calling it. For unmet optional criteria, pass \
 `optional_criteria_justification` explaining why each one could not be \
 completed. The report is required in that case even though routine reports \
-are disabled.
+are disabled. Commit every intended change and leave every ticket repository \
+clean before stopping or calling `submit_run_report`; the Harness rejects a \
+dirty handoff.
 
 """
 
@@ -368,7 +372,7 @@ def _get_criterion_endpoint_map(
 
         return build_criterion_endpoint_map(expanded, mcp_tools)
 
-    except Exception:  # noqa: BLE001 — mapping is best-effort; degrade to empty map so the run still proceeds
+    except Exception:  # mapping is best-effort; degrade to empty map so the run still proceeds
         logger.warning("Failed to auto-build criterion-to-endpoint map", exc_info=True)
         return {}
 
