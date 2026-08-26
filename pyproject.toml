@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # PyPI distribution name ("booley" was taken); the import package stays `booley`.
 name = "booley-rtl"
 dynamic = ["version"]
-description = "RTL development harness with ticket-based workflow automation"
+description = "The open-source agentic RTL IDE"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
