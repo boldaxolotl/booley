@@ -14,12 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
+from booley.dev_support.criteria import TargetPair
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
 from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
-from booley.flows.implementation_comparison import ImplementationTargetPair
 from booley.flows.recipe_evidence import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
@@ -158,9 +158,7 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
             side_effect=lambda target: calls.append(target) or metrics,
         ),
     ):
-        results, short_sha = flow._run_baseline_configs(
-            (ImplementationTargetPair("fpga_before", "fpga_after"),)
-        )
+        results, short_sha = flow._run_baseline_configs((TargetPair("fpga_before", "fpga_after"),))
 
     assert calls == ["fpga_before"]
     assert short_sha == "abc1234"

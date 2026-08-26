@@ -175,6 +175,7 @@ class TestBooleyFlowExecution:
         flow = EchoFlow()
         flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
         assert flow._pre_state_gate() is None
+        assert flow._target_contract == contract
 
         (tmp_path / "changed.core").write_text("CAPI=2:\nname: ::changed:0\n")
         rejected = flow._pre_state_gate()

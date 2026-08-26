@@ -357,34 +357,45 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
         logger.warning("Legacy ticket %s has no immutable Target contract", ctx.slug)
         return
     from booley.runtime.project_dir import resolve_project_dir
-    from booley.ticket_board.contract_ops import validate_open_seal
-    from booley.ticket_board.target_contract import validate_contract_fields, verify_surface
 
     worktree = resolve_project_dir(ctx.project_root) / "worktrees" / ctx.slug
     if action == "fresh":
-        try:
-            errors = validate_open_seal(ctx.project_root, ctx.slug, contract)
-        except (RuntimeError, ValueError, OSError) as exc:
-            errors = [str(exc)]
-        if errors:
-            raise FatalError(
-                f"target-contract-change-required: {'; '.join(errors)}",
-                slug=ctx.slug,
-            )
-        binding_errors = validate_contract_fields(
-            {
-                "base_sha": ctx.base_sha,
-                "target_contract": contract.as_dict(),
-                "criteria": ctx.criteria,
-            },
-            worktree,
-        )
-        if binding_errors:
-            raise FatalError(
-                f"target-contract-change-required: {'; '.join(binding_errors)}",
-                slug=ctx.slug,
-            )
+        _verify_fresh_contract(ctx, worktree)
         return
+    _verify_resumed_contract(ctx, worktree)
+
+
+def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
+    contract = ctx.target_contract
+    assert contract is not None
+    return {
+        "base_sha": ctx.base_sha,
+        "target_contract": contract.as_dict(),
+        "criteria": ctx.criteria,
+    }
+
+
+def _verify_fresh_contract(ctx: TicketContext, worktree: Path) -> None:
+    from booley.ticket_board.contract_ops import validate_open_seal
+    from booley.ticket_board.target_contract import validate_contract_fields
+
+    contract = ctx.target_contract
+    assert contract is not None
+    try:
+        errors = validate_open_seal(ctx.project_root, ctx.slug, contract)
+    except (RuntimeError, ValueError, OSError) as exc:
+        errors = [str(exc)]
+    if not errors:
+        errors = validate_contract_fields(_contract_fields(ctx), worktree)
+    if errors:
+        raise FatalError(f"target-contract-change-required: {'; '.join(errors)}", slug=ctx.slug)
+
+
+def _verify_resumed_contract(ctx: TicketContext, worktree: Path) -> None:
+    from booley.ticket_board.target_contract import validate_contract_fields, verify_surface
+
+    contract = ctx.target_contract
+    assert contract is not None
     if not worktree.is_dir():
         raise FatalError(
             f"target-contract-change-required: ticket worktree is missing: {worktree}",
@@ -392,14 +403,7 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
         )
     try:
         verify_surface(contract, worktree)
-        binding_errors = validate_contract_fields(
-            {
-                "base_sha": ctx.base_sha,
-                "target_contract": contract.as_dict(),
-                "criteria": ctx.criteria,
-            },
-            worktree,
-        )
+        binding_errors = validate_contract_fields(_contract_fields(ctx), worktree)
         if binding_errors:
             raise TargetContractError("; ".join(binding_errors))
     except TargetContractError as exc:

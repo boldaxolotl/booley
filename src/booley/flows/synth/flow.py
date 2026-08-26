@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, as_int, require_bool
+from booley.dev_support.criteria import TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -60,7 +61,7 @@ from ..clock_timing import (
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
-    ImplementationTargetPair,
+    target_pair_for_candidate,
     target_pairs_for_candidates,
 )
 from ..recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
@@ -1536,10 +1537,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             self._compute_delta_pct,
             eda_tool=self._eda_tool,
         )
-        pair = next(
-            (item for item in getattr(self, "_target_pairs", ()) if item.candidate == target),
-            ImplementationTargetPair(target, target),
-        )
+        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), target)
         report["baseline_target"] = pair.baseline
         report["candidate_target"] = pair.candidate
         report["run_evidence"] = metrics.run_evidence or None
@@ -1695,6 +1693,30 @@ class AsicSynthesizeFlow(BooleyFlow):
                     "(bare name if unambiguous, else vlnv#name)."
                 ),
             )
+        preparation_error = self._prepare_target_pairs(targets)
+        if preparation_error is not None:
+            return preparation_error
+        if self.args.dry_run:
+            return self._dry_run(targets)
+        self.reserve_invocation_dir()
+        self._write_progress_report(targets, {}, {}, phase="starting")
+        baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
+        if isinstance(baseline_results, McpToolResult):
+            return baseline_results
+        current_results = self._run_current_targets(targets, baseline_results, short_sha)
+        self._discard_stale_selfcompare(targets, current_results, baseline_results)
+        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
+        self._write_progress_report(
+            targets,
+            current_results,
+            baseline_results,
+            phase="complete",
+            baseline_ref=short_sha,
+            complete=True,
+        )
+        return result
+
+    def _prepare_target_pairs(self, targets: list[str]) -> McpToolResult | None:
         baseline_error = self._apply_ticket_baseline(targets)
         comparison_error: str | None = None
         try:
@@ -1702,6 +1724,9 @@ class AsicSynthesizeFlow(BooleyFlow):
                 self.state.criteria,
                 "synthesis_ok_",
                 targets,
+                contract=getattr(self, "_target_contract", None),
+                project_root=self.args.work_dir,
+                flow="synth",
             )
         except ImplementationComparisonError as exc:
             comparison_error = f"synth: {exc}"
@@ -1715,23 +1740,14 @@ class AsicSynthesizeFlow(BooleyFlow):
         config_error = self._resolve_run_policy(self._flow_enabled())
         if config_error is not None:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=config_error)
-        if self.args.dry_run:
-            return self._dry_run(targets)
+        return None
 
-        # Claim the final report directory before the first long target.  The
-        # progress checkpoint and final report then share one invocation even
-        # if an outer watchdog kills the process between targets.
-        self.reserve_invocation_dir()
-        self._write_progress_report(targets, {}, {}, phase="starting")
-
-        # Baseline mode: synthesize the baseline ref in a throwaway worktree
-        # (the current run below stays in the caller's tree, untouched).
-        baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
-        if isinstance(baseline_results, McpToolResult):
-            return baseline_results  # early exit on error
-
-        # Current HEAD runs.  Persist every terminal target before starting the
-        # next one; a late timeout/OOM must not erase earlier completed work.
+    def _run_current_targets(
+        self,
+        targets: list[str],
+        baseline_results: dict[str, SynthMetrics],
+        short_sha: str | None,
+    ) -> dict[str, SynthMetrics]:
         current_results: dict[str, SynthMetrics] = {}
         for tgt in targets:
             metrics, _output = self._run_single_config(tgt)
@@ -1757,7 +1773,14 @@ class AsicSynthesizeFlow(BooleyFlow):
                         baseline_results.get(tgt),
                     )
                 )
+        return current_results
 
+    def _discard_stale_selfcompare(
+        self,
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+        baseline_results: dict[str, SynthMetrics],
+    ) -> None:
         if self._baseline_selfcompare_msg and any(
             baseline_results.get(target) is not None
             and baseline_results[target].recipe_fingerprint
@@ -1765,23 +1788,6 @@ class AsicSynthesizeFlow(BooleyFlow):
             for target in targets
         ):
             self._baseline_selfcompare_msg = None
-
-        # Collect results and format output
-        result = self._aggregate_results(
-            targets,
-            current_results,
-            baseline_results,
-            short_sha,
-        )
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="complete",
-            baseline_ref=short_sha,
-            complete=True,
-        )
-        return result
 
     def _dry_run(self, targets: list[str]) -> McpToolResult:
         """Print the boundary command + the spec it is rendered from.
@@ -1834,85 +1840,29 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _run_baseline_configs(
         self,
-        pairs: Sequence[ImplementationTargetPair | str],
+        pairs: Sequence[TargetPair | str],
     ) -> tuple[dict[str, SynthMetrics] | McpToolResult, str | None]:
-        """Synthesize paired baseline Targets at ``--baseline`` in a throwaway worktree.
-
-        Returns ``(results_dict, short_sha)``, or ``(McpToolResult, None)`` when the
-        worktree could not be created. The baseline ref is materialized in an
-        ephemeral ``git worktree`` (never the caller's tree — so this works in
-        Interactive Mode too, ADR 0012); ``self.args.work_dir`` is pointed at it
-        for the duration so every path the run derives (FuseSoC build dir,
-        sources, logs) resolves inside the baseline checkout. Each baseline log
-        is re-persisted to the real project runtime before the worktree — and
-        the log it wrote inside it — is destroyed.
-        """
+        """Synthesize paired baseline Targets in an ephemeral worktree."""
         baseline_ref = self.args.baseline
         if not baseline_ref:
             return {}, None
-
-        pairs = tuple(
-            pair
-            if isinstance(pair, ImplementationTargetPair)
-            else ImplementationTargetPair(baseline=pair, candidate=pair)
-            for pair in pairs
-        )
+        pairs = self._normalize_target_pairs(pairs)
         targets = [pair.candidate for pair in pairs]
         project_root = Path(self.args.work_dir)
         short_sha = git_short_sha(baseline_ref, project_root)
         full_sha = git_full_sha(str(baseline_ref), project_root)
         if full_sha is not None:
             self._baseline_full_sha = full_sha
-        baseline_results: dict[str, SynthMetrics] = {}
-        executed: dict[str, SynthMetrics] = {}
         try:
             with baseline_worktree(project_root, baseline_ref) as wt:
                 self.args.work_dir = wt
-                # Keep the real project root while work_dir points into the
-                # throwaway baseline worktree.
                 self._project_root = project_root
-                # Guard against the stealth-cores self-compare (ADR 0036): if
-                # both trees hash identical, --baseline measured nothing and the
-                # +0.0% delta must not read as a clean pass. Computed here while
-                # both the worktree and real root are in scope; surfaced by
-                # _aggregate_results.
                 if all(pair.baseline == pair.candidate for pair in pairs):
                     self._baseline_selfcompare_msg = _baseline_self_compare_warning(
-                        project_root,
-                        wt,
+                        project_root, wt
                     )
                 try:
-                    for pair in pairs:
-                        if pair.baseline not in executed:
-                            metrics, output = self._run_single_config(pair.baseline)
-                            metrics.log_path = self._persist_baseline_log(
-                                pair.baseline,
-                                output,
-                                project_root,
-                            )
-                            executed[pair.baseline] = metrics
-                        metrics = copy.deepcopy(executed[pair.baseline])
-                        baseline_results[pair.candidate] = metrics
-                        self._write_progress_report(
-                            targets,
-                            {},
-                            baseline_results,
-                            phase="baseline",
-                            baseline_ref=short_sha,
-                        )
-                        if metrics.infra_error:
-                            pair_label = (
-                                pair.baseline
-                                if pair.baseline == pair.candidate
-                                else f"{pair.baseline} for candidate {pair.candidate}"
-                            )
-                            return McpToolResult(
-                                exit_code=EXIT_ERROR,
-                                report_text=(
-                                    f"synth baseline {pair_label}: infrastructure error: "
-                                    f"{metrics.infra_error}"
-                                ),
-                            ), None
+                    result = self._execute_baseline_pairs(pairs, targets, project_root, short_sha)
                 finally:
                     self.args.work_dir = project_root
                     self._project_root = None
@@ -1921,8 +1871,46 @@ class AsicSynthesizeFlow(BooleyFlow):
                 exit_code=EXIT_ERROR,
                 report_text=f"synth: {exc}",
             ), None
+        if isinstance(result, McpToolResult):
+            return result, None
+        return result, short_sha
 
-        return baseline_results, short_sha
+    @staticmethod
+    def _normalize_target_pairs(pairs: Sequence[TargetPair | str]) -> tuple[TargetPair, ...]:
+        return tuple(
+            pair if isinstance(pair, TargetPair) else TargetPair(pair, pair) for pair in pairs
+        )
+
+    def _execute_baseline_pairs(
+        self,
+        pairs: Sequence[TargetPair],
+        targets: list[str],
+        project_root: Path,
+        short_sha: str,
+    ) -> dict[str, SynthMetrics] | McpToolResult:
+        baseline_results: dict[str, SynthMetrics] = {}
+        executed: dict[str, SynthMetrics] = {}
+        for pair in pairs:
+            if pair.baseline not in executed:
+                metrics, output = self._run_single_config(pair.baseline)
+                metrics.log_path = self._persist_baseline_log(pair.baseline, output, project_root)
+                executed[pair.baseline] = metrics
+            metrics = copy.deepcopy(executed[pair.baseline])
+            baseline_results[pair.candidate] = metrics
+            self._write_progress_report(
+                targets, {}, baseline_results, phase="baseline", baseline_ref=short_sha
+            )
+            if metrics.infra_error:
+                pair_label = pair.baseline
+                if pair.baseline != pair.candidate:
+                    pair_label = f"{pair.baseline} for candidate {pair.candidate}"
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"synth baseline {pair_label}: infrastructure error: {metrics.infra_error}"
+                    ),
+                )
+        return baseline_results
 
     def _target_report_lines(
         self,
@@ -2224,10 +2212,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         baseline_ref: str | None,
     ) -> None:
         """Set the synthesis_ok criterion for one target."""
-        pair = next(
-            (item for item in getattr(self, "_target_pairs", ()) if item.candidate == tgt),
-            ImplementationTargetPair(tgt, tgt),
-        )
+        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), tgt)
         detail: dict[str, Any] = {
             **cur.qor_detail(),
             **cur.structural_detail(),

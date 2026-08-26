@@ -3,43 +3,99 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from booley.dev_support.criteria import BASELINE_TARGET_PARAM
+from booley.core.boundary import as_dict, as_str
+from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
+from booley.fusesoc import fusesoc_registry
+from booley.ticket_board.target_contract import SCHEMA_VERSION, TargetContract
 
 
 class ImplementationComparisonError(ValueError):
     """Persisted criterion metadata cannot define an executable Target pair."""
 
 
-@dataclass(frozen=True)
-class ImplementationTargetPair:
-    """Candidate-selected implementation Target and its sealed baseline Target."""
+def _state_pair(criteria: Mapping[str, Any], criterion_prefix: str, candidate: str) -> TargetPair:
+    """Read the persisted pair, preserving equal-Target legacy behavior."""
+    entry = criteria.get(f"{criterion_prefix}{candidate}")
+    params = as_dict(getattr(entry, "params", None)) if entry is not None else None
+    if params is None or BASELINE_TARGET_PARAM not in params:
+        return TargetPair(candidate, candidate)
+    baseline = as_str(params[BASELINE_TARGET_PARAM])
+    if baseline is None or not baseline.strip():
+        raise ImplementationComparisonError(
+            f"{criterion_prefix}{candidate} has invalid baseline Target metadata"
+        )
+    return TargetPair(baseline.strip(), candidate)
 
-    baseline: str
-    candidate: str
+
+def _canonical_selector(project_root: Path | str, target: str) -> str:
+    ref = fusesoc_registry.resolve_ref(project_root, target)
+    return f"{ref.vlnv}#{ref.name}"
+
+
+def _sealed_pair(
+    contract: TargetContract,
+    project_root: Path | str,
+    flow: str,
+    criterion: str,
+    state_pair: TargetPair,
+) -> TargetPair:
+    """Resolve one execution pair from schema-2 sealed identities."""
+    try:
+        candidate = _canonical_selector(project_root, state_pair.candidate)
+        state_baseline = _canonical_selector(project_root, state_pair.baseline)
+    except fusesoc_registry.FuseSocError as exc:
+        raise ImplementationComparisonError(str(exc)) from exc
+    matches = tuple(
+        binding
+        for binding in contract.bindings
+        if binding.flow == flow
+        and binding.criterion == criterion
+        and binding.candidate == candidate
+    )
+    if len(matches) != 1:
+        raise ImplementationComparisonError(
+            f"sealed contract has no unique {flow}/{criterion} binding for "
+            f"candidate Target {state_pair.candidate!r}"
+        )
+    sealed = matches[0]
+    if state_baseline != sealed.baseline:
+        raise ImplementationComparisonError(
+            f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
+            "match the sealed contract"
+        )
+    return TargetPair(sealed.baseline, state_pair.candidate)
 
 
 def target_pairs_for_candidates(
     criteria: Mapping[str, Any],
     criterion_prefix: str,
     candidates: Sequence[str],
-) -> tuple[ImplementationTargetPair, ...]:
+    *,
+    contract: TargetContract | None = None,
+    project_root: Path | str | None = None,
+    flow: str = "",
+) -> tuple[TargetPair, ...]:
     """Resolve selected candidates; missing metadata preserves equal-Target behavior."""
-    pairs: list[ImplementationTargetPair] = []
+    pairs: list[TargetPair] = []
     seen: dict[str, str] = {}
     for candidate in candidates:
-        baseline = candidate
-        entry = criteria.get(f"{criterion_prefix}{candidate}")
-        params = getattr(entry, "params", None) if entry is not None else None
-        if isinstance(params, dict) and BASELINE_TARGET_PARAM in params:
-            raw = params[BASELINE_TARGET_PARAM]
-            if not isinstance(raw, str) or not raw.strip():
+        pair = _state_pair(criteria, criterion_prefix, candidate)
+        if contract is not None and contract.schema == SCHEMA_VERSION:
+            if project_root is None or not flow:
                 raise ImplementationComparisonError(
-                    f"{criterion_prefix}{candidate} has invalid baseline Target metadata"
+                    "schema-2 Target contract comparison requires project root and flow"
                 )
-            baseline = raw.strip()
+            pair = _sealed_pair(
+                contract,
+                project_root,
+                flow,
+                criterion_prefix.removesuffix("_"),
+                pair,
+            )
+        baseline = pair.baseline
         prior = seen.get(candidate)
         if prior is not None and prior != baseline:
             raise ImplementationComparisonError(
@@ -47,5 +103,13 @@ def target_pairs_for_candidates(
                 f"{prior!r} and {baseline!r}"
             )
         seen[candidate] = baseline
-        pairs.append(ImplementationTargetPair(baseline, candidate))
+        pairs.append(pair)
     return tuple(pairs)
+
+
+def target_pair_for_candidate(pairs: Sequence[TargetPair], candidate: str) -> TargetPair:
+    """Return one resolved pair, defaulting only for legacy equal-Target runs."""
+    return next(
+        (pair for pair in pairs if pair.candidate == candidate),
+        TargetPair(candidate, candidate),
+    )

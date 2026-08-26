@@ -43,6 +43,7 @@ __all__ = [
     "require_dict",
     "require_finite_number",
     "require_int",
+    "require_list",
     "require_opt_str",
     "require_str",
 ]
@@ -69,6 +70,13 @@ def require_dict(value: Any, *, field: str = "value") -> dict:
     if not isinstance(value, Mapping):
         raise BoundaryError(f"{field} must be a mapping, got {type(value).__name__}")
     return dict(value)
+
+
+def require_list(value: Any, *, field: str = "value") -> list:
+    """Return *value* when it is a list, or raise with boundary context."""
+    if not isinstance(value, list):
+        raise BoundaryError(f"{field} must be a list, got {type(value).__name__}")
+    return value
 
 
 # ---------------------------------------------------------------------------

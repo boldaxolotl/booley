@@ -31,9 +31,12 @@ from typing import Any
 from booley.core.boundary import (
     BoundaryError,
     as_positive_int,
+    as_str,
     is_str_list,
     require_bool,
+    require_dict,
     require_finite_number,
+    require_str,
 )
 from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
 
@@ -54,21 +57,28 @@ class TargetPair:
 
 def parse_target_pair(value: Any, *, field: str = "target") -> TargetPair:
     """Normalize a Target string or exact ``{baseline, candidate}`` mapping."""
-    if isinstance(value, str):
-        target = value.strip()
+    target = as_str(value)
+    if target is not None:
+        target = target.strip()
         if not target:
             raise ValueError(f"{field} must be a non-empty Target name")
         return TargetPair(target, target)
-    if not isinstance(value, dict):
-        raise ValueError(f"{field} must be a Target name or baseline/candidate mapping")
-    keys = set(value)
+    try:
+        mapping = require_dict(value, field=field)
+    except BoundaryError as exc:
+        raise ValueError(f"{field} must be a Target name or baseline/candidate mapping") from exc
+    keys = set(mapping)
     if keys != {"baseline", "candidate"}:
         raise ValueError(f"{field} mapping must contain exactly 'baseline' and 'candidate'")
-    baseline = value.get("baseline")
-    candidate = value.get("candidate")
-    if not isinstance(baseline, str) or not baseline.strip():
+    try:
+        baseline = require_str(mapping, "baseline").strip()
+        candidate = require_str(mapping, "candidate").strip()
+    except BoundaryError as exc:
+        key = "baseline" if not as_str(mapping.get("baseline")) else "candidate"
+        raise ValueError(f"{field}.{key} must be a non-empty Target name") from exc
+    if not baseline:
         raise ValueError(f"{field}.baseline must be a non-empty Target name")
-    if not isinstance(candidate, str) or not candidate.strip():
+    if not candidate:
         raise ValueError(f"{field}.candidate must be a non-empty Target name")
     return TargetPair(baseline.strip(), candidate.strip())
 
@@ -1011,33 +1021,44 @@ def _parse_dict_criterion(
             raise ValueError(
                 f"{key}.targets baseline/candidate mappings require a relative threshold"
             )
-        specs: list[CriterionSpec] = []
-        baselines_by_candidate: dict[str, str] = {}
-        for index, raw_target in enumerate(targets):
-            pair = parse_target_pair(raw_target, field=f"{key}.targets[{index}]")
-            prior = baselines_by_candidate.get(pair.candidate)
-            if prior is not None:
-                if prior != pair.baseline:
-                    raise ValueError(
-                        f"{key}.targets assigns conflicting baselines {prior!r} and "
-                        f"{pair.baseline!r} to candidate {pair.candidate!r}"
-                    )
-                continue
-            baselines_by_candidate[pair.candidate] = pair.baseline
-            pair_params = dict(params)
-            if pair.baseline != pair.candidate:
-                pair_params[BASELINE_TARGET_PARAM] = pair.baseline
-            specs.append(
-                CriterionSpec(
-                    key,
-                    mandatory=mandatory,
-                    per_target=True,
-                    targets=[pair.candidate],
-                    params=pair_params,
-                )
-            )
-        return specs
+        return _paired_target_specs(key, targets, params, mandatory=mandatory)
     return [CriterionSpec(key, mandatory=mandatory, params=params)]
+
+
+def _paired_target_specs(
+    key: str,
+    targets: list[Any],
+    params: dict[str, Any],
+    *,
+    mandatory: bool,
+) -> list[CriterionSpec]:
+    """Expand directed pairs while rejecting conflicting candidate identities."""
+    specs: list[CriterionSpec] = []
+    baselines_by_candidate: dict[str, str] = {}
+    for index, raw_target in enumerate(targets):
+        pair = parse_target_pair(raw_target, field=f"{key}.targets[{index}]")
+        prior = baselines_by_candidate.get(pair.candidate)
+        if prior is not None:
+            if prior != pair.baseline:
+                raise ValueError(
+                    f"{key}.targets assigns conflicting baselines {prior!r} and "
+                    f"{pair.baseline!r} to candidate {pair.candidate!r}"
+                )
+            continue
+        baselines_by_candidate[pair.candidate] = pair.baseline
+        pair_params = dict(params)
+        if pair.baseline != pair.candidate:
+            pair_params[BASELINE_TARGET_PARAM] = pair.baseline
+        specs.append(
+            CriterionSpec(
+                key,
+                mandatory=mandatory,
+                per_target=True,
+                targets=[pair.candidate],
+                params=pair_params,
+            )
+        )
+    return specs
 
 
 def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:

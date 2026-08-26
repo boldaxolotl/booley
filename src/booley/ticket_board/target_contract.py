@@ -22,6 +22,7 @@ from booley.core.boundary import (
     as_str,
     is_str_list,
     require_dict,
+    require_list,
     require_str,
 )
 from booley.dev_support.thresholds import has_relative_threshold
@@ -199,25 +200,35 @@ def _string_tuple(value: Any, key: str) -> tuple[str, ...]:
 
 
 def _binding_tuple(value: Any) -> tuple[ContractTargetBinding, ...]:
-    if not isinstance(value, list):
-        raise TargetContractError("target_contract.bindings must be a list[dict]")
+    try:
+        raw_bindings = require_list(value, field="target_contract.bindings")
+    except BoundaryError as exc:
+        raise TargetContractError("target_contract.bindings must be a list[dict]") from exc
     bindings: list[ContractTargetBinding] = []
-    for index, raw in enumerate(value):
-        if not isinstance(raw, Mapping):
-            raise TargetContractError(f"target_contract.bindings[{index}] must be a mapping")
-        if set(raw) != {"flow", "criterion", "baseline", "candidate"}:
+    for index, raw in enumerate(raw_bindings):
+        field = f"target_contract.bindings[{index}]"
+        try:
+            mapping = require_dict(raw, field=field)
+        except BoundaryError as exc:
+            raise TargetContractError(str(exc)) from exc
+        if set(mapping) != {"flow", "criterion", "baseline", "candidate"}:
             raise TargetContractError(
                 f"target_contract.bindings[{index}] must contain exactly flow, criterion, "
                 "baseline, and candidate"
             )
         fields: dict[str, str] = {}
         for key in ("flow", "criterion", "baseline", "candidate"):
-            item = raw.get(key)
-            if not isinstance(item, str) or not item.strip():
+            try:
+                item = require_str(mapping, key).strip()
+            except BoundaryError as exc:
+                raise TargetContractError(
+                    f"target_contract.bindings[{index}].{key} must be a non-empty string"
+                ) from exc
+            if not item:
                 raise TargetContractError(
                     f"target_contract.bindings[{index}].{key} must be a non-empty string"
                 )
-            fields[key] = item.strip()
+            fields[key] = item
         bindings.append(ContractTargetBinding(**fields))
     return tuple(bindings)
 
@@ -335,10 +346,10 @@ def surface_entries(project_root: Path | str) -> tuple[ContractSurfaceEntry, ...
     return tuple(sorted(rows, key=lambda row: (row.path, row.kind)))
 
 
-def surface_digest(project_root: Path | str) -> str:
+def surface_digest(project_root: Path | str, *, schema: int = SCHEMA_VERSION) -> str:
     """Hash the normalized Target/control-plane manifest."""
     manifest = [row.as_dict() for row in surface_entries(project_root)]
-    return _sha256(_canonical_bytes({"schema": SCHEMA_VERSION, "files": manifest}))
+    return _sha256(_canonical_bytes({"schema": schema, "files": manifest}))
 
 
 def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
@@ -476,11 +487,30 @@ def validate_targets_for_seal(
     errors = validate_criterion_targets(fields, root)
     if errors:
         return errors
+    bindings = criterion_targets(fields.get("criteria"))
+    required = _required_targets(root, bindings)
+    errors.extend(_validate_required_targets(root, Path(build_root), required))
+    for binding in bindings:
+        if binding.baseline != binding.target and not _missing_target_sources(
+            root, binding.target
+        ):
+            errors.extend(_validate_comparison_basis(binding, root, Path(build_root)))
+    errors.extend(
+        _validate_changed_targets(
+            fields, root, Path(build_root), changed_targets, seen=set(required)
+        )
+    )
+    return errors
+
+
+def _required_targets(
+    root: Path, bindings: Iterable[CriterionTarget]
+) -> dict[str, tuple[CriterionTarget, bool]]:
     # A Target used as a baseline anywhere always receives the stronger
     # executable-at-base requirement, even if another pair also uses it as a
     # candidate whose [new] sources could otherwise defer resolution.
     required: dict[str, tuple[CriterionTarget, bool]] = {}
-    for binding in criterion_targets(fields.get("criteria")):
+    for binding in bindings:
         candidate_missing = bool(_missing_target_sources(root, binding.target))
         prior = required.get(binding.target)
         required[binding.target] = (
@@ -488,17 +518,32 @@ def validate_targets_for_seal(
             (prior[1] if prior else False) or not candidate_missing,
         )
         required[binding.baseline] = (binding, True)
+    return required
+
+
+def _validate_required_targets(
+    root: Path,
+    build_root: Path,
+    required: Mapping[str, tuple[CriterionTarget, bool]],
+) -> list[str]:
+    errors: list[str] = []
     for target, (binding, must_resolve) in required.items():
         if not must_resolve:
             continue
         target_build = Path(build_root) / _safe_target_dir(target)
         errors.extend(_dry_resolve_binding(binding, root, target_build, target=target))
-    for binding in criterion_targets(fields.get("criteria")):
-        if binding.baseline != binding.target and not _missing_target_sources(
-            root, binding.target
-        ):
-            errors.extend(_validate_comparison_basis(binding, root, Path(build_root)))
-    seen = set(required)
+    return errors
+
+
+def _validate_changed_targets(
+    fields: Mapping[str, Any],
+    root: Path,
+    build_root: Path,
+    changed_targets: Iterable[str],
+    *,
+    seen: set[str],
+) -> list[str]:
+    errors: list[str] = []
     for target in changed_targets:
         if target in seen:
             continue
@@ -516,7 +561,7 @@ def validate_targets_for_seal(
         if missing:
             continue
         binding = CriterionTarget("contract", "changed_target", target, "", False)
-        target_build = Path(build_root) / _safe_target_dir(target)
+        target_build = build_root / _safe_target_dir(target)
         errors.extend(_dry_resolve_binding(binding, root, target_build))
     return errors
 
@@ -531,43 +576,15 @@ def _validate_comparison_basis(
     build_root: Path,
 ) -> list[str]:
     """Fail sealing when two resolvable Targets change measurement methodology."""
-    from booley.flows.recipe_evidence import (
-        implementation_comparison_basis,
-        recipe_changes,
-    )
-
     try:
-        baseline = fusesoc_registry.resolve_target(
-            binding.baseline,
-            project_root=root,
-            build_root=build_root / f"basis-baseline-{_safe_target_dir(binding.baseline)}",
-        )
-        candidate = fusesoc_registry.resolve_target(
-            binding.target,
-            project_root=root,
-            build_root=build_root / f"basis-candidate-{_safe_target_dir(binding.target)}",
-        )
-        if binding.flow == "synth":
-            from booley.flows.synth.recipe import (
-                default_recipe_args,
-                synthesis_recipe_snapshot,
-            )
-
-            baseline_snapshot = synthesis_recipe_snapshot(
-                baseline, default_recipe_args(), target=binding.baseline
-            )
-            candidate_snapshot = synthesis_recipe_snapshot(
-                candidate, default_recipe_args(), target=binding.target
-            )
-        elif binding.flow == "fpga":
-            from booley.flows.fpga.recipe import fpga_recipe_snapshot
-
-            baseline_snapshot = fpga_recipe_snapshot(baseline, target=binding.baseline)
-            candidate_snapshot = fpga_recipe_snapshot(candidate, target=binding.target)
-        else:
-            return []
+        snapshots = _comparison_snapshots(binding, root, build_root)
     except (fusesoc_registry.FuseSocError, BoundaryError, OSError) as exc:
         return [f"{binding.label}: cannot compare Target measurement basis: {exc}"]
+    if snapshots is None:
+        return []
+    from booley.flows.recipe_evidence import implementation_comparison_basis, recipe_changes
+
+    baseline_snapshot, candidate_snapshot = snapshots
     changes = recipe_changes(
         implementation_comparison_basis(baseline_snapshot),
         implementation_comparison_basis(candidate_snapshot),
@@ -579,6 +596,37 @@ def _validate_comparison_basis(
         f"{binding.label}: baseline Target {binding.baseline!r} and candidate Target "
         f"{binding.target!r} use incompatible measurement bases ({paths})"
     ]
+
+
+def _comparison_snapshots(
+    binding: CriterionTarget, root: Path, build_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    baseline = fusesoc_registry.resolve_target(
+        binding.baseline,
+        project_root=root,
+        build_root=build_root / f"basis-baseline-{_safe_target_dir(binding.baseline)}",
+    )
+    candidate = fusesoc_registry.resolve_target(
+        binding.target,
+        project_root=root,
+        build_root=build_root / f"basis-candidate-{_safe_target_dir(binding.target)}",
+    )
+    if binding.flow == "synth":
+        from booley.flows.synth.recipe import default_recipe_args, synthesis_recipe_snapshot
+
+        args = default_recipe_args()
+        return (
+            synthesis_recipe_snapshot(baseline, args, target=binding.baseline),
+            synthesis_recipe_snapshot(candidate, args, target=binding.target),
+        )
+    if binding.flow == "fpga":
+        from booley.flows.fpga.recipe import fpga_recipe_snapshot
+
+        return (
+            fpga_recipe_snapshot(baseline, target=binding.baseline),
+            fpga_recipe_snapshot(candidate, target=binding.target),
+        )
+    return None
 
 
 def _dry_resolve_binding(
@@ -715,7 +763,7 @@ def resolve_commit(repository: Path | str, sha: str) -> str:
 
 def verify_surface(contract: TargetContract, project_root: Path | str) -> None:
     """Raise when the checkout's current contract surface differs from sealed data."""
-    actual = surface_digest(project_root)
+    actual = surface_digest(project_root, schema=contract.schema)
     if actual != contract.surface_digest:
         raise TargetContractError(
             f"{CONTRACT_BLOCK_REASON}: Target surface digest is {actual}, "

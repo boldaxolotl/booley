@@ -18,6 +18,7 @@ from booley.ticket_board.target_contract import (
     surface_digest,
     validate_contract_fields,
     validate_criterion_targets,
+    verify_surface,
 )
 
 _CORE = textwrap.dedent(
@@ -278,6 +279,20 @@ def test_non_target_booley_config_does_not_change_surface(tmp_path: Path) -> Non
     config.write_text(config.read_text(encoding="utf-8").replace("true", "false"))
 
     assert surface_digest(project) == original
+
+
+def test_schema_one_contract_verifies_with_legacy_digest(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    contract = TargetContract(
+        outer_sha="a" * 40,
+        project_sha="",
+        surface_digest=surface_digest(project, schema=1),
+        targets=("synth_before",),
+        schema=1,
+    )
+
+    verify_surface(contract, project)
+    assert contract.surface_digest != surface_digest(project)
 
 
 def test_surface_covers_referenced_core_and_config_hooks(tmp_path: Path) -> None:
