@@ -11,6 +11,12 @@ env:
   BASE_IMAGE_NAME: boldaxolotl/booley-sandbox-base
   RISCV_IMAGE_NAME: boldaxolotl/booley-sandbox-riscv
 
+# A newer release cancels an older in-flight run before its promotion job can
+# move `latest` backwards. Candidate tags remain available for diagnosis.
+concurrency:
+  group: docker-release-promotion
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -22,6 +28,7 @@ jobs:
       packages: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,9 +79,10 @@ jobs:
           build-contexts: |
             booley-runtime-base=docker-image://${{ steps.runtime-base.outputs.image }}
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          # Unique, non-advertised candidate tag. Public version/latest tags
+          # are assigned only by the final digest-promotion job.
+          tags: >-
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: |
             BOOLEY_VERSION=${{ steps.version.outputs.version }}
             BOOLEY_SOURCE_REVISION=${{ steps.version.outputs.revision }}
@@ -125,9 +133,8 @@ jobs:
           push: true
           build-contexts: |
             booley-sandbox=docker-image://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:latest
+          tags: >-
+            ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           # No GHA cache here: the riscv image is ~10 GB, larger than the
           # repo's entire 10 GB Actions cache budget — writing it would evict
           # the per-PR sandbox cache that bwave-smoke depends on, for a build
@@ -273,3 +280,38 @@ jobs:
       - name: Restore demo checkout ownership
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" demo
+
+  # Retag the already-tested manifests by digest. No Dockerfile or source
+  # context is available to this job, so promotion cannot rebuild candidates.
+  promote:
+    name: Promote tested image digests
+    needs: [build-and-push, build-and-push-riscv, demo-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote exact tested digests without rebuilding
+        shell: bash
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+          SANDBOX_DIGEST: ${{ needs.build-and-push.outputs.image-digest }}
+          RISCV_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${IMAGE_NAME}:${VERSION}" \
+            --tag "${REGISTRY}/${IMAGE_NAME}:latest" \
+            "${REGISTRY}/${IMAGE_NAME}@${SANDBOX_DIGEST}"
+          docker buildx imagetools create \
+            --tag "${REGISTRY}/${RISCV_IMAGE_NAME}:${VERSION}" \
+            --tag "${REGISTRY}/${RISCV_IMAGE_NAME}:latest" \
+            "${REGISTRY}/${RISCV_IMAGE_NAME}@${RISCV_DIGEST}"

@@ -204,6 +204,18 @@ def test_changed_stable_base_build_reuses_trusted_cache_without_publishing() -> 
     assert "cache-to:" not in base_build
 
 
+def test_stacked_pr_builds_inherited_stable_base_locally() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    selection = workflow[
+        workflow.index("- name: Select compatible stable runtime base") : workflow.index(
+            "- name: Build changed stable runtime base locally"
+        )
+    ]
+
+    assert "github.event_name == 'pull_request'" in selection
+    assert "github.base_ref != 'main'" in selection
+
+
 def test_stable_base_has_dedicated_publish_lifecycle_and_compatibility_smoke() -> None:
     workflow = Path(".github/workflows/docker-base-publish.yml").read_text(encoding="utf-8")
 
