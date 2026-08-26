@@ -154,6 +154,22 @@ pub fn common_scope_prefix(names: &[String]) -> String {
     }
 }
 
+/// Distinct first-level scopes represented by the signal set.
+///
+/// A trace can be perfectly queryable without one common scope. Verilator's
+/// Cocotb main, for example, emits `$rootio.*` beside the DUT hierarchy.
+pub fn top_scopes(names: &[String]) -> Vec<String> {
+    let mut scopes = std::collections::BTreeSet::new();
+    for name in names {
+        if let Some((scope, _leaf)) = name.split_once('.') {
+            if !scope.is_empty() {
+                scopes.insert(scope.to_string());
+            }
+        }
+    }
+    scopes.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +194,16 @@ mod tests {
 
         let names = vec!["a".into(), "b".into()];
         assert_eq!(common_scope_prefix(&names), "");
+    }
+
+    #[test]
+    fn test_top_scopes_preserves_multiple_roots() {
+        let names = vec![
+            "$rootio.clk".into(),
+            "uart16550.rx_state".into(),
+            "uart16550.rx_data".into(),
+        ];
+        assert_eq!(top_scopes(&names), vec!["$rootio", "uart16550"]);
     }
 
     #[test]

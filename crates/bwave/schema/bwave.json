@@ -51,12 +51,22 @@
   "$defs": {
     "listData": {
       "type": "object",
-      "required": ["scope_prefix", "clock", "total_ticks", "signals"],
+      "required": ["scope_prefix", "root_scopes", "signal_count", "clock", "total_ticks", "signals"],
       "additionalProperties": false,
       "properties": {
         "scope_prefix": {
           "type": "string",
           "description": "Common hierarchical prefix of all matched signals (without trailing dot). Empty when matches span multiple scopes or are top-level."
+        },
+        "root_scopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Distinct first-level scopes represented by the matched signals. Unlike scope_prefix, this remains populated when a trace has multiple roots."
+        },
+        "signal_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total matched signals before --limit is applied to the signals array."
         },
         "clock": {
           "anyOf": [
