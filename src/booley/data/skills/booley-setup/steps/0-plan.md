@@ -379,19 +379,22 @@ script lines) as you go.
   dir is `.booley_project/cores`; for an in-tree `.core` it is the repo root.
 - **Git submodules.** Run `git submodule status`. If the repo has any, add a
   decision row — but a short one: ticket worktrees get their submodules
-  **copied out of the main repo**, never cloned, so nothing here is offline- or
-  SSH-broken (mechanics in CONFIG.md → "Submodules"). What the plan owes is the
-  precondition and, if the repo has heavy submodules nothing builds against,
-  the explicit list:
-  - Every submodule must be **present and clean in the main repo** before any
+  reconstructed from local Git objects at the same Project path, never cloned,
+  so private SSH URLs are not consulted (mechanics in CONFIG.md →
+  "Submodules"). What the plan owes is the precondition and, if the repo has
+  heavy submodules nothing builds against, the explicit list:
+  - Every selected submodule must be **present, clean, non-shallow, and contain
+    the required pinned commit objects** in the main Project before any
     ticket runs — one host-side `git submodule update --init --recursive` at
     setup, and no uncommitted work left inside a submodule. Worktree setup hard-
-    errors otherwise, so recognize the two lines: `submodule <path> not found in
-    main repo — run 'git submodule update --init' first` and
-    `submodule <path> is dirty in main repo — commit or stash changes first`.
-  - `.gitmodules` discovery is the default and needs no config. To copy only
-    some of them, set `[submodules].paths` in `booley.toml` — it *replaces*
-    discovery, so anything omitted is simply absent from ticket worktrees.
+    errors otherwise with the missing path, dirty checkout, shallow history, or
+    incomplete local-object cause.
+  - Destination gitlinks are authoritative, so historical pins are preserved.
+    `.gitmodules` discovery is the default and needs no config. To materialize
+    only some top-level entries, set `[submodules].paths` in `booley.toml`; an
+    explicit empty list selects none, and a non-empty list is intersected with
+    the selected revision's gitlinks. Nested gitlinks below a selected entry are
+    still recursive.
   - Execution-time check: a ticket worktree comes up with the submodule
     populated (the main checkout looking fine proves only the precondition).
 - **Design scale.** Past ~250 files or ~150K LOC (`booley doctor` prints a
@@ -721,8 +724,8 @@ separate columns (see "How a row resolves"). The standard checklist:
 Then add the **repo-specific rows**, numbering on from 22 — everything Part A
 surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever `git submodule status` is non-empty: the host-side
-init/clean precondition, and `[submodules].paths` if only some should reach
-ticket worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
+initialized/clean/full-history precondition, and `[submodules].paths` if only
+some should reach ticket worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
 targets — say what is excluded and why, never leave it implied), multi-clock
 timing intent, environment modules, a TB stdout tee, unusual directory layouts.
 The checklist is the floor, not the ceiling.
