@@ -141,7 +141,7 @@ def _detect_console(args: argparse.Namespace) -> bool:
 def _run_harness(args: argparse.Namespace, project_root: Path, use_console: bool) -> int:
     """Run the developer, returning an exit code."""
     try:
-        asyncio.run(
+        result = asyncio.run(
             run_ticket(
                 args.ticket,
                 project_root,
@@ -160,6 +160,8 @@ def _run_harness(args: argparse.Namespace, project_root: Path, use_console: bool
     except Exception as e:
         logging.getLogger(__name__).critical("Harness failed: %s", e, exc_info=True)
         return 1
+    if result is not None:
+        print(result.to_cli_line(), flush=True)
     return 0
 
 

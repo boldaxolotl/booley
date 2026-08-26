@@ -153,6 +153,64 @@ def test_resolve_context_accepts_blocked_ticket(tmp_path: Path, monkeypatch):
     assert ctx.ticket_path == tmp_path / "tickets" / "board/blocked/demo.md"
 
 
+def test_resolve_context_accepts_embedded_project_state_without_paired_checkout(
+    tmp_path: Path, monkeypatch
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_dir = project_root / rp.PROJECT_DIR_NAME
+    project_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+
+    checkout = tmp_path / "worktree"
+    head_sha = _create_git_snapshot(checkout, {"source.txt": "committed\n"})
+    (checkout / rp.PROJECT_DIR_NAME).mkdir()
+    exclude = checkout / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as stream:
+        stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
+
+    class FakeTicketIO:
+        logs_dir = project_dir / "tickets" / "logs"
+
+        def find_ticket(self, _slug):
+            return {
+                "status": "review",
+                "file": "board/review/demo.md",
+                "feature_branch": "demo",
+                "base_sha": head_sha,
+                "on_success": {"triage_report": False},
+            }
+
+    monkeypatch.setattr(rp, "tickets_dir_from_project_root", lambda _root: project_dir / "tickets")
+    monkeypatch.setattr(rp, "TicketIO", lambda *_args, **_kwargs: FakeTicketIO())
+    monkeypatch.setattr(rp, "_find_checkout", lambda *_args: checkout)
+
+    ctx = rp._resolve_context(project_root, "demo", allow_report_disabled=True)
+
+    assert ctx.worktree == checkout.resolve()
+    assert ctx.project_repository is None
+
+
+def test_project_review_repository_rejects_missing_pair_for_standalone_project_repo(
+    tmp_path: Path, monkeypatch
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project_dir = project_root / rp.PROJECT_DIR_NAME
+    _create_git_snapshot(project_dir, {"ticket-data.txt": "committed\n"})
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+
+    checkout = tmp_path / "worktree"
+    _create_git_snapshot(checkout, {"source.txt": "committed\n"})
+    (checkout / rp.PROJECT_DIR_NAME).mkdir()
+    exclude = checkout / ".git" / "info" / "exclude"
+    with exclude.open("a", encoding="utf-8") as stream:
+        stream.write(f"\n/{rp.PROJECT_DIR_NAME}/\n")
+
+    with pytest.raises(rp.ReviewPrepError, match="has no paired ticket checkout"):
+        rp._resolve_project_review_repository(project_root, checkout, "demo")
+
+
 def test_write_output_normalizes_empty_fields_and_missing_scope_rows(tmp_path: Path):
     ctx = _ctx(tmp_path)
     assessment = _assessment()
@@ -392,7 +450,7 @@ async def test_stable_context_reresolves_after_ticket_jobs_drain(tmp_path: Path,
     after = replace(before, head_sha="c" * 40)
     contexts = iter([before, after])
     wait = AsyncMock(return_value=[SimpleNamespace(tool="mutation_tester")])
-    monkeypatch.setattr(rp, "_resolve_context", lambda *_args: next(contexts))
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: next(contexts))
     monkeypatch.setattr(rp, "wait_for_ticket_jobs", wait)
 
     resolved = await rp._resolve_stable_context(tmp_path, "demo")
@@ -441,6 +499,7 @@ async def test_prepare_review_writes_package_and_manifest(tmp_path: Path, monkey
     assert manifest["source_sha256"] == "source"
     assert manifest["html_sha256"] == rp._file_sha256(outcome.html_path)
     assert Path(manifest["briefing_path"]).is_file()
+    assert outcome.package_path == Path(manifest["briefing_path"])
     assert manifest["briefing_sha256"] == rp._file_sha256(Path(manifest["briefing_path"]))
     assert manifest["cost_usd"] == 0.125
     evidence_manifest = json.loads(
@@ -509,7 +568,12 @@ def test_review_briefing_command_uses_prepared_package_only(tmp_path: Path, monk
     monkeypatch.setattr(
         rp,
         "_fresh_outcome",
-        lambda *_args: rp.ReviewPrepOutcome("fresh", "current", Path(package["html_path"])),
+        lambda *_args: rp.ReviewPrepOutcome(
+            "fresh",
+            "current",
+            Path(package["html_path"]),
+            package_path,
+        ),
     )
     opened = []
     monkeypatch.setattr(rp, "open_package_diffs", lambda value: opened.append(value) or [])
@@ -555,6 +619,38 @@ def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path,
     assert "**Recommendation:** hold" in outcome.briefing
     assert "`rtl/extra.sv` — **Needs review**" in outcome.briefing
     assert "Polished HTML report: unavailable" in outcome.briefing
+
+
+@pytest.mark.asyncio
+async def test_prepare_review_persists_package_when_model_report_is_disabled(
+    tmp_path: Path, monkeypatch
+):
+    ctx = replace(_ctx(tmp_path), triage_report_enabled=False)
+    ctx.worktree.mkdir()
+    ctx.ticket_path.write_text("ticket\n", encoding="utf-8")
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
+    monkeypatch.setattr(
+        rp,
+        "_prompt_text",
+        lambda: (_ for _ in ()).throw(AssertionError("report prompt must stay disabled")),
+    )
+    monkeypatch.setattr(rp, "_source_fingerprint", lambda _ctx: "source")
+    monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
+    monkeypatch.setattr(
+        rp,
+        "_invoke_agent",
+        AsyncMock(side_effect=AssertionError("model report must stay disabled")),
+    )
+
+    outcome = await rp.prepare_review(tmp_path, "demo")
+
+    assert outcome.ready
+    assert outcome.html_path is None
+    assert outcome.package_path == ctx.runtime_dir / "briefing.json"
+    package = json.loads(outcome.package_path.read_text(encoding="utf-8"))
+    assert package["assessment"]["recommendation"] == "hold"
+    assert package["explanation"] is None
+    assert rp.verify_review_handoff(tmp_path, "demo").package_path == outcome.package_path
 
 
 @pytest.mark.asyncio
@@ -612,7 +708,7 @@ async def test_prepare_review_keeps_briefing_when_html_is_invalid(tmp_path: Path
 async def test_prepare_review_persists_prompt_setup_failure(tmp_path: Path, monkeypatch):
     ctx = _ctx(tmp_path)
     ctx.worktree.mkdir()
-    monkeypatch.setattr(rp, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(
         rp,
         "_prompt_text",
@@ -650,7 +746,7 @@ async def test_prepare_review_marks_live_input_changes_concurrent(tmp_path: Path
         yield rp.ReviewAgentWorkspace(ctx.worktree, {"diff": evidence})
 
     fingerprints = iter(["before", "before", "after", "after"])
-    monkeypatch.setattr(rp, "_resolve_context", lambda *_args: ctx)
+    monkeypatch.setattr(rp, "_resolve_context", lambda *_args, **_kwargs: ctx)
     monkeypatch.setattr(rp, "_prompt_text", lambda: "exact prompt")
     monkeypatch.setattr(rp, "_collect_git_evidence", lambda _ctx: _git_evidence(evidence))
     monkeypatch.setattr(rp, "build_review_facts", lambda _ctx: _facts())
