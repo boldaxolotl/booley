@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from booley.dev_support.criteria import BASELINE_TARGET_PARAM
 from booley.dev_support.criterion_categories import CATEGORY_RTL, CATEGORY_TB
 from booley.dev_support.cycle_count import build_cycle_comparison
 from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS, evaluate_cycle_threshold
@@ -23,10 +24,13 @@ from booley.flows.recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
     BASELINE_REF_PARAM,
+    BASELINE_TARGET_DETAIL,
+    CANDIDATE_TARGET_DETAIL,
     RECIPE_FINGERPRINT_DETAIL,
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_DETAIL,
     RECIPE_SNAPSHOT_PARAM,
+    implementation_comparison_basis,
     recipe_changes,
 )
 from booley.flows.source_fingerprint import (  # noqa: F401  # compatibility re-export
@@ -118,6 +122,74 @@ class CriterionEntry:
             stale=d.get("stale", False),
             transition_evidence=d.get("transition_evidence", []),
         )
+
+
+@dataclass(frozen=True)
+class _RecipeEvidence:
+    complete: bool
+    expected_recipe: Any
+    actual_recipe: Any
+    expected_ref: Any
+    actual_ref: Any
+    baseline_snapshot: Any
+    current_snapshot: Any
+    baseline_target: Any
+    candidate_target: Any
+    changes: list[dict[str, Any]]
+    basis_changes: list[dict[str, Any]]
+
+
+def _collect_recipe_evidence(entry: CriterionEntry) -> _RecipeEvidence:
+    detail = entry.detail
+    expected_recipe = entry.params.get(RECIPE_FINGERPRINT_PARAM)
+    actual_recipe = detail.get(RECIPE_FINGERPRINT_DETAIL)
+    expected_ref = entry.params.get(BASELINE_REF_PARAM)
+    actual_ref = detail.get(BASELINE_REF_DETAIL)
+    baseline_recipe = detail.get(BASELINE_RECIPE_FINGERPRINT_DETAIL)
+    complete = actual_recipe is not None
+    if expected_ref is not None:
+        complete = complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
+    baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
+    current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
+    candidate_target = detail.get(CANDIDATE_TARGET_DETAIL)
+    baseline_target = detail.get(BASELINE_TARGET_DETAIL) or entry.params.get(
+        BASELINE_TARGET_PARAM, candidate_target
+    )
+    if isinstance(baseline_snapshot, dict):
+        complete = complete and isinstance(current_snapshot, dict)
+        if isinstance(baseline_target, str):
+            complete = complete and baseline_snapshot.get("target") == baseline_target
+    if isinstance(current_snapshot, dict) and isinstance(candidate_target, str):
+        complete = complete and current_snapshot.get("target") == candidate_target
+    snapshots_available = isinstance(baseline_snapshot, dict) and isinstance(
+        current_snapshot, dict
+    )
+    directed_pair = (
+        snapshots_available
+        and isinstance(baseline_target, str)
+        and isinstance(candidate_target, str)
+    )
+    basis_changes: list[dict[str, Any]] = []
+    if directed_pair and baseline_target != candidate_target:
+        basis_changes = recipe_changes(
+            implementation_comparison_basis(baseline_snapshot),
+            implementation_comparison_basis(current_snapshot),
+        )
+        complete = complete and not basis_changes
+    changes = recipe_changes(baseline_snapshot, current_snapshot) if snapshots_available else []
+    return _RecipeEvidence(
+        complete,
+        expected_recipe,
+        actual_recipe,
+        expected_ref,
+        actual_ref,
+        baseline_snapshot,
+        current_snapshot,
+        baseline_target,
+        candidate_target,
+        changes,
+        basis_changes,
+    )
 
 
 # Well-known category prefixes: criteria whose key starts with these
@@ -485,48 +557,33 @@ class DevelopmentState:
         expected_recipe = entry.params.get(RECIPE_FINGERPRINT_PARAM)
         if expected_recipe is None:
             return True
-        detail = entry.detail
-        actual_recipe = detail.get(RECIPE_FINGERPRINT_DETAIL)
-        expected_ref = entry.params.get(BASELINE_REF_PARAM)
-        actual_ref = detail.get(BASELINE_REF_DETAIL)
-        baseline_recipe = detail.get(BASELINE_RECIPE_FINGERPRINT_DETAIL)
-        complete = actual_recipe is not None
-        if expected_ref is not None:
-            complete = (
-                complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
-            )
-        baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
-        current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
-        if isinstance(baseline_snapshot, dict):
-            complete = complete and isinstance(current_snapshot, dict)
-        changes = (
-            recipe_changes(baseline_snapshot, current_snapshot)
-            if isinstance(baseline_snapshot, dict) and isinstance(current_snapshot, dict)
-            else []
-        )
-        detail["recipe_comparison"] = {
-            "flow": _recipe_flow(baseline_snapshot, current_snapshot),
-            "target": current_snapshot.get("target")
-            if isinstance(current_snapshot, dict)
+        evidence = _collect_recipe_evidence(entry)
+        entry.detail["recipe_comparison"] = {
+            "flow": _recipe_flow(evidence.baseline_snapshot, evidence.current_snapshot),
+            "target": evidence.current_snapshot.get("target")
+            if isinstance(evidence.current_snapshot, dict)
             else None,
-            "baseline_ref": expected_ref,
-            "baseline_fingerprint": expected_recipe,
-            "current_fingerprint": actual_recipe,
-            "changed": actual_recipe != expected_recipe,
-            "changes": changes,
+            "baseline_target": evidence.baseline_target,
+            "candidate_target": evidence.candidate_target,
+            "baseline_ref": evidence.expected_ref,
+            "baseline_fingerprint": evidence.expected_recipe,
+            "current_fingerprint": evidence.actual_recipe,
+            "changed": evidence.actual_recipe != evidence.expected_recipe,
+            "changes": evidence.changes,
+            "comparison_basis_changes": evidence.basis_changes,
         }
         checks.append(
             {
                 "param": "_recipe_evidence",
-                "expected": expected_ref or expected_recipe,
-                "actual": actual_ref or actual_recipe,
-                "pass": complete,
-                "detail": "baseline and current evidence match the sealed recipe"
-                if complete
+                "expected": evidence.expected_ref or evidence.expected_recipe,
+                "actual": evidence.actual_ref or evidence.actual_recipe,
+                "pass": evidence.complete,
+                "detail": "baseline and candidate evidence match the sealed Target pair"
+                if evidence.complete
                 else "implementation recipe comparison evidence is incomplete",
             }
         )
-        return complete
+        return evidence.complete
 
     def _check_single_threshold(
         self,

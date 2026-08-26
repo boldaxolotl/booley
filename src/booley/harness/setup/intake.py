@@ -13,7 +13,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from booley.dev_support.criteria import CriteriaTemplate, find_retired_criteria
+from booley.dev_support.criteria import (
+    BASELINE_TARGET_PARAM,
+    CriteriaTemplate,
+    find_retired_criteria,
+)
 from booley.dev_support.development_state import DevelopmentState
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import (
@@ -353,21 +357,45 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
         logger.warning("Legacy ticket %s has no immutable Target contract", ctx.slug)
         return
     from booley.runtime.project_dir import resolve_project_dir
-    from booley.ticket_board.contract_ops import validate_open_seal
-    from booley.ticket_board.target_contract import verify_surface
 
     worktree = resolve_project_dir(ctx.project_root) / "worktrees" / ctx.slug
     if action == "fresh":
-        try:
-            errors = validate_open_seal(ctx.project_root, ctx.slug, contract)
-        except (RuntimeError, ValueError, OSError) as exc:
-            errors = [str(exc)]
-        if errors:
-            raise FatalError(
-                f"target-contract-change-required: {'; '.join(errors)}",
-                slug=ctx.slug,
-            )
+        _verify_fresh_contract(ctx, worktree)
         return
+    _verify_resumed_contract(ctx, worktree)
+
+
+def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
+    contract = ctx.target_contract
+    assert contract is not None
+    return {
+        "base_sha": ctx.base_sha,
+        "target_contract": contract.as_dict(),
+        "criteria": ctx.criteria,
+    }
+
+
+def _verify_fresh_contract(ctx: TicketContext, worktree: Path) -> None:
+    from booley.ticket_board.contract_ops import validate_open_seal
+    from booley.ticket_board.target_contract import validate_contract_fields
+
+    contract = ctx.target_contract
+    assert contract is not None
+    try:
+        errors = validate_open_seal(ctx.project_root, ctx.slug, contract)
+    except (RuntimeError, ValueError, OSError) as exc:
+        errors = [str(exc)]
+    if not errors:
+        errors = validate_contract_fields(_contract_fields(ctx), worktree)
+    if errors:
+        raise FatalError(f"target-contract-change-required: {'; '.join(errors)}", slug=ctx.slug)
+
+
+def _verify_resumed_contract(ctx: TicketContext, worktree: Path) -> None:
+    from booley.ticket_board.target_contract import validate_contract_fields, verify_surface
+
+    contract = ctx.target_contract
+    assert contract is not None
     if not worktree.is_dir():
         raise FatalError(
             f"target-contract-change-required: ticket worktree is missing: {worktree}",
@@ -375,6 +403,9 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
         )
     try:
         verify_surface(contract, worktree)
+        binding_errors = validate_contract_fields(_contract_fields(ctx), worktree)
+        if binding_errors:
+            raise TargetContractError("; ".join(binding_errors))
     except TargetContractError as exc:
         raise FatalError(str(exc), slug=ctx.slug) from exc
 
@@ -566,25 +597,60 @@ def _freeze_recipe_family(
 
     keys = [key for key in expanded if key.startswith(prefix)]
     recipe_root = ticket_runtime_dir(ctx.logs_dir) / "recipe-freeze" / prefix.rstrip("_")
+    prepared: list[tuple[str, str, dict[str, Any], bool]] = []
     for key in keys:
-        target = key.removeprefix(prefix)
+        candidate = key.removeprefix(prefix)
         params = criterion_params.setdefault(key, {})
         needs_baseline = _pin_recipe_baseline(ctx, key, params, flow_label)
-        build_root = recipe_root / target
-        shutil.rmtree(build_root, ignore_errors=True)
-        snapshot = _snapshot_intake_recipe(
-            ctx,
-            key,
-            target,
-            build_root,
-            needs_baseline,
-            flow_label,
-            snapshot_builder,
-        )
-        if snapshot is None:
-            continue
-        params[RECIPE_FINGERPRINT_PARAM] = recipe_snapshot_fingerprint(snapshot)
-        params[RECIPE_SNAPSHOT_PARAM] = snapshot
+        baseline = params.get(BASELINE_TARGET_PARAM, candidate)
+        if not isinstance(baseline, str) or not baseline:
+            raise FatalError(
+                f"{flow_label} criterion {key!r} has invalid baseline Target metadata",
+                slug=ctx.slug,
+            )
+        prepared.append((key, baseline if needs_baseline else candidate, params, needs_baseline))
+
+    with _baseline_recipe_root(ctx, any(item[3] for item in prepared), flow_label) as base_root:
+        for key, recipe_target, params, needs_baseline in prepared:
+            candidate = key.removeprefix(prefix)
+            build_root = recipe_root / candidate
+            shutil.rmtree(build_root, ignore_errors=True)
+            snapshot = _snapshot_intake_recipe(
+                ctx,
+                base_root if needs_baseline else ctx.work_dir,
+                key,
+                recipe_target,
+                build_root,
+                needs_baseline,
+                flow_label,
+                snapshot_builder,
+            )
+            if snapshot is None:
+                continue
+            params[RECIPE_FINGERPRINT_PARAM] = recipe_snapshot_fingerprint(snapshot)
+            params[RECIPE_SNAPSHOT_PARAM] = snapshot
+
+
+@contextlib.contextmanager
+def _baseline_recipe_root(
+    ctx: TicketContext,
+    needed: bool,
+    flow_label: str,
+):
+    """Yield the exact baseline checkout used to freeze relative recipe evidence."""
+    if not needed:
+        yield ctx.work_dir
+        return
+    from booley.flows.baseline_worktree import BaselineWorktreeError, baseline_worktree
+
+    try:
+        with baseline_worktree(Path(ctx.work_dir), ctx.base_sha) as root:
+            yield root
+    except BaselineWorktreeError as exc:
+        raise FatalError(
+            f"Cannot materialize {flow_label.lower()} baseline {ctx.base_sha}: {exc}",
+            slug=ctx.slug,
+        ) from exc
 
 
 def _pin_recipe_baseline(
@@ -610,6 +676,7 @@ def _pin_recipe_baseline(
 
 def _snapshot_intake_recipe(
     ctx: TicketContext,
+    project_root: Path,
     key: str,
     target: str,
     build_root: Path,
@@ -622,7 +689,7 @@ def _snapshot_intake_recipe(
     from booley.fusesoc import fusesoc_registry
 
     try:
-        fusesoc_registry.resolve_ref(ctx.work_dir, target)
+        fusesoc_registry.resolve_ref(project_root, target)
     except fusesoc_registry.UnknownTargetError:
         if needs_baseline:
             raise FatalError(
@@ -644,7 +711,7 @@ def _snapshot_intake_recipe(
     try:
         resolved = fusesoc_registry.resolve_target(
             target,
-            project_root=ctx.work_dir,
+            project_root=project_root,
             build_root=build_root,
         )
         return snapshot_builder(resolved, target)

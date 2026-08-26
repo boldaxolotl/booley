@@ -24,6 +24,7 @@ from booley.core.boundary import (
     require_dict,
     require_finite_number,
     require_int,
+    require_list,
     require_opt_str,
     require_str,
 )
@@ -65,6 +66,16 @@ class TestDict:
     def test_require_dict_field_in_message(self):
         with pytest.raises(BoundaryError, match="tools"):
             require_dict("nope", field="tools")
+
+
+class TestList:
+    def test_require_list_passes_list(self):
+        value = ["a", 1]
+        assert require_list(value) is value
+
+    def test_require_list_rejects_other_sequences_with_field(self):
+        with pytest.raises(BoundaryError, match="bindings"):
+            require_list(("a",), field="bindings")
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from booley.ticket_board.target_contract import (
     surface_digest,
     validate_contract_fields,
     validate_criterion_targets,
+    verify_surface,
 )
 
 _CORE = textwrap.dedent(
@@ -50,6 +51,16 @@ _CORE = textwrap.dedent(
         flow: lint
         flow_options: {tool: verilator}
         filesets: [rtl]
+        toplevel: toy
+      synth_before:
+        flow: generic
+        flow_options: {tool: yosys}
+        filesets: [rtl, constraints]
+        toplevel: toy
+      synth_after:
+        flow: generic
+        flow_options: {tool: yosys}
+        filesets: [rtl, constraints]
         toplevel: toy
       synth_future:
         flow: generic
@@ -106,6 +117,36 @@ def test_contract_round_trips_as_nested_frontmatter(tmp_path: Path) -> None:
     assert validate_contract_fields(parsed) == []
 
 
+def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    criteria = {
+        "mandatory": {
+            "synthesis_ok": {
+                "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                "area_reduce_at_least": 10,
+            }
+        }
+    }
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["synth_before", "synth_after"],
+        bindings=criterion_targets(criteria),
+    )
+    fields = {
+        "summary": "sealed",
+        "type": "feature",
+        "branch": "main",
+        "scope": [],
+        "base_sha": contract.outer_sha,
+        "target_contract": contract.as_dict(),
+    }
+
+    parsed, _body = parse_frontmatter(format_frontmatter(fields, "body"))
+
+    assert TargetContract.from_mapping(parsed["target_contract"]) == contract
+
+
 def test_contract_rejects_caller_fabricated_base_sha(tmp_path: Path) -> None:
     project = _project(tmp_path)
     contract = build_contract(project, outer_sha="a" * 40, targets=["sim_toy"])
@@ -128,6 +169,57 @@ def test_contract_requires_sorted_unique_targets() -> None:
                 "targets": ["sim_b", "sim_a", "sim_a"],
             }
         )
+
+
+def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    criteria = {
+        "mandatory": {
+            "synthesis_ok": {
+                "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                "area_reduce_at_least": 10,
+            }
+        }
+    }
+
+    bindings = criterion_targets(criteria)
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["synth_before", "synth_after"],
+        bindings=bindings,
+    )
+
+    assert bindings[0].target == "synth_after"
+    assert bindings[0].baseline == "synth_before"
+    assert contract.schema == 2
+    assert contract.bindings[0].baseline == "acme:lib:toy:1.0#synth_before"
+    assert contract.bindings[0].candidate == "acme:lib:toy:1.0#synth_after"
+
+
+def test_schema_one_rejects_unequal_pair() -> None:
+    fields = {
+        "base_sha": "a" * 40,
+        "target_contract": {
+            "schema": 1,
+            "outer_sha": "a" * 40,
+            "project_sha": "",
+            "surface_digest": "b" * 64,
+            "targets": ["synth_after", "synth_before"],
+        },
+        "criteria": {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                    "area_reduce_at_least": 10,
+                }
+            }
+        },
+    }
+
+    assert validate_contract_fields(fields) == [
+        "target_contract.schema 1 cannot seal directed baseline/candidate Target pairs"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -187,6 +279,20 @@ def test_non_target_booley_config_does_not_change_surface(tmp_path: Path) -> Non
     config.write_text(config.read_text(encoding="utf-8").replace("true", "false"))
 
     assert surface_digest(project) == original
+
+
+def test_schema_one_contract_verifies_with_legacy_digest(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    contract = TargetContract(
+        outer_sha="a" * 40,
+        project_sha="",
+        surface_digest=surface_digest(project, schema=1),
+        targets=("synth_before",),
+        schema=1,
+    )
+
+    verify_surface(contract, project)
+    assert contract.surface_digest != surface_digest(project)
 
 
 def test_surface_covers_referenced_core_and_config_hooks(tmp_path: Path) -> None:
@@ -266,6 +372,42 @@ def test_future_relative_target_requires_executable_baseline(tmp_path: Path) -> 
 
     assert bindings[0].relative is True
     assert any("relative-QoR" in error and "rtl/future.sv" in error for error in errors)
+
+
+def test_paired_relative_candidate_accepts_scope_new_source(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fields = {
+        "scope": ["rtl/future.sv [new]"],
+        "criteria": {
+            "optional": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_before", "candidate": "synth_future"}],
+                    "area_reduce_at_least": 5,
+                }
+            }
+        },
+    }
+
+    assert validate_criterion_targets(fields, project) == []
+
+
+def test_paired_relative_candidate_rejects_undeclared_missing_source(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fields = {
+        "scope": [],
+        "criteria": {
+            "optional": {
+                "synthesis_ok": {
+                    "targets": [{"baseline": "synth_before", "candidate": "synth_future"}],
+                    "area_reduce_at_least": 5,
+                }
+            }
+        },
+    }
+
+    errors = validate_criterion_targets(fields, project)
+
+    assert any("candidate target 'synth_future'" in error for error in errors)
 
 
 def test_resolve_commit_rejects_unresolvable_full_sha(tmp_path: Path) -> None:

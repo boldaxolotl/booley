@@ -22,6 +22,7 @@ from booley.core.boundary import (
     as_str,
     is_str_list,
     require_dict,
+    require_list,
     require_str,
 )
 from booley.dev_support.thresholds import has_relative_threshold
@@ -29,7 +30,8 @@ from booley.fusesoc import fusesoc_registry
 from booley.targets.declared_inputs import referenced_program_paths
 from booley.targets.target_surface import flow_can_drive
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+LEGACY_SCHEMA_VERSION = 1
 CONTRACT_BLOCK_REASON = "target-contract-change-required"
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -56,12 +58,13 @@ class TargetContractError(ValueError):
 
 @dataclass(frozen=True)
 class TargetContract:
-    """Schema-1 identity of a sealed Target execution surface."""
+    """Identity of a sealed Target surface and its directed criterion bindings."""
 
     outer_sha: str
     project_sha: str
     surface_digest: str
     targets: tuple[str, ...]
+    bindings: tuple[ContractTargetBinding, ...] = ()
     schema: int = SCHEMA_VERSION
 
     @classmethod
@@ -72,14 +75,16 @@ class TargetContract:
         except BoundaryError as exc:
             raise TargetContractError(str(exc)) from exc
         schema = value.get("schema")
-        if schema != SCHEMA_VERSION:
+        if schema not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
             raise TargetContractError(
-                f"target_contract.schema must be {SCHEMA_VERSION}, got {schema!r}"
+                "target_contract.schema must be "
+                f"{LEGACY_SCHEMA_VERSION} or {SCHEMA_VERSION}, got {schema!r}"
             )
         outer_sha = _required_string(value, "outer_sha")
         project_sha = _optional_string(value, "project_sha")
         digest = _required_string(value, "surface_digest").lower()
         targets = _string_tuple(value.get("targets"), "targets")
+        bindings = _binding_tuple(value.get("bindings")) if schema == SCHEMA_VERSION else ()
         if not _COMMIT_RE.fullmatch(outer_sha.lower()):
             raise TargetContractError("target_contract.outer_sha must be a full Git commit SHA")
         if project_sha and not _COMMIT_RE.fullmatch(project_sha.lower()):
@@ -90,16 +95,46 @@ class TargetContract:
             )
         if tuple(sorted(set(targets))) != targets:
             raise TargetContractError("target_contract.targets must be sorted and unique")
-        return cls(outer_sha.lower(), project_sha.lower(), digest, targets, schema)
+        if schema == SCHEMA_VERSION and tuple(sorted(set(bindings))) != bindings:
+            raise TargetContractError("target_contract.bindings must be sorted and unique")
+        return cls(
+            outer_sha.lower(),
+            project_sha.lower(),
+            digest,
+            targets,
+            bindings,
+            schema,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         """Return the frontmatter representation."""
-        return {
+        result = {
             "schema": self.schema,
             "outer_sha": self.outer_sha,
             "project_sha": self.project_sha,
             "surface_digest": self.surface_digest,
             "targets": list(self.targets),
+        }
+        if self.schema == SCHEMA_VERSION:
+            result["bindings"] = [binding.as_dict() for binding in self.bindings]
+        return result
+
+
+@dataclass(frozen=True, order=True)
+class ContractTargetBinding:
+    """Canonical directed Target binding persisted in schema-2 contracts."""
+
+    flow: str
+    criterion: str
+    baseline: str
+    candidate: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "flow": self.flow,
+            "criterion": self.criterion,
+            "baseline": self.baseline,
+            "candidate": self.candidate,
         }
 
 
@@ -125,6 +160,12 @@ class CriterionTarget:
     target: str
     flow: str
     relative: bool
+    baseline_target: str | None = None
+
+    @property
+    def baseline(self) -> str:
+        """Baseline Target, defaulting to the candidate for legacy criteria."""
+        return self.baseline_target or self.target
 
     @property
     def label(self) -> str:
@@ -156,6 +197,40 @@ def _string_tuple(value: Any, key: str) -> tuple[str, ...]:
     if any(not item for item in normalized):
         raise TargetContractError(f"target_contract.{key} cannot contain empty names")
     return normalized
+
+
+def _binding_tuple(value: Any) -> tuple[ContractTargetBinding, ...]:
+    try:
+        raw_bindings = require_list(value, field="target_contract.bindings")
+    except BoundaryError as exc:
+        raise TargetContractError("target_contract.bindings must be a list[dict]") from exc
+    bindings: list[ContractTargetBinding] = []
+    for index, raw in enumerate(raw_bindings):
+        field = f"target_contract.bindings[{index}]"
+        try:
+            mapping = require_dict(raw, field=field)
+        except BoundaryError as exc:
+            raise TargetContractError(str(exc)) from exc
+        if set(mapping) != {"flow", "criterion", "baseline", "candidate"}:
+            raise TargetContractError(
+                f"target_contract.bindings[{index}] must contain exactly flow, criterion, "
+                "baseline, and candidate"
+            )
+        fields: dict[str, str] = {}
+        for key in ("flow", "criterion", "baseline", "candidate"):
+            try:
+                item = require_str(mapping, key).strip()
+            except BoundaryError as exc:
+                raise TargetContractError(
+                    f"target_contract.bindings[{index}].{key} must be a non-empty string"
+                ) from exc
+            if not item:
+                raise TargetContractError(
+                    f"target_contract.bindings[{index}].{key} must be a non-empty string"
+                )
+            fields[key] = item
+        bindings.append(ContractTargetBinding(**fields))
+    return tuple(bindings)
 
 
 def _sha256(data: bytes) -> str:
@@ -271,10 +346,10 @@ def surface_entries(project_root: Path | str) -> tuple[ContractSurfaceEntry, ...
     return tuple(sorted(rows, key=lambda row: (row.path, row.kind)))
 
 
-def surface_digest(project_root: Path | str) -> str:
+def surface_digest(project_root: Path | str, *, schema: int = SCHEMA_VERSION) -> str:
     """Hash the normalized Target/control-plane manifest."""
     manifest = [row.as_dict() for row in surface_entries(project_root)]
-    return _sha256(_canonical_bytes({"schema": SCHEMA_VERSION, "files": manifest}))
+    return _sha256(_canonical_bytes({"schema": schema, "files": manifest}))
 
 
 def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
@@ -295,33 +370,41 @@ def _relative_params(value: Any) -> bool:
     return has_relative_threshold(dict(value))
 
 
-def _targets_from_value(key: str, value: Any) -> list[tuple[str, bool]]:
+def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
     if isinstance(value, Mapping):
+        from booley.dev_support.criteria import parse_target_pair
+
         targets = value.get("targets")
         if isinstance(targets, list):
-            return [
-                (target, _relative_params(value)) for target in targets if isinstance(target, str)
-            ]
+            pairs: list[tuple[str, str, bool]] = []
+            for index, target in enumerate(targets):
+                try:
+                    pair = parse_target_pair(target, field=f"{key}.targets[{index}]")
+                except ValueError:
+                    continue
+                pairs.append((pair.candidate, pair.baseline, _relative_params(value)))
+            return pairs
         return []
     if not isinstance(value, list):
         return []
     return _targets_from_list(key, value)
 
 
-def _targets_from_list(key: str, value: list[Any]) -> list[tuple[str, bool]]:
+def _targets_from_list(key: str, value: list[Any]) -> list[tuple[str, str, bool]]:
     from booley.dev_support.criteria import parse_sim_criterion
 
-    targets: list[tuple[str, bool]] = []
+    targets: list[tuple[str, str, bool]] = []
     for item in value:
         if isinstance(item, Mapping) and isinstance(item.get("target"), str):
-            targets.append((item["target"], _relative_params(item)))
+            targets.append((item["target"], item["target"], _relative_params(item)))
         elif isinstance(item, str) and "->" in item:
             try:
-                targets.append((parse_sim_criterion(item).target, False))
+                target = parse_sim_criterion(item).target
+                targets.append((target, target, False))
             except ValueError:
                 continue
         elif isinstance(item, str) and "@" not in item:
-            targets.append((item, False))
+            targets.append((item, item, False))
     return targets
 
 
@@ -338,8 +421,17 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
             flow = _criterion_flow(str(key))
             if flow is None:
                 continue
-            for target, relative in _targets_from_value(str(key), value):
-                bindings.append(CriterionTarget(section_name, str(key), target, flow, relative))
+            for target, baseline, relative in _targets_from_value(str(key), value):
+                bindings.append(
+                    CriterionTarget(
+                        section_name,
+                        str(key),
+                        target,
+                        flow,
+                        relative,
+                        baseline if baseline != target else None,
+                    )
+                )
     return tuple(bindings)
 
 
@@ -395,13 +487,63 @@ def validate_targets_for_seal(
     errors = validate_criterion_targets(fields, root)
     if errors:
         return errors
-    seen: set[str] = set()
-    for binding in criterion_targets(fields.get("criteria")):
-        if binding.target in seen or _missing_target_sources(root, binding.target):
+    bindings = criterion_targets(fields.get("criteria"))
+    required = _required_targets(root, bindings)
+    errors.extend(_validate_required_targets(root, Path(build_root), required))
+    for binding in bindings:
+        if binding.baseline != binding.target and not _missing_target_sources(
+            root, binding.target
+        ):
+            errors.extend(_validate_comparison_basis(binding, root, Path(build_root)))
+    errors.extend(
+        _validate_changed_targets(
+            fields, root, Path(build_root), changed_targets, seen=set(required)
+        )
+    )
+    return errors
+
+
+def _required_targets(
+    root: Path, bindings: Iterable[CriterionTarget]
+) -> dict[str, tuple[CriterionTarget, bool]]:
+    # A Target used as a baseline anywhere always receives the stronger
+    # executable-at-base requirement, even if another pair also uses it as a
+    # candidate whose [new] sources could otherwise defer resolution.
+    required: dict[str, tuple[CriterionTarget, bool]] = {}
+    for binding in bindings:
+        candidate_missing = bool(_missing_target_sources(root, binding.target))
+        prior = required.get(binding.target)
+        required[binding.target] = (
+            binding,
+            (prior[1] if prior else False) or not candidate_missing,
+        )
+        required[binding.baseline] = (binding, True)
+    return required
+
+
+def _validate_required_targets(
+    root: Path,
+    build_root: Path,
+    required: Mapping[str, tuple[CriterionTarget, bool]],
+) -> list[str]:
+    errors: list[str] = []
+    for target, (binding, must_resolve) in required.items():
+        if not must_resolve:
             continue
-        seen.add(binding.target)
-        target_build = Path(build_root) / _safe_target_dir(binding.target)
-        errors.extend(_dry_resolve_binding(binding, root, target_build))
+        target_build = Path(build_root) / _safe_target_dir(target)
+        errors.extend(_dry_resolve_binding(binding, root, target_build, target=target))
+    return errors
+
+
+def _validate_changed_targets(
+    fields: Mapping[str, Any],
+    root: Path,
+    build_root: Path,
+    changed_targets: Iterable[str],
+    *,
+    seen: set[str],
+) -> list[str]:
+    errors: list[str] = []
     for target in changed_targets:
         if target in seen:
             continue
@@ -419,7 +561,7 @@ def validate_targets_for_seal(
         if missing:
             continue
         binding = CriterionTarget("contract", "changed_target", target, "", False)
-        target_build = Path(build_root) / _safe_target_dir(target)
+        target_build = build_root / _safe_target_dir(target)
         errors.extend(_dry_resolve_binding(binding, root, target_build))
     return errors
 
@@ -428,50 +570,128 @@ def _safe_target_dir(target: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", target).strip("_") or "target"
 
 
-def _dry_resolve_binding(binding: CriterionTarget, root: Path, build_root: Path) -> list[str]:
+def _validate_comparison_basis(
+    binding: CriterionTarget,
+    root: Path,
+    build_root: Path,
+) -> list[str]:
+    """Fail sealing when two resolvable Targets change measurement methodology."""
+    try:
+        snapshots = _comparison_snapshots(binding, root, build_root)
+    except (fusesoc_registry.FuseSocError, BoundaryError, OSError) as exc:
+        return [f"{binding.label}: cannot compare Target measurement basis: {exc}"]
+    if snapshots is None:
+        return []
+    from booley.flows.recipe_evidence import implementation_comparison_basis, recipe_changes
+
+    baseline_snapshot, candidate_snapshot = snapshots
+    changes = recipe_changes(
+        implementation_comparison_basis(baseline_snapshot),
+        implementation_comparison_basis(candidate_snapshot),
+    )
+    if not changes:
+        return []
+    paths = ", ".join(str(change.get("path")) for change in changes[:5])
+    return [
+        f"{binding.label}: baseline Target {binding.baseline!r} and candidate Target "
+        f"{binding.target!r} use incompatible measurement bases ({paths})"
+    ]
+
+
+def _comparison_snapshots(
+    binding: CriterionTarget, root: Path, build_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    baseline = fusesoc_registry.resolve_target(
+        binding.baseline,
+        project_root=root,
+        build_root=build_root / f"basis-baseline-{_safe_target_dir(binding.baseline)}",
+    )
+    candidate = fusesoc_registry.resolve_target(
+        binding.target,
+        project_root=root,
+        build_root=build_root / f"basis-candidate-{_safe_target_dir(binding.target)}",
+    )
+    if binding.flow == "synth":
+        from booley.flows.synth.recipe import default_recipe_args, synthesis_recipe_snapshot
+
+        args = default_recipe_args()
+        return (
+            synthesis_recipe_snapshot(baseline, args, target=binding.baseline),
+            synthesis_recipe_snapshot(candidate, args, target=binding.target),
+        )
+    if binding.flow == "fpga":
+        from booley.flows.fpga.recipe import fpga_recipe_snapshot
+
+        return (
+            fpga_recipe_snapshot(baseline, target=binding.baseline),
+            fpga_recipe_snapshot(candidate, target=binding.target),
+        )
+    return None
+
+
+def _dry_resolve_binding(
+    binding: CriterionTarget,
+    root: Path,
+    build_root: Path,
+    *,
+    target: str | None = None,
+) -> list[str]:
+    selected = target or binding.target
     try:
         resolved = fusesoc_registry.resolve_target(
-            binding.target,
+            selected,
             project_root=root,
             build_root=build_root,
         )
     except (fusesoc_registry.FuseSocError, OSError) as exc:
-        return [f"{binding.label}: target {binding.target!r} dry-run failed: {exc}"]
+        return [f"{binding.label}: target {selected!r} dry-run failed: {exc}"]
     if not resolved.toplevel:
-        return [f"{binding.label}: target {binding.target!r} resolves without a toplevel"]
+        return [f"{binding.label}: target {selected!r} resolves without a toplevel"]
     return []
 
 
 def _validate_binding(
     binding: CriterionTarget, fields: Mapping[str, Any], root: Path
 ) -> list[str]:
-    try:
-        ref = fusesoc_registry.resolve_ref(root, binding.target)
-    except fusesoc_registry.FuseSocError as exc:
-        return [f"{binding.label}: target {binding.target!r}: {exc}"]
-    if not flow_can_drive(binding.flow, ref):
-        return [
-            f"{binding.label}: target {binding.target!r} cannot satisfy {binding.key} "
-            f"with Flow {binding.flow} (flow={ref.flow!r}, EDA tool={ref.eda_tool!r})"
+    errors: list[str] = []
+    for role, target in (("candidate", binding.target), ("baseline", binding.baseline)):
+        if role == "baseline" and target == binding.target:
+            continue
+        try:
+            ref = fusesoc_registry.resolve_ref(root, target)
+        except fusesoc_registry.FuseSocError as exc:
+            errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
+            continue
+        if not flow_can_drive(binding.flow, ref):
+            errors.append(
+                f"{binding.label}: {role} target {target!r} cannot satisfy {binding.key} "
+                f"with Flow {binding.flow} (flow={ref.flow!r}, EDA tool={ref.eda_tool!r})"
+            )
+            continue
+        missing = _missing_target_sources(root, target)
+        if not missing:
+            continue
+        if role == "baseline" or (binding.relative and binding.baseline == binding.target):
+            errors.append(
+                f"{binding.label}: relative-QoR baseline target {target!r} has missing "
+                f"source(s): {', '.join(missing)}"
+            )
+            continue
+        undeclared = [
+            path for path in missing if not _new_scope_matches(fields.get("scope"), path)
         ]
-    missing = _missing_target_sources(root, binding.target)
-    if not missing:
-        return []
-    if binding.relative:
-        return [
-            f"{binding.label}: relative-QoR target {binding.target!r} has missing baseline "
-            f"source(s): {', '.join(missing)}"
-        ]
-    undeclared = [path for path in missing if not _new_scope_matches(fields.get("scope"), path)]
-    if not undeclared:
-        return []
-    return [
-        f"{binding.label}: target {binding.target!r} has missing source(s) not declared "
-        f"Scope [new]: {', '.join(undeclared)}"
-    ]
+        if undeclared:
+            errors.append(
+                f"{binding.label}: {role} target {target!r} has missing source(s) not "
+                f"declared Scope [new]: {', '.join(undeclared)}"
+            )
+    return errors
 
 
-def validate_contract_fields(fields: Mapping[str, Any]) -> list[str]:
+def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity gates
+    fields: Mapping[str, Any],
+    project_root: Path | str | None = None,
+) -> list[str]:
     """Validate a present contract and its compatibility `base_sha`."""
     raw = fields.get("target_contract")
     if raw is None:
@@ -483,11 +703,45 @@ def validate_contract_fields(fields: Mapping[str, Any]) -> list[str]:
     if fields.get("base_sha") != contract.outer_sha:
         return ["base_sha must equal target_contract.outer_sha"]
     declared = set(contract.targets)
-    referenced = {binding.target for binding in criterion_targets(fields.get("criteria"))}
+    criterion_bindings = criterion_targets(fields.get("criteria"))
+    referenced = {
+        target for binding in criterion_bindings for target in (binding.target, binding.baseline)
+    }
     missing = sorted(referenced - declared)
     if missing:
         return [f"target_contract.targets omits criterion Target(s): {', '.join(missing)}"]
+    unequal = [binding for binding in criterion_bindings if binding.baseline != binding.target]
+    if contract.schema == LEGACY_SCHEMA_VERSION and unequal:
+        return ["target_contract.schema 1 cannot seal directed baseline/candidate Target pairs"]
+    if contract.schema == SCHEMA_VERSION and project_root is not None:
+        try:
+            expected = canonical_contract_bindings(project_root, criterion_bindings)
+        except fusesoc_registry.FuseSocError as exc:
+            return [f"target_contract.bindings cannot be resolved: {exc}"]
+        if expected != contract.bindings:
+            return ["target_contract.bindings do not match the ticket's criterion Target pairs"]
     return []
+
+
+def canonical_contract_bindings(
+    project_root: Path | str,
+    bindings: Iterable[CriterionTarget],
+) -> tuple[ContractTargetBinding, ...]:
+    """Resolve criterion bindings to sorted full-VLNV directed identities."""
+    root = Path(project_root)
+    rows: set[ContractTargetBinding] = set()
+    for binding in bindings:
+        baseline = fusesoc_registry.resolve_ref(root, binding.baseline)
+        candidate = fusesoc_registry.resolve_ref(root, binding.target)
+        rows.add(
+            ContractTargetBinding(
+                flow=binding.flow,
+                criterion=binding.key,
+                baseline=f"{baseline.vlnv}#{baseline.name}",
+                candidate=f"{candidate.vlnv}#{candidate.name}",
+            )
+        )
+    return tuple(sorted(rows))
 
 
 def resolve_commit(repository: Path | str, sha: str) -> str:
@@ -509,7 +763,7 @@ def resolve_commit(repository: Path | str, sha: str) -> str:
 
 def verify_surface(contract: TargetContract, project_root: Path | str) -> None:
     """Raise when the checkout's current contract surface differs from sealed data."""
-    actual = surface_digest(project_root)
+    actual = surface_digest(project_root, schema=contract.schema)
     if actual != contract.surface_digest:
         raise TargetContractError(
             f"{CONTRACT_BLOCK_REASON}: Target surface digest is {actual}, "
@@ -533,6 +787,7 @@ def build_contract(
     outer_sha: str,
     project_sha: str = "",
     targets: Iterable[str] = (),
+    bindings: Iterable[CriterionTarget] = (),
 ) -> TargetContract:
     """Build a sealed contract from already committed repository state."""
     return TargetContract(
@@ -540,4 +795,5 @@ def build_contract(
         project_sha=project_sha.lower(),
         surface_digest=surface_digest(project_root),
         targets=tuple(sorted(set(targets))),
+        bindings=canonical_contract_bindings(project_root, bindings),
     )

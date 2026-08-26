@@ -2770,6 +2770,66 @@ class TestValidateCriteriaField:
         errors = validate_ticket_fields(fields, "## Description\ntext")
         assert any("unknown top-level" in e for e in errors)
 
+    def test_relative_qor_target_pair_is_valid(self):
+        fields = {
+            "summary": "x",
+            "type": "feature",
+            "branch": "m",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                        "area_reduce_at_least": 10,
+                    }
+                }
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\ntext")
+
+        assert not any("baseline/candidate" in error for error in errors)
+
+    def test_target_pair_without_relative_threshold_is_rejected(self):
+        fields = {
+            "summary": "x",
+            "type": "feature",
+            "branch": "m",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                        "cell_count_max": 500,
+                    }
+                }
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\ntext")
+
+        assert any("require a relative threshold" in error for error in errors)
+
+    def test_malformed_target_pair_is_rejected(self):
+        fields = {
+            "summary": "x",
+            "type": "feature",
+            "branch": "m",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {
+                    "synthesis_ok": {
+                        "targets": [{"baseline": "synth_before"}],
+                        "area_reduce_at_least": 10,
+                    }
+                }
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\ntext")
+
+        assert any("exactly 'baseline' and 'candidate'" in error for error in errors)
+
 
 class TestResumeDetectTypeFallback:
     """resume_detect warns on missing/invalid type."""

@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.dev_support.criteria import BASELINE_TARGET_PARAM
 from booley.dev_support.development_state import DevelopmentState
+from booley.flows.recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from booley.flows.synth.recipe import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
     BASELINE_REF_DETAIL,
@@ -107,6 +109,50 @@ class TestRecipeFingerprint:
             },
         )
         assert state.is_met("synthesis_ok_default")
+
+    def test_paired_targets_require_matching_measurement_basis(self, state):
+        baseline = {
+            "target": "synth_before",
+            "vlnv": "acme:lib:core:1",
+            "toplevel": "top",
+            "recipe_args": ["--synth-mode", "physical"],
+            "constraints": [],
+            "technology": {"liberty": "/opt/pdk/a.lib"},
+        }
+        current = {
+            **baseline,
+            "target": "synth_after",
+            "technology": {"liberty": "/opt/pdk/b.lib"},
+        }
+        _init_with_params(
+            state,
+            {
+                BASELINE_TARGET_PARAM: "synth_before",
+                RECIPE_FINGERPRINT_PARAM: "baseline-recipe",
+                RECIPE_SNAPSHOT_PARAM: baseline,
+            },
+        )
+
+        state.set_criterion(
+            "synthesis_ok_default",
+            True,
+            detail={
+                RECIPE_FINGERPRINT_DETAIL: "candidate-recipe",
+                RECIPE_SNAPSHOT_DETAIL: current,
+                BASELINE_TARGET_DETAIL: "synth_before",
+                CANDIDATE_TARGET_DETAIL: "synth_after",
+            },
+        )
+
+        assert not state.is_met("synthesis_ok_default")
+        comparison = state.criteria["synthesis_ok_default"].detail["recipe_comparison"]
+        assert comparison["comparison_basis_changes"] == [
+            {
+                "path": "technology.liberty",
+                "before": "/opt/pdk/a.lib",
+                "after": "/opt/pdk/b.lib",
+            }
+        ]
 
 
 # ===========================================================================

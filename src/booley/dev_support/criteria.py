@@ -31,13 +31,65 @@ from typing import Any
 from booley.core.boundary import (
     BoundaryError,
     as_positive_int,
+    as_str,
     is_str_list,
     require_bool,
+    require_dict,
     require_finite_number,
+    require_str,
 )
 from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
 
 logger = logging.getLogger(__name__)
+
+_RELATIVE_QOR_SUFFIXES = ("_increase_at_most", "_reduce_at_least")
+_PAIRED_TARGET_CRITERIA = frozenset({"synthesis_ok", "fpga_impl_ok"})
+BASELINE_TARGET_PARAM = "_baseline_target"
+
+
+@dataclass(frozen=True)
+class TargetPair:
+    """One frozen baseline/candidate Target relationship for a relative Criterion."""
+
+    baseline: str
+    candidate: str
+
+
+def parse_target_pair(value: Any, *, field: str = "target") -> TargetPair:
+    """Normalize a Target string or exact ``{baseline, candidate}`` mapping."""
+    target = as_str(value)
+    if target is not None:
+        target = target.strip()
+        if not target:
+            raise ValueError(f"{field} must be a non-empty Target name")
+        return TargetPair(target, target)
+    try:
+        mapping = require_dict(value, field=field)
+    except BoundaryError as exc:
+        raise ValueError(f"{field} must be a Target name or baseline/candidate mapping") from exc
+    keys = set(mapping)
+    if keys != {"baseline", "candidate"}:
+        raise ValueError(f"{field} mapping must contain exactly 'baseline' and 'candidate'")
+    try:
+        baseline = require_str(mapping, "baseline").strip()
+        candidate = require_str(mapping, "candidate").strip()
+    except BoundaryError as exc:
+        key = "baseline" if not as_str(mapping.get("baseline")) else "candidate"
+        raise ValueError(f"{field}.{key} must be a non-empty Target name") from exc
+    if not baseline:
+        raise ValueError(f"{field}.baseline must be a non-empty Target name")
+    if not candidate:
+        raise ValueError(f"{field}.candidate must be a non-empty Target name")
+    return TargetPair(baseline.strip(), candidate.strip())
+
+
+def has_relative_qor_threshold(params: dict[str, Any]) -> bool:
+    """Whether public Criterion params request a baseline-relative QoR check."""
+    return any(
+        isinstance(key, str) and key.endswith(_RELATIVE_QOR_SUFFIXES)
+        for key in params
+        if not str(key).startswith("_")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +719,18 @@ class CriteriaTemplate:
                 if key == "cycle_count"
                 else _parse_criterion_entry(key, value, mandatory=False)
             )
+        baselines: dict[tuple[str, str], str] = {}
+        for spec in specs:
+            for candidate in spec.targets or []:
+                baseline = spec.params.get(BASELINE_TARGET_PARAM, candidate)
+                identity = (spec.name, candidate)
+                prior = baselines.get(identity)
+                if prior is not None and prior != baseline:
+                    raise ValueError(
+                        f"{spec.name} candidate {candidate!r} has conflicting baselines "
+                        f"{prior!r} and {baseline!r} across criteria sections"
+                    )
+                baselines[identity] = baseline
         return cls(specs=specs)
 
     def expand(self, targets: list[str]) -> dict[str, bool]:
@@ -939,12 +1003,62 @@ def _parse_dict_criterion(
         _validate_criterion_params(key, params)
 
     if isinstance(targets, list):
-        return [
-            CriterionSpec(
-                key, mandatory=mandatory, per_target=True, targets=targets, params=params
+        # Preserve the legacy all-string representation exactly. Besides being
+        # the common path, old persisted criteria state and tests rely on one
+        # spec carrying the whole Target list.
+        if all(isinstance(target, str) for target in targets):
+            return [
+                CriterionSpec(
+                    key, mandatory=mandatory, per_target=True, targets=targets, params=params
+                )
+            ]
+        if key not in _PAIRED_TARGET_CRITERIA:
+            raise ValueError(
+                f"{key}.targets baseline/candidate mappings are only supported for "
+                "synthesis_ok and fpga_impl_ok"
             )
-        ]
+        if not has_relative_qor_threshold(params):
+            raise ValueError(
+                f"{key}.targets baseline/candidate mappings require a relative threshold"
+            )
+        return _paired_target_specs(key, targets, params, mandatory=mandatory)
     return [CriterionSpec(key, mandatory=mandatory, params=params)]
+
+
+def _paired_target_specs(
+    key: str,
+    targets: list[Any],
+    params: dict[str, Any],
+    *,
+    mandatory: bool,
+) -> list[CriterionSpec]:
+    """Expand directed pairs while rejecting conflicting candidate identities."""
+    specs: list[CriterionSpec] = []
+    baselines_by_candidate: dict[str, str] = {}
+    for index, raw_target in enumerate(targets):
+        pair = parse_target_pair(raw_target, field=f"{key}.targets[{index}]")
+        prior = baselines_by_candidate.get(pair.candidate)
+        if prior is not None:
+            if prior != pair.baseline:
+                raise ValueError(
+                    f"{key}.targets assigns conflicting baselines {prior!r} and "
+                    f"{pair.baseline!r} to candidate {pair.candidate!r}"
+                )
+            continue
+        baselines_by_candidate[pair.candidate] = pair.baseline
+        pair_params = dict(params)
+        if pair.baseline != pair.candidate:
+            pair_params[BASELINE_TARGET_PARAM] = pair.baseline
+        specs.append(
+            CriterionSpec(
+                key,
+                mandatory=mandatory,
+                per_target=True,
+                targets=[pair.candidate],
+                params=pair_params,
+            )
+        )
+    return specs
 
 
 def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:

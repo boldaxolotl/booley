@@ -149,28 +149,8 @@ def _param_flavours(params: frozenset[str]) -> dict[str, set[str]]:
     return out
 
 
-def render_criteria_params_reference() -> str:
-    """Render implementation and per-test Cycle Count threshold references.
-
-    Straight from the param registry in :mod:`booley.dev_support.criteria`, so the
-    documented flavours can never drift from what the validator actually accepts.
-    """
-    from booley.dev_support.criteria import (
-        FPGA_IMPL_OK_MUTEX_PAIRS,
-        FPGA_IMPL_OK_PARAMS,
-        SYNTHESIS_OK_MUTEX_PAIRS,
-        SYNTHESIS_OK_PARAMS,
-    )
-    from booley.dev_support.thresholds import CYCLE_COUNT_DESCRIPTORS
-
-    flavour_cols = [
-        ("max", "≤ cap"),
-        ("min", "≥ floor"),
-        ("increase_at_most", "≤ +N% vs base"),
-        ("reduce_at_least", "≥ -N% vs base"),
-    ]
-
-    lines = [
+def _implementation_params_intro() -> list[str]:
+    return [
         "Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional "
         "threshold **params**. Each takes a `targets:` list, the per-target "
         "scoping key naming which project Targets to check (the key is "
@@ -188,36 +168,39 @@ def render_criteria_params_reference() -> str:
         "Syntax (ticket criteria): "
         "`synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.",
         "",
+        "For a relative threshold, a Target entry may instead be a directed frozen "
+        "pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain "
+        "Target name is backward-compatible shorthand for using that Target on both "
+        "sides.",
+        "",
         "In Ticket Mode, ticket creation seals an immutable Target contract before "
         "enqueue. A baseline-relative `synthesis_ok` or `fpga_impl_ok` criterion runs "
-        "`base_sha` and the ticket head with the same normalized Target recipe. "
+        "the pair's baseline Target at `base_sha` and its candidate Target at the "
+        "ticket head. Both Targets and their directed binding are sealed. "
         "Developer execution cannot change contract controls; a missing or incorrect "
-        "recipe blocks as `target-contract-change-required` for revision and "
+        "Target blocks as `target-contract-change-required` for revision and "
         "resealing. Missing or mismatched baseline evidence never skips a relative "
         "check.",
         "",
     ]
 
-    for title, params, mutex, note in (
-        (
-            "`synthesis_ok` (ASIC)",
-            SYNTHESIS_OK_PARAMS,
-            SYNTHESIS_OK_MUTEX_PAIRS,
-            "Absolute area caps pick a unit (`area_um2` / `area_kge`); the "
-            "unit-agnostic `area` row carries the baseline-relative bounds only.",
-        ),
-        ("`fpga_impl_ok` (FPGA)", FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS, ""),
-    ):
+
+def _implementation_param_tables(
+    families: tuple[tuple[str, frozenset[str], tuple[tuple[str, str], ...], str], ...],
+) -> list[str]:
+    flavour_cols = ("max", "min", "increase_at_most", "reduce_at_least")
+    lines: list[str] = []
+    for title, params, mutex, note in families:
         flavours = _param_flavours(params)
         # Column headers stay un-backticked: `booley cheat`'s terminal renderer
         # only strips inline-code from body cells, not headers, and a lone
         # `_max`/`_increase_at_most` token has no matching underscore so GitHub
         # markdown leaves it un-italicised anyway.
-        header = "| Metric | " + " | ".join(f"_{k}" for k, _ in flavour_cols) + " |"
+        header = "| Metric | " + " | ".join(f"_{key}" for key in flavour_cols) + " |"
         sep = "|--------|" + "|".join([":---:"] * len(flavour_cols)) + "|"
         lines += [f"**{title}**", "", header, sep]
         for metric in sorted(flavours):
-            cells = ["✓" if k in flavours[metric] else "—" for k, _ in flavour_cols]
+            cells = ["✓" if key in flavours[metric] else "—" for key in flavour_cols]
             lines.append(f"| `{metric}` | " + " | ".join(cells) + " |")
         if note:
             lines.append("")
@@ -226,8 +209,11 @@ def render_criteria_params_reference() -> str:
             lines.append("")
             lines.append(f"> Mutually exclusive: `{a}` ⊕ `{b}`.")
         lines.append("")
+    return lines
 
-    lines += [
+
+def _cycle_count_params_reference(descriptors) -> list[str]:
+    lines = [
         "**Per-test `cycle_count`**",
         "",
         "Use a list of mappings. Every item names one `target` and registered `test`, "
@@ -249,24 +235,52 @@ def render_criteria_params_reference() -> str:
         "cycle_count_reduce_at_least_cycles": "baseline - current ≥ N",
         "cycle_count_reduce_at_most_cycles": "baseline - current ≤ N",
     }
-    for param, descriptor in CYCLE_COUNT_DESCRIPTORS.items():
+    for param, descriptor in descriptors.items():
         baseline = "yes" if descriptor.relative else "no"
         lines.append(f"| `{param}` | {baseline} | {descriptor.unit} | {relations[param]} |")
-    lines += [
-        "",
-        "Syntax (ticket criteria): "
-        "`cycle_count: [{target: sim_coremark, test: coremark, "
-        "cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.",
-        "",
-        "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
-        "that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, "
-        "or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing "
-        "Cycle Count records remain observational.",
-        "",
-        "Relative comparisons report an **observed Cycle Count change**. When declared "
-        "workload inputs differ, review reports disclose the changes and do not attribute "
-        "the result to RTL alone.",
-    ]
+    lines.extend(
+        [
+            "",
+            "Syntax (ticket criteria): "
+            "`cycle_count: [{target: sim_coremark, test: coremark, "
+            "cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.",
+            "",
+            "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
+            "that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, "
+            "or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing "
+            "Cycle Count records remain observational.",
+            "",
+            "Relative comparisons report an **observed Cycle Count change**. When declared "
+            "workload inputs differ, review reports disclose the changes and do not attribute "
+            "the result to RTL alone.",
+        ]
+    )
+    return lines
+
+
+def render_criteria_params_reference() -> str:
+    """Render implementation and per-test Cycle Count threshold references."""
+    from booley.dev_support.criteria import (
+        FPGA_IMPL_OK_MUTEX_PAIRS,
+        FPGA_IMPL_OK_PARAMS,
+        SYNTHESIS_OK_MUTEX_PAIRS,
+        SYNTHESIS_OK_PARAMS,
+    )
+    from booley.dev_support.thresholds import CYCLE_COUNT_DESCRIPTORS
+
+    families = (
+        (
+            "`synthesis_ok` (ASIC)",
+            SYNTHESIS_OK_PARAMS,
+            SYNTHESIS_OK_MUTEX_PAIRS,
+            "Absolute area caps pick a unit (`area_um2` / `area_kge`); the "
+            "unit-agnostic `area` row carries the baseline-relative bounds only.",
+        ),
+        ("`fpga_impl_ok` (FPGA)", FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS, ""),
+    )
+    lines = _implementation_params_intro()
+    lines.extend(_implementation_param_tables(families))
+    lines.extend(_cycle_count_params_reference(CYCLE_COUNT_DESCRIPTORS))
 
     return "\n".join(lines).rstrip("\n")
 
