@@ -622,7 +622,7 @@ def test_review_briefing_command_supports_report_disabled_ticket(tmp_path: Path,
 
 
 @pytest.mark.asyncio
-async def test_prepare_review_persists_package_when_report_agent_is_disabled(
+async def test_prepare_review_persists_package_when_model_report_is_disabled(
     tmp_path: Path, monkeypatch
 ):
     ctx = replace(_ctx(tmp_path), triage_report_enabled=False)
@@ -639,7 +639,7 @@ async def test_prepare_review_persists_package_when_report_agent_is_disabled(
     monkeypatch.setattr(
         rp,
         "_invoke_agent",
-        AsyncMock(side_effect=AssertionError("report agent must stay disabled")),
+        AsyncMock(side_effect=AssertionError("model report must stay disabled")),
     )
 
     outcome = await rp.prepare_review(tmp_path, "demo")

@@ -75,7 +75,7 @@ def _patch_disposition_collaborators(verdict: CriteriaVerdict):
         "archive": patch("booley.ticket_board.archive.op_archive"),
     }
     mocks = {name: p.start() for name, p in patches.items()}
-    mocks["handoff"].return_value = True
+    mocks["handoff"].return_value = None
     mocks["prepare_review"].return_value = ReviewPrepOutcome(
         "ready",
         "prepared",

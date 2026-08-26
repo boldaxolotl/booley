@@ -679,20 +679,21 @@ on_success:
   destination: review     # review (default) | done
   merge: true             # merge the ticket branch into its base
   cleanup: true           # remove the worktree and branch afterwards
-  triage_report: true     # add an agent-prepared HTML explanation to the review package
+  triage_report: true     # add an LLM-generated HTML explanation to the review package
 ```
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
 
 Every review-bound run persists a versioned, machine-readable JSON package at
 `logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views
-are rendered from that same package, so an agent can inspect the complete
-review input without scraping a presentation format. With `triage_report: true`
-(the default), Booley uses the configured agent backend after criteria
+are rendered from that same package, so a command-line client can inspect the
+complete review input without scraping a presentation format. With
+`triage_report: true`
+(the default), Booley uses the configured model backend after criteria
 acceptance to add a self-contained HTML explanation under the ticket log
 directory. The triage skill presents its deterministic briefing directly in
 chat instead of writing another summary report. Set `triage_report` to `false`
-to skip the extra agent call; Booley still writes the deterministic JSON
+to skip the extra model call; Booley still writes the deterministic JSON
 package, with a conservative deterministic assessment and no HTML explanation.
 A generation failure is recorded but does not block an otherwise successful ticket;
 `booley board prepare-review <slug> --force` retries it.
@@ -713,7 +714,7 @@ when the full-screen Console was used:
 BOOLEY_RUN_RESULT {"disposition":"review","html_path":"/work/.../explanation.html","review_package_path":"/booley-project/tickets/logs/demo/.runtime/triage-prep/briefing.json","slug":"demo","version":1}
 ```
 
-Normal progress output may surround this line. Command-line agents should scan
+Normal progress output may surround this line. Command-line clients should scan
 for the `BOOLEY_RUN_RESULT ` prefix; one record is emitted per review-bound
 ticket. `html_path` is `null` when no HTML explanation was produced.
 

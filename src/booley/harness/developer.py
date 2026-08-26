@@ -1321,7 +1321,66 @@ async def _prepare_review_handoff(
     return None
 
 
-async def _resolve_ticket_disposition(  # noqa: PLR0912 - lifecycle routing stays explicit
+def _display_criteria_verdict(state_path: Path, verdict) -> None:
+    """Render the accepted Criteria details before routing the Ticket."""
+    from booley.ticket_board.criteria_acceptance import build_criteria_summary_lines
+
+    from .colors import yellow
+
+    crit_lines, totals_line = build_criteria_summary_lines(state_path)
+    if crit_lines:
+        terminal.criteria_summary(crit_lines, totals_line)
+    if transition_note := verdict.unverified_transitions_note():
+        terminal.raw(f"  {yellow('[WARN]')} {transition_note}")
+
+
+def _verify_review_package(
+    ctx: TicketContext, project_root: Path, run_index: int
+) -> ReviewPrepOutcome | None:
+    """Return the current review package or block a changed handoff."""
+    from .colors import yellow
+    from .review_prep import ReviewPrepError, verify_review_handoff
+
+    try:
+        return verify_review_handoff(project_root, ctx.slug)
+    except ReviewPrepError as exc:
+        reason = f"Review package changed before handoff: {exc}"
+        logger.warning("Review handoff verification failed for %s: %s", ctx.slug, exc)
+        block_ticket(ctx, reason, "post-processing", run_index=run_index)
+        terminal.raw(f"  {yellow('[BLOCK]')} review package verification failed")
+        return None
+
+
+async def _handoff_accepted_ticket(
+    ctx: TicketContext, project_root: Path, run_index: int
+) -> TicketRunResult | None:
+    """Complete an accepted Ticket handoff and return its review package."""
+    from .colors import dim, green
+
+    review_outcome = None
+    if ctx.on_success.destination == "review":
+        prepared = await _prepare_review_handoff(ctx, project_root, run_index)
+        if prepared is None:
+            return None
+        terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
+        review_outcome = _verify_review_package(ctx, project_root, run_index)
+        if review_outcome is None:
+            return None
+    else:
+        terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
+
+    ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
+    ticket_cli.handoff(project_root, ctx.slug, **ownership)
+    if review_outcome is None or review_outcome.package_path is None:
+        return None
+    return TicketRunResult(
+        slug=ctx.slug,
+        review_package_path=review_outcome.package_path,
+        html_path=review_outcome.html_path,
+    )
+
+
+async def _resolve_ticket_disposition(
     ctx: TicketContext,
     state_path: Path,
     project_root: Path,
@@ -1330,26 +1389,13 @@ async def _resolve_ticket_disposition(  # noqa: PLR0912 - lifecycle routing stay
     """Read final state, check criteria acceptance, and transition the ticket."""
     if _block_changed_target_contract(ctx, run_index):
         return None
-    from booley.ticket_board.criteria_acceptance import (
-        build_criteria_summary_lines,
-        check_criteria_acceptance,
-    )
+    from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 
-    from .colors import bold_red, dim, green, yellow
+    from .colors import bold_red, yellow
 
     verdict = check_criteria_acceptance(state_path, work_dir=ctx.work_dir)
     logger.info("Criteria verdict for %s: %s", ctx.slug, verdict.disposition)
-
-    # Print per-criterion summary table before the verdict line
-    crit_lines, totals_line = build_criteria_summary_lines(state_path)
-    if crit_lines:
-        terminal.criteria_summary(crit_lines, totals_line)
-
-    # A fail->pass criterion met without a recorded failure proved less than it
-    # promised. Not a blocker, but the reviewer must not have to infer it (F-53).
-    transition_note = verdict.unverified_transitions_note()
-    if transition_note:
-        terminal.raw(f"  {yellow('[WARN]')} {transition_note}")
+    _display_criteria_verdict(state_path, verdict)
 
     # The harness MUST NOT auto-archive (delete) tickets. Failed-criteria
     # tickets land in blocked/ for human triage; archive is a human-only
@@ -1359,38 +1405,7 @@ async def _resolve_ticket_disposition(  # noqa: PLR0912 - lifecycle routing stay
         terminal.raw(f"  {yellow('[BLOCK]')} {verdict.blocked_reason}")
     elif verdict.disposition == "review":
         logger.info("All mandatory criteria met for %s", ctx.slug)
-        review_outcome = None
-        if ctx.on_success.destination == "review":
-            review_outcome = await _prepare_review_handoff(ctx, project_root, run_index)
-            if review_outcome is None:
-                return None
-            terminal.raw(f"  {green('post-processing complete')} {dim('→ review')}")
-        else:
-            terminal.raw(f"  {green('all criteria met')} {dim('→ review')}")
-        if ctx.on_success.destination == "review":
-            from .review_prep import ReviewPrepError, verify_review_handoff
-
-            try:
-                review_outcome = verify_review_handoff(project_root, ctx.slug)
-            except ReviewPrepError as exc:
-                reason = f"Review package changed before handoff: {exc}"
-                logger.warning("Review handoff verification failed for %s: %s", ctx.slug, exc)
-                block_ticket(ctx, reason, "post-processing", run_index=run_index)
-                terminal.raw(f"  {yellow('[BLOCK]')} review package verification failed")
-                return None
-        ownership = {"expected_execution_id": ctx.execution_id} if ctx.execution_id else {}
-        handed_off = ticket_cli.handoff(project_root, ctx.slug, **ownership)
-        if (
-            handed_off
-            and ctx.on_success.destination == "review"
-            and review_outcome is not None
-            and review_outcome.package_path is not None
-        ):
-            return TicketRunResult(
-                slug=ctx.slug,
-                review_package_path=review_outcome.package_path,
-                html_path=review_outcome.html_path,
-            )
+        return await _handoff_accepted_ticket(ctx, project_root, run_index)
     elif verdict.disposition == "failed":
         fail_ticket(
             ctx,
