@@ -83,11 +83,13 @@ def _strip_inline_yaml_comment(val):
 
 
 def _split_respecting_quotes(s, delimiter=","):
-    """Split on *delimiter* only when outside single/double quotes."""
+    """Split on *delimiter* only when outside quotes and nested collections."""
     parts = []
     current = []
     in_single = False
     in_double = False
+    nesting: list[str] = []
+    closing = {"[": "]", "{": "}", "(": ")"}
     for ch in s:
         if ch == '"' and not in_single:
             in_double = not in_double
@@ -95,7 +97,13 @@ def _split_respecting_quotes(s, delimiter=","):
         elif ch == "'" and not in_double:
             in_single = not in_single
             current.append(ch)
-        elif ch == delimiter and not in_single and not in_double:
+        elif not in_single and not in_double and ch in closing:
+            nesting.append(closing[ch])
+            current.append(ch)
+        elif not in_single and not in_double and nesting and ch == nesting[-1]:
+            nesting.pop()
+            current.append(ch)
+        elif ch == delimiter and not in_single and not in_double and not nesting:
             parts.append("".join(current))
             current = []
         else:
@@ -298,7 +306,7 @@ def _parse_inline_value(val: str) -> Any:  # noqa: PLR0911 — one early return 
         inner = val[1:-1].strip()
         if inner:
             return [
-                _coerce_scalar(item.strip())
+                _parse_inline_value(item.strip())
                 for item in _split_respecting_quotes(inner)
                 if item.strip()
             ]
@@ -459,10 +467,20 @@ def _format_target_contract(val, lines):
     lines.append("target_contract:")
     for field_name, field_value in val.items():
         if isinstance(field_value, list):
-            items = ", ".join(_yaml_scalar(item) for item in field_value)
+            items = ", ".join(_yaml_inline_value(item) for item in field_value)
             lines.append(f"  {field_name}: [{items}]")
         else:
             lines.append(f"  {field_name}: {_yaml_scalar(field_value)}")
+
+
+def _yaml_inline_value(value: Any) -> str:
+    """Format a scalar or collection for the frontmatter parser's inline subset."""
+    if isinstance(value, dict):
+        items = ", ".join(f"{key}: {_yaml_inline_value(item)}" for key, item in value.items())
+        return f"{{{items}}}"
+    if isinstance(value, list):
+        return f"[{', '.join(_yaml_inline_value(item) for item in value)}]"
+    return _yaml_scalar(value)
 
 
 def _format_field(key, val, lines):

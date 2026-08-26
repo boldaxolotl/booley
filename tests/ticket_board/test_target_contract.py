@@ -116,6 +116,36 @@ def test_contract_round_trips_as_nested_frontmatter(tmp_path: Path) -> None:
     assert validate_contract_fields(parsed) == []
 
 
+def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    criteria = {
+        "mandatory": {
+            "synthesis_ok": {
+                "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                "area_reduce_at_least": 10,
+            }
+        }
+    }
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["synth_before", "synth_after"],
+        bindings=criterion_targets(criteria),
+    )
+    fields = {
+        "summary": "sealed",
+        "type": "feature",
+        "branch": "main",
+        "scope": [],
+        "base_sha": contract.outer_sha,
+        "target_contract": contract.as_dict(),
+    }
+
+    parsed, _body = parse_frontmatter(format_frontmatter(fields, "body"))
+
+    assert TargetContract.from_mapping(parsed["target_contract"]) == contract
+
+
 def test_contract_rejects_caller_fabricated_base_sha(tmp_path: Path) -> None:
     project = _project(tmp_path)
     contract = build_contract(project, outer_sha="a" * 40, targets=["sim_toy"])
