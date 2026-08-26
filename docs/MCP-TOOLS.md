@@ -321,9 +321,11 @@ files from the real worktree. Baseline metrics therefore carry no `artifacts`
 block.
 
 Specialists that expose durable evidence follow the same convention. For
-example, `mutation_tester` persists one log per mutant under the lock directory
-and cites the collection through the `mutant_logs` role rather than pretending
-that a shared `run.log` represents every mutant.
+example, `mutation_tester` stages one self-contained campaign directory in its
+numbered report invocation. Its atomic manifest cites the pristine baseline log,
+one log per mutant, verification rounds, mutation specifications, results, and
+isolated source variants; the `mutant_logs` role points at the durable invocation copy,
+not the reusable runtime lock.
 
 ### `satisfies` and `satisfies_args`
 

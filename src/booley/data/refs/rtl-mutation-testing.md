@@ -1,202 +1,109 @@
 # RTL Mutation Testing Guide
 
-Single-point RTL mutation testing with **runtime mutation selection** — all
-mutations are baked into one set of muxed RTL files and selected at simulation
-time via the `MUT_ID` plusarg.  The design is compiled once and simulated N
-times; no per-mutation source edits.
+Mutation testing uses compiler-isolated source variants. The creator is a
+read-only design agent: it proposes exact replacements, while Booley validates
+and materializes them. Neither side attempts to parse SystemVerilog or Verilog.
+The project's configured compiler is the language authority.
 
 ## Workflow
 
-1. Read the RTL files in scope.  Build a complete picture: datapath, control
-   logic, output ports.
-2. Design N single-point mutations.  Each one wraps the original code in a
-   runtime mux gated by `booley_mut_pkg::mut_id == k`.  The original code is
-   the default branch; the mutated code activates only when `mut_id == k`.
-3. Above each muxed site, place a marker comment:
-   `// MUTATION #<index>: <original_code> -> <mutated_code>`.
-4. Emit the JSON spec list (see *Output Format* below).
+1. Read every authorized RTL file and understand the datapath, control logic,
+   and externally observable behavior. Do not read testbench sources.
+2. Select N single-point mutations that a reasonable testbench should detect.
+3. Return each mutation as an exact source slice and replacement. Do not edit
+   files, run commands, add selector muxes, or insert marker comments.
+4. Booley checks that the exact original bytes occur once on the declared line.
+5. Booley builds and runs the untouched source as the baseline.
+6. Booley applies one replacement alone, builds it in an independent directory,
+   runs the Target's complete test suite, and restores the pristine bytes.
 
-The harness handles all infrastructure:
+The creator proposes intent; exact byte matching and the compiler enforce the
+mechanics. A proposal that does not anchor safely or compile is rejected and a
+complete replacement proposal list is requested.
 
-- generates `package booley_mut_pkg; ... int mut_id = 0; endpackage` and
-  prepends it to the DUT top file.  The package mirrors the DUT top's own time
-  declarations — a `timeunit`/`timeprecision` pair is copied into the package
-  body, a `` `timescale `` directive is re-emitted above it — because a
-  timescale-less package on a design that declares time units everywhere trips
-  Verilator's TIMESCALEMOD, which `-Wall`/`--Werror` turns into an elaboration
-  error before a single mutation runs,
-- inserts `import booley_mut_pkg::*;` and a `$value$plusargs("MUT_ID=%d")`
-  reader inside the DUT top module.  The reader echoes
-  `[booley_mut] MUT_ID=<k> active` on every mutant run (and stays silent on the
-  MUT_ID=0 baseline, so a baseline run is byte-identical to an unmutated one) —
-  that line is the runtime proof the plusarg actually reached the design, which
-  is what separates "the tests don't cover this scope" from "the harness is
-  broken" when a sweep kills nothing,
-- builds the design once after you finish,
-- runs verification sims (baseline + one pinned mutation),
-- if scope files do not contain the DUT top, **you** must add
-  `import booley_mut_pkg::*;` at the top of every module that references
-  `mut_id`.
+## Good Mutations
 
-**Never** modify, remove, or duplicate the harness-generated blocks.
+Prefer narrow changes with a clear path to an observable output:
 
-## Mux Templates by Category
+- arithmetic or logical operator changes (`+` to `-`, `&` to `|`);
+- comparison-boundary changes (`<` to `<=`, `==` to `!=`);
+- constant or reset-value changes;
+- condition or polarity changes;
+- bit-select changes;
+- FSM next-state changes;
+- signal substitutions or branch swaps.
 
-Every mutation must follow one of these patterns.  If a candidate site does
-not fit a template, **skip it** and pick another site.
+Structural mutations are allowed only when they remain one exact source
+replacement. They do not need to fit a runtime-selection expression because
+every variant is compiled independently. Keep the replacement as small and
+auditable as possible.
 
-The muxed expression and the original expression **must be type- and
-width-identical**.  Otherwise the elaborator will warn or silently truncate
-and the mutation becomes invalid.
+Reject a mutation when:
 
-### Expression mutation (operator / comparison / polarity / bit-select)
+- error correction or redundancy masks it before any observable output;
+- it affects only performance when tests check functional correctness;
+- it targets dead or unreachable code;
+- it is equivalent for all legal inputs;
+- it combines multiple independent faults;
+- its exact source slice is needlessly broad.
 
-```systemverilog
-// MUTATION #3: a + b -> a - b
-assign y = (mut_id == 3) ? (a - b) : (a + b);
-```
+The `detectability_argument` must explain how the replacement can corrupt an
+observable result. Distribute proposals across scope files when the authorized
+scope spans several meaningful modules.
 
-Works for:
-- Arithmetic operator change (`+` ↔ `-`, `*` ↔ `/`, etc.)
-- Comparison operator flip (`==` ↔ `!=`, `<` ↔ `<=`, etc.)
-- Polarity flip (`x` ↔ `~x`, `cond` ↔ `!cond`)
-- Bit-select shift (`a[7:4]` ↔ `a[8:5]`)
-- Constant bit flip (`4'b1010` ↔ `4'b1011`)
+## Exact Replacement Contract
 
-### Reset value mutation
+`original_code` is not a pattern. Copy it verbatim from the source, preserving
+whitespace, punctuation, capitalization, and newlines. `line` is the 1-based
+line on which that exact slice begins. `mutated_code` contains only the bytes
+that replace it.
 
-```systemverilog
-always_ff @(posedge clk) begin
-  if (rst)
-    // MUTATION #5: 4'b0000 -> 4'b0001
-    q <= (mut_id == 5) ? 4'b0001 : 4'b0000;
-  else
-    q <= d;
-end
-```
+Booley rejects a proposal if:
 
-### FSM next-state mutation
+- its file is outside the authorized scope;
+- its index is not unique and positive;
+- the original or replacement is empty or identical;
+- the exact original slice is missing or occurs more than once on the declared
+  line;
+- the isolated replacement does not compile;
+- the simulator cannot produce a trustworthy verdict.
 
-```systemverilog
-case (state)
-  S1: begin
-    // MUTATION #7: S2 -> S3
-    next_state = (mut_id == 7) ? S3 : S2;
-  end
-  ...
-endcase
-```
-
-### Stuck-at on enable / valid
-
-```systemverilog
-// MUTATION #9: req & ~busy -> 1'b1
-assign en = (mut_id == 9) ? 1'b1 : (req & ~busy);
-```
-
-### LHS / signal swap (statement-level mutation)
-
-When the mutation gates **which assignment statement runs**, wrap the
-statement block, not an expression:
-
-```systemverilog
-always_ff @(posedge clk) begin
-  // MUTATION #13: a<=x;b<=y -> a<=y;b<=x
-  if (mut_id == 13) begin
-    a <= y;
-    b <= x;
-  end else begin
-    a <= x;
-    b <= y;
-  end
-end
-```
-
-### Mux branch swap
-
-```systemverilog
-// MUTATION #15: sel ? a : b -> sel ? b : a
-assign out = (mut_id == 15) ? (sel ? b : a) : (sel ? a : b);
-```
-
-## Hard Rules
-
-- **One mutation per `always` block.** Multiple muxes interacting in the
-  same block at the same `mut_id` create cross-coupled bugs.
-- **Type and width must match** between the mutated and original branches.
-- **Distribute across files in scope.** Don't concentrate all mutations in
-  one module if the scope spans several.
-- **Functional logic only** — never mutate comments, parameters, dead /
-  unreachable code, or anything outside the simulated path.
-- **No structural changes** — port widths, declarations, module
-  instantiations are off-limits (they break the compile-once model).
-- **Always leave the original code as the default** (`mut_id != k`) branch.
-  This guarantees `MUT_ID=0` runs the baseline design unaltered.
-
-## Forbidden Mutation Categories
-
-These categories are unrunnable under runtime selection and must not be used.
-The harness rejects them at spec validation as a verification failure:
-
-- `instance_swap` / `module_instantiation_swap`
-- `port_width` / `port_declaration` / `declaration_change`
-- `sensitivity_list` / `trigger_reorder`
-- `code_removal` / `delete_always` / `delete_assign`
-- `clock_polarity` / `reset_polarity`
-
-## Quality Criteria — REJECT a mutation if:
-
-- **Error correction absorbs it** — RTL redundancy masks the fault before
-  it reaches outputs.
-- **Performance-only impact** — affects cycle count / throughput but not
-  functional correctness.
-- **Dead / unreachable code** — the mutated path is never exercised.
-- **Equivalent mutation** — the mutated expression produces the same output
-  for all valid inputs (e.g., swapping operands of `+`, `==`).
-
-A good mutation corrupts at least one output-observable value for at least
-one legal input stimulus.  The `detectability_argument` field must trace
-the mutation to observable output corruption.
+Do not add imports, packages, `MUT_ID`, plusarg readers, conditional muxes,
+comments, or testbench changes. Do not edit any project file.
 
 ## Output Format
 
-After writing all muxes, return a JSON object with the mutation list:
+Return only a JSON object with a complete mutation list:
 
 ```json
 {
   "mutations": [
     {
       "index": 1,
-      "mut_id": 1,
       "category": "operator_change",
-      "file": "mod_a.sv",
+      "file": "rtl/mod_a.sv",
       "line": 42,
       "original_code": "a + b",
       "mutated_code": "a - b",
-      "detectability_argument": "Flipping addition to subtraction corrupts every result"
+      "detectability_argument": "Subtraction corrupts the output value for unequal operands"
     }
   ]
 }
 ```
 
-`index` and `mut_id` are equal for now (1-based, contiguous).  The harness
-drives `+MUT_ID=k` per simulation to activate mutation `k`.  `MUT_ID=0` is
-reserved for the unmutated baseline.
+Indexes are 1-based and unique. On a retry, return a complete fresh JSON list;
+do not edit source in place.
 
-## Harness-Side Verification
+## Campaign Evidence
 
-After you finish writing muxes, the harness will:
+The completed campaign publishes:
 
-1. Build the design once.
-2. Run `MUT_ID=0` — must pass (proves your default branches are correct).
-3. Run one pinned non-zero `MUT_ID` — must compile and complete without
-   crashing (proves your mux scaffolding is sound).
+- the pristine baseline log;
+- one simulator log per mutation;
+- the proposal specification and result report;
+- one inspectable mutated source under `variants/mutant_<index>/...`;
+- a manifest that links each result to its exact variant and source fingerprint.
 
-If either fails, the harness resumes this session with the failure log
-and asks you to fix the muxed file.  You have up to two retries before
-the campaign aborts.  Retry instructions differ by failure type:
-
-- **Forbidden category** → return a fresh JSON spec list with valid
-  categories.
-- **Elab / sim failure** → only edit the muxed source files; do not
-  return a new JSON.
+A timed-out mutant counts as detected because the mutation can wedge the
+design. Missing, malformed, skipped, or otherwise unresolved Cocotb results are
+inconclusive and never count as a kill.

@@ -20,7 +20,7 @@ def _process(returncode: int, output: str = "") -> subprocess.CompletedProcess[s
 
 
 def _spec() -> MutationSpec:
-    return MutationSpec(1, "operator", "rtl/dut.sv", 1, "a+b", "a-b", mut_id=1)
+    return MutationSpec(1, "operator", "rtl/dut.sv", 1, "a+b", "a-b")
 
 
 def _mutation_endpoint(tmp_path: Path) -> MutationTesterSpecialist:
@@ -28,7 +28,7 @@ def _mutation_endpoint(tmp_path: Path) -> MutationTesterSpecialist:
     endpoint._args = types.SimpleNamespace(work_dir=tmp_path)
     endpoint.emit_progress = lambda _line: None
     endpoint._reset_mutant_logs = lambda: None
-    endpoint._persist_mutant_log = lambda _mut_id, _output: ""
+    endpoint._persist_mutant_log = lambda _index, _output: ""
     return endpoint
 
 
@@ -39,10 +39,10 @@ def test_mutant_is_killed_when_any_target_test_fails(tmp_path: Path) -> None:
         MutationTestRun("corner", process=_process(1), output="FAIL"),
     ]
 
-    results, _elapsed = endpoint._run_sim_sweep([_spec()], "sim", tmp_path, tmp_path, "tb")
-
-    assert results[0].detected is True
-    assert results[0].invalid is False
+    runs = endpoint._run_target_test_suite()
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is True
+    assert verdict.inconclusive_reason == ""
 
 
 def test_mutant_survives_only_when_every_target_test_passes(tmp_path: Path) -> None:
@@ -52,10 +52,10 @@ def test_mutant_survives_only_when_every_target_test_passes(tmp_path: Path) -> N
         MutationTestRun("corner", process=_process(0), output="PASS"),
     ]
 
-    results, _elapsed = endpoint._run_sim_sweep([_spec()], "sim", tmp_path, tmp_path, "tb")
-
-    assert results[0].detected is False
-    assert results[0].invalid is False
+    runs = endpoint._run_target_test_suite()
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is False
+    assert verdict.inconclusive_reason == ""
 
 
 def test_infrastructure_failure_is_invalid_without_a_kill(tmp_path: Path) -> None:
@@ -65,10 +65,10 @@ def test_infrastructure_failure_is_invalid_without_a_kill(tmp_path: Path) -> Non
         MutationTestRun("corner", process=_process(0), output="PASS"),
     ]
 
-    results, _elapsed = endpoint._run_sim_sweep([_spec()], "sim", tmp_path, tmp_path, "tb")
-
-    assert results[0].detected is False
-    assert results[0].invalid is True
+    runs = endpoint._run_target_test_suite()
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is False
+    assert "simulator missing" in verdict.inconclusive_reason
 
 
 def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
@@ -78,10 +78,10 @@ def test_mutant_timeout_counts_as_kill_not_invalid(tmp_path: Path) -> None:
         MutationTestRun("corner", process=_process(0), output="PASS"),
     ]
 
-    results, _elapsed = endpoint._run_sim_sweep([_spec()], "sim", tmp_path, tmp_path, "tb")
-
-    assert results[0].detected is True
-    assert results[0].invalid is False
+    runs = endpoint._run_target_test_suite()
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is True
+    assert verdict.inconclusive_reason == ""
 
 
 def test_coverage_signal_evidence_merges_across_target_traces() -> None:
