@@ -428,7 +428,11 @@ jobs:
         id: runtime-base
         shell: bash
         env:
-          BUILD_STABLE_BASE: ${{ needs.changes.outputs.build_stable_base }}
+          # A stacked PR can inherit unpublished stable-base inputs from its
+          # base branch even when its own diff does not change those inputs.
+          BUILD_STABLE_BASE: >-
+            ${{ needs.changes.outputs.build_stable_base == 'true' ||
+                (github.event_name == 'pull_request' && github.base_ref != 'main') }}
           PUBLISHED_BASE: ghcr.io/boldaxolotl/booley-sandbox-base:main
         run: |
           if [[ "${BUILD_STABLE_BASE}" == "true" ]]; then
