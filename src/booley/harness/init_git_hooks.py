@@ -30,6 +30,7 @@ from booley.harness.init_common import (
     WriteOutcome,
     guarded_write,
     info,
+    note,
     ok,
     skip,
     warn,
@@ -927,7 +928,7 @@ def _step_line_endings(ctx: InitContext) -> None:
 
     snapshots, safety_error = _snapshot_candidates(ctx.project_root, crlf_paths)
     clean = _worktree_is_clean(ctx.project_root)
-    _report_line_ending_findings(len(crlf_paths), autocrlf)
+    _report_line_ending_findings(len(crlf_paths), autocrlf, check_only=ctx.check_only)
     if ctx.check_only:
         _report_line_endings_plan(ctx, autocrlf, len(crlf_paths), clean, safety_error)
         ctx.record("line_endings", "warn", "CRLF working tree")
@@ -948,17 +949,26 @@ def _is_git_repository(project_root: Path) -> bool:
     return probe.returncode == 0
 
 
-def _report_line_ending_findings(crlf_count: int, autocrlf: bool) -> None:
+def _report_line_ending_findings(crlf_count: int, autocrlf: bool, *, check_only: bool) -> None:
+    """Report detected problems at the severity appropriate to this run.
+
+    A normal init repairs these findings immediately, so presenting them as
+    warnings makes successfully repaired setup look incomplete.  Check-only
+    leaves them unresolved and keeps the warning severity.  Any failed or
+    refused repair emits its own warning later in the step.
+    """
+    emit = warn if check_only else note
+    prefix = "" if check_only else "detected "
     if crlf_count:
-        warn(
-            f"{crlf_count} tracked file(s) are checked out with CRLF — the "
+        emit(
+            f"{prefix}{crlf_count} tracked file(s) are checked out with CRLF — the "
             "Session Runtime container will see every one as modified "
             "(phantom diffs break the dirty-tree check, scope enforcement, "
             "and ticket worktrees)"
         )
     if autocrlf:
-        warn(
-            "core.autocrlf=true (Git for Windows' installer default) "
+        emit(
+            f"{prefix}core.autocrlf=true (Git for Windows' installer default) "
             "re-creates CRLF checkouts on every clone/checkout"
         )
 

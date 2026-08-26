@@ -574,10 +574,13 @@ class TestLineEndingsAutoFix:
         assert not (tmp_path / ".gitattributes").exists()
         assert (tmp_path / "a.v").read_bytes() == b"module a;\r\nendmodule\r\n"
         output = capsys.readouterr().out
+        assert "[!!] 1 tracked file(s) are checked out with CRLF" in output
+        assert "[!!] core.autocrlf=true" in output
+        assert "[ii]" not in output
         assert "would normalize 1 tracked file(s) to LF in place" in output
         assert "--fix-line-endings" not in output
 
-    def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path):
+    def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path, capsys):
         from booley.harness.init_git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
@@ -601,6 +604,10 @@ class TestLineEndingsAutoFix:
         assert tracked_status.stdout == ""
         assert staged_diff.returncode == 0
         assert ctx.results[-1].status == "ok"
+        output = capsys.readouterr().out
+        assert "[ii] detected 1 tracked file(s) are checked out with CRLF" in output
+        assert "[ii] detected core.autocrlf=true" in output
+        assert "[!!]" not in output
 
     def test_fix_flag_rechecks_out_as_lf(self, tmp_path: Path):
         from booley.harness.init_git_hooks import _step_line_endings
