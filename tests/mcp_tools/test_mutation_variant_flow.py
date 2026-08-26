@@ -15,7 +15,7 @@ from booley.specialists.mutation_tester import (
     MutationSpec,
     MutationTesterSpecialist,
     MutationTestRun,
-    compute_rtl_complexity,
+    compute_source_size_budget,
 )
 
 
@@ -41,7 +41,7 @@ def _plan(tmp_path: Path, scope: str) -> MutationRunPlan:
         count=2,
         auto_mode=False,
         formula_count=2,
-        complexity=None,
+        source_size_budget=None,
     )
 
 
@@ -194,7 +194,7 @@ def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> No
     source.parent.mkdir(parents=True)
     source.write_text("not even valid HDL\n" * 16, encoding="utf-8")
 
-    breakdown = compute_rtl_complexity(["rtl/dut.sv"], tmp_path)
+    breakdown = compute_source_size_budget(["rtl/dut.sv"], tmp_path)
 
     assert breakdown["method"] == "language_neutral_source_size"
     assert breakdown["source_lines"] == 16
@@ -203,4 +203,4 @@ def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> No
 
 def test_auto_budget_fails_when_scope_file_is_unreadable(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        compute_rtl_complexity(["rtl/missing.sv"], tmp_path)
+        compute_source_size_budget(["rtl/missing.sv"], tmp_path)
