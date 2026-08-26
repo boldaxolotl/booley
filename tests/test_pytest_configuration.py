@@ -188,6 +188,7 @@ def test_image_pytest_commands_install_configured_plugins() -> None:
         for step in workflow["jobs"]["bwave-smoke"]["steps"]
         if step.get("name") == "Install host-side test dependencies"
     )
+    assert "pytest==9.0.2" in host_install["run"]
     assert "pytest-asyncio" in host_install["run"]
 
 
