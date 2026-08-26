@@ -839,9 +839,13 @@ that tree on an isolated simulation build variant of the default Target's
 first runnable test. Ordinary simulation never applies or reuses it, and no
 Doctor-only shell command belongs in `[flows.sim].pre_run_commands`.
 
-Lint's corresponding convention is a `.core` Target named
-`lint_selftest_bad`. Doctor uses the first lint Doctor Target as the good case
-and that conventional Target as the bad case. There is no
+Lint's corresponding convention is a Target named `lint_selftest_bad` in its
+own tracked `.core`, with `flow_options.booley.doctor_selftest: true`. Keep the
+known-bad source beside that dedicated core under ordinary tracked verification
+material. Booley omits Doctor self-test Targets from `booley targets`, its MCP
+equivalent, and ordinary Flow selection; Doctor can still resolve them for the
+bad case. Doctor uses the first lint Doctor Target as the good case and that
+conventional Target as the bad case. There is no
 `[flows.<flow>.selftest]` configuration table; legacy tables must be deleted.
 
 ### Feedback (`[feedback]`)

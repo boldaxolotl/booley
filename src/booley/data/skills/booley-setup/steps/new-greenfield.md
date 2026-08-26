@@ -5,7 +5,9 @@
 > not a port of existing RTL. It replaces the plan phase (Steps 0–1) with a
 > lightweight grill; the shared Steps 3–4 still run at the end.
 
-Every flow is green by construction, so there is **no feasibility triage**. But
+Every flow is green by construction, including conventional simulation and lint
+fail-path fixtures that let deep Doctor prove known-bad inputs fail, so there is
+**no feasibility triage**. But
 the choices still get made deliberately: run a **lightweight, dependency-aware
 grill** in the **onboarding voice** (SKILL.md). Map the choices below as a
 decision tree. Ask the whole current frontier — every unresolved choice whose
@@ -58,4 +60,7 @@ Then **Reopen in Container** and run **Step 3 (optional — offer it) and Step 4
 **not** declare the project ready until both exit 0 with zero active warnings.
 For a scaffolded project
 the sim/lint/synth smokes should pass before a line of design is written; that
-green gate is the whole point of the mode.
+green gate is the whole point of the mode. Confirm deep Doctor ran both the good
+and bad sim/lint cases. Keep the generated Doctor-only fixtures separate from
+the public design Targets; do not remove or defer them while presenting the
+scaffold as Doctor-clean.
