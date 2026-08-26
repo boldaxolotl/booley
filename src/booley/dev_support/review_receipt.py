@@ -42,12 +42,19 @@ def _digest(value: Any) -> str:
 def _ticket_source(work_dir: Path, ticket_path: Path | None) -> dict[str, str]:
     """Resolve and persist the documents which bind a review to its Ticket."""
     logs = Path(os.environ["BOOLEY_LOGS_DIR"]) if os.environ.get("BOOLEY_LOGS_DIR") else None
-    resolved_ticket = logs / _TICKET_FILE if logs else ticket_path
+    logs_ticket = logs / _TICKET_FILE if logs else None
+    if logs_ticket is not None and not logs_ticket.is_absolute():
+        logs_ticket = work_dir / logs_ticket
+    resolved_ticket = (
+        logs_ticket if logs_ticket is not None and logs_ticket.is_file() else ticket_path
+    )
     if resolved_ticket is not None and not resolved_ticket.is_absolute():
         resolved_ticket = work_dir / resolved_ticket
     decisions = logs / _DECISIONS_FILE if logs else None
     if decisions is None and resolved_ticket is not None:
         decisions = resolved_ticket.parent / _DECISIONS_FILE
+    elif decisions is not None and not decisions.is_absolute():
+        decisions = work_dir / decisions
     return {
         "ticket": str(resolved_ticket.resolve()) if resolved_ticket else "",
         "accepted_decisions": str(decisions.resolve()) if decisions else "",
