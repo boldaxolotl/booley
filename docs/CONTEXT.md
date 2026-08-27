@@ -194,6 +194,18 @@ _Avoid_: cycle budget, synthesis criterion, benchmark score
 The filesystem-backed state machine that tracks one Ticket from draft through execution and review. Its normal route is draft → queued → running → review → done, with waiting and blocked as pre-review pauses; review can instead archive the Ticket or explicitly reset it to a clean queued state, but never sends retained work back for partial rework. Directories live under `board/`; the status strings draft, queued, and running map to `drafts/`, `queue/`, and `active/`, while waiting, blocked, review, done, and archived match their directory names.
 _Avoid_: bare "Board", kanban, tracker, backlog
 
+**Target Contract**:
+The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets and control surface to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
+_Avoid_: target snapshot, config patch, mutable recipe
+
+**Ticket Workspace**:
+The disposable checkout set materialized from a Ticket's sealed repository refs for Target Contract authoring or Developer Agent execution. Its outer and optional project-data worktrees may be destroyed and reconstructed; the Ticket Branch commits, not checkout paths, preserve the work.
+_Avoid_: permanent worktree, ticket sandbox, integration checkout
+
+**Acceptance Journal**:
+The recoverable record of a Ticket's prepared and published repository candidates. It lets acceptance roll forward after a partial multi-repository publication and keeps the Ticket in review until every destination ref has landed.
+_Avoid_: merge log, rollback record, transaction database
+
 **Scope**:
 The set of files a ticket is authorized to commit. The Developer Agent owns its commits and must leave every repository in its Ticket Workspace clean before submitting its run report or stopping; `submit_run_report` rejects staged, modified, deleted, or untracked files, and the Harness blocks a dirty handoff rather than creating a commit for the agent. A per-run deviation report (`.runtime/scope_deviations.json`) records any outside paths that nevertheless reached branch history. The per-worktree pre-commit hook hard-rejects out-of-Scope files and Harness bookkeeping (development state, Criteria, ticket files, `booley.toml`). The `["*"]` sentinel grants no ownership.
 _Avoid_: allowlist

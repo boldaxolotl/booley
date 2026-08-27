@@ -10,6 +10,7 @@ import pytest
 
 from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.target_contract import (
+    ContractParticipant,
     TargetContract,
     TargetContractError,
     build_contract,
@@ -145,6 +146,54 @@ def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path
     parsed, _body = parse_frontmatter(format_frontmatter(fields, "body"))
 
     assert TargetContract.from_mapping(parsed["target_contract"]) == contract
+
+
+def test_schema_three_seals_repository_participants_and_surface_entries(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    outer = ContractParticipant(
+        role="outer",
+        sealed_sha="a" * 40,
+        ticket_ref="refs/heads/add-target",
+        destination_ref="refs/heads/main",
+        destination_sha="b" * 40,
+    )
+
+    contract = build_contract(
+        project,
+        outer_sha=outer.sealed_sha,
+        targets=["sim_toy"],
+        participants=[outer],
+    )
+    parsed = TargetContract.from_mapping(contract.as_dict())
+
+    assert parsed == contract
+    assert parsed.participants == (outer,)
+    assert parsed.surface_entries
+    assert {entry.kind for entry in parsed.surface_entries} >= {"core", "target-selection"}
+
+
+def test_schema_three_rejects_participant_that_disagrees_with_outer_sha() -> None:
+    with pytest.raises(TargetContractError, match="outer participant sealed_sha"):
+        TargetContract.from_mapping(
+            {
+                "schema": 3,
+                "outer_sha": "a" * 40,
+                "project_sha": "",
+                "surface_digest": "b" * 64,
+                "surface_entries": [],
+                "targets": [],
+                "bindings": [],
+                "participants": [
+                    {
+                        "role": "outer",
+                        "sealed_sha": "c" * 40,
+                        "ticket_ref": "refs/heads/ticket",
+                        "destination_ref": "refs/heads/main",
+                        "destination_sha": "d" * 40,
+                    }
+                ],
+            }
+        )
 
 
 def test_contract_rejects_caller_fabricated_base_sha(tmp_path: Path) -> None:

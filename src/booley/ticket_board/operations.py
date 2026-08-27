@@ -783,7 +783,7 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
     )
 
 
-def op_complete(
+def op_complete(  # noqa: PLR0911 - ordered validation and legacy/schema-3 paths
     tio: Any,
     slug: str,
     *,
@@ -818,6 +818,29 @@ def op_complete(
         )
         return False
 
+    raw_contract = entry.get("target_contract")
+    if on_success.merge and isinstance(raw_contract, dict) and raw_contract.get("schema") == 3:
+        from .completion import complete_review_ticket
+
+        if not complete_review_ticket(tio, slug, on_success):
+            print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
+            return False
+        if on_success.cleanup:
+            # Publication is already durable and the board is done.  Worktree
+            # and branch removal is therefore garbage collection: report a
+            # failure but never misrepresent the accepted Ticket as incomplete.
+            project_ok, project_detail = TicketWorkspace.retire(
+                tio._project_root,
+                slug,
+                WorkspaceDisposition.DISCARD,
+            )
+            outer_ok = _cleanup_merged_branch(slug)
+            if not project_ok or not outer_ok:
+                detail = project_detail or "outer repository cleanup failed"
+                print(f"Warning: accepted '{slug}' but cleanup is pending: {detail}", file=sys.stderr)
+        _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+        return True
+
     # Merge FIRST: the review->done transition must only be recorded once the
     # terminal actions have actually succeeded. Approving before merging left
     # tickets marked done with their fix stranded on an unmerged branch (F-16b).
@@ -845,11 +868,13 @@ def op_complete(
     if not op_approve(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
 
-    # The worktree is gone by now (cleanup removed it, whether from the merge
-    # step or the cleanup step), so the creation locks it left behind can go
-    # too rather than lingering until the next ticket's GC reaps them as stale
-    # (F-54). Skipped when cleanup was declined: the worktree is still live.
-    if on_success.cleanup:
+    _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+    return True
+
+
+def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool) -> None:
+    """Release ephemeral execution state after durable acceptance."""
+    if cleanup:
         from booley.harness.setup.worktree_lock_gc import release_worktree_locks
 
         release_worktree_locks(tio._project_root, slug)
@@ -857,9 +882,7 @@ def op_complete(
     from .archive import _cleanup_session_files
 
     _cleanup_session_files(tio.logs_dir / slug)
-
     op_promote_waiting(tio)
-    return True
 
 
 def op_board_move(

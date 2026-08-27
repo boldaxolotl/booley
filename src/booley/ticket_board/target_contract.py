@@ -30,7 +30,8 @@ from booley.fusesoc import fusesoc_registry
 from booley.targets.declared_inputs import referenced_program_paths
 from booley.targets.target_surface import flow_can_drive
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+DIRECTED_SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 CONTRACT_BLOCK_REASON = "target-contract-change-required"
 
@@ -56,6 +57,27 @@ class TargetContractError(ValueError):
     """A Target contract is malformed or does not match its repository."""
 
 
+@dataclass(frozen=True, order=True)
+class ContractParticipant:
+    """One repository whose sealed history participates in Ticket acceptance."""
+
+    role: str
+    sealed_sha: str
+    ticket_ref: str
+    destination_ref: str
+    destination_sha: str
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the stable frontmatter representation."""
+        return {
+            "role": self.role,
+            "sealed_sha": self.sealed_sha,
+            "ticket_ref": self.ticket_ref,
+            "destination_ref": self.destination_ref,
+            "destination_sha": self.destination_sha,
+        }
+
+
 @dataclass(frozen=True)
 class TargetContract:
     """Identity of a sealed Target surface and its directed criterion bindings."""
@@ -65,6 +87,8 @@ class TargetContract:
     surface_digest: str
     targets: tuple[str, ...]
     bindings: tuple[ContractTargetBinding, ...] = ()
+    participants: tuple[ContractParticipant, ...] = ()
+    surface_entries: tuple[ContractSurfaceEntry, ...] = ()
     schema: int = SCHEMA_VERSION
 
     @classmethod
@@ -75,16 +99,19 @@ class TargetContract:
         except BoundaryError as exc:
             raise TargetContractError(str(exc)) from exc
         schema = value.get("schema")
-        if schema not in {LEGACY_SCHEMA_VERSION, SCHEMA_VERSION}:
+        if schema not in {LEGACY_SCHEMA_VERSION, DIRECTED_SCHEMA_VERSION, SCHEMA_VERSION}:
             raise TargetContractError(
                 "target_contract.schema must be "
-                f"{LEGACY_SCHEMA_VERSION} or {SCHEMA_VERSION}, got {schema!r}"
+                f"{LEGACY_SCHEMA_VERSION}, {DIRECTED_SCHEMA_VERSION}, or "
+                f"{SCHEMA_VERSION}, got {schema!r}"
             )
         outer_sha = _required_string(value, "outer_sha")
         project_sha = _optional_string(value, "project_sha")
         digest = _required_string(value, "surface_digest").lower()
         targets = _string_tuple(value.get("targets"), "targets")
-        bindings = _binding_tuple(value.get("bindings")) if schema == SCHEMA_VERSION else ()
+        bindings = _binding_tuple(value.get("bindings")) if schema >= DIRECTED_SCHEMA_VERSION else ()
+        participants = _participant_tuple(value.get("participants")) if schema == SCHEMA_VERSION else ()
+        entries = _surface_entry_tuple(value.get("surface_entries")) if schema == SCHEMA_VERSION else ()
         if not _COMMIT_RE.fullmatch(outer_sha.lower()):
             raise TargetContractError("target_contract.outer_sha must be a full Git commit SHA")
         if project_sha and not _COMMIT_RE.fullmatch(project_sha.lower()):
@@ -95,15 +122,19 @@ class TargetContract:
             )
         if tuple(sorted(set(targets))) != targets:
             raise TargetContractError("target_contract.targets must be sorted and unique")
-        if schema == SCHEMA_VERSION and tuple(sorted(set(bindings))) != bindings:
+        if schema >= DIRECTED_SCHEMA_VERSION and tuple(sorted(set(bindings))) != bindings:
             raise TargetContractError("target_contract.bindings must be sorted and unique")
+        if schema == SCHEMA_VERSION:
+            _validate_participants(participants, outer_sha.lower(), project_sha.lower())
         return cls(
-            outer_sha.lower(),
-            project_sha.lower(),
-            digest,
-            targets,
-            bindings,
-            schema,
+            outer_sha=outer_sha.lower(),
+            project_sha=project_sha.lower(),
+            surface_digest=digest,
+            targets=targets,
+            bindings=bindings,
+            participants=participants,
+            surface_entries=entries,
+            schema=schema,
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -115,8 +146,11 @@ class TargetContract:
             "surface_digest": self.surface_digest,
             "targets": list(self.targets),
         }
-        if self.schema == SCHEMA_VERSION:
+        if self.schema >= DIRECTED_SCHEMA_VERSION:
             result["bindings"] = [binding.as_dict() for binding in self.bindings]
+        if self.schema == SCHEMA_VERSION:
+            result["participants"] = [participant.as_dict() for participant in self.participants]
+            result["surface_entries"] = [entry.as_dict() for entry in self.surface_entries]
         return result
 
 
@@ -231,6 +265,82 @@ def _binding_tuple(value: Any) -> tuple[ContractTargetBinding, ...]:
             fields[key] = item
         bindings.append(ContractTargetBinding(**fields))
     return tuple(bindings)
+
+
+def _participant_tuple(value: Any) -> tuple[ContractParticipant, ...]:
+    try:
+        raw_rows = require_list(value, field="target_contract.participants")
+    except BoundaryError as exc:
+        raise TargetContractError("target_contract.participants must be a list[dict]") from exc
+    participants: list[ContractParticipant] = []
+    for index, raw in enumerate(raw_rows):
+        field = f"target_contract.participants[{index}]"
+        try:
+            item = require_dict(raw, field=field)
+            role = require_str(item, "role").strip()
+            sealed_sha = require_str(item, "sealed_sha").strip().lower()
+            ticket_ref = require_str(item, "ticket_ref").strip()
+            destination_ref = require_str(item, "destination_ref").strip()
+            destination_sha = require_str(item, "destination_sha").strip().lower()
+        except BoundaryError as exc:
+            raise TargetContractError(f"{field} is malformed: {exc}") from exc
+        if role not in {"outer", "project"}:
+            raise TargetContractError(f"{field}.role must be 'outer' or 'project'")
+        if not _COMMIT_RE.fullmatch(sealed_sha) or not _COMMIT_RE.fullmatch(destination_sha):
+            raise TargetContractError(f"{field} commit identities must be full Git SHAs")
+        if not ticket_ref.startswith("refs/heads/") or not destination_ref.startswith(
+            "refs/heads/"
+        ):
+            raise TargetContractError(f"{field} refs must be full refs/heads names")
+        participants.append(
+            ContractParticipant(role, sealed_sha, ticket_ref, destination_ref, destination_sha)
+        )
+    result = tuple(participants)
+    if tuple(sorted(set(result))) != result:
+        raise TargetContractError("target_contract.participants must be sorted and unique")
+    return result
+
+
+def _surface_entry_tuple(value: Any) -> tuple[ContractSurfaceEntry, ...]:
+    try:
+        raw_rows = require_list(value, field="target_contract.surface_entries")
+    except BoundaryError as exc:
+        raise TargetContractError("target_contract.surface_entries must be a list[dict]") from exc
+    entries: list[ContractSurfaceEntry] = []
+    for index, raw in enumerate(raw_rows):
+        field = f"target_contract.surface_entries[{index}]"
+        try:
+            item = require_dict(raw, field=field)
+            path = require_str(item, "path").strip()
+            kind = require_str(item, "kind").strip()
+            sha256 = require_str(item, "sha256").strip().lower()
+        except BoundaryError as exc:
+            raise TargetContractError(f"{field} is malformed: {exc}") from exc
+        if not path or not kind or not _DIGEST_RE.fullmatch(sha256):
+            raise TargetContractError(f"{field} has an invalid path, kind, or digest")
+        entries.append(ContractSurfaceEntry(path, kind, sha256))
+    result = tuple(entries)
+    if tuple(sorted(set(result), key=lambda row: (row.path, row.kind, row.sha256))) != result:
+        raise TargetContractError("target_contract.surface_entries must be sorted and unique")
+    return result
+
+
+def _validate_participants(
+    participants: tuple[ContractParticipant, ...], outer_sha: str, project_sha: str
+) -> None:
+    by_role = {participant.role: participant for participant in participants}
+    if len(by_role) != len(participants):
+        raise TargetContractError("target_contract.participants may contain each role once")
+    outer = by_role.get("outer")
+    if outer is None:
+        raise TargetContractError("target_contract.participants requires an outer participant")
+    if outer.sealed_sha != outer_sha:
+        raise TargetContractError("outer participant sealed_sha must equal outer_sha")
+    project = by_role.get("project")
+    if bool(project) != bool(project_sha):
+        raise TargetContractError("project participant presence must match project_sha")
+    if project is not None and project.sealed_sha != project_sha:
+        raise TargetContractError("project participant sealed_sha must equal project_sha")
 
 
 def _sha256(data: bytes) -> str:
@@ -713,7 +823,7 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
     unequal = [binding for binding in criterion_bindings if binding.baseline != binding.target]
     if contract.schema == LEGACY_SCHEMA_VERSION and unequal:
         return ["target_contract.schema 1 cannot seal directed baseline/candidate Target pairs"]
-    if contract.schema == SCHEMA_VERSION and project_root is not None:
+    if contract.schema >= DIRECTED_SCHEMA_VERSION and project_root is not None:
         try:
             expected = canonical_contract_bindings(project_root, criterion_bindings)
         except fusesoc_registry.FuseSocError as exc:
@@ -788,12 +898,17 @@ def build_contract(
     project_sha: str = "",
     targets: Iterable[str] = (),
     bindings: Iterable[CriterionTarget] = (),
+    participants: Iterable[ContractParticipant] | None = None,
 ) -> TargetContract:
     """Build a sealed contract from already committed repository state."""
+    schema = SCHEMA_VERSION if participants is not None else DIRECTED_SCHEMA_VERSION
     return TargetContract(
         outer_sha=outer_sha.lower(),
         project_sha=project_sha.lower(),
-        surface_digest=surface_digest(project_root),
+        surface_digest=surface_digest(project_root, schema=schema),
         targets=tuple(sorted(set(targets))),
         bindings=canonical_contract_bindings(project_root, bindings),
+        participants=tuple(sorted(set(participants or ()))),
+        surface_entries=surface_entries(project_root) if schema == SCHEMA_VERSION else (),
+        schema=schema,
     )

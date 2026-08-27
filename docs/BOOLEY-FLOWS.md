@@ -112,20 +112,25 @@ from unstructured output.
 ### Ticket Target contracts
 
 Ticket Mode treats the Target recipe as acceptance input, not implementation
-work. Before enqueue, ticket creation records schema 2 with exact outer and
-optional project-data commits, the criterion Targets, and a normalized SHA-256
-digest; compatibility `base_sha` equals the outer commit. Schema 2 also seals
-each Criterion's directed Target Pair using canonical Target identities. Schema
-1 remains readable for legacy tickets whose baseline and candidate are the same
-Target.
+work. Ticket creation opens a Ticket Workspace before enqueue, so new or changed
+Targets are authored on Ticket-owned branches without changing the Project's
+destination branches or making Doctor observe a half-configured Target. Schema
+3 records the exact outer and optional project-data participants, their durable
+Ticket and destination refs, the criterion Targets, a normalized surface
+manifest, and its SHA-256 digest; compatibility `base_sha` equals the outer
+sealed commit. It also seals each Criterion's directed Target Pair using
+canonical Target identities. Schemas 1 and 2 remain readable for legacy
+Tickets.
 
 The digest covers every `.core`, the test registry, Target-selecting Flow
 configuration, selected SDC/XDC, and referenced generators or hooks. Paths are
 part of the identity. RTL and testbench contents remain editable.
 
 Contract metadata is published only after every repository validates and
-commits. Execution starts from those commits, and intake, each Flow, the commit
-guard, and review handoff reject drift as `target-contract-change-required`.
+commits. Worktrees can then be discarded and reconstructed from the sealed
+refs. Execution starts from those commits, and intake, each Flow, the commit
+guard, review handoff, and final acceptance reject drift as
+`target-contract-change-required`.
 For relative synth/FPGA Criteria, a plain Target name uses that frozen Target at
 both revisions. An explicit `{baseline, candidate}` Target Pair runs the
 baseline Target at `base_sha` and the candidate Target at the ticket head. The

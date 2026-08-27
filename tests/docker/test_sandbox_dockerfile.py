@@ -243,7 +243,7 @@ def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
     assert trusted_cli_setup in workflow
 
 
-def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
+def test_release_smokes_public_picorv32_demo_without_a_premade_ticket() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
     assert "repository: YosysHQ/picorv32" in workflow
@@ -257,10 +257,11 @@ def test_release_smokes_public_picorv32_demo_and_ticket_mode() -> None:
     assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
     assert 'bash "${project_dir}/hooks/post-setup.sh"' in workflow
     assert "BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register" in workflow
-    assert "python -m booley.ticket_board parse-ticket" in workflow
-    assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
-    assert 'booley run --ticket "${ticket_slug}" --dry-run' in workflow
-    assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
+    assert "booley-ticket-create" in workflow
+    assert 'find "${project_dir}/tickets/board" -type f -name "*.md"' in workflow
+    assert "add-rv32-zbb-pcpi-co-processor" not in workflow
+    assert "python -m booley.ticket_board parse-ticket" not in workflow
+    assert "booley run --ticket" not in workflow
     assert (
         """      - name: Restore demo checkout ownership
         if: always()

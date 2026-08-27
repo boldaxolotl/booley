@@ -69,11 +69,11 @@ def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedP
 
 
 class TestBranchCreation:
-    """Test feature branch vs integration branch selection."""
+    """Every implementation Ticket owns an isolated branch."""
 
-    def test_integration_uses_base_branch(self):
+    def test_integration_uses_ticket_branch(self):
         branch = _pick_branch(is_integration=True, slug="fix-fsm", base_branch="int/batch-1")
-        assert branch == "int/batch-1"
+        assert branch == "fix-fsm"
 
     def test_normal_uses_slug(self):
         branch = _pick_branch(is_integration=False, slug="fix-fsm", base_branch="master")
@@ -332,8 +332,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 
 def _pick_branch(is_integration: bool, slug: str, base_branch: str) -> str:
     """Replicate branch selection logic."""
-    if is_integration:
-        return base_branch
+    del is_integration, base_branch
     return slug
 
 
@@ -544,8 +543,7 @@ class TestWorkspaceRun:
 
     @pytest.mark.asyncio
     @patch("subprocess.run")
-    async def test_integration_branch_used(self, mock_sub, project_root):
-        """Kills: L104 negate_if (is_integration)."""
+    async def test_integration_ticket_keeps_sealed_ticket_branch(self, mock_sub, project_root):
         ctx = _make_ctx(project_root, branch="int/batch-1")
 
         wt = project_root / ".booley_project" / "worktrees" / ctx.slug
@@ -556,7 +554,7 @@ class TestWorkspaceRun:
 
         result = await run(ctx)
         assert result.block_reason is None
-        assert result.metadata["branch"] == "int/batch-1"
+        assert result.metadata["branch"] == ctx.slug
 
     @pytest.mark.asyncio
     @patch("subprocess.run")

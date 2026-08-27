@@ -121,7 +121,30 @@ def test_native_contract_open_seal_and_enqueue(tmp_path: Path) -> None:
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["base_sha"] == sealed["outer_sha"]
     assert fields["target_contract"] == sealed
+    assert sealed["schema"] == 3
+    assert sealed["participants"] == [
+        {
+            "role": "outer",
+            "sealed_sha": sealed["outer_sha"],
+            "ticket_ref": "refs/heads/change-target",
+            "destination_ref": "refs/heads/main",
+            "destination_sha": opened["outer_base_sha"],
+        }
+    ]
     assert _git(root, "rev-parse", "change-target") == sealed["outer_sha"]
+    assert tio.enqueue_ticket("change-target") is True
+
+
+def test_sealed_refs_remain_valid_after_authoring_worktree_is_discarded(tmp_path: Path) -> None:
+    root, tio, _ticket = _native_project(tmp_path)
+    opened = tio.contract_open("change-target")
+    sealed = tio.contract_seal("change-target")
+    outer = Path(opened["outer_worktree"])
+    _git(root, "worktree", "remove", "--force", str(outer))
+
+    contract = contract_ops.TargetContract.from_mapping(sealed)
+
+    assert contract_ops.validate_sealed_refs(root, contract) == []
     assert tio.enqueue_ticket("change-target") is True
 
 
@@ -246,6 +269,17 @@ def test_standalone_project_repository_gets_paired_contract_commit(tmp_path: Pat
     sealed = tio.contract_seal("change-target")
 
     assert sealed["project_sha"]
+    assert [participant["role"] for participant in sealed["participants"]] == [
+        "outer",
+        "project",
+    ]
+    assert sealed["participants"][1] == {
+        "role": "project",
+        "sealed_sha": sealed["project_sha"],
+        "ticket_ref": "refs/heads/booley-ticket/change-target",
+        "destination_ref": "refs/heads/main",
+        "destination_sha": opened["project_base_sha"],
+    }
     assert _git(paired, "rev-parse", "HEAD") == sealed["project_sha"]
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["target_contract"]["project_sha"] == sealed["project_sha"]

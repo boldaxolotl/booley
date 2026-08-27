@@ -519,37 +519,32 @@ def _create_feature_branch(
     worktree_path: Path,
     base_ref: str,
 ) -> StepResult | None:
-    """Create feature branch (or checkout integration branch)."""
-    if ctx.is_integration:
-        branch_name = ctx.branch
-        logger.info("Integration branch: %s", branch_name)
-        git_run(worktree_path, ["checkout", branch_name], timeout=30)
-    else:
-        branch_name = ctx.slug
-        logger.info("Feature branch from %s", base_ref)
-        existing = git_run(
-            worktree_path,
-            ["rev-parse", "--verify", f"refs/heads/{branch_name}"],
-            timeout=10,
-        )
-        if existing.returncode == 0 and existing.stdout.strip():
-            base = git_run(worktree_path, ["rev-parse", base_ref], timeout=10)
-            if base.returncode != 0 or existing.stdout.strip() != base.stdout.strip():
-                return StepResult(
-                    block_reason=(
-                        f"Refusing to reset surviving feature branch {branch_name!r} "
-                        f"to {base_ref!r}: it points at {existing.stdout.strip()[:12]} "
-                        "and may contain preserved unmerged work. Move, merge, or "
-                        "delete that branch explicitly before rerunning the ticket."
-                    )
-                )
-        # -B is safe here: an existing branch was proven byte-for-byte equal
-        # to the requested base.  A divergent branch is preserved above.
-        result = git_run(worktree_path, ["checkout", "-B", branch_name], timeout=30)
-        if result.returncode != 0:
+    """Create the Ticket-owned feature branch from its sealed revision."""
+    branch_name = ctx.slug
+    logger.info("Feature branch from %s", base_ref)
+    existing = git_run(
+        worktree_path,
+        ["rev-parse", "--verify", f"refs/heads/{branch_name}"],
+        timeout=10,
+    )
+    if existing.returncode == 0 and existing.stdout.strip():
+        base = git_run(worktree_path, ["rev-parse", base_ref], timeout=10)
+        if base.returncode != 0 or existing.stdout.strip() != base.stdout.strip():
             return StepResult(
-                block_reason=f"Failed to create/checkout branch {branch_name}: {result.stderr}"
+                block_reason=(
+                    f"Refusing to reset surviving feature branch {branch_name!r} "
+                    f"to {base_ref!r}: it points at {existing.stdout.strip()[:12]} "
+                    "and may contain preserved unmerged work. Move, merge, or "
+                    "delete that branch explicitly before rerunning the ticket."
+                )
             )
+    # -B is safe here: an existing branch was proven byte-for-byte equal
+    # to the requested base. A divergent branch is preserved above.
+    result = git_run(worktree_path, ["checkout", "-B", branch_name], timeout=30)
+    if result.returncode != 0:
+        return StepResult(
+            block_reason=f"Failed to create/checkout branch {branch_name}: {result.stderr}"
+        )
 
     ctx.feature_branch = branch_name
     return None
@@ -557,8 +552,6 @@ def _create_feature_branch(
 
 def _resume_branch_name(ctx: TicketContext) -> str:
     """Return the branch that owns a resumed ticket's preserved work."""
-    if ctx.is_integration:
-        return ctx.branch
     return ctx.feature_branch or ctx.slug
 
 
@@ -770,6 +763,38 @@ def _build_setup_result(ctx: TicketContext) -> StepResult:
     return StepResult(metadata=meta)
 
 
+def _validate_materialized_target_contract(
+    ctx: TicketContext, worktree_path: Path
+) -> StepResult | None:
+    """Validate the sealed surface after disposable checkouts are materialized."""
+    contract = ctx.target_contract
+    if contract is None:
+        return None
+    from booley.ticket_board.target_contract import (
+        TargetContractError,
+        validate_contract_fields,
+        verify_surface,
+    )
+
+    try:
+        verify_surface(contract, worktree_path)
+        errors = validate_contract_fields(
+            {
+                "base_sha": ctx.base_sha,
+                "target_contract": contract.as_dict(),
+                "criteria": ctx.criteria,
+            },
+            worktree_path,
+        )
+    except (OSError, TargetContractError) as exc:
+        errors = [str(exc)]
+    if errors:
+        return StepResult(
+            block_reason=f"target-contract-change-required: {'; '.join(errors)}"
+        )
+    return None
+
+
 def _prepare_outer_worktree(ctx: TicketContext) -> StepResult | None:
     project_root = ctx.project_root
     _prune_stale_worktree_locks(project_root)
@@ -799,6 +824,10 @@ def _prepare_project_worktree_and_scopes(ctx: TicketContext) -> StepResult | Non
         project_worktree = prepare_project_worktree(ctx)
     except ProjectWorktreeError as exc:
         return StepResult(block_reason=f"Project worktree setup failed: {exc}")
+
+    contract_failure = _validate_materialized_target_contract(ctx, worktree_path)
+    if contract_failure is not None:
+        return contract_failure
 
     _install_scope_hook(worktree_path, ctx.scope, project_root=project_root)
     if project_worktree is not None:

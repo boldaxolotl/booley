@@ -80,7 +80,8 @@ criteria:
         total: 10
 
 # -- Runtime fields are stamped by Booley or stored in logs/<slug>/.runtime/progress.json --
-# feature_branch, created, integration_base
+# feature_branch, created
+# integration_base is legacy-only; schema-3 contracts seal destination refs.
 # current_tool, tools_completed, last_update, blocked_reason, blocked_tool
 ---
 
