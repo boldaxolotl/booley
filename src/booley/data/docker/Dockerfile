@@ -16,7 +16,7 @@
 # final image's Ubuntu 24.04 (2.39), so the binary's symbol requirements
 # (max GLIBC_2.34) resolve there. A newer builder base would link against
 # symbols 24.04 does not have and fail at exec time, not at build time.
-FROM rust:1.97.1-slim-bookworm@sha256:2775a09d208ff0d7c1f50490c45b62db929e87ba1dcbc3f2132ac71a704bcdd3 AS bwave-builder
+FROM rust:1.98.0-slim-bookworm@sha256:1469a27c125cb5a3aebfa4f4e4665d935b02fb72cc093b2c974b3d740e43f157 AS bwave-builder
 COPY crates/bwave/ /build/bwave/
 RUN CARGO_TARGET_DIR=/build/target cargo build --release --locked \
         --manifest-path /build/bwave/Cargo.toml

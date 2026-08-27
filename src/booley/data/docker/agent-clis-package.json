@@ -2,7 +2,7 @@
   "name": "booley-agent-clis",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.234",
-    "@openai/codex": "0.147.0"
+    "@anthropic-ai/claude-code": "2.1.247",
+    "@openai/codex": "0.150.1"
   }
 }
