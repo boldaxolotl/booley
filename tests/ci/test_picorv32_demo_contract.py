@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -98,7 +99,7 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert "${GITHUB_ACTION_PATH}/../.." not in action
 
     action_reference = "uses: ./.github/actions/prepare-picorv32-demo"
-    verifier = f"bash /booley-source/{VERIFY_SCRIPT}"
+    verifier = f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}"
     for workflow in workflows:
         assert action_reference in workflow
         assert verifier in workflow
@@ -159,7 +160,8 @@ def test_ticket_installer_installs_fixture_into_empty_checkout(tmp_path: Path) -
     destination = project / "tickets" / "board" / "queue" / "demo.md"
     assert result.returncode == 0
     assert destination.read_bytes() == fixture.read_bytes()
-    assert destination.stat().st_mode & 0o777 == 0o644
+    if os.name == "posix":
+        assert destination.stat().st_mode & 0o777 == 0o644
     exclude = project / ".git" / "info" / "exclude"
     assert exclude.read_text(encoding="utf-8") == "/tickets/board/queue/demo.md\n"
 
