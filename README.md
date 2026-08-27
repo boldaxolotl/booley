@@ -63,7 +63,7 @@ for first-run, PATH, and Python-environment problems, then continue to
 Three ways in, ordered by how much you want to invest:
 
 1. **[Level 1: Watch](#level-1-watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Clone a pre-configured demo repo and run its tickets out of the box.
+2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Clone the configured demo, create a Ticket with the bundled ticket-creation skill, and run your own change.
 3. **[Level 3: Use it on your own project](#level-3-use-it-on-your-own-project).** Full integration on your own RTL.
 
 ### Level 1: Watch
@@ -84,6 +84,11 @@ The project's author recorded all four videos, then replaced the original narrat
 First, complete the [installation](#installation) above.
 
 Then follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
+Start in **Interactive Mode**: ask the agent to explain the design, inspect a
+Target, and run a lint or simulation Flow while you guide it. Once that feels
+familiar, try **Ticket Mode** as the optional autonomous workflow by creating a
+Ticket against the live design. The repository intentionally contains no
+pre-made Tickets.
 
 ### Level 3: Use it on your own project
 

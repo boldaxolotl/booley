@@ -48,10 +48,16 @@ def _run_git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def _initialize_project(tmp_path: Path) -> Path:
     project = tmp_path / "ticket-mode-project"
     shutil.copytree(_FIXTURE, project)
-    board = project / ".booley_project" / "tickets" / "board"
+    project_dir = project / ".booley_project"
+    board = project_dir / "tickets" / "board"
     for state in ("queue", "active", "blocked", "waiting", "archived", "review", "done"):
         (board / state).mkdir(parents=True)
-    (project / ".booley_project" / "tickets" / "logs").mkdir(parents=True)
+    (project_dir / "tickets" / "logs").mkdir(parents=True)
+    _run_git(project_dir, "init", "-b", "main")
+    _run_git(project_dir, "config", "user.name", "Booley Smoke")
+    _run_git(project_dir, "config", "user.email", "smoke@example.invalid")
+    _run_git(project_dir, "add", ".")
+    _run_git(project_dir, "commit", "-m", "Initialize Ticket Mode project data")
     _run_git(project, "init", "-b", "main")
     _run_git(project, "config", "user.name", "Booley Smoke")
     _run_git(project, "config", "user.email", "smoke@example.invalid")

@@ -10,7 +10,7 @@ import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -46,6 +46,50 @@ def _write_progress(project_root: Path, slug: str, data: dict):
     logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
     logs_dir.mkdir(parents=True, exist_ok=True)
     (logs_dir / "progress.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _verify_target_contract
+
+    contract = MagicMock()
+    contract.as_dict.return_value = {"schema": 3}
+    ctx = TicketContext(
+        slug="sealed-ticket",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="feature",
+        branch="main",
+        summary="Sealed Ticket",
+        criteria={"mandatory": {}},
+        project_root=tmp_path,
+        base_sha="a" * 40,
+        target_contract=contract,
+    )
+
+    with (
+        patch(
+            "booley.ticket_board.contract_ops.validate_sealed_refs",
+            return_value=[],
+        ) as validate_refs,
+        patch(
+            "booley.ticket_board.target_contract.validate_contract_fields",
+            return_value=[],
+        ) as validate_fields,
+    ):
+        _verify_target_contract(ctx, "fresh")
+
+    validate_refs.assert_called_once_with(
+        tmp_path,
+        contract,
+        slug="sealed-ticket",
+        destination_branch="main",
+    )
+    validate_fields.assert_called_once_with(
+        {
+            "base_sha": "a" * 40,
+            "target_contract": {"schema": 3},
+            "criteria": {"mandatory": {}},
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

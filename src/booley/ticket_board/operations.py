@@ -7,13 +7,11 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.ticket_repositories import TicketWorkspace, WorkspaceDisposition
 from booley.runtime.timefmt import format_human_datetime
@@ -21,16 +19,12 @@ from booley.runtime.timefmt import format_human_datetime
 logger = logging.getLogger(__name__)
 
 from .git_ops import (
-    add_worktree,
     cleanup_worktree_and_branch,
     delete_branch,
-    find_checkout_of_branch,
     find_worktree_for_branch,
-    merge_branch,
     prune_worktrees,
     remove_worktree,
     remove_worktree_for_branch,
-    worktree_is_clean,
 )
 from .helpers import compute_done_slugs, parse_arrow, slug_from_file
 from .io import scan_all_tickets
@@ -626,106 +620,6 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _do_merge(
-    slug,
-    entry,
-    *,
-    cleanup: bool = True,
-    project_root: Path | None = None,
-    allowed_unstaged_rename: tuple[Path, Path] | None = None,
-):
-    """Perform the merge step of op_complete. Returns True on success.
-
-    ``merge_into`` is usually the branch checked out in the primary worktree
-    (e.g. ``main``), and git refuses to check out a branch that is already
-    checked out elsewhere — so when a checkout of ``merge_into`` exists, the
-    merge runs *in* that checkout instead of a temp worktree (F-16a). The
-    ticket's worktree and branch are only torn down after the merge succeeds,
-    so a failed merge leaves everything in place to retry.
-
-    *cleanup* is that teardown's switch. It belongs here and not only in
-    :func:`_do_cleanup` because the merge path tears the worktree down itself:
-    without the gate, ``--no-cleanup`` would still destroy the worktree of any
-    ticket whose ``on_success.merge`` is set.
-    """
-    integration_base = entry.get("integration_base", "")
-    is_integration = bool(integration_base)
-    if is_integration:
-        merge_into, merge_from = integration_base, entry.get("branch", "")
-    else:
-        merge_into = entry.get("branch", "")
-        merge_from = entry.get("feature_branch", "")
-
-    if not merge_from:
-        print(f"Error: merge_from branch is empty for '{slug}'", file=sys.stderr)
-        return False
-
-    merge_msg = f"merge({slug}): {'integration' if is_integration else 'feature'} completed"
-
-    if not _merge_outer_repository(
-        merge_into,
-        merge_from,
-        merge_msg,
-        allowed_unstaged_rename=allowed_unstaged_rename,
-    ):
-        return False
-    if project_root is not None:
-        ok, detail = TicketWorkspace.retire(
-            project_root,
-            slug,
-            WorkspaceDisposition.MERGE,
-            merge_msg,
-            cleanup=cleanup,
-        )
-        if not ok:
-            print(f"Error: project repository merge failed: {detail}", file=sys.stderr)
-            return False
-
-    # Both merges landed — now it is safe to drop the ticket worktrees and branches.
-    return not cleanup or _cleanup_merged_branch(merge_from)
-
-
-def _merge_outer_repository(
-    merge_into: str,
-    merge_from: str,
-    merge_msg: str,
-    *,
-    allowed_unstaged_rename: tuple[Path, Path] | None = None,
-) -> bool:
-    """Merge the RTL feature branch in an existing or temporary checkout."""
-    checkout = find_checkout_of_branch(merge_into)
-    if checkout:
-        # Merge in the existing checkout. Git itself refuses to clobber
-        # uncommitted changes, but check first for a clearer error.
-        if not worktree_is_clean(
-            checkout,
-            allowed_unstaged_rename=allowed_unstaged_rename,
-        ):
-            print(
-                f"Error: cannot merge into '{merge_into}': its checkout at "
-                f"{checkout} has uncommitted changes",
-                file=sys.stderr,
-            )
-            return False
-        ok, err = merge_branch(merge_from, merge_msg, cwd=checkout)
-        if not ok:
-            print(f"Error: merge failed: {err}", file=sys.stderr)
-            return False
-    else:
-        tmp_dir = tempfile.mkdtemp(prefix="rtl_merge_")
-        ok, err = add_worktree(tmp_dir, merge_into)
-        if not ok:
-            print(f"Error: worktree creation for {merge_into} failed: {err}", file=sys.stderr)
-            safe_rmtree(tmp_dir, protect_git_root=False)
-            return False
-        ok, err = merge_branch(merge_from, merge_msg, cwd=tmp_dir)
-        remove_worktree(tmp_dir)
-        if not ok:
-            print(f"Error: merge failed: {err}", file=sys.stderr)
-            return False
-    return True
-
-
 def _cleanup_merged_branch(merge_from: str) -> bool:
     if merge_from:
         remove_worktree_for_branch(merge_from)
@@ -783,7 +677,7 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
     )
 
 
-def op_complete(
+def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
     tio: Any,
     slug: str,
     *,
@@ -811,28 +705,44 @@ def op_complete(
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
 
     status = entry.get("status", "")
-    if status != "review":
+    if status != "review" and not (status == "done" and on_success.merge):
         print(
             f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
             file=sys.stderr,
         )
         return False
 
-    # Merge FIRST: the review->done transition must only be recorded once the
-    # terminal actions have actually succeeded. Approving before merging left
-    # tickets marked done with their fix stranded on an unmerged branch (F-16b).
-    if on_success.merge and not _do_merge(
-        slug,
-        entry,
-        cleanup=on_success.cleanup,
-        project_root=tio._project_root,
-        allowed_unstaged_rename=(
-            tio.tickets_dir / "board" / "queue" / Path(str(entry["file"])).name,
-            tio.tickets_dir / str(entry["file"]),
-        ),
-    ):
-        print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
+    from .target_contract import TargetContract, TargetContractError
+
+    try:
+        TargetContract.from_mapping(entry.get("target_contract"))
+    except TargetContractError as exc:
+        print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return False
+
+    if on_success.merge:
+        from .completion import complete_review_ticket
+
+        if not complete_review_ticket(tio, slug, on_success):
+            print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
+            return False
+        if on_success.cleanup:
+            # Publication is already durable and the board is done.  Worktree
+            # and branch removal is therefore garbage collection: report a
+            # failure but never misrepresent the accepted Ticket as incomplete.
+            project_ok, project_detail = TicketWorkspace.retire(
+                tio._project_root,
+                slug,
+                WorkspaceDisposition.DISCARD,
+            )
+            outer_ok = _cleanup_merged_branch(slug)
+            if not project_ok or not outer_ok:
+                detail = project_detail or "outer repository cleanup failed"
+                print(
+                    f"Warning: accepted '{slug}' but cleanup is pending: {detail}", file=sys.stderr
+                )
+        _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+        return True
 
     if (
         on_success.cleanup
@@ -845,11 +755,13 @@ def op_complete(
     if not op_approve(tio, slug, actor="op-complete", detail="terminal actions"):
         return False
 
-    # The worktree is gone by now (cleanup removed it, whether from the merge
-    # step or the cleanup step), so the creation locks it left behind can go
-    # too rather than lingering until the next ticket's GC reaps them as stale
-    # (F-54). Skipped when cleanup was declined: the worktree is still live.
-    if on_success.cleanup:
+    _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+    return True
+
+
+def _finish_completed_ticket(tio: Any, slug: str, *, cleanup: bool) -> None:
+    """Release ephemeral execution state after durable acceptance."""
+    if cleanup:
         from booley.harness.setup.worktree_lock_gc import release_worktree_locks
 
         release_worktree_locks(tio._project_root, slug)
@@ -857,9 +769,7 @@ def op_complete(
     from .archive import _cleanup_session_files
 
     _cleanup_session_files(tio.logs_dir / slug)
-
     op_promote_waiting(tio)
-    return True
 
 
 def op_board_move(

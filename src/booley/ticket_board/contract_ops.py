@@ -12,7 +12,7 @@ from pathlib import Path
 from booley.dev_support.contract_path_policy import is_static_contract_path
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
 from booley.runtime.ticket_repositories import (
     TicketRepository,
     paired_project_repository,
@@ -24,6 +24,7 @@ from booley.runtime.ticket_repositories import (
 from .frontmatter import parse_frontmatter, update_frontmatter
 from .git_status import parse_porcelain_v1_z
 from .target_contract import (
+    ContractParticipant,
     TargetContract,
     build_contract,
     contract_control_paths,
@@ -218,7 +219,10 @@ def _local_manifest_paths(surface_root: Path, project_repository: bool) -> set[s
     paths = set(contract_control_paths(surface_root))
     if not project_repository:
         return paths
-    prefix = ".booley_project/"
+    try:
+        prefix = checkout_project_dir_relative_to(surface_root).as_posix().rstrip("/") + "/"
+    except (FileNotFoundError, ValueError) as exc:
+        raise ContractOperationError(str(exc)) from exc
     return {path.removeprefix(prefix) for path in paths if path.startswith(prefix)}
 
 
@@ -339,6 +343,41 @@ def _prepare_seal(project_root: Path | str, ticket_path: Path | str, slug: str) 
     return _SealInputs(ticket, fields, outer, outer_changes, project, project_changes)
 
 
+def _sealed_participants(
+    slug: str,
+    fields: dict[str, object],
+    outer: Path,
+    outer_sha: str,
+    project: Path | None,
+    project_sha: str,
+) -> tuple[ContractParticipant, ...]:
+    """Freeze repository routing while every authoring checkout is available."""
+    destination = fields.get("branch")
+    if not isinstance(destination, str) or not destination:
+        raise ContractOperationError("ticket has no destination branch")
+    participants = [
+        ContractParticipant(
+            role="outer",
+            sealed_sha=outer_sha,
+            ticket_ref=f"refs/heads/{slug}",
+            destination_ref=f"refs/heads/{destination}",
+            destination_sha=_full_commit(outer, destination),
+        )
+    ]
+    if project is not None:
+        upstream = _require_git(project, "rev-parse", "--abbrev-ref", "@{upstream}")
+        participants.append(
+            ContractParticipant(
+                role="project",
+                sealed_sha=project_sha,
+                ticket_ref=f"refs/heads/{project_ticket_branch(slug)}",
+                destination_ref=f"refs/heads/{upstream}",
+                destination_sha=_full_commit(project, upstream),
+            )
+        )
+    return tuple(participants)
+
+
 def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) -> TargetContract:
     """Validate, commit all repositories, then atomically publish ticket metadata."""
     prepared = _prepare_seal(project_root, ticket_path, slug)
@@ -371,6 +410,14 @@ def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) 
                 for target in (binding.target, binding.baseline)
             ),
             bindings=criterion_bindings,
+            participants=_sealed_participants(
+                slug,
+                fields,
+                outer,
+                outer_sha,
+                project,
+                project_sha,
+            ),
         )
         update_frontmatter(
             ticket,
@@ -390,10 +437,139 @@ def _restore_unpublished_commit(repository: Path, start_sha: str, current_sha: s
         _require_git(repository, "reset", "--soft", start_sha)
 
 
-def validate_open_seal(project_root: Path | str, slug: str, contract: TargetContract) -> list[str]:
+def _require_ancestor(repository: Path, ancestor: str, descendant: str, message: str) -> None:
+    result = _git(repository, "merge-base", "--is-ancestor", ancestor, descendant)
+    if result.returncode == 0:
+        return
+    if result.returncode == 1:
+        raise ContractOperationError(message)
+    detail = (result.stderr or result.stdout).strip()
+    raise ContractOperationError(
+        f"git merge-base --is-ancestor failed in {repository} (rc={result.returncode}): {detail}"
+    )
+
+
+def _project_destination_ref(repository: Path, slug: str) -> str:
+    branch = project_ticket_branch(slug)
+    upstream = _require_git(
+        repository,
+        "rev-parse",
+        "--abbrev-ref",
+        f"{branch}@{{upstream}}",
+    )
+    if upstream.startswith("refs/heads/"):
+        return upstream
+    if upstream.startswith("remotes/") or "/" in upstream:
+        raise ContractOperationError(
+            f"project Ticket branch {branch!r} must track a local destination branch"
+        )
+    return f"refs/heads/{upstream}"
+
+
+def _expected_participant_refs(
+    source: Path | None,
+    slug: str,
+    destination_branch: str,
+) -> dict[str, tuple[str, str]]:
+    expected = {
+        "outer": (f"refs/heads/{slug}", f"refs/heads/{destination_branch}"),
+    }
+    if source is not None:
+        expected["project"] = (
+            f"refs/heads/{project_ticket_branch(slug)}",
+            _project_destination_ref(source, slug),
+        )
+    return expected
+
+
+def pin_sealed_refs(
+    project_root: Path | str,
+    contract: TargetContract,
+    *,
+    slug: str,
+    destination_branch: str,
+) -> dict[str, str]:
+    """Validate canonical routing and resolve mutable Ticket refs once."""
+    root = Path(project_root).resolve()
+    source = resolve_inner_project_repo(root)
+    expected = _expected_participant_refs(source, slug, destination_branch)
+    participants = {participant.role: participant for participant in contract.participants}
+    if set(participants) != set(expected):
+        raise ContractOperationError("sealed repository participants do not match this project")
+    sources: dict[str, str] = {}
+    for role, (ticket_ref, destination_ref) in expected.items():
+        participant = participants[role]
+        if (participant.ticket_ref, participant.destination_ref) != (
+            ticket_ref,
+            destination_ref,
+        ):
+            raise ContractOperationError(
+                f"sealed {role} routing does not match Ticket {slug!r} and "
+                f"destination {destination_branch!r}"
+            )
+        repository = root if role == "outer" else source
+        if repository is None:
+            raise ContractOperationError(f"sealed {role} repository is unavailable")
+        sealed = _full_commit(repository, participant.sealed_sha)
+        destination_identity = _full_commit(repository, participant.destination_sha)
+        destination = _full_commit(repository, destination_ref)
+        source_sha = _full_commit(repository, ticket_ref)
+        _require_ancestor(
+            repository,
+            sealed,
+            source_sha,
+            f"ticket ref {ticket_ref!r} does not descend from sealed {role} commit {sealed}",
+        )
+        _require_ancestor(
+            repository,
+            destination_identity,
+            destination,
+            f"destination ref {destination_ref!r} rewrote its sealed history",
+        )
+        _require_ancestor(
+            repository,
+            destination_identity,
+            sealed,
+            f"sealed {role} commit does not descend from its destination identity",
+        )
+        sources[role] = source_sha
+    return sources
+
+
+def validate_sealed_refs(
+    project_root: Path | str,
+    contract: TargetContract,
+    *,
+    slug: str,
+    destination_branch: str,
+) -> list[str]:
+    """Verify canonical sealed refs without requiring materialized worktrees."""
+    try:
+        pin_sealed_refs(
+            project_root,
+            contract,
+            slug=slug,
+            destination_branch=destination_branch,
+        )
+    except (ContractOperationError, ValueError) as exc:
+        return [str(exc)]
+    return []
+
+
+def validate_open_seal(
+    project_root: Path | str,
+    slug: str,
+    contract: TargetContract,
+    destination_branch: str,
+) -> list[str]:
     """Verify sealed refs and the still-open authoring checkout before enqueue."""
     root = Path(project_root).resolve()
-    errors: list[str] = []
+    errors = validate_sealed_refs(
+        root,
+        contract,
+        slug=slug,
+        destination_branch=destination_branch,
+    )
     try:
         resolve_commit(root, contract.outer_sha)
     except ValueError as exc:
@@ -437,7 +613,7 @@ def reset_contract_worktrees(
         _delete_branch(source, project_ticket_branch(slug))
     _attach_worktree(root, outer, slug, contract.outer_sha)
     _restore_project_contract(source, outer, slug, requested_branch, contract)
-    errors = validate_open_seal(root, slug, contract)
+    errors = validate_open_seal(root, slug, contract, requested_branch)
     if errors:
         raise ContractOperationError("could not restore sealed contract: " + "; ".join(errors))
 

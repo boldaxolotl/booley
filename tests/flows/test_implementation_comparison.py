@@ -8,7 +8,11 @@ from booley.flows.implementation_comparison import (
     ImplementationComparisonError,
     target_pairs_for_candidates,
 )
-from booley.ticket_board.target_contract import ContractTargetBinding, TargetContract
+from booley.ticket_board.target_contract import (
+    ContractParticipant,
+    ContractTargetBinding,
+    TargetContract,
+)
 
 
 def test_missing_metadata_preserves_equal_target_behavior() -> None:
@@ -58,10 +62,19 @@ targets:
                 candidate="acme:lib:toy:1.0#synth_after",
             ),
         ),
+        participants=(
+            ContractParticipant(
+                "outer",
+                "a" * 40,
+                "refs/heads/ticket",
+                "refs/heads/main",
+                "c" * 40,
+            ),
+        ),
     )
 
 
-def test_schema_two_executes_selector_verified_against_sealed_pair(tmp_path: Path) -> None:
+def test_schema_three_executes_selector_verified_against_sealed_pair(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
@@ -80,7 +93,7 @@ def test_schema_two_executes_selector_verified_against_sealed_pair(tmp_path: Pat
 
 
 @pytest.mark.parametrize("baseline", [None, "synth_other"])
-def test_schema_two_rejects_resumed_state_that_disagrees_with_contract(
+def test_schema_three_rejects_resumed_state_that_disagrees_with_contract(
     tmp_path: Path, baseline: str | None
 ) -> None:
     contract = _sealed_project(tmp_path)

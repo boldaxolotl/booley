@@ -166,7 +166,9 @@ only how to *infer* a value from the conversation and the repo.
 
 Runtime and seal fields are *not* inferred: `target_contract` and `base_sha` are
 stamped from Git by `contract-seal`, `created` by `enqueue`, `feature_branch` by
-`init`, and `integration_base` by `enqueue --integration-base`.
+`init`. `integration_base` is unsupported and must not be authored for
+schema-3 Tickets; their sealed participant manifest names the
+destination of each Ticket Branch directly.
 
 ## §C. CLI Workflow
 
@@ -208,8 +210,7 @@ python -m booley.ticket_board validate-ticket \
 python -m booley.ticket_board contract-seal "$SLUG"
 
 # E8. Enqueue (refuses an absent/stale seal; preserves on_success; stamps created)
-python -m booley.ticket_board enqueue $SLUG \
-  [--integration-base "$INT_BASE"]
+python -m booley.ticket_board enqueue "$SLUG"
 ```
 
 ## §D. Criteria Catalog

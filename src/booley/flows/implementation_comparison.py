@@ -9,7 +9,7 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
-from booley.ticket_board.target_contract import SCHEMA_VERSION, TargetContract
+from booley.ticket_board.target_contract import TargetContract
 
 
 class ImplementationComparisonError(ValueError):
@@ -17,7 +17,7 @@ class ImplementationComparisonError(ValueError):
 
 
 def _state_pair(criteria: Mapping[str, Any], criterion_prefix: str, candidate: str) -> TargetPair:
-    """Read the persisted pair, preserving equal-Target legacy behavior."""
+    """Read the persisted pair, preserving equal-Target behavior."""
     entry = criteria.get(f"{criterion_prefix}{candidate}")
     params = as_dict(getattr(entry, "params", None)) if entry is not None else None
     if params is None or BASELINE_TARGET_PARAM not in params:
@@ -42,7 +42,7 @@ def _sealed_pair(
     criterion: str,
     state_pair: TargetPair,
 ) -> TargetPair:
-    """Resolve one execution pair from schema-2 sealed identities."""
+    """Resolve one execution pair from sealed Target identities."""
     try:
         candidate = _canonical_selector(project_root, state_pair.candidate)
         state_baseline = _canonical_selector(project_root, state_pair.baseline)
@@ -86,10 +86,10 @@ def target_pairs_for_candidates(
     seen: dict[str, str] = {}
     for candidate in candidates:
         pair = _state_pair(criteria, criterion_prefix, candidate)
-        if contract is not None and contract.schema == SCHEMA_VERSION:
+        if contract is not None:
             if project_root is None or not flow:
                 raise ImplementationComparisonError(
-                    "schema-2 Target contract comparison requires project root and flow"
+                    "Target contract comparison requires project root and flow"
                 )
             pair = _sealed_pair(
                 contract,
@@ -111,7 +111,7 @@ def target_pairs_for_candidates(
 
 
 def target_pair_for_candidate(pairs: Sequence[TargetPair], candidate: str) -> TargetPair:
-    """Return one resolved pair, defaulting only for legacy equal-Target runs."""
+    """Return one resolved pair, defaulting only for equal-Target runs."""
     return next(
         (pair for pair in pairs if pair.candidate == candidate),
         TargetPair(candidate, candidate),

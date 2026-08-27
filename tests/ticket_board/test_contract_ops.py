@@ -12,6 +12,7 @@ from booley.ticket_board import contract_ops
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_reset
+from booley.ticket_board.target_contract import ContractParticipant, TargetContract
 
 
 @pytest.fixture(autouse=True)
@@ -121,8 +122,138 @@ def test_native_contract_open_seal_and_enqueue(tmp_path: Path) -> None:
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["base_sha"] == sealed["outer_sha"]
     assert fields["target_contract"] == sealed
+    assert sealed["schema"] == 3
+    assert sealed["participants"] == [
+        {
+            "role": "outer",
+            "sealed_sha": sealed["outer_sha"],
+            "ticket_ref": "refs/heads/change-target",
+            "destination_ref": "refs/heads/main",
+            "destination_sha": opened["outer_base_sha"],
+        }
+    ]
     assert _git(root, "rev-parse", "change-target") == sealed["outer_sha"]
     assert tio.enqueue_ticket("change-target") is True
+
+
+def test_sealed_refs_remain_valid_after_authoring_worktree_is_discarded(tmp_path: Path) -> None:
+    root, tio, _ticket = _native_project(tmp_path)
+    opened = tio.contract_open("change-target")
+    sealed = tio.contract_seal("change-target")
+    outer = Path(opened["outer_worktree"])
+    _git(root, "worktree", "remove", "--force", str(outer))
+
+    contract = contract_ops.TargetContract.from_mapping(sealed)
+
+    assert (
+        contract_ops.validate_sealed_refs(
+            root,
+            contract,
+            slug="change-target",
+            destination_branch="main",
+        )
+        == []
+    )
+    assert tio.enqueue_ticket("change-target") is True
+
+
+def test_sealed_ref_validation_reports_unknown_commit(tmp_path: Path) -> None:
+    root, _tio, _ticket = _native_project(tmp_path)
+    participant = ContractParticipant(
+        "outer",
+        "d" * 40,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        _git(root, "rev-parse", "HEAD"),
+    )
+    contract = TargetContract("d" * 40, "", "b" * 64, (), participants=(participant,))
+
+    errors = contract_ops.validate_sealed_refs(
+        root,
+        contract,
+        slug="change-target",
+        destination_branch="main",
+    )
+
+    assert len(errors) == 1
+    assert "git rev-parse --verify" in errors[0]
+
+
+def test_sealed_ref_validation_rejects_ref_that_does_not_descend_from_seal(
+    tmp_path: Path,
+) -> None:
+    root, _tio, _ticket = _native_project(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    _git(root, "branch", "old-ticket", base)
+    (root / "main-only.txt").write_text("advance destination\n", encoding="utf-8")
+    sealed = _commit_all(root, "advance main")
+    participant = ContractParticipant(
+        "outer",
+        sealed,
+        "refs/heads/old-ticket",
+        "refs/heads/main",
+        base,
+    )
+    contract = TargetContract(sealed, "", "b" * 64, (), participants=(participant,))
+
+    assert contract_ops.validate_sealed_refs(
+        root,
+        contract,
+        slug="old-ticket",
+        destination_branch="main",
+    ) == [f"ticket ref 'refs/heads/old-ticket' does not descend from sealed outer commit {sealed}"]
+
+
+def test_sealed_ref_validation_binds_ticket_and_destination_refs(tmp_path: Path) -> None:
+    root, tio, _ticket = _native_project(tmp_path)
+    tio.contract_open("change-target")
+    sealed = tio.contract_seal("change-target")
+    contract = TargetContract.from_mapping(sealed)
+
+    assert (
+        "routing does not match"
+        in contract_ops.validate_sealed_refs(
+            root,
+            contract,
+            slug="another-ticket",
+            destination_branch="main",
+        )[0]
+    )
+    assert (
+        "routing does not match"
+        in contract_ops.validate_sealed_refs(
+            root,
+            contract,
+            slug="change-target",
+            destination_branch="release",
+        )[0]
+    )
+
+
+def test_sealed_ref_validation_reports_git_history_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, tio, _ticket = _native_project(tmp_path)
+    tio.contract_open("change-target")
+    contract = TargetContract.from_mapping(tio.contract_seal("change-target"))
+    run_git = contract_ops._git
+
+    def fail_merge_base(repository: Path, *args: str):
+        result = run_git(repository, *args)
+        if args[:2] == ("merge-base", "--is-ancestor"):
+            return subprocess.CompletedProcess(result.args, 128, "", "history unavailable")
+        return result
+
+    monkeypatch.setattr(contract_ops, "_git", fail_merge_base)
+
+    errors = contract_ops.validate_sealed_refs(
+        root,
+        contract,
+        slug="change-target",
+        destination_branch="main",
+    )
+    assert "rc=128" in errors[0]
+    assert "history unavailable" in errors[0]
 
 
 def test_seal_rejects_non_control_implementation_changes(tmp_path: Path) -> None:
@@ -246,6 +377,17 @@ def test_standalone_project_repository_gets_paired_contract_commit(tmp_path: Pat
     sealed = tio.contract_seal("change-target")
 
     assert sealed["project_sha"]
+    assert [participant["role"] for participant in sealed["participants"]] == [
+        "outer",
+        "project",
+    ]
+    assert sealed["participants"][1] == {
+        "role": "project",
+        "sealed_sha": sealed["project_sha"],
+        "ticket_ref": "refs/heads/booley-ticket/change-target",
+        "destination_ref": "refs/heads/main",
+        "destination_sha": opened["project_base_sha"],
+    }
     assert _git(paired, "rev-parse", "HEAD") == sealed["project_sha"]
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["target_contract"]["project_sha"] == sealed["project_sha"]

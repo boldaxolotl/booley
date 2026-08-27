@@ -692,6 +692,12 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
+Ticket creation first opens an isolated Ticket Workspace. This is where the
+ticket-creation agent adds any Target the Ticket will require; the Project's
+destination branch stays fully functional and Doctor-clean until acceptance.
+The Target Contract seals every participating repository ref, and final
+acceptance rechecks that composite control surface before publishing it.
+
 **Per-clock timing thresholds.** Timing is reported per clock, so the timing
 metrics (`critical_path_ps`, `fmax_mhz`, `wns_ns`, `whs_ns`, `period_ns`) accept
 **flat** or **clock-scoped** thresholds (area / cell / LUT / FF / BRAM / DSP /

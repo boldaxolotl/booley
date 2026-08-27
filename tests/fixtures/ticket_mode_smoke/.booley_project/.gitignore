@@ -1,0 +1,12 @@
+# Transient Booley state — do not commit.
+tmp/
+tickets/logs/
+tickets/locks/
+.interactive_logs/
+.runtime/
+runtime/
+worktrees/
+__pycache__/
+*.pyc
+SETUP-REPORT.md
+FEEDBACK-REPORT.md

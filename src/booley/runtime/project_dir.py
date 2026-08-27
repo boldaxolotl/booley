@@ -101,10 +101,27 @@ def resolve_checkout_project_dir(project_root: Path) -> Path:
     cache so config and design sources come from the same checkout. Projects
     without a local snapshot retain the normal resolution chain.
     """
-    local = project_root.resolve() / PROJECT_DIR_NAME
+    root = project_root.resolve()
+    toml_result = _resolve_from_toml(root)
+    if toml_result is not None:
+        return toml_result
+    local = root / PROJECT_DIR_NAME
     if local.is_dir():
         return local
-    return resolve_project_dir(project_root)
+    return resolve_project_dir(root)
+
+
+def checkout_project_dir_relative_to(project_root: Path) -> Path:
+    """Return the selected checkout's project directory as a safe relative path."""
+    root = project_root.resolve()
+    project_dir = resolve_checkout_project_dir(root).resolve()
+    try:
+        relative = project_dir.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"project directory {project_dir} is outside checkout {root}") from exc
+    if relative == Path():
+        raise ValueError("project directory cannot be the checkout root")
+    return relative
 
 
 def runtime_dir(start: Path | None = None) -> Path:

@@ -759,21 +759,26 @@ class TicketIO:
             return self._enqueue_locked(slug, ticket_path, on_success, integration_base, has_unmet)
 
     def _validate_enqueue_contract(self, slug: str, fields: dict[str, Any]) -> list[str]:
-        """Require a schema-1 seal before a real Git project becomes executable."""
+        """Require durable sealed refs before a real Git project becomes executable."""
         if not (self._project_root / ".git").exists():
             return []  # lightweight filesystem-only consumers cannot verify Git identities
-        from .contract_ops import validate_open_seal
+        from .contract_ops import validate_sealed_refs
         from .target_contract import TargetContract, TargetContractError
 
         raw = fields.get("target_contract")
         if raw is None:
-            return ["target_contract.schema: 1 is required; run contract-open/contract-seal"]
+            return ["target_contract seal is required; run contract-open/contract-seal"]
         try:
             contract = TargetContract.from_mapping(raw)
         except TargetContractError as exc:
             return [str(exc)]
         try:
-            return validate_open_seal(self._project_root, slug, contract)
+            return validate_sealed_refs(
+                self._project_root,
+                contract,
+                slug=slug,
+                destination_branch=str(fields.get("branch", "")),
+            )
         except (RuntimeError, ValueError, OSError) as exc:
             return [str(exc)]
 

@@ -68,12 +68,61 @@ def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedP
 # ===========================================================================
 
 
-class TestBranchCreation:
-    """Test feature branch vs integration branch selection."""
+class TestMaterializedTargetContract:
+    def _context(self, tmp_path: Path) -> MagicMock:
+        contract = MagicMock()
+        contract.as_dict.return_value = {"schema": 3}
+        return MagicMock(
+            target_contract=contract,
+            base_sha="a" * 40,
+            criteria={"mandatory": {}},
+        )
 
-    def test_integration_uses_base_branch(self):
+    def test_accepts_unchanged_materialized_surface(self, tmp_path: Path):
+        from booley.harness.setup.workspace import _validate_materialized_target_contract
+
+        ctx = self._context(tmp_path)
+        with (
+            patch("booley.ticket_board.target_contract.verify_surface") as verify,
+            patch(
+                "booley.ticket_board.target_contract.validate_contract_fields",
+                return_value=[],
+            ) as validate,
+        ):
+            result = _validate_materialized_target_contract(ctx, tmp_path)
+
+        assert result is None
+        verify.assert_called_once_with(ctx.target_contract, tmp_path)
+        validate.assert_called_once_with(
+            {
+                "base_sha": "a" * 40,
+                "target_contract": {"schema": 3},
+                "criteria": {"mandatory": {}},
+            },
+            tmp_path,
+        )
+
+    def test_blocks_changed_materialized_surface(self, tmp_path: Path):
+        from booley.harness.setup.workspace import _validate_materialized_target_contract
+        from booley.ticket_board.target_contract import TargetContractError
+
+        ctx = self._context(tmp_path)
+        with patch(
+            "booley.ticket_board.target_contract.verify_surface",
+            side_effect=TargetContractError("surface changed"),
+        ):
+            result = _validate_materialized_target_contract(ctx, tmp_path)
+
+        assert result is not None
+        assert result.block_reason == "target-contract-change-required: surface changed"
+
+
+class TestBranchCreation:
+    """Every implementation Ticket owns an isolated branch."""
+
+    def test_integration_uses_ticket_branch(self):
         branch = _pick_branch(is_integration=True, slug="fix-fsm", base_branch="int/batch-1")
-        assert branch == "int/batch-1"
+        assert branch == "fix-fsm"
 
     def test_normal_uses_slug(self):
         branch = _pick_branch(is_integration=False, slug="fix-fsm", base_branch="master")
@@ -332,8 +381,7 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 
 def _pick_branch(is_integration: bool, slug: str, base_branch: str) -> str:
     """Replicate branch selection logic."""
-    if is_integration:
-        return base_branch
+    del is_integration, base_branch
     return slug
 
 
@@ -544,8 +592,7 @@ class TestWorkspaceRun:
 
     @pytest.mark.asyncio
     @patch("subprocess.run")
-    async def test_integration_branch_used(self, mock_sub, project_root):
-        """Kills: L104 negate_if (is_integration)."""
+    async def test_integration_ticket_keeps_sealed_ticket_branch(self, mock_sub, project_root):
         ctx = _make_ctx(project_root, branch="int/batch-1")
 
         wt = project_root / ".booley_project" / "worktrees" / ctx.slug
@@ -556,7 +603,7 @@ class TestWorkspaceRun:
 
         result = await run(ctx)
         assert result.block_reason is None
-        assert result.metadata["branch"] == "int/batch-1"
+        assert result.metadata["branch"] == ctx.slug
 
     @pytest.mark.asyncio
     @patch("subprocess.run")

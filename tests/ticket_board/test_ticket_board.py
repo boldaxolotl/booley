@@ -5234,7 +5234,25 @@ class TestOpBoardMove:
             "review",
             "my-ticket",
             extra_fields={
-                "on_success": {"destination": "review", "merge": False, "cleanup": False}
+                "on_success": {"destination": "review", "merge": False, "cleanup": False},
+                "target_contract": {
+                    "schema": 3,
+                    "outer_sha": "a" * 40,
+                    "project_sha": "",
+                    "surface_digest": "b" * 64,
+                    "targets": [],
+                    "bindings": [],
+                    "surface_entries": [],
+                    "participants": [
+                        {
+                            "role": "outer",
+                            "sealed_sha": "a" * 40,
+                            "ticket_ref": "refs/heads/my-ticket",
+                            "destination_ref": "refs/heads/main",
+                            "destination_sha": "c" * 40,
+                        }
+                    ],
+                },
             },
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
@@ -5279,6 +5297,27 @@ class TestBoardMoveTerminalActionOverrides:
     itself; the cleanup step branches on the merge decision)."""
 
     @staticmethod
+    def _target_contract():
+        return {
+            "schema": 3,
+            "outer_sha": "a" * 40,
+            "project_sha": "",
+            "surface_digest": "b" * 64,
+            "targets": [],
+            "bindings": [],
+            "surface_entries": [],
+            "participants": [
+                {
+                    "role": "outer",
+                    "sealed_sha": "a" * 40,
+                    "ticket_ref": "refs/heads/my-ticket",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                }
+            ],
+        }
+
+    @staticmethod
     def _review_ticket(tmp_path, *, merge: bool, cleanup: bool):
         tio = make_tio(tmp_path)
         make_ticket_in_dir(
@@ -5288,6 +5327,7 @@ class TestBoardMoveTerminalActionOverrides:
             extra_fields={
                 "on_success": {"destination": "review", "merge": merge, "cleanup": cleanup},
                 "feature_branch": "feat/my-ticket",
+                "target_contract": TestBoardMoveTerminalActionOverrides._target_contract(),
             },
         )
         make_progress(tio, "my-ticket", {"step": "summary"})
@@ -5295,21 +5335,41 @@ class TestBoardMoveTerminalActionOverrides:
 
     def test_no_merge_skips_the_merge_step(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        with patch("booley.ticket_board.operations._do_merge") as do_merge:
+        with patch("booley.ticket_board.completion.complete_review_ticket") as complete:
             assert op_board_move(tio, "my-ticket", "done", no_merge=True) is True
-        do_merge.assert_not_called()
+        complete.assert_not_called()
 
     def test_merge_still_runs_without_the_flag(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        with patch("booley.ticket_board.operations._do_merge", return_value=True) as do_merge:
+        with patch(
+            "booley.ticket_board.completion.complete_review_ticket", return_value=True
+        ) as complete:
             assert op_board_move(tio, "my-ticket", "done") is True
-        assert do_merge.call_count == 1
+        assert complete.call_count == 1
+
+    def test_done_ticket_can_retry_journaled_merge_recovery(self, tmp_path):
+        from booley.ticket_board.operations import op_complete
+
+        tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
+        review, _status = find_ticket_file(tio.tickets_dir, "my-ticket")
+        assert review is not None
+        done = review.parent.parent / "done" / review.name
+        done.parent.mkdir(parents=True, exist_ok=True)
+        review.rename(done)
+
+        with patch(
+            "booley.ticket_board.completion.complete_review_ticket", return_value=True
+        ) as complete:
+            assert op_complete(tio, "my-ticket") is True
+        complete.assert_called_once()
 
     def test_feature_branch_alias_uses_canonical_slug_for_terminal_actions(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=True, cleanup=False)
-        with patch("booley.ticket_board.operations._do_merge", return_value=True) as do_merge:
+        with patch(
+            "booley.ticket_board.completion.complete_review_ticket", return_value=True
+        ) as complete:
             assert op_board_move(tio, "feat/my-ticket", "done") is True
-        assert do_merge.call_args.args[0] == "my-ticket"
+        assert complete.call_args.args[1] == "my-ticket"
 
     def test_no_cleanup_skips_the_cleanup_step(self, tmp_path):
         tio = self._review_ticket(tmp_path, merge=False, cleanup=True)
@@ -5322,11 +5382,13 @@ class TestBoardMoveTerminalActionOverrides:
         --no-cleanup has to reach into it too."""
         tio = self._review_ticket(tmp_path, merge=True, cleanup=True)
         with (
-            patch("booley.ticket_board.operations._do_merge", return_value=True) as do_merge,
+            patch(
+                "booley.ticket_board.completion.complete_review_ticket", return_value=True
+            ) as complete,
             patch("booley.ticket_board.operations._do_cleanup") as do_cleanup,
         ):
             assert op_board_move(tio, "my-ticket", "done", no_cleanup=True) is True
-        assert do_merge.call_args.kwargs["cleanup"] is False
+        assert complete.call_args.args[2].cleanup is False
         do_cleanup.assert_not_called()
 
     def test_cleanup_sees_the_effective_merge_decision(self, tmp_path):
@@ -5342,12 +5404,8 @@ class TestBoardMoveTerminalActionOverrides:
         """Subtractive only: a ticket that opted out of merging does not start
         merging because the flags were left off."""
         tio = self._review_ticket(tmp_path, merge=False, cleanup=False)
-        with (
-            patch("booley.ticket_board.operations._do_merge") as do_merge,
-            patch("booley.ticket_board.operations._do_cleanup") as do_cleanup,
-        ):
+        with patch("booley.ticket_board.operations._do_cleanup") as do_cleanup:
             assert op_board_move(tio, "my-ticket", "done") is True
-        do_merge.assert_not_called()
         do_cleanup.assert_not_called()
 
     def test_flags_are_announced_as_ignored_on_other_edges(self, tmp_path, capsys):
@@ -5355,28 +5413,6 @@ class TestBoardMoveTerminalActionOverrides:
         make_ticket_in_dir(tio, "drafts", "my-ticket")
         assert op_board_move(tio, "my-ticket", "queue", no_cleanup=True) is True
         assert "apply to the review->done move only" in capsys.readouterr().err
-
-    def test_merge_teardown_is_gated_on_cleanup(self, tmp_path):
-        """The gate inside _do_merge itself: merge lands, worktree stays."""
-        from booley.ticket_board import operations
-
-        entry = {"branch": "main", "feature_branch": "feat/x"}
-        with (
-            patch.object(operations, "find_checkout_of_branch", return_value=None),
-            patch.object(operations, "add_worktree", return_value=(True, "")),
-            patch.object(operations, "merge_branch", return_value=(True, "")),
-            patch.object(operations, "remove_worktree"),
-            patch.object(operations, "remove_worktree_for_branch") as rm_wt,
-            patch.object(operations, "prune_worktrees"),
-            patch.object(operations, "delete_branch") as del_branch,
-        ):
-            assert operations._do_merge("my-ticket", entry, cleanup=False) is True
-            rm_wt.assert_not_called()
-            del_branch.assert_not_called()
-
-            assert operations._do_merge("my-ticket", entry, cleanup=True) is True
-            rm_wt.assert_called_once_with("feat/x")
-            del_branch.assert_called_once_with("feat/x", force=True)
 
 
 class TestArchiveWithSlug:

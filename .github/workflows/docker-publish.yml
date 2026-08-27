@@ -237,7 +237,7 @@ jobs:
       - name: Prepare demo checkout ownership
         run: sudo chown -R 1000:1000 demo
 
-      - name: Run demo Doctor and Ticket Mode smoke
+      - name: Run demo Doctor and ticket-authoring surface smoke
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
           EXPECTED_BOOLEY_VERSION: ${{ steps.version.outputs.version }}
@@ -253,7 +253,6 @@ jobs:
             "${IMAGE}" bash -euo pipefail -c '
               python -c "import booley, os; assert booley.__version__ == os.environ[\"EXPECTED_BOOLEY_VERSION\"]"
               project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
-              ticket_slug=add-rv32-zbb-pcpi-co-processor
               BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register
               bash "${project_dir}/hooks/post-setup.sh"
               doctor_log="$(mktemp)"
@@ -261,17 +260,10 @@ jobs:
               grep -Fq "0 warning(s)" "${doctor_log}"
               grep -Fq "0 failed." "${doctor_log}"
 
-              ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
-              python -m booley.ticket_board parse-ticket "${ticket}" >/dev/null
-              python -m booley.ticket_board show "${ticket_slug}" >/dev/null
+              python -c "from booley.runtime.paths import skills_dir; assert (skills_dir() / \"booley-ticket-create\" / \"SKILL.md\").is_file()"
               python -c "from pathlib import Path; from booley.harness.preflight import run_preflight; run_preflight(Path.cwd())"
               booley board show
-
-              before="$(sha256sum "${ticket}")"
-              booley run --ticket "${ticket_slug}" --dry-run
-              test -f "${ticket}"
-              test ! -e "${project_dir}/tickets/board/active/${ticket_slug}.md"
-              test "${before}" = "$(sha256sum "${ticket}")"
+              test -z "$(find "${project_dir}/tickets/board" -type f -name "*.md" -print -quit)"
             '
 
       # The production image runs as uid 1000, while checkout cleanup runs as
