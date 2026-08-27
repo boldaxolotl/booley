@@ -630,7 +630,8 @@ def _required_targets(
             binding,
             (prior[1] if prior else False) or not candidate_missing,
         )
-        required[binding.baseline] = (binding, True)
+        if binding.relative or binding.baseline != binding.target:
+            required[binding.baseline] = (binding, True)
     return required
 
 

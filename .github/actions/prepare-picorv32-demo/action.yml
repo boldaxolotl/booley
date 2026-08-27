@@ -1,0 +1,64 @@
+name: Prepare pinned PicoRV32 demo
+description: Check out and prepare the CI-owned PicoRV32 demo contract
+
+inputs:
+  contract:
+    description: Repository-relative path to the demo contract
+    required: false
+    default: .github/contracts/picorv32-demo.toml
+
+outputs:
+  ticket_slug:
+    description: Slug of the installed CI-owned Ticket fixture
+    value: ${{ steps.contract.outputs.ticket_slug }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read reviewed revisions from contract
+      id: contract
+      shell: bash
+      env:
+        CONTRACT_PATH: ${{ inputs.contract }}
+      run: >-
+        python "${GITHUB_WORKSPACE}/.github/scripts/export_demo_contract.py"
+        --contract "${CONTRACT_PATH}" >> "${GITHUB_OUTPUT}"
+
+    # The RTL pin belongs to public main; the project-data pin belongs to a
+    # permanent CI-only contract branch so the demo can ship without a Ticket.
+    - name: Check out reviewed PicoRV32 revision
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ steps.contract.outputs.upstream_repository }}
+        ref: ${{ steps.contract.outputs.upstream_ref }}
+        path: demo
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Check out reviewed demo-project revision
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ steps.contract.outputs.project_repository }}
+        ref: ${{ steps.contract.outputs.project_ref }}
+        path: demo/.booley_project
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Require reviewed revisions on public refs
+      shell: bash
+      env:
+        PROJECT_CONTRACT_REF: ${{ steps.contract.outputs.project_contract_ref }}
+      run: |
+        git -C demo merge-base --is-ancestor HEAD origin/main
+        git -C demo/.booley_project merge-base --is-ancestor HEAD "origin/${PROJECT_CONTRACT_REF}"
+
+    - name: Install CI-owned Ticket fixture into ticket-free checkout
+      shell: bash
+      env:
+        TICKET_FIXTURE: ${{ steps.contract.outputs.ticket_fixture }}
+        TICKET_SLUG: ${{ steps.contract.outputs.ticket_slug }}
+      run: >-
+        python "${GITHUB_WORKSPACE}/.github/scripts/install_demo_ticket.py"
+        --project-dir demo/.booley_project
+        --fixture "${TICKET_FIXTURE}"
+        --slug "${TICKET_SLUG}"

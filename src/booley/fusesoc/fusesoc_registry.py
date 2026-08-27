@@ -41,6 +41,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+from fusesoc.capi2.exprs import Exprs
 
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
@@ -977,9 +978,10 @@ def _depend_keys(entries: Any) -> set[str]:
     for entry in entries:
         if not isinstance(entry, str):
             continue
-        token = entry.strip().strip("()").lstrip("<>=~^! ").strip()
-        if token:
-            keys.add(_vlnv_key(token))
+        for possible in _possible_expression_values(entry):
+            token = possible.strip().strip("()").lstrip("<>=~^! ").strip()
+            if token:
+                keys.add(_vlnv_key(token))
     return keys
 
 
@@ -996,7 +998,7 @@ def _target_depend_keys(core_doc: Mapping[str, Any], target: str) -> set[str]:
         return set()
     keys = _depend_keys(target_def.get("depend"))
     filesets = core_doc.get("filesets") or {}
-    for fs_name in target_fileset_names(target_def):
+    for fs_name in _possible_fileset_names(target_def):
         fileset = filesets.get(fs_name) if isinstance(filesets, Mapping) else None
         if isinstance(fileset, Mapping):
             keys |= _depend_keys(fileset.get("depend"))
@@ -1440,6 +1442,42 @@ def target_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
     return [*(td.get("filesets") or []), *(td.get("filesets_append") or [])]
 
 
+def _possible_expression_values(value: str) -> list[str]:
+    """Return every value a CAPI2 conditional expression can select.
+
+    This is a conservative inventory, independent of the active FuseSoC flag
+    set: callers that promise every Target-referenced input must include both
+    conditional branches. Invalid expressions are returned unchanged so the
+    caller can apply the same conservative non-literal policy as FuseSoC.
+    """
+    try:
+        ast = Exprs(value).ast
+    except ValueError:
+        return [value]
+
+    values: list[str] = []
+
+    def _walk(nodes: list[Any]) -> None:
+        for node in nodes:
+            if isinstance(node, str):
+                values.extend(node.split())
+            elif isinstance(node, tuple) and len(node) == 3 and isinstance(node[2], list):
+                _walk(node[2])
+
+    _walk(ast)
+    return values
+
+
+def _possible_fileset_names(target_def: Mapping[str, Any] | None) -> list[str]:
+    """Every fileset a Target may select, including conditional entries."""
+    return [
+        name
+        for expression in target_fileset_names(target_def)
+        if isinstance(expression, str)
+        for name in _possible_expression_values(expression)
+    ]
+
+
 # Characters that mark a fileset path as non-literal (a glob or a CAPI2
 # conditional expression). FuseSoC itself does not expand globs in ``files``
 # lists, but the preflight stays conservative: anything that is not a plain
@@ -1484,6 +1522,74 @@ def _literal_target_source_paths(
                 seen.add(path)
                 paths.append(path)
     return paths
+
+
+def target_referenced_files(project_root: Path | str, target: str) -> tuple[str, ...]:
+    """Return every file referenced by one Target, including data files.
+
+    Unlike :func:`target_source_files`, this inventory intentionally includes
+    ``file_type: user`` inputs such as firmware images. Conditional filesets and
+    files from dependency cores' ``default`` Targets are included conservatively.
+    Paths are relative to *project_root*, matching ticket Scope and CI contracts.
+    """
+    root = Path(project_root)
+    ref = resolve_ref(root, target)
+    doc = read_core(ref.core_file)
+    targets = doc.get("targets") or {}
+    target_def = targets.get(ref.name) if isinstance(targets, Mapping) else None
+    referenced = _referenced_files_for_filesets(
+        ref.core_file,
+        root,
+        doc.get("filesets"),
+        _possible_fileset_names(target_def),
+    )
+
+    token = f"{ref.vlnv}#{ref.name}"
+    closure = selectable_core_closure(root, [token]) or frozenset()
+    for core_file in sorted(closure):
+        if core_file == ref.core_file:
+            continue
+        dep_doc = read_core(core_file)
+        referenced.extend(
+            _referenced_files_for_filesets(
+                core_file,
+                root,
+                dep_doc.get("filesets"),
+                _possible_dependency_fileset_names(dep_doc),
+            )
+        )
+    return tuple(dict.fromkeys(referenced))
+
+
+def _possible_dependency_fileset_names(doc: Mapping[str, Any]) -> list[str]:
+    """Every fileset a dependency core's default Target may contribute."""
+    targets = doc.get("targets")
+    default_def = targets.get("default") if isinstance(targets, Mapping) else None
+    if isinstance(default_def, Mapping):
+        return _possible_fileset_names(default_def)
+    return []
+
+
+def _referenced_files_for_filesets(
+    core_file: Path,
+    project_root: Path,
+    filesets: Any,
+    fileset_names: Collection[str],
+) -> list[str]:
+    """Expand one core's possible fileset inputs into project-relative paths."""
+    if not isinstance(filesets, Mapping):
+        return []
+    referenced: list[str] = []
+    for fileset_name in fileset_names:
+        fileset = filesets.get(fileset_name)
+        if not isinstance(fileset, Mapping):
+            continue
+        for expression, _attrs in _fileset_file_attrs(fileset):
+            for declared in _possible_expression_values(expression):
+                if _NON_LITERAL_PATH_CHARS.intersection(declared):
+                    continue
+                referenced.append(core_relative_to_project(core_file, project_root, declared))
+    return referenced
 
 
 def _worktree_root_of(path: str) -> str | None:

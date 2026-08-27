@@ -1052,6 +1052,53 @@ class TestUpdateFrontmatter:
         fields = update_frontmatter(p, {"error": ""})
         assert "error" not in fields
 
+    def test_preserves_structured_campaign_during_unrelated_update(self, tmp_path):
+        p = tmp_path / "ticket.md"
+        criteria = {
+            "mandatory": {"sim_pass": ["tb.sv @ sim_core @ smoke @ pass -> pass"]},
+            "optional": {
+                "mutation_score": [
+                    {
+                        "target": "sim_core",
+                        "scope": ["picorv32.v"],
+                        "min_detected": 14,
+                        "total": 15,
+                    }
+                ]
+            },
+        }
+        p.write_text(
+            format_frontmatter(
+                {"summary": "Test", "type": "feature", "criteria": criteria},
+                "## Description\nTest.\n",
+            ),
+            encoding="utf-8",
+        )
+
+        update_frontmatter(p, {"priority": "high"})
+
+        reread, _ = parse_frontmatter(p.read_text(encoding="utf-8"))
+        assert reread["criteria"] == criteria
+
+    def test_refuses_to_replace_ticket_when_serialization_changes_meaning(
+        self, tmp_path, monkeypatch
+    ):
+        from booley.ticket_board import frontmatter
+
+        p = tmp_path / "ticket.md"
+        original = "---\nsummary: Test\ntype: bugfix\n---\n## Description\nTest.\n"
+        p.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(
+            frontmatter,
+            "format_frontmatter",
+            lambda _fields, _body: "---\nsummary: Corrupted\n---\n",
+        )
+
+        with pytest.raises(ValueError, match="serialization changed ticket fields"):
+            update_frontmatter(p, {"priority": "high"})
+
+        assert p.read_text(encoding="utf-8") == original
+
 
 # ===========================================================================
 # 3. Filesystem discovery tests

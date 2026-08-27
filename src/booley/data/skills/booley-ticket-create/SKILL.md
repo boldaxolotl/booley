@@ -95,16 +95,15 @@ fallbacks in §D. Present the resolved selection as a structured menu:
 
 If the user deselects every mandatory criterion, confirm explicitly before accepting (§D requires ≥1).
 
-### 2f: Confirm and write
+### 2f: Approve the ticket
 
-**MANDATORY DRAFT GATE.** Show the complete proposed ticket (frontmatter + body,
-excluding seal fields). Ask: *"Create this draft and author its Target contract?
-(yes / edit / cancel)"*
+**MANDATORY TICKET APPROVAL.** Show the complete proposed ticket (frontmatter +
+body, excluding seal fields). Ask: *"Create this ticket? (yes / edit / cancel)"*
 
 For detailed mode, this is the first review artifact shown after grilling. If the user
 chooses `edit`, revise the complete ticket and show it again; keep the review at this gate
-rather than falling back to summaries or partial previews. Step 4's combined ticket +
-Target diff remains the separate seal gate because it reviews newly authored contract data.
+rather than falling back to summaries or partial previews. Approval authorizes the complete
+creation transaction in Step 4; Target-contract mechanics require no further user confirmation.
 
 **Never write the ticket file until the user explicitly approves** — including agent-invoked creation from other skills.
 
@@ -122,11 +121,12 @@ Target diff remains the separate seal gate because it reviews newly authored con
 
 ## Step 4: Author and Seal
 
-Follow §C: create the approved draft, open its contract worktrees, author every
-needed Target/control file there, validate, and show one combined ticket + Target
-diff. Get explicit approval to seal, then seal and enqueue. Target authoring is part
-of ticket creation, never deferred to the developer. The combined ticket + Target
-diff is the separate seal gate.
+Follow §C end to end after ticket approval: create the draft, open its contract
+worktrees, author every needed Target/control file there, validate, seal, and enqueue.
+Target authoring and sealing are internal implementation details: do not expose their
+SHAs or diffs, and do not pause for another confirmation. Target authoring is part of
+ticket creation, never deferred to the developer. If a mechanical failure cannot be
+repaired, report the actionable error without turning contract internals into user choices.
 
 ## Step 5: Report
 
@@ -205,8 +205,7 @@ python -m booley.ticket_board contract-open "$SLUG"
 python -m booley.ticket_board validate-ticket \
   .booley_project/tickets/board/drafts/$SLUG.md [--check-git]
 
-# E7. Show the complete ticket plus outer/paired Target diffs and ask for
-#     explicit seal approval. Then commit and publish the immutable seal.
+# E7. Validate, commit, and publish the immutable seal without another user gate.
 python -m booley.ticket_board contract-seal "$SLUG"
 
 # E8. Enqueue (refuses an absent/stale seal; preserves on_success; stamps created)

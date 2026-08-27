@@ -161,19 +161,9 @@ jobs:
         id: version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
-      - name: Check out PicoRV32
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: YosysHQ/picorv32
-          path: demo
-          persist-credentials: false
-
-      - name: Check out Booley demo configuration
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: boldaxolotl/booley-prj-picorv32
-          path: demo/.booley_project
-          persist-credentials: false
+      - name: Prepare exact reviewed demo contract
+        id: demo
+        uses: ./.github/actions/prepare-picorv32-demo
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -241,8 +231,10 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
           EXPECTED_BOOLEY_VERSION: ${{ steps.version.outputs.version }}
+          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
         run: |
           docker run --init --rm --network none \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
             --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
@@ -250,20 +242,30 @@ jobs:
             -e BOOLEY_PROJECT_DIR=/booley-project \
             -e BOOLEY_IN_SANDBOX=1 \
             -e EXPECTED_BOOLEY_VERSION \
+            -e TICKET_SLUG \
             "${IMAGE}" bash -euo pipefail -c '
               python -c "import booley, os; assert booley.__version__ == os.environ[\"EXPECTED_BOOLEY_VERSION\"]"
               project_dir="$(python -c "from booley.runtime.project_dir import resolve_project_dir; print(resolve_project_dir())")"
+              ticket_slug="${TICKET_SLUG}"
               BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register
-              bash "${project_dir}/hooks/post-setup.sh"
+              ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
+              before="$(sha256sum "${ticket}")"
+              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
+
               doctor_log="$(mktemp)"
               booley doctor --deep --skip-agent-checks | tee "${doctor_log}"
               grep -Fq "0 warning(s)" "${doctor_log}"
               grep -Fq "0 failed." "${doctor_log}"
 
               python -c "from booley.runtime.paths import skills_dir; assert (skills_dir() / \"booley-ticket-create\" / \"SKILL.md\").is_file()"
+              python -m booley.ticket_board validate-ticket "${ticket}"
+              python -m booley.ticket_board show "${ticket_slug}" >/dev/null
               python -c "from pathlib import Path; from booley.harness.preflight import run_preflight; run_preflight(Path.cwd())"
               booley board show
-              test -z "$(find "${project_dir}/tickets/board" -type f -name "*.md" -print -quit)"
+
+              test -f "${ticket}"
+              test ! -e "${project_dir}/tickets/board/active/${ticket_slug}.md"
+              test "${before}" = "$(sha256sum "${ticket}")"
             '
 
       # The production image runs as uid 1000, while checkout cleanup runs as
@@ -271,7 +273,10 @@ jobs:
       # smoke fails so checkout's post-job hooks can read their git metadata.
       - name: Restore demo checkout ownership
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" demo
+        run: |
+          if test -e demo; then
+            sudo chown -R "$(id -u):$(id -g)" demo
+          fi
 
   # Retag the already-tested manifests by digest. No Dockerfile or source
   # context is available to this job, so promotion cannot rebuild candidates.

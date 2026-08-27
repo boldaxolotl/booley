@@ -1,0 +1,81 @@
+name: PicoRV32 demo contract
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  merge_group:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: picorv32-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONTRACT: .github/contracts/picorv32-demo.toml
+  IMAGE: ghcr.io/boldaxolotl/booley-sandbox-riscv:latest
+
+jobs:
+  demo-contract:
+    name: Demo is execution-ready
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out Booley
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare exact reviewed demo contract
+        id: demo
+        uses: ./.github/actions/prepare-picorv32-demo
+        with:
+          contract: ${{ env.CONTRACT }}
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull RISC-V Session Runtime
+        run: docker pull "${IMAGE}"
+
+      - name: Apply documented local checkout excludes
+        run: |
+          printf '%s\n' \
+            '/.booley_project' \
+            '/.booley-projected-*.core' \
+            >> demo/.git/info/exclude
+
+      - name: Prepare bind-mount ownership
+        run: sudo chown -R 1000:1000 demo
+
+      - name: Verify public demo contract with current Booley source
+        env:
+          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
+        run: |
+          docker run --init --rm --network none \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            -w /work \
+            -e BOOLEY_PROJECT_DIR=/booley-project \
+            -e BOOLEY_IN_SANDBOX=1 \
+            -e PYTHONPATH=/booley-source/src \
+            -e TICKET_SLUG \
+            "${IMAGE}" bash -euo pipefail -c '
+              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
+            '
+
+      - name: Restore checkout ownership
+        if: always()
+        run: |
+          if test -e demo; then
+            sudo chown -R "$(id -u):$(id -g)" demo
+          fi

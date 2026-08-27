@@ -1,0 +1,141 @@
+"""No-agent ticket readiness checks exercise preparation and Target binding."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from booley.fusesoc import fusesoc_registry
+from booley.ticket_board import readiness as readiness_module
+from booley.ticket_board.frontmatter import format_frontmatter
+from booley.ticket_board.readiness import check_ticket_ready
+from booley.ticket_board.target_contract import ContractParticipant, build_contract
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_check_ticket_ready_prepares_generated_target_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.invalid")
+    (root / ".gitignore").write_text("/.booley_project\n/generated.hex\n", encoding="utf-8")
+    (root / "rtl").mkdir()
+    (root / "rtl" / "toy.sv").write_text("module toy; endmodule\n", encoding="utf-8")
+    (root / "tb").mkdir()
+    (root / "tb" / "toy_tb.sv").write_text(
+        "module toy_tb; toy dut(); endmodule\n", encoding="utf-8"
+    )
+    (root / "toy.core").write_text(
+        """CAPI=2:
+name: acme:lib:toy:1.0
+filesets:
+  rtl:
+    files: [rtl/toy.sv]
+    file_type: systemVerilogSource
+  tb:
+    files: [tb/toy_tb.sv]
+    file_type: systemVerilogSource
+  firmware:
+    files:
+      - generated.hex: {file_type: user}
+targets:
+  sim_toy:
+    default_tool: icarus
+    filesets: [rtl, tb, firmware]
+    toplevel: toy_tb
+""",
+        encoding="utf-8",
+    )
+    project = root / ".booley_project"
+    (project / "hooks").mkdir(parents=True)
+    (project / "hooks" / "post-setup.sh").write_text(
+        "#!/bin/sh\nprintf 'firmware\\n' > generated.hex\n", encoding="utf-8"
+    )
+    (project / "booley.toml").write_text(
+        "[flows.sim]\ndefault_target = 'sim_toy'\n", encoding="utf-8"
+    )
+    (project / "tickets" / "board" / "queue").mkdir(parents=True)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "demo")
+    head = _git(root, "rev-parse", "HEAD")
+    participant = ContractParticipant(
+        "outer",
+        head,
+        "refs/heads/main",
+        "refs/heads/main",
+        head,
+    )
+    contract = build_contract(
+        root,
+        outer_sha=head,
+        targets=["sim_toy"],
+        participants=[participant],
+    )
+    criteria = {"mandatory": {"sim_pass": ["tb/toy_tb.sv @ sim_toy @ smoke @ pass -> pass"]}}
+    ticket = project / "tickets" / "board" / "queue" / "demo.md"
+    ticket.write_text(
+        format_frontmatter(
+            {
+                "summary": "Demo",
+                "type": "verification",
+                "branch": "main",
+                "scope": ["rtl/toy.sv"],
+                "base_sha": head,
+                "target_contract": contract.as_dict(),
+                "criteria": criteria,
+            },
+            "## Description\n\nVerify the demo.\n",
+        ),
+        encoding="utf-8",
+    )
+    ticket_before = ticket.read_bytes()
+    resolved_roots: list[Path] = []
+
+    def resolve_checkout(selected_root: Path) -> Path:
+        resolved_roots.append(selected_root)
+        return project
+
+    monkeypatch.setattr(
+        readiness_module,
+        "resolve_checkout_project_dir",
+        resolve_checkout,
+        raising=False,
+    )
+
+    result = check_ticket_ready(root, "demo")
+
+    assert result.errors == ()
+    assert resolved_roots == [root.resolve()]
+    assert ticket.read_bytes() == ticket_before
+    assert not (project / "tickets" / "board" / "active" / "demo.md").exists()
+    assert (root / "generated.hex").is_file()
+    assert "generated.hex" in fusesoc_registry.target_referenced_files(root, "sim_toy")
+    assert _git(root, "status", "--porcelain") == ""
+
+
+def test_checkout_status_failure_is_loud(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "demo"
+    root.mkdir()
+
+    def failed_status(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            ["git", "status"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: not a repository",
+        )
+
+    monkeypatch.setattr(readiness_module.subprocess, "run", failed_status)
+
+    with pytest.raises(RuntimeError, match="not a repository"):
+        readiness_module._checkout_statuses(root)

@@ -460,10 +460,9 @@ unstructured, and let the skill turn it into a precise contract:
    contract: they are what the harness gates on, and prose in the ticket body gates
    nothing. Ask to edit criteria, fields, plan, or scope in place; `scope` is what keeps
    the agent out of unrelated files.
-5. **Author and seal the Target contract.** After draft approval, the skill prepares any
-   required Target recipe and shows the combined ticket + Target diff at the separate seal
-   gate. These mechanics are automatic; review what the skill shows you rather than
-   managing its worktrees or metadata.
+5. **Creation completes automatically.** After ticket approval, the skill authors and seals
+   any required Target recipe, then enqueues the ticket. Target-contract worktrees, diffs,
+   and seal metadata are internal mechanics rather than additional user approval gates.
 
 #### Project Ticket Creation Defaults
 

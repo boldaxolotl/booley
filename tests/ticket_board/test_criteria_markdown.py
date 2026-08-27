@@ -69,6 +69,44 @@ CRITERIA_WITH_SYNTHESIS = {
     }
 }
 
+CRITERIA_WITH_DIRECTED_SYNTHESIS_TARGET = {
+    "mandatory": {
+        "synthesis_ok": {
+            "targets": [
+                {
+                    "baseline": "synth_core",
+                    "candidate": "synth_core_zbb",
+                }
+            ],
+            "cell_count_increase_at_most": 11,
+            "critical_path_ps_increase_at_most": 3,
+        }
+    }
+}
+
+CRITERIA_WITH_TARGET_CAMPAIGNS = {
+    "mandatory": {
+        "sim_pass": ["verif/tb.sv @ sim_core @ smoke @ pass -> pass"],
+        "coverage_toggle": [
+            {
+                "target": "sim_core",
+                "scope": ["rtl/core.sv", "rtl/decoder.sv"],
+                "min_pct": 95,
+            }
+        ],
+    },
+    "optional": {
+        "mutation_score": [
+            {
+                "target": "sim_core",
+                "scope": ["rtl/core.sv"],
+                "min_detected": 14,
+                "total": 15,
+            }
+        ]
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Round-trip tests
@@ -85,8 +123,17 @@ class TestRoundTrip:
             CRITERIA_WITH_OPTIONAL,
             CRITERIA_WITH_LINT,
             CRITERIA_WITH_SYNTHESIS,
+            CRITERIA_WITH_DIRECTED_SYNTHESIS_TARGET,
+            CRITERIA_WITH_TARGET_CAMPAIGNS,
         ],
-        ids=["real_ticket", "with_optional", "with_lint", "with_synthesis"],
+        ids=[
+            "real_ticket",
+            "with_optional",
+            "with_lint",
+            "with_synthesis",
+            "with_directed_synthesis_target",
+            "with_target_campaigns",
+        ],
     )
     def test_round_trip(self, criteria):
         rendered = render_criteria_section(criteria)

@@ -248,27 +248,7 @@ class TicketIO:
         """Write spec field updates to frontmatter (atomic via temp+rename)."""
         if not spec_updates:
             return
-        with file_path.open(encoding="utf-8") as f:
-            text = f.read()
-        fields, body = parse_frontmatter(text)
-        for k, v in spec_updates.items():
-            if v is None or v == "":
-                fields.pop(k, None)
-            else:
-                fields[k] = v
-        import tempfile
-
-        content = format_frontmatter(fields, body)
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            dir=str(file_path.parent), suffix=".tmp", prefix="spec"
-        )
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(content)
-            Path(tmp_name).replace(file_path)
-        except BaseException:
-            Path(tmp_name).unlink(missing_ok=True)
-            raise
+        update_frontmatter(file_path, spec_updates)
 
     def move_ticket_file(self, slug: str, to_dir: str) -> bool:
         """Move a ticket .md file to a different directory (queue, active, etc.)."""
@@ -734,12 +714,13 @@ class TicketIO:
                 print(f"  - {err}", file=sys.stderr)
             return False
 
+        validation_root = self._enqueue_validation_root(slug, fields)
         validation_results = validate_ticket_fields(
             fields,
             body,
-            check_files=(self._project_root / ".booley").is_dir(),
+            check_files=(validation_root / ".booley").is_dir(),
             check_git=False,
-            project_root=self._project_root,
+            project_root=validation_root,
         )
         for w in validation_results:
             if w.startswith("[warning] "):
@@ -757,6 +738,14 @@ class TicketIO:
 
         with self._ticket_lock(slug):
             return self._enqueue_locked(slug, ticket_path, on_success, integration_base, has_unmet)
+
+    def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
+        """Validate sealed tickets against their immutable authoring checkout."""
+        if not (self._project_root / ".git").exists() or fields.get("target_contract") is None:
+            return self._project_root
+        from booley.runtime.project_dir import resolve_project_dir
+
+        return resolve_project_dir(self._project_root) / "worktrees" / slug
 
     def _validate_enqueue_contract(self, slug: str, fields: dict[str, Any]) -> list[str]:
         """Require durable sealed refs before a real Git project becomes executable."""
