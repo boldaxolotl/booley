@@ -272,6 +272,24 @@ def _validate_criterion_value(section_name, key, value, errors):
         )
 
 
+def _validate_cycle_count_grammar(criteria: dict[str, Any], errors: list[str]) -> None:
+    """Apply the runtime Cycle Count grammar during section validation."""
+    cycle_count_sections: dict[str, dict[str, Any]] = {}
+    for section_name in ("mandatory", "optional"):
+        section = criteria.get(section_name)
+        if isinstance(section, dict) and "cycle_count" in section:
+            cycle_count_sections[section_name] = {"cycle_count": section["cycle_count"]}
+    if not cycle_count_sections:
+        return
+
+    from booley.dev_support.criteria import CriteriaTemplate
+
+    try:
+        CriteriaTemplate.from_yaml(cycle_count_sections)
+    except (ValueError, KeyError, TypeError) as exc:
+        errors.append(f"criteria: {exc}")
+
+
 def validate_criteria_section(criteria: Any) -> list[str]:
     """Validate a ticket's ``criteria:`` section. Returns error strings."""
     errors: list[str] = []
@@ -299,6 +317,9 @@ def validate_criteria_section(criteria: Any) -> list[str]:
     mandatory = criteria.get("mandatory")
     if not mandatory or (isinstance(mandatory, dict) and len(mandatory) == 0):
         errors.append("criteria.mandatory must contain at least one criterion")
+
+    if not errors:
+        _validate_cycle_count_grammar(criteria, errors)
 
     return errors
 

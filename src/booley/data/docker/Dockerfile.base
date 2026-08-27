@@ -1,6 +1,6 @@
 # Published Booley EDA/runtime base — invariant tools and Python dependencies.
 # Candidate application code, B-Wave, and repository patches belong in Dockerfile.
-FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 # Tolerate host clock skew during image build (win_test): on Windows hosts the
 # Docker Desktop/WSL2 VM inherits the host clock; a skewed host (common on
@@ -48,8 +48,8 @@ RUN git config --system --add safe.directory '*' \
 # image's flex/bison/libfl-dev (line ~23) plus cmake/gawk here. Submodules are
 # fetched full (NOT --shallow-submodules): sv-elab/slang pin non-tip commits a
 # shallow submodule fetch can miss.
-ARG YOSYS_VERSION=v0.67
-ARG YOSYS_REF=2d1509d1bcb8df0723f6790057e3b1d21c876683
+ARG YOSYS_VERSION=v0.68
+ARG YOSYS_REF=38e001a6ff74ca434bf4cc02c053f53619160ab0
 RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source (this takes a while)..." \
     && apt-get update && apt-get install -y --no-install-recommends \
         cmake gawk pkg-config tcl-dev libreadline-dev libffi-dev zlib1g-dev \
@@ -121,8 +121,8 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
     && rm -rf /tmp/verilator
 
 # sv2v (pinned release binary)
-ARG SV2V_VERSION=v0.0.12
-ARG SV2V_SHA256=ff8c9eea5bc029b372fb4953427625cddb7cf7e58c1240623ac9f260818d5a00
+ARG SV2V_VERSION=v0.0.13
+ARG SV2V_SHA256=552799a1d76cd177b9b4cc63a3e77823a3d2a6eb4ec006569288abeff28e1ff8
 RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/zachjs/sv2v/releases/download/${SV2V_VERSION}/sv2v-Linux.zip" \
     -o /tmp/sv2v.zip \
@@ -133,8 +133,8 @@ RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
 
 # Verible (pinned prebuilt static binary — the sv2v pattern). Bundled
 # lint EDA tool for .core lint Targets with flow_options.tool: verible (ADR 0033).
-ARG VERIBLE_VERSION=v0.0-4080-ga0a8d8eb
-ARG VERIBLE_SHA256=f75daa70f29dbe9624ffee3738408341cfdadbdaf7e5d714a5bcceb9223953e6
+ARG VERIBLE_VERSION=v0.0-4148-g1ea007ec
+ARG VERIBLE_SHA256=5198d7980e5c8e039ad371fd963dfec375aacac1ea80cfa530804b945132ab10
 RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
     -o /tmp/verible.tar.gz \
@@ -163,8 +163,8 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.234" \
-    && test "$(codex --version | awk '{print $2}')" = "0.147.0" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.247" \
+    && test "$(codex --version | awk '{print $2}')" = "0.150.1" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 
@@ -228,7 +228,7 @@ RUN python -m pip install --break-system-packages --no-cache-dir \
 # cocotbext-spi is ABSENT deliberately: no release imports against cocotb 2.x
 # (0.5.0 still uses the removed cocotb.clock.BaseClock).
 RUN python -m pip install --break-system-packages --no-cache-dir \
-    "cocotb==2.0.1" "numpy==2.5.1" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
+    "cocotb==2.0.1" "numpy==2.5.2" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
 
 # Build-time sanity (D2): the image fails to build rather than failing at
 # first sim — cocotb-config resolves, the curated set imports, and the
