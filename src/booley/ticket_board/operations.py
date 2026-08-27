@@ -837,7 +837,9 @@ def op_complete(  # noqa: PLR0911 - ordered validation and legacy/schema-3 paths
             outer_ok = _cleanup_merged_branch(slug)
             if not project_ok or not outer_ok:
                 detail = project_detail or "outer repository cleanup failed"
-                print(f"Warning: accepted '{slug}' but cleanup is pending: {detail}", file=sys.stderr)
+                print(
+                    f"Warning: accepted '{slug}' but cleanup is pending: {detail}", file=sys.stderr
+                )
         _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
         return True
 

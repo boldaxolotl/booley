@@ -109,9 +109,15 @@ class TargetContract:
         project_sha = _optional_string(value, "project_sha")
         digest = _required_string(value, "surface_digest").lower()
         targets = _string_tuple(value.get("targets"), "targets")
-        bindings = _binding_tuple(value.get("bindings")) if schema >= DIRECTED_SCHEMA_VERSION else ()
-        participants = _participant_tuple(value.get("participants")) if schema == SCHEMA_VERSION else ()
-        entries = _surface_entry_tuple(value.get("surface_entries")) if schema == SCHEMA_VERSION else ()
+        bindings = (
+            _binding_tuple(value.get("bindings")) if schema >= DIRECTED_SCHEMA_VERSION else ()
+        )
+        participants = (
+            _participant_tuple(value.get("participants")) if schema == SCHEMA_VERSION else ()
+        )
+        entries = (
+            _surface_entry_tuple(value.get("surface_entries")) if schema == SCHEMA_VERSION else ()
+        )
         if not _COMMIT_RE.fullmatch(outer_sha.lower()):
             raise TargetContractError("target_contract.outer_sha must be a full Git commit SHA")
         if project_sha and not _COMMIT_RE.fullmatch(project_sha.lower()):

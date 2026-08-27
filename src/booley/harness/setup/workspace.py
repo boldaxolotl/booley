@@ -789,9 +789,7 @@ def _validate_materialized_target_contract(
     except (OSError, TargetContractError) as exc:
         errors = [str(exc)]
     if errors:
-        return StepResult(
-            block_reason=f"target-contract-change-required: {'; '.join(errors)}"
-        )
+        return StepResult(block_reason=f"target-contract-change-required: {'; '.join(errors)}")
     return None
 
 

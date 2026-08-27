@@ -55,8 +55,7 @@ def _require_git(repository: Path, *args: str) -> str:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise CompletionError(
-            f"git {' '.join(args)} failed in {repository} "
-            f"(rc={result.returncode}): {detail}"
+            f"git {' '.join(args)} failed in {repository} (rc={result.returncode}): {detail}"
         )
     return result.stdout.strip()
 
@@ -164,9 +163,7 @@ def _validate_participant(
             f"{participant.destination_ref} rewrote the sealed destination history"
         )
     ticket_changes = _changed_paths(repository, participant.destination_sha, source)
-    destination_changes = _changed_paths(
-        repository, participant.destination_sha, destination
-    )
+    destination_changes = _changed_paths(repository, participant.destination_sha, destination)
     collisions = sorted(ticket_changes & destination_changes & protected_paths)
     if collisions:
         raise CompletionError(
@@ -289,9 +286,7 @@ def _publish_candidate(
         )
     checkout = _checked_out_at(repository, participant.destination_ref)
     if checkout is not None:
-        if not worktree_is_clean(
-            str(checkout), allowed_unstaged_rename=allowed_board_rename
-        ):
+        if not worktree_is_clean(str(checkout), allowed_unstaged_rename=allowed_board_rename):
             raise CompletionError(
                 f"cannot publish {participant.destination_ref}: its checkout at "
                 f"{checkout} has changes outside this Ticket's board transition"
@@ -321,9 +316,10 @@ def _prepare_all(
     for participant in contract.participants:
         if participant.role in candidates:
             repository = _repository_for(root, project_repository, participant)
-            if _commit(repository, candidates[participant.role]["staging_ref"]) != candidates[
-                participant.role
-            ]["sha"]:
+            if (
+                _commit(repository, candidates[participant.role]["staging_ref"])
+                != candidates[participant.role]["sha"]
+            ):
                 raise CompletionError(
                     f"acceptance staging ref for {participant.role} no longer matches its journal"
                 )

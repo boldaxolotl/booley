@@ -29,9 +29,7 @@ def _reset_project_cache(monkeypatch: pytest.MonkeyPatch):
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
@@ -126,9 +124,7 @@ def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> No
     assert len(journals) == 1
 
 
-def test_complete_publishes_project_repository_before_outer(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "rtl"
     outer_base = _repository(root)
     outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
@@ -252,16 +248,12 @@ def test_complete_rejects_concurrent_change_to_same_control_path(tmp_path: Path)
     root = tmp_path / "rtl"
     _repository(root)
     core = root / "toy.core"
-    core.write_text(
-        "CAPI=2:\nname: acme:lib:toy:1.0\ntargets: {}\n", encoding="utf-8"
-    )
+    core.write_text("CAPI=2:\nname: acme:lib:toy:1.0\ntargets: {}\n", encoding="utf-8")
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "add target")
     base = _git(root, "rev-parse", "HEAD")
     _git(root, "switch", "-c", "change-target")
-    core.write_text(
-        "CAPI=2:\nname: acme:lib:toy:2.0\ntargets: {}\n", encoding="utf-8"
-    )
+    core.write_text("CAPI=2:\nname: acme:lib:toy:2.0\ntargets: {}\n", encoding="utf-8")
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "ticket target change")
     sealed = _git(root, "rev-parse", "HEAD")
@@ -274,9 +266,7 @@ def test_complete_rejects_concurrent_change_to_same_control_path(tmp_path: Path)
     )
     contract = _contract(root, (participant,))
     _git(root, "switch", "main")
-    core.write_text(
-        "CAPI=2:\nname: acme:lib:toy:3.0\ntargets: {}\n", encoding="utf-8"
-    )
+    core.write_text("CAPI=2:\nname: acme:lib:toy:3.0\ntargets: {}\n", encoding="utf-8")
     _git(root, "add", "toy.core")
     _git(root, "commit", "-m", "concurrent target change")
     (root / ".booley_project").mkdir()
