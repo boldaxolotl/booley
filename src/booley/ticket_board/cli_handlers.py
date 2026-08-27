@@ -10,6 +10,7 @@ import json
 import sys
 from pathlib import Path
 
+from booley.core.models import OnSuccess
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
 
@@ -508,6 +509,21 @@ def _cmd_create_file(tio, args):
             print(f"Error: invalid --criteria JSON: {e}", file=sys.stderr)
             return 2
 
+    on_success = None
+    if args.on_success:
+        try:
+            on_success = json.loads(args.on_success)
+        except json.JSONDecodeError as e:
+            print(f"Error: invalid --on-success JSON: {e}", file=sys.stderr)
+            return 2
+        if not isinstance(on_success, dict):
+            print("Error: --on-success must be a JSON object", file=sys.stderr)
+            return 2
+        errors = OnSuccess.from_dict(on_success).validate()
+        if errors:
+            print(f"Error: invalid --on-success: {'; '.join(errors)}", file=sys.stderr)
+            return 2
+
     # Read body from file if --body-file given
     body = args.body
     if args.body_file:
@@ -524,6 +540,7 @@ def _cmd_create_file(tio, args):
             dependencies=args.dependencies,
             priority=args.priority,
             criteria=criteria,
+            on_success=on_success,
             body=body,
         ),
     )

@@ -47,6 +47,10 @@ class OnSuccess:
             )
         if not isinstance(self.triage_report, bool):
             errors.append("on_success.triage_report must be true or false")
+        if not isinstance(self.merge, bool):
+            errors.append("on_success.merge must be true or false")
+        if not isinstance(self.cleanup, bool):
+            errors.append("on_success.cleanup must be true or false")
         return errors
 
 
