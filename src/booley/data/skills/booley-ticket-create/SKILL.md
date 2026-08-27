@@ -157,7 +157,7 @@ only how to *infer* a value from the conversation and the repo.
 | `branch` | `git branch --show-current` |
 | `scope` | From grilling results. `[new]` for new files. Unknown bugfix → `["*"]` (prefer narrow) |
 | `spec` | Include when an arch spec exists near scope |
-| `on_success` | Active Project-wide §E value, otherwise `{destination: review, merge: true, cleanup: true, triage_report: true}`. Set `triage_report: false` to skip the rich HTML explanation. Benchmark: `{destination: done, merge: false, cleanup: true}` |
+| `on_success` | Active Project-wide §E value, otherwise `{destination: review, merge: true, cleanup: true, triage_report: true}`. Set `triage_report: false` to skip the rich HTML explanation. Benchmark: `{destination: done, merge: false, cleanup: true, triage_report: true}` |
 | `dependencies` | From scan (§A) + grilling; user confirms |
 | `priority` | Default `medium` |
 | `criteria` | Complete Project type block from §E, otherwise §D defaults; user confirms/edits. **feature** → from grilling. **refactor** → all `pass -> pass`. **bugfix** → the failing entry `fail -> pass`, rest `pass -> pass`. **verification** → TB-only work |

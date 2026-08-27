@@ -4052,6 +4052,65 @@ class TestDraftsDirectory:
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fields["on_success"] == on_success
 
+    @pytest.mark.parametrize(
+        ("on_success", "error"),
+        [
+            ("not-json", "invalid JSON"),
+            (json.dumps([]), "--on-success must be a mapping"),
+            (
+                json.dumps({"destination": "done"}),
+                "missing keys: cleanup, merge, triage_report",
+            ),
+            (
+                json.dumps(
+                    {
+                        "destination": "done",
+                        "merge": False,
+                        "cleanup": True,
+                        "triage_report": False,
+                        "unexpected": True,
+                    }
+                ),
+                "unknown keys: unexpected",
+            ),
+            (
+                json.dumps(
+                    {
+                        "destination": "done",
+                        "merge": "no",
+                        "cleanup": True,
+                        "triage_report": False,
+                    }
+                ),
+                "on_success.merge must be true or false",
+            ),
+        ],
+    )
+    def test_create_file_cli_rejects_invalid_on_success(
+        self, tmp_path, monkeypatch, capsys, on_success, error
+    ):
+        tickets_dir = tmp_path / "tickets"
+        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
+
+        rc = main(
+            argv=[
+                "create-file",
+                "invalid-defaults",
+                "--summary",
+                "Invalid defaults",
+                "--type",
+                "feature",
+                "--branch",
+                "main",
+                "--on-success",
+                on_success,
+            ]
+        )
+
+        assert rc == 2
+        assert error in capsys.readouterr().err
+        assert not (tickets_dir / "board" / "drafts" / "invalid-defaults.md").exists()
+
     def test_create_ticket_file_omits_empty_legacy_and_runtime_fields(self, tmp_path):
         """New tickets should not carry stale blank plan/runtime placeholders."""
         tio = make_tio(tmp_path)

@@ -10,6 +10,7 @@ import json
 import sys
 from pathlib import Path
 
+from booley.core.boundary import BoundaryError, require_dict
 from booley.core.models import OnSuccess
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp
@@ -493,6 +494,43 @@ def _cmd_init(tio, args):
     return 2
 
 
+_ON_SUCCESS_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
+
+
+def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
+    """Parse a complete successful-run disposition from the CLI boundary."""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        return None, f"invalid JSON: {exc}"
+
+    try:
+        mapping = require_dict(parsed, field="--on-success")
+    except BoundaryError as exc:
+        return None, str(exc)
+
+    missing = _ON_SUCCESS_KEYS - mapping.keys()
+    unknown = mapping.keys() - _ON_SUCCESS_KEYS
+    key_errors = []
+    if missing:
+        key_errors.append(f"missing keys: {', '.join(sorted(missing))}")
+    if unknown:
+        key_errors.append(f"unknown keys: {', '.join(sorted(unknown))}")
+    if key_errors:
+        return None, "; ".join(key_errors)
+
+    model = OnSuccess.from_dict(mapping)
+    errors = model.validate()
+    if errors:
+        return None, "; ".join(errors)
+    return {
+        "destination": model.destination,
+        "merge": model.merge,
+        "cleanup": model.cleanup,
+        "triage_report": model.triage_report,
+    }, None
+
+
 def _cmd_create_file(tio, args):
     # Parse criteria: --criteria-file takes precedence over --criteria
     criteria = None
@@ -510,18 +548,10 @@ def _cmd_create_file(tio, args):
             return 2
 
     on_success = None
-    if args.on_success:
-        try:
-            on_success = json.loads(args.on_success)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid --on-success JSON: {e}", file=sys.stderr)
-            return 2
-        if not isinstance(on_success, dict):
-            print("Error: --on-success must be a JSON object", file=sys.stderr)
-            return 2
-        errors = OnSuccess.from_dict(on_success).validate()
-        if errors:
-            print(f"Error: invalid --on-success: {'; '.join(errors)}", file=sys.stderr)
+    if args.on_success is not None:
+        on_success, error = _parse_on_success_arg(args.on_success)
+        if error:
+            print(f"Error: invalid --on-success: {error}", file=sys.stderr)
             return 2
 
     # Read body from file if --body-file given
