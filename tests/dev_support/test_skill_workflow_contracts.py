@@ -161,7 +161,7 @@ def test_ticket_create_defaults_every_review_to_corrective_mode():
     assert "Every `_clean` waiver includes a justification" in contract
 
 
-def test_ticket_create_grills_frontiers_then_shows_one_complete_draft():
+def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
     skill = _skill_text("booley-ticket-create")
     grilling = _skill_text("booley-ticket-create", "grilling.md")
     contract = " ".join(f"{skill}\n{grilling}".split())
@@ -176,10 +176,18 @@ def test_ticket_create_grills_frontiers_then_shows_one_complete_draft():
         "The complete ticket is the one post-grill review artifact",
         "Detailed mode skips 2d and 2e",
         "single post-grill review artifact",
-        "MANDATORY DRAFT GATE",
-        "combined ticket + Target diff is the separate seal gate",
+        "MANDATORY TICKET APPROVAL",
+        "Create this ticket? (yes / edit / cancel)",
+        "require no further user confirmation",
+        "internal implementation details",
     ):
         assert required in contract
+    for retired in (
+        "explicit approval to seal",
+        "separate seal gate",
+        "combined ticket + Target diff",
+    ):
+        assert retired not in contract
     assert "one question at a time" not in contract.lower()
     assert (
         "summarize the resulting shared understanding and ask the user to confirm it"

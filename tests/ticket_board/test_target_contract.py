@@ -20,6 +20,7 @@ from booley.ticket_board.target_contract import (
     surface_digest,
     validate_contract_fields,
     validate_criterion_targets,
+    validate_targets_for_seal,
 )
 
 _CORE = textwrap.dedent(
@@ -582,6 +583,7 @@ def test_future_nonrelative_target_accepts_only_scope_new_sources(tmp_path: Path
     }
 
     assert validate_criterion_targets(fields, project) == []
+    assert validate_targets_for_seal(fields, project, tmp_path / "build") == []
 
     fields["scope"] = ["rtl/future.sv"]
     errors = validate_criterion_targets(fields, project)

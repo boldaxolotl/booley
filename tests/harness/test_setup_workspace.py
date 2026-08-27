@@ -163,6 +163,66 @@ class TestHookDetection:
         assert "not found" in result
 
 
+class TestHookOutputCommit:
+    def test_tracked_and_nonignored_outputs_are_committed(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _git(repo, "init", "-b", "main").returncode == 0
+        assert _git(repo, "config", "user.name", "Test").returncode == 0
+        assert _git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+        (repo / ".gitignore").write_text("/ignored.hex\n", encoding="utf-8")
+        (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+        assert _git(repo, "add", "-A").returncode == 0
+        assert _git(repo, "commit", "-m", "initial").returncode == 0
+
+        worktree = tmp_path / "ticket-worktree"
+        assert _git(repo, "worktree", "add", "-b", "ticket", str(worktree)).returncode == 0
+        (worktree / "tracked.txt").write_text("after\n", encoding="utf-8")
+        (worktree / "control.txt").write_text("generated control\n", encoding="utf-8")
+        (worktree / "ignored.hex").write_text("firmware\n", encoding="utf-8")
+        ctx = _make_ctx(repo, worktree_path=worktree)
+
+        from booley.harness.setup.workspace import _commit_hook_outputs
+
+        failure = _commit_hook_outputs(ctx)
+
+        assert failure is None
+        assert _git(worktree, "status", "--porcelain").stdout == ""
+        assert _git(worktree, "show", "--format=", "--name-only", "HEAD").stdout.splitlines() == [
+            "control.txt",
+            "tracked.txt",
+        ]
+        assert _git(worktree, "log", "-1", "--format=%s").stdout.strip() == (
+            "feat(fix-fsm-counter): post-setup hook files"
+        )
+
+    def test_scope_hook_can_reject_output_commit(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        assert _git(repo, "init", "-b", "main").returncode == 0
+        assert _git(repo, "config", "user.name", "Test").returncode == 0
+        assert _git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+        (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
+        assert _git(repo, "add", "-A").returncode == 0
+        assert _git(repo, "commit", "-m", "initial").returncode == 0
+        initial = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        worktree = tmp_path / "ticket-worktree"
+        assert _git(repo, "worktree", "add", "-b", "ticket", str(worktree)).returncode == 0
+        (worktree / "tracked.txt").write_text("after\n", encoding="utf-8")
+
+        from booley.harness.setup.workspace import _commit_hook_outputs
+
+        failure = _commit_hook_outputs(_make_ctx(repo, worktree_path=worktree))
+
+        assert failure is not None
+        assert "Post-setup commit failed" in failure.block_reason
+        assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == initial
+
+
 class TestStealthHookGating:
     """The commit-msg (stealth) hook install honors [stealth] enabled; the
     scope pre-commit hook is always installed."""
@@ -472,10 +532,20 @@ class TestWorkspaceRun:
         ctx = _make_ctx(project_root)
         wt = project_root / ".booley_project" / "worktrees" / ctx.slug
         _populate_wt(wt)
+        (wt / ".git").rmdir()
+        fake_git_dir = project_root / ".fake-gitdir" / ctx.slug
+        fake_git_dir.mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {fake_git_dir}\n", encoding="utf-8")
         hook = project_root / ".booley" / "project" / "hooks" / "post-setup.sh"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        mock_sub.return_value = _mock_success()
+
+        def _run_result(command, **_kwargs):
+            if "status" in command:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return _mock_success()
+
+        mock_sub.side_effect = _run_result
 
         from booley.harness.setup.workspace import run
 

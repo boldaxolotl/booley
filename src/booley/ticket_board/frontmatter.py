@@ -569,8 +569,30 @@ def update_frontmatter(
         for k in remove_keys:
             fields.pop(k, None)
 
-    # Atomic write: tmp file + rename to avoid corruption on crash
+    # Verify the complete candidate before replacing the ticket.  This turns
+    # serialization into a transactional boundary: a formatter regression must
+    # fail closed instead of silently changing a contract that already passed
+    # validation (for example list[dict] campaign criteria becoming strings).
     content = format_frontmatter(fields, body)
+    candidate_fields, candidate_body = parse_frontmatter(content)
+
+    from .constants import RUNTIME_FIELDS
+    from .criteria_markdown import strip_criteria_from_body
+
+    protected_fields = {
+        key: value
+        for key, value in fields.items()
+        if key not in RUNTIME_FIELDS and key != "status"
+    }
+    if candidate_fields != protected_fields:
+        raise ValueError("serialization changed ticket fields; refusing to replace ticket")
+
+    original_body = strip_criteria_from_body(body).strip()
+    serialized_body = strip_criteria_from_body(candidate_body).strip()
+    if serialized_body != original_body:
+        raise ValueError("serialization changed ticket body; refusing to replace ticket")
+
+    # Atomic write: tmp file + rename to avoid corruption on crash.
     tmp_fd, tmp_name = tempfile.mkstemp(
         dir=str(file_path.parent), suffix=".tmp", prefix=file_path.stem
     )

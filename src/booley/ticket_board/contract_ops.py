@@ -13,6 +13,7 @@ from booley.dev_support.contract_path_policy import is_static_contract_path
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
+from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import (
     TicketRepository,
     paired_project_repository,
@@ -157,10 +158,28 @@ def open_contract(
     outer_base = _attach_worktree(root, outer, slug, branch)
     try:
         project, project_base = _open_project_contract(root, outer, slug, branch)
+        _prepare_contract_project(root, outer, Path(ticket_path), slug)
     except Exception:
-        _git(root, "worktree", "remove", "--force", str(outer))
+        source = resolve_inner_project_repo(root)
+        paired = paired_project_repository(outer) if outer.is_dir() else None
+        _remove_contract_worktrees(root, outer, paired, source)
         raise
     return ContractWorktrees(outer, project, outer_base, project_base)
+
+
+def _prepare_contract_project(root: Path, outer: Path, ticket: Path, slug: str) -> None:
+    """Run the same deterministic preparation used by ticket execution."""
+    from booley.flows.execution import flow_enabled
+
+    result = prepare_project(
+        root,
+        outer,
+        slug=slug,
+        ticket_path=ticket,
+        sim_flow_enabled=flow_enabled("sim", outer),
+    )
+    if not result.ok:
+        raise ContractOperationError(result.error)
 
 
 def _archive_legacy_worktrees(root: Path, outer: Path, slug: str) -> None:
@@ -326,6 +345,7 @@ def _prepare_seal(project_root: Path | str, ticket_path: Path | str, slug: str) 
     outer = resolve_project_dir(root) / "worktrees" / slug
     if not outer.is_dir():
         raise ContractOperationError(f"contract worktree is not open: {outer}")
+    _prepare_contract_project(root, outer, ticket, slug)
     outer_changes = _validate_authoring_changes(outer, outer, project_repository=False)
     paired = paired_project_repository(outer)
     project = paired.worktree if paired is not None else None

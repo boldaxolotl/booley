@@ -9,7 +9,6 @@ import shutil
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 from booley.dev_support.validate_commit_msg import validate_message
@@ -18,11 +17,13 @@ from booley.runtime.git import add_git_excludes, git_run
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.project_prepare import prepare_project
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_submodules,
 )
 from booley.runtime.ticket_repositories import paired_project_repository, project_repository_scope
+from booley.ticket_board.git_status import parse_porcelain_v1_z
 
 from ..models import StepResult, TicketContext
 from ..worktree_health import check_worktree_health
@@ -201,127 +202,6 @@ def _resync_booley_dir(project_root: Path, worktree_path: Path) -> None:
         return
     copy_booley_tree(src, dst)
     logger.info("Re-synced .booley/ into worktree")
-
-
-@dataclass(frozen=True)
-class _HookRun:
-    """Bundles the parameters threaded through post-setup hook execution.
-
-    ``ctx`` carries the worktree path (``ctx.worktree_path``), so it is not
-    duplicated here; the remaining fields are values derived once by
-    ``_run_project_hook``.
-    """
-
-    ctx: TicketContext
-    project_dir: Path
-    hook: Path
-    ticket_file: str
-    sim_flow_enabled: bool
-
-
-def _run_project_hook(
-    ctx: TicketContext,
-    sim_flow_enabled: bool,
-) -> StepResult | None:
-    """Run .booley_project/hooks/post-setup if it exists.
-
-    The hook runs as a plain subprocess — Booley is container-only
-    (ADR 0028), so the process already lives inside the Session Runtime.
-
-    Returns StepResult on failure, None on success or if hook is absent.
-    """
-    project_dir = _find_project_dir(ctx.project_root)
-    hook_dir = project_dir / "hooks"
-
-    # Discover hook script (try .sh, .py, then extensionless)
-    hook: Path | None = None
-    for suffix in (".sh", ".py", ""):
-        candidate = hook_dir / f"post-setup{suffix}"
-        if candidate.exists():
-            hook = candidate
-            break
-
-    if hook is None:
-        logger.debug("No post-setup hook in %s", hook_dir)
-        return None
-
-    # ctx.ticket_path may point to queue/ but the ticket has been moved to
-    # active/ by ticket intake.  Resolve current location by slug.
-    ticket_file = ""
-    if ctx.ticket_path.exists():
-        ticket_file = str(ctx.ticket_path)
-    else:
-        board_dir = ctx.ticket_path.parent.parent
-        for status in ("active", "queue", "waiting", "blocked", "review", "done", "archived"):
-            candidate = board_dir / status / f"{ctx.slug}.md"
-            if candidate.exists():
-                ticket_file = str(candidate)
-                break
-
-    run = _HookRun(ctx, project_dir, hook, ticket_file, sim_flow_enabled)
-    return _run_project_hook_local(run)
-
-
-def _local_hook_cmd(hook: Path) -> list[str]:
-    """Resolve the command list for running a hook script locally."""
-    if hook.suffix == ".py":
-        return [sys.executable, str(hook)]
-    if hook.suffix in {".sh", ""}:
-        return [bash_bin(), str(hook)]
-    return [str(hook)]
-
-
-def _log_hook_output(result: subprocess.CompletedProcess) -> None:
-    """Log truncated stdout/stderr from a hook subprocess."""
-    if result.stdout.strip():
-        logger.debug("Hook stdout: %s", result.stdout.strip()[:500])
-    if result.stderr.strip():
-        logger.debug("Hook stderr: %s", result.stderr.strip()[:500])
-
-
-def _run_project_hook_local(run: _HookRun) -> StepResult | None:
-    """Run the project hook on the host."""
-    ctx = run.ctx
-    worktree_path = ctx.worktree_path
-    paired = paired_project_repository(worktree_path)
-    project_content_dir = paired.worktree if paired is not None else run.project_dir
-    env = {
-        **os.environ,
-        "BOOLEY_WORKTREE": str(worktree_path),
-        "BOOLEY_PROJECT_DIR": str(project_content_dir),
-        "BOOLEY_PROJECT_ROOT": str(ctx.project_root),
-        "BOOLEY_TICKET_SLUG": ctx.slug,
-        "BOOLEY_TICKET_FILE": run.ticket_file,
-        "BOOLEY_SIM_FLOW_ENABLED": "1" if run.sim_flow_enabled else "0",
-        "BOOLEY_IN_DOCKER": "",
-    }
-
-    logger.debug("Running post-setup hook: %s", run.hook)
-    try:
-        result = subprocess.run(
-            _local_hook_cmd(run.hook),
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            env=env,
-            timeout=900,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return StepResult(block_reason="post-setup hook timed out (15 min)")
-    except OSError as exc:
-        return StepResult(block_reason=f"post-setup hook failed (OS error): {exc}")
-
-    _log_hook_output(result)
-    if result.returncode != 0:
-        return StepResult(
-            block_reason=f"post-setup hook failed (rc={result.returncode}): "
-            f"{result.stderr.strip()[:500]}"
-        )
-
-    logger.info("post-setup hook OK")
-    return None
 
 
 def _remove_stale_worktree(project_root: Path, worktree_path: Path) -> None:
@@ -623,63 +503,77 @@ def _load_flow_enablement(project_root: Path | None = None) -> tuple[bool, bool]
     return sim_flow_enabled, synth_flow_enabled
 
 
-def _commit_hook_files(ctx: TicketContext) -> None:
-    """Commit any files the post-setup hook created/modified (host-side)."""
-    worktree_path = ctx.worktree_path
-    files_to_stage = _discover_hook_files(worktree_path)
-    if not files_to_stage:
-        return
-
-    add_result = git_run(worktree_path, ["add", "--", *files_to_stage], timeout=30)
-    if add_result.returncode != 0:
-        logger.warning(
-            "git add failed (rc=%d): %s", add_result.returncode, add_result.stderr.strip()
-        )
-
-    diff_result = git_run(worktree_path, ["diff", "--cached", "--quiet"], timeout=10)
-    if diff_result.returncode == 0:
-        return  # nothing staged
-
-    # Guard: refuse to commit in main worktree (Principle 3)
-    if (worktree_path / ".git").is_dir():
-        logger.error("_commit_hook_files called on main worktree (%s) — refusing", worktree_path)
-        return
-
-    commit_msg = f"feat({ctx.slug}): post-setup hook files"
-    errors = validate_message(commit_msg)
-    if errors:
-        logger.warning("Commit message validation failed: %s", "; ".join(errors))
-        return
-
-    commit_result = git_run(worktree_path, ["commit", "--no-verify", "-m", commit_msg], timeout=30)
-    if commit_result.returncode != 0:
-        logger.warning(
-            "Post-setup commit failed (rc=%d): %s",
-            commit_result.returncode,
-            (commit_result.stdout + commit_result.stderr).strip()[:300],
-        )
-    else:
-        logger.debug("Committed post-setup hook files on feature branch")
+_NEVER_COMMIT = frozenset({".scope.json"})
 
 
-_NEVER_COMMIT = {".scope.json"}
-
-
-def _discover_hook_files(worktree_path: Path) -> list[str]:
-    """Discover modified/untracked files from the post-setup hook."""
-    status_result = git_run(
-        worktree_path, ["status", "--porcelain", "--ignore-submodules"], timeout=30
+def _hook_output_paths(worktree_path: Path) -> list[str]:
+    """Return Git-visible hook outputs, excluding harness bookkeeping."""
+    status = git_run(
+        worktree_path,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules"],
+        timeout=30,
     )
-    if status_result.returncode != 0:
-        logger.warning(
-            "git status failed (rc=%d): %s", status_result.returncode, status_result.stderr.strip()
+    if status.returncode != 0:
+        detail = status.stderr.strip() or status.stdout.strip() or "no diagnostic"
+        raise RuntimeError(
+            f"git status failed while collecting post-setup outputs "
+            f"(rc={status.returncode}): {detail}"
         )
-        return []
-    return [
-        line[3:].strip()
-        for line in status_result.stdout.splitlines()
-        if len(line) > 3 and line[3:].strip() and line[3:].strip() not in _NEVER_COMMIT
-    ]
+    try:
+        entries = parse_porcelain_v1_z(status.stdout)
+    except ValueError as exc:
+        raise RuntimeError(f"Could not parse post-setup Git status: {exc}") from exc
+    return [entry.path for entry in entries if entry.path not in _NEVER_COMMIT]
+
+
+def _stage_and_commit_hook_outputs(ctx: TicketContext, paths: list[str]) -> None:
+    """Stage and commit already-discovered post-setup output paths."""
+    worktree_path = ctx.worktree_path
+    staged = git_run(worktree_path, ["--literal-pathspecs", "add", "--", *paths], timeout=30)
+    if staged.returncode != 0:
+        raise RuntimeError(
+            f"git add failed for post-setup outputs (rc={staged.returncode}): "
+            f"{staged.stderr.strip()}"
+        )
+
+    diff = git_run(worktree_path, ["diff", "--cached", "--quiet"], timeout=10)
+    if diff.returncode == 0:
+        return
+    if diff.returncode != 1:
+        raise RuntimeError(
+            f"git diff failed for post-setup outputs (rc={diff.returncode}): {diff.stderr.strip()}"
+        )
+
+    message = f"feat({ctx.slug}): post-setup hook files"
+    message_errors = validate_message(message, project_root=ctx.project_root)
+    if message_errors:
+        raise RuntimeError("Invalid post-setup commit message: " + "; ".join(message_errors))
+    committed = git_run(
+        worktree_path,
+        ["commit", "-m", message],
+        timeout=30,
+    )
+    if committed.returncode != 0:
+        detail = (committed.stderr or committed.stdout).strip()
+        raise RuntimeError(f"Post-setup commit failed (rc={committed.returncode}): {detail}")
+    logger.debug("Committed post-setup hook outputs on feature branch")
+
+
+def _commit_hook_outputs(ctx: TicketContext) -> StepResult | None:
+    """Commit tracked and nonignored outputs created by the post-setup hook."""
+    worktree_path = ctx.worktree_path
+    if (worktree_path / ".git").is_dir():
+        return StepResult(
+            block_reason=f"Refusing to commit post-setup outputs in main worktree {worktree_path}"
+        )
+
+    try:
+        paths = _hook_output_paths(worktree_path)
+        if paths:
+            _stage_and_commit_hook_outputs(ctx, paths)
+    except RuntimeError as exc:
+        return StepResult(block_reason=str(exc))
+    return None
 
 
 def _verify_project_paths(
@@ -761,6 +655,16 @@ def _build_setup_result(ctx: TicketContext) -> StepResult:
     if getattr(ctx, "_synth_baseline_sha", None):
         meta["synthesis_baseline_sha"] = ctx._synth_baseline_sha
     return StepResult(metadata=meta)
+
+
+def _current_ticket_path(ctx: TicketContext) -> Path | None:
+    """Resolve a ticket after intake may have moved it out of queue/."""
+    if ctx.ticket_path.is_file():
+        return ctx.ticket_path
+    from booley.ticket_board.scanner import find_ticket_file
+
+    ticket, _status = find_ticket_file(ctx._tickets_dir, ctx.slug)
+    return ticket
 
 
 def _validate_materialized_target_contract(
@@ -849,13 +753,20 @@ async def run(ctx: TicketContext) -> StepResult:
     project_root = ctx.project_root
     worktree_path = ctx.worktree_path
     sim_flow_enabled, synth_flow_enabled = _load_flow_enablement(project_root)
-    hook_fail = _run_project_hook(ctx, sim_flow_enabled)
-    if hook_fail is not None:
-        return hook_fail
-    _commit_hook_files(ctx)
-    fail = _verify_project_paths(
-        worktree_path, synth_flow_enabled, ctx.has_synth
-    ) or _freeze_synth_baseline(ctx)
+    preparation = prepare_project(
+        project_root,
+        worktree_path,
+        slug=ctx.slug,
+        ticket_path=_current_ticket_path(ctx),
+        sim_flow_enabled=sim_flow_enabled,
+    )
+    if not preparation.ok:
+        return StepResult(block_reason=preparation.error)
+    fail = (
+        (_commit_hook_outputs(ctx) if preparation.hook is not None else None)
+        or _verify_project_paths(worktree_path, synth_flow_enabled, ctx.has_synth)
+        or _freeze_synth_baseline(ctx)
+    )
     if fail:
         return fail
 

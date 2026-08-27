@@ -243,11 +243,10 @@ def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
     assert trusted_cli_setup in workflow
 
 
-def test_release_smokes_public_picorv32_demo_without_a_premade_ticket() -> None:
+def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
-    assert "repository: YosysHQ/picorv32" in workflow
-    assert "repository: boldaxolotl/booley-prj-picorv32" in workflow
+    assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
     assert 'booley init | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
@@ -255,17 +254,47 @@ def test_release_smokes_public_picorv32_demo_without_a_premade_ticket() -> None:
     assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
     assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
     assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
-    assert 'bash "${project_dir}/hooks/post-setup.sh"' in workflow
     assert "BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register" in workflow
     assert "booley-ticket-create" in workflow
-    assert 'find "${project_dir}/tickets/board" -type f -name "*.md"' in workflow
+    assert "python -m booley.ticket_board validate-ticket" in workflow
+    assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
+    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in workflow
+    assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
     assert "add-rv32-zbb-pcpi-co-processor" not in workflow
     assert "python -m booley.ticket_board parse-ticket" not in workflow
-    assert "booley run --ticket" not in workflow
     assert (
         """      - name: Restore demo checkout ownership
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" demo
+        run: |
+          if test -e demo; then
+            sudo chown -R "$(id -u):$(id -g)" demo
+          fi
 """
         in workflow
     )
+
+
+def test_release_promotes_stable_tags_only_after_demo_smoke() -> None:
+    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    build_section = workflow[: workflow.index("  demo-smoke:")]
+    promote_section = workflow[workflow.index("  promote:") :]
+    assert (
+        ":candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+        in build_section
+    )
+    assert ":latest" not in build_section
+    assert "needs: [build-and-push, build-and-push-riscv, demo-smoke]" in promote_section
+    assert "docker buildx imagetools create" in promote_section
+    assert ":latest" in promote_section
+
+
+def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> None:
+    workflow = Path(".github/workflows/picorv32-demo.yml").read_text(encoding="utf-8")
+
+    assert "pull_request:" in workflow
+    assert "branches: [main]" in workflow
+    assert "merge_group:" in workflow
+    assert "schedule:" in workflow
+    assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
+    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in workflow

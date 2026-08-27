@@ -58,14 +58,14 @@ def _render_items(items: dict[str, Any]) -> list[str]:
 
     # First pass: collect groups
     for key, val in items.items():
-        if key.startswith(_COVERAGE_PREFIX):
+        if key.startswith(_COVERAGE_PREFIX) and not isinstance(val, (list, dict)):
             coverage[key[len(_COVERAGE_PREFIX) :]] = val
         elif _REVIEW_CLEAN_RE.match(key) and val is True:
             reviews.append(_REVIEW_CLEAN_RE.match(key).group(1))
 
     # Second pass: render in order, inserting groups at first occurrence
     for key, val in items.items():
-        if key.startswith(_COVERAGE_PREFIX):
+        if key.startswith(_COVERAGE_PREFIX) and not isinstance(val, (list, dict)):
             if not coverage_rendered and coverage:
                 parts = ", ".join(f"{m} >= {v}" for m, v in coverage.items())
                 lines.append(f"- **coverage**: {parts}")
@@ -95,14 +95,14 @@ def _render_bullet(key: str, val: Any) -> str:
     if isinstance(val, bool):
         return f"- **{key}**" if val else f"- **{key}**: false"
     if isinstance(val, list):
-        rendered = (
-            json.dumps(item, sort_keys=True, separators=(",", ":"))
-            if isinstance(item, dict)
-            else str(item)
-            for item in val
-        )
-        return f"- **{key}**: {', '.join(f'`{item}`' for item in rendered)}"
+        if any(isinstance(item, (dict, list)) for item in val):
+            encoded = json.dumps(val, separators=(",", ":"), ensure_ascii=False)
+            return f"- **{key}**: `json:{encoded}`"
+        return f"- **{key}**: {', '.join(f'`{item}`' for item in val)}"
     if isinstance(val, dict):
+        if _dict_requires_json(val):
+            encoded = json.dumps(val, separators=(",", ":"), ensure_ascii=False)
+            return f"- **{key}**: `json:{encoded}`"
         parts = []
         for dk, dv in val.items():
             if isinstance(dv, list):
@@ -111,6 +111,16 @@ def _render_bullet(key: str, val: Any) -> str:
                 parts.append(f"{dk}: {dv}")
         return f"- **{key}**: {', '.join(parts)}"
     return f"- **{key}**: {val}"
+
+
+def _dict_requires_json(value: dict[str, Any]) -> bool:
+    """Return whether a mapping contains structure the prose form loses."""
+    for nested in value.values():
+        if isinstance(nested, dict):
+            return True
+        if isinstance(nested, list) and any(isinstance(item, (dict, list)) for item in nested):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -228,11 +238,7 @@ def _parse_value(text: str, *, structured_list_items: bool = False) -> Any:
     """Parse a bullet value into the appropriate Python type."""
     backticks = re.findall(r"`([^`]+)`", text)
     if backticks:
-        return (
-            [_parse_backtick_value(value) for value in backticks]
-            if structured_list_items
-            else backticks
-        )
+        return _parse_backticks(backticks, structured_list_items=structured_list_items)
     if text.lower() == "true":
         return True
     if text.lower() == "false":
@@ -242,6 +248,18 @@ def _parse_value(text: str, *, structured_list_items: bool = False) -> Any:
     if re.search(r"\w+:\s", text):
         return _parse_dict_value(text)
     return text
+
+
+def _parse_backticks(values: list[str], *, structured_list_items: bool) -> Any:
+    """Decode canonical structured lists and legacy mutation campaigns."""
+    if len(values) == 1 and values[0].startswith("json:"):
+        try:
+            return json.loads(values[0].removeprefix("json:"))
+        except json.JSONDecodeError:
+            return values
+    if structured_list_items:
+        return [_parse_backtick_value(value) for value in values]
+    return values
 
 
 def _parse_backtick_value(value: str) -> Any:

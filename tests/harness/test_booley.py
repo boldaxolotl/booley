@@ -2114,6 +2114,27 @@ class TestNamedTicketImplications:
         assert self._parse(["run", "--ticket", "fix-crc", "-n", "2"]).count == 1
 
 
+class TestCheckReady:
+    def _parse(self, argv: list[str]):
+        parser = tlr._build_parser()
+        return tlr._normalize_args(parser, parser.parse_args(argv))
+
+    def test_parser_exposes_no_agent_readiness_mode(self):
+        args = self._parse(["run", "--ticket", "demo", "--check-ready"])
+        assert args.check_ready is True
+        assert args.ticket == "demo"
+
+    def test_readiness_reports_validation_errors(self, tmp_path, monkeypatch, capsys):
+        result = MagicMock(errors=("bad criterion",), warnings=())
+        check = MagicMock(return_value=result)
+        monkeypatch.setattr("booley.ticket_board.readiness.check_ticket_ready", check)
+        args = self._parse(["run", "--ticket", "demo", "--check-ready"])
+
+        assert tlr._check_ticket_readiness(args, tmp_path) == 2
+        assert "bad criterion" in capsys.readouterr().err
+        check.assert_called_once_with(tmp_path, "demo")
+
+
 class TestIdleShutdown:
     """`booley run` must not outlive its queue (F-50)."""
 

@@ -391,6 +391,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Validate setup without executing tickets (implies -n 1 and --no-console)",
     )
     run_p.add_argument(
+        "--check-ready",
+        action="store_true",
+        help="Prepare and fully validate one ticket without agents or board transitions",
+    )
+    run_p.add_argument(
         "--no-console",
         "-L",
         action="store_true",
@@ -760,6 +765,7 @@ _RUN_DEFAULTS = {
     "wait": 5,
     "count": 0,
     "dry_run": False,
+    "check_ready": False,
     "verbose": False,
     "ticket": "",
     "no_console": False,
@@ -798,9 +804,18 @@ def _normalize_args(
         # queued ticket wake the loop and re-activate the completed slug.
         if args.ticket:
             args.count = 1
+        _validate_run_mode(parser, args)
         _apply_dry_run_implications(args)
 
     return args
+
+
+def _validate_run_mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Reject incompatible or incomplete observational run modes."""
+    if args.check_ready and not args.ticket:
+        parser.error("--check-ready requires --ticket")
+    if args.check_ready and args.dry_run:
+        parser.error("--check-ready cannot be combined with --dry-run")
 
 
 def _validate_doctor_args(
@@ -1536,6 +1551,22 @@ def _preview_ticket_run(args: argparse.Namespace, project_root: Path) -> int:
     return 0
 
 
+def _check_ticket_readiness(args: argparse.Namespace, project_root: Path) -> int:
+    """Run deterministic preparation and ticket/Target validation only."""
+    from booley.ticket_board.readiness import check_ticket_ready
+
+    result = check_ticket_ready(project_root, args.ticket)
+    for warning in result.warnings:
+        print(warning, file=sys.stderr)
+    if result.errors:
+        print(f"Ticket {args.ticket!r} is not ready:", file=sys.stderr)
+        for error in result.errors:
+            print(f"  - {error}", file=sys.stderr)
+        return 2
+    print(f"Ticket {args.ticket!r} is ready")
+    return 0
+
+
 def _will_use_console(args: argparse.Namespace) -> bool:
     """Mirror harness `_detect_console`: would the child run the TUI?
 
@@ -2076,6 +2107,8 @@ def main() -> int:
         return early
 
     # Only 'run' subcommand reaches here.
+    if args.check_ready:
+        return _check_ticket_readiness(args, project_root)
     if args.dry_run:
         _print_banner(args)
         return _preview_ticket_run(args, project_root)

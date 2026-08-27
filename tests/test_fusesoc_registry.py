@@ -51,6 +51,7 @@ from booley.fusesoc.fusesoc_registry import (
     sim_target_has_untagged_tb,
     state_cores_dir,
     target_eda_tools,
+    target_referenced_files,
     target_source_files,
     target_source_files_for_ref,
     trace_overlay_vlnv,
@@ -2345,6 +2346,102 @@ class TestFilesetsAppend:
         )
         _write_core(state_cores, text)
         assert all_referenced_files(tmp_path) == [".booley_project/cores/fw/boot.hex"]
+
+    def test_target_referenced_files_include_conditionals_and_dependencies(
+        self, tmp_path: Path
+    ) -> None:
+        top = textwrap.dedent(
+            """\
+            CAPI=2:
+            name: acme:demo:top:0
+            filesets:
+              harness:
+                files: [tb/top.sv]
+                depend: ["flag_fw ? (acme:demo:firmware)"]
+              generated:
+                files:
+                  - generated/boot.hex: {file_type: user}
+                  - "flag_extra ? (generated/test.hex)": {file_type: user}
+            targets:
+              sim:
+                flow: sim
+                flow_options: {tool: verilator}
+                filesets: [harness, "tool_verilator ? (generated)"]
+                toplevel: top
+            """
+        )
+        _write_core(tmp_path, top, create_sources=False)
+        (tmp_path / "tb").mkdir()
+        (tmp_path / "tb" / "top.sv").touch()
+        generated = tmp_path / "generated"
+        generated.mkdir()
+        (generated / "boot.hex").touch()
+        (generated / "test.hex").touch()
+
+        dependency = tmp_path / "deps" / "firmware"
+        dependency.mkdir(parents=True)
+        _write_core(
+            dependency,
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:demo:firmware:0
+                filesets:
+                  images:
+                    files:
+                      - images/rom.hex: {file_type: user}
+                targets:
+                  default: {filesets: [images]}
+                """
+            ),
+            create_sources=False,
+        )
+        (dependency / "images").mkdir()
+        (dependency / "images" / "rom.hex").touch()
+
+        assert target_referenced_files(tmp_path, "sim") == (
+            "tb/top.sv",
+            "generated/boot.hex",
+            "generated/test.hex",
+            "deps/firmware/images/rom.hex",
+        )
+
+    def test_target_referenced_files_exclude_nonconsumed_globs_and_dependency_filesets(
+        self, tmp_path: Path
+    ) -> None:
+        _write_core(
+            tmp_path,
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:demo:top:0
+                filesets:
+                  harness:
+                    files: [generated/*.hex]
+                    depend: [acme:demo:unused]
+                targets:
+                  sim: {filesets: [harness]}
+                """
+            ),
+            create_sources=False,
+        )
+        dependency = tmp_path / "deps" / "unused"
+        dependency.mkdir(parents=True)
+        _write_core(
+            dependency,
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:demo:unused:0
+                filesets:
+                  data:
+                    files: [data/not-consumed.hex]
+                """
+            ),
+            create_sources=False,
+        )
+
+        assert target_referenced_files(tmp_path, "sim") == ()
 
     def test_missing_target_sources_walks_filesets_append(self, tmp_path: Path):
         """The source-existence preflight (`_literal_target_source_paths`) shares

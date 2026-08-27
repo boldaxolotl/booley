@@ -9,7 +9,7 @@ import pytest
 
 from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import contract_ops
-from booley.ticket_board.frontmatter import parse_frontmatter
+from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_reset
 from booley.ticket_board.target_contract import ContractParticipant, TargetContract
@@ -51,17 +51,33 @@ def _write_core(root: Path, version: str = "1.0") -> None:
                 "  rtl:",
                 "    files: [rtl/toy.sv]",
                 "    file_type: systemVerilogSource",
+                "  tb:",
+                "    files: [tb/toy_tb.sv]",
+                "    file_type: systemVerilogSource",
                 "targets:",
                 "  lint_toy:",
                 "    flow: lint",
                 "    flow_options: {tool: verilator}",
                 "    filesets: [rtl]",
                 "    toplevel: toy",
+                "  sim_toy:",
+                "    default_tool: icarus",
+                "    filesets: [rtl, tb]",
+                "    toplevel: toy_tb",
+                "    tools:",
+                "      icarus: {iverilog_options: [-g2012]}",
                 "",
             ]
         ),
         encoding="utf-8",
     )
+
+
+def _write_sources(root: Path) -> None:
+    (root / "rtl").mkdir()
+    (root / "rtl" / "toy.sv").write_text("module toy; endmodule\n")
+    (root / "tb").mkdir()
+    (root / "tb" / "toy_tb.sv").write_text("module toy_tb; toy dut(); endmodule\n")
 
 
 def _create_ticket(tio: TicketIO, slug: str = "change-target") -> Path:
@@ -83,8 +99,7 @@ def _create_ticket(tio: TicketIO, slug: str = "change-target") -> Path:
 def _native_project(tmp_path: Path) -> tuple[Path, TicketIO, Path]:
     root = tmp_path / "rtl"
     _init_repo(root)
-    (root / "rtl").mkdir()
-    (root / "rtl" / "toy.sv").write_text("module toy; endmodule\n")
+    _write_sources(root)
     project = root / ".booley_project"
     (project / "tickets" / "board" / "drafts").mkdir(parents=True)
     (project / ".gitignore").write_text("/worktrees/\n")
@@ -134,6 +149,63 @@ def test_native_contract_open_seal_and_enqueue(tmp_path: Path) -> None:
     ]
     assert _git(root, "rev-parse", "change-target") == sealed["outer_sha"]
     assert tio.enqueue_ticket("change-target") is True
+
+
+def test_enqueue_validates_targets_from_sealed_contract_worktree(tmp_path: Path) -> None:
+    _root, tio, _ticket = _native_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "add-target",
+        TicketFileSpec(
+            summary="Add a lint Target",
+            ticket_type="refactor",
+            branch="main",
+            scope=["toy.core"],
+            criteria={"mandatory": {"lint_clean": ["lint_future"]}},
+            body="## Description\n\nAdd and use the `lint_future` Target.\n",
+        ),
+    )
+    assert ticket is not None
+    opened = tio.contract_open("add-target")
+    outer = Path(opened["outer_worktree"])
+    core = outer / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_future:\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n"
+        + "    filesets: [rtl]\n"
+        + "    toplevel: toy\n",
+        encoding="utf-8",
+    )
+
+    tio.contract_seal("add-target")
+
+    assert tio.enqueue_ticket("add-target") is True
+
+
+def test_contract_seal_preserves_structured_campaign_criteria(tmp_path: Path) -> None:
+    _root, tio, ticket = _native_project(tmp_path)
+    campaign = {
+        "target": "sim_toy",
+        "scope": ["rtl/toy.sv"],
+        "min_detected": 14,
+        "total": 15,
+    }
+    update_frontmatter(
+        ticket,
+        {
+            "criteria": {
+                "mandatory": {"review_rtl_bugs": True},
+                "optional": {"mutation_score": [campaign]},
+            }
+        },
+    )
+
+    tio.contract_open("change-target")
+    tio.contract_seal("change-target")
+
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    assert fields["criteria"]["optional"]["mutation_score"] == [campaign]
 
 
 def test_sealed_refs_remain_valid_after_authoring_worktree_is_discarded(tmp_path: Path) -> None:
@@ -351,8 +423,7 @@ def test_blocked_contract_revision_returns_ticket_to_draft(tmp_path: Path) -> No
 def test_standalone_project_repository_gets_paired_contract_commit(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     _init_repo(root)
-    (root / "rtl").mkdir()
-    (root / "rtl" / "toy.sv").write_text("module toy; endmodule\n")
+    _write_sources(root)
     _write_core(root)
     (root / ".gitignore").write_text("/.booley_project\n")
     _commit_all(root, "initial RTL")
@@ -412,8 +483,7 @@ def test_failed_cross_repository_seal_restores_unpublished_branch_refs(
 ) -> None:
     root = tmp_path / "rtl"
     _init_repo(root)
-    (root / "rtl").mkdir()
-    (root / "rtl" / "toy.sv").write_text("module toy; endmodule\n")
+    _write_sources(root)
     _write_core(root)
     (root / ".gitignore").write_text("/.booley_project\n")
     _commit_all(root, "initial RTL")

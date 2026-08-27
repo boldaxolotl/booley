@@ -1,0 +1,52 @@
+schema = 1
+upstream_repository = "YosysHQ/picorv32"
+upstream_ref = "a473fc8fca393771d83b0ffcf0b14db3393339d8"
+project_repository = "boldaxolotl/booley-prj-picorv32"
+project_ref = "0c7329ccfeaeac012a05ff71bb1b53561950c37c"
+project_contract_ref = "ci/agent-ticket-contract"
+ticket_fixture = ".github/contracts/picorv32-demo-ticket.md"
+ticket_slug = "add-opt-in-rv32-zbb-pcpi-co-processor"
+
+required_targets = [
+  "lint_core",
+  "sim_core",
+  "sim_dhry",
+  "sim_wb",
+  "sim_zbb_disabled",
+  "synth_core",
+  "synth_core_zbb",
+]
+
+[[required_binding]]
+criterion = "criteria.mandatory.lint_clean"
+target = "lint_core"
+
+[[required_binding]]
+criterion = "criteria.mandatory.sim_pass"
+target = "sim_core"
+
+[[required_binding]]
+criterion = "criteria.mandatory.sim_pass"
+target = "sim_wb"
+
+[[required_binding]]
+criterion = "criteria.mandatory.sim_pass"
+target = "sim_zbb_disabled"
+
+[[required_binding]]
+criterion = "criteria.mandatory.synthesis_ok"
+target = "synth_core_zbb"
+
+[[required_binding]]
+criterion = "criteria.optional.mutation_score"
+target = "sim_core"
+
+[[generated_input]]
+path = "firmware/firmware.hex"
+producer = ".booley_project/hooks/post-setup.sh"
+targets = ["sim_core", "sim_wb"]
+
+[[generated_input]]
+path = "dhrystone/dhry.hex"
+producer = ".booley_project/hooks/post-setup.sh"
+targets = ["sim_dhry"]
