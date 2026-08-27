@@ -154,12 +154,12 @@ may override the Python rows (see
 | Python | 3.13 (deadsnakes PPA) |
 | Verilator | v5.046 (built from source) |
 | Icarus Verilog | v13_0 |
-| Yosys | v0.67, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
-| sv2v | v0.0.12 |
+| Yosys | v0.68, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
+| sv2v | v0.0.13 |
 | OpenROAD | 2.0-17598-ga008522d8 (Precision-Innovations release 2024-12-14) |
-| Verible | v0.0-4080-ga0a8d8eb |
+| Verible | v0.0-4148-g1ea007ec |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
-| cocotb | 2.0.1, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.1 |
+| cocotb | 2.0.1, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley init`, mounted read-only at `/opt/pdk/cell/lib` |
 
 Check what your image actually has rather than trusting the table after an
