@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.runtime.project_dir import (
+    checkout_project_dir_relative_to,
     reset_cache,
     resolve_checkout_project_dir,
     resolve_project_dir,
@@ -72,6 +73,33 @@ class TestEnvVarOverride:
         assert resolve_project_dir() == session_dir.resolve()  # pre-warm global cache
 
         assert resolve_checkout_project_dir(checkout) == local.resolve()
+
+    def test_checkout_local_config_overrides_warmed_global_cache(self, tmp_path, monkeypatch):
+        session_dir = tmp_path / "session-project"
+        session_dir.mkdir()
+        checkout = tmp_path / "ticket-checkout"
+        custom = checkout / "control"
+        custom.mkdir(parents=True)
+        (checkout / "booley.toml").write_text('[project]\ndir = "control"\n')
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_dir))
+        assert resolve_project_dir() == session_dir.resolve()
+
+        assert resolve_checkout_project_dir(checkout) == custom.resolve()
+        assert checkout_project_dir_relative_to(checkout) == Path("control")
+
+    def test_checkout_relative_project_dir_rejects_external_path(self, tmp_path, monkeypatch):
+        checkout = tmp_path / "ticket-checkout"
+        checkout.mkdir()
+        external = tmp_path / "external"
+        external.mkdir()
+        (checkout / "booley.toml").write_text(
+            f'[project]\ndir = "{external.as_posix()}"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+
+        with pytest.raises(ValueError, match="outside checkout"):
+            checkout_project_dir_relative_to(checkout)
 
 
 # ---------------------------------------------------------------------------

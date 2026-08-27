@@ -361,7 +361,12 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
     from booley.ticket_board.target_contract import validate_contract_fields
 
     try:
-        errors = validate_sealed_refs(ctx.project_root, contract, slug=ctx.slug)
+        errors = validate_sealed_refs(
+            ctx.project_root,
+            contract,
+            slug=ctx.slug,
+            destination_branch=ctx.branch,
+        )
     except (RuntimeError, ValueError, OSError) as exc:
         errors = [str(exc)]
     errors.extend(validate_contract_fields(_contract_fields(ctx)))

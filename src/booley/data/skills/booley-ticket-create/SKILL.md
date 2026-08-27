@@ -166,8 +166,8 @@ only how to *infer* a value from the conversation and the repo.
 
 Runtime and seal fields are *not* inferred: `target_contract` and `base_sha` are
 stamped from Git by `contract-seal`, `created` by `enqueue`, `feature_branch` by
-`init`. `integration_base` is a legacy compatibility field and must not be
-authored for new schema-3 Tickets; their sealed participant manifest names the
+`init`. `integration_base` is unsupported and must not be authored for
+schema-3 Tickets; their sealed participant manifest names the
 destination of each Ticket Branch directly.
 
 ## §C. CLI Workflow

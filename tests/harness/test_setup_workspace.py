@@ -68,6 +68,55 @@ def _run_worktree_create(project_root: Path, name: str) -> subprocess.CompletedP
 # ===========================================================================
 
 
+class TestMaterializedTargetContract:
+    def _context(self, tmp_path: Path) -> MagicMock:
+        contract = MagicMock()
+        contract.as_dict.return_value = {"schema": 3}
+        return MagicMock(
+            target_contract=contract,
+            base_sha="a" * 40,
+            criteria={"mandatory": {}},
+        )
+
+    def test_accepts_unchanged_materialized_surface(self, tmp_path: Path):
+        from booley.harness.setup.workspace import _validate_materialized_target_contract
+
+        ctx = self._context(tmp_path)
+        with (
+            patch("booley.ticket_board.target_contract.verify_surface") as verify,
+            patch(
+                "booley.ticket_board.target_contract.validate_contract_fields",
+                return_value=[],
+            ) as validate,
+        ):
+            result = _validate_materialized_target_contract(ctx, tmp_path)
+
+        assert result is None
+        verify.assert_called_once_with(ctx.target_contract, tmp_path)
+        validate.assert_called_once_with(
+            {
+                "base_sha": "a" * 40,
+                "target_contract": {"schema": 3},
+                "criteria": {"mandatory": {}},
+            },
+            tmp_path,
+        )
+
+    def test_blocks_changed_materialized_surface(self, tmp_path: Path):
+        from booley.harness.setup.workspace import _validate_materialized_target_contract
+        from booley.ticket_board.target_contract import TargetContractError
+
+        ctx = self._context(tmp_path)
+        with patch(
+            "booley.ticket_board.target_contract.verify_surface",
+            side_effect=TargetContractError("surface changed"),
+        ):
+            result = _validate_materialized_target_contract(ctx, tmp_path)
+
+        assert result is not None
+        assert result.block_reason == "target-contract-change-required: surface changed"
+
+
 class TestBranchCreation:
     """Every implementation Ticket owns an isolated branch."""
 

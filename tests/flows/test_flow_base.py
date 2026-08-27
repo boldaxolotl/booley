@@ -156,9 +156,20 @@ class TestBooleyFlowExecution:
     ) -> None:
         from booley.runtime import runtime_context
         from booley.ticket_board.frontmatter import format_frontmatter
-        from booley.ticket_board.target_contract import build_contract
+        from booley.ticket_board.target_contract import ContractParticipant, build_contract
 
-        contract = build_contract(tmp_path, outer_sha="a" * 40)
+        participant = ContractParticipant(
+            "outer",
+            "a" * 40,
+            "refs/heads/ticket",
+            "refs/heads/main",
+            "b" * 40,
+        )
+        contract = build_contract(
+            tmp_path,
+            outer_sha="a" * 40,
+            participants=[participant],
+        )
         ticket = tmp_path / "ticket.md"
         ticket.write_text(
             format_frontmatter(

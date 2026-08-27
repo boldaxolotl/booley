@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,10 +20,12 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
-from booley.runtime.project_dir import runtime_dir
+from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
+from .contract_ops import ContractOperationError, pin_sealed_refs
 from .git_ops import worktree_is_clean
 from .target_contract import (
     ContractParticipant,
@@ -118,8 +121,125 @@ def _initial_journal(slug: str, contract: TargetContract) -> dict[str, Any]:
         "ticket": slug,
         "state": "initializing",
         "participants": [item.as_dict() for item in contract.participants],
+        "sources": {},
         "candidates": {},
         "published": [],
+    }
+
+
+def _validated_string_map(value: Any, field: str, roles: set[str]) -> dict[str, str]:
+    mapping = require_dict(value, field=field)
+    if not set(mapping) <= roles:
+        raise BoundaryError(f"{field} contains an unknown participant role")
+    result: dict[str, str] = {}
+    for role in mapping:
+        item = require_str(mapping, role)
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item):
+            raise BoundaryError(f"{field}.{role} must be a full Git commit SHA")
+        result[role] = item
+    return result
+
+
+def _validated_candidates(
+    value: Any,
+    roles: set[str],
+    transaction: str,
+) -> dict[str, dict[str, str]]:
+    mapping = require_dict(value, field="acceptance journal candidates")
+    if not set(mapping) <= roles:
+        raise BoundaryError("acceptance journal candidates contains an unknown role")
+    result: dict[str, dict[str, str]] = {}
+    for role, raw in mapping.items():
+        candidate = require_dict(raw, field=f"acceptance journal candidates.{role}")
+        if set(candidate) != {"sha", "staging_ref", "expected_destination_sha"}:
+            raise BoundaryError(f"acceptance journal candidate {role!r} has invalid fields")
+        strings = {key: require_str(candidate, key) for key in candidate}
+        for key in ("sha", "expected_destination_sha"):
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", strings[key]):
+                raise BoundaryError(f"acceptance journal candidates.{role}.{key} is invalid")
+        expected_ref = f"refs/booley/acceptance/{transaction}/{role}"
+        if strings["staging_ref"] != expected_ref:
+            raise BoundaryError(
+                f"acceptance journal candidates.{role}.staging_ref must be {expected_ref!r}"
+            )
+        result[str(role)] = strings
+    return result
+
+
+def _validate_journal_progress(
+    state: str,
+    roles: set[str],
+    sources: dict[str, str],
+    candidates: dict[str, dict[str, str]],
+    published: list[Any],
+) -> None:
+    order = [role for role in ("project", "outer") if role in roles]
+    if published != order[: len(published)]:
+        raise BoundaryError("acceptance journal published roles are out of order")
+    if candidates and not sources:
+        raise BoundaryError("acceptance journal candidates require pinned sources")
+    if sources and set(sources) != roles:
+        raise BoundaryError("acceptance journal sources must pin every participant")
+    if set(candidates) - set(sources) or set(published) - set(candidates):
+        raise BoundaryError("acceptance journal checkpoints are inconsistent")
+    if state == "initializing" and published:
+        raise BoundaryError("initializing acceptance journal cannot contain publications")
+    if state != "initializing" and set(candidates) != roles:
+        raise BoundaryError(f"acceptance journal state {state!r} requires every candidate")
+    expected_published = {
+        "prepared": [],
+        "published-project": ["project"],
+        "published-outer": order,
+        "done": order,
+    }
+    if state in expected_published and published != expected_published[state]:
+        raise BoundaryError(f"acceptance journal state {state!r} conflicts with published roles")
+
+
+def _validated_journal(
+    value: Any,
+    slug: str,
+    participants: list[dict[str, str]],
+) -> dict[str, Any]:
+    journal = require_dict(value, field="acceptance journal")
+    expected_fields = {
+        "schema",
+        "transaction",
+        "ticket",
+        "state",
+        "participants",
+        "sources",
+        "candidates",
+        "published",
+    }
+    if require_str(journal, "ticket") != slug:
+        raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
+    if journal.get("participants") != participants:
+        raise BoundaryError("sealed repository participants changed after acceptance began")
+    if set(journal) != expected_fields:
+        raise BoundaryError("acceptance journal has invalid fields")
+    if journal.get("schema") != 1:
+        raise BoundaryError("acceptance journal schema must be 1")
+    transaction = require_str(journal, "transaction")
+    if not re.fullmatch(r"[0-9a-f]{32}", transaction):
+        raise BoundaryError("acceptance journal transaction is invalid")
+    state = require_str(journal, "state")
+    if state not in {"initializing", "prepared", "published-project", "published-outer", "done"}:
+        raise BoundaryError(f"acceptance journal state {state!r} is invalid")
+    roles = {item["role"] for item in participants}
+    sources = _validated_string_map(journal.get("sources"), "acceptance journal sources", roles)
+    candidates = _validated_candidates(journal.get("candidates"), roles, transaction)
+    published = require_list(journal.get("published"), field="acceptance journal published")
+    _validate_journal_progress(state, roles, sources, candidates, published)
+    return {
+        "schema": 1,
+        "transaction": transaction,
+        "ticket": slug,
+        "state": state,
+        "participants": participants,
+        "sources": sources,
+        "candidates": candidates,
+        "published": published,
     }
 
 
@@ -131,14 +251,10 @@ def _load_journal(path: Path, slug: str, contract: TargetContract) -> dict[str, 
         journal = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CompletionError(f"acceptance journal is unreadable: {path}: {exc}") from exc
-    if not isinstance(journal, dict) or journal.get("ticket") != slug:
-        raise CompletionError(f"acceptance journal does not belong to Ticket {slug!r}")
-    if journal.get("participants") != expected:
-        raise CompletionError(
-            "sealed repository participants changed after acceptance began; "
-            f"inspect {path} before retrying"
-        )
-    return journal
+    try:
+        return _validated_journal(journal, slug, expected)
+    except BoundaryError as exc:
+        raise CompletionError(f"acceptance journal is malformed: {path}: {exc}") from exc
 
 
 def _changed_paths(repository: Path, before: str, after: str) -> set[str]:
@@ -149,9 +265,9 @@ def _changed_paths(repository: Path, before: str, after: str) -> set[str]:
 def _validate_participant(
     repository: Path,
     participant: ContractParticipant,
+    source: str,
     protected_paths: set[str],
 ) -> str:
-    source = _commit(repository, participant.ticket_ref)
     destination = _commit(repository, participant.destination_ref)
     if not _is_ancestor(repository, participant.sealed_sha, source):
         raise CompletionError(
@@ -176,12 +292,12 @@ def _validate_participant(
 def _prepare_candidate(
     repository: Path,
     participant: ContractParticipant,
+    source: str,
     transaction: str,
     slug: str,
     protected_paths: set[str],
 ) -> dict[str, str]:
-    destination = _validate_participant(repository, participant, protected_paths)
-    source = _commit(repository, participant.ticket_ref)
+    destination = _validate_participant(repository, participant, source, protected_paths)
     staging_ref = f"refs/booley/acceptance/{transaction}/{participant.role}"
     if _is_ancestor(repository, source, destination):
         candidate = destination
@@ -194,7 +310,7 @@ def _prepare_candidate(
                     temporary,
                     "merge",
                     "--no-ff",
-                    participant.ticket_ref,
+                    source,
                     "-m",
                     f"merge({slug}): sealed Ticket completed",
                 )
@@ -216,26 +332,30 @@ def _validate_source_surface(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
+    sources: Mapping[str, str],
 ) -> None:
     """Rebuild the sealed composite checkout and reject contract-control drift."""
     participants = {item.role: item for item in contract.participants}
-    outer = participants["outer"]
     temporary = Path(tempfile.mkdtemp(prefix="booley-accept-surface-"))
     project_checkout: Path | None = None
     try:
-        _require_git(root, "worktree", "add", "--detach", str(temporary), outer.ticket_ref)
+        _require_git(root, "worktree", "add", "--detach", str(temporary), sources["outer"])
         project = participants.get("project")
         if project is not None:
             if project_repository is None:
                 raise CompletionError("sealed project repository is unavailable")
-            project_checkout = temporary / ".booley_project"
+            try:
+                project_relative = checkout_project_dir_relative_to(root)
+            except (FileNotFoundError, ValueError) as exc:
+                raise CompletionError(str(exc)) from exc
+            project_checkout = temporary / project_relative
             _require_git(
                 project_repository,
                 "worktree",
                 "add",
                 "--detach",
                 str(project_checkout),
-                project.ticket_ref,
+                sources["project"],
             )
         try:
             verify_surface(contract, temporary)
@@ -313,6 +433,10 @@ def _prepare_all(
     candidates = journal["candidates"]
     transaction = journal["transaction"]
     has_project = any(item.role == "project" for item in contract.participants)
+    try:
+        project_prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
+    except (FileNotFoundError, ValueError) as exc:
+        raise CompletionError(str(exc)) from exc
     for participant in contract.participants:
         if participant.role in candidates:
             repository = _repository_for(root, project_repository, participant)
@@ -326,23 +450,23 @@ def _prepare_all(
             continue
         repository = _repository_for(root, project_repository, participant)
         if participant.role == "project":
-            prefix = ".booley_project/"
             protected_paths = {
-                item.path.removeprefix(prefix)
+                item.path.removeprefix(project_prefix)
                 for item in contract.surface_entries
-                if item.path.startswith(prefix)
+                if item.path.startswith(project_prefix)
             }
         elif has_project:
             protected_paths = {
                 item.path
                 for item in contract.surface_entries
-                if not item.path.startswith(".booley_project/")
+                if not item.path.startswith(project_prefix)
             }
         else:
             protected_paths = {item.path for item in contract.surface_entries}
         candidates[participant.role] = _prepare_candidate(
             repository,
             participant,
+            journal["sources"][participant.role],
             transaction,
             slug,
             protected_paths,
@@ -396,6 +520,105 @@ def _approve(tio: Any, slug: str) -> bool:
     )
 
 
+def _ensure_sources(
+    root: Path,
+    project_repository: Path | None,
+    slug: str,
+    destination_branch: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    path: Path,
+) -> None:
+    try:
+        current = pin_sealed_refs(
+            root,
+            contract,
+            slug=slug,
+            destination_branch=destination_branch,
+        )
+    except ContractOperationError as exc:
+        raise CompletionError(str(exc)) from exc
+    if not journal["sources"]:
+        journal["sources"] = current
+        _write_journal(path, journal)
+        return
+    participants = {item.role: item for item in contract.participants}
+    for role, source in journal["sources"].items():
+        participant = participants[role]
+        repository = _repository_for(root, project_repository, participant)
+        _commit(repository, source)
+        if not _is_ancestor(repository, participant.sealed_sha, source):
+            raise CompletionError(
+                f"pinned {role} source no longer descends from its sealed commit"
+            )
+
+
+def _finish_approval(
+    tio: Any,
+    slug: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    path: Path,
+) -> None:
+    expected = {item.role for item in contract.participants}
+    if set(journal["published"]) != expected:
+        raise CompletionError("cannot approve before every repository is published")
+    entry = tio.find_ticket(slug)
+    status = entry.get("status", "") if entry else ""
+    if status == "review" and not _approve(tio, slug):
+        raise CompletionError(
+            "repository publication succeeded but the board transition failed; retry"
+        )
+    if status not in {"review", "done"}:
+        raise CompletionError(
+            f"repository publication succeeded but Ticket status is {status!r}; inspect and retry"
+        )
+    journal["state"] = "done"
+    _write_journal(path, journal)
+
+
+def _execute_completion(
+    tio: Any,
+    slug: str,
+    entry: Mapping[str, Any],
+    contract: TargetContract,
+    path: Path,
+    allowed_board_rename: tuple[Path, Path],
+) -> None:
+    journal = _load_journal(path, slug, contract)
+    _write_journal(path, journal)
+    if journal["state"] == "done":
+        if entry.get("status") == "done":
+            return
+        raise CompletionError("acceptance journal is done but the Ticket is not")
+    root = Path(tio._project_root).resolve()
+    project_repository = resolve_inner_project_repo(root)
+    destination_branch = entry.get("branch")
+    if not isinstance(destination_branch, str) or not destination_branch:
+        raise CompletionError("Ticket has no destination branch")
+    _ensure_sources(
+        root,
+        project_repository,
+        slug,
+        destination_branch,
+        contract,
+        journal,
+        path,
+    )
+    _validate_source_surface(root, project_repository, contract, journal["sources"])
+    _prepare_all(root, project_repository, slug, contract, journal, path)
+    _publish_all(
+        root,
+        project_repository,
+        contract,
+        journal,
+        path,
+        allowed_board_rename,
+    )
+    if journal["state"] != "done":
+        _finish_approval(tio, slug, contract, journal, path)
+
+
 def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
     """Prepare, publish, and approve one schema-3 review Ticket.
 
@@ -409,18 +632,18 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
         return False
+    status = entry.get("status", "")
+    if status not in {"review", "done"}:
+        print(
+            f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
+            file=sys.stderr,
+        )
+        return False
     try:
         contract = TargetContract.from_mapping(entry.get("target_contract"))
     except TargetContractError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return False
-    if not contract.participants:
-        print(
-            f"Error: cannot complete '{slug}': sealed repository participants are missing",
-            file=sys.stderr,
-        )
-        return False
-
     root = Path(tio._project_root).resolve()
     ticket_name = Path(str(entry["file"])).name
     allowed_board_rename = (
@@ -435,26 +658,14 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
             lock_path.open("a+", encoding="utf-8") as handle,
             nonblocking_file_lock(handle),
         ):
-            journal = _load_journal(path, slug, contract)
-            _write_journal(path, journal)
-            project_repository = resolve_inner_project_repo(root)
-            _validate_source_surface(root, project_repository, contract)
-            _prepare_all(root, project_repository, slug, contract, journal, path)
-            _publish_all(
-                root,
-                project_repository,
+            _execute_completion(
+                tio,
+                slug,
+                entry,
                 contract,
-                journal,
                 path,
                 allowed_board_rename,
             )
-            if journal.get("state") != "done":
-                if not _approve(tio, slug):
-                    raise CompletionError(
-                        "repository publication succeeded but the board transition failed; retry"
-                    )
-                journal["state"] = "done"
-                _write_journal(path, journal)
     except LockContentionError:
         print(f"Error: acceptance is already running for '{slug}'", file=sys.stderr)
         return False

@@ -55,6 +55,7 @@ def _ticket_commit(repo: Path, branch: str, content: str) -> str:
     _git(repo, "commit", "-m", f"implement {branch}")
     sha = _git(repo, "rev-parse", "HEAD")
     _git(repo, "switch", "main")
+    _git(repo, "branch", "--set-upstream-to=main", branch)
     return sha
 
 
@@ -72,6 +73,7 @@ class _TicketIO:
         self.entry: dict[str, Any] = {
             "file": "board/review/change-target.md",
             "status": "review",
+            "branch": "main",
             "target_contract": contract.as_dict(),
         }
         self.transitions: list[tuple[str, str, str, str]] = []
@@ -176,6 +178,46 @@ def test_acceptance_journal_rejects_corrupt_or_mismatched_state(
         completion._load_journal(journal, "change-target", _boundary_contract())
 
 
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"transaction": "short"}, "transaction is invalid"),
+        ({"state": "invented"}, "state 'invented' is invalid"),
+        ({"sources": []}, "sources must be a mapping"),
+        ({"sources": {"outer": "short"}}, "full Git commit SHA"),
+        (
+            {
+                "candidates": {
+                    "outer": {
+                        "sha": "d" * 40,
+                        "staging_ref": "refs/booley/acceptance/{transaction}/outer",
+                        "expected_destination_sha": "e" * 40,
+                    }
+                }
+            },
+            "candidates require pinned sources",
+        ),
+        ({"published": ["outer", "outer"]}, "published roles are out of order"),
+    ],
+)
+def test_acceptance_journal_validates_every_recovery_field(
+    tmp_path: Path, update: dict[str, Any], message: str
+) -> None:
+    contract = _boundary_contract()
+    data = completion._initial_journal("change-target", contract)
+    candidates = update.get("candidates")
+    if isinstance(candidates, dict) and "outer" in candidates:
+        candidates["outer"]["staging_ref"] = candidates["outer"]["staging_ref"].format(
+            transaction=data["transaction"]
+        )
+    data.update(update)
+    journal = tmp_path / "acceptance.json"
+    journal.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(completion.CompletionError, match=message):
+        completion._load_journal(journal, "change-target", contract)
+
+
 def test_complete_requires_merge_policy() -> None:
     with pytest.raises(completion.CompletionError, match="requires merge policy"):
         complete_review_ticket(_BoundaryTicketIO(None), "missing", _Policy(merge=False))
@@ -187,17 +229,18 @@ def test_complete_reports_missing_ticket(capsys: pytest.CaptureFixture[str]) -> 
 
 
 def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str]) -> None:
-    tio = _BoundaryTicketIO({"target_contract": {}})
+    tio = _BoundaryTicketIO({"status": "review", "target_contract": {}})
 
     assert complete_review_ticket(tio, "bad-contract", _Policy()) is False
     assert "cannot complete 'bad-contract'" in capsys.readouterr().err
 
 
-def test_complete_routes_legacy_contract_away_from_journaled_path(
+def test_complete_rejects_legacy_contract_schema(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     tio = _BoundaryTicketIO(
         {
+            "status": "review",
             "target_contract": {
                 "schema": 2,
                 "outer_sha": "a" * 40,
@@ -205,12 +248,12 @@ def test_complete_routes_legacy_contract_away_from_journaled_path(
                 "surface_digest": "b" * 64,
                 "targets": [],
                 "bindings": [],
-            }
+            },
         }
     )
 
     assert complete_review_ticket(tio, "legacy", _Policy()) is False
-    assert "sealed repository participants are missing" in capsys.readouterr().err
+    assert "target_contract.schema must be 3" in capsys.readouterr().err
 
 
 def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> None:
@@ -321,6 +364,75 @@ def test_retry_rolls_forward_after_only_project_was_published(
     assert complete_review_ticket(tio, "change-target", _Policy()) is True
     assert _git(root, "show", "main:design.txt") == "outer implementation"
     assert tio.entry["status"] == "done"
+
+
+def test_retry_finishes_journal_after_board_approval_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+    write_journal = completion._write_journal
+    failed = False
+
+    def fail_done_write(path: Path, journal: dict[str, Any]) -> None:
+        nonlocal failed
+        if journal.get("state") == "done" and not failed:
+            failed = True
+            raise OSError("simulated journal write failure")
+        write_journal(path, journal)
+
+    monkeypatch.setattr(completion, "_write_journal", fail_done_write)
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert tio.entry["status"] == "done"
+    assert _git(root, "show", "main:design.txt") == "implemented"
+
+    monkeypatch.setattr(completion, "_write_journal", write_journal)
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    assert json.loads(journal_path.read_text(encoding="utf-8"))["state"] == "done"
+
+
+def test_ticket_ref_move_after_pinning_does_not_change_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    _git(root, "switch", "-c", "late-source", ticket_sha)
+    (root / "design.txt").write_text("late ref movement\n", encoding="utf-8")
+    _git(root, "add", "design.txt")
+    _git(root, "commit", "-m", "late source")
+    late_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "switch", "main")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+    validate_surface = completion._validate_source_surface
+
+    def move_ref(*args: Any, **kwargs: Any) -> None:
+        validate_surface(*args, **kwargs)
+        _git(root, "branch", "-f", "change-target", late_sha)
+
+    monkeypatch.setattr(completion, "_validate_source_surface", move_ref)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+    assert _git(root, "show", "main:design.txt") == "implemented"
 
 
 def test_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> None:

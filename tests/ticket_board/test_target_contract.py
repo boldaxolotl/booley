@@ -20,7 +20,6 @@ from booley.ticket_board.target_contract import (
     surface_digest,
     validate_contract_fields,
     validate_criterion_targets,
-    verify_surface,
 )
 
 _CORE = textwrap.dedent(
@@ -97,12 +96,23 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _participant(sha: str = "a" * 40) -> ContractParticipant:
+    return ContractParticipant(
+        "outer",
+        sha,
+        "refs/heads/ticket",
+        "refs/heads/main",
+        "b" * 40,
+    )
+
+
 def test_contract_round_trips_as_nested_frontmatter(tmp_path: Path) -> None:
     project = _project(tmp_path)
     contract = build_contract(
         project,
         outer_sha="a" * 40,
         targets=["sim_toy", "lint_toy"],
+        participants=[_participant()],
     )
     fields = {
         "summary": "sealed",
@@ -134,6 +144,7 @@ def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path
         outer_sha="a" * 40,
         targets=["synth_before", "synth_after"],
         bindings=criterion_targets(criteria),
+        participants=[_participant()],
     )
     fields = {
         "summary": "sealed",
@@ -364,7 +375,12 @@ def test_schema_three_rejects_inconsistent_participant_set(
 
 def test_contract_rejects_caller_fabricated_base_sha(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    contract = build_contract(project, outer_sha="a" * 40, targets=["sim_toy"])
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["sim_toy"],
+        participants=[_participant()],
+    )
 
     errors = validate_contract_fields(
         {"base_sha": "b" * 40, "target_contract": contract.as_dict()}
@@ -375,15 +391,9 @@ def test_contract_rejects_caller_fabricated_base_sha(tmp_path: Path) -> None:
 
 def test_contract_requires_sorted_unique_targets() -> None:
     with pytest.raises(TargetContractError, match="sorted and unique"):
-        TargetContract.from_mapping(
-            {
-                "schema": 1,
-                "outer_sha": "a" * 40,
-                "project_sha": "",
-                "surface_digest": "b" * 64,
-                "targets": ["sim_b", "sim_a", "sim_a"],
-            }
-        )
+        mapping = _schema_three_mapping()
+        mapping["targets"] = ["sim_b", "sim_a", "sim_a"]
+        TargetContract.from_mapping(mapping)
 
 
 def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> None:
@@ -403,16 +413,17 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
         outer_sha="a" * 40,
         targets=["synth_before", "synth_after"],
         bindings=bindings,
+        participants=[_participant()],
     )
 
     assert bindings[0].target == "synth_after"
     assert bindings[0].baseline == "synth_before"
-    assert contract.schema == 2
+    assert contract.schema == 3
     assert contract.bindings[0].baseline == "acme:lib:toy:1.0#synth_before"
     assert contract.bindings[0].candidate == "acme:lib:toy:1.0#synth_after"
 
 
-def test_schema_one_rejects_unequal_pair() -> None:
+def test_legacy_contract_schema_is_rejected() -> None:
     fields = {
         "base_sha": "a" * 40,
         "target_contract": {
@@ -432,9 +443,7 @@ def test_schema_one_rejects_unequal_pair() -> None:
         },
     }
 
-    assert validate_contract_fields(fields) == [
-        "target_contract.schema 1 cannot seal directed baseline/candidate Target pairs"
-    ]
+    assert validate_contract_fields(fields) == ["target_contract.schema must be 3, got 1"]
 
 
 @pytest.mark.parametrize(
@@ -443,11 +452,14 @@ def test_schema_one_rejects_unequal_pair() -> None:
         ([], "target_contract must be a mapping"),
         (
             {
-                "schema": 1,
+                "schema": 3,
                 "outer_sha": "a" * 40,
                 "project_sha": "",
                 "surface_digest": "b" * 64,
                 "targets": "sim_toy",
+                "bindings": [],
+                "participants": [],
+                "surface_entries": [],
             },
             r"target_contract\.targets must be a list\[str\]",
         ),
@@ -486,6 +498,19 @@ def test_surface_ignores_rtl_but_covers_every_control_input(tmp_path: Path) -> N
     assert surface_digest(project) != after_flow
 
 
+def test_surface_uses_checkout_configured_project_directory(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    default = project / ".booley_project"
+    custom = project / "control"
+    default.rename(custom)
+    (project / "booley.toml").write_text('[project]\ndir = "control"\n', encoding="utf-8")
+    original = surface_digest(project)
+
+    (custom / "tests.toml").write_text("[targets.sim_toy]\ntests = ['smoke']\n")
+
+    assert surface_digest(project) != original
+
+
 def test_non_target_booley_config_does_not_change_surface(tmp_path: Path) -> None:
     project = _project(tmp_path)
     config = project / ".booley_project" / "booley.toml"
@@ -496,18 +521,13 @@ def test_non_target_booley_config_does_not_change_surface(tmp_path: Path) -> Non
     assert surface_digest(project) == original
 
 
-def test_schema_one_contract_verifies_with_legacy_digest(tmp_path: Path) -> None:
-    project = _project(tmp_path)
-    contract = TargetContract(
-        outer_sha="a" * 40,
-        project_sha="",
-        surface_digest=surface_digest(project, schema=1),
-        targets=("synth_before",),
-        schema=1,
-    )
+@pytest.mark.parametrize("schema", [1, 2])
+def test_legacy_contract_schemas_are_not_supported(schema: int) -> None:
+    mapping = _schema_three_mapping()
+    mapping["schema"] = schema
 
-    verify_surface(contract, project)
-    assert contract.surface_digest != surface_digest(project)
+    with pytest.raises(TargetContractError, match="schema must be 3"):
+        TargetContract.from_mapping(mapping)
 
 
 def test_surface_covers_referenced_core_and_config_hooks(tmp_path: Path) -> None:

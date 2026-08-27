@@ -84,8 +84,11 @@ The project's author recorded all four videos, then replaced the original narrat
 First, complete the [installation](#installation) above.
 
 Then follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
-The repository intentionally contains no pre-made Tickets: creating one against
-the live design is the first part of the demo workflow.
+Start in **Interactive Mode**: ask the agent to explain the design, inspect a
+Target, and run a lint or simulation Flow while you guide it. Once that feels
+familiar, try **Ticket Mode** as the optional autonomous workflow by creating a
+Ticket against the live design. The repository intentionally contains no
+pre-made Tickets.
 
 ### Level 3: Use it on your own project
 

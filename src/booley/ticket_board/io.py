@@ -773,7 +773,12 @@ class TicketIO:
         except TargetContractError as exc:
             return [str(exc)]
         try:
-            return validate_sealed_refs(self._project_root, contract, slug=slug)
+            return validate_sealed_refs(
+                self._project_root,
+                contract,
+                slug=slug,
+                destination_branch=str(fields.get("branch", "")),
+            )
         except (RuntimeError, ValueError, OSError) as exc:
             return [str(exc)]
 

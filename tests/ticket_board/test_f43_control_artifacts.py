@@ -16,6 +16,7 @@ from booley.ticket_board.frontmatter import parse_frontmatter, update_frontmatte
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_complete
 from booley.ticket_board.scanner import find_ticket_file
+from booley.ticket_board.target_contract import ContractParticipant, build_contract
 from booley.ticket_board.validation import validate_ticket_fields
 
 
@@ -60,7 +61,7 @@ def _project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
     )
     project = root / ".booley_project"
     (project / "tickets" / "board" / "drafts").mkdir(parents=True)
-    (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
+    (project / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
     (project / "booley.toml").write_text(
         "[flows.lint]\ndefault_target = 'lint_toy'\n", encoding="utf-8"
     )
@@ -246,6 +247,24 @@ def test_review_completion_ignores_its_board_rename_but_not_product_edits(
     review = queue.parent.parent / "review" / queue.name
     review.parent.mkdir(parents=True, exist_ok=True)
     queue.rename(review)
+    sealed = _git(root, "rev-parse", "change-target")
+    destination = _git(root, "merge-base", "main", "change-target")
+    participant = ContractParticipant(
+        "outer",
+        sealed,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        destination,
+    )
+    contract = build_contract(
+        worktree,
+        outer_sha=sealed,
+        participants=[participant],
+    )
+    update_frontmatter(
+        review,
+        {"base_sha": sealed, "target_contract": contract.as_dict()},
+    )
     monkeypatch.chdir(root)
 
     source = root / "rtl" / "toy.sv"

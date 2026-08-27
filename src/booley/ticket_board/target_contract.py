@@ -27,12 +27,11 @@ from booley.core.boundary import (
 )
 from booley.dev_support.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
+from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
 from booley.targets.target_surface import flow_can_drive
 
 SCHEMA_VERSION = 3
-DIRECTED_SCHEMA_VERSION = 2
-LEGACY_SCHEMA_VERSION = 1
 CONTRACT_BLOCK_REASON = "target-contract-change-required"
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -91,6 +90,13 @@ class TargetContract:
     surface_entries: tuple[ContractSurfaceEntry, ...] = ()
     schema: int = SCHEMA_VERSION
 
+    def __post_init__(self) -> None:
+        if self.schema != SCHEMA_VERSION:
+            raise TargetContractError(
+                f"target_contract.schema must be {SCHEMA_VERSION}, got {self.schema!r}"
+            )
+        _validate_participants(self.participants, self.outer_sha, self.project_sha)
+
     @classmethod
     def from_mapping(cls, value: Any) -> TargetContract:
         """Validate external frontmatter and return a typed contract."""
@@ -99,25 +105,17 @@ class TargetContract:
         except BoundaryError as exc:
             raise TargetContractError(str(exc)) from exc
         schema = value.get("schema")
-        if schema not in {LEGACY_SCHEMA_VERSION, DIRECTED_SCHEMA_VERSION, SCHEMA_VERSION}:
+        if schema != SCHEMA_VERSION:
             raise TargetContractError(
-                "target_contract.schema must be "
-                f"{LEGACY_SCHEMA_VERSION}, {DIRECTED_SCHEMA_VERSION}, or "
-                f"{SCHEMA_VERSION}, got {schema!r}"
+                f"target_contract.schema must be {SCHEMA_VERSION}, got {schema!r}"
             )
         outer_sha = _required_string(value, "outer_sha")
         project_sha = _optional_string(value, "project_sha")
         digest = _required_string(value, "surface_digest").lower()
         targets = _string_tuple(value.get("targets"), "targets")
-        bindings = (
-            _binding_tuple(value.get("bindings")) if schema >= DIRECTED_SCHEMA_VERSION else ()
-        )
-        participants = (
-            _participant_tuple(value.get("participants")) if schema == SCHEMA_VERSION else ()
-        )
-        entries = (
-            _surface_entry_tuple(value.get("surface_entries")) if schema == SCHEMA_VERSION else ()
-        )
+        bindings = _binding_tuple(value.get("bindings"))
+        participants = _participant_tuple(value.get("participants"))
+        entries = _surface_entry_tuple(value.get("surface_entries"))
         if not _COMMIT_RE.fullmatch(outer_sha.lower()):
             raise TargetContractError("target_contract.outer_sha must be a full Git commit SHA")
         if project_sha and not _COMMIT_RE.fullmatch(project_sha.lower()):
@@ -128,10 +126,8 @@ class TargetContract:
             )
         if tuple(sorted(set(targets))) != targets:
             raise TargetContractError("target_contract.targets must be sorted and unique")
-        if schema >= DIRECTED_SCHEMA_VERSION and tuple(sorted(set(bindings))) != bindings:
+        if tuple(sorted(set(bindings))) != bindings:
             raise TargetContractError("target_contract.bindings must be sorted and unique")
-        if schema == SCHEMA_VERSION:
-            _validate_participants(participants, outer_sha.lower(), project_sha.lower())
         return cls(
             outer_sha=outer_sha.lower(),
             project_sha=project_sha.lower(),
@@ -152,17 +148,15 @@ class TargetContract:
             "surface_digest": self.surface_digest,
             "targets": list(self.targets),
         }
-        if self.schema >= DIRECTED_SCHEMA_VERSION:
-            result["bindings"] = [binding.as_dict() for binding in self.bindings]
-        if self.schema == SCHEMA_VERSION:
-            result["participants"] = [participant.as_dict() for participant in self.participants]
-            result["surface_entries"] = [entry.as_dict() for entry in self.surface_entries]
+        result["bindings"] = [binding.as_dict() for binding in self.bindings]
+        result["participants"] = [participant.as_dict() for participant in self.participants]
+        result["surface_entries"] = [entry.as_dict() for entry in self.surface_entries]
         return result
 
 
 @dataclass(frozen=True, order=True)
 class ContractTargetBinding:
-    """Canonical directed Target binding persisted in schema-2 contracts."""
+    """Canonical directed Target binding persisted in Target contracts."""
 
     flow: str
     criterion: str
@@ -204,7 +198,7 @@ class CriterionTarget:
 
     @property
     def baseline(self) -> str:
-        """Baseline Target, defaulting to the candidate for legacy criteria."""
+        """Baseline Target, defaulting to the candidate for equal-Target criteria."""
         return self.baseline_target or self.target
 
     @property
@@ -370,7 +364,10 @@ def _entry(root: Path, path: Path, kind: str, data: bytes | None = None) -> Cont
 
 
 def _project_control_files(root: Path) -> Iterator[tuple[Path, str, bytes | None]]:
-    project_dir = root / ".booley_project"
+    try:
+        project_dir = resolve_checkout_project_dir(root)
+    except FileNotFoundError:
+        return
     tests_path = project_dir / "tests.toml"
     if tests_path.is_file():
         yield tests_path, "tests", _canonical_toml(tests_path)
@@ -462,10 +459,10 @@ def surface_entries(project_root: Path | str) -> tuple[ContractSurfaceEntry, ...
     return tuple(sorted(rows, key=lambda row: (row.path, row.kind)))
 
 
-def surface_digest(project_root: Path | str, *, schema: int = SCHEMA_VERSION) -> str:
+def surface_digest(project_root: Path | str) -> str:
     """Hash the normalized Target/control-plane manifest."""
     manifest = [row.as_dict() for row in surface_entries(project_root)]
-    return _sha256(_canonical_bytes({"schema": schema, "files": manifest}))
+    return _sha256(_canonical_bytes({"schema": SCHEMA_VERSION, "files": manifest}))
 
 
 def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
@@ -826,10 +823,7 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
     missing = sorted(referenced - declared)
     if missing:
         return [f"target_contract.targets omits criterion Target(s): {', '.join(missing)}"]
-    unequal = [binding for binding in criterion_bindings if binding.baseline != binding.target]
-    if contract.schema == LEGACY_SCHEMA_VERSION and unequal:
-        return ["target_contract.schema 1 cannot seal directed baseline/candidate Target pairs"]
-    if contract.schema >= DIRECTED_SCHEMA_VERSION and project_root is not None:
+    if project_root is not None:
         try:
             expected = canonical_contract_bindings(project_root, criterion_bindings)
         except fusesoc_registry.FuseSocError as exc:
@@ -879,7 +873,7 @@ def resolve_commit(repository: Path | str, sha: str) -> str:
 
 def verify_surface(contract: TargetContract, project_root: Path | str) -> None:
     """Raise when the checkout's current contract surface differs from sealed data."""
-    actual = surface_digest(project_root, schema=contract.schema)
+    actual = surface_digest(project_root)
     if actual != contract.surface_digest:
         raise TargetContractError(
             f"{CONTRACT_BLOCK_REASON}: Target surface digest is {actual}, "
@@ -888,7 +882,7 @@ def verify_surface(contract: TargetContract, project_root: Path | str) -> None:
 
 
 def load_ticket_contract(ticket_path: Path | str) -> TargetContract | None:
-    """Read a contract from a ticket file; return None for explicit legacy mode."""
+    """Read a schema-3 contract from a ticket file, or None when unsealed."""
     from .frontmatter import parse_frontmatter
 
     path = Path(ticket_path)
@@ -904,17 +898,16 @@ def build_contract(
     project_sha: str = "",
     targets: Iterable[str] = (),
     bindings: Iterable[CriterionTarget] = (),
-    participants: Iterable[ContractParticipant] | None = None,
+    participants: Iterable[ContractParticipant],
 ) -> TargetContract:
     """Build a sealed contract from already committed repository state."""
-    schema = SCHEMA_VERSION if participants is not None else DIRECTED_SCHEMA_VERSION
     return TargetContract(
         outer_sha=outer_sha.lower(),
         project_sha=project_sha.lower(),
-        surface_digest=surface_digest(project_root, schema=schema),
+        surface_digest=surface_digest(project_root),
         targets=tuple(sorted(set(targets))),
         bindings=canonical_contract_bindings(project_root, bindings),
-        participants=tuple(sorted(set(participants or ()))),
-        surface_entries=surface_entries(project_root) if schema == SCHEMA_VERSION else (),
-        schema=schema,
+        participants=tuple(sorted(set(participants))),
+        surface_entries=surface_entries(project_root),
+        schema=SCHEMA_VERSION,
     )

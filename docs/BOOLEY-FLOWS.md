@@ -119,8 +119,8 @@ destination branches or making Doctor observe a half-configured Target. Schema
 Ticket and destination refs, the criterion Targets, a normalized surface
 manifest, and its SHA-256 digest; compatibility `base_sha` equals the outer
 sealed commit. It also seals each Criterion's directed Target Pair using
-canonical Target identities. Schemas 1 and 2 remain readable for legacy
-Tickets.
+canonical Target identities. Schema 3 is the only supported Target Contract
+format; recreate older Tickets before enqueueing them.
 
 The digest covers every `.core`, the test registry, Target-selecting Flow
 configuration, selected SDC/XDC, and referenced generators or hooks. Paths are
