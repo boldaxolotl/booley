@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -194,6 +195,171 @@ def test_schema_three_rejects_participant_that_disagrees_with_outer_sha() -> Non
                 ],
             }
         )
+
+
+def _schema_three_mapping() -> dict[str, Any]:
+    return {
+        "schema": 3,
+        "outer_sha": "a" * 40,
+        "project_sha": "",
+        "surface_digest": "b" * 64,
+        "surface_entries": [],
+        "targets": [],
+        "bindings": [],
+        "participants": [
+            {
+                "role": "outer",
+                "sealed_sha": "a" * 40,
+                "ticket_ref": "refs/heads/ticket",
+                "destination_ref": "refs/heads/main",
+                "destination_sha": "c" * 40,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("participants", None, r"participants must be a list\[dict\]"),
+        ("participants", [None], "participants\\[0\\] is malformed"),
+        (
+            "participants",
+            [
+                {
+                    "role": "worker",
+                    "sealed_sha": "a" * 40,
+                    "ticket_ref": "refs/heads/ticket",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                }
+            ],
+            "role must be 'outer' or 'project'",
+        ),
+        (
+            "participants",
+            [
+                {
+                    "role": "outer",
+                    "sealed_sha": "short",
+                    "ticket_ref": "refs/heads/ticket",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                }
+            ],
+            "commit identities must be full Git SHAs",
+        ),
+        (
+            "participants",
+            [
+                {
+                    "role": "outer",
+                    "sealed_sha": "a" * 40,
+                    "ticket_ref": "ticket",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                }
+            ],
+            "refs must be full refs/heads names",
+        ),
+        (
+            "surface_entries",
+            None,
+            r"surface_entries must be a list\[dict\]",
+        ),
+        ("surface_entries", [None], "surface_entries\\[0\\] is malformed"),
+        (
+            "surface_entries",
+            [{"path": "toy.core", "kind": "core", "sha256": "short"}],
+            "has an invalid path, kind, or digest",
+        ),
+    ],
+)
+def test_schema_three_rejects_malformed_participant_and_surface_rows(
+    field: str, value: object, message: str
+) -> None:
+    mapping = _schema_three_mapping()
+    mapping[field] = value
+
+    with pytest.raises(TargetContractError, match=message):
+        TargetContract.from_mapping(mapping)
+
+
+def test_schema_three_requires_sorted_unique_participants_and_surface_entries() -> None:
+    participant_mapping = _schema_three_mapping()
+    participant_mapping["participants"] *= 2
+    with pytest.raises(TargetContractError, match="participants must be sorted and unique"):
+        TargetContract.from_mapping(participant_mapping)
+
+    surface_mapping = _schema_three_mapping()
+    entry = {"path": "toy.core", "kind": "core", "sha256": "d" * 64}
+    surface_mapping["surface_entries"] = [entry, entry]
+    with pytest.raises(TargetContractError, match="surface_entries must be sorted and unique"):
+        TargetContract.from_mapping(surface_mapping)
+
+
+@pytest.mark.parametrize(
+    ("participants", "project_sha", "message"),
+    [
+        (
+            [
+                {
+                    "role": "outer",
+                    "sealed_sha": "a" * 40,
+                    "ticket_ref": "refs/heads/a",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                },
+                {
+                    "role": "outer",
+                    "sealed_sha": "a" * 40,
+                    "ticket_ref": "refs/heads/b",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                },
+            ],
+            "",
+            "may contain each role once",
+        ),
+        (
+            [
+                {
+                    "role": "project",
+                    "sealed_sha": "d" * 40,
+                    "ticket_ref": "refs/heads/ticket",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                }
+            ],
+            "d" * 40,
+            "requires an outer participant",
+        ),
+        (_schema_three_mapping()["participants"], "d" * 40, "presence must match project_sha"),
+        (
+            [
+                *_schema_three_mapping()["participants"],
+                {
+                    "role": "project",
+                    "sealed_sha": "e" * 40,
+                    "ticket_ref": "refs/heads/ticket",
+                    "destination_ref": "refs/heads/main",
+                    "destination_sha": "c" * 40,
+                },
+            ],
+            "d" * 40,
+            "project participant sealed_sha must equal project_sha",
+        ),
+    ],
+)
+def test_schema_three_rejects_inconsistent_participant_set(
+    participants: object, project_sha: str, message: str
+) -> None:
+    mapping = _schema_three_mapping()
+    mapping["participants"] = participants
+    mapping["project_sha"] = project_sha
+
+    with pytest.raises(TargetContractError, match=message):
+        TargetContract.from_mapping(mapping)
 
 
 def test_contract_rejects_caller_fabricated_base_sha(tmp_path: Path) -> None:

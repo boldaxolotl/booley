@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,14 @@ class _TicketIO:
         return True
 
 
+class _BoundaryTicketIO:
+    def __init__(self, entry: dict[str, Any] | None) -> None:
+        self.entry = entry
+
+    def find_ticket(self, _slug: str) -> dict[str, Any] | None:
+        return self.entry
+
+
 def _contract(root: Path, participants: tuple[ContractParticipant, ...]) -> TargetContract:
     outer = next(item for item in participants if item.role == "outer")
     project = next((item for item in participants if item.role == "project"), None)
@@ -97,6 +106,111 @@ def _contract(root: Path, participants: tuple[ContractParticipant, ...]) -> Targ
         participants=participants,
         surface_entries=surface_entries(root),
     )
+
+
+def _boundary_contract() -> TargetContract:
+    participant = ContractParticipant(
+        role="outer",
+        sealed_sha="a" * 40,
+        ticket_ref="refs/heads/ticket",
+        destination_ref="refs/heads/main",
+        destination_sha="b" * 40,
+    )
+    return TargetContract(
+        outer_sha=participant.sealed_sha,
+        project_sha="",
+        surface_digest="c" * 64,
+        targets=(),
+        participants=(participant,),
+    )
+
+
+def test_git_failures_report_repository_and_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(completion.CompletionError, match="git rev-parse HEAD failed"):
+        completion._require_git(tmp_path, "rev-parse", "HEAD")
+
+    with pytest.raises(completion.CompletionError, match="could not compare Git history"):
+        completion._is_ancestor(tmp_path, "a" * 40, "b" * 40)
+
+    def unavailable_git(*_args, **_kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(subprocess, "run", unavailable_git)
+    with pytest.raises(completion.CompletionError, match=r"git status failed.*git unavailable"):
+        completion._git(tmp_path, "status")
+
+
+def test_project_participant_requires_project_repository(tmp_path: Path) -> None:
+    participant = ContractParticipant(
+        "project",
+        "a" * 40,
+        "refs/heads/ticket",
+        "refs/heads/main",
+        "b" * 40,
+    )
+
+    with pytest.raises(completion.CompletionError, match="project repository is unavailable"):
+        completion._repository_for(tmp_path, None, participant)
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("{", "acceptance journal is unreadable"),
+        (json.dumps({"ticket": "another", "participants": []}), "does not belong"),
+        (
+            json.dumps({"ticket": "change-target", "participants": []}),
+            "sealed repository participants changed",
+        ),
+    ],
+)
+def test_acceptance_journal_rejects_corrupt_or_mismatched_state(
+    tmp_path: Path, content: str, message: str
+) -> None:
+    journal = tmp_path / "acceptance.json"
+    journal.write_text(content, encoding="utf-8")
+
+    with pytest.raises(completion.CompletionError, match=message):
+        completion._load_journal(journal, "change-target", _boundary_contract())
+
+
+def test_complete_requires_merge_policy() -> None:
+    with pytest.raises(completion.CompletionError, match="requires merge policy"):
+        complete_review_ticket(_BoundaryTicketIO(None), "missing", _Policy(merge=False))
+
+
+def test_complete_reports_missing_ticket(capsys: pytest.CaptureFixture[str]) -> None:
+    assert complete_review_ticket(_BoundaryTicketIO(None), "missing", _Policy()) is False
+    assert "ticket 'missing' not found" in capsys.readouterr().err
+
+
+def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str]) -> None:
+    tio = _BoundaryTicketIO({"target_contract": {}})
+
+    assert complete_review_ticket(tio, "bad-contract", _Policy()) is False
+    assert "cannot complete 'bad-contract'" in capsys.readouterr().err
+
+
+def test_complete_routes_legacy_contract_away_from_journaled_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tio = _BoundaryTicketIO(
+        {
+            "target_contract": {
+                "schema": 2,
+                "outer_sha": "a" * 40,
+                "project_sha": "",
+                "surface_digest": "b" * 64,
+                "targets": [],
+                "bindings": [],
+            }
+        }
+    )
+
+    assert complete_review_ticket(tio, "legacy", _Policy()) is False
+    assert "sealed repository participants are missing" in capsys.readouterr().err
 
 
 def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> None:

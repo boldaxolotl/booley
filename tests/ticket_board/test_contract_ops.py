@@ -12,6 +12,7 @@ from booley.ticket_board import contract_ops
 from booley.ticket_board.frontmatter import parse_frontmatter
 from booley.ticket_board.io import TicketFileSpec, TicketIO
 from booley.ticket_board.operations import op_reset
+from booley.ticket_board.target_contract import ContractParticipant, TargetContract
 
 
 @pytest.fixture(autouse=True)
@@ -146,6 +147,66 @@ def test_sealed_refs_remain_valid_after_authoring_worktree_is_discarded(tmp_path
 
     assert contract_ops.validate_sealed_refs(root, contract) == []
     assert tio.enqueue_ticket("change-target") is True
+
+
+def test_legacy_sealed_ref_validation_requires_ticket_slug(tmp_path: Path) -> None:
+    root, _tio, _ticket = _native_project(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    contract = TargetContract(base, "", "b" * 64, (), schema=2)
+
+    assert contract_ops.validate_sealed_refs(root, contract) == [
+        "legacy Target contract validation requires the Ticket slug"
+    ]
+
+
+def test_legacy_sealed_ref_validation_reports_missing_refs_and_repository(tmp_path: Path) -> None:
+    root, _tio, _ticket = _native_project(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    contract = TargetContract(base, base, "b" * 64, (), schema=2)
+
+    assert contract_ops.validate_sealed_refs(root, contract, slug="change-target") == [
+        "sealed ticket ref 'refs/heads/change-target' is unavailable",
+        "sealed project repository is unavailable",
+    ]
+
+
+def test_sealed_ref_validation_reports_unknown_commit(tmp_path: Path) -> None:
+    root, _tio, _ticket = _native_project(tmp_path)
+    participant = ContractParticipant(
+        "outer",
+        "d" * 40,
+        "refs/heads/main",
+        "refs/heads/main",
+        _git(root, "rev-parse", "HEAD"),
+    )
+    contract = TargetContract("d" * 40, "", "b" * 64, (), participants=(participant,))
+
+    errors = contract_ops.validate_sealed_refs(root, contract)
+
+    assert len(errors) == 1
+    assert "does not resolve exactly" in errors[0]
+
+
+def test_sealed_ref_validation_rejects_ref_that_does_not_descend_from_seal(
+    tmp_path: Path,
+) -> None:
+    root, _tio, _ticket = _native_project(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    _git(root, "branch", "old-ticket", base)
+    (root / "main-only.txt").write_text("advance destination\n", encoding="utf-8")
+    sealed = _commit_all(root, "advance main")
+    participant = ContractParticipant(
+        "outer",
+        sealed,
+        "refs/heads/old-ticket",
+        "refs/heads/main",
+        base,
+    )
+    contract = TargetContract(sealed, "", "b" * 64, (), participants=(participant,))
+
+    assert contract_ops.validate_sealed_refs(root, contract) == [
+        f"ticket ref 'refs/heads/old-ticket' does not descend from sealed outer commit {sealed}"
+    ]
 
 
 def test_seal_rejects_non_control_implementation_changes(tmp_path: Path) -> None:
