@@ -174,7 +174,9 @@ class TestDiscoverSkills:
         assert "Remove that conditional bullet when stealth mode is disabled" in agents_step
         rule = (
             "This repo is operating in stealth mode. No changes to "
-            "`.booley_project/` may be visible in the main repo."
+            "`.booley_project/` may be visible in the main repo. `.booley_project/` is a "
+            "separate Git repository with its own history; commit its contents there, not "
+            "in the main repo."
         )
         assert rule in agents_template
 
