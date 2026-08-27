@@ -178,6 +178,13 @@ TESTS_TOML_SKELETON = """\
 # reads the annotated TESTS_TEMPLATE.toml shipped with the skill.
 """
 
+
+def _ticket_defaults_skeleton() -> str:
+    """Read the inactive Ticket Creation Defaults template shipped with the skill."""
+    template = skills_dir() / "booley-ticket-create" / "TICKET_DEFAULTS_TEMPLATE.md"
+    return template.read_text(encoding="utf-8")
+
+
 # Inside ``.booley_project/`` we ignore transient state that should never be
 # committed (tmp scratch, runtime logs, lockfiles).  ``.interactive_logs/`` is
 # new in ADR 0012 — per-session transcripts written by the MCP server when an
@@ -226,10 +233,13 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     """Create missing config skeletons without guessing project-specific values."""
     # configs.toml is deliberately absent: the legacy registry was removed by
     # ADR 0022 (.core owns design-description) and doctor fails on an empty one.
-    # tests.toml carries verification-intent; scaffolded empty alongside booley.toml.
+    # tests.toml carries verification-intent; ticket_defaults.md is inactive
+    # agent guidance. Both are scaffolded alongside booley.toml without guessing
+    # Project-specific values.
     skeletons = {
         "booley.toml": BOOLEY_TOML_SKELETON,
         "tests.toml": TESTS_TOML_SKELETON,
+        "ticket_defaults.md": _ticket_defaults_skeleton(),
     }
     added = [
         name

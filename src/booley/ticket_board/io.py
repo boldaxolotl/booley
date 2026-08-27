@@ -28,6 +28,7 @@ class TicketFileSpec:
     dependencies: list[str] | None = None
     priority: str = "medium"
     criteria: dict[str, Any] | None = None
+    on_success: dict[str, Any] | None = None
     body: str = ""
 
 
@@ -538,18 +539,21 @@ class TicketIO:
     @staticmethod
     def _build_ticket_fields(spec: TicketFileSpec) -> dict[str, Any]:
         """Build the frontmatter fields dict from a TicketFileSpec."""
+        on_success = spec.on_success
+        if on_success is None:
+            on_success = {
+                "destination": "review",
+                "merge": True,
+                "cleanup": True,
+                "triage_report": True,
+            }
         fields = {
             "summary": spec.summary,
             "type": spec.ticket_type,
             "branch": spec.branch,
             "scope": spec.scope or [],
             "criteria": spec.criteria or {},
-            "on_success": {
-                "destination": "review",
-                "merge": True,
-                "cleanup": True,
-                "triage_report": True,
-            },
+            "on_success": on_success,
             "priority": spec.priority,
         }
         if spec.spec:

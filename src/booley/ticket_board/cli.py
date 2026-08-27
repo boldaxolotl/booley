@@ -233,6 +233,13 @@ def _add_create_file_args(p: argparse.ArgumentParser) -> None:
         default="",
         help="Read criteria JSON/YAML from file instead of --criteria",
     )
+    p.add_argument(
+        "--on-success",
+        default=None,
+        help=(
+            "JSON dict: {destination, merge, cleanup, triage_report} — successful-run disposition"
+        ),
+    )
     p.add_argument("--body", default="", help="Ticket body (markdown)")
     p.add_argument("--body-file", default="", help="Read ticket body from file instead of --body")
 

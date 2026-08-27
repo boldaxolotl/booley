@@ -219,8 +219,15 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat", "--project"]), Path.cwd()) == 0
         out = capsys.readouterr().out
         basic, custom = out.split("Custom tool files", maxsplit=1)
-        for path in ("booley.toml", "tests.toml", "doctor-waivers.toml", "AGENTS.md"):
+        for path in (
+            "booley.toml",
+            "tests.toml",
+            "ticket_defaults.md",
+            "doctor-waivers.toml",
+            "AGENTS.md",
+        ):
             assert path in basic
+        assert "/booley-ticket-create" in basic
         for path in ("criteria.toml", "mcp_tools/*.py"):
             assert path not in basic
             assert path in custom

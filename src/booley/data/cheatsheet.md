@@ -277,6 +277,7 @@ the design sources they describe.
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, agent, sandbox, and job policy | All Flows and Specialists |
 | `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
+| `ticket_defaults.md` | Ticket Criteria and completion defaults | `/booley-ticket-create` only |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
@@ -299,7 +300,7 @@ do not need these files.
 
 | Skill | Use it when | Result |
 |-------|-------------|--------|
-| `/booley-ticket-create <desc>` | You want to create a ticket | Preview, validate, and enqueue a ticket |
+| `/booley-ticket-create <desc>` | You want to create a ticket | Apply defaults; preview and enqueue |
 | `/booley-ticket-triage` | Tickets are blocked or awaiting review | Unblock/reset or approve/reject |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
 | `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; submit after approval |

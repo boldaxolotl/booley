@@ -493,6 +493,21 @@ class TestValidateTicketFields:
         errors = validate_ticket_fields(fields, "## Description\nSome text")
         assert errors == ["on_success.triage_report must be true or false"]
 
+    @pytest.mark.parametrize("field", ["merge", "cleanup"])
+    def test_on_success_flags_must_be_boolean(self, field):
+        fields = {
+            "summary": "Do something",
+            "type": "feature",
+            "branch": "master",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {"sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"]}
+            },
+            "on_success": {field: "yes"},
+        }
+        errors = validate_ticket_fields(fields, "## Description\nSome text")
+        assert errors == [f"on_success.{field} must be true or false"]
+
     def test_missing_fields(self):
         errors = validate_ticket_fields({}, "## Description\ntext")
         missing = [e for e in errors if "Missing required field" in e]
@@ -3982,6 +3997,119 @@ class TestDraftsDirectory:
         assert path is not None
         assert path.parent.name == "drafts"
         assert path.exists()
+
+    def test_create_ticket_file_preserves_explicit_on_success(self, tmp_path):
+        tio = make_tio(tmp_path)
+        on_success = {
+            "destination": "done",
+            "merge": False,
+            "cleanup": False,
+            "triage_report": False,
+        }
+        path = tio.create_ticket_file(
+            "custom-handoff",
+            TicketFileSpec(
+                summary="Custom handoff",
+                ticket_type="feature",
+                branch="master",
+                criteria={"mandatory": {"custom": True}},
+                on_success=on_success,
+            ),
+        )
+        assert path is not None
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fields["on_success"] == on_success
+
+    def test_create_file_cli_accepts_on_success(self, tmp_path, monkeypatch):
+        tickets_dir = tmp_path / "tickets"
+        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
+        on_success = {
+            "destination": "done",
+            "merge": False,
+            "cleanup": True,
+            "triage_report": False,
+        }
+
+        rc = main(
+            argv=[
+                "create-file",
+                "cli-defaults",
+                "--summary",
+                "CLI defaults",
+                "--type",
+                "feature",
+                "--branch",
+                "main",
+                "--criteria",
+                json.dumps({"mandatory": {"custom": True}}),
+                "--on-success",
+                json.dumps(on_success),
+            ]
+        )
+
+        assert rc == 0
+        path = tickets_dir / "board" / "drafts" / "cli-defaults.md"
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert fields["on_success"] == on_success
+
+    @pytest.mark.parametrize(
+        ("on_success", "error"),
+        [
+            ("not-json", "invalid JSON"),
+            (json.dumps([]), "--on-success must be a mapping"),
+            (
+                json.dumps({"destination": "done"}),
+                "missing keys: cleanup, merge, triage_report",
+            ),
+            (
+                json.dumps(
+                    {
+                        "destination": "done",
+                        "merge": False,
+                        "cleanup": True,
+                        "triage_report": False,
+                        "unexpected": True,
+                    }
+                ),
+                "unknown keys: unexpected",
+            ),
+            (
+                json.dumps(
+                    {
+                        "destination": "done",
+                        "merge": "no",
+                        "cleanup": True,
+                        "triage_report": False,
+                    }
+                ),
+                "on_success.merge must be true or false",
+            ),
+        ],
+    )
+    def test_create_file_cli_rejects_invalid_on_success(
+        self, tmp_path, monkeypatch, capsys, on_success, error
+    ):
+        tickets_dir = tmp_path / "tickets"
+        monkeypatch.setenv("TICKETS_DIR", str(tickets_dir))
+
+        rc = main(
+            argv=[
+                "create-file",
+                "invalid-defaults",
+                "--summary",
+                "Invalid defaults",
+                "--type",
+                "feature",
+                "--branch",
+                "main",
+                "--on-success",
+                on_success,
+            ]
+        )
+
+        assert rc == 2
+        assert error in capsys.readouterr().err
+        assert not (tickets_dir / "board" / "drafts" / "invalid-defaults.md").exists()
 
     def test_create_ticket_file_omits_empty_legacy_and_runtime_fields(self, tmp_path):
         """New tickets should not carry stale blank plan/runtime placeholders."""
