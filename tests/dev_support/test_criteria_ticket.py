@@ -130,6 +130,44 @@ class TestValidateCriteriaSection:
         }
         assert self._validate(criteria) == []
 
+    @pytest.mark.parametrize(
+        "entries",
+        [
+            [],
+            ['{"target":"sim_demo","test":"smoke","cycle_count_max":100}'],
+            [{"test": "smoke", "cycle_count_max": 100}],
+            [{"target": "sim_demo", "cycle_count_max": 100}],
+            [{"target": "sim_demo", "test": "smoke"}],
+            [{"target": "sim_demo", "test": "smoke", "cycle_count_max": -1}],
+        ],
+    )
+    def test_cycle_count_validation_matches_runtime_parser(self, entries):
+        criteria = {"mandatory": {"cycle_count": entries}}
+        with pytest.raises(ValueError) as runtime_error:
+            CriteriaTemplate.from_yaml(criteria)
+
+        assert self._validate(criteria) == [f"criteria: {runtime_error.value}"]
+
+    def test_cycle_count_validation_rejects_duplicate_binding_across_sections(self):
+        binding = {"target": "sim_demo", "test": "smoke"}
+        criteria = {
+            "mandatory": {"cycle_count": [{**binding, "cycle_count_max": 100}]},
+            "optional": {"cycle_count": [{**binding, "cycle_count_min": 1}]},
+        }
+        with pytest.raises(ValueError) as runtime_error:
+            CriteriaTemplate.from_yaml(criteria)
+
+        assert self._validate(criteria) == [f"criteria: {runtime_error.value}"]
+
+    def test_cycle_count_validation_accepts_runtime_grammar(self):
+        criteria = {
+            "mandatory": {
+                "cycle_count": [{"target": "sim_demo", "test": "smoke", "cycle_count_max": 100}]
+            }
+        }
+
+        assert self._validate(criteria) == []
+
 
 # ===================================================================
 # validate_ticket_fields — criteria integration
