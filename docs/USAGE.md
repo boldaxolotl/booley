@@ -465,6 +465,31 @@ unstructured, and let the skill turn it into a precise contract:
    gate. These mechanics are automatic; review what the skill shows you rather than
    managing its worktrees or metadata.
 
+#### Project Ticket Creation Defaults
+
+`booley init` creates an inactive, comment-only
+`.booley_project/ticket_defaults.md`. Customize it when a Project repeatedly uses the same
+Criteria—for example, a fixed matrix of Simulation Targets or a mandatory security
+review—or the same successful-run disposition. Only `/booley-ticket-create` reads this
+file, and only while creating a Ticket. The Runner, Harness, and Developer Agent do not
+read it.
+
+An active document contains a Project-wide `on_success` block and one complete `criteria`
+block under each of the Feature, Bugfix, Refactor, and Verification headings. The YAML uses
+the same syntax as Ticket frontmatter, including complete simulation entries such as
+`tb/foo_tb.sv @ sim_default @ all @ pass -> pass`. It is a full replacement, not an
+overlay: omitted Criteria are not selected, and later changes to Booley's shipped defaults
+do not change the Project. If the file is absent or remains comment-only, the shipped
+defaults apply.
+
+Lightweight, Detailed-plan, and agent-driven creation all use the file for inferred
+`criteria` and `on_success`. Complete values explicitly chosen for one Ticket win. The
+skill validates all four type blocks against the live Criterion catalog, enabled producers,
+Targets, and registered tests before using any of them. A partial or stale document is an
+error rather than a silent fallback; an interactive user can fix it or supply complete
+Ticket-specific values. The full draft remains the authority you review before creation,
+and editing this file never changes an existing Ticket.
+
 Queuing a ticket doesn't start it. Tickets sit in `board/queue/` until you start Ticket Mode with `booley run` in a container terminal; that loop then pulls tickets off the queue one after another without further input. Use `/booley-ticket-triage` to work through blocked, failed, and finished ones.
 
 **Writing a ticket by hand** is an advanced path because executable tickets
@@ -539,6 +564,11 @@ acceptance effects. Simulation acceptance compares the selected and passing
 test names with the Target registry instead of trusting an aggregate count,
 rejects explicitly model-only evidence for a DUT criterion, and requires a
 recorded failing run before a `fail -> pass` criterion can become green.
+
+Three similarly named inputs have different jobs. `criteria.toml` defines the live
+Criterion families available to Project-authored Flows and Specialists;
+`ticket_defaults.md` chooses complete creation-time defaults from that catalog; and each
+Ticket stores the concrete immutable Criteria selected for that one run.
 
 The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
 
@@ -754,7 +784,10 @@ git -C .booley_project status                      # what changed in Booley's ow
 git -C .booley_project log --oneline -5
 ```
 
-Same rule for anything else under `.booley_project/` — `tests.toml`, `criteria.toml`, the `.core` files. If `git -C .booley_project rev-parse --git-dir` errors, the directory isn't a repo on this machine, so those files were never version-controlled: copy one aside before you edit it.
+Same rule for anything else under `.booley_project/` — `tests.toml`,
+`ticket_defaults.md`, `criteria.toml`, and the `.core` files. If
+`git -C .booley_project rev-parse --git-dir` errors, the directory isn't a repo on this
+machine, so those files were never version-controlled: copy one aside before you edit it.
 
 ## Running Unattended
 

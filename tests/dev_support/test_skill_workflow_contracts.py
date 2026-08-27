@@ -1,5 +1,9 @@
 """Regression contracts for shipped ticket workflow skills."""
 
+import re
+
+import yaml
+
 from booley.runtime.paths import skills_dir
 
 
@@ -181,6 +185,36 @@ def test_ticket_create_grills_frontiers_then_shows_one_complete_draft():
         "summarize the resulting shared understanding and ask the user to confirm it"
         not in contract
     )
+
+
+def test_ticket_create_uses_complete_project_defaults_only_during_creation():
+    skill = _skill_text("booley-ticket-create")
+    contract = " ".join(skill.split())
+
+    for required in (
+        'resolve_project_dir() / "ticket_defaults.md"',
+        "consumed **only here, during creation**",
+        "All five blocks must then be present, unique, non-null, and complete",
+        "An active file fully replaces the shipped defaults",
+        "Validate the **entire active file**",
+        "explicitly supply complete per-Ticket `criteria` **and** `on_success`",
+        "validation never does",
+        '--on-success "$ON_SUCCESS_JSON"',
+    ):
+        assert required in contract
+    assert "merge, add/remove, or inheritance syntax" in contract
+    assert "never influence scope, priority, dependencies" in contract
+
+
+def test_ticket_defaults_template_is_packaged_and_inactive():
+    template = _skill_text("booley-ticket-create", "TICKET_DEFAULTS_TEMPLATE.md")
+    for heading in ("On success", "Feature", "Bugfix", "Refactor", "Verification"):
+        assert template.count(f"## {heading}") == 1
+
+    blocks = re.findall(r"```yaml\n(.*?)```", template, flags=re.DOTALL)
+    assert len(blocks) == 5
+    assert all(yaml.safe_load(block) is None for block in blocks)
+    assert "@ sim_default @ all @ pass -> pass" in template
 
 
 def test_setup_grills_one_dependency_frontier_per_round():

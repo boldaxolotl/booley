@@ -139,8 +139,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.234"' in lock
-    assert '"@openai/codex": "0.147.0"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.247"' in lock
+    assert '"@openai/codex": "0.150.1"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
