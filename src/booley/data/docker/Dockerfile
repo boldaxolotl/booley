@@ -105,15 +105,20 @@ ARG BOOLEY_SOURCE_REVISION=unknown
 ARG BOOLEY_SOURCE_UPDATED_AT=unknown
 ARG BOOLEY_IMAGE_BUILT_AT=unknown
 ARG BOOLEY_RUNTIME_BASE_IMAGE=unknown
+ARG BOOLEY_PAYLOAD_FINGERPRINT=unknown
 ENV BOOLEY_VERSION=${BOOLEY_VERSION} \
     BOOLEY_SOURCE_REVISION=${BOOLEY_SOURCE_REVISION} \
     BOOLEY_SOURCE_UPDATED_AT=${BOOLEY_SOURCE_UPDATED_AT} \
-    BOOLEY_IMAGE_BUILT_AT=${BOOLEY_IMAGE_BUILT_AT}
+    BOOLEY_IMAGE_BUILT_AT=${BOOLEY_IMAGE_BUILT_AT} \
+    BOOLEY_PAYLOAD_FINGERPRINT=${BOOLEY_PAYLOAD_FINGERPRINT}
 LABEL org.opencontainers.image.version=${BOOLEY_VERSION} \
       org.opencontainers.image.revision=${BOOLEY_SOURCE_REVISION} \
       org.opencontainers.image.created=${BOOLEY_IMAGE_BUILT_AT} \
       org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
-      io.booley.runtime-base.image=${BOOLEY_RUNTIME_BASE_IMAGE}
+      io.booley.runtime-base.image=${BOOLEY_RUNTIME_BASE_IMAGE} \
+      io.booley.provenance.schema=1 \
+      io.booley.payload.fingerprint=${BOOLEY_PAYLOAD_FINGERPRINT} \
+      booley.build-fingerprint=${BOOLEY_PAYLOAD_FINGERPRINT}
 
 USER agent
 WORKDIR /work

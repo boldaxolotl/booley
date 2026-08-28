@@ -1598,24 +1598,33 @@ check rebuilds a project image left behind by a base version/source update.
 Manual ownership prevents file rewriting; it does not freeze stale parent
 layers into the Session Runtime.
 
+Booley infers ancestry only from a Dockerfile with one unambiguous `FROM`. For
+a multi-stage or variable-based recipe, declare the managed direct parent
+without changing Docker semantics:
+
+```dockerfile
+# booley:parent=booley-sandbox-riscv
+FROM booley-sandbox-riscv AS tools
+FROM tools AS runtime
+```
+
+The directive is lifecycle metadata. Booley verifies the resulting image label
+against that parent's current immutable Docker image ID; it never treats a tag
+or matching Booley version as proof of ancestry.
+
 Use the [post-setup hook](#post-setup-hook) (below) for per-worktree
 preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
 
-**Changing an *already-built* image is a three-step operation, not a config
-edit.** (Init's own build above already does step 1 for you.) The
-devcontainer spec freezes the image name at seed time, and a running container
-keeps the image it started on. So every image change (new `image`, or a rebuild
-behind the same tag) needs:
-
-1. `booley init --seed` on the host, which refreshes the devcontainer spec;
-2. recreate the container with VS Code **Rebuild Container**, or
-   `booley session down && booley session up`;
-3. probe **inside the Session Runtime** (`booley session enter -- <new-eda-tool>
-   --version`); a host `docker run` proves nothing about the container.
-
-Skipping step 2 is the classic trap. `booley doctor` and `booley session up`
-warn on image drift; treat those as "do the three steps".
+**Changing an already-built image is a lifecycle operation, not a config
+edit.** For a headless Booley-managed runtime, `booley session refresh`
+reconciles the full image chain, pins the new immutable image ID into the host
+spec, recreates the container, and probes its installed Booley payload before
+discarding the old container. A failed recreation or probe restores the old
+container. If VS Code owns the running runtime, refresh the image with
+`booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
+external images remain your responsibility: rebuild or pull them, run
+`booley init --seed`, then recreate and probe the runtime.
 
 #### RISC-V toolchain image (`booley-sandbox-riscv`)
 

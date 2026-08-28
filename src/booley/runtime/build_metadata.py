@@ -20,6 +20,7 @@ class BuildMetadata:
     revision: str
     source_updated_at: str
     image_built_at: str
+    payload_fingerprint: str
 
 
 def _checkout_root() -> Path | None:
@@ -93,7 +94,19 @@ def current_build_metadata() -> BuildMetadata:
             checkout_updated_at or (image_updated_at if package_matches_image else "")
         ),
         image_built_at=os.environ.get("BOOLEY_IMAGE_BUILT_AT", ""),
+        payload_fingerprint=(
+            _embedded_payload_fingerprint()
+            or (os.environ.get("BOOLEY_PAYLOAD_FINGERPRINT", "") if package_matches_image else "")
+        ),
     )
+
+
+def _embedded_payload_fingerprint() -> str:
+    try:
+        from booley._build_commit import PAYLOAD_FINGERPRINT
+    except (ImportError, AttributeError):
+        return ""
+    return PAYLOAD_FINGERPRINT
 
 
 def _format_timestamp(value: str) -> str:

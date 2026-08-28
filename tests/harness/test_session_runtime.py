@@ -694,15 +694,21 @@ def _write_spec(workspace: Path, spec: dict) -> None:
 @pytest.fixture
 def wired(workspace: Path):
     """A workspace with a spec on disk and a fully mocked Docker."""
-    from booley.harness import init_docker_image as idi
+    from booley.harness import image_lifecycle
 
     _write_spec(workspace, _spec())
     with (
         patch.object(sr.idk, "network_exists", return_value=True),
         patch.object(sr.idk, "image_exists", return_value=True),
-        # The stale-bake probe hashes the real checkout and inspects real
-        # docker labels; force "no verdict" to keep these tests hermetic.
-        patch.object(idi, "source_fingerprint_mismatch", return_value=None),
+        patch.object(
+            image_lifecycle,
+            "reconcile",
+            return_value=image_lifecycle.LifecycleResult(
+                "booley-sandbox",
+                "sha256:fixture",
+                image_lifecycle.Status.CURRENT,
+            ),
+        ),
         patch(
             "booley.eda.runtime_spec.validate",
             return_value=SimpleNamespace(
@@ -796,9 +802,9 @@ class TestUp:
         ]
         assert hooks == [dc.mcp_post_start_command()]
 
-    def test_rebuild_removes_first(self, wired):
+    def test_rebuild_parks_old_container_until_replacement_succeeds(self, wired):
         workspace, run = wired
-        exists = iter([True, True, False, False])  # down() sees it, then run creates
+        exists = iter([True, False, False])
         with (
             patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
             patch.object(sr.idk, "container_running", return_value=False),
@@ -811,9 +817,92 @@ class TestUp:
             sr.up(workspace, rebuild=True)
 
         argvs = [_argv_of(c) for c in run.call_args_list]
-        assert any(a[:2] == ["docker", "stop"] for a in argvs)
-        assert any(a[:3] == ["docker", "rm", "-f"] for a in argvs)
+        backup = f"{sr.session_container_name(workspace)}-pre-refresh"
+        assert ["docker", "rename", sr.session_container_name(workspace), backup] in argvs
         assert any(a[:2] == ["docker", "run"] for a in argvs)
+        assert ["docker", "rm", "-f", backup] in argvs
+
+    def test_failed_refresh_probe_restores_parked_container(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        backup = f"{name}-pre-refresh"
+        exists = iter([True, False, False, True])
+        with (
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(sr.idk, "container_running", return_value=False),
+            patch.object(
+                sr,
+                "verify_refreshed_session",
+                side_effect=sr.SessionError("payload mismatch"),
+            ),
+            pytest.raises(sr.SessionError, match="payload mismatch"),
+        ):
+            sr.up(
+                workspace,
+                rebuild=True,
+                expected_image_id="sha256:fresh",
+                expected_payload_fingerprint="payload-123",
+            )
+
+        argvs = [_argv_of(c) for c in run.call_args_list]
+        assert ["docker", "rename", name, backup] in argvs
+        assert ["docker", "rm", "-f", name] in argvs
+        assert ["docker", "rename", backup, name] in argvs
+        assert ["docker", "rm", "-f", backup] not in argvs
+
+    def test_failed_probe_without_prior_runtime_removes_candidate(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        exists = iter([False, False, True])
+        with (
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(
+                sr,
+                "verify_refreshed_session",
+                side_effect=sr.SessionError("payload mismatch"),
+            ),
+            pytest.raises(sr.SessionError, match="payload mismatch"),
+        ):
+            sr.up(
+                workspace,
+                rebuild=True,
+                expected_image_id="sha256:fresh",
+                expected_payload_fingerprint="payload-123",
+            )
+
+        assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
+
+    def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        backup = f"{name}-pre-refresh"
+        exists = iter([True, False, False])
+
+        def response(argv, **_kwargs):
+            if argv == ["docker", "rm", "-f", backup]:
+                return subprocess.CompletedProcess(argv, 1, "", "busy")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        run.side_effect = response
+        with (
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(sr.idk, "container_running", return_value=False),
+            patch.object(sr, "verify_refreshed_session"),
+        ):
+            assert sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh") == name
+
+        assert "replacement succeeded" in caplog.text
+
+    def test_licensed_refresh_fails_before_parking_existing_runtime(self, wired):
+        workspace, run = wired
+        with (
+            patch.object(sr.idk, "container_exists", return_value=True),
+            patch.object(sr, "_requested_issued_license", return_value=object()),
+            pytest.raises(sr.SessionError, match="licensed relay topology"),
+        ):
+            sr.up(workspace, rebuild=True)
+
+        assert not any(_argv_of(call)[:2] == ["docker", "rename"] for call in run.call_args_list)
 
     def test_image_override_cannot_bypass_host_issued_spec(self, wired):
         workspace, _run = wired
@@ -1219,41 +1308,36 @@ class TestStaleBooleyBakeWarning:
     stay silent."""
 
     def test_mismatch_warns_and_names_the_fix(self, workspace, caplog):
-        from booley.harness import init_docker_image as idi
+        from booley.harness import image_lifecycle
 
-        seen: list[str] = []
+        result = image_lifecycle.LifecycleResult(
+            "booley-sandbox", "sha256:old", image_lifecycle.Status.STALE
+        )
+        with patch.object(image_lifecycle, "reconcile", return_value=result) as reconcile:
+            sr._warn_on_stale_booley_bake(workspace)
 
-        def fake_mismatch(image: str) -> bool:
-            seen.append(image)
-            return True
-
-        with patch.object(idi, "source_fingerprint_mismatch", fake_mismatch):
-            sr._warn_on_stale_booley_bake({"image": "booley-sandbox"})
-
-        assert seen == ["booley-sandbox"]
+        reconcile.assert_called_once_with(workspace, image_lifecycle.Intent.CHECK)
         assert "stale Booley code" in caplog.text
-        assert "build.sh" in caplog.text
-        assert "booley session down" in caplog.text
+        assert "booley session refresh" in caplog.text
 
-    def test_no_verdict_is_silent(self, workspace, caplog):
-        from booley.harness import init_docker_image as idi
+    def test_external_image_is_silent(self, workspace, caplog):
+        from booley.harness import image_lifecycle
 
-        with patch.object(idi, "source_fingerprint_mismatch", return_value=None):
-            sr._warn_on_stale_booley_bake({"image": "booley-sandbox"})
+        result = image_lifecycle.LifecycleResult(
+            "custom/image", None, image_lifecycle.Status.EXTERNAL
+        )
+        with patch.object(image_lifecycle, "reconcile", return_value=result):
+            sr._warn_on_stale_booley_bake(workspace)
         assert "stale Booley code" not in caplog.text
 
     def test_match_is_silent(self, workspace, caplog):
-        from booley.harness import init_docker_image as idi
+        from booley.harness import image_lifecycle
 
-        with patch.object(idi, "source_fingerprint_mismatch", return_value=False):
-            sr._warn_on_stale_booley_bake({"image": "booley-sandbox"})
-        assert "stale Booley code" not in caplog.text
-
-    def test_missing_image_key_is_silent(self, workspace, caplog):
-        from booley.harness import init_docker_image as idi
-
-        with patch.object(idi, "source_fingerprint_mismatch", return_value=True):
-            sr._warn_on_stale_booley_bake({})
+        result = image_lifecycle.LifecycleResult(
+            "booley-sandbox", "sha256:new", image_lifecycle.Status.CURRENT
+        )
+        with patch.object(image_lifecycle, "reconcile", return_value=result):
+            sr._warn_on_stale_booley_bake(workspace)
         assert "stale Booley code" not in caplog.text
 
 
@@ -1568,6 +1652,13 @@ class TestEnterAlwaysSetsTERM:
 
 
 class TestSessionRefresh:
+    def test_session_command_coordinator_fits_on_a_screen(self):
+        import inspect
+
+        from booley.harness import booley
+
+        assert len(inspect.getsourcelines(booley._cmd_session)[0]) <= 50
+
     def test_parser_exposes_refresh_subcommand(self):
         from booley.harness.booley import _build_parser
 
@@ -1575,34 +1666,85 @@ class TestSessionRefresh:
         assert args.command == "session"
         assert args.session_command == "refresh"
 
+    def test_small_session_handlers_delegate_and_report(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from booley.harness import booley
+
+        with (
+            patch.object(sr, "enter", return_value=7) as enter,
+            patch.object(booley.sys.stdin, "isatty", return_value=True),
+            patch.object(booley.sys.stdout, "isatty", return_value=True),
+        ):
+            assert (
+                booley._session_enter(SimpleNamespace(exec_cmd=["--", "echo", "ready"]), tmp_path)
+                == 7
+            )
+        enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True)
+
+        with (
+            patch.object(sr, "down", return_value=False),
+            patch.object(sr, "status", return_value="stopped"),
+            patch.object(sr, "validate", return_value="valid"),
+            patch.object(sr, "prepare", return_value="prepared"),
+        ):
+            assert booley._session_down(SimpleNamespace(), tmp_path) == 0
+            assert booley._session_status(SimpleNamespace(), tmp_path) == 0
+            assert booley._session_validate(SimpleNamespace(), tmp_path) == 0
+            assert booley._session_prepare(SimpleNamespace(), tmp_path) == 0
+
+        assert capsys.readouterr().out.splitlines() == [
+            "no Session Runtime container for this folder",
+            "stopped",
+            "valid",
+            "prepared",
+        ]
+
+    def test_refresh_refuses_active_vscode_before_reconciling_image(self, tmp_path: Path):
+        from booley.harness import booley, init_cmd
+        from booley.harness.booley import _build_parser
+
+        args = _build_parser().parse_args(["session", "refresh"])
+        with (
+            patch.object(sr, "conflicting_vscode_session", return_value="vscode-owned"),
+            patch.object(init_cmd, "refresh_session_image") as refresh,
+        ):
+            assert booley._cmd_session(args, tmp_path) == 2
+
+        refresh.assert_not_called()
+
     def test_refresh_rebuilds_base_then_selected_flavor(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
-        from booley.harness.init_docker_image import FLAVOR_IMAGES
+        from booley.harness.image_lifecycle import Intent, LifecycleResult, Status
 
-        selected = next(iter(FLAVOR_IMAGES))
+        expected = LifecycleResult(
+            "booley-sandbox-riscv",
+            "sha256:fresh",
+            Status.CHANGED,
+            changed_images=("booley-sandbox", "booley-sandbox-riscv"),
+        )
         calls = []
-        monkeypatch.setattr(init_cmd, "project_sandbox_image", lambda _root: selected)
         monkeypatch.setattr(
             init_cmd,
-            "_step_docker_image",
-            lambda ctx, image: calls.append(("base", image, ctx.force)),
-        )
-        monkeypatch.setattr(
-            init_cmd,
-            "_step_project_image",
-            lambda ctx: calls.append(("selected", selected, ctx.force)),
+            "reconcile_images",
+            lambda root, intent, *, verbose=False: (
+                calls.append((root, intent, verbose)) or expected
+            ),
         )
 
-        assert init_cmd.refresh_session_image(tmp_path) == selected
-        assert calls == [("base", selected, True), ("selected", selected, True)]
+        assert init_cmd.refresh_session_image(tmp_path, verbose=True) is expected
+        assert calls == [(tmp_path, Intent.REFRESH, True)]
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
+        from booley.harness.image_lifecycle import LifecycleResult, Status
 
         monkeypatch.setattr(
             init_cmd,
-            "project_sandbox_image",
-            lambda _root: "registry.example/custom:latest",
+            "reconcile_images",
+            lambda *_args, **_kwargs: LifecycleResult(
+                "registry.example/custom:latest", None, Status.EXTERNAL
+            ),
         )
         with pytest.raises(RuntimeError, match="user-managed"):
             init_cmd.refresh_session_image(tmp_path)
@@ -1610,6 +1752,7 @@ class TestSessionRefresh:
     def test_refresh_reissues_spec_before_rebuild_start(self, tmp_path: Path):
         from booley.harness import booley, init_cmd
         from booley.harness.booley import _build_parser
+        from booley.harness.image_lifecycle import LifecycleResult, Status
 
         args = _build_parser().parse_args(["session", "refresh"])
         events: list[str] = []
@@ -1617,9 +1760,15 @@ class TestSessionRefresh:
             patch.object(
                 init_cmd,
                 "refresh_session_image",
-                side_effect=lambda *_args, **_kwargs: (events.append("image"), "booley-sandbox")[
-                    1
-                ],
+                side_effect=lambda *_args, **_kwargs: (
+                    events.append("image")
+                    or LifecycleResult(
+                        "booley-sandbox",
+                        "sha256:fresh",
+                        Status.CHANGED,
+                        payload_fingerprint="payload-123",
+                    )
+                ),
             ),
             patch.object(
                 init_cmd,
@@ -1631,14 +1780,110 @@ class TestSessionRefresh:
                 sr,
                 "up",
                 side_effect=lambda *_args, **kwargs: (
-                    events.append(f"up:{kwargs.get('rebuild')}") or "session"
+                    events.append(
+                        "up:"
+                        f"{kwargs.get('rebuild')}:"
+                        f"{kwargs.get('expected_image_id')}:"
+                        f"{kwargs.get('expected_payload_fingerprint')}"
+                    )
+                    or "session"
                 ),
             ),
             patch.object(booley, "_report_session_health"),
         ):
             assert booley._cmd_session(args, tmp_path) == 0
 
-        assert events == ["image", "reissue", "up:True"]
+        assert events == ["image", "reissue", "up:True:sha256:fresh:payload-123"]
+
+    def test_refresh_failure_restores_prior_host_spec(self, tmp_path: Path):
+        from booley.harness import booley, init_cmd
+        from booley.harness.booley import _build_parser
+        from booley.harness.image_lifecycle import LifecycleResult, Status
+
+        args = _build_parser().parse_args(["session", "refresh"])
+        snapshot = object()
+        events: list[str] = []
+        result = LifecycleResult(
+            "booley-sandbox",
+            "sha256:fresh",
+            Status.CHANGED,
+            payload_fingerprint="payload-123",
+        )
+        with (
+            patch.object(init_cmd, "refresh_session_image", return_value=result),
+            patch.object(init_cmd, "capture_session_spec", return_value=snapshot),
+            patch.object(
+                init_cmd,
+                "reissue_session_spec",
+                side_effect=lambda *_args, **_kwargs: events.append("reissue"),
+            ),
+            patch.object(
+                init_cmd,
+                "restore_session_spec",
+                side_effect=lambda root, saved: events.append(
+                    f"restore:{root == tmp_path}:{saved is snapshot}"
+                ),
+            ),
+            patch.object(sr, "conflicting_vscode_session", return_value=None),
+            patch.object(sr, "up", side_effect=sr.SessionError("payload mismatch")),
+            patch.object(booley, "_report_session_health"),
+        ):
+            assert booley._cmd_session(args, tmp_path) == 2
+
+        assert events == ["reissue", "restore:True:True"]
+
+    def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
+        from booley.eda import runtime_spec
+        from booley.harness import init_cmd
+
+        spec_path = dc.devcontainer_path(tmp_path)
+        spec_path.parent.mkdir(parents=True)
+        old_id = "sha256:" + "a" * 64
+        old_spec = json.dumps({"image": old_id}).encode()
+        spec_path.write_bytes(old_spec)
+        stamp_path = tmp_path / "host-stamp.json"
+        stamp_path.write_bytes(b"old stamp\n")
+        monkeypatch.setattr(runtime_spec, "stamp_path", lambda _root: stamp_path)
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            init_cmd.subprocess,
+            "run",
+            lambda argv, **_kwargs: (
+                calls.append(argv) or subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            ),
+        )
+
+        snapshot = init_cmd.capture_session_spec(tmp_path)
+        spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
+        stamp_path.write_text("new stamp\n", encoding="utf-8")
+        init_cmd.restore_session_spec(tmp_path, snapshot)
+
+        assert spec_path.read_bytes() == old_spec
+        assert stamp_path.read_bytes() == b"old stamp\n"
+        assert calls == [["docker", "tag", old_id, runtime_spec.keeper_image(tmp_path)]]
+
+    def test_runtime_probe_uses_isolated_import_and_exact_payload(self, tmp_path: Path):
+        image_id = "sha256:" + "a" * 64
+        completed = subprocess.CompletedProcess([], 0, stdout="payload-123\n", stderr="")
+        with (
+            patch.object(sr, "_docker_stdout", return_value=image_id),
+            patch.object(sr, "_run", return_value=completed) as run,
+        ):
+            sr.verify_refreshed_session(tmp_path, image_id, "payload-123")
+
+        argv = run.call_args.args[0]
+        assert argv[:3] == ["docker", "exec", sr.session_container_name(tmp_path)]
+        assert argv[3:6] == ["python3", "-I", "-c"]
+
+    def test_runtime_probe_rejects_payload_mismatch(self, tmp_path: Path):
+        image_id = "sha256:" + "a" * 64
+        completed = subprocess.CompletedProcess([], 0, stdout="old-payload\n", stderr="")
+        with (
+            patch.object(sr, "_docker_stdout", return_value=image_id),
+            patch.object(sr, "_run", return_value=completed),
+            pytest.raises(sr.SessionError, match="payload does not match"),
+        ):
+            sr.verify_refreshed_session(tmp_path, image_id, "payload-123")
 
     def test_down_up_never_announces_persisted_stale_doctor_findings(
         self,

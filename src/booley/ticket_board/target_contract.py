@@ -391,15 +391,10 @@ def _identity(root: Path, path: Path) -> str:
         return path.as_posix()
 
 
-def _portable_surface_payload(kind: str, payload: bytes) -> bytes:
-    if kind in {"constraint", "hook"}:
-        return payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-    return payload
-
-
 def _entry(root: Path, path: Path, kind: str, data: bytes | None = None) -> ContractSurfaceEntry:
     payload = path.read_bytes() if data is None else data
-    payload = _portable_surface_payload(kind, payload)
+    if kind == "constraint":
+        payload = payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     return ContractSurfaceEntry(_identity(root, path), kind, _sha256(payload))
 
 

@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -388,29 +389,17 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
         )
 
 
-def _warn_on_stale_booley_bake(spec: dict) -> None:
-    """Warn when the spec image bakes Booley sources older than this checkout.
+def _warn_on_stale_booley_bake(workspace: Path) -> None:
+    """Warn when the managed Session Image is stale by authoritative provenance."""
+    from booley.harness.image_lifecycle import Intent, Status, reconcile
 
-    The image build stamps a content hash of the baked sources as the
-    ``booley.build-fingerprint`` label (inherited by every derived project
-    image), so an exact comparison against the current checkout is cheap: one
-    ``docker image inspect`` plus hashing ``src/``. Without this, a host-side
-    Booley fix stays invisible in-container until someone rebuilds — the
-    recurring "stale wheel" incident this guard exists to end. Advisory only,
-    and silent for pip installs (no checkout to hash) and unlabeled or
-    deliberately pulled images: `doctor`'s mtime heuristics cover those.
-    """
-    # Deferred import: init_docker_image pulls in the init build stack.
-    from booley.harness.init_docker_image import source_fingerprint_mismatch
-
-    image = spec.get("image")
-    if isinstance(image, str) and image and source_fingerprint_mismatch(image):
+    result = reconcile(workspace, Intent.CHECK)
+    if result.status is Status.STALE:
         logger.warning(
             "sandbox image '%s' was built from Booley sources that no longer "
             "match this checkout — the session runs stale Booley code. Rebuild "
-            "the image (src/booley/data/docker/build.sh or `booley init "
-            "--force`), then `booley session down` and `booley session up`.",
-            image,
+            "with `booley session refresh`.",
+            result.selected_reference,
         )
 
 
@@ -446,11 +435,200 @@ def _run(argv: list[str], *, capture: bool = True) -> subprocess.CompletedProces
     )
 
 
+@dataclass(frozen=True)
+class _ParkedSession:
+    name: str
+    backup: str
+    was_running: bool
+
+
+def _park_session_for_rebuild(name: str) -> _ParkedSession:
+    """Stop and rename an unlicensed Session so refresh can roll it back."""
+    backup = f"{name}-pre-refresh"
+    if idk.container_exists(backup):
+        raise SessionError(
+            f"cannot refresh while recovery container {backup!r} exists; inspect it first"
+        )
+    was_running = idk.container_running(name)
+    if was_running:
+        stopped = _run(["docker", "stop", name])
+        if stopped.returncode != 0:
+            raise SessionError(
+                f"could not stop existing Session Runtime: {stopped.stderr.strip()}"
+            )
+    renamed = _run(["docker", "rename", name, backup])
+    if renamed.returncode != 0:
+        if was_running:
+            _run(["docker", "start", name])
+        raise SessionError(f"could not park existing Session Runtime: {renamed.stderr.strip()}")
+    return _ParkedSession(name, backup, was_running)
+
+
+def _restore_parked_session(parked: _ParkedSession) -> None:
+    """Restore the pre-refresh Session after replacement failed."""
+    if idk.container_exists(parked.name):
+        _run(["docker", "rm", "-f", parked.name])
+    renamed = _run(["docker", "rename", parked.backup, parked.name])
+    if renamed.returncode != 0:
+        raise SessionError(
+            f"refresh failed and recovery container {parked.backup!r} could not be restored"
+        )
+    if parked.was_running:
+        _start_session_container(parked.name)
+
+
+def _discard_parked_session(parked: _ParkedSession) -> None:
+    result = _run(["docker", "rm", "-f", parked.backup])
+    if result.returncode != 0:
+        logger.warning(
+            "replacement succeeded but old recovery Session %r could not be removed: %s",
+            parked.backup,
+            result.stderr.strip() or "docker rm failed",
+        )
+
+
+def _remove_failed_candidate(request: _UpRequest, *, remove_relay: bool) -> None:
+    """Remove an unverified candidate and any topology created only for it."""
+    if idk.container_exists(request.name):
+        removed = _run(["docker", "rm", "-f", request.name])
+        if removed.returncode != 0:
+            raise SessionError(
+                f"could not remove failed Session candidate {request.name!r}: "
+                f"{removed.stderr.strip()}"
+            )
+    if remove_relay:
+        _remove_license_relay(request.relay)
+
+
+@dataclass(frozen=True)
+class _UpRequest:
+    spec: dict
+    issuance: Any
+    profile: Any
+    name: str
+    labels: tuple[str, ...]
+    relay: Any
+
+
+def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequest:
+    from booley.eda import runtime_spec
+
+    spec = _load_spec(workspace)
+    try:
+        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+    except runtime_spec.RuntimeSpecError as exc:
+        raise SessionError(
+            f"refusing Session Runtime startup: {exc}; run `booley init --seed` on the host"
+        ) from exc
+    _warn_on_image_drift(spec, workspace)
+    if image_override is not None and image_override != spec.get("image"):
+        raise SessionError(
+            "session refresh cannot bypass a host-issued spec; re-run `booley init --seed`"
+        )
+    profile = _requested_issued_license(workspace, issuance)
+    _preflight(spec, license_required=profile is not None)
+    _warn_on_stale_booley_bake(workspace)
+    return _UpRequest(
+        spec,
+        issuance,
+        profile,
+        session_container_name(workspace),
+        runtime_spec.labels(issuance),
+        _relay_resources(workspace),
+    )
+
+
+def _create_or_resume_session(
+    workspace: Path,
+    request: _UpRequest,
+    *,
+    exists: bool,
+) -> bool:
+    relay, relay_created = _prepare_license_relay(
+        workspace,
+        request.relay,
+        request.name,
+        request.profile,
+        request.labels,
+        exists,
+        request.issuance.relay_image_id,
+    )
+    created = not exists
+    if created:
+        _create_session_container(
+            request.spec,
+            workspace,
+            request.name,
+            request.labels,
+            request.profile,
+            relay,
+            relay_created,
+            request.issuance.relay_image_id,
+        )
+    else:
+        _start_session_container(request.name)
+    if created and request.spec.get("postCreateCommand"):
+        _run_hook(request.name, str(request.spec["postCreateCommand"]), "postCreateCommand")
+    if request.spec.get("postStartCommand"):
+        _run_hook(request.name, str(request.spec["postStartCommand"]), "postStartCommand")
+    return relay_created
+
+
+def _run_up_transaction(
+    workspace: Path,
+    request: _UpRequest,
+    *,
+    rebuild: bool,
+    expected_image_id: str | None,
+    expected_payload_fingerprint: str | None,
+) -> None:
+    replacing = rebuild and idk.container_exists(request.name)
+    if replacing and request.profile is not None:
+        raise SessionError(
+            "transactional refresh cannot yet preserve a licensed relay topology; "
+            "run `booley session down` before `booley session refresh`"
+        )
+    parked = _park_session_for_rebuild(request.name) if replacing else None
+    exists = idk.container_exists(request.name)
+    if exists and not _container_matches_issuance(
+        request.name, request.issuance, spec=request.spec, workspace=workspace
+    ):
+        raise SessionError(
+            f"existing Session Runtime {request.name!r} does not match the current host "
+            "issuance; run `booley session up --rebuild`"
+        )
+    candidate_ready = False
+    relay_created = False
+    try:
+        relay_created = _create_or_resume_session(
+            workspace,
+            request,
+            exists=exists,
+        )
+        candidate_ready = True
+        if expected_image_id is not None:
+            verify_refreshed_session(
+                workspace,
+                expected_image_id,
+                expected_payload_fingerprint,
+            )
+    except BaseException:
+        if parked is not None:
+            _restore_parked_session(parked)
+        elif not exists and candidate_ready:
+            _remove_failed_candidate(request, remove_relay=relay_created)
+        raise
+    if parked is not None:
+        _discard_parked_session(parked)
+
+
 def up(
     workspace: Path,
     *,
     rebuild: bool = False,
     image_override: str | None = None,
+    expected_image_id: str | None = None,
+    expected_payload_fingerprint: str | None = None,
 ) -> str:
     """Create-or-start the Session Runtime for *workspace*; return its name.
 
@@ -460,70 +638,18 @@ def up(
     start (it revives the in-container MCP endpoint after a stop->start, which a
     resumed container needs and a fresh one gets from postCreate anyway).
     """
-    spec = _load_spec(workspace)
-    from booley.eda import runtime_spec
-
-    spec_path = dc.devcontainer_path(workspace)
-    try:
-        issuance = runtime_spec.validate(workspace, spec, spec_path)
-    except runtime_spec.RuntimeSpecError as exc:
-        raise SessionError(
-            f"refusing Session Runtime startup: {exc}; run `booley init --seed` on the host"
-        ) from exc
-    _warn_on_image_drift(spec, workspace)
-    _warn_on_stale_booley_bake(spec)
-    if image_override is not None and image_override != spec.get("image"):
-        raise SessionError(
-            "session refresh cannot bypass a host-issued spec; re-run `booley init --seed`"
-        )
-    profile = _requested_issued_license(workspace, issuance)
-    _preflight(spec, license_required=profile is not None)
-    name = session_container_name(workspace)
-    labels = runtime_spec.labels(issuance)
-    relay = _relay_resources(workspace)
-
-    if rebuild and idk.container_exists(name):
-        down(workspace, remove=True)
-
-    exists = idk.container_exists(name)
-    if exists and not _container_matches_issuance(name, issuance, spec=spec, workspace=workspace):
-        raise SessionError(
-            f"existing Session Runtime {name!r} does not match the current host issuance; "
-            "run `booley session up --rebuild`"
-        )
-
-    relay, relay_created = _prepare_license_relay(
+    request = _validate_up_request(workspace, image_override)
+    _run_up_transaction(
         workspace,
-        relay,
-        name,
-        profile,
-        labels,
-        exists,
-        issuance.relay_image_id,
+        request,
+        rebuild=rebuild,
+        expected_image_id=expected_image_id,
+        expected_payload_fingerprint=expected_payload_fingerprint,
     )
-    created = not exists
-    if created:
-        _create_session_container(
-            spec,
-            workspace,
-            name,
-            labels,
-            profile,
-            relay,
-            relay_created,
-            issuance.relay_image_id,
-        )
-    else:
-        _start_session_container(name)
-
-    if created and spec.get("postCreateCommand"):
-        _run_hook(name, str(spec["postCreateCommand"]), "postCreateCommand")
-    if spec.get("postStartCommand"):
-        _run_hook(name, str(spec["postStartCommand"]), "postStartCommand")
     # Last, so it judges the container that actually ended up running (a
     # just-created one trivially matches its image and stays silent).
-    _warn_on_stale_session_containers(spec, workspace)
-    return name
+    _warn_on_stale_session_containers(request.spec, workspace)
+    return request.name
 
 
 def validate(workspace: Path) -> str:
@@ -1217,6 +1343,37 @@ def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True
         return run_command(workspace, name, list(command), tty=tty).exit_code
     argv = exec_argv(name, ["/bin/bash", "-l"], tty=tty)
     return _run(argv, capture=False).returncode
+
+
+def verify_refreshed_session(
+    workspace: Path,
+    expected_image_id: str,
+    expected_payload_fingerprint: str | None,
+) -> None:
+    """Verify the recreated Session uses the reconciled artifact and payload."""
+    name = session_container_name(workspace)
+    actual_image_id = _docker_stdout(["docker", "inspect", name, "--format", "{{.Image}}"])
+    if actual_image_id != expected_image_id:
+        raise SessionError(
+            f"refreshed Session Runtime uses {actual_image_id or '<unknown>'}, "
+            f"expected {expected_image_id}"
+        )
+    if expected_payload_fingerprint is None:
+        return
+    probe = (
+        "from booley.runtime.build_metadata import current_build_metadata; "
+        "print(current_build_metadata().payload_fingerprint)"
+    )
+    result = _run(
+        ["docker", "exec", name, "python3", "-I", "-c", probe],
+        capture=True,
+    )
+    actual_fingerprint = result.stdout.strip()
+    if result.returncode != 0 or actual_fingerprint != expected_payload_fingerprint:
+        detail = result.stderr.strip() or actual_fingerprint or "probe produced no output"
+        raise SessionError(
+            "refreshed Session Runtime payload does not match the reconciled image: " + detail
+        )
 
 
 def down(workspace: Path, *, remove: bool = True) -> bool:

@@ -19,6 +19,14 @@ How and where Booley work runs. The **Session Runtime** is the execution environ
 The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Tickets receive their own git worktrees and branches inside the runtime; the branch and its commits are the durable artifact of a run, while the worktree itself is runtime-scoped scratch. Docker is the default implementation, not the domain concept.
 _Avoid_: Session Container, Docker Session, MCP sandbox, per-ticket sandbox
 
+**Session Image**:
+The immutable filesystem and installed-program artifact from which a **Session Runtime** is created. A Project selects either a Booley-owned image, an automatically named Project-derived image, or an explicitly external image; a mutable tag is only a locator and is not the Session Image's identity.
+_Avoid_: sandbox tag, container, Dockerfile
+
+**Session Image Provenance**:
+The evidence connecting a **Session Image** to its Booley payload, build recipe, and exact parent ancestry. How the image reached the host—pull or local build—is acquisition history, not provenance.
+_Avoid_: image version, pulled tag, freshness label
+
 **Ticket Mode**:
 The ticket-driven execution mode: a `booley run` invocation, issued from inside a Session Runtime, launches a Developer Agent per selected Ticket and drives each Ticket through its lifecycle to completion or escalation. Multiple Tickets may execute concurrently within one Session Runtime, alongside an Interactive Mode session; each Ticket works in its own git worktree and branch. Ticket Mode no longer creates a Session Runtime of its own.
 _Avoid_: batch mode, automated mode, host mode
@@ -215,7 +223,7 @@ The disposable checkout set materialized from a Ticket's sealed repository refs 
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
 **Acceptance Journal**:
-The recoverable record of a Ticket's prepared, finalized, and published repository candidates. It binds any creation-time Target removals to the transaction, lets acceptance roll forward after a partial multi-repository publication, and keeps the Ticket in review until every destination ref has landed.
+The recoverable record of a Ticket's prepared, finalized, and published repository candidates, bound creation-time Target removals, and exact Ticket-ref cleanup progress. It lets acceptance roll forward after partial multi-repository publication, keeps the Ticket in review until every destination ref has landed, and distinguishes an accepted Ticket whose identity-checked cleanup is still pending.
 _Avoid_: merge log, rollback record, transaction database
 
 **Scope**:

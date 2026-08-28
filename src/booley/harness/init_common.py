@@ -77,6 +77,7 @@ class InitContext:
     verbose: bool = False
     fix_line_endings: bool = False
     interactive: bool = field(default_factory=sys.stdin.isatty)
+    show_step_banners: bool = True
     #: Display number of the last step banner printed by :meth:`step_banner`.
     #: A step's *identity* is its ``record`` key, never this number.
     _step_no: int = 0
@@ -95,6 +96,8 @@ class InitContext:
         suppressed (F-2). A conditional step (``--scaffold``) or a
         single-step run (``--seed``) therefore renumbers rather than skips.
         """
+        if not self.show_step_banners:
+            return
         self._step_no += 1
         banner(f"Step {self._step_no} — {title}")
 

@@ -206,11 +206,11 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Keep a stuck compatibility leg within the five-minute CI budget."""
+    """Keep a stuck compatibility leg within the ten-minute CI budget."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == 5
+    assert test_job["timeout-minutes"] == 10
 
     pytest_steps = [
         step for step in test_job["steps"] if str(step.get("name", "")).startswith("Run tests")

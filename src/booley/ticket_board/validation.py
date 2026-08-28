@@ -5,7 +5,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -409,10 +409,7 @@ def _validate_basic_fields(fields: dict[str, Any], body: str) -> list[str]:
             f"Invalid priority '{prio}'. Must be one of: {', '.join(sorted(VALID_PRIORITIES))}"
         )
 
-    # Deprecated field detection
-    for f in fields:
-        if f in DEPRECATED_FIELDS:
-            errors.append(f"Deprecated field '{f}': {DEPRECATED_FIELDS[f]}")
+    errors.extend(retired_ticket_field_errors(fields))
 
     # Unknown field detection
     unknown = set(fields) - KNOWN_FIELDS - RUNTIME_FIELDS
@@ -421,6 +418,15 @@ def _validate_basic_fields(fields: dict[str, Any], body: str) -> list[str]:
         errors.append(f"Unknown fields: {', '.join(sorted(unknown))}")
 
     return errors
+
+
+def retired_ticket_field_errors(fields: Mapping[str, Any]) -> list[str]:
+    """Return hard migration errors for retired Ticket frontmatter fields."""
+    return [
+        f"Deprecated field '{field}': {DEPRECATED_FIELDS[field]}"
+        for field in fields
+        if field in DEPRECATED_FIELDS
+    ]
 
 
 def _validate_scope(

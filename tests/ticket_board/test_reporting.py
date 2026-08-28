@@ -205,6 +205,28 @@ class TestBuildBoardRows:
         # No tickets_dir → no link
         assert links == [""]
 
+    def test_acceptance_progress_is_visible_in_status(self):
+        tickets = [
+            {
+                "file": "review/partial.md",
+                "status": "review",
+                "acceptance_state": "published-project",
+                "steps_completed": [],
+            },
+            {
+                "file": "done/cleanup.md",
+                "status": "done",
+                "acceptance_state": "accepted",
+                "steps_completed": [],
+            },
+        ]
+
+        rows, _links, counts = _build_board_rows(tickets)
+
+        assert rows[0][2] == "review/published-project"
+        assert rows[1][2] == "done/cleanup-pending"
+        assert counts == {"review": 1, "done": 1}
+
     def test_link_for_existing_file(self, tmp_path):
         (tmp_path / "queue").mkdir()
         ticket_md = tmp_path / "queue" / "test.md"
