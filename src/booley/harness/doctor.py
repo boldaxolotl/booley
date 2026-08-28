@@ -121,6 +121,21 @@ _AUDITED_FLOWS = ("sim", "lint", "synth")
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
 _SELFTEST_FLOWS = ("sim", "lint")
 _LINT_SELFTEST_BAD_TARGET = "lint_selftest_bad"
+_TICKET_CONTEXT_ENV = frozenset(
+    {
+        "BOOLEY_AGENT_ROLE",
+        "BOOLEY_EXECUTION_ID",
+        "BOOLEY_LOGS_DIR",
+        "BOOLEY_PAIRED_PROJECT_REPOSITORY",
+        "BOOLEY_RUNTIME_DIR",
+        "BOOLEY_SLUG",
+        "BOOLEY_STATE_FILE",
+        "BOOLEY_TICKET_FILE",
+        "BOOLEY_TICKET_SLUG",
+        "BOOLEY_TICKET_TYPE",
+        "BOOLEY_WORKTREE",
+    }
+)
 #: Per-Flow footprint note appended to the "fail-path unvalidated" advisory.
 #: Adding a selftest is a *project-footprint* decision — a known-bad fixture
 #: is a broken artifact living in someone's repo — and no doc said so, which is
@@ -6228,11 +6243,17 @@ def _prepare_selftest_invocation(
             "run 'booley init --seed' and retry",
         )
         return None
-    env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env = _doctor_subprocess_env(project)
     env[selftest_overlay.INTERNAL_KIND_ENV] = kind
     timeout_s = _deep_timeout_s(project, flow_name)
     return cmd, env, timeout_s
+
+
+def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
+    """Return a diagnostic environment with Ticket context removed."""
+    env = {key: value for key, value in os.environ.items() if key not in _TICKET_CONTEXT_ENV}
+    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    return env
 
 
 def _execute_selftest(
@@ -6417,8 +6438,7 @@ def _run_flow_check_subprocess(
     _fail: Fail,
 ) -> subprocess.CompletedProcess | None:
     """Run *cmd* for a Flow check; ``None`` means a FAIL was already reported."""
-    env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env = _doctor_subprocess_env(project)
     try:
         return subprocess.run(
             cmd,
@@ -6891,6 +6911,7 @@ def _flow_argv(
         report_dir,
         "--target",
         target,
+        "--diagnostic",
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout", "30000"])
@@ -6932,11 +6953,9 @@ def _flow_command(
         f"booley.flows.{implementation_module(flow_name)}",
         *argv,
     ]
-    command_env = (
-        {selftest_overlay.INTERNAL_KIND_ENV: doctor_selftest_kind}
-        if doctor_selftest_kind is not None
-        else None
-    )
+    command_env = dict.fromkeys(_TICKET_CONTEXT_ENV, "")
+    if doctor_selftest_kind is not None:
+        command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)
 
 

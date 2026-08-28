@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import BoundaryError, require_dict
 from booley.harness.devcontainer import EGRESS_NETWORK
 from booley.runtime.auth_token import config_dir
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
@@ -159,8 +160,11 @@ def _issuance_authority(
     a licence.  Its runtime remains fully host-issued, but validating that
     issuance must not create or open the separate writable EDA authority store.
     """
-    container_env = spec.get("containerEnv")
-    license_marker = isinstance(container_env, dict) and "XILINXD_LICENSE_FILE" in container_env
+    try:
+        container_env = require_dict(spec.get("containerEnv", {}), field="containerEnv")
+    except BoundaryError as exc:
+        raise RuntimeSpecError(f"devcontainer.json {exc}") from exc
+    license_marker = "XILINXD_LICENSE_FILE" in container_env
     eda_requested = host_provisioning or _vivado_requested(project_root, config)
     prior_eda = prior is not None and (
         prior.installation is not None or prior.license_profile is not None

@@ -66,8 +66,9 @@ booley init
 ```
 
 On a terminal, init asks which provider (`claude` or `codex`) and auth policy
-(`subscription`, `api-key`, or `auto`) this project uses. Neither prompt has a
-default. For CI or another unattended bootstrap, provide both explicitly:
+(`subscription`, `api-key`, or `auto`) this project uses. Press Enter to accept
+the `claude` and `auto` defaults. CI and other unattended bootstraps apply the
+same defaults; pass flags only when the project needs a different selection:
 
 ```bash
 booley init --provider codex --auth subscription
@@ -77,7 +78,7 @@ The choice is recorded in `.booley_project/booley.toml` before credentials are
 checked or the devcontainer is generated. Re-running init preserves an existing
 `[agent]` selection; change that table directly when deliberately migrating a
 project. `booley init --seed` follows the same contract, so an older project
-without a provider needs the flags (or a terminal prompt) on its first reseed.
+without a provider records the default (or supplied flag) on its first reseed.
 
 ```bash
 mkdir my_ip && cd my_ip && git init      # a new IP, from scratch

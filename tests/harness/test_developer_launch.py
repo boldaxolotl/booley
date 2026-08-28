@@ -86,6 +86,7 @@ def test_launch_developer_agent_native_env_and_params(tmp_path, monkeypatch):
                 cwd=tmp_path,
                 slug="my-ticket",
                 ticket_type="feature",
+                execution_id="execution-7",
                 state_path=state_path,
                 logs_dir=logs_dir,
                 mcp_tools=["lint", "sim"],
@@ -111,6 +112,7 @@ def test_launch_developer_agent_native_env_and_params(tmp_path, monkeypatch):
     assert env["BOOLEY_RUNTIME_DIR"] == str(logs_dir / ".runtime")
     assert env["BOOLEY_STATE_FILE"] == str(state_path)
     assert env["BOOLEY_AGENT_ROLE"] == "ticket"
+    assert env["BOOLEY_EXECUTION_ID"] == "execution-7"
     assert env["BOOLEY_MCP_TOOLS"] == "lint,sim"
     assert env["BOOLEY_PRIMARY_PROVIDER"] == "claude"
     assert env["BOOLEY_PRIMARY_AUTH"] == "subscription"
