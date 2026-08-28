@@ -303,12 +303,17 @@ def read_acceptance(log_dir: Path) -> AcceptanceReadResult:
         digest = reference["snapshot_digest"]
         if not isinstance(digest, str) or len(digest) != 64:
             raise ValueError("accepted reference has an invalid digest")
-        payload = json.loads(
-            (root / "snapshots" / f"{digest}.json").read_text(encoding="utf-8")
-        )
+        payload = json.loads((root / "snapshots" / f"{digest}.json").read_text(encoding="utf-8"))
         actual = hashlib.sha256(_canonical(payload)).hexdigest()
         if actual != digest:
             raise ValueError("accepted snapshot digest mismatch")
         return AcceptanceReadResult("accepted", _snapshot_from_payload(payload, digest))
-    except (AcceptanceLedgerError, KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (
+        AcceptanceLedgerError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
         return AcceptanceReadResult("corrupt", reason=str(exc))
