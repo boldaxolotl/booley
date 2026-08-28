@@ -242,6 +242,19 @@ def test_setup_grills_one_dependency_frontier_per_round():
     assert "one question at a time" not in contract.lower()
 
 
+def test_setup_preserves_upstream_verdict_sources_when_adapter_is_sufficient():
+    plan = " ".join(_skill_text("booley-setup", "steps/0-plan.md").split()).replace("*", "")
+    project_config = " ".join(
+        _skill_text("booley-setup", "steps/2-project-config.md").split()
+    ).replace("*", "")
+
+    assert "Treat vendored and upstream sources as preserved inputs" in plan
+    assert "plan the verdict bridge outside them" in plan
+    assert "Keep upstream/vendored testbenches unchanged" in project_config
+    assert "project-owned adapter, wrapper, or monitor" in project_config
+    assert "Modify an upstream source only when the approved plan" in project_config
+
+
 def test_heal_has_bounded_doctor_repair_and_verification_loop():
     skill = _skill_text("booley-heal")
 

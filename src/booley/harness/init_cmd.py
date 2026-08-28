@@ -123,7 +123,12 @@ from booley.runtime import project_image as pi
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import docker_data_dir, skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
-from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.runtime.project_dir import (
+    PROJECT_DIR_NAME,
+    reset_cache,
+    resolve_checkout_project_dir,
+    resolve_project_dir,
+)
 from booley.runtime.timefmt import detect_host_timezone
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
@@ -511,15 +516,13 @@ class AgentSelection:
     write_auth: bool = False
 
 
-def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
-    """Return this init run's project config path without walking on normal init."""
-    direct = project_root / ".booley_project" / "booley.toml"
-    if direct.is_file() or not seed:
-        return direct
+def _agent_config_path(project_root: Path) -> Path:
+    """Return the resolved project config, or the future default on first init."""
     try:
-        return resolve_project_dir(project_root) / "booley.toml"
+        project_dir = resolve_checkout_project_dir(project_root)
     except FileNotFoundError:
-        return direct
+        project_dir = project_root / PROJECT_DIR_NAME
+    return project_dir / "booley.toml"
 
 
 def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
@@ -586,7 +589,7 @@ def _resolve_agent_selection(
     ctx: InitContext, args: argparse.Namespace
 ) -> tuple[AgentSelection, Path] | None:
     """Resolve flags/config/prompts without guessing either agent setting."""
-    config_path = _agent_config_path(ctx.project_root, seed=getattr(args, "seed", False))
+    config_path = _agent_config_path(ctx.project_root)
     try:
         provider, auth = _read_agent_selection(config_path)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:

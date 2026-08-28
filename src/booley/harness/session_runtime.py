@@ -26,12 +26,16 @@ import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.harness import devcontainer as dc
 from booley.harness import interactive_docker as idk
 from booley.runtime import auth_token
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
+
+if TYPE_CHECKING:
+    from booley.eda.authority import LicenseProfile
+    from booley.eda.runtime_spec import Issuance
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,16 @@ _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
 
 class SessionError(RuntimeError):
     """A precondition for running the Session Runtime is missing."""
+
+
+def _requested_issued_license(workspace: Path, issuance: Issuance) -> LicenseProfile | None:
+    """Resolve exactly the licence named by a validated runtime issuance."""
+    from booley.eda import runtime_spec
+
+    return runtime_spec.requested_license(
+        workspace,
+        expected_name=issuance.license_profile,
+    )
 
 
 def session_container_name(workspace: Path) -> str:
@@ -462,10 +476,7 @@ def up(
         raise SessionError(
             "session refresh cannot bypass a host-issued spec; re-run `booley init --seed`"
         )
-    profile = runtime_spec.requested_license(
-        workspace,
-        expected_name=getattr(issuance, "license_profile", ""),
-    )
+    profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
     name = session_container_name(workspace)
     labels = runtime_spec.labels(issuance)
@@ -544,10 +555,7 @@ def prepare(workspace: Path) -> str:
             f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
         ) from exc
     _reconcile_stopped_vscode_containers(workspace, issuance)
-    profile = runtime_spec.requested_license(
-        workspace,
-        expected_name=getattr(issuance, "license_profile", ""),
-    )
+    profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
     if profile is None:
         return issuance.spec_sha256

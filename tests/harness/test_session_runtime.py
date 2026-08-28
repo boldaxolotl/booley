@@ -1077,7 +1077,10 @@ class TestPreflight:
     def test_missing_image_names_booley_init(self, workspace: Path):
         _write_spec(workspace, _spec())
         with (
-            patch("booley.eda.runtime_spec.validate", return_value=SimpleNamespace()),
+            patch(
+                "booley.eda.runtime_spec.validate",
+                return_value=SimpleNamespace(license_profile=None),
+            ),
             patch.object(sr.idk, "network_exists", return_value=True),
             patch.object(sr.idk, "image_exists", return_value=False),
             pytest.raises(sr.SessionError, match="not built"),

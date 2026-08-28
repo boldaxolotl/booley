@@ -22,6 +22,14 @@ def test_unattended_first_init_requires_both_choices(tmp_path):
     assert ctx.results[-1].status == "err"
 
 
+def test_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch):
+    project_dir = tmp_path / "project-data"
+    project_dir.mkdir()
+    monkeypatch.setattr(init_cmd, "resolve_checkout_project_dir", lambda _root: project_dir)
+
+    assert init_cmd._agent_config_path(tmp_path) == project_dir / "booley.toml"
+
+
 def test_terminal_prompt_has_no_empty_default(tmp_path, monkeypatch):
     answers = iter(("", "codex", "", "subscription"))
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
