@@ -49,7 +49,7 @@ from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
-from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_run_cwd, _resolve_sim_sentinels
+from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_sim_sentinels
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
@@ -74,6 +74,7 @@ from booley.sim.cocotb_results import (
     CocotbResults,
     parse_results_line,
 )
+from booley.sim.config import resolve_run_cwd
 from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.targets.target import inspect_target
 
@@ -1776,7 +1777,7 @@ replacement must differ, and every proposal must remain a single source edit.
             str(max(1, timeout - 5)),
         ]
         cmd.extend(f"--test={test_name}" for test_name in test_names)
-        run_cwd = _resolve_run_cwd(work_dir)
+        run_cwd = resolve_run_cwd(work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         return cmd
@@ -1820,7 +1821,7 @@ replacement must differ, and every proposal must remain a single source edit.
         pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
-        run_cwd = _resolve_run_cwd(work_dir)
+        run_cwd = resolve_run_cwd(work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         return cmd
@@ -1855,7 +1856,7 @@ replacement must differ, and every proposal must remain a single source edit.
         pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
-        run_cwd = _resolve_run_cwd(work_dir)
+        run_cwd = resolve_run_cwd(work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         return cmd
