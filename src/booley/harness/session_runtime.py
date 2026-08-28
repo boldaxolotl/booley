@@ -1338,7 +1338,10 @@ def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True
     name = up(workspace)
     if command:
         _warn_on_mangled_args(command)
-    argv = exec_argv(name, list(command) if command else ["/bin/bash", "-l"], tty=tty)
+        from booley.harness.runtime_attachment import run_command
+
+        return run_command(workspace, name, list(command), tty=tty).exit_code
+    argv = exec_argv(name, ["/bin/bash", "-l"], tty=tty)
     return _run(argv, capture=False).returncode
 
 

@@ -525,6 +525,7 @@ def _validate_run_args(
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
     fixed = [
+        "--init",
         "--network",
         EGRESS_NETWORK,
         "--label",

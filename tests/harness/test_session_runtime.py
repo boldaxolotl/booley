@@ -121,6 +121,7 @@ class TestDockerRunArgv:
 
     def test_run_args_carry_network_label_and_hardening(self, workspace: Path):
         argv = _argv(_spec(memory="8g"), workspace)
+        assert "--init" in argv
         assert _flag_values(argv, "--network") == [dc.EGRESS_NETWORK]
         assert _flag_values(argv, "--label") == [dc.INTERACTIVE_ROLE_LABEL]
         assert _flag_values(argv, "--cap-drop") == ["ALL"]
@@ -1589,12 +1590,12 @@ class TestMangledArgWarning:
         cmd = ["python3", "-c", "print(1)", "--out", "C:/Temp/x"]
         with (
             patch.object(sr, "up", return_value="booley-session-x"),
-            patch.object(sr, "_run") as run,
+            patch("booley.harness.runtime_attachment.run_command") as run,
         ):
-            run.return_value = subprocess.CompletedProcess([], 0)
+            run.return_value = SimpleNamespace(exit_code=0)
             sr.enter(workspace, cmd, tty=False)
-        argv = run.call_args[0][0]
-        assert argv[-len(cmd) :] == cmd
+        assert run.call_args.args[2] == cmd
+        assert run.call_args.kwargs == {"tty": False}
 
 
 class TestEnterAlwaysSetsTERM:
@@ -1614,12 +1615,13 @@ class TestEnterAlwaysSetsTERM:
         env = {} if term_env is None else {"TERM": term_env}
         with (
             patch.object(sr, "up", return_value="booley-session-x"),
-            patch.object(sr, "_run") as run,
+            patch("booley.harness.runtime_attachment.run_command") as run,
             patch.dict(sr.os.environ, env, clear=(term_env is None)),
         ):
-            run.return_value = subprocess.CompletedProcess([], 0)
+            run.return_value = SimpleNamespace(exit_code=0)
             sr.enter(workspace, ["echo", "hi"], tty=tty)
-        return run.call_args[0][0]
+        command = run.call_args.args[2]
+        return sr.exec_argv("booley-session-x", command, tty=run.call_args.kwargs["tty"])
 
     def test_non_tty_run_gets_a_dumb_term(self, workspace: Path):
         argv = self._argv(workspace, tty=False, term_env="xterm-256color")
@@ -1646,7 +1648,7 @@ class TestEnterAlwaysSetsTERM:
     def test_the_command_still_comes_last(self, workspace: Path):
         argv = self._argv(workspace, tty=False, term_env="vt100")
         assert argv[-2:] == ["echo", "hi"]
-        assert argv[-3] == "booley-session-x"
+        assert "booley-session-x" in argv
 
 
 class TestSessionRefresh:

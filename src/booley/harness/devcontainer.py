@@ -738,6 +738,7 @@ def _build_run_args(memory: str) -> list[str]:
     # cost nothing to the legitimate EDA stack, which ran under the same flags
     # pre-ADR-0028.
     run_args = [
+        "--init",
         "--network",
         EGRESS_NETWORK,
         "--label",
