@@ -234,8 +234,9 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     # configs.toml is deliberately absent: the legacy registry was removed by
     # ADR 0022 (.core owns design-description) and doctor fails on an empty one.
     # tests.toml carries verification-intent; ticket_creation.md is Project-owned
-    # agent guidance. Existing ticket_defaults.md is the legacy fallback filename,
-    # so its presence suppresses the new scaffold rather than shadowing user content.
+    # Ticket Creation Guidance. Existing ticket_defaults.md is the legacy fallback
+    # filename, so its presence suppresses the new scaffold rather than shadowing
+    # user content.
     skeletons = {
         "booley.toml": BOOLEY_TOML_SKELETON,
         "tests.toml": TESTS_TOML_SKELETON,

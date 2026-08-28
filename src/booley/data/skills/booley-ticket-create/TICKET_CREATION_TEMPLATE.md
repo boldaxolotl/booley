@@ -14,4 +14,4 @@ For example, a Project might say:
 > Feature and refactor Tickets must prove that area does not regress on `synth_area`.
 
 Replace these examples with this Project's guidance. Leaving the file unchanged adds no
-guidance to Booley's shipped ticket-creation defaults.
+guidance to Booley's shipped inference.
