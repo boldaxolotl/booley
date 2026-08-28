@@ -728,7 +728,7 @@ def _contract_archive_ref(slug: str, contract: TargetContract) -> str:
     identities = [contract.surface_digest, contract.outer_sha]
     if contract.project_sha:
         identities.append(contract.project_sha)
-    return f"booley-contract-archive/{slug}/{'-'.join(value[:12] for value in identities)}"
+    return f"booley-contract-archive/{slug}/{'-'.join(identities)}"
 
 
 def _archive_ref(repository: Path, archive: str, source: str) -> None:

@@ -395,8 +395,7 @@ def test_revise_archives_identity_resets_evidence_and_reopens(tmp_path: Path) ->
     reopened = tio.contract_revise("change-target")
 
     archive = (
-        "booley-contract-archive/change-target/"
-        f"{sealed['surface_digest'][:12]}-{sealed['outer_sha'][:12]}"
+        f"booley-contract-archive/change-target/{sealed['surface_digest']}-{sealed['outer_sha']}"
     )
     assert _git(root, "rev-parse", archive) == sealed["outer_sha"]
     assert Path(reopened["outer_worktree"]).is_dir()
