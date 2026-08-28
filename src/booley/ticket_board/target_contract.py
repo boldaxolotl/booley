@@ -685,24 +685,46 @@ def _new_scope_matches(scope: Any, path: str) -> bool:
     return False
 
 
-def _missing_target_sources(root: Path, target: str) -> list[str]:
-    inspection = inspect_target(root, target)
+def _missing_target_sources(
+    root: Path,
+    target: str,
+    *,
+    schema: int = SCHEMA_VERSION,
+) -> list[str]:
+    if schema == WORKSPACE_SCHEMA_VERSION:
+        sources = fusesoc_registry.target_source_files(
+            root,
+            target,
+            include_dependencies=True,
+            include_headers=True,
+        )
+        selected = (*sources.rtl_source_files, *sources.tb_files)
+    else:
+        selected = tuple(item.path for item in inspect_target(root, target).inputs)
     missing: list[str] = []
-    for item in inspection.inputs:
-        candidate = Path(item.path)
+    for path in selected:
+        candidate = Path(path)
         if not candidate.is_absolute():
             candidate = root / candidate
         if not candidate.exists():
-            missing.append(item.path)
+            missing.append(path)
     return sorted(set(missing))
+
+
+def _validation_schema(fields: Mapping[str, Any]) -> int:
+    contract = fields.get("target_contract")
+    if isinstance(contract, Mapping) and contract.get("schema") == WORKSPACE_SCHEMA_VERSION:
+        return WORKSPACE_SCHEMA_VERSION
+    return SCHEMA_VERSION
 
 
 def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
     """Validate every mandatory/optional criterion Target without running tools."""
     root = Path(project_root)
+    schema = _validation_schema(fields)
     errors: list[str] = []
     for binding in criterion_targets(fields.get("criteria")):
-        errors.extend(_validate_binding(binding, fields, root))
+        errors.extend(_validate_binding(binding, fields, root, schema=schema))
     return errors
 
 
@@ -715,34 +737,43 @@ def validate_targets_for_seal(
 ) -> list[str]:
     """Validate bindings and dry-resolve criterion and changed Targets."""
     root = Path(project_root)
+    schema = _validation_schema(fields)
     errors = validate_criterion_targets(fields, root)
     if errors:
         return errors
     bindings = criterion_targets(fields.get("criteria"))
-    required = _required_targets(root, bindings)
+    required = _required_targets(root, bindings, schema=schema)
     errors.extend(_validate_required_targets(root, Path(build_root), required))
     for binding in bindings:
         if binding.baseline != binding.target and not _missing_target_sources(
-            root, binding.target
+            root, binding.target, schema=schema
         ):
             errors.extend(_validate_comparison_basis(binding, root, Path(build_root)))
     errors.extend(
         _validate_changed_targets(
-            fields, root, Path(build_root), changed_targets, seen=set(required)
+            fields,
+            root,
+            Path(build_root),
+            changed_targets,
+            seen=set(required),
+            schema=schema,
         )
     )
     return errors
 
 
 def _required_targets(
-    root: Path, bindings: Iterable[CriterionTarget]
+    root: Path,
+    bindings: Iterable[CriterionTarget],
+    *,
+    schema: int = SCHEMA_VERSION,
 ) -> dict[str, tuple[CriterionTarget, bool]]:
     # A Target used as a baseline anywhere always receives the stronger
     # executable-at-base requirement, even if another pair also uses it as a
     # candidate whose [new] sources could otherwise defer resolution.
     required: dict[str, tuple[CriterionTarget, bool]] = {}
     for binding in bindings:
-        candidate_missing = bool(_missing_target_sources(root, binding.target))
+        candidate_missing = bool(_missing_target_sources(root, binding.target, schema=schema))
         prior = required.get(binding.target)
         required[binding.target] = (
             binding,
@@ -774,13 +805,14 @@ def _validate_changed_targets(
     changed_targets: Iterable[str],
     *,
     seen: set[str],
+    schema: int = SCHEMA_VERSION,
 ) -> list[str]:
     errors: list[str] = []
     for target in changed_targets:
         if target in seen:
             continue
         seen.add(target)
-        missing = _missing_target_sources(root, target)
+        missing = _missing_target_sources(root, target, schema=schema)
         undeclared = [
             path for path in missing if not _new_scope_matches(fields.get("scope"), path)
         ]
@@ -883,7 +915,11 @@ def _dry_resolve_binding(
 
 
 def _validate_binding(
-    binding: CriterionTarget, fields: Mapping[str, Any], root: Path
+    binding: CriterionTarget,
+    fields: Mapping[str, Any],
+    root: Path,
+    *,
+    schema: int = SCHEMA_VERSION,
 ) -> list[str]:
     errors: list[str] = []
     for role, target in (("candidate", binding.target), ("baseline", binding.baseline)):
@@ -900,7 +936,7 @@ def _validate_binding(
                 f"with Flow {binding.flow} (flow={ref.flow!r}, EDA tool={ref.eda_tool!r})"
             )
             continue
-        missing = _missing_target_sources(root, target)
+        missing = _missing_target_sources(root, target, schema=schema)
         if not missing:
             continue
         if role == "baseline" or (binding.relative and binding.baseline == binding.target):

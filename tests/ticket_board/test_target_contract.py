@@ -730,6 +730,25 @@ def test_contract_validation_uses_condition_selected_source_paths(tmp_path: Path
     assert validate_criterion_targets(fields, tmp_path) == []
 
 
+def test_schema_three_validation_keeps_legacy_source_codec(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    core = project / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace(
+            "files: [rtl/toy.sv]",
+            "files: [rtl/toy.sv]\n    depend:",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    fields = {
+        "criteria": {"mandatory": {"lint_clean": ["lint_toy"]}},
+        "target_contract": {"schema": 3},
+    }
+
+    assert validate_criterion_targets(fields, project) == []
+
+
 def test_future_relative_target_requires_executable_baseline(tmp_path: Path) -> None:
     project = _project(tmp_path)
     fields = {
