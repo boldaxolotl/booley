@@ -190,6 +190,17 @@ def test_project_participant_requires_project_repository(tmp_path: Path) -> None
         completion._repository_for(tmp_path, None, participant)
 
 
+def test_candidate_clone_copies_repository_commit_identity(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    commit = _repository(repository)
+    clone = tmp_path / "clone"
+
+    completion._clone_checkout(repository, clone, commit)
+
+    assert _git(clone, "config", "--local", "--get", "user.name") == "Test"
+    assert _git(clone, "config", "--local", "--get", "user.email") == "test@example.invalid"
+
+
 @pytest.mark.parametrize(
     ("content", "message"),
     [

@@ -209,7 +209,17 @@ def _clone_checkout(repository: Path, destination: Path, commit: str) -> None:
         str(repository),
         str(destination),
     )
+    _copy_commit_identity(repository, destination)
     _require_git(destination, "checkout", "--detach", commit)
+
+
+def _copy_commit_identity(repository: Path, destination: Path) -> None:
+    """Preserve repository-local commit identity in an isolated shared clone."""
+    for key in ("user.name", "user.email"):
+        configured = _git(repository, "config", "--get", key)
+        value = configured.stdout.strip()
+        if configured.returncode == 0 and value:
+            _require_git(destination, "config", key, value)
 
 
 def _plan_candidate(
