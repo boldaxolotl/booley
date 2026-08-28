@@ -408,9 +408,7 @@ def _handoff_to_review(
         append_step="summary",
         expected_status="running" if expected_execution_id is not None else None,
         expected_execution_id=expected_execution_id,
-        before_move=lambda: _prepare_handoff_snapshot(
-            tio, slug, entry, expected_execution_id
-        ),
+        before_move=lambda: _prepare_handoff_snapshot(tio, slug, entry, expected_execution_id),
     )
     if ok and is_event_enabled("review"):
         ticket_name = entry.get("summary", slug) if entry else slug
@@ -535,9 +533,7 @@ def op_handoff(
             append_step="summary",
             expected_status="running" if expected_execution_id is not None else None,
             expected_execution_id=expected_execution_id,
-            before_move=lambda: _prepare_handoff_snapshot(
-                tio, slug, entry, expected_execution_id
-            ),
+            before_move=lambda: _prepare_handoff_snapshot(tio, slug, entry, expected_execution_id),
         )
         return ok and op_complete(tio, slug)
 

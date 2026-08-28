@@ -120,8 +120,11 @@ class TestSingleProcess:
         store = SlotStore(root)
         token = store.acquire(CLASS_HEAVY, pid=os.getpid(), poll_interval=0.01)
         try:
-            time.sleep(0.08)
             holder = store.snapshot(CLASS_HEAVY)[0][0]
+            deadline = time.monotonic() + 1.0
+            while holder.lease_generation < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+                holder = store.snapshot(CLASS_HEAVY)[0][0]
             assert holder.lease_generation >= 2
             assert holder.lease_state == job_slots.LEASE_ACTIVE
         finally:

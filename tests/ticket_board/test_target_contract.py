@@ -502,6 +502,15 @@ def test_schema_three_surface_digest_codec_remains_stable(tmp_path: Path) -> Non
     )
 
 
+def test_schema_three_surface_digest_normalizes_text_line_endings(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    expected = surface_digest(project, schema=3)
+    constraint = project / "constraints" / "toy.sdc"
+    constraint.write_bytes(constraint.read_bytes().replace(b"\n", b"\r\n"))
+
+    assert surface_digest(project, schema=3) == expected
+
+
 def test_legacy_contract_schema_is_rejected() -> None:
     fields = {
         "base_sha": "a" * 40,
