@@ -33,6 +33,7 @@ from booley.runtime.process_tree import descendant_pids
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _POLL_SECONDS = 0.05
+_PF_KTHREAD = 0x00200000
 _RECOVERY_STAGES = tuple(
     (signum, timeout_s)
     for signal_name, timeout_s in (
@@ -54,18 +55,25 @@ def _execution_marker(execution_id: ExecutionId) -> bytes:
     return f"{RUNTIME_EXECUTION_ENV}={execution_id}".encode()
 
 
+def _proc_state_and_flags(proc: Path) -> tuple[str, int] | None:
+    try:
+        fields = (proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+        return fields[0], int(fields[6])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 def _matches_execution(proc: Path, marker: bytes) -> bool | None:
     try:
         environ = (proc / "environ").read_bytes()
     except FileNotFoundError:
         return False
     except OSError:
-        try:
-            state = (proc / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
-            if state == "Z":
+        state_and_flags = _proc_state_and_flags(proc)
+        if state_and_flags is not None:
+            state, flags = state_and_flags
+            if state == "Z" or flags & _PF_KTHREAD:
                 return False
-        except (OSError, IndexError):
-            pass
         try:
             return False if proc.stat().st_uid != os.geteuid() else None
         except OSError:
