@@ -10,11 +10,18 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from booley.harness import runtime_attachment
 from booley.runtime import execution_records, job_slots, project_dir
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="Runtime Attachment execution supervision requires Linux",
+)
 
 
 def _fake_docker(tmp_path: Path, monkeypatch, project: Path) -> None:

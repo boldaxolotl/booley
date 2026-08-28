@@ -18,7 +18,7 @@ def test_import_does_not_require_sigkill() -> None:
             (
                 "import signal, sys; "
                 "sys.path.insert(0, 'src'); "
-                "del signal.SIGKILL; "
+                "hasattr(signal, 'SIGKILL') and delattr(signal, 'SIGKILL'); "
                 "import booley.runtime.execution_recovery"
             ),
         ],

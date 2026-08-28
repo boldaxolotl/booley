@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
+
+if sys.platform != "linux":
+    pytest.skip(
+        "Runtime Attachment execution supervision requires Linux",
+        allow_module_level=True,
+    )
+
+import pty
 
 from booley.runtime.execution_records import (
     atomic_write_json,

@@ -490,6 +490,7 @@ class TestGhostReaping:
         assert cancellations == [execution_id]
         assert store.snapshot(CLASS_HEAVY)[0][0].lease_state == job_slots.LEASE_CANCELLING
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="execution recovery scans Linux /proc")
     @pytest.mark.parametrize("record_state", ["missing", "unrecoverable"])
     def test_failed_execution_is_scoped_recovered_and_releases_holder(
         self, tmp_path, monkeypatch, record_state
@@ -538,6 +539,7 @@ class TestGhostReaping:
             unrelated.wait(timeout=5)
             runtime_project_dir.reset_cache()
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="process recovery scans Linux /proc")
     def test_expired_process_lease_recovers_only_its_durable_owner(self, tmp_path):
         clean_env = {
             key: value for key, value in os.environ.items() if key != RUNTIME_EXECUTION_ENV
