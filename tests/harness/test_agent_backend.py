@@ -59,6 +59,10 @@ def _capturing_successful_query():
     return captured_options, fake_query
 
 
+def _raise_callback_error(_event):
+    raise RuntimeError("console died")
+
+
 # ===========================================================================
 # Protocol conformance
 # ===========================================================================
@@ -1148,6 +1152,29 @@ class TestClaudeFileChangeEvents:
         assert events == []
         assert state.pending_file_edits == {}
 
+    def test_callback_failure_never_escapes(self):
+        from types import SimpleNamespace
+
+        from booley.runtime import _claude_backend as cb
+
+        state = cb._StreamState(pending_file_edits={"edit-1": "rtl/top.sv"})
+        result = SimpleNamespace(content=[self._block(tool_use_id="edit-1", is_error=False)])
+
+        cb._dispatch_completed_file_edits(_raise_callback_error, result, state)
+
+        assert state.pending_file_edits == {}
+
+
+class TestClaudeDisplayEvents:
+    def test_callback_failure_never_escapes(self):
+        from types import SimpleNamespace
+
+        from booley.runtime import _claude_backend as cb
+
+        message = SimpleNamespace(content=[SimpleNamespace(text="paid response")])
+
+        cb._dispatch_on_event(_raise_callback_error, message)
+
 
 class TestLiveUsageDeltas:
     """Streaming usage is emitted as output-token deltas the Console accumulates.
@@ -1303,7 +1330,4 @@ class TestDispatchUsage:
         """A broken display must not abort a paid stream."""
         from booley.runtime import _claude_backend as cb
 
-        def _boom(_event):
-            raise RuntimeError("console died")
-
-        cb._dispatch_usage(_boom, self._counters_with(42), "claude-opus-4-8")
+        cb._dispatch_usage(_raise_callback_error, self._counters_with(42), "claude-opus-4-8")
