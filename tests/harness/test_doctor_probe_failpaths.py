@@ -170,38 +170,41 @@ def _sim_ref(root: Path, cocotb_module: str | None = None) -> fusesoc_registry.T
 
 
 class TestSimVerdictSetup:
-    def _run(self, tmp_path, monkeypatch, tb_files, booley_toml=None, ref=None) -> _Rec:
+    def _run(self, tmp_path, tb_files, booley_toml=None, ref=None) -> _Rec:
         project = _mk_audit(tmp_path, booley_toml)
-        monkeypatch.setattr(
-            doctor.fusesoc_registry,
-            "target_source_files",
-            lambda _root, _name, include_dependencies=False: SimpleNamespace(tb_files=tb_files),
-        )
         rec = _Rec()
         doctor._check_sim_verdict_setup(
-            project, tmp_path, "sim_fast", ref or _sim_ref(tmp_path), rec.p, rec.w
+            project,
+            tmp_path,
+            "sim_fast",
+            ref or _sim_ref(tmp_path),
+            rec.p,
+            rec.w,
+            sources=fusesoc_registry.CoreSources(
+                rtl_source_files=(),
+                tb_files=tuple(tb_files),
+            ),
         )
         return rec
 
-    def test_sv_tb_without_sentinel_warns(self, tmp_path, monkeypatch):
+    def test_sv_tb_without_sentinel_warns(self, tmp_path):
         (tmp_path / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
-        rec = self._run(tmp_path, monkeypatch, ["tb.sv"])
+        rec = self._run(tmp_path, ["tb.sv"])
         assert rec.kinds() == {"warn"}
         msg = rec.warns()[0]
         assert "no configured pass sentinel" in msg
         assert "$display" in msg  # SV-shaped hint, not the cocotb one
 
-    def test_python_tb_without_sentinel_gets_cocotb_hint(self, tmp_path, monkeypatch):
+    def test_python_tb_without_sentinel_gets_cocotb_hint(self, tmp_path):
         (tmp_path / "test_dut.py").write_text("import cocotb\n", encoding="utf-8")
-        rec = self._run(tmp_path, monkeypatch, ["test_dut.py"])
+        rec = self._run(tmp_path, ["test_dut.py"])
         assert rec.kinds() == {"warn"}
         assert "cocotb_module" in rec.warns()[0]  # F-8: hint fits a .py TB
 
-    def test_custom_sentinel_from_booley_toml_passes(self, tmp_path, monkeypatch):
+    def test_custom_sentinel_from_booley_toml_passes(self, tmp_path):
         (tmp_path / "tb.sv").write_text('initial $display("ALL GOOD");\n', encoding="utf-8")
         rec = self._run(
             tmp_path,
-            monkeypatch,
             ["tb.sv"],
             booley_toml={"flows": {"sim": {"pass_sentinels": ["ALL GOOD"]}}},
         )
@@ -210,23 +213,22 @@ class TestSimVerdictSetup:
     def test_fusesoc_error_returns_silently(self, tmp_path, monkeypatch):
         # Documenting CURRENT behavior: an enumeration failure emits nothing
         # from this probe (the structural core audit reports it separately).
-        def boom(_root, _name, include_dependencies=False):
+        def boom(_root, _selector):
             raise fusesoc_registry.FuseSocError("core exploded")
 
         project = _mk_audit(tmp_path)
-        monkeypatch.setattr(doctor.fusesoc_registry, "target_source_files", boom)
+        monkeypatch.setattr(doctor, "inspect_target", boom)
         rec = _Rec()
         doctor._check_sim_verdict_setup(
             project, tmp_path, "sim_fast", _sim_ref(tmp_path), rec.p, rec.w
         )
         assert rec.events == []
 
-    def test_cocotb_target_is_exempt(self, tmp_path, monkeypatch):
+    def test_cocotb_target_is_exempt(self, tmp_path):
         # ADR 0034 decision 6: verdict comes from results.xml — no sentinel
         # scan, no events at all.
         rec = self._run(
             tmp_path,
-            monkeypatch,
             ["test_dut.py"],
             ref=_sim_ref(tmp_path, cocotb_module="test_dut"),
         )
