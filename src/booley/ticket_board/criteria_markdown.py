@@ -14,6 +14,7 @@ from typing import Any
 _COVERAGE_PREFIX = "coverage_"
 _REVIEW_CLEAN_RE = re.compile(r"^review_(.+)_clean$")
 _BULLET_RE = re.compile(r"^-\s+\*\*(.+?)\*\*(?:\s*\(.*?\))?(?::\s*(.*))?$")
+_STRUCTURED_LIST_CRITERIA = frozenset({"cycle_count", "mutation_score"})
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,7 @@ def _parse_bullets(lines: list[str]) -> dict[str, Any]:
         else:
             result[key] = _parse_value(
                 raw_val,
-                structured_list_items=key == "mutation_score",
+                structured_list_items=key in _STRUCTURED_LIST_CRITERIA,
             )
 
     return result
