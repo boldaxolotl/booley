@@ -1,9 +1,5 @@
 """Regression contracts for shipped ticket workflow skills."""
 
-import re
-
-import yaml
-
 from booley.runtime.paths import skills_dir
 
 
@@ -195,34 +191,48 @@ def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
     )
 
 
-def test_ticket_create_uses_complete_project_defaults_only_during_creation():
+def test_ticket_create_applies_free_form_project_guidance_only_during_creation():
     skill = _skill_text("booley-ticket-create")
     contract = " ".join(skill.split())
 
     for required in (
-        'resolve_project_dir() / "ticket_defaults.md"',
+        "Ticket Creation Guidance is Project-owned, free-form Markdown",
         "consumed **only here, during creation**",
-        "All five blocks must then be present, unique, non-null, and complete",
-        "An active file fully replaces the shipped defaults",
-        "Validate the **entire active file**",
-        "explicitly supply complete per-Ticket `criteria` **and** `on_success`",
+        "Read `ticket_creation.md` when it exists",
+        "read `ticket_defaults.md` only when `ticket_creation.md` is absent",
+        "Start from the shipped §B/§D inference",
+        "Project guidance overrides shipped inference",
+        "explicit instructions for the current Ticket override the Project file",
+        "Validate the resolved Ticket through §C",
+        "has no schema, required headings, completeness check, or static validation pass",
+        "Ambiguous, conflicting, or unresolvable applicable guidance",
+        "disregard the old scaffold's instructions about YAML activation",
+        "An untouched, comment-only legacy scaffold adds no guidance",
         "validation never does",
         '--on-success "$ON_SUCCESS_JSON"',
     ):
         assert required in contract
-    assert "merge, add/remove, or inheritance syntax" in contract
-    assert "never influence scope, priority, dependencies" in contract
+    assert (
+        "Its authority is limited to the proposed Ticket's `criteria` and `on_success`" in contract
+    )
+    for retired in (
+        "All five blocks must then be present",
+        "An active file fully replaces",
+        "Validate the **entire active file**",
+        "merge, add/remove, or inheritance syntax",
+    ):
+        assert retired not in contract
 
 
-def test_ticket_defaults_template_is_packaged_and_inactive():
-    template = _skill_text("booley-ticket-create", "TICKET_DEFAULTS_TEMPLATE.md")
-    for heading in ("On success", "Feature", "Bugfix", "Refactor", "Verification"):
-        assert template.count(f"## {heading}") == 1
+def test_ticket_creation_template_is_packaged_free_form_markdown():
+    template = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
 
-    blocks = re.findall(r"```yaml\n(.*?)```", template, flags=re.DOTALL)
-    assert len(blocks) == 5
-    assert all(yaml.safe_load(block) is None for block in blocks)
-    assert "@ sim_default @ all @ pass -> pass" in template
+    assert template.startswith("# Ticket Creation Guidance")
+    assert "in any Markdown form" in template
+    assert "corrective security review in every feature Ticket" in template
+    assert "standard simulation matrix" in template
+    assert "area does not regress" in template
+    assert "```yaml" not in template
 
 
 def test_setup_grills_one_dependency_frontier_per_round():
