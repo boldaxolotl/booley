@@ -48,7 +48,7 @@
 | 16 | Git footprint: stealth `.booley_project/` or open native cores; ignore repository-native `.core` files? | | | | | |
 | 17 | Specialists explicitly disabled from the start (reviewer, …) | | | | | |
 | 18 | Parity check (optional): native EDA-tool match per phase → tier, else `none` | | | | | |
-| 19 | Agent backend: `[agent] provider` = `claude` or `codex` (+ `auth`) — always ask | | | | | |
+| 19 | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a legacy missing field | | | | | |
 | 20 | `[stealth]`: history scrub plus hidden-core projection; required by row 16 when hidden cores are authored | | | | | |
 | 21 | `[feedback] mode`: `ask` (default, public issue) / `email` (private, to the maintainer) / `file-only` / `off` — always ask | | | | | |
 
@@ -72,7 +72,7 @@
 - [ ] <check — e.g. `fusesoc --cores-root <dir> run --setup --work-root "$(mktemp -d)" --target <target> <vlnv>`
       (raw fusesoc: `--cores-root` before `run`, no `<vlnv>#<target>` form)>
 - [ ] <check — e.g. compile one firmware file with the project's exact `-march` flags>
-- [ ] <check — e.g. the packed-struct toplevel elaborates through the ASIC frontend (sv2v)>
+- [ ] <check — e.g. the packed-struct toplevel passes the synthesis RTL frontend (sv2v)>
 - [ ] <check — e.g. time each smoke candidate and re-pin row 6 to the measured fastest>
 
 ## 3. Approval & deviations

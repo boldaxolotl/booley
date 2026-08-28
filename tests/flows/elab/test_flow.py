@@ -28,7 +28,8 @@ def _adr0039_lenient_selection(monkeypatch):
     """
     from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root):
+    def _lenient(target_arg, project_root, *, for_flow=None):
+        assert for_flow in (None, "elab")
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
 
     monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
@@ -128,6 +129,27 @@ class TestArgs:
         flow = _make_flow(tmp_path, extra_args=["--timeout", "60000"])
         assert flow._get_timeout() == 60
 
+    def test_incompatible_target_is_reported_before_setup(self, tmp_path, monkeypatch):
+        from booley.fusesoc import fusesoc_registry
+
+        flow = _make_flow(tmp_path, target="synth")
+
+        def reject(*args, **kwargs):
+            assert kwargs["for_flow"] == "elab"
+            raise fusesoc_registry.IncompatibleTargetError("synthesis Target is incompatible")
+
+        monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", reject)
+        monkeypatch.setattr(
+            ElaborateFlow,
+            "_prepare_elab_command",
+            lambda *args: pytest.fail("setup must not run"),
+        )
+
+        result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.report_text == "elab: synthesis Target is incompatible"
+
 
 # ---------------------------------------------------------------------------
 # Command building
@@ -224,29 +246,6 @@ class TestElabResolution:
             "-C",
             ".booley_project/.runtime/edalize/elab/sim/elab_demo_0/sim",
         ]
-
-    def test_vivado_elaboration_stops_at_synthesis_target(self, tmp_path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, target="sim")
-        build = tmp_path / "build" / "sim"
-        resolved = fusesoc_registry.ResolvedTarget(
-            name="sim",
-            vlnv="::demo:0",
-            toplevel="top",
-            eda_tool="vivado",
-            files=(),
-            parameters={},
-            build_root=build,
-            edam_path=build / "demo.eda.yml",
-        )
-        with (
-            patch.object(fusesoc_registry, "resolve_target", return_value=resolved),
-            patch("booley.flows.elab.flow.validate_top_parameter_intent"),
-        ):
-            command = flow._prepare_elab_command("sim")
-
-        assert command[-1] == "synth"
 
     def test_setup_failure_propagates(self, tmp_path):
         """A FuseSoC resolution failure surfaces (caller records it as FAIL)."""
@@ -1233,11 +1232,11 @@ class TestStandaloneFrontend:
         import booley.flows.elab.flow as elab_mod
 
         monkeypatch.setattr(elab_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        _asic_project(tmp_path, '[flows.elab]\nstandalone_frontend = "iverilog"\n')
+        _write_flow_config(tmp_path, '[flows.elab]\nstandalone_frontend = "iverilog"\n')
         assert self._flow(tmp_path)._resolve_standalone_frontend() == "iverilog"
 
     def test_unknown_frontend_is_a_loud_config_error(self, tmp_path):
-        _asic_project(tmp_path, '[flows.elab]\nstandalone_frontend = "vcs"\n')
+        _write_flow_config(tmp_path, '[flows.elab]\nstandalone_frontend = "vcs"\n')
         with pytest.raises(ValueError, match="standalone_frontend"):
             self._flow(tmp_path)._resolve_standalone_frontend()
 
@@ -1251,7 +1250,7 @@ class TestStandaloneFrontend:
             "target_source_files",
             lambda *a, **k: fusesoc_registry.CoreSources(rtl_source_files=(), tb_files=()),
         )
-        _asic_project(tmp_path, '[flows.elab]\nstandalone_frontend = "vcs"\n')
+        _write_flow_config(tmp_path, '[flows.elab]\nstandalone_frontend = "vcs"\n')
         flow = _make_flow(tmp_path, extra_args=["--standalone"])
         flow._execute = lambda cmd: SubprocessResult(returncode=0, stdout="make ok")
         with patch.object(
@@ -1366,275 +1365,11 @@ class TestParseGapCredibility:
         assert "unparsed" not in detail
 
 
-def _asic_project(tmp_path: Path, body: str) -> None:
-    """Author a booley.toml carrying an [flows.synth] section."""
+def _write_flow_config(tmp_path: Path, body: str) -> None:
+    """Author a project-local ``booley.toml`` for Flow configuration tests."""
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir(exist_ok=True)
     (project_dir / "booley.toml").write_text(body, encoding="utf-8")
-
-
-def _yosys_resolved(
-    build_root: Path,
-    *,
-    eda_tool: str = "yosys",
-    flow_options: dict | None = None,
-):
-    """A resolved ASIC Target: two SV sources, one header, one vlogdefine."""
-    from booley.fusesoc import fusesoc_registry
-
-    files = (
-        fusesoc_registry.ResolvedFile(name="rtl/pkg.sv", file_type="systemVerilogSource"),
-        fusesoc_registry.ResolvedFile(name="rtl/dut.sv", file_type="systemVerilogSource"),
-        fusesoc_registry.ResolvedFile(
-            name="rtl/inc/defs.svh",
-            file_type="systemVerilogSource",
-            is_include=True,
-        ),
-    )
-    return fusesoc_registry.ResolvedTarget(
-        name="asic_dut",
-        vlnv="::demo:0",
-        toplevel="dut",
-        eda_tool=eda_tool,
-        flow_options=flow_options or {"tool": eda_tool},
-        files=files,
-        parameters={
-            "NO_ASSERTIONS": {"paramtype": "vlogdefine", "default": True},
-            "N": {"paramtype": "vlogparam", "default": 4},
-        },
-        build_root=build_root,
-        edam_path=build_root / "demo.eda.yml",
-    )
-
-
-class TestAsicFrontendParity:
-    """`elaborate` honors the ASIC Target's frontend (ravenoc F-31).
-
-    Edalize's Yosys flow reads RTL with a generic `read_verilog`, which dies on
-    a package import (`syntax error, unexpected TOK_IMPORT`) — so *every*
-    SystemVerilog ASIC Target was un-elaboratable, on either frontend. Booley
-    now reads the design the way `asic_synthesize` will.
-    """
-
-    def test_slang_target_runs_booleys_own_yosys_script(self, tmp_path):
-        resolved = _yosys_resolved(
-            tmp_path / "build",
-            flow_options={
-                "tool": "yosys",  # upstream FuseSoC/Edalize schema field
-                "frontend": "slang",
-                "slang_options": ["--single-unit"],
-            },
-        )
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", resolved)
-
-        assert cmd is not None
-        assert cmd[:2] == ["yosys", "-p"]
-        script = cmd[2]
-        assert script.startswith("read_slang --top dut ")
-        assert "--single-unit" in script
-        assert "-D NO_ASSERTIONS" in script
-        assert "-G N=4" in script
-        # The include header is an -I dir, not a source to elaborate.
-        assert "defs.svh" not in script
-        assert "-I build/rtl/inc" in script
-        assert "hierarchy -check -top dut" in script
-
-    def test_sv2v_target_transpiles_before_reading(self, tmp_path):
-        """The regression this finding is really about: on the DEFAULT frontend
-        an SV ASIC Target must go through sv2v, not straight into read_verilog.
-        """
-        resolved = _yosys_resolved(
-            tmp_path / "build",
-            flow_options={"tool": "yosys", "frontend": "sv2v"},
-        )
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", resolved)
-
-        assert cmd is not None
-        assert cmd[:2] == ["sh", "-c"]
-        script = cmd[2]
-        # Stage 1: sv2v over the raw SV sources, with includes + defines.
-        assert script.startswith("sv2v ")
-        assert "-Ibuild/rtl/inc" in script
-        assert "-DNO_ASSERTIONS" in script
-        assert "build/rtl/pkg.sv" in script and "build/rtl/dut.sv" in script
-        assert "-w build/sv2v_converted.v" in script
-        # Stage 2: Yosys reads the TRANSPILED file, never the raw .sv.
-        yosys_stage = script[script.index("yosys -p") :]
-        assert "sv2v_converted.v" in yosys_stage
-        assert "rtl/dut.sv" not in yosys_stage
-        assert "chparam -set N 4 dut" in yosys_stage
-        assert "hierarchy -libdir ./ -check -top dut" in yosys_stage
-        # sv2v runs first and gates Yosys.
-        assert script.index("sv2v ") < script.index("yosys -p")
-
-    def test_unset_frontend_defaults_to_the_sv2v_chain(self, tmp_path):
-        """No [flows.synth] section at all — the common case, and the
-        one the finding reproduced on."""
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", _yosys_resolved(tmp_path / "build"))
-        assert cmd is not None
-        assert cmd[:2] == ["sh", "-c"]
-        assert "sv2v " in cmd[2]
-
-    def test_sv2v_failure_names_the_stage(self, tmp_path):
-        """A transpile failure must not read as a Yosys diagnostic."""
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", _yosys_resolved(tmp_path / "build"))
-        script = cmd[2]
-        assert "the sv2v transpile FAILED" in script
-        assert "come from sv2v" in script and "not from Yosys" in script
-        # Named as a real elaboration failure, not an EDA-tool problem.
-        assert "real elaboration failure" in script
-        # And the rc is preserved so the verdict stays a design FAIL.
-        assert "exit $rc" in script
-
-    def test_asic_target_is_marked_for_local_execution(self, tmp_path):
-        """Neither `yosys -p` nor the sh -c chain is a Boundary-Command-Contract
-        command, so they must never be routed to the host."""
-        flow = _make_flow(tmp_path, target="asic_dut")
-        flow._asic_elab_command("asic_dut", _yosys_resolved(tmp_path / "build"))
-        assert "asic_dut" in flow._asic_targets()
-
-    def test_sim_target_is_never_diverted(self, tmp_path):
-        """A verilator Target keeps make-driving Edalize."""
-        flow = _make_flow(tmp_path, target="sim")
-        resolved = _yosys_resolved(tmp_path / "b", eda_tool="verilator")
-        assert flow._asic_elab_command("sim", resolved) is None
-
-    def test_toplevel_less_target_is_never_diverted(self, tmp_path):
-        """No elaboration root means no `--top`; the Edalize path reports that
-        gap in its own vocabulary."""
-        import dataclasses
-
-        flow = _make_flow(tmp_path, target="asic_dut")
-        resolved = dataclasses.replace(_yosys_resolved(tmp_path / "b"), toplevel="")
-        assert flow._asic_elab_command("asic_dut", resolved) is None
-
-    def test_prepare_returns_the_asic_command_end_to_end(self, tmp_path):
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, target="asic_dut")
-        resolved = _yosys_resolved(
-            tmp_path / "build",
-            flow_options={"tool": "yosys", "frontend": "slang"},
-        )
-        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved):
-            cmd = flow._prepare_elab_command("asic_dut")
-        assert cmd[0] == "yosys"
-
-    def test_asic_target_uses_the_local_executor(self, tmp_path):
-        """Wiring check: the diverted command goes through `_execute`, not the
-        Session Runtime boundary executor."""
-        flow = _make_flow(tmp_path, target="asic_dut")
-        flow._asic_targets().add("asic_dut")
-        with (
-            patch.object(
-                ElaborateFlow, "_prepare_elab_command", return_value=["yosys", "-p", "x"]
-            ),
-            patch.object(
-                ElaborateFlow,
-                "_execute",
-                return_value=SubprocessResult(returncode=0, stdout="ok"),
-            ) as local,
-            patch.object(ElaborateFlow, "_execute_boundary") as boundary,
-        ):
-            flow._elaborate_targets(["asic_dut"])
-        assert local.called
-        assert not boundary.called
-
-    @staticmethod
-    def _stub_eda_tools(tmp_path, *, sv2v_rc: int) -> dict[str, str]:
-        """PATH with stub sv2v/yosys so the composed shell can be run for real."""
-        bindir = tmp_path / "stubbin"
-        bindir.mkdir()
-        (bindir / "sv2v").write_text(
-            f"#!/bin/sh\necho 'sv2v: Parse error near import' >&2\nexit {sv2v_rc}\n",
-            encoding="utf-8",
-        )
-        (bindir / "yosys").write_text("#!/bin/sh\necho YOSYS_RAN\nexit 0\n", encoding="utf-8")
-        for name in ("sv2v", "yosys"):
-            (bindir / name).chmod(0o755)
-        env = dict(os.environ)
-        env["PATH"] = f"{bindir}:{env['PATH']}"
-        return env
-
-    def test_composed_shell_chains_the_two_stages(self, tmp_path):
-        """Run the generated `sh -c` for real (stub binaries): a clean transpile
-        hands off to Yosys."""
-        import subprocess
-
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", _yosys_resolved(tmp_path / "build"))
-        proc = subprocess.run(
-            cmd,
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=self._stub_eda_tools(tmp_path, sv2v_rc=0),
-        )
-        assert proc.returncode == 0
-        assert "YOSYS_RAN" in proc.stdout
-
-    def test_composed_shell_stops_and_reports_on_a_failed_transpile(self, tmp_path):
-        """A failing transpile keeps its rc, never reaches Yosys, and says so."""
-        import subprocess
-
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", _yosys_resolved(tmp_path / "build"))
-        proc = subprocess.run(
-            cmd,
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=self._stub_eda_tools(tmp_path, sv2v_rc=3),
-        )
-        combined = proc.stdout + proc.stderr
-        assert proc.returncode == 3  # rc preserved -> a design FAIL, not a Flow error
-        assert "YOSYS_RAN" not in combined  # Yosys never ran
-        assert "sv2v: Parse error near import" in combined  # sv2v's own stderr survives
-        assert "the sv2v transpile FAILED" in combined  # ...and the stage is named
-
-    def test_real_sv2v_yosys_elaborates_a_package_import(self, tmp_path, monkeypatch):
-        """End-to-end with real sv2v + Yosys: an SV ASIC Target whose sources
-        use `package`/`import` elaborates cleanly on the DEFAULT frontend.
-
-        This is the finding's exact reproducer — it used to die with
-        `ERROR: syntax error, unexpected TOK_IMPORT`.
-        """
-        import shutil as _shutil
-        import subprocess
-
-        if _shutil.which("sv2v") is None or _shutil.which("yosys") is None:
-            pytest.skip("sv2v and/or yosys not installed")
-
-        build = tmp_path / "build"
-        (build / "rtl" / "inc").mkdir(parents=True)
-        (build / "rtl" / "pkg.sv").write_text(
-            "package demo_pkg;\n  typedef logic [3:0] nibble_t;\nendpackage\n",
-            encoding="utf-8",
-        )
-        (build / "rtl" / "dut.sv").write_text(
-            "import demo_pkg::*;\n"
-            "module dut #(parameter int N = 4) (\n"
-            "  input logic clk, input nibble_t d, output logic q);\n"
-            "  always_ff @(posedge clk) q <= |d;\n"
-            "endmodule\n",
-            encoding="utf-8",
-        )
-        (build / "rtl" / "inc" / "defs.svh").write_text("// header\n", encoding="utf-8")
-
-        flow = _make_flow(tmp_path, target="asic_dut")
-        cmd = flow._asic_elab_command("asic_dut", _yosys_resolved(build))
-        proc = subprocess.run(
-            cmd, cwd=tmp_path, capture_output=True, text=True, check=False, timeout=300
-        )
-        combined = proc.stdout + proc.stderr
-        assert "TOK_IMPORT" not in combined, combined
-        assert proc.returncode == 0, combined
 
 
 class TestBuildTreeRetention:

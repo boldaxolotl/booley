@@ -538,7 +538,8 @@ for `slang` when the design puts **parameterized interfaces on module port
 lists** or reads their parameters hierarchically
 (`localparam KEEP_W = s_axis.KEEP_W`). sv2v transpiles neither, so there it is a
 requirement, not a preference. Both frontends feed the same tech-mapping and
-timing tail, so the choice affects elaboration only, not the PPA methodology.
+timing tail, so the choice affects RTL frontend processing only, not the PPA
+methodology.
 For the full comparison and known `slang` limitations, see
 [SUPPORTED-EDA-TOOLS.md → RTL frontend](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 

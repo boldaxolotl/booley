@@ -474,18 +474,12 @@ violation prints `RESULT: WARN -- timing VIOLATED` and exits 0. Turn it on once
 the SDC is real, or an rc-only consumer (ticket gate, CI step) reads a -2.6 ns
 design as success.
 
-The Target's `frontend` and `slang_options` reach beyond synthesis: `elab`
-reads an ASIC Target through the same frontend, so its verdict matches the one
-`synth` will reach — `sv2v` transpiles first and elaborates the
-result, `slang` runs `read_slang` directly. That is what makes a SystemVerilog
-ASIC Target elaboratable at all: the generic flow reads it with a plain
-`read_verilog` that cannot parse a package `import`.
-
 ### Elaboration (`[flows.elab]`)
 
 `elab` compiles and elaborates the design without running the testbench — a
-fast build-only check that RTL/TB changes still compile. It runs inside the
-Session Runtime.
+fast build-only check for simulation Targets that RTL/TB changes still compile.
+It runs inside the Session Runtime. Synthesis Targets belong to `synth`, whose
+RTL frontend reads and checks the design before technology mapping.
 
 ```toml
 [flows.elab]
@@ -964,6 +958,13 @@ backend, Claude or Codex:
 [agent]
 provider = "claude"   # or "codex"
 ```
+
+`booley init` records this choice before it seeds the Session Runtime. A TTY
+prompts with no default; unattended initialization must pass, for example,
+`--provider claude --auth subscription`. Existing explicit `[agent]` values are
+preserved on re-run. An older provider-only project must explicitly select its
+missing policy on the next init (for example, `--auth auto`); init then records
+it rather than silently applying it.
 
 #### Pinning what bills (`[agent] auth`)
 

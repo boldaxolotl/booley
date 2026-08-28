@@ -1792,6 +1792,38 @@ class TestFullRtlReview:
         assert "RESULT: REVIEWED — NO FINDINGS" in captured.out
 
     @patch("booley.specialists.specialist._call_agent_sync")
+    def test_clean_interactive_review_needs_no_ticket_snapshot(
+        self,
+        mock_agent,
+        state_file: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        logs = tmp_path / "interactive-logs"
+        logs.mkdir()
+        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+        mock_agent.return_value = _make_agent_result([])
+        endpoint = ReviewerSpecialist()
+        endpoint.parse_args(
+            [
+                "--scope",
+                "rtl/mod_a.sv",
+                "--category",
+                "rtl",
+                "--focus",
+                "bugs",
+                "--work-dir",
+                str(tmp_path),
+            ]
+        )
+        endpoint.read_state()
+
+        result = endpoint._run()
+
+        assert result.exit_code == 0
+        assert result.detail["contract"]["ticket_source"]["ticket"] == ""
+
+    @patch("booley.specialists.specialist._call_agent_sync")
     def test_corrective_issues_keep_done_unmet(self, mock_agent, state_file: Path, capsys):
         mock_agent.return_value = _make_agent_result(
             [

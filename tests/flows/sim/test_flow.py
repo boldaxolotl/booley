@@ -1388,6 +1388,18 @@ class TestEdalizeSimPath:
     # `_use_edalize_sim` itself (ADR 0037): every selection rides the Edalize
     # flow.
 
+    def test_unset_run_cwd_is_explicit_project_root(self, tmp_path: Path):
+        """An omitted config cannot inherit the run-half's build-dir fallback."""
+        flow = _make_flow(tmp_path)
+        commands = (
+            flow._verilator_run_cmd("build/verilator", "tb", []),
+            flow._icarus_run_cmd("build/icarus", []),
+            flow._cocotb_run_cmd("build/cocotb", "icarus", "test_tb", ["smoke"]),
+        )
+
+        for command in commands:
+            assert command[command.index("--run-cwd") + 1] == "."
+
     def test_icarus_run_cmd_ships_through_iverilog_run(self, tmp_path: Path):
         """Icarus runs are re-homed to booley.sim.iverilog_run (the edalize
         Icarus run-half) — the mirror of the verilator_run wiring, not `make run`.

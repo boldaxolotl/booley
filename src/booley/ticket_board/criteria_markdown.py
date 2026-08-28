@@ -199,10 +199,7 @@ def _parse_bullets(lines: list[str]) -> dict[str, Any]:
         elif key == "reviews":
             _expand_reviews(raw_val, result)
         else:
-            result[key] = _parse_value(
-                raw_val,
-                structured_list_items=key == "mutation_score",
-            )
+            result[key] = _parse_value(raw_val)
 
     return result
 
@@ -224,15 +221,11 @@ def _expand_reviews(text: str, result: dict[str, Any]) -> None:
             result[f"review_{focus}_clean"] = True
 
 
-def _parse_value(text: str, *, structured_list_items: bool = False) -> Any:
+def _parse_value(text: str) -> Any:
     """Parse a bullet value into the appropriate Python type."""
     backticks = re.findall(r"`([^`]+)`", text)
     if backticks:
-        return (
-            [_parse_backtick_value(value) for value in backticks]
-            if structured_list_items
-            else backticks
-        )
+        return [_parse_backtick_value(value) for value in backticks]
     if text.lower() == "true":
         return True
     if text.lower() == "false":
