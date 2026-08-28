@@ -63,7 +63,7 @@ def _proc_state_and_flags(proc: Path) -> tuple[str, int] | None:
         return None
 
 
-def _matches_execution(proc: Path, marker: bytes) -> bool | None:
+def _matches_execution(proc: Path, marker: bytes) -> bool:
     try:
         environ = (proc / "environ").read_bytes()
     except FileNotFoundError:
@@ -74,10 +74,10 @@ def _matches_execution(proc: Path, marker: bytes) -> bool | None:
             state, flags = state_and_flags
             if state == "Z" or flags & _PF_KTHREAD:
                 return False
-        try:
-            return False if proc.stat().st_uid != os.geteuid() else None
-        except OSError:
-            return False
+        # Execution members are spawned by Booley in this runtime identity and
+        # expose their environment.  Unreadable host processes cannot be
+        # classified by the exact marker, so a best-effort scan skips them.
+        return False
     return marker in environ.split(b"\0")
 
 
@@ -93,10 +93,7 @@ def _scan_execution(execution_id: ExecutionId) -> _ExecutionProcesses:
     for proc in entries:
         if not proc.name.isdigit() or int(proc.name) == os.getpid():
             continue
-        matches = _matches_execution(proc, marker)
-        if matches is None:
-            complete = False
-        elif matches:
+        if _matches_execution(proc, marker):
             identity = capture_process_identity(int(proc.name), proc_root=proc_root)
             if identity is None:
                 complete = False

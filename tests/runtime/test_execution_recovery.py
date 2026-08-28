@@ -40,3 +40,15 @@ def test_unreadable_kernel_thread_cannot_match_execution(tmp_path: Path) -> None
     )
 
     assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
+
+
+def test_unreadable_proc_entry_does_not_block_marker_scan(tmp_path: Path) -> None:
+    proc = tmp_path / "321"
+    proc.mkdir()
+    (proc / "environ").mkdir()
+    (proc / "stat").write_text(
+        "321 (host-agent) S 1 1 1 0 0 0\n",
+        encoding="utf-8",
+    )
+
+    assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
