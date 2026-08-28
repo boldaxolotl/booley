@@ -80,6 +80,15 @@ checked or the devcontainer is generated. Re-running init preserves an existing
 project. `booley init --seed` follows the same contract, so an older project
 without a provider records the default (or supplied flag) on its first reseed.
 
+For CI, release validation, or another environment that must configure a
+project without access to a user's secrets, pass `--skip-credentials`. Init
+still records and validates the provider/auth selection, but does not inspect
+the environment or warn that credentials are absent:
+
+```bash
+booley init --provider codex --auth subscription --skip-credentials
+```
+
 ```bash
 mkdir my_ip && cd my_ip && git init      # a new IP, from scratch
 booley init --scaffold my_ip

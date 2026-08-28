@@ -264,7 +264,7 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
 
     assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
-    assert 'booley init | tee "${init_log}"' in workflow
+    assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
     assert 'booley doctor --deep --skip-agent-checks | tee "${doctor_log}"' in workflow
     assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow

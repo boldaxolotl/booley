@@ -108,6 +108,17 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         assert "picorv32_demo_contract.py" not in workflow
 
 
+def test_release_validation_skips_credentials_and_cannot_promote() -> None:
+    workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "booley init --skip-credentials | tee" in workflow
+    assert "OPENAI_API_KEY: ci-presence-check-only" not in workflow
+    assert (
+        "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
+        in workflow
+    )
+
+
 def _demo_project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
     (project / ".git" / "info").mkdir(parents=True)

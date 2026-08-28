@@ -259,15 +259,13 @@ jobs:
           echo "${RUNNER_TEMP}/booley-ci-bin" >> "${GITHUB_PATH}"
 
       # Exercise the public quick start and reject warnings as well as errors.
-      # A placeholder credential satisfies init's presence-only auth check; the
-      # release smoke never sends an agent request.
+      # Credentials are deliberately absent: this validation never contacts an
+      # agent provider, but still records the demo's configured agent policy.
       - name: Initialize demo cleanly as documented
         working-directory: demo
-        env:
-          OPENAI_API_KEY: ci-presence-check-only
         run: |
           init_log="$(mktemp)"
-          booley init | tee "${init_log}"
+          booley init --skip-credentials | tee "${init_log}"
           if grep -Fq "[!!]" "${init_log}" || grep -Fq "[XX]" "${init_log}"; then
             echo "booley init did not finish cleanly" >&2
             exit 1
@@ -336,6 +334,7 @@ jobs:
   promote:
     name: Promote tested image digests
     needs: [build-and-push, build-and-push-riscv, demo-smoke]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
