@@ -1018,7 +1018,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             dest="flatten",
             action="store_false",
             default=None,
-            help="Elaborate hierarchically (overrides the selected Target).",
+            help="Preserve hierarchy through synthesis (overrides the selected Target).",
         )
         # RTL frontend A/B toggle (like --flatten): sv2v transpile vs Yosys
         # 0.67 native read_slang. Tri-state — unset (None) uses the selected
@@ -1109,7 +1109,7 @@ class AsicSynthesizeFlow(BooleyFlow):
     ) -> None:
         """Append ``-d``/``-p`` typed-param flags and warn on likely sim Targets."""
         # FuseSoC owns build-time defines. ``vlogdefine`` parameters on this
-        # Target are the sole source, shared with FPGA and elaborate.
+        # Target are the sole source, shared with FPGA.
         defines = _vlogdefine_args(resolved.parameters)
         for define in defines:
             cmd.extend(["-d", define])

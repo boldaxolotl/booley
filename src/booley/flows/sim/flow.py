@@ -473,7 +473,7 @@ def parse_sva_errors(output: str) -> int:
         return count
 
 
-def _resolve_run_cwd(work_dir: Path | None = None) -> str | None:
+def _resolve_run_cwd(work_dir: Path | None = None) -> str:
     """Working directory for the sim *run*, relative to the project root.
 
     Some testbenches ``$readmemh`` vectors / firmware via paths relative to the
@@ -481,9 +481,8 @@ def _resolve_run_cwd(work_dir: Path | None = None) -> str | None:
     Verilated binary from the project root, so those reads miss. Setting
     ``[flows.sim].run_cwd`` in booley.toml points the run at the directory
     the TB's relative paths are authored against (e.g. the testbench dir).
-    Returns ``None`` (run from the project root — the default behaviour) when
-    unset. Only the direct-binary (Verilator) run honours this as a literal
-    cwd; the Icarus ``make run`` target stays anchored to the build dir.
+    Returns ``.`` when unset so every direct runner receives the documented
+    project-root cwd explicitly instead of falling back to its build directory.
     """
     try:
         from booley.runtime.shared_infra import _load_rtl_config
@@ -495,7 +494,7 @@ def _resolve_run_cwd(work_dir: Path | None = None) -> str | None:
                 return str(val)
     except ImportError:
         pass
-    return None
+    return "."
 
 
 def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
@@ -1465,7 +1464,6 @@ class SimulateFlow(BooleyFlow):
         test_name: str | None,
         test_names_map: dict[str, list[str]],
         build_root: Path | None,
-        default_run_dir: Path | None = None,
     ) -> dict[str, str]:
         """The ``BOOLEY_*`` env contract for Pre-Run Commands (ADR 0039).
 
@@ -1477,9 +1475,8 @@ class SimulateFlow(BooleyFlow):
           * ``BOOLEY_TEST_NAME`` — only when the run is a single test.
           * ``BOOLEY_TEST_NAMES`` — always; the run's list, space-joined.
           * ``BOOLEY_RUN_CWD`` — the directory the sim run executes in: the
-            ``run_cwd`` knob resolved against the project root when set, else
-            *default_run_dir* (the project root for direct Runtime execution,
-            or the work root for a generated boundary command).
+            ``run_cwd`` knob resolved against the project root, or the project
+            root itself when the knob is unset.
           * ``BOOLEY_BUILD_ROOT`` — the resolved Edalize build tree.
           * ``BOOLEY_PROJECT_ROOT`` / ``BOOLEY_PROJECT_DIR``,
             ``BOOLEY_SIM_EDA_TOOL`` — the explicit EDA-selection variable
@@ -1487,7 +1484,7 @@ class SimulateFlow(BooleyFlow):
         """
         work_dir = Path(self.args.work_dir)
         run_cwd = _resolve_run_cwd(self.args.work_dir)
-        run_dir = work_dir / run_cwd if run_cwd else Path(default_run_dir or work_dir)
+        run_dir = work_dir / run_cwd
         env = {
             "BOOLEY_TARGET": target,
             "BOOLEY_TEST_NAMES": " ".join(self._run_test_names(target, test_name, test_names_map)),
@@ -1632,7 +1629,6 @@ class SimulateFlow(BooleyFlow):
         test_name: str | None,
         test_names_map: dict[str, list[str]],
         build_root: Path | None,
-        default_run_dir: Path | None = None,
     ) -> list[str]:
         """Dry-run preview of Pre-Run Commands: env exports + the raw lines.
 
@@ -1645,13 +1641,7 @@ class SimulateFlow(BooleyFlow):
         commands = _resolve_pre_run_commands(self.args.work_dir)
         if not commands:
             return []
-        env = self._pre_run_env(
-            target,
-            test_name,
-            test_names_map,
-            build_root,
-            default_run_dir,
-        )
+        env = self._pre_run_env(target, test_name, test_names_map, build_root)
         exports = [f"export {k}={shlex.quote(v)}" for k, v in env.items()]
         return [*exports, *commands]
 
@@ -2860,13 +2850,11 @@ class SimulateFlow(BooleyFlow):
             return
         work_dir = Path(self.args.work_dir).resolve()
         run_cwd = _resolve_run_cwd(work_dir)
-        normalized_run_cwd = ""
-        if run_cwd is not None:
-            resolved_run_cwd = (work_dir / run_cwd).resolve()
-            try:
-                normalized_run_cwd = resolved_run_cwd.relative_to(work_dir).as_posix()
-            except ValueError:
-                normalized_run_cwd = "<outside-worktree>"
+        resolved_run_cwd = (work_dir / run_cwd).resolve()
+        try:
+            normalized_run_cwd = resolved_run_cwd.relative_to(work_dir).as_posix()
+        except ValueError:
+            normalized_run_cwd = "<outside-worktree>"
         controls = {
             "cycle_sentinels": _resolve_cycle_sentinels(self.args.work_dir),
             "pre_run_commands": _resolve_pre_run_commands(self.args.work_dir),

@@ -65,6 +65,20 @@ cd your-rtl-project            # porting an existing project
 booley init
 ```
 
+On a terminal, init asks which provider (`claude` or `codex`) and auth policy
+(`subscription`, `api-key`, or `auto`) this project uses. Neither prompt has a
+default. For CI or another unattended bootstrap, provide both explicitly:
+
+```bash
+booley init --provider codex --auth subscription
+```
+
+The choice is recorded in `.booley_project/booley.toml` before credentials are
+checked or the devcontainer is generated. Re-running init preserves an existing
+`[agent]` selection; change that table directly when deliberately migrating a
+project. `booley init --seed` follows the same contract, so an older project
+without a provider needs the flags (or a terminal prompt) on its first reseed.
+
 ```bash
 mkdir my_ip && cd my_ip && git init      # a new IP, from scratch
 booley init --scaffold my_ip
@@ -77,8 +91,8 @@ directive you add, and leaves your files and image untouched). Either form walks
 through:
 
 1. Creating `.booley_project/` with placeholder configs
-2. The tickets directory tree
-3. Agent authentication (subscription vs API key, with credential checks)
+2. Recording the selected agent provider and authentication policy
+3. The tickets directory tree and selected-provider credential checks
 4. External dependency detection (Docker)
 5. **Deploying interactive skills to your agent runtime (Claude Code, Codex
    CLI)**: this is what makes the `booley-setup` skill available at all

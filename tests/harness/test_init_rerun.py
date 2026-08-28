@@ -40,7 +40,14 @@ HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
 
 def _init_args() -> argparse.Namespace:
-    return argparse.Namespace(seed=False, check_only=False, force=False, verbose=False)
+    return argparse.Namespace(
+        seed=False,
+        check_only=False,
+        force=False,
+        verbose=False,
+        provider="claude",
+        auth="subscription",
+    )
 
 
 def _run_full_init(root: Path) -> int:

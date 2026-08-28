@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 import tomllib
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,33 @@ def _host_vivado_requested(project_root: Path, config: EdaConfig | None) -> bool
     )
 
 
+def _issuance_authority(
+    project_root: Path,
+    config: EdaConfig | None,
+    spec: dict[str, Any],
+    host_provisioning: bool,
+    prior: Issuance | None = None,
+) -> AbstractContextManager[tuple[authority.Installation | None, authority.LicenseProfile | None]]:
+    """Resolve EDA authority only when the runtime has an active consumer.
+
+    A Project without an active Vivado Flow requests neither a host install nor
+    a licence.  Its runtime remains fully host-issued, but validating that
+    issuance must not create or open the separate writable EDA authority store.
+    """
+    container_env = spec.get("containerEnv")
+    license_marker = isinstance(container_env, dict) and "XILINXD_LICENSE_FILE" in container_env
+    eda_requested = host_provisioning or _vivado_requested(project_root, config)
+    prior_eda = prior is not None and (
+        prior.installation is not None or prior.license_profile is not None
+    )
+    if not eda_requested and not license_marker and not prior_eda:
+        return nullcontext((None, None))
+    return authority.resolve_for_issuance(
+        project_root,
+        host_provisioning,
+    )
+
+
 def seal(project_root: Path, spec: dict[str, Any]) -> str:
     """Add host-derived networks and issuance labels to a generated spec.
 
@@ -159,7 +187,7 @@ def seal(project_root: Path, spec: dict[str, Any]) -> str:
     config = load_eda_config(project).get("vivado")
     host_provisioning = _host_vivado_requested(project, config)
     try:
-        with authority.resolve_for_issuance(project, host_provisioning) as (
+        with _issuance_authority(project, config, spec, host_provisioning) as (
             installation,
             profile,
         ):
@@ -205,9 +233,25 @@ def requested_host_installation(
     return config, authority.resolve_installation(project_root)
 
 
-def requested_license(project_root: Path) -> authority.LicenseProfile | None:
-    """Return the host-selected License Profile, when the Project has one."""
+def requested_license(
+    project_root: Path,
+    *,
+    expected_name: str | None = "",
+) -> authority.LicenseProfile | None:
+    """Return the host-selected License Profile, when the runtime requests one.
+
+    ``expected_name=None`` is the validated no-licence runtime path: it avoids
+    opening the EDA authority store. Omitting the argument retains discovery
+    for ``booley init``, before a runtime issuance exists.
+    """
+    if expected_name is None:
+        return None
     project = project_root.resolve(strict=True)
+    if expected_name:
+        profile = _optional_license(project)
+        if profile is None or profile.name != expected_name:
+            raise RuntimeSpecError("Project licence grant differs from the issued runtime")
+        return profile
     config = load_eda_config(project).get("vivado")
     if not _vivado_requested(project, config):
         return None
@@ -221,7 +265,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
     config = load_eda_config(project).get("vivado")
     host_provisioning = _host_vivado_requested(project, config)
     try:
-        with authority.resolve_for_issuance(project, host_provisioning) as (
+        with _issuance_authority(project, config, spec, host_provisioning) as (
             installation,
             profile,
         ):
@@ -265,7 +309,7 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
     config = load_eda_config(project).get("vivado")
     host_provisioning = _host_vivado_requested(project, config)
     try:
-        with authority.resolve_for_issuance(project, host_provisioning) as (
+        with _issuance_authority(project, config, spec, host_provisioning, stamp) as (
             installation,
             profile,
         ):

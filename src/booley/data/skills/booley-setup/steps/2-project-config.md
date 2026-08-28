@@ -499,13 +499,9 @@ What goes here:
   If row 16 explicitly chose to exclude repository-native `.core` files, also
   write `ignore_native_cores = true`; otherwise omit it (default false). This
   switch is valid only with `enabled = true`.
-- **Agent backend — write what row 19 settled.** If the plan chose `codex`,
-  emit the `[agent]` block (`provider = "codex"`, plus `auth` — usually
-  `subscription` to bill the `~/.codex/auth.json` login rather than an API
-  key). If it chose `claude`, either write `[agent] provider = "claude"`
-  explicitly or omit the block (Booley defaults to `claude`) — but never leave
-  the choice unrecorded when the user asked for `codex`, or every agent run
-  silently bills the wrong provider.
+- **Agent backend — preserve row 19 exactly.** `booley init` has already written
+  explicit `provider` and `auth` values. Carry them forward unchanged; for a
+  legacy project, write only the missing field settled during planning.
 - **Feedback mode — write what row 21 settled**, whenever it is anything other
   than the `ask` default: `[feedback] mode = "email"`, `"file-only"`, or
   `"off"`. Writing it
@@ -559,7 +555,10 @@ What goes here:
 - **Sentinels** (SV Targets; the plan's row 5): make sure a run's verdict is
   legible — either the TB emits `[SIM_RESULT] PASSED`/`FAILED`, or set
   `[flows.sim].pass_sentinels`/`fail_sentinels` to the TB's own wording.
-  Never require the user to rewrite a testbench they don't own. (Cocotb
+  Keep upstream/vendored testbenches unchanged when a project-owned adapter,
+  wrapper, or monitor can expose their existing verdict. Modify an upstream
+  source only when the approved plan explicitly chose that ownership cost.
+  (Cocotb
   Targets are exempt — verdicts come from `results.xml`; sentinels are
   ignored.) **Write the set fail-dominant**: `fail_sentinels` must carry the
   TB's *input/setup-error* wording too (a missing vector or firmware file —

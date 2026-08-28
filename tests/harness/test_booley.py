@@ -99,6 +99,13 @@ def test_init_parser_rejects_retired_eda_tool_flags(retired, replacement, capsys
     assert f"{retired} is retired; use {replacement}" in capsys.readouterr().err
 
 
+def test_init_parser_accepts_explicit_agent_selection():
+    args = tlr._build_parser().parse_args(["init", "--provider", "codex", "--auth", "api-key"])
+
+    assert args.provider == "codex"
+    assert args.auth == "api_key"
+
+
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
     from booley.harness import auto_doctor
 
@@ -110,19 +117,22 @@ def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch,
     assert "Automatic Doctor is running" in capsys.readouterr().err
 
 
-def test_rebuild_does_not_report_pre_rebuild_doctor_findings(tmp_path, monkeypatch, capsys):
+def test_due_session_start_does_not_report_persisted_doctor_findings(
+    tmp_path, monkeypatch, capsys
+):
     from booley.harness import auto_doctor
 
-    monkeypatch.setattr(auto_doctor, "load_report", lambda _root: {"checked_at": "old"})
     monkeypatch.setattr(
         auto_doctor,
         "consume_changed_summary",
         lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
     )
 
-    tlr._report_session_health(tmp_path, prior_checked_at="old")
+    tlr._report_session_health(tmp_path, startup_due_reason="Doctor inputs changed")
 
-    assert "Pre-rebuild Doctor findings were retired" in capsys.readouterr().err
+    output = capsys.readouterr().err
+    assert "Automatic Doctor is running" in output
+    assert "before startup" in output
 
 
 def test_console_startup_logs_automatic_doctor_progress(tmp_path, monkeypatch):

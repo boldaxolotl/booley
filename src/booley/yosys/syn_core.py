@@ -71,7 +71,6 @@ __all__ = [
     "SYN_DIR",
     "StaTimingConfig",
     "area_to_kge",
-    "build_elaborate_script",
     "detect_clock_port",
     "effective_params_filename",
     "effective_period_ps",
@@ -526,19 +525,19 @@ def effective_period_ps(config: StaTimingConfig, stdout: str) -> float:
 
 
 # The one name every consumer of the transpile agrees on. The make-driven
-# synth recipe writes it, the synth Yosys script reads it, elaborate does both,
-# and the provenance helper greps yosys errors for it — a second spelling would
-# silently break the last of those.
+# synth recipe writes it, the synth Yosys script reads it, and the provenance
+# helper greps Yosys errors for it — a second spelling would silently break the
+# last of those.
 SV2V_OUTPUT_NAME = "sv2v_converted.v"
 
-# Tiny RTLIL module-header artifact written immediately after elaboration. It
-# records the effective top-level parameter values without serializing the
-# (potentially very large) elaborated netlist.
+# Tiny RTLIL module-header artifact written immediately after RTL frontend
+# processing. It records the effective top-level parameter values without
+# serializing the (potentially very large) frontend netlist.
 EFFECTIVE_PARAMS_PREFIX = "effective_params_"
 
 
 def effective_params_filename(design_name: str) -> str:
-    """Artifact name holding *design_name*'s elaborated parameter header."""
+    """Artifact name holding *design_name*'s effective parameter header."""
     return f"{EFFECTIVE_PARAMS_PREFIX}{design_name}.il"
 
 
@@ -579,8 +578,7 @@ def sv2v_argv(
     """The sv2v transpile command line: SystemVerilog in, one Verilog file out.
 
     The single source of truth for the transpile invocation, shared by the
-    make-driven synth recipe (``syn_make._sv2v_recipe``) and ``elaborate``'s
-    ASIC path.
+    make-driven synthesis recipe (``syn_make._sv2v_recipe``).
 
     Parameter overrides are deliberately absent: sv2v preserves parameter
     declarations, and the overrides are applied on the Yosys side
@@ -608,12 +606,11 @@ def _quote_yosys_path(path) -> str:
 FRONTEND_CHOICES = ("sv2v", "slang")
 
 # What an unset Target ``flow_options.frontend`` resolves to. Named rather
-# than repeated as a literal default because two Flows now branch on it:
-# ``run_yosys_syn``'s argparse default and ``elaborate``'s ASIC path.
+# than repeated as a literal default across the synthesis entry points.
 DEFAULT_FRONTEND = "sv2v"
 
 # Yosys formal/verification cell types. These carry no gates and no liberty
-# area, so anything downstream of elaboration chokes on them: ``stat`` prints
+# area, so anything downstream of RTL frontend processing chokes on them: ``stat`` prints
 # "Area for cell type $check is unknown!" (and scores the design short), ABC has
 # nothing to map, and ``write_verilog`` emits a non-structural instance that
 # can abort OpenROAD's netlist parse ("syntax error") — leaving a synthesis run that
@@ -643,10 +640,7 @@ def resolve_frontend(
     distinct from an explicit ``"sv2v"``, so ``asic_synthesize`` can keep
     forwarding no ``--frontend`` flag at all in that case.
 
-    Shared by ``asic_synthesize`` and ``elaborate``
-    (which must follow it — ravenoc F-31: elaborating an asic Target with
-    plain ``read_verilog`` while synthesis used ``read_slang`` made every
-    SystemVerilog asic Target un-elaboratable).
+    Shared by the synthesis CLI and Target-driven Flow.
     """
     frontend = override or require_opt_str(recipe, "frontend", field=field)
     if frontend is not None and frontend not in FRONTEND_CHOICES:
@@ -683,14 +677,14 @@ def _slang_read_command(
     params: dict[str, str] | None,
     slang_options: list[str] | None = None,
 ) -> str:
-    """Build the ``read_slang`` command that elaborates raw SystemVerilog.
+    """Build the ``read_slang`` command that reads and lowers SystemVerilog.
 
     Yosys 0.67's native slang frontend (povik/sv-elab + MikePopoloski/slang)
     reads SystemVerilog directly, so the sv2v transpile step is skipped: the
     raw source files are handed to ``read_slang`` along with the include search
     paths (``-I``), preprocessor defines (``-D``), and — replacing the Yosys
     ``chparam`` pass the sv2v path uses — top-level parameter overrides applied
-    at read time (``-G NAME=VALUE``). ``--top`` names the elaboration root.
+    at read time (``-G NAME=VALUE``). ``--top`` names the synthesis top.
 
     *slang_options* are extra raw ``read_slang`` tokens appended verbatim after
     the generated options (Target ``flow_options.slang_options``). The
@@ -710,7 +704,7 @@ def _slang_read_command(
     return f"read_slang {' '.join(opts)} {files_str}"
 
 
-def _elaboration_commands(
+def _rtl_frontend_commands(
     source_files: list[Path],
     design_name: str,
     *,
@@ -720,13 +714,11 @@ def _elaboration_commands(
     params: dict[str, str] | None,
     slang_options: list[str] | None,
 ) -> str:
-    """``read RTL → elaborate to the top`` — everything before tech-mapping.
+    """Read RTL and prepare the selected top for synthesis tech-mapping.
 
-    Extracted so the synthesis script and the elaborate-only script are the
-    *same* commands by construction rather than by two authors agreeing: a
-    frontend flag, an elaboration pass, or a ``chformal`` placement added here
-    reaches both, and ``elaborate`` cannot start answering a question about a
-    different design than ``asic_synthesize`` will.
+    This is the synthesis RTL frontend: source ingestion, hierarchy selection,
+    process lowering, and formal-cell cleanup. Keeping it as one helper makes
+    the sv2v and slang paths converge before the technology-mapping stages.
 
     ``sv2v`` reads the single transpiled Verilog file with ``read_verilog`` +
     ``chparam``; ``slang`` hands the raw SystemVerilog (plus ``inc_dirs`` /
@@ -737,7 +729,7 @@ def _elaboration_commands(
         read_src = _slang_read_command(
             source_files, design_name, inc_dirs, defines, params, slang_options
         )
-        # read_slang already elaborated with the parameter overrides; hierarchy
+        # read_slang already applied the parameter overrides; hierarchy
         # just re-roots/-checks the design and proc lowers any remaining always
         # blocks. These are near no-ops on slang's word-level netlist but stay
         # harmless. ``chformal -remove`` runs right after ``proc`` (which lowers
@@ -752,44 +744,6 @@ def _elaboration_commands(
             chparam_cmd = f"chparam {set_args} {design_name}; "
         hls = f"{chparam_cmd}hierarchy -libdir ./ -check -top {design_name}; proc"
     return f"{read_src}; {hls}"
-
-
-def build_elaborate_script(
-    source_files: list[Path],
-    design_name: str,
-    *,
-    frontend: str = "sv2v",
-    inc_dirs: list[Path] | None = None,
-    defines: list[str] | None = None,
-    params: dict[str, str] | None = None,
-    slang_options: list[str] | None = None,
-) -> str:
-    """The elaborate-only Yosys script (ravenoc F-31).
-
-    Byte-for-byte the elaboration prefix :func:`_build_yosys_script` runs — same
-    read line, same ``hierarchy``/``proc``/``chformal`` sequence — stopped
-    before ``techmap`` and everything after it. That is the point: ``elaborate``
-    must reach the same verdict the eventual synthesis will, so it has to read
-    the RTL through the *configured* frontend rather than a generic
-    ``read_verilog``.
-
-    For the ``sv2v`` frontend *source_files* is the one transpiled file the
-    caller has already produced (see :func:`sv2v_argv`), exactly as in the
-    synthesis flow. Writes no netlist and needs no liberty file, so it is cheap
-    enough to run per Target on every call.
-    """
-    return (
-        _elaboration_commands(
-            source_files,
-            design_name,
-            frontend=frontend,
-            inc_dirs=inc_dirs or [],
-            defines=defines or [],
-            params=params,
-            slang_options=slang_options,
-        )
-        + "; check -noinit"
-    )
 
 
 def _build_yosys_script(
@@ -811,9 +765,9 @@ def _build_yosys_script(
     """Build the Yosys synthesis command script string.
 
     *frontend* selects how the RTL enters Yosys — see
-    :func:`_elaboration_commands`, which builds that shared prefix (and which
-    ``build_elaborate_script`` reuses verbatim). The tech-mapping tail
-    (dfflibmap → ABC → stat) added here is identical for both frontends.
+    :func:`_rtl_frontend_commands`, which builds the shared read-design prefix.
+    The tech-mapping tail (dfflibmap → ABC → stat) added here is identical for
+    both frontends.
 
     The middle is Yosys's own ``synth`` pass. It used to be a hand-rolled
     ``opt; check -noinit; memory; fsm; techmap``, which skipped the
@@ -831,8 +785,8 @@ def _build_yosys_script(
     lib_path = q(liberty)
     out_dir = str(work_dir).replace("\\", "/")
 
-    # Step 1 + 2: read RTL and elaborate to the top module.
-    hls = _elaboration_commands(
+    # Step 1 + 2: read RTL and prepare the selected top for synthesis.
+    hls = _rtl_frontend_commands(
         source_files,
         design_name,
         frontend=frontend,
