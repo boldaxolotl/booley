@@ -103,9 +103,7 @@ class TestOnSuccess:
 
     def test_remove_targets_must_be_unique_non_empty_strings(self):
         errors = OnSuccess(remove_targets=("baseline", "", "baseline")).validate()
-        assert errors == [
-            "on_success.remove_targets must contain unique non-empty strings"
-        ]
+        assert errors == ["on_success.remove_targets must contain unique non-empty strings"]
 
 
 class TestExecutionContext:

@@ -737,9 +737,7 @@ class TicketIO:
                 print(f"  - {err}", file=sys.stderr)
             return False
 
-        has_unmet, dep_error = self._check_deps(
-            slug, effective_fields.get("dependencies", [])
-        )
+        has_unmet, dep_error = self._check_deps(slug, effective_fields.get("dependencies", []))
         if dep_error:
             return False
 

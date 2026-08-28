@@ -19,21 +19,14 @@ from booley.ticket_board.target_finalization import (
 
 def _write_core(path: Path, *, vlnv: str, targets: str) -> None:
     path.write_text(
-        "CAPI=2:\n"
-        f"name: {vlnv}\n"
-        "filesets:\n"
-        "  rtl:\n"
-        "    files: [rtl/toy.sv]\n"
-        "targets:\n"
-        f"{targets}",
+        f"CAPI=2:\nname: {vlnv}\nfilesets:\n  rtl:\n    files: [rtl/toy.sv]\ntargets:\n{targets}",
         encoding="utf-8",
     )
 
 
 def _binding(*targets: str) -> tuple[ContractTargetBinding, ...]:
     return tuple(
-        ContractTargetBinding("synth", "synthesis_ok", target, target)
-        for target in targets
+        ContractTargetBinding("synth", "synthesis_ok", target, target) for target in targets
     )
 
 

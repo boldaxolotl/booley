@@ -348,9 +348,7 @@ def _validated_journal(
     roles = {item["role"] for item in participants}
     sources = _validated_string_map(journal.get("sources"), "acceptance journal sources", roles)
     candidates = _validated_candidates(journal.get("candidates"), roles, transaction)
-    raw_published = require_list(
-        journal.get("published"), field="acceptance journal published"
-    )
+    raw_published = require_list(journal.get("published"), field="acceptance journal published")
     published = [require_str({"role": item}, "role") for item in raw_published]
     _validate_journal_progress(
         state,
@@ -568,9 +566,7 @@ def _restore_candidate_ref(
     if actual == candidate["sha"]:
         return
     if not finalized:
-        raise CompletionError(
-            f"acceptance staging ref for {role} no longer matches its journal"
-        )
+        raise CompletionError(f"acceptance staging ref for {role} no longer matches its journal")
     _commit(repository, candidate["sha"])
     _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
 
@@ -710,9 +706,7 @@ def _partition_finalization_paths(
         return [], changed
     project_prefix = project_checkout.relative_to(temporary)
     project_paths = [
-        path.relative_to(project_prefix)
-        for path in changed
-        if path.is_relative_to(project_prefix)
+        path.relative_to(project_prefix) for path in changed if path.is_relative_to(project_prefix)
     ]
     outer_paths = [path for path in changed if not path.is_relative_to(project_prefix)]
     return project_paths, outer_paths
@@ -729,9 +723,7 @@ def _commit_finalized_candidates(
     )
     finalized: dict[str, str] = {}
     if project_checkout is not None:
-        finalized["project"] = _commit_finalized_paths(
-            project_checkout, project_paths, slug
-        )
+        finalized["project"] = _commit_finalized_paths(project_checkout, project_paths, slug)
     finalized["outer"] = _commit_finalized_paths(temporary, outer_paths, slug)
     return finalized
 
@@ -785,15 +777,11 @@ def _finalize_all(
             root, temporary, project_repository, "project" in by_role, journal
         )
         changed = _planned_finalization_paths(temporary, contract, journal)
-        finalized = _commit_finalized_candidates(
-            temporary, project_checkout, changed, slug
-        )
+        finalized = _commit_finalized_candidates(temporary, project_checkout, changed, slug)
         journal.mark_finalized(finalized, journal_path)
         _update_finalized_refs(root, project_repository, by_role, journal, finalized)
     finally:
-        _remove_finalization_worktrees(
-            root, temporary, project_repository, project_checkout
-        )
+        _remove_finalization_worktrees(root, temporary, project_repository, project_checkout)
 
 
 def _publish_all(
@@ -938,18 +926,14 @@ def _execute_completion(
         _finish_approval(tio, slug, contract, journal, path)
 
 
-def _validate_removal_targets(
-    contract: TargetContract, removal_targets: tuple[str, ...]
-) -> None:
+def _validate_removal_targets(contract: TargetContract, removal_targets: tuple[str, ...]) -> None:
     if removal_targets != contract.removal_targets:
         raise TargetContractError(
             "on_success.remove_targets changed after Target Contract sealing"
         )
 
 
-def _completion_context(
-    tio: Any, slug: str, effective_policy: Any
-) -> _CompletionContext | None:
+def _completion_context(tio: Any, slug: str, effective_policy: Any) -> _CompletionContext | None:
     removal_targets = tuple(getattr(effective_policy, "remove_targets", ()))
     entry = tio.find_ticket(slug)
     if not entry:

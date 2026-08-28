@@ -836,9 +836,9 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
     if fields.get("base_sha") != contract.outer_sha:
         return ["base_sha must equal target_contract.outer_sha"]
     on_success = fields.get("on_success")
-    declared_removals = on_success.get("remove_targets", []) if isinstance(
-        on_success, Mapping
-    ) else []
+    declared_removals = (
+        on_success.get("remove_targets", []) if isinstance(on_success, Mapping) else []
+    )
     if is_str_list(declared_removals) and tuple(declared_removals) != contract.removal_targets:
         return ["on_success.remove_targets changed after Target Contract sealing"]
     declared = set(contract.targets)

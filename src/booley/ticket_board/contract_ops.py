@@ -444,9 +444,7 @@ def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) 
     """Validate, commit all repositories, then atomically publish ticket metadata."""
     prepared = _prepare_seal(project_root, ticket_path, slug)
     outer_start = _full_commit(prepared.outer, "HEAD")
-    project_start = (
-        _full_commit(prepared.project, "HEAD") if prepared.project is not None else ""
-    )
+    project_start = _full_commit(prepared.project, "HEAD") if prepared.project is not None else ""
     outer_sha = outer_start
     project_sha = project_start
     try:

@@ -78,11 +78,7 @@ def _tests_key(root: Path, ref: fusesoc_registry.TargetRef) -> str:
     canonical = f"{ref.vlnv}#{ref.name}"
     if canonical in raw:
         return canonical
-    matching = [
-        key
-        for key in raw
-        if key != TEST_LISTS_TABLE and _bare_target(key) == ref.name
-    ]
+    matching = [key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) == ref.name]
     if not matching:
         return ""
     if len(matching) > 1:
@@ -149,9 +145,7 @@ def canonical_remove_targets(
     selectors = on_success.get("remove_targets", [])
     if not isinstance(selectors, list) or not selectors:
         return ()
-    bindings = canonical_contract_bindings(
-        project_root, criterion_targets(fields.get("criteria"))
-    )
+    bindings = canonical_contract_bindings(project_root, criterion_targets(fields.get("criteria")))
     return plan_target_removals(project_root, selectors, bindings).canonical_targets
 
 
@@ -199,9 +193,7 @@ def _core_replacements(text: str, names: set[str], path: Path) -> list[tuple[int
     if targets is None:
         raise TargetFinalizationError(f".core {path} has no mapping-valued targets block")
     entries = {
-        key.value: (key, value)
-        for key, value in targets.value
-        if isinstance(key, ScalarNode)
+        key.value: (key, value) for key, value in targets.value if isinstance(key, ScalarNode)
     }
     missing = sorted(names - entries.keys())
     if missing:
@@ -260,7 +252,9 @@ def _toml_headers(text: str) -> list[tuple[int, tuple[str, ...]]]:
             try:
                 parsed = tomllib.loads(f"[{match.group(1)}]\n")
             except tomllib.TOMLDecodeError as exc:
-                raise TargetFinalizationError(f"unsupported tests.toml table header: {exc}") from exc
+                raise TargetFinalizationError(
+                    f"unsupported tests.toml table header: {exc}"
+                ) from exc
             headers.append((offset, _single_toml_path(parsed)))
         offset += len(line)
     return headers
@@ -344,10 +338,7 @@ def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
         raise TargetFinalizationError(f"finalized tests.toml is invalid: {exc}") from exc
     declarations = fusesoc_registry.target_declarations(root)
     orphaned = sorted(
-        key
-        for key in raw
-        if key != TEST_LISTS_TABLE
-        and _bare_target(key) not in declarations
+        key for key in raw if key != TEST_LISTS_TABLE and _bare_target(key) not in declarations
     )
     if orphaned:
         raise TargetFinalizationError(
@@ -355,9 +346,7 @@ def _validate_finalized(root: Path, plan: TargetRemovalPlan) -> None:
         )
 
 
-def apply_target_removals(
-    project_root: Path | str, plan: TargetRemovalPlan
-) -> tuple[Path, ...]:
+def apply_target_removals(project_root: Path | str, plan: TargetRemovalPlan) -> tuple[Path, ...]:
     """Apply a proven plan and return changed paths relative to the checkout."""
     root = Path(project_root).resolve()
     by_core: dict[str, set[str]] = defaultdict(set)

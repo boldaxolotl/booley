@@ -250,9 +250,10 @@ def test_complete_rejects_removal_policy_changed_after_sealing(
         }
     )
 
-    assert complete_review_ticket(
-        tio, "change-target", _Policy(remove_targets=("baseline",))
-    ) is False
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=("baseline",)))
+        is False
+    )
     assert "changed after Target Contract sealing" in capsys.readouterr().err
 
 
@@ -345,9 +346,9 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
     )
     tio = _TicketIO(root, contract)
 
-    assert complete_review_ticket(
-        tio, "change-target", _Policy(remove_targets=(canonical,))
-    ) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
 
     merged_core = _git(root, "show", "main:toy.core")
     assert "  baseline:" not in merged_core
@@ -423,9 +424,9 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
     )
     tio = _TicketIO(root, contract)
 
-    assert complete_review_ticket(
-        tio, "change-target", _Policy(remove_targets=(canonical,))
-    ) is True
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
 
     assert "  baseline:" not in _git(project, "show", "main:cores/toy.core")
     assert "  candidate:" in _git(project, "show", "main:cores/toy.core")
