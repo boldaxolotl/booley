@@ -52,3 +52,14 @@ def test_unreadable_proc_entry_does_not_block_marker_scan(tmp_path: Path) -> Non
     )
 
     assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
+
+
+def test_unreadable_proc_entry_with_malformed_stat_does_not_match(
+    tmp_path: Path,
+) -> None:
+    proc = tmp_path / "654"
+    proc.mkdir()
+    (proc / "environ").mkdir()
+    (proc / "stat").write_text("malformed\n", encoding="utf-8")
+
+    assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
