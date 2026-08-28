@@ -80,8 +80,8 @@ def _project(tmp_path: Path) -> Path:
     (tmp_path / "tb").mkdir()
     (tmp_path / "tb" / "toy_tb.sv").write_text("module toy_tb; endmodule\n", encoding="utf-8")
     (tmp_path / "constraints").mkdir()
-    (tmp_path / "constraints" / "toy.sdc").write_text(
-        "create_clock -period 10 [get_ports clk]\n", encoding="utf-8"
+    (tmp_path / "constraints" / "toy.sdc").write_bytes(
+        b"create_clock -period 10 [get_ports clk]\n"
     )
     project = tmp_path / ".booley_project"
     project.mkdir()
