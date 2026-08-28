@@ -7,6 +7,9 @@ import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
+
+from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 
 
 class ProcessState(StrEnum):
@@ -33,6 +36,29 @@ class ProcessIdentity:
     pid: int
     pid_namespace: str
     start_ticks: int
+
+    def to_payload(self) -> dict[str, Any]:
+        """Serialize this identity for a durable protocol record."""
+        return {
+            "pid": self.pid,
+            "pid_namespace": self.pid_namespace,
+            "start_ticks": self.start_ticks,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: object) -> ProcessIdentity | None:
+        """Parse one untrusted protocol identity, or return ``None``."""
+        try:
+            data = require_dict(payload, field="process identity")
+            return cls(
+                pid=require_int(data.get("pid"), field="process identity pid"),
+                pid_namespace=require_str(data, "pid_namespace"),
+                start_ticks=require_int(
+                    data.get("start_ticks"), field="process identity start_ticks"
+                ),
+            )
+        except BoundaryError:
+            return None
 
 
 @dataclass(frozen=True)

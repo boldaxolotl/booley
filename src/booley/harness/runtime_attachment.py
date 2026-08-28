@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 
+from booley.core.boundary import BoundaryError, as_str, require_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     RUNTIME_EXECUTION_ENV,
@@ -97,13 +98,16 @@ def _terminal_result(payload: dict | None) -> ExecutionResult | None:
     state = payload.get("state")
     if state not in {"terminal", "unrecoverable"}:
         return None
-    exit_code = payload.get("exit_code")
-    cause = payload.get("terminal_cause")
+    try:
+        exit_code = require_int(payload.get("exit_code"), field="execution exit_code")
+    except BoundaryError:
+        exit_code = 125
+    cause = as_str(payload.get("terminal_cause"), "unknown") or "unknown"
     return ExecutionResult(
-        exit_code=exit_code if isinstance(exit_code, int) else 125,
+        exit_code=exit_code,
         state=state,
         tree_terminal=payload.get("tree_terminal") is True,
-        terminal_cause=cause if isinstance(cause, str) else "unknown",
+        terminal_cause=cause,
     )
 
 
@@ -128,6 +132,22 @@ def _request_protocol_shutdown(paths: ExecutionPaths) -> None:
     )
 
 
+def _force_recovery_if_due(
+    paths: ExecutionPaths,
+    pending: _PendingSignals,
+    recovery_started: float | None,
+    now: float,
+) -> None:
+    if recovery_started is None or now - recovery_started < _RECOVERY_FORCE_SECONDS:
+        return
+    request_cancellation(
+        paths,
+        force=True,
+        signum=pending.signum or signal.SIGTERM,
+        reason="cancelled" if pending.signum is not None else "transport_lost",
+    )
+
+
 def _drive_execution(
     process: subprocess.Popen,
     paths: ExecutionPaths,
@@ -139,7 +159,9 @@ def _drive_execution(
     recovery_started: float | None = None
     transport_failed = False
     protocol_failure: ExecutionResult | None = None
-    while recovery_started is None or time.monotonic() - recovery_started < _RECOVERY_LIMIT_SECONDS:
+    while (
+        recovery_started is None or time.monotonic() - recovery_started < _RECOVERY_LIMIT_SECONDS
+    ):
         now = time.monotonic()
         if now >= next_heartbeat:
             generation += 1
@@ -162,19 +184,17 @@ def _drive_execution(
             recovery_started = recovery_started or now
             if process.poll() is not None:
                 return result
-        if process.poll() is not None and payload is None and now - started_at >= _STARTUP_LIMIT_SECONDS:
+        if (
+            process.poll() is not None
+            and payload is None
+            and now - started_at >= _STARTUP_LIMIT_SECONDS
+        ):
             return ExecutionResult(125, "unrecoverable", False, "protocol_unavailable")
         if process.poll() is not None and not transport_failed:
             transport_failed = True
             request_cancellation(paths, signum=signal.SIGTERM, reason="transport_lost")
             recovery_started = recovery_started or now
-        if recovery_started is not None and now - recovery_started >= _RECOVERY_FORCE_SECONDS:
-            request_cancellation(
-                paths,
-                force=True,
-                signum=pending.signum or signal.SIGTERM,
-                reason="cancelled" if pending.signum is not None else "transport_lost",
-            )
+        _force_recovery_if_due(paths, pending, recovery_started, now)
         time.sleep(_POLL_SECONDS)
     return protocol_failure or ExecutionResult(125, "unrecoverable", False, "recovery_timeout")
 

@@ -543,15 +543,25 @@ command inherits that execution's opaque ID; zero or many Job leases may link
 to the same execution. When an owner disappears or a lease expires, recovery
 atomically changes the lease from `active` to `cancelling` and requests scoped
 execution cancellation. The slot remains occupied until the supervisor has
-reaped the complete execution tree and published a terminal record, so a dead
-root PID can never free capacity while EDA descendants still run.
+reaped the complete execution tree and published a terminal record. If that
+supervisor or its record is lost, a later reaper recovers only processes that
+carry the same opaque execution identity, checks their durable PID identities
+before signaling, and publishes terminality only after no running process with
+that identity remains. A dead root PID therefore cannot free capacity while
+EDA descendants still run, and a failed supervisor cannot leave the holder
+permanently cancelling.
 
 Unattached and legacy callers remain process-owned for compatibility. Their
-entries use PID namespace, process start time, zombie state, and the existing
-argv/work-timeout guards where available. They cannot prove complete-tree
-terminality after the owner dies, so the stronger cancellation-and-reap
-guarantee applies only to execution-owned leases. Unknown future slot schemas
-and incomplete execution records fail closed rather than freeing capacity.
+entries use the same renewable lease plus PID namespace, process start time,
+zombie state, and the existing argv/work-timeout guards where available. A
+missing work timeout or promotion stamp falls back to the finite recovery lease;
+legacy records anchor that lease at their creation stamp. An expired live owner
+is identity-checked and its current descendant tree is cancelled before the
+slot is released. Process-owned leases cannot recover descendants that escaped
+after the owner died, so the stronger durable identity guarantee still applies
+only to execution-owned leases.
+Unknown future slot schemas and indeterminate same-user process observations
+fail closed rather than freeing capacity.
 Complete execution records are retained for seven days; an active Job lease
 pins its referenced record, and nonterminal or unfamiliar records are never
 garbage-collected automatically.

@@ -10,12 +10,22 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
 from booley.runtime import job_slots
+from booley.runtime import project_dir as runtime_project_dir
+from booley.runtime.execution_records import (
+    PROTOCOL_VERSION,
+    RUNTIME_EXECUTION_ENV,
+    atomic_write_json,
+    execution_paths,
+    read_json,
+)
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     CLASS_LIGHT,
@@ -66,6 +76,7 @@ def make_store(root: Path, world: FakeWorld, caps: SlotCaps | None = None) -> Sl
         read_cmdline=world.read_cmdline,
         now=world.now,
         sleep=lambda s: None,
+        recovery=job_slots.SlotRecovery(recover_process_owner=lambda _identity: True),
     )
 
 
@@ -82,8 +93,12 @@ def make_execution_store(
         read_cmdline=world.read_cmdline,
         now=world.now,
         sleep=lambda _seconds: None,
-        execution_is_terminal=execution_terminal,
-        cancel_execution=cancellations.append,
+        recovery=job_slots.SlotRecovery(
+            execution_is_terminal=execution_terminal,
+            cancel_execution=cancellations.append,
+            recover_execution=lambda _execution_id: False,
+            recover_process_owner=lambda _identity: False,
+        ),
     )
 
 
@@ -100,7 +115,7 @@ class TestSingleProcess:
         assert tok.is_holder
 
     def test_acquire_renews_production_lease_until_release(self, root, monkeypatch):
-        monkeypatch.setattr(job_slots, "LEASE_DURATION_SECONDS", 0.2)
+        monkeypatch.setattr(job_slots, "LEASE_DURATION_SECONDS", 2.0)
         monkeypatch.setattr(job_slots, "LEASE_RENEW_INTERVAL_SECONDS", 0.02)
         store = SlotStore(root)
         token = store.acquire(CLASS_HEAVY, pid=os.getpid(), poll_interval=0.01)
@@ -422,9 +437,7 @@ class TestGhostReaping:
         assert holder.lease_id
         assert holder.lease_expires_at is not None
 
-    def test_one_runtime_execution_can_own_multiple_job_leases(
-        self, root, world, monkeypatch
-    ):
+    def test_one_runtime_execution_can_own_multiple_job_leases(self, root, world, monkeypatch):
         execution_id = "e" * 32
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
         spawn(world, 100)
@@ -476,6 +489,83 @@ class TestGhostReaping:
         assert store.reap(CLASS_HEAVY) == []
         assert cancellations == [execution_id]
         assert store.snapshot(CLASS_HEAVY)[0][0].lease_state == job_slots.LEASE_CANCELLING
+
+    @pytest.mark.parametrize("record_state", ["missing", "unrecoverable"])
+    def test_failed_execution_is_scoped_recovered_and_releases_holder(
+        self, tmp_path, monkeypatch, record_state
+    ):
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        runtime_project_dir.reset_cache()
+        execution_id = "f" * 32
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            env={**os.environ, RUNTIME_EXECUTION_ENV: execution_id},
+        )
+        unrelated = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            env={key: value for key, value in os.environ.items() if key != RUNTIME_EXECUTION_ENV},
+        )
+        store = SlotStore(project / "runtime" / "jobs" / "slots")
+        token = store.submit(CLASS_HEAVY, pid=process.pid, execution_id=execution_id)
+        assert store.refresh(token).state == HOLDING
+        paths = execution_paths(execution_id, project_dir=project)
+        if record_state == "unrecoverable":
+            atomic_write_json(
+                paths.record,
+                {
+                    "schema_version": PROTOCOL_VERSION,
+                    "state": "unrecoverable",
+                    "tree_terminal": False,
+                },
+            )
+        payload = json.loads(token.path.read_text(encoding="utf-8"))
+        payload["lease_expires_at"] = "1970-01-01T00:00:00Z"
+        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        try:
+            assert store.reap(CLASS_HEAVY) == [token.path.name]
+            assert process.wait(timeout=5) != 0
+            assert unrelated.poll() is None
+            terminal = read_json(paths.record)
+            assert terminal["state"] == "terminal"
+            assert terminal["tree_terminal"] is True
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            unrelated.kill()
+            unrelated.wait(timeout=5)
+            runtime_project_dir.reset_cache()
+
+    def test_expired_process_lease_recovers_only_its_durable_owner(self, tmp_path):
+        clean_env = {
+            key: value for key, value in os.environ.items() if key != RUNTIME_EXECUTION_ENV
+        }
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            env=clean_env,
+        )
+        unrelated = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)"],
+            env=clean_env,
+        )
+        store = SlotStore(tmp_path / "slots")
+        token = store.submit(CLASS_HEAVY, pid=process.pid, timeout_s=None)
+        assert store.refresh(token).state == HOLDING
+        payload = json.loads(token.path.read_text(encoding="utf-8"))
+        payload["lease_expires_at"] = "1970-01-01T00:00:00Z"
+        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        try:
+            assert store.reap(CLASS_HEAVY) == [token.path.name]
+            assert process.wait(timeout=5) != 0
+            assert unrelated.poll() is None
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            unrelated.kill()
+            unrelated.wait(timeout=5)
 
     @pytest.mark.parametrize("unknown_schema", [job_slots.SLOT_SCHEMA_VERSION + 1, "future"])
     def test_unknown_future_slot_schema_fails_closed(self, root, world, unknown_schema):
@@ -567,6 +657,7 @@ class TestAcquire:
         def tick(_seconds):
             polls["n"] += 1
             world.clock += 10  # 10s per poll
+            a.renew(holder)
             if polls["n"] >= 8:  # 80s of waiting, then let it through
                 a.release(holder)
 
@@ -585,6 +676,7 @@ class TestAcquire:
         assert store.refresh(tok).state == HOLDING
 
         world.clock += 613  # 10m13s later
+        store.renew(tok)
         described = store.describe_holders(CLASS_HEAVY)
         assert "pid 100" in described
         assert "(sim)" in described
@@ -736,12 +828,14 @@ class TestPromotionDeadline:
         # Queue far past the waiter's own budget + slack: waiters have no
         # deadline, and the wait must not pre-charge the future holder.
         world.clock += 1_000
+        store.renew(holder)
         assert store.reap(CLASS_HEAVY) == []
         store.release(holder)
         assert store.refresh(waiter).state == HOLDING
 
         # Freshly promoted: inside its (promotion-anchored) budget.
         world.clock += 100
+        store.renew(waiter)
         assert store.reap(CLASS_HEAVY) == []
         assert waiter.path.exists()
 
@@ -749,21 +843,18 @@ class TestPromotionDeadline:
         world.clock += job_slots.DEADLINE_SLACK_SECONDS + 1
         assert store.reap(CLASS_HEAVY) == [waiter.path.name]
 
-    def test_holder_without_promotion_stamp_has_no_deadline(self, root, world):
-        # A holder that crashed between the rename and the payload rewrite
-        # (or a pre-stamp writer) keeps no deadline — PID guards still apply.
-        import json as _json
-
+    def test_null_timeout_holder_without_promotion_stamp_uses_lease_deadline(self, root, world):
         spawn(world, 100)
         store = make_store(root, world)
-        tok = store.submit(CLASS_HEAVY, pid=100, timeout_s=100)
+        tok = store.submit(CLASS_HEAVY, pid=100, timeout_s=None)
         assert store.refresh(tok).state == HOLDING
-        payload = _json.loads(tok.path.read_text(encoding="utf-8"))
+        payload = json.loads(tok.path.read_text(encoding="utf-8"))
         del payload["promoted_at"]
-        tok.path.write_text(_json.dumps(payload) + "\n", encoding="utf-8")
+        del payload["lease_expires_at"]
+        tok.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
-        world.clock += 1_000_000
-        assert store.reap(CLASS_HEAVY) == []
+        world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+        assert store.reap(CLASS_HEAVY) == [tok.path.name]
 
 
 class TestAcquireWithdrawsOnFailure:

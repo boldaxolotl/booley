@@ -11,7 +11,10 @@ import time
 from pathlib import Path
 
 from booley.harness import runtime_attachment
-from booley.runtime import execution_records, project_dir
+from booley.runtime import execution_records, job_slots, project_dir
+from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
+
+_SRC_ROOT = Path(__file__).parents[2] / "src"
 
 
 def _fake_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
@@ -26,6 +29,10 @@ def _fake_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
     )
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        f"{_SRC_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+    )
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
     project_dir.reset_cache()
 
@@ -37,6 +44,30 @@ def _exiting_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
     project_dir.reset_cache()
+
+
+def _wait_for_execution_leader_exit(project: Path, *, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    executions = project / ".runtime" / "executions"
+    while time.monotonic() < deadline:
+        for record in executions.glob("*/record.json"):
+            payload = execution_records.read_json(record)
+            leader = ProcessIdentity.from_payload(
+                payload.get("leader") if payload is not None else None
+            )
+            if leader is not None and observe_process(leader).state not in {RUNNING, UNKNOWN}:
+                return True
+        time.sleep(0.01)
+    return False
+
+
+def _interrupt_when(predicate, *, timeout_s: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            os.kill(os.getpid(), signal.SIGINT)
+            return
+        time.sleep(0.01)
 
 
 def test_normal_command_uses_structured_terminal_result(tmp_path: Path, monkeypatch) -> None:
@@ -169,6 +200,112 @@ def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
     assert result.exit_code == 130
     assert result.tree_terminal is True
     assert time.monotonic() - started < 2
+
+
+def test_sigint_after_root_exit_cancels_surviving_descendant(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "project"
+    data = root / ".booley_project"
+    data.mkdir(parents=True)
+    _fake_docker(tmp_path, monkeypatch, data)
+    descendant_pid_file = tmp_path / "descendant.pid"
+    descendant_ready = tmp_path / "descendant.ready"
+    descendant = (
+        "import signal,time\n"
+        "signal.signal(signal.SIGINT,signal.SIG_IGN)\n"
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        f"open({str(descendant_ready)!r},'w').close()\n"
+        "time.sleep(120)\n"
+    )
+    command = (
+        "import pathlib,subprocess,sys,time\n"
+        f"p=subprocess.Popen([sys.executable,'-c',{descendant!r}],start_new_session=True)\n"
+        f"open({str(descendant_pid_file)!r},'w').write(str(p.pid))\n"
+        f"ready=pathlib.Path({str(descendant_ready)!r})\n"
+        "while not ready.exists(): time.sleep(0.01)\n"
+    )
+
+    interrupter = threading.Thread(
+        target=lambda: (
+            _wait_for_execution_leader_exit(data) and os.kill(os.getpid(), signal.SIGINT)
+        ),
+        daemon=True,
+    )
+    interrupter.start()
+    result = runtime_attachment.run_command(
+        root,
+        "session-name",
+        [sys.executable, "-c", command],
+        tty=False,
+    )
+    interrupter.join(timeout=2)
+
+    assert result.exit_code == 130
+    assert result.terminal_cause == "cancelled"
+    assert result.tree_terminal is True
+
+
+def test_sigint_during_slot_queue_wait_withdraws_waiter(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "project"
+    data = root / ".booley_project"
+    data.mkdir(parents=True)
+    _fake_docker(tmp_path, monkeypatch, data)
+    slots = data / "runtime" / "jobs" / "slots"
+    holder_store = job_slots.SlotStore(slots)
+    holder = holder_store.acquire(job_slots.CLASS_HEAVY, pid=os.getpid())
+    command = (
+        "import os\n"
+        "from booley.runtime import job_slots\n"
+        "from booley.runtime.project_dir import resolve_project_dir\n"
+        "root=resolve_project_dir()/'runtime'/'jobs'/'slots'\n"
+        "store=job_slots.SlotStore(root)\n"
+        "store.acquire(job_slots.CLASS_HEAVY,pid=os.getpid(),poll_interval=0.02)\n"
+    )
+    interrupter = threading.Thread(
+        target=lambda: _interrupt_when(
+            lambda: bool(holder_store.snapshot(job_slots.CLASS_HEAVY)[1])
+        ),
+        daemon=True,
+    )
+    interrupter.start()
+    try:
+        result = runtime_attachment.run_command(
+            root, "session-name", [sys.executable, "-c", command], tty=False
+        )
+        assert result.exit_code == 130
+        assert holder_store.snapshot(job_slots.CLASS_HEAVY)[1] == []
+    finally:
+        holder_store.release(holder)
+
+
+def test_sigint_after_promotion_allows_repeated_slot_cleanup(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "project"
+    data = root / ".booley_project"
+    data.mkdir(parents=True)
+    _fake_docker(tmp_path, monkeypatch, data)
+    promoted = tmp_path / "promoted"
+    command = (
+        "import os,time\n"
+        "from booley.runtime import job_slots\n"
+        "from booley.runtime.project_dir import resolve_project_dir\n"
+        "root=resolve_project_dir()/'runtime'/'jobs'/'slots'\n"
+        "store=job_slots.SlotStore(root)\n"
+        "store.acquire(job_slots.CLASS_HEAVY,pid=os.getpid(),poll_interval=0.02)\n"
+        f"open({str(promoted)!r},'w').close()\n"
+        "time.sleep(120)\n"
+    )
+    interrupter = threading.Thread(
+        target=lambda: _interrupt_when(promoted.exists),
+        daemon=True,
+    )
+    interrupter.start()
+    result = runtime_attachment.run_command(
+        root, "session-name", [sys.executable, "-c", command], tty=False
+    )
+    store = job_slots.SlotStore(data / "runtime" / "jobs" / "slots")
+
+    assert result.exit_code == 130
+    assert len(store.reap(job_slots.CLASS_HEAVY)) == 1
+    assert store.reap(job_slots.CLASS_HEAVY) == []
 
 
 def test_missing_container_protocol_fails_fast_with_actionable_message(

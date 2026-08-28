@@ -110,3 +110,24 @@ def test_observation_distinguishes_zombie_and_reused_pid(tmp_path: Path) -> None
     (tmp_path / "123" / "ns" / "pid").unlink()
     _write_proc_entry(tmp_path, 123, state="S", start_ticks=101, namespace="pid:[10]")
     assert runtime_pid.observe_process(identity, proc_root=tmp_path).state is runtime_pid.REUSED
+
+
+def test_process_identity_owns_protocol_serialization() -> None:
+    identity = runtime_pid.ProcessIdentity(
+        pid=123,
+        pid_namespace="pid:[10]",
+        start_ticks=100,
+    )
+
+    assert identity.to_payload() == {
+        "pid": 123,
+        "pid_namespace": "pid:[10]",
+        "start_ticks": 100,
+    }
+    assert runtime_pid.ProcessIdentity.from_payload(identity.to_payload()) == identity
+    assert (
+        runtime_pid.ProcessIdentity.from_payload(
+            {"pid": True, "pid_namespace": "pid:[10]", "start_ticks": 100}
+        )
+        is None
+    )

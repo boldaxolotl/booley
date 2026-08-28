@@ -45,7 +45,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import threading
 import time
 import uuid
@@ -55,10 +54,12 @@ from pathlib import Path
 
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
+    ExecutionId,
     execution_paths,
     read_json,
     request_cancellation,
 )
+from booley.runtime.execution_recovery import recover_execution, recover_process_owner
 from booley.runtime.job_records import (
     DEADLINE_SLACK_SECONDS,
     _proc_cmdline,
@@ -111,6 +112,7 @@ NARRATE_INTERVAL_SECONDS = 30.0
 # permanent phantom-holder deadlocks.
 _ENTRY_IO_ATTEMPTS = 20
 _ENTRY_IO_RETRY_SECONDS = 0.01
+_ENTRY_CREATE_ATTEMPTS = 20
 
 # Ranking and waiter->holder promotion must be one serialized decision. Without
 # a gate, two processes can each observe themselves in the last free rank before
@@ -126,7 +128,6 @@ LEASE_ACTIVE = "active"
 LEASE_CANCELLING = "cancelling"
 LEASE_DURATION_SECONDS = 30.0
 LEASE_RENEW_INTERVAL_SECONDS = 10.0
-_EXECUTION_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 class QueueFullError(RuntimeError):
@@ -225,7 +226,7 @@ class SlotToken:
     promoted_at: str | None = None
     schema_version: int = 1
     lease_id: str = ""
-    execution_id: str | None = None
+    execution_id: ExecutionId | None = None
     lease_state: str = LEASE_ACTIVE
     lease_generation: int = 0
     lease_expires_at: str | None = None
@@ -235,6 +236,18 @@ class SlotToken:
     @property
     def is_holder(self) -> bool:
         return self.path.name.startswith(f"{_HOLDER}-")
+
+
+@dataclass(frozen=True)
+class _WaiterRequest:
+    cls_dir: Path
+    priority: int
+    pid: int
+    argv: list[str]
+    role: str
+    timeout_s: float | None
+    created: float
+    execution_id: ExecutionId | None
 
 
 def slots_dir() -> Path | None:
@@ -269,6 +282,22 @@ def _default_execution_is_terminal(execution_id: str) -> bool:
 
 def _default_cancel_execution(execution_id: str) -> None:
     request_cancellation(execution_paths(execution_id))
+
+
+def _default_recover_process_owner(identity: ProcessIdentity | None) -> bool:
+    return identity is not None and recover_process_owner(identity)
+
+
+@dataclass(frozen=True)
+class SlotRecovery:
+    """Injected recovery boundary for durable execution and process owners."""
+
+    execution_is_terminal: Callable[[str], bool] = _default_execution_is_terminal
+    cancel_execution: Callable[[str], None] = _default_cancel_execution
+    recover_execution: Callable[[str], bool] = recover_execution
+    recover_process_owner: Callable[[ProcessIdentity | None], bool] = (
+        _default_recover_process_owner
+    )
 
 
 def _entry_name(state: str, priority: int, seq: int, pid: int, n: int) -> str:
@@ -383,8 +412,7 @@ class SlotStore:
         sleep: Callable[[float], None] = time.sleep,
         capture_identity: Callable[[int], ProcessIdentity | None] = capture_process_identity,
         observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
-        execution_is_terminal: Callable[[str], bool] = _default_execution_is_terminal,
-        cancel_execution: Callable[[str], None] = _default_cancel_execution,
+        recovery: SlotRecovery | None = None,
     ) -> None:
         self.root = root
         self.caps = caps or SlotCaps()
@@ -394,8 +422,7 @@ class SlotStore:
         self._sleep = sleep
         self._capture_identity = capture_identity
         self._observe_identity = observe_identity
-        self._execution_is_terminal = execution_is_terminal
-        self._cancel_execution = cancel_execution
+        self._recovery = recovery or SlotRecovery()
         self._n = 0  # per-store counter: distinct entries from one process
         self._auto_renew = now is time.time and sleep is time.sleep
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
@@ -410,14 +437,9 @@ class SlotStore:
         argv: list[str] | None = None,
         role: str = ROLE_INTERACTIVE,
         timeout_s: float | None = None,
-        execution_id: str | None = None,
+        execution_id: str | ExecutionId | None = None,
     ) -> SlotToken:
-        """Join the admission order for *job_class*.
-
-        Returns a token that may already be HOLDING (check with
-        :meth:`refresh`). Raises :class:`QueueFullError` when the class queue
-        is already at ``queue_max`` — the caller surfaces that as BLOCKED.
-        """
+        """Join *job_class* admission or raise when its bounded queue is full."""
         cap = self.caps.cap_for(job_class)
         cls_dir = self.root / job_class
         cls_dir.mkdir(parents=True, exist_ok=True)
@@ -433,18 +455,19 @@ class SlotStore:
 
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_TICKET])
         created = self._now()
-        linked_execution = execution_id or os.environ.get(RUNTIME_EXECUTION_ENV) or None
-        if linked_execution is not None and _EXECUTION_ID_RE.fullmatch(linked_execution) is None:
-            raise ValueError("execution_id must be 32 lowercase hexadecimal characters")
+        raw_execution = execution_id or os.environ.get(RUNTIME_EXECUTION_ENV) or None
+        linked_execution = ExecutionId(raw_execution) if raw_execution is not None else None
         token = self._create_entry(
-            cls_dir,
-            priority,
-            pid,
-            argv or [],
-            role,
-            timeout_s,
-            created,
-            linked_execution,
+            _WaiterRequest(
+                cls_dir=cls_dir,
+                priority=priority,
+                pid=pid,
+                argv=argv or [],
+                role=role,
+                timeout_s=timeout_s,
+                created=created,
+                execution_id=linked_execution,
+            )
         )
 
         # Post-create backstop: if a racing submit pushed us past the bound,
@@ -454,76 +477,73 @@ class SlotStore:
             raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
         return token
 
-    def _create_entry(
-        self,
-        cls_dir: Path,
-        priority: int,
-        pid: int,
-        argv: list[str],
-        role: str,
-        timeout_s: float | None,
-        created: float,
-        execution_id: str | None,
-    ) -> SlotToken:
+    def _create_entry(self, request: _WaiterRequest) -> SlotToken:
         """Create a uniquely-named waiter entry; atomic full-content appearance."""
-        owner_identity = self._capture_identity(pid)
+        owner_identity = self._capture_identity(request.pid)
         lease_id = uuid.uuid4().hex
-        payload_base = {
-            "schema_version": SLOT_SCHEMA_VERSION,
-            "role": role,
-            "argv": argv,
-            "created_at": _utc_stamp(created),
-            "timeout_s": timeout_s,
-            "lease_id": lease_id,
-            "execution_id": execution_id,
-            "owner_kind": "execution" if execution_id is not None else "process",
-            "lease_state": LEASE_ACTIVE,
-            "lease_generation": 0,
-            "lease_expires_at": None,
-            "owner_identity": self._identity_payload(owner_identity),
-        }
-        while True:
-            seq = self._next_seq(cls_dir)
+        payload_base = self._new_waiter_payload(request, lease_id, owner_identity)
+        for _attempt in range(_ENTRY_CREATE_ATTEMPTS):
+            seq = self._next_seq(request.cls_dir)
             self._n += 1
-            name = _entry_name(_WAITER, priority, seq, pid, self._n)
-            path = cls_dir / name
+            name = _entry_name(_WAITER, request.priority, seq, request.pid, self._n)
+            path = request.cls_dir / name
             payload = dict(payload_base, seq=seq)
-            tmp = cls_dir / f".{name}.{pid}.tmp"
+            tmp = request.cls_dir / f".{name}.{request.pid}.tmp"
             try:
                 tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-                os.link(tmp, path)  # atomic; EEXIST on the ~impossible collision
+                os.link(tmp, path)
             except FileExistsError:
-                continue  # same pid+n+seq raced us — pick a fresh seq
+                continue
             finally:
                 with contextlib.suppress(OSError):
                     tmp.unlink(missing_ok=True)
-            return SlotToken(
-                job_class=cls_dir.name,
-                role=role,
-                priority=priority,
-                seq=seq,
-                pid=pid,
-                n=self._n,
-                argv=list(argv),
-                created_at=payload["created_at"],
-                timeout_s=timeout_s,
-                path=path,
-                schema_version=SLOT_SCHEMA_VERSION,
-                lease_id=lease_id,
-                execution_id=execution_id,
-                owner_identity=owner_identity,
-                owner_kind="execution" if execution_id is not None else "process",
-            )
+            return self._new_waiter_token(path, payload, request)
+        raise RuntimeError("could not allocate a unique Job slot entry")
 
     @staticmethod
-    def _identity_payload(identity: ProcessIdentity | None) -> dict | None:
-        if identity is None:
-            return None
+    def _new_waiter_payload(
+        request: _WaiterRequest,
+        lease_id: str,
+        owner_identity: ProcessIdentity | None,
+    ) -> dict:
         return {
-            "pid": identity.pid,
-            "pid_namespace": identity.pid_namespace,
-            "start_ticks": identity.start_ticks,
+            "schema_version": SLOT_SCHEMA_VERSION,
+            "role": request.role,
+            "argv": request.argv,
+            "created_at": _utc_stamp(request.created),
+            "timeout_s": request.timeout_s,
+            "lease_id": lease_id,
+            "execution_id": request.execution_id,
+            "owner_kind": "execution" if request.execution_id is not None else "process",
+            "lease_state": LEASE_ACTIVE,
+            "lease_generation": 0,
+            "lease_expires_at": None,
+            "owner_identity": owner_identity.to_payload() if owner_identity is not None else None,
         }
+
+    def _new_waiter_token(
+        self,
+        path: Path,
+        payload: dict,
+        request: _WaiterRequest,
+    ) -> SlotToken:
+        return SlotToken(
+            job_class=path.parent.name,
+            role=payload["role"],
+            priority=request.priority,
+            seq=payload["seq"],
+            pid=request.pid,
+            n=self._n,
+            argv=list(payload["argv"]),
+            created_at=payload["created_at"],
+            timeout_s=payload["timeout_s"],
+            path=path,
+            schema_version=SLOT_SCHEMA_VERSION,
+            lease_id=payload["lease_id"],
+            execution_id=payload["execution_id"],
+            owner_identity=ProcessIdentity.from_payload(payload["owner_identity"]),
+            owner_kind=payload["owner_kind"],
+        )
 
     def _next_seq(self, cls_dir: Path) -> int:
         """Max seq among live entries + 1. Ties across processes are fine —
@@ -660,7 +680,9 @@ class SlotStore:
             "lease_state": token.lease_state,
             "lease_generation": token.lease_generation,
             "lease_expires_at": token.lease_expires_at,
-            "owner_identity": self._identity_payload(token.owner_identity),
+            "owner_identity": (
+                token.owner_identity.to_payload() if token.owner_identity is not None else None
+            ),
         }
 
     def _rewrite_token(self, token: SlotToken) -> bool:
@@ -701,30 +723,16 @@ class SlotStore:
         should_abort: Callable[[], bool] | None = None,
         narrate_interval_s: float = NARRATE_INTERVAL_SECONDS,
     ) -> SlotToken:
-        """Blocking convenience: submit, then poll until HOLDING.
+        """Submit and wait for a holder, withdrawing on cancellation or failure.
 
-        ``on_queued(position)`` fires whenever the position changes, and again
-        every ``narrate_interval_s`` while the wait continues — the Console's
-        "waiting for slot (position N)" narration hook. The periodic repeat
-        exists because a position that never moves used to narrate exactly once
-        and then go silent for as long as the holder ran (F-27). Raises
-        :class:`ClaimLostError` when the entry vanishes while waiting: a
-        live waiter is only ever unlinked by a deliberate cancellation, so
-        re-submitting would undo it. ``should_abort`` is checked once per
-        poll; when it returns True the entry is withdrawn and
-        :class:`ClaimAbortedError` raised — the shutdown hook for callers
-        whose signal handlers set an event instead of raising.
-
-        Any exception escaping the wait (including KeyboardInterrupt)
-        withdraws our own entry first: a claim without a caller-held token is
-        unreleasable, and — with this process alive and its argv matching —
-        unreapable, i.e. a permanent slot leak.
+        Queue narration repeats when its interval elapses. ``should_abort``
+        lets signal handlers end a wait without leaking the caller's entry.
         """
         token = self.submit(job_class, pid=pid, argv=argv, role=role, timeout_s=timeout_s)
         last_pos: int | None = None
         last_narrated: float | None = None
         try:
-            while True:
+            while token.path.exists():
                 if should_abort is not None and should_abort():
                     raise ClaimAbortedError(
                         f"aborted while waiting for a {job_class} slot (shutdown requested)"
@@ -744,6 +752,9 @@ class SlotStore:
                     last_narrated = now
                     on_queued(state.position)
                 self._sleep(poll_interval)
+            raise ClaimLostError(
+                f"{job_class} queue entry vanished while waiting — the job was cancelled"
+            )
         except BaseException:
             self.release(token)  # idempotent; no-op on the LOST path
             raise
@@ -769,7 +780,7 @@ class SlotStore:
             if (
                 current.lease_state == LEASE_CANCELLING
                 and current.execution_id is not None
-                and not self._execution_is_terminal(current.execution_id)
+                and not self._recovery.execution_is_terminal(current.execution_id)
             ):
                 return
             self._unlink_entry(token.path)
@@ -899,16 +910,11 @@ class SlotStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, ValueError):
             return None
-        owner_payload = payload.get("owner_identity")
-        owner_identity: ProcessIdentity | None = None
-        if isinstance(owner_payload, dict):
-            owner_pid = owner_payload.get("pid")
-            namespace = owner_payload.get("pid_namespace")
-            start_ticks = owner_payload.get("start_ticks")
-            if isinstance(owner_pid, int) and isinstance(namespace, str) and isinstance(
-                start_ticks, int
-            ):
-                owner_identity = ProcessIdentity(owner_pid, namespace, start_ticks)
+        owner_identity = ProcessIdentity.from_payload(payload.get("owner_identity"))
+        try:
+            execution_id = ExecutionId(payload.get("execution_id"))
+        except ValueError:
+            execution_id = None
         return SlotToken(
             job_class=path.parent.name,
             role=payload.get("role", ROLE_INTERACTIVE),
@@ -923,7 +929,7 @@ class SlotStore:
             promoted_at=payload.get("promoted_at"),
             schema_version=payload.get("schema_version", 1),
             lease_id=payload.get("lease_id", ""),
-            execution_id=payload.get("execution_id"),
+            execution_id=execution_id,
             lease_state=payload.get("lease_state", LEASE_ACTIVE),
             lease_generation=payload.get("lease_generation", 0),
             lease_expires_at=payload.get("lease_expires_at"),
@@ -1018,25 +1024,36 @@ class SlotStore:
         if tok.schema_version > SLOT_SCHEMA_VERSION:
             return False
 
-        if tok.execution_id is not None:
-            return self._linked_execution_is_stale(tok, state)
+        if tok.owner_kind == "execution":
+            return bool(
+                tok.execution_id is not None and self._linked_execution_is_stale(tok, state)
+            )
         return self._process_owner_is_stale(tok, state)
 
     def _linked_execution_is_stale(self, tok: SlotToken, state: str) -> bool:
-        if self._execution_is_terminal(tok.execution_id or ""):
+        if self._recovery.execution_is_terminal(tok.execution_id or ""):
             return self._begin_execution_recovery(tok, request_cancel=False)
         owner_stale = self._owner_is_stale(tok)
         deadline_reached = state == _HOLDER and (
             self._lease_expired(tok) or self._work_deadline_expired(tok)
         )
+        recovery_claimed = tok.lease_state == LEASE_CANCELLING
         if owner_stale or deadline_reached:
-            self._begin_execution_recovery(tok, request_cancel=True)
-        return False
+            recovery_claimed = self._begin_execution_recovery(tok, request_cancel=True)
+        return bool(
+            recovery_claimed
+            and tok.execution_id is not None
+            and self._recovery.recover_execution(tok.execution_id)
+        )
 
     def _process_owner_is_stale(self, tok: SlotToken, state: str) -> bool:
         if self._owner_is_stale(tok):
             return True
-        return state == _HOLDER and self._work_deadline_expired(tok)
+        deadline_reached = state == _HOLDER and (
+            self._lease_expired(tok) or self._work_deadline_expired(tok)
+        )
+        owner = tok.owner_identity or self._capture_identity(tok.pid)
+        return bool(deadline_reached and self._recovery.recover_process_owner(owner))
 
     def _owner_is_stale(self, tok: SlotToken) -> bool:
         if tok.owner_identity is not None:
@@ -1061,8 +1078,7 @@ class SlotStore:
             return False
         started = parse_stamp(tok.promoted_at)
         return bool(
-            started is not None
-            and self._now() > started + tok.timeout_s + DEADLINE_SLACK_SECONDS
+            started is not None and self._now() > started + tok.timeout_s + DEADLINE_SLACK_SECONDS
         )
 
     def _begin_execution_recovery(self, tok: SlotToken, *, request_cancel: bool) -> bool:
@@ -1080,7 +1096,7 @@ class SlotStore:
                 current.lease_generation += 1
                 claimed = self._rewrite_token(current)
                 if claimed and request_cancel:
-                    self._cancel_execution(current.execution_id or tok.execution_id)
+                    self._recovery.cancel_execution(current.execution_id or tok.execution_id)
         return claimed
 
     def _is_old_junk(self, path: Path) -> bool:

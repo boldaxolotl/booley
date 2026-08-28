@@ -827,6 +827,13 @@ interrupt and exits normally, its own exit code wins. If a pre-refresh Session
 Runtime does not support the execution protocol, the command fails with exit
 125 and tells you to run `booley session refresh`.
 
+Each execution identity is inherited by its descendants and any Job leases they
+hold. If the original supervisor disappears or leaves an incomplete record,
+lease recovery signals only processes carrying that identity and releases the
+slot after their durable identities are terminal. This fallback also covers an
+interrupt arriving after the root command exits while descendants are still
+being reaped; that interrupt retains the expected signal-derived host status.
+
 ## Scope
 
 Each ticket declares the files it's expected to touch. That's a plan, not a

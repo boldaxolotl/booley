@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
-import math
 import os
 import signal
 import subprocess
@@ -21,6 +20,7 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Any
 
+from booley.core.boundary import BoundaryError, as_float, as_str, require_int
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionPaths,
@@ -72,16 +72,6 @@ def _become_subreaper() -> None:
         raise OSError(errno, os.strerror(errno))
 
 
-def _identity_payload(identity: ProcessIdentity | None) -> dict[str, Any] | None:
-    if identity is None:
-        return None
-    return {
-        "pid": identity.pid,
-        "pid_namespace": identity.pid_namespace,
-        "start_ticks": identity.start_ticks,
-    }
-
-
 def _execution_record(
     *,
     state: str,
@@ -95,8 +85,8 @@ def _execution_record(
         "schema_version": PROTOCOL_VERSION,
         "state": state,
         "runtime_identity": supervisor.pid_namespace if supervisor is not None else None,
-        "supervisor": _identity_payload(supervisor),
-        "leader": _identity_payload(leader),
+        "supervisor": supervisor.to_payload() if supervisor is not None else None,
+        "leader": leader.to_payload() if leader is not None else None,
         "exit_code": exit_code,
         "tree_terminal": tree_terminal,
         "terminal_cause": terminal_cause,
@@ -120,12 +110,11 @@ def _reap_adopted(child: subprocess.Popen[Any]) -> None:
     child.poll()
     if child.returncode is None:
         return
-    while True:
+    reaped_pid = 1
+    while reaped_pid > 0:
         try:
-            pid, _status = os.waitpid(-1, os.WNOHANG)
+            reaped_pid, _status = os.waitpid(-1, os.WNOHANG)
         except ChildProcessError:
-            return
-        if pid == 0:
             return
 
 
@@ -166,11 +155,15 @@ def _terminate_tree(
     initial_signal: int,
     force: bool = False,
 ) -> bool:
-    stages = [(signal.SIGKILL, _FORCE_REAP_SECONDS)] if force else [
-        (initial_signal, grace_seconds),
-        (signal.SIGTERM, grace_seconds),
-        (signal.SIGKILL, _FORCE_REAP_SECONDS),
-    ]
+    stages = (
+        [(signal.SIGKILL, _FORCE_REAP_SECONDS)]
+        if force
+        else [
+            (initial_signal, grace_seconds),
+            (signal.SIGTERM, grace_seconds),
+            (signal.SIGKILL, _FORCE_REAP_SECONDS),
+        ]
+    )
     for signum, timeout_s in stages:
         signaled = _signal_owned_tree(signum)
         terminal, force_requested = _wait_for_tree_exit(
@@ -201,17 +194,39 @@ def _normal_exit_code(returncode: int) -> int:
     return 128 + (-returncode) if returncode < 0 else returncode
 
 
+def _owned_tree_exit_code(
+    root_returncode: int | None,
+    requested_signal: int,
+    *,
+    cancelled: bool,
+    cancellation_after_root_exit: bool,
+) -> int:
+    if (
+        cancelled
+        and not cancellation_after_root_exit
+        and root_returncode is not None
+        and root_returncode >= 0
+    ):
+        return root_returncode
+    if cancelled:
+        return 128 + requested_signal
+    return _normal_exit_code(root_returncode or 0)
+
+
 def _cancellation_request(paths: ExecutionPaths) -> tuple[str, bool, int] | None:
     cancel = read_json(paths.cancel)
     force = force_cancellation_requested(paths)
     if cancel is None:
         return ("cancelled", True, signal.SIGINT) if force else None
-    reason = cancel.get("reason")
-    signum = cancel.get("signum")
+    reason = as_str(cancel.get("reason"), "cancelled") or "cancelled"
+    try:
+        signum = require_int(cancel.get("signum"), field="cancellation signum")
+    except BoundaryError:
+        signum = signal.SIGINT
     return (
-        reason if isinstance(reason, str) else "cancelled",
+        reason,
         cancel.get("force") is True or force,
-        signum if isinstance(signum, int) and signum > 0 else signal.SIGINT,
+        signum if signum > 0 else signal.SIGINT,
     )
 
 
@@ -272,6 +287,7 @@ def _finish_owned_tree(
 ) -> int:
     terminal_cause, force, requested_signal = stop
     cancelled = terminal_cause != "exited"
+    cancellation_after_root_exit = False
     if cancelled:
         cancelling = _execution_record(state="cancelling", supervisor=supervisor, leader=leader)
         atomic_write_json(paths.record, cancelling)
@@ -285,10 +301,17 @@ def _finish_owned_tree(
     )
     child.poll()
     root_returncode = child.returncode if root_returncode is None else root_returncode
-    if cancelled and root_returncode is not None and root_returncode >= 0:
-        exit_code = root_returncode
-    else:
-        exit_code = 128 + requested_signal if cancelled else _normal_exit_code(root_returncode or 0)
+    late_cancellation = _cancellation_request(paths) if not cancelled else None
+    if late_cancellation is not None:
+        terminal_cause, _late_force, requested_signal = late_cancellation
+        cancelled = True
+        cancellation_after_root_exit = True
+    exit_code = _owned_tree_exit_code(
+        root_returncode,
+        requested_signal,
+        cancelled=cancelled,
+        cancellation_after_root_exit=cancellation_after_root_exit,
+    )
     atomic_write_json(
         paths.record,
         _execution_record(
@@ -336,9 +359,7 @@ def supervise(
         leader = capture_process_identity(child.pid)
         running = _execution_record(state="running", supervisor=supervisor, leader=leader)
         atomic_write_json(paths.record, running)
-        stop = _wait_until_stop(
-            child, paths, attachment_timeout_s, pending
-        )
+        stop = _wait_until_stop(child, paths, attachment_timeout_s, pending)
     return _finish_owned_tree(
         child,
         paths,
@@ -366,11 +387,10 @@ def _foreground_child(child: subprocess.Popen[Any], *, enabled: bool):
 
 
 def _positive_seconds(raw: str) -> float:
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("must be a number") from exc
-    if not math.isfinite(value) or value <= 0:
+    value = as_float(raw)
+    if value is None:
+        raise argparse.ArgumentTypeError("must be a finite number")
+    if value <= 0:
         raise argparse.ArgumentTypeError("must be a finite number greater than zero")
     return value
 

@@ -6,7 +6,15 @@ import json
 import os
 from pathlib import Path
 
-from booley.runtime.execution_records import execution_paths, gc_terminal_executions
+import pytest
+
+from booley.runtime.execution_records import ExecutionId, execution_paths, gc_terminal_executions
+
+
+def test_execution_id_owns_validation() -> None:
+    assert str(ExecutionId("a" * 32)) == "a" * 32
+    with pytest.raises(ValueError, match="32 lowercase hexadecimal"):
+        ExecutionId("not-an-execution")
 
 
 def _old_terminal(project_dir: Path, execution_id: str) -> None:

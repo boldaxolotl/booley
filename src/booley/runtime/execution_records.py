@@ -25,6 +25,15 @@ _PROTOCOL_FILENAMES = {
 }
 
 
+class ExecutionId(str):
+    """Validated opaque identity shared by one Runtime Attachment execution."""
+
+    def __new__(cls, value: object) -> ExecutionId:
+        if not isinstance(value, str) or _EXECUTION_ID_RE.fullmatch(value) is None:
+            raise ValueError("execution_id must be 32 lowercase hexadecimal characters")
+        return str.__new__(cls, value)
+
+
 @dataclass(frozen=True)
 class ExecutionPaths:
     """Files shared by the host attachment and in-runtime supervisor."""
@@ -37,13 +46,12 @@ class ExecutionPaths:
 
 
 def execution_paths(
-    execution_id: str, *, project_dir: Path | None = None
+    execution_id: str | ExecutionId, *, project_dir: Path | None = None
 ) -> ExecutionPaths:
     """Resolve protocol paths for one validated opaque execution ID."""
-    if _EXECUTION_ID_RE.fullmatch(execution_id) is None:
-        raise ValueError("execution_id must be 32 lowercase hexadecimal characters")
+    validated_id = ExecutionId(execution_id)
     resolved = project_dir if project_dir is not None else resolve_project_dir()
-    root = resolved / ".runtime" / "executions" / execution_id
+    root = resolved / ".runtime" / "executions" / validated_id
     return ExecutionPaths(
         root=root,
         record=root / "record.json",
@@ -124,8 +132,10 @@ def _referenced_execution_ids(project_dir: Path) -> set[str]:
     for path in slots.glob("*/*.json"):
         payload = read_json(path)
         execution_id = payload.get("execution_id") if payload is not None else None
-        if isinstance(execution_id, str):
-            references.add(execution_id)
+        try:
+            references.add(ExecutionId(execution_id))
+        except ValueError:
+            continue
     return references
 
 
@@ -169,8 +179,12 @@ def gc_terminal_executions(
     cutoff = (time.time() if now is None else now) - retention_seconds
     removed: list[str] = []
     for root in executions.iterdir():
-        if _EXECUTION_ID_RE.fullmatch(root.name) is None or root.name in referenced:
+        try:
+            execution_id = ExecutionId(root.name)
+        except ValueError:
+            continue
+        if execution_id in referenced:
             continue
         if root.is_dir() and _remove_terminal_record(root, cutoff=cutoff):
-            removed.append(root.name)
+            removed.append(execution_id)
     return sorted(removed)
