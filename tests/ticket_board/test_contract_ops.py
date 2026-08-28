@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -445,9 +446,12 @@ def test_revise_archives_identity_resets_evidence_and_reopens(tmp_path: Path) ->
 
     reopened = tio.contract_revise("change-target")
 
+    archive_identity = "\0".join(
+        ("booley-contract-archive-v1", sealed["surface_digest"], sealed["outer_sha"])
+    )
     archive = (
         "booley-contract-archive/change-target/"
-        f"{sealed['surface_digest'][:12]}-{sealed['outer_sha'][:12]}"
+        f"{hashlib.sha256(archive_identity.encode('ascii')).hexdigest()}"
     )
     assert _git(root, "rev-parse", archive) == sealed["outer_sha"]
     assert Path(reopened["outer_worktree"]).is_dir()
@@ -456,6 +460,23 @@ def test_revise_archives_identity_resets_evidence_and_reopens(tmp_path: Path) ->
     assert "target_contract" not in fields
     assert "base_sha" not in fields
     assert sealed["surface_digest"] in fields["target_contract_history"][0]
+
+
+def test_archive_ref_distinguishes_identities_with_the_same_short_prefix() -> None:
+    def contract(outer_sha: str) -> TargetContract:
+        participant = ContractParticipant(
+            "outer", outer_sha, "refs/heads/change-target", "refs/heads/main", "c" * 40
+        )
+        return TargetContract(outer_sha, "", "b" * 64, (), participants=(participant,))
+
+    first = contract("a" * 12 + "1" * 28)
+    second = contract("a" * 12 + "2" * 28)
+
+    first_ref = contract_ops._contract_archive_ref("change-target", first)
+    second_ref = contract_ops._contract_archive_ref("change-target", second)
+
+    assert first_ref != second_ref
+    assert len(first_ref.rsplit("/", 1)[-1]) == 64
 
 
 def test_revise_twice_archives_distinct_paired_project_identities(tmp_path: Path) -> None:

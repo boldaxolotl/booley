@@ -182,6 +182,14 @@ _Avoid_: Ticket Creation Defaults, ticket format, user preferences, runtime defa
 A named boolean condition that must be satisfied for ticket completion, bound to a **Target** by name, automatically invalidated when its dependency category (RTL, TB) changes. Tracks whether it was ever met across resets; any Flow requirement not enforced by the Harness itself must be expressed as an explicit Criterion.
 _Avoid_: check, gate, acceptance test
 
+**Acceptance Evidence**:
+An immutable, completion-ordered record of one normalized Criterion outcome produced during Ticket execution. It identifies the Criterion and its baseline or candidate role, carries the effective result after aliases and thresholds are resolved, and retains execution and Target Contract data as provenance; mutable runtime state is only a projection of these observations.
+_Avoid_: booley_state entry, raw Flow result, execution identity
+
+**Acceptance Snapshot**:
+The content-addressed, immutable projection of all Criteria selected when a Ticket crosses the acceptance lifecycle boundary. Review and done lifecycle readers use this snapshot for Criterion status while continuing to use live runtime data for operational history such as timeline and cost; a missing legacy snapshot is reported as unavailable, never as failed.
+_Avoid_: final booley_state, cached status, review report
+
 **Simulation Criterion**:
 A Criterion satisfied by a passing simulation Booley Flow run. Any Ticket that authorizes RTL or testbench edits must include at least one Simulation Criterion; otherwise the Ticket shape is invalid before development. The required testbench may already exist or be created during ticket execution when Scope permits it.
 _Avoid_: optional sim, smoke test

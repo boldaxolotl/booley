@@ -5722,6 +5722,49 @@ class TestFailPathSelfTest:
         assert not rec.fails()
         assert any("correctly graded a failure" in m for _, m in rec.events)
 
+    def test_selftests_cannot_inherit_ticket_acceptance_context(self, tmp_path, monkeypatch):
+        _set_venue(monkeypatch, True)
+        ticket_vars = {
+            "BOOLEY_SLUG": "active-ticket",
+            "BOOLEY_TICKET_FILE": "/ticket.md",
+            "BOOLEY_STATE_FILE": "/ticket-logs/.runtime/booley_state.json",
+            "BOOLEY_LOGS_DIR": "/ticket-logs",
+            "BOOLEY_RUNTIME_DIR": "/ticket-logs/.runtime",
+            "BOOLEY_EXECUTION_ID": "resume-generation",
+        }
+        for key, value in ticket_vars.items():
+            monkeypatch.setenv(key, value)
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append((cmd, kwargs["env"]))
+            kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            return subprocess.CompletedProcess(
+                cmd,
+                {"good": 0, "bad": 1}[kind],
+                stdout="",
+                stderr="",
+            )
+
+        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+        project = self._audit(tmp_path)
+        rec = _Rec()
+
+        doctor._run_selftest_checks(
+            project,
+            doctor._DoctorFlowRuntime(project.project_root, None),
+            rec.p,
+            rec.w,
+            rec.s,
+            rec.f,
+        )
+
+        assert not rec.fails()
+        assert len(seen) == 2
+        for cmd, env in seen:
+            assert "--diagnostic" in cmd
+            assert ticket_vars.keys().isdisjoint(env)
+
     def test_false_pass_on_bad_is_caught(self, tmp_path, monkeypatch):
         # QA-4: bad case exits 0 -> false pass -> FAIL.
         rec = self._run(monkeypatch, self._audit(tmp_path), {"good": 0, "bad": 0})

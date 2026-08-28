@@ -135,6 +135,23 @@ def test_due_session_start_does_not_report_persisted_doctor_findings(
     assert "before startup" in output
 
 
+def test_session_health_rechecks_freshness_before_consuming_summary(tmp_path, monkeypatch, capsys):
+    from booley.harness import auto_doctor
+
+    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: "Doctor inputs changed")
+    monkeypatch.setattr(
+        auto_doctor,
+        "consume_changed_summary",
+        lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
+    )
+
+    tlr._report_session_health(tmp_path)
+
+    output = capsys.readouterr().err
+    assert "Automatic Doctor is running" in output
+    assert "Doctor inputs changed" in output
+
+
 def test_console_startup_logs_automatic_doctor_progress(tmp_path, monkeypatch):
     from booley.harness import auto_doctor
 

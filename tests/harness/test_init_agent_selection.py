@@ -1,8 +1,9 @@
-"""Explicit agent selection contract for ``booley init`` and ``--seed``."""
+"""Agent selection and defaulting contract for ``booley init`` and ``--seed``."""
 
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
 from booley.harness import init_cmd
 from booley.harness.init_common import InitContext
@@ -14,12 +15,17 @@ def _args(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
-def test_unattended_first_init_requires_both_choices(tmp_path):
+def test_unattended_first_init_records_compatible_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    init_cmd.reset_cache()
     ctx = InitContext(project_root=tmp_path, interactive=False)
 
-    assert init_cmd._resolve_agent_selection(ctx, _args()) is None
+    resolved = init_cmd._resolve_agent_selection(ctx, _args())
 
-    assert ctx.results[-1].status == "err"
+    assert resolved == (
+        init_cmd.AgentSelection("claude", "auto", True, True),
+        tmp_path / init_cmd.PROJECT_DIR_NAME / "booley.toml",
+    )
 
 
 def test_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch):
@@ -30,8 +36,8 @@ def test_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch):
     assert init_cmd._agent_config_path(tmp_path) == project_dir / "booley.toml"
 
 
-def test_terminal_prompt_has_no_empty_default(tmp_path, monkeypatch):
-    answers = iter(("", "codex", "", "subscription"))
+def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
+    answers = iter(("", ""))
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
     ctx = InitContext(project_root=tmp_path, interactive=True)
 
@@ -39,7 +45,29 @@ def test_terminal_prompt_has_no_empty_default(tmp_path, monkeypatch):
 
     assert resolved is not None
     selection, _ = resolved
-    assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
+    assert selection == init_cmd.AgentSelection("claude", "auto", True, True)
+
+
+def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
+    project_dir = tmp_path / init_cmd.PROJECT_DIR_NAME
+    project_dir.mkdir()
+    monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", lambda _ctx: True)
+
+    def seed(_ctx, selection):
+        config = (project_dir / "booley.toml").read_text(encoding="utf-8")
+        assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
+        assert '[agent]\nprovider = "codex"\nauth = "subscription"' in config
+        return 0
+
+    monkeypatch.setattr(init_cmd, "_run_seed", seed)
+
+    assert (
+        init_cmd.run_init(
+            _args(seed=True, provider="codex", auth="subscription"),
+            tmp_path,
+        )
+        == 0
+    )
 
 
 def test_terminal_prompt_stops_after_three_invalid_answers(monkeypatch):
@@ -47,6 +75,40 @@ def test_terminal_prompt_stops_after_three_invalid_answers(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     assert init_cmd._prompt_agent_choice("provider", ("claude", "codex")) is None
+
+
+def test_agent_selection_records_an_aborted_auth_prompt(tmp_path, monkeypatch):
+    choices = iter(("claude", None))
+    monkeypatch.setattr(init_cmd, "_prompt_agent_choice", lambda *_args, **_kwargs: next(choices))
+    ctx = InitContext(project_root=tmp_path, interactive=True)
+
+    assert init_cmd._resolve_agent_selection(ctx, _args()) is None
+    assert ctx.results[-1].detail == "agent selection aborted"
+
+
+def test_existing_guidance_plan_can_proceed(tmp_path, monkeypatch):
+    canon = tmp_path / ".booley_project" / "AGENTS.md"
+    canon.parent.mkdir()
+    canon.write_text("# Project\n", encoding="utf-8")
+    plan = SimpleNamespace(blockers=[])
+    monkeypatch.setattr(init_cmd, "plan_guidance_links", lambda *_args: plan)
+
+    assert init_cmd._plan_existing_guidance(InitContext(project_root=tmp_path)) == (plan, True)
+
+
+def test_existing_guidance_inspection_failure_stops_init(tmp_path, monkeypatch):
+    canon = tmp_path / ".booley_project" / "AGENTS.md"
+    canon.parent.mkdir()
+    canon.write_text("# Project\n", encoding="utf-8")
+    monkeypatch.setattr(
+        init_cmd,
+        "plan_guidance_links",
+        lambda *_args: (_ for _ in ()).throw(OSError("unreadable")),
+    )
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._plan_existing_guidance(ctx) == (None, False)
+    assert ctx.results[-1].detail == "inspection failed"
 
 
 def test_persist_selection_preserves_existing_config_text(tmp_path):
@@ -83,17 +145,14 @@ def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeyp
     assert config.read_text(encoding="utf-8") == body
 
 
-def test_existing_provider_only_requires_explicit_auth_and_persists_it(tmp_path):
+def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
     config = project_dir / "booley.toml"
     config.write_text('[agent]\nprovider = "claude"\n', encoding="utf-8")
     ctx = InitContext(project_root=tmp_path, interactive=False)
 
-    assert init_cmd._resolve_agent_selection(ctx, _args(seed=True)) is None
-
-    ctx = InitContext(project_root=tmp_path, interactive=False)
-    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True, auth="auto"))
+    resolved = init_cmd._resolve_agent_selection(ctx, _args(seed=True))
 
     assert resolved == (init_cmd.AgentSelection("claude", "auto", False, True), config)
     assert init_cmd._step_agent_config(ctx, resolved[0], config)

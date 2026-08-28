@@ -553,14 +553,8 @@ def _add_cheat_subparser(sub) -> None:
     )
 
 
-def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative CLI option list
-    """Add cheat, doctor, init, auth subparsers."""
-    _add_cheat_subparser(sub)
-
-    from booley.eda import cli as eda_cli
-
-    eda_cli.add_subparser(sub)
-
+def _add_auth_subparser(sub) -> None:
+    """Add the host credential-management command."""
     auth_p = sub.add_parser(
         "auth", help="Mint + store the agent's long-lived auth token (claude setup-token)"
     )
@@ -580,6 +574,9 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         help="Read the credential from stdin instead of prompting",
     )
 
+
+def _add_doctor_subparser(sub) -> None:
+    """Add setup and environment diagnostics."""
     doctor_p = sub.add_parser(
         "doctor",
         help="Run setup and environment health checks",
@@ -600,38 +597,9 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         ),
     )
 
-    init_p = sub.add_parser("init", help="Set up a new Booley project")
-    init_p.add_argument(
-        "--check-only", action="store_true", help="Run health checks without modifying anything"
-    )
-    init_p.add_argument(
-        "--force", action="store_true", help="Overwrite existing configuration files"
-    )
-    init_p.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable verbose logging output"
-    )
-    init_p.add_argument(
-        "--fix-line-endings",
-        action="store_true",
-        help="Compatibility option; clean CRLF checkouts are repaired automatically",
-    )
-    init_p.add_argument(
-        "--seed",
-        action="store_true",
-        help="Seed only the Interactive Mode devcontainer for this folder/worktree "
-        "(no project scaffolding); run once per user/Ticket-Mode worktree",
-    )
-    init_p.add_argument(
-        "--provider",
-        choices=("claude", "codex"),
-        help="Agent provider to record for this project (required for unattended first init)",
-    )
-    init_p.add_argument(
-        "--auth",
-        type=_agent_auth_arg,
-        metavar="{auto,subscription,api-key}",
-        help="Agent authentication policy to record (required for unattended first init)",
-    )
+
+def _add_init_scaffold_arguments(init_p) -> None:
+    """Add the optional new-IP scaffold controls to ``booley init``."""
     init_p.add_argument(
         "--scaffold",
         metavar="IP_NAME",
@@ -668,6 +636,46 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         help="Scaffold: enable fpga for this Vivado part (default off)",
     )
 
+
+def _add_init_subparser(sub) -> None:
+    """Add project initialization and Session Runtime seeding."""
+    init_p = sub.add_parser("init", help="Set up a new Booley project")
+    init_p.add_argument(
+        "--check-only", action="store_true", help="Run health checks without modifying anything"
+    )
+    init_p.add_argument(
+        "--force", action="store_true", help="Overwrite existing configuration files"
+    )
+    init_p.add_argument(
+        "--verbose", "-v", action="store_true", help="Enable verbose logging output"
+    )
+    init_p.add_argument(
+        "--fix-line-endings",
+        action="store_true",
+        help="Compatibility option; clean CRLF checkouts are repaired automatically",
+    )
+    init_p.add_argument(
+        "--seed",
+        action="store_true",
+        help="Seed only the Interactive Mode devcontainer for this folder/worktree "
+        "(no project scaffolding); run once per user/Ticket-Mode worktree",
+    )
+    init_p.add_argument(
+        "--provider",
+        choices=("claude", "codex"),
+        help="Agent provider to record for this project (default: claude)",
+    )
+    init_p.add_argument(
+        "--auth",
+        type=_agent_auth_arg,
+        metavar="{auto,subscription,api-key}",
+        help="Agent authentication policy to record (default: auto)",
+    )
+    _add_init_scaffold_arguments(init_p)
+
+
+def _add_flow_subparser(sub) -> None:
+    """Add direct Flow execution."""
     flow_p = sub.add_parser(
         "flow",
         help="Run a Booley Flow directly (e.g. `booley flow lint --target lint`)",
@@ -682,15 +690,10 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         nargs=argparse.REMAINDER,
         help="Arguments passed verbatim to the Flow",
     )
-    _add_targets_subparser(sub)
 
-    # `booley feedback` spans runtime contexts by design: steps log findings and
-    # render reports in-container, while `submit` is host-only (see
-    # feedback/submit.py — github.com is deliberately off the sandbox's egress
-    # allowlist). It therefore keeps its own runtime-location check rather than joining
-    # _HOST_ONLY_COMMANDS, which would block logging from where setup runs.
-    feedback_cli.add_subparser(sub)
 
+def _add_session_subparser(sub) -> None:
+    """Add lifecycle controls for the Session Runtime."""
     session_p = sub.add_parser(
         "session",
         help="Start/enter/stop the Session Runtime container without VS Code",
@@ -727,6 +730,9 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         help="Rebuild the configured image from current Booley sources and recreate the session",
     )
 
+
+def _add_shell_subparser(sub) -> None:
+    """Add the deliberately undocumented host debugging shell."""
     # `booley shell` is deliberately undocumented (no `help=`, hidden via the
     # subparsers metavar): a host-side debugging hatch, kept working but out
     # of the advertised Session Runtime workflow (ADR 0028).
@@ -747,6 +753,25 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         help="Optional command to run non-interactively, e.g. "
         "`booley shell -- verilator --version`. Omit for an interactive shell.",
     )
+
+
+def _add_utility_subparsers(sub) -> None:
+    """Add host utilities, setup commands, and direct Flow commands."""
+    _add_cheat_subparser(sub)
+
+    from booley.eda import cli as eda_cli
+
+    eda_cli.add_subparser(sub)
+    _add_auth_subparser(sub)
+    _add_doctor_subparser(sub)
+    _add_init_subparser(sub)
+    _add_flow_subparser(sub)
+    _add_targets_subparser(sub)
+
+    # Feedback spans runtime contexts: logging is in-container, submission host-only.
+    feedback_cli.add_subparser(sub)
+    _add_session_subparser(sub)
+    _add_shell_subparser(sub)
 
 
 def _add_targets_subparser(sub) -> None:
@@ -1126,9 +1151,10 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
     """Surface the result, or the scheduled check, after Session Runtime start."""
     from booley.harness import auto_doctor
 
-    if startup_due_reason is not None:
+    due_reason = startup_due_reason or auto_doctor.due_reason(project_root)
+    if due_reason is not None:
         print(
-            f"Automatic Doctor is running in the Session Runtime ({startup_due_reason}); "
+            f"Automatic Doctor is running in the Session Runtime ({due_reason}); "
             "persisted findings from before startup will not be reported as current.",
             file=sys.stderr,
         )
@@ -1139,12 +1165,6 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
         prefix = "warning: " if any(auto_doctor.issue_counts(report)) else ""
         print(f"{prefix}{summary}", file=sys.stderr)
         return
-    if auto_doctor.due_reason(project_root):
-        print(
-            "Automatic Doctor is running in the Session Runtime; changed findings "
-            "will appear in `booley_status` and the next Booley Flow result.",
-            file=sys.stderr,
-        )
 
 
 def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command cohesive

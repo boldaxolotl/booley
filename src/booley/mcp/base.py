@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Any, ClassVar
 from booley.dev_support.criterion_categories import verification_fingerprint_categories
 from booley.dev_support.development_state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
+    CriterionChange,
     DevelopmentState,
 )
 from booley.flows import execution
@@ -338,6 +340,7 @@ class McpTool(ABC):
         self._start_time: float = 0.0
         self._pre_run_head: str | None = None
         self._raw_argv: list[str] | None = None
+        self._invocation_id = uuid.uuid4().hex
         self._reserved_invocation_dir: Path | None = None
         # Set for the duration of _run(); read by _post_run to avoid echoing a
         # verdict block the endpoint already printed itself (F-28).
@@ -459,10 +462,38 @@ class McpTool(ABC):
             detail,
             source_target=source_target,
         )
-        self.state.set_criterion(key, met, detail=stamped_detail)
+        changes = self.state.set_criterion(key, met, detail=stamped_detail)
         if self.state._file_path is not None:
+            self._record_acceptance_changes(changes)
             self.state.save()
             _emit_criteria_update(self.state)
+
+    def _record_acceptance_changes(self, changes: list[CriterionChange]) -> None:
+        """Append normalized strict-Ticket outcomes before mutable state is saved."""
+        if not changes or not self.state.strict_criteria:
+            return
+        raw_logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
+        if not raw_logs_dir:
+            return
+        target_contract: dict[str, Any] = {}
+        raw_ticket_file = os.environ.get("BOOLEY_TICKET_FILE")
+        if raw_ticket_file and Path(raw_ticket_file).is_file():
+            from booley.ticket_board.target_contract import load_ticket_contract
+
+            contract = load_ticket_contract(raw_ticket_file)
+            if contract is not None:
+                target_contract = contract.as_dict()
+        from booley.ticket_board.acceptance_ledger import record_changes
+
+        record_changes(
+            Path(raw_logs_dir),
+            self.state,
+            changes,
+            invocation_id=os.environ.get("BOOLEY_RUN_ID") or self._invocation_id,
+            producer=self.name,
+            execution_id=os.environ.get("BOOLEY_EXECUTION_ID", ""),
+            target_contract=target_contract,
+        )
 
     def _criterion_key_for_source(self, key: str, source_target: str | None) -> str:
         """Render a criterion key with the Target name, never a qualified selector."""
@@ -1126,6 +1157,19 @@ class McpTool(ABC):
         reset_keys: list[str] = []
         if result.exit_code == EXIT_SUCCESS and self.code_modifying:
             reset_keys = self.invalidate_dependent_criteria()
+            self._record_acceptance_changes(
+                [
+                    CriterionChange(
+                        key,
+                        self.state.criteria[key].met,
+                        "source-invalidated",
+                        dict(self.state.criteria[key].detail),
+                        self.state.criteria[key].mandatory,
+                        dict(self.state.criteria[key].params),
+                    )
+                    for key in reset_keys
+                ]
+            )
         criteria_set = [result.criterion_key] if result.criterion_key else []
         if reset_keys:
             criteria_set.extend(f"~{k}" for k in reset_keys)

@@ -15,6 +15,7 @@ import pytest
 from booley.eda import authority, runtime_spec
 from booley.eda.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_path
 from booley.harness import devcontainer as dc
+from booley.harness import session_runtime
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import reset_cache
 
@@ -113,6 +114,42 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
     assert runtime_spec.validate(project, spec, path) == stamp
     assert authority.state_path().read_text(encoding="utf-8") == "not valid authority JSON"
     assert not (authority.state_dir() / "authority.lock").exists()
+
+    authority.state_dir().chmod(0o500)
+    try:
+        monkeypatch.setattr(session_runtime, "_warn_on_image_drift", lambda *_args: None)
+        monkeypatch.setattr(session_runtime, "_warn_on_stale_booley_bake", lambda *_args: None)
+        monkeypatch.setattr(
+            session_runtime, "_warn_on_stale_session_containers", lambda *_args: None
+        )
+        monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(session_runtime, "_create_session_container", lambda *_args: None)
+        monkeypatch.setattr(session_runtime, "_run_hook", lambda *_args: None)
+
+        assert session_runtime.up(project).startswith("booley-session-")
+    finally:
+        authority.state_dir().chmod(0o700)
+
+
+def test_runtime_spec_rejects_non_mapping_container_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    spec["containerEnv"] = []
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="containerEnv must be a mapping"):
+        runtime_spec.seal(project, spec)
 
 
 def test_host_eda_issuance_still_requires_authority(

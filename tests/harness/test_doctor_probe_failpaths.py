@@ -173,9 +173,9 @@ class TestSimVerdictSetup:
     def _run(self, tmp_path, monkeypatch, tb_files, booley_toml=None, ref=None) -> _Rec:
         project = _mk_audit(tmp_path, booley_toml)
         monkeypatch.setattr(
-            doctor.fusesoc_registry,
-            "target_source_files",
-            lambda _root, _name, include_dependencies=False: SimpleNamespace(tb_files=tb_files),
+            doctor,
+            "inspect_target",
+            lambda _root, _selector: SimpleNamespace(rtl_files=(), tb_files=tuple(tb_files)),
         )
         rec = _Rec()
         doctor._check_sim_verdict_setup(
@@ -210,11 +210,11 @@ class TestSimVerdictSetup:
     def test_fusesoc_error_returns_silently(self, tmp_path, monkeypatch):
         # Documenting CURRENT behavior: an enumeration failure emits nothing
         # from this probe (the structural core audit reports it separately).
-        def boom(_root, _name, include_dependencies=False):
+        def boom(_root, _selector):
             raise fusesoc_registry.FuseSocError("core exploded")
 
         project = _mk_audit(tmp_path)
-        monkeypatch.setattr(doctor.fusesoc_registry, "target_source_files", boom)
+        monkeypatch.setattr(doctor, "inspect_target", boom)
         rec = _Rec()
         doctor._check_sim_verdict_setup(
             project, tmp_path, "sim_fast", _sim_ref(tmp_path), rec.p, rec.w

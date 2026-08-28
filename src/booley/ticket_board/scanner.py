@@ -119,10 +119,20 @@ def _load_timeline_summary(state_data: dict[str, Any] | None) -> dict[str, Any] 
 
 
 def _enrich_from_state(entry: dict[str, Any], logs_dir: Path, slug: str) -> None:
-    """Augment a ticket entry with data from booley_state.json (criteria + timeline)."""
+    """Augment criteria by lifecycle and timeline from mutable runtime state."""
     state_data = _load_state_data(existing_runtime_file(logs_dir, slug, "booley_state.json"))
 
-    cr = _load_criteria_summary(state_data)
+    criteria_data = state_data
+    if entry.get("status") in {"review", "done"}:
+        from .acceptance_ledger import read_acceptance
+
+        accepted = read_acceptance(logs_dir / slug)
+        criteria_data = (
+            {"criteria": accepted.snapshot.criteria}
+            if accepted.kind == "accepted" and accepted.snapshot is not None
+            else None
+        )
+    cr = _load_criteria_summary(criteria_data)
     if cr is not None:
         entry["criteria_passed"], entry["criteria_total"] = cr
 
