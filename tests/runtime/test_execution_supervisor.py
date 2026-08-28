@@ -233,9 +233,8 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
             "--attachment-timeout-seconds",
             "0.1",
             "--",
-            sys.executable,
-            "-c",
-            "import time; time.sleep(120)",
+            "sleep",
+            "120",
         ],
         env=_runtime_env(project_dir),
     )
