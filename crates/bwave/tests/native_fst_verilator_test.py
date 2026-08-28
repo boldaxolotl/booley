@@ -12,6 +12,11 @@ query command's output between the native store and the converted store.
 Same simulator + same semantics on both runs, so any difference is a
 writer/reader artifact by construction.
 
+A separate authored C++ fixture compiles and runs ``VerilatedFstC`` with the
+matching ``--trace-fst`` and ``VM_TRACE_FMT_FST`` options, then requires B-Wave
+to list its counter. That locks the compiler/runtime-object/harness contract
+that a prerecorded FST alone cannot exercise.
+
 Normalization is shared with differential_fst.py (same accepted deltas:
 x/z minimal forms, real float text, no-op transitions), plus one specific
 to this comparison: var-type labels are collapsed, because Verilator's FST
@@ -121,6 +126,63 @@ def verilate_and_run(design: str, trace_flag: str, workdir: Path) -> Path:
     return dump
 
 
+def build_and_run_authored_fst_main(workdir: Path) -> Path:
+    """Compile a real VerilatedFstC harness and return its native FST output."""
+    top = "authored_fst_top"
+    workdir.mkdir(parents=True, exist_ok=True)
+    build = subprocess.run(
+        [
+            "verilator",
+            "--cc",
+            "--exe",
+            "--build",
+            "--trace-fst",
+            "--timing",
+            "-Wno-fatal",
+            "--top-module",
+            top,
+            "--Mdir",
+            "obj_dir",
+            "-CFLAGS",
+            "-DVM_TRACE_FMT_FST",
+            str(RTL / f"{top}.sv"),
+            str(RTL / "authored_fst_main.cpp"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=300,
+        check=False,
+    )
+    if build.returncode != 0:
+        raise RuntimeError(f"authored VerilatedFstC build failed:\n{build.stdout}\n{build.stderr}")
+    store = workdir / "authored.fst"
+    sim = subprocess.run(
+        [str(workdir / "obj_dir" / f"V{top}"), str(store)],
+        capture_output=True,
+        text=True,
+        cwd=workdir,
+        timeout=120,
+        check=False,
+    )
+    if sim.returncode != 0 or "[SIM_RESULT] PASSED" not in sim.stdout:
+        raise RuntimeError(f"authored VerilatedFstC run failed:\n{sim.stdout}\n{sim.stderr}")
+    if not store.is_file() or store.stat().st_size == 0:
+        raise RuntimeError("authored VerilatedFstC run produced no nonempty FST")
+    return store
+
+
+def validate_authored_fst_main(exe: str, workdir: Path) -> bool:
+    """Build, run, and query the authored C++ native-FST harness."""
+    store = build_and_run_authored_fst_main(workdir)
+    stdout, stderr, returncode = run(exe, ["list"], str(store))
+    if returncode != 0 or "count[3:0]" not in stdout:
+        print(f"FAIL authored VerilatedFstC harness: rc={returncode}\n{stdout}\n{stderr}")
+        return False
+    print(f"{'authored VerilatedFstC harness':<40} OK")
+    return True
+
+
 def main() -> int:
     exe = find_bwave()
     if exe is None:
@@ -131,8 +193,8 @@ def main() -> int:
         return 2
 
     tmp = Path(tempfile.mkdtemp(prefix="bwave_native_fst_"))
-    failures = 0
-    total = 0
+    failures = 0 if validate_authored_fst_main(exe, tmp / "authored_fst_main") else 1
+    total = 1
     for design in DESIGNS:
         native_dump = verilate_and_run(design, "--trace-fst", tmp / f"{design}_fst")
         native_store = native_dump.with_name("native.fst")
