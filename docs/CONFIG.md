@@ -543,6 +543,35 @@ incomplete calibration, never a successful PPA result.
 The slot store is per-project. It does not arbitrate separate Projects' shared
 host resources such as commercial-license seats.
 
+Each admitted holder has a renewable recovery lease that is separate from its
+optional work timeout. A Job launched through an explicit Runtime Attachment
+command inherits that execution's opaque ID; zero or many Job leases may link
+to the same execution. When an owner disappears or a lease expires, recovery
+atomically changes the lease from `active` to `cancelling` and requests scoped
+execution cancellation. The slot remains occupied until the supervisor has
+reaped the complete execution tree and published a terminal record. If that
+supervisor or its record is lost, a later reaper recovers only processes that
+carry the same opaque execution identity, checks their durable PID identities
+before signaling, and publishes terminality only after no running process with
+that identity remains. A dead root PID therefore cannot free capacity while
+EDA descendants still run, and a failed supervisor cannot leave the holder
+permanently cancelling.
+
+Unattached and legacy callers remain process-owned for compatibility. Their
+entries use the same renewable lease plus PID namespace, process start time,
+zombie state, and the existing argv/work-timeout guards where available. A
+missing work timeout or promotion stamp falls back to the finite recovery lease;
+legacy records anchor that lease at their creation stamp. An expired live owner
+is identity-checked and its current descendant tree is cancelled before the
+slot is released. Process-owned leases cannot recover descendants that escaped
+after the owner died, so the stronger durable identity guarantee still applies
+only to execution-owned leases.
+Unknown future slot schemas and indeterminate same-user process observations
+fail closed rather than freeing capacity.
+Complete execution records are retained for seven days; an active Job lease
+pins its referenced record, and nonterminal or unfamiliar records are never
+garbage-collected automatically.
+
 ### Auto-retry on transient crashes (`[developer.auto_retry]`)
 
 When the Developer Agent dies to a server-side failure (today, an `API Error:
@@ -1569,24 +1598,33 @@ check rebuilds a project image left behind by a base version/source update.
 Manual ownership prevents file rewriting; it does not freeze stale parent
 layers into the Session Runtime.
 
+Booley infers ancestry only from a Dockerfile with one unambiguous `FROM`. For
+a multi-stage or variable-based recipe, declare the managed direct parent
+without changing Docker semantics:
+
+```dockerfile
+# booley:parent=booley-sandbox-riscv
+FROM booley-sandbox-riscv AS tools
+FROM tools AS runtime
+```
+
+The directive is lifecycle metadata. Booley verifies the resulting image label
+against that parent's current immutable Docker image ID; it never treats a tag
+or matching Booley version as proof of ancestry.
+
 Use the [post-setup hook](#post-setup-hook) (below) for per-worktree
 preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
 
-**Changing an *already-built* image is a three-step operation, not a config
-edit.** (Init's own build above already does step 1 for you.) The
-devcontainer spec freezes the image name at seed time, and a running container
-keeps the image it started on. So every image change (new `image`, or a rebuild
-behind the same tag) needs:
-
-1. `booley init --seed` on the host, which refreshes the devcontainer spec;
-2. recreate the container with VS Code **Rebuild Container**, or
-   `booley session down && booley session up`;
-3. probe **inside the Session Runtime** (`booley session enter -- <new-eda-tool>
-   --version`); a host `docker run` proves nothing about the container.
-
-Skipping step 2 is the classic trap. `booley doctor` and `booley session up`
-warn on image drift; treat those as "do the three steps".
+**Changing an already-built image is a lifecycle operation, not a config
+edit.** For a headless Booley-managed runtime, `booley session refresh`
+reconciles the full image chain, pins the new immutable image ID into the host
+spec, recreates the container, and probes its installed Booley payload before
+discarding the old container. A failed recreation or probe restores the old
+container. If VS Code owns the running runtime, refresh the image with
+`booley init --force` and use **Dev Containers: Rebuild Container**. Explicit
+external images remain your responsibility: rebuild or pull them, run
+`booley init --seed`, then recreate and probe the runtime.
 
 #### RISC-V toolchain image (`booley-sandbox-riscv`)
 

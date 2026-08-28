@@ -167,6 +167,18 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "booley-sandbox=docker-image://" in workflow
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
+    assert (
+        "io.booley.build.parent-artifact=${{ steps.base-artifact.outputs.image-id }}" in workflow
+    )
+
+
+def test_release_base_records_exact_stable_runtime_parent() -> None:
+    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    assert "id: runtime-base-artifact" in workflow
+    assert (
+        "io.booley.build.parent-artifact=${{ steps.runtime-base-artifact.outputs.image-id }}"
+    ) in workflow
 
 
 def test_candidate_builds_consume_compatible_stable_base_by_immutable_digest() -> None:

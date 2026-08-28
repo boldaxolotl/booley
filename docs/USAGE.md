@@ -819,12 +819,39 @@ booley session refresh                  # rebuild configured image, recreate ses
 booley session down                     # stop and remove
 ```
 
+`session refresh` is transactional for the headless runtime. It keeps the old
+container recoverable until the replacement is running on the reconciled
+immutable image ID and an isolated in-container probe confirms the expected
+Booley payload. It refuses to replace a runtime currently owned by VS Code;
+use the editor's **Dev Containers: Rebuild Container** command in that case.
+For a licensed headless runtime, run `booley session down` first so refresh does
+not risk replacing the deterministic license-relay topology beneath a recoverable
+old container.
+
 These are **host** commands (they need Docker), and `booley init` must have run
 first: it builds the image and creates the network, proxy, and reaper. The
 container carries the same `booley.role=interactive` label as the VS Code one,
 so the idle reaper owns its lifecycle either way. `booley session enter` is the
 headless equivalent of a container terminal, so every container-only command
 works through it.
+
+An explicit command after `--` runs as one supervised Runtime Attachment
+execution. `Ctrl-C`, `SIGTERM`, a lost Docker attachment, or an expired host
+heartbeat requests scoped cancellation inside the runtime. Booley escalates
+through a bounded grace period, reaps descendants even when they create a new
+session, and returns only after the complete owned process tree is terminal. A
+second interrupt requests immediate force cleanup. Normal exit codes and the
+usual `128 + signal` shell convention are preserved; if the command handles an
+interrupt and exits normally, its own exit code wins. If a pre-refresh Session
+Runtime does not support the execution protocol, the command fails with exit
+125 and tells you to run `booley session refresh`.
+
+Each execution identity is inherited by its descendants and any Job leases they
+hold. If the original supervisor disappears or leaves an incomplete record,
+lease recovery signals only processes carrying that identity and releases the
+slot after their durable identities are terminal. This fallback also covers an
+interrupt arriving after the root command exits while descendants are still
+being reaped; that interrupt retains the expected signal-derived host status.
 
 ## Scope
 

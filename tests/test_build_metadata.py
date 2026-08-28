@@ -49,3 +49,12 @@ def test_updated_package_does_not_claim_old_image_source_metadata(monkeypatch):
     assert "old123" not in line
     assert "last updated unknown" in line
     assert "sandbox image built 04:00 · 02 JAN 2026" in line
+
+
+def test_payload_fingerprint_describes_imported_wheel_not_old_image(monkeypatch):
+    monkeypatch.setattr(build_metadata, "_checkout_metadata", lambda: ("", ""))
+    monkeypatch.setattr(build_metadata, "_embedded_payload_fingerprint", lambda: "wheel-payload")
+    monkeypatch.setenv("BOOLEY_VERSION", "different-version")
+    monkeypatch.setenv("BOOLEY_PAYLOAD_FINGERPRINT", "old-image-payload")
+
+    assert build_metadata.current_build_metadata().payload_fingerprint == "wheel-payload"

@@ -154,6 +154,9 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
 
     monkeypatch.setattr(init_docker_image, "_docker_build_wheel", lambda *_args: True)
     monkeypatch.setattr(init_docker_image, "_docker_image_exists", lambda *_args: False)
+    monkeypatch.setattr(
+        init_docker_image, "_docker_image_id", lambda _image: "sha256:runtime-base"
+    )
     monkeypatch.setattr(init_docker_image, "_report_build_cache", lambda: None)
     monkeypatch.setattr(init_docker_image, "_runtime_base_build_metadata_args", lambda _root: [])
 
@@ -173,6 +176,11 @@ def test_local_build_constructs_base_before_candidate_with_named_context(
     assert candidate.dockerfile.name == "Dockerfile"
     assert candidate.build_contexts == (
         ("booley-runtime-base", "docker-image://booley-runtime-base:local"),
+    )
+    assert candidate.parent_artifact == "sha256:runtime-base"
+    assert candidate.build_args == (
+        "--build-arg",
+        "BOOLEY_RUNTIME_BASE_IMAGE=sha256:runtime-base",
     )
 
 

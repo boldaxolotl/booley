@@ -69,6 +69,13 @@ from booley.harness import devcontainer as dc
 from booley.harness import doctor_stamp, nangate_pdk
 from booley.harness import interactive_docker as idk
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
+from booley.harness.image_lifecycle import (
+    ImageLifecycleError,
+    LifecycleResult,
+)
+from booley.harness.image_lifecycle import Intent as ImageLifecycleIntent
+from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
+from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.init_common import (
     InitContext,
     StepResult,
@@ -1115,6 +1122,39 @@ def _step_sandbox_images(ctx: InitContext) -> None:
         _warn_on_live_session_on_old_image(ctx, selected)
 
 
+def _step_image_lifecycle(ctx: InitContext) -> None:
+    """Reconcile the authoritative Session Image chain for initialization."""
+    ctx.step_banner("Session Image lifecycle")
+    intent = (
+        ImageLifecycleIntent.CHECK
+        if ctx.check_only
+        else ImageLifecycleIntent.REFRESH
+        if ctx.force
+        else ImageLifecycleIntent.ENSURE
+    )
+    try:
+        result = reconcile_images(ctx.project_root, intent, verbose=ctx.verbose)
+    except ImageLifecycleError as exc:
+        err(str(exc))
+        ctx.record("docker_image", "err", str(exc))
+        return
+    if result.status is ImageLifecycleStatus.EXTERNAL:
+        skip(f"[sandbox].image={result.selected_reference!r} is externally managed")
+        ctx.record("project_image", "skip", "user-managed image")
+        return
+    if result.status is ImageLifecycleStatus.STALE:
+        for diagnostic in result.diagnostics:
+            warn(diagnostic.message)
+        ctx.record("docker_image", "warn", "Session Image provenance is stale")
+        return
+    if result.changed_images:
+        ok("reconciled Session Images: " + ", ".join(result.changed_images))
+        ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
+        return
+    skip(f"Session Image {result.selected_reference} is current")
+    ctx.record("docker_image", "skip", "current")
+
+
 # ---------------------------------------------------------------------------
 # Sandbox image resolution for the Interactive Mode devcontainer.
 # ---------------------------------------------------------------------------
@@ -1148,7 +1188,7 @@ def project_sandbox_image(project_root: Path) -> str:
     return DOCKER_IMAGE
 
 
-def refresh_session_image(project_root: Path, *, verbose: bool = False) -> str:
+def refresh_session_image(project_root: Path, *, verbose: bool = False) -> LifecycleResult:
     """Rebuild the configured Session Runtime image from current Booley sources.
 
     This is the implementation behind ``booley session refresh``. It reuses
@@ -1157,60 +1197,92 @@ def refresh_session_image(project_root: Path, *, verbose: bool = False) -> str:
     project image are reproducible here; an arbitrary explicit image remains
     user-managed and is rejected with an actionable error.
     """
-    selected = project_sandbox_image(project_root)
-    generated = pi.project_image_name(project_root)
-    managed = {DOCKER_IMAGE, pi.BASE_IMAGE, generated, *FLAVOR_IMAGES}
-    if selected not in managed:
+    result = reconcile_images(project_root, ImageLifecycleIntent.REFRESH, verbose=verbose)
+    if result.status is ImageLifecycleStatus.EXTERNAL:
         raise RuntimeError(
-            f"[sandbox].image={selected!r} is user-managed, so Booley has no "
+            f"[sandbox].image={result.selected_reference!r} is user-managed, so Booley has no "
             "build recipe to refresh. Rebuild that image yourself, then run "
             "`booley session up --rebuild`."
         )
-
-    ctx = InitContext(project_root=project_root, force=True, verbose=verbose)
-    _step_docker_image(ctx, selected)
-    if any(result.status == "err" for result in ctx.results):
-        raise RuntimeError("base sandbox image refresh failed")
-
-    # A generated image with hand-authored docker/ files is still rebuildable;
-    # unlike init's conservative rerun path, refresh is an explicit request to
-    # build those files verbatim. It must not regenerate or overwrite them.
-    if selected == generated:
-        project_dir = resolve_project_dir(project_root)
-        docker_dir = project_dir / "docker"
-        user_owned = any(
-            path.is_file() and not pi.is_managed_generated_file(path)
-            for path in (docker_dir / "Dockerfile", docker_dir / "requirements.txt")
-        )
-        if user_owned:
-            ctx.step_banner("project sandbox image")
-            if not (docker_dir / "Dockerfile").is_file():
-                raise RuntimeError(
-                    f"cannot refresh {selected}: {docker_dir / 'Dockerfile'} is missing"
-                )
-            if not pi.build_project_image(selected, docker_dir, verbose=verbose):
-                raise RuntimeError(f"failed to rebuild {selected}")
-            ok(f"rebuilt {selected} from the hand-authored docker/ recipe")
-            ctx.record("project_image", "ok", selected)
-        else:
-            _step_project_image(ctx)
-    elif selected in FLAVOR_IMAGES:
-        # Build the selected shipped flavor after its refreshed base.
-        _step_project_image(ctx)
-
-    if any(result.status == "err" for result in ctx.results):
-        raise RuntimeError(f"sandbox image refresh failed for {selected}")
-    return selected
+    return result
 
 
-def reissue_session_spec(project_root: Path, *, verbose: bool = False) -> None:
+def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
     pdk_root = _step_nangate_pdk(ctx)
-    _step_interactive(ctx, nangate_pdk_root=pdk_root)
+    _step_interactive(ctx, nangate_pdk_root=pdk_root, session_image_id=image_id)
     failures = [result.detail for result in ctx.results if result.status == "err"]
     if failures:
         raise RuntimeError("Session Runtime spec reissuance failed: " + "; ".join(failures))
+
+
+@dataclass(frozen=True)
+class SessionSpecSnapshot:
+    """Recoverable host-spec state retained across a runtime replacement."""
+
+    spec_path: Path
+    spec_content: bytes | None
+    spec_mode: int
+    stamp_path: Path
+    stamp_content: bytes | None
+    stamp_mode: int
+    image_id: str | None
+
+
+def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
+    """Capture the spec, issuance stamp, and prior immutable image identity."""
+    from booley.eda import runtime_spec
+
+    spec_path = dc.devcontainer_path(project_root)
+    stamp_path = runtime_spec.stamp_path(project_root)
+    spec_content = spec_path.read_bytes() if spec_path.is_file() else None
+    stamp_content = stamp_path.read_bytes() if stamp_path.is_file() else None
+    image_id = None
+    if spec_content is not None:
+        try:
+            raw_image = json.loads(spec_content).get("image")
+        except (json.JSONDecodeError, AttributeError):
+            raw_image = None
+        if isinstance(raw_image, str) and raw_image.startswith("sha256:"):
+            image_id = raw_image
+    return SessionSpecSnapshot(
+        spec_path,
+        spec_content,
+        stat.S_IMODE(spec_path.stat().st_mode) if spec_content is not None else 0o644,
+        stamp_path,
+        stamp_content,
+        stat.S_IMODE(stamp_path.stat().st_mode) if stamp_content is not None else 0o600,
+        image_id,
+    )
+
+
+def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None:
+    if content is None:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    path.chmod(mode)
+
+
+def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> None:
+    """Restore the prior host issuance after Session replacement rolled back."""
+    from booley.eda import runtime_spec
+
+    if snapshot.image_id is not None:
+        result = subprocess.run(
+            ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or "docker tag failed"
+            raise RuntimeError(f"could not restore prior Session Image keeper: {detail}")
+    _restore_snapshot_file(snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode)
+    _restore_snapshot_file(snapshot.stamp_path, snapshot.stamp_content, snapshot.stamp_mode)
 
 
 def _project_sandbox_memory(project_root: Path) -> str:
@@ -1650,6 +1722,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     *,
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
     agent_app: str | None = None,
+    session_image_id: str | None = None,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
@@ -1725,7 +1798,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         _mask_source_dir().mkdir(parents=True, exist_ok=True)
     spec = dc.build_devcontainer_spec(
         app,
-        image=project_sandbox_image(ctx.project_root),
+        image=session_image_id or project_sandbox_image(ctx.project_root),
         project_dir_source=docker_mount_path(project_data_source),
         project_id=dc.canonical_project_id(ctx.project_root),
         # docker_mount_path keeps every mount source in ONE path style — the
@@ -1763,7 +1836,10 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     )
 
     try:
-        eda_runtime_spec.pin_image(spec)
+        if session_image_id is None:
+            eda_runtime_spec.pin_image(spec)
+        else:
+            eda_runtime_spec.pin_image(spec, expected_image_id=session_image_id)
         eda_runtime_spec.seal(ctx.project_root, spec)
     except eda_runtime_spec.RuntimeSpecError as exc:
         err(f"could not pin Session Runtime image: {exc}")
@@ -2316,7 +2392,7 @@ def _run_project_init_steps(
     _step_auth(ctx, selection)
     _deploy_skills(ctx)
     pdk_root = _step_nangate_pdk(ctx)
-    _step_sandbox_images(ctx)
+    _step_image_lifecycle(ctx)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)

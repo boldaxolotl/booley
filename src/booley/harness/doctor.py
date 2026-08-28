@@ -53,7 +53,7 @@ from booley.fusesoc import (
     selftest_overlay,
 )
 from booley.harness import devcontainer as dc
-from booley.harness import doctor_stamp, nangate_pdk, session_runtime
+from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk, session_runtime
 from booley.harness import interactive_docker as idk
 from booley.harness.colors import green, red, yellow
 from booley.harness.devcontainer import (
@@ -71,6 +71,7 @@ from booley.harness.doctor_waivers import (
 )
 from booley.harness.init_cmd import (
     DOCKER_IMAGE,
+    FLAVOR_IMAGES,
     MIN_PY,
     _detect_claude_code,
     _detect_codex,
@@ -84,7 +85,6 @@ from booley.harness.init_cmd import (
     warn,
 )
 from booley.harness.init_common import note
-from booley.harness.init_docker_image import source_fingerprint_mismatch
 from booley.runtime import auth_token, runtime_context
 from booley.runtime import project_image as pi
 from booley.runtime.git import _git_common_dir
@@ -2072,22 +2072,7 @@ def _check_image_bakes_current_booley(
     _pass: Check,
     _warn: Check,
 ) -> None:
-    """Warn when host Booley source is newer than the wheel baked into the image.
-
-    One level deeper than :func:`_check_derived_image_freshness`: even an image
-    that post-dates its base can bake a *Booley wheel* older than the current
-    host source. The sandbox's egress lockdown forbids ``pip install`` at Flow
-    time, so a host-side Booley fix stays invisible in-container until the image
-    is rebuilt — the container silently runs stale code. ``pip show``'s static
-    ``0.1.0`` (SETUP-1) can't reveal this. The exact answer is the
-    ``booley.build-fingerprint`` image label — a content hash of the baked
-    sources, stamped at build time and inherited by derived images — compared
-    against the current checkout. When either side is unavailable (pip install
-    with no checkout, an unlabeled or deliberately pulled image), fall back to
-    the newest-host-source-mtime-vs-image-build-time heuristic the sibling
-    probes use. Scoped to the base and auto-generated derived images; a
-    user-managed ``[sandbox].image`` need not bake our wheel and is left alone.
-    """
+    """Report managed Session Image freshness from authoritative provenance."""
     _warn = _warning_sink(
         _warn,
         "sandbox.image-stale",
@@ -2097,35 +2082,23 @@ def _check_image_bakes_current_booley(
     if not docker_exe:
         return
     generated = pi.project_image_name(project.project_root) if project else None
-    if image not in (DOCKER_IMAGE, generated):
+    if image not in (DOCKER_IMAGE, generated, *FLAVOR_IMAGES):
         return
-    mismatch = source_fingerprint_mismatch(image)
-    if mismatch is not None:
-        if mismatch:
+    if project is not None:
+        result = image_lifecycle.reconcile(project.project_root, image_lifecycle.Intent.CHECK)
+        if result.status is image_lifecycle.Status.STALE:
             _warn(
                 f"'{image}' bakes Booley sources that no longer match this "
-                "checkout (build-fingerprint label differs); the sandbox runs "
+                "checkout (image provenance differs); the sandbox runs "
                 "stale code (egress is locked, so it can't pip-install the "
-                "fix). Rebuild with booley init --force."
+                "fix). Rebuild with booley session refresh."
             )
-        else:
+            return
+        if result.status is image_lifecycle.Status.CURRENT:
             _pass(f"'{image}' bakes exactly this checkout's Booley sources")
-        return
-    pkg = _booley_package_dir()
-    created = _image_created_epoch(docker_exe, image)
-    if pkg is None or created is None:
-        return
-    newest = _newest_source_mtime(pkg)
-    if newest is None:
-        return
-    if newest > created:
-        _warn(
-            f"host Booley source is newer than the build baked into '{image}'; "
-            "the sandbox runs stale code (egress is locked, so it can't pip-"
-            "install the fix). Rebuild with booley init --force."
-        )
-    else:
-        _pass(f"'{image}' bakes Booley no older than the host source")
+            return
+        if result.status is image_lifecycle.Status.EXTERNAL:
+            return
 
 
 def _check_container_uid(  # noqa: PLR0911 — ordered precondition ladder; each early return is a distinct skip/failure case

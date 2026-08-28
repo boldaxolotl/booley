@@ -77,7 +77,6 @@ REQUIRED_FIELDS = {"summary", "type", "branch", "scope", "criteria"}
 KNOWN_FIELDS = REQUIRED_FIELDS | {
     "spec",
     "auto_approve",
-    "integration_base",
     "dependencies",
     "priority",
     "synthesis",
@@ -94,6 +93,9 @@ KNOWN_FIELDS = REQUIRED_FIELDS | {
 
 # Deprecated fields that must not appear in new tickets.
 DEPRECATED_FIELDS = {
+    "integration_base": (
+        "schema-3 Tickets publish their sealed Ticket refs directly to destination refs"
+    ),
     "test": "use 'criteria' instead",
     "plan_file": "removed — the planner specialists were pruned; put the plan in the ticket body",
     "rtl_plan_file": "removed — the planner specialists were pruned; put the plan in the ticket body",

@@ -33,6 +33,7 @@ class TicketFileSpec:
     body: str = ""
 
 
+from .acceptance_journal import acceptance_state
 from .constants import RUNTIME_FIELDS, normalize_dir
 from .frontmatter import format_frontmatter, parse_frontmatter, update_frontmatter
 from .helpers import compute_done_slugs, lock_fd, now_iso, slug_from_file, unlock_fd
@@ -182,6 +183,9 @@ class TicketIO:
         # Prefer frontmatter feature_branch (matches scan_all_tickets);
         # fall back to filename stem for legacy tickets without the field.
         entry["feature_branch"] = fields.get("feature_branch") or file_path.stem
+        journal_state = acceptance_state(self.tickets_dir, file_path.stem)
+        if journal_state is not None:
+            entry["acceptance_state"] = str(journal_state)
 
         # Overlay runtime fields from .runtime/progress.json (backward compat fallback)
         progress = load_progress(self.logs_dir, file_path.stem)
@@ -648,7 +652,7 @@ class TicketIO:
         done_slugs = compute_done_slugs(all_tickets)
         return not all(d in done_slugs for d in deps), False
 
-    def _enqueue_locked(self, slug, ticket_path, on_success, integration_base, has_unmet):
+    def _enqueue_locked(self, slug, ticket_path, on_success, has_unmet):
         """Perform locked enqueue mutations: stamp, progress, move, transition."""
         recheck_path, _ = find_ticket_file(self.tickets_dir, slug)
         if recheck_path is not None:
@@ -666,8 +670,6 @@ class TicketIO:
                 print(f"Error: invalid on_success: {'; '.join(errors)}", file=sys.stderr)
                 return False
             fm_updates["on_success"] = on_success
-        if integration_base:
-            fm_updates["integration_base"] = integration_base
         update_frontmatter(ticket_path, fm_updates)
 
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
@@ -707,48 +709,65 @@ class TicketIO:
 
         Returns True/False.
         """
+        if self._retired_enqueue_argument(integration_base):
+            return False
         ticket_path, skip = self._resolve_enqueue_path(slug)
         if skip:
             return False
+        fields = self._validated_enqueue_fields(slug, ticket_path, on_success)
+        if fields is None:
+            return False
+        has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
+        if dep_error:
+            return False
+        with self._ticket_lock(slug):
+            return self._enqueue_locked(slug, ticket_path, on_success, has_unmet)
 
-        with ticket_path.open(encoding="utf-8") as f:
-            fields, body = parse_frontmatter(f.read())
+    @staticmethod
+    def _retired_enqueue_argument(integration_base: str) -> bool:
+        if not integration_base:
+            return False
+        print(
+            "Error: --integration-base is retired; schema-3 Tickets publish "
+            "their sealed Ticket refs directly to destination refs",
+            file=sys.stderr,
+        )
+        return True
 
+    def _validated_enqueue_fields(
+        self, slug: str, ticket_path: Path, on_success: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        with ticket_path.open(encoding="utf-8") as handle:
+            fields, body = parse_frontmatter(handle.read())
         effective_fields = dict(fields)
         if on_success:
             effective_fields["on_success"] = on_success
-
         contract_errors = self._validate_enqueue_contract(slug, effective_fields)
         if contract_errors:
-            print("Error: ticket Target contract is not sealed:", file=sys.stderr)
-            for err in contract_errors:
-                print(f"  - {err}", file=sys.stderr)
-            return False
-
+            self._print_enqueue_errors("ticket Target contract is not sealed", contract_errors)
+            return None
         validation_root = self._enqueue_validation_root(slug, effective_fields)
-        validation_results = validate_ticket_fields(
+        results = validate_ticket_fields(
             effective_fields,
             body,
             check_files=(validation_root / ".booley").is_dir(),
             check_git=False,
             project_root=validation_root,
         )
-        for w in validation_results:
-            if w.startswith("[warning] "):
-                logger.warning(w)
-        validation_errors = [e for e in validation_results if not e.startswith("[warning] ")]
-        if validation_errors:
-            print("Error: ticket validation failed:", file=sys.stderr)
-            for err in validation_errors:
-                print(f"  - {err}", file=sys.stderr)
-            return False
+        for warning in results:
+            if warning.startswith("[warning] "):
+                logger.warning(warning)
+        errors = [item for item in results if not item.startswith("[warning] ")]
+        if errors:
+            self._print_enqueue_errors("ticket validation failed", errors)
+            return None
+        return effective_fields
 
-        has_unmet, dep_error = self._check_deps(slug, effective_fields.get("dependencies", []))
-        if dep_error:
-            return False
-
-        with self._ticket_lock(slug):
-            return self._enqueue_locked(slug, ticket_path, on_success, integration_base, has_unmet)
+    @staticmethod
+    def _print_enqueue_errors(summary: str, errors: list[str]) -> None:
+        print(f"Error: {summary}:", file=sys.stderr)
+        for error in errors:
+            print(f"  - {error}", file=sys.stderr)
 
     def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
         """Validate sealed tickets against their immutable authoring checkout."""

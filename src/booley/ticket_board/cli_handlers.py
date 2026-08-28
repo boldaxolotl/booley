@@ -96,6 +96,12 @@ def _cmd_read_board(tio, args):
     return 0
 
 
+def _print_acceptance_state(entry) -> None:
+    acceptance_state = entry.get("acceptance_state")
+    if acceptance_state:
+        print(f"acceptance: {acceptance_state}")
+
+
 def _cmd_show(tio, args):
     """Show one ticket's paths, branch, and criteria split -- or the board.
 
@@ -152,6 +158,7 @@ def _cmd_show(tio, args):
     wt_note = "" if worktree.is_dir() else "  (absent)"
     print(f"ticket:    {slug}")
     print(f"status:    {entry.get('status', '')}")
+    _print_acceptance_state(entry)
     print(f"file:      {ticket_file}")
     print(f"logs:      {logs_dir}")
     print(f"worktree:  {worktree}{wt_note}")
