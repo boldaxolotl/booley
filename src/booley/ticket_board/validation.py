@@ -737,7 +737,7 @@ def _validate_sim_entries(criteria: dict[str, Any]) -> list[str]:
 def _eligible_sim_target_selectors(declarations: dict[str, list[Any]]) -> list[str]:
     """Return copy-pasteable selectors for Targets the sim Booley Flow can drive."""
     from booley.fusesoc import fusesoc_registry
-    from booley.targets.target_surface import flow_can_drive
+    from booley.targets.target import flow_can_drive
 
     selectors: list[str] = []
     for bucket in declarations.values():
@@ -812,7 +812,7 @@ def _validate_sim_targets(
     """Reject structured ``sim_pass`` entries aimed at non-simulation Targets."""
     from booley.dev_support.criteria import parse_sim_criterion
     from booley.fusesoc import fusesoc_registry
-    from booley.targets.target_surface import flow_can_drive
+    from booley.targets.target import flow_can_drive, select_target
 
     root = Path(project_root)
     try:
@@ -837,7 +837,7 @@ def _validate_sim_targets(
                 continue
             try:
                 target = parse_sim_criterion(item).target
-                ref = fusesoc_registry.resolve_ref(root, target)
+                ref = select_target(root, target)
             except ValueError:
                 continue  # _validate_sim_entries owns malformed-entry errors.
             except fusesoc_registry.UnknownTargetError as exc:

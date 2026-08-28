@@ -438,6 +438,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     category_overrides = template.category_overrides(targets)
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
+    _apply_contract_selectors(ctx, expanded, criterion_params)
     _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
@@ -488,6 +489,34 @@ def _init_criteria_state(ctx: TicketContext) -> None:
         len(expanded),
         sum(1 for v in expanded.values() if v),
     )
+
+
+def _apply_contract_selectors(
+    ctx: TicketContext,
+    expanded: dict[str, bool],
+    criterion_params: dict[str, dict[str, Any]],
+) -> None:
+    """Seed sealed identities and callable selectors into runtime criteria."""
+    contract = ctx.target_contract
+    if contract is None or contract.schema < 4:
+        return
+    for binding in contract.bindings:
+        if not binding.candidate_selector:
+            continue
+        candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
+        accepted = {binding.candidate, binding.candidate_selector, candidate_name}
+        prefix = f"{binding.criterion}_"
+        for key in expanded:
+            if key != binding.criterion and not key.startswith(prefix):
+                continue
+            params = criterion_params.setdefault(key, {})
+            authored = params.get("target")
+            if not isinstance(authored, str) and key.startswith(prefix):
+                authored = key.removeprefix(prefix)
+            if authored not in accepted:
+                continue
+            params["target"] = binding.candidate
+            params["_target_selector"] = binding.candidate_selector
 
 
 def _freeze_synthesis_recipe_fingerprints(

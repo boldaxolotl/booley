@@ -75,6 +75,7 @@ from booley.sim.cocotb_results import (
     parse_results_line,
 )
 from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX, has_infra_error
+from booley.targets.target import inspect_target
 
 from .specialist import Specialist
 
@@ -886,13 +887,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if not target:
             return None
         try:
-            resolved = list(
-                fusesoc_registry.target_source_files(
-                    self.args.work_dir,
-                    target,
-                    include_dependencies=True,
-                ).rtl_source_files
-            )
+            resolved = list(inspect_target(self.args.work_dir, target).rtl_files)
         except Exception:  # noqa: BLE001 — unresolvable target: fail open, let downstream report
             return None
         if not resolved:
@@ -944,13 +939,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if not target:
             return []
         try:
-            return list(
-                fusesoc_registry.target_source_files(
-                    self.args.work_dir,
-                    target,
-                    include_dependencies=True,
-                ).rtl_source_files
-            )
+            return list(inspect_target(self.args.work_dir, target).rtl_files)
         except Exception:  # noqa: BLE001 — best-effort source-file lookup; degrades to an empty list
             return []
 

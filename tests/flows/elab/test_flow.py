@@ -787,17 +787,10 @@ class TestStandalone:
 
     @staticmethod
     def _stub_sources(monkeypatch, rtl: list[str], tb: list[str] | None = None) -> None:
-        """Fix the RTL/TB partition the sweep resolves (fake-registry stub)."""
-        from booley.fusesoc import fusesoc_registry
-
-        sources = fusesoc_registry.CoreSources(
-            rtl_source_files=tuple(rtl),
-            tb_files=tuple(tb or []),
-        )
+        """Fix the condition-selected RTL/TB partition used by the sweep."""
         monkeypatch.setattr(
-            fusesoc_registry,
-            "target_source_files",
-            lambda *a, **k: sources,
+            "booley.flows.elab.flow.inspect_target",
+            lambda *a, **k: MagicMock(rtl_files=tuple(rtl), tb_files=tuple(tb or [])),
         )
 
     @pytest.fixture(autouse=True)
@@ -1331,16 +1324,11 @@ class TestParseGapCredibility:
     def test_same_frontend_syntax_error_is_a_real_finding(self, tmp_path, monkeypatch):
         """End to end: verilator built the Target and verilator rejects the
         module standalone -> a FAIL, not an excused capability gap."""
-        from booley.fusesoc import fusesoc_registry
-
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl/alu.sv").write_text("module alu;\nendmodule\n", encoding="utf-8")
         monkeypatch.setattr(
-            fusesoc_registry,
-            "target_source_files",
-            lambda *a, **k: fusesoc_registry.CoreSources(
-                rtl_source_files=("rtl/alu.sv",), tb_files=()
-            ),
+            "booley.flows.elab.flow.inspect_target",
+            lambda *a, **k: MagicMock(rtl_files=("rtl/alu.sv",), tb_files=()),
         )
         monkeypatch.setattr(
             ElaborateFlow, "_resolve_standalone_frontend", lambda self: "verilator"

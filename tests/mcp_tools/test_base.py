@@ -326,6 +326,52 @@ class TestMcpToolGateBehavior:
         assert "lint --target lint_uart" in capsys.readouterr().err
         assert "lint_clean_sim_uart" not in DevelopmentState.load(state_file).criteria
 
+    def test_qualified_selector_matches_bare_target_criterion_identity(self, tmp_path: Path):
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "uart.sv").write_text("module uart; endmodule\n")
+        (tmp_path / "uart.core").write_text(
+            "CAPI=2:\n"
+            "name: acme:ip:uart:1.0\n"
+            "filesets:\n"
+            "  rtl: {files: [rtl/uart.sv]}\n"
+            "targets:\n"
+            "  lint_uart:\n"
+            "    flow: lint\n"
+            "    flow_options: {tool: verilator}\n"
+            "    filesets: [rtl]\n"
+            "    toplevel: uart\n",
+            encoding="utf-8",
+        )
+        state_file = tmp_path / "state.json"
+        state = DevelopmentState.load(state_file)
+        state.init_criteria({"lint_clean_lint_uart": True}, strict=True)
+        state.save()
+
+        class BoundLint(LintLikeMcpTool):
+            def _run(self) -> McpToolResult:
+                self.ran = True
+                self.set_criterion(
+                    f"lint_clean_{self.args.target}",
+                    True,
+                    source_target=self.args.target,
+                )
+                return McpToolResult(exit_code=EXIT_SUCCESS)
+
+        endpoint = BoundLint()
+        with mock.patch.dict(os.environ, _env_with_state(state_file)):
+            exit_code = endpoint.main(
+                [
+                    "--work-dir",
+                    str(tmp_path),
+                    "--target",
+                    "acme:ip:uart:1.0#lint_uart",
+                ]
+            )
+
+        assert exit_code == EXIT_SUCCESS
+        assert endpoint.ran is True
+        assert DevelopmentState.load(state_file).criteria["lint_clean_lint_uart"].met is True
+
     def test_diagnostic_wrong_target_runs_without_evidence(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
         state = DevelopmentState.load(state_file)

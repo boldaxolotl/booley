@@ -36,6 +36,7 @@ from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.sim.sim_result import write_run_log
 from booley.targets.parameter_integrity import validate_top_parameter_intent
+from booley.targets.target import inspect_target
 
 from .. import edam as edam_layer
 from .. import execution, output_budget
@@ -471,7 +472,7 @@ class ElaborateFlow(BooleyFlow):
             cmd = self._dry_run_command(target)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # observability only; never fail the run over it
+        except Exception:  # noqa: BLE001 — report context is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -479,9 +480,9 @@ class ElaborateFlow(BooleyFlow):
     def _fileset_for_report(self, target: str) -> dict[str, list[str]] | None:
         """*target*'s declared source fileset, split rtl/tb, or None.
 
-        A cheap ``.core`` read (``target_source_files``, dependency closure
-        included — a layered repo's RTL arrives transitively, F-27), cached
-        per target. Best-effort like :meth:`_compile_command_str`.
+        Uses canonical pre-setup Target inspection, including FuseSoC's
+        condition evaluation and dependency closure. Cached per Target and
+        best-effort like :meth:`_compile_command_str`.
         """
         cache: dict[str, dict[str, list[str]] | None] = getattr(self, "_fileset_cache", {})
         if not hasattr(self, "_fileset_cache"):
@@ -490,16 +491,12 @@ class ElaborateFlow(BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            sources = fusesoc_registry.target_source_files(
-                self.args.work_dir,
-                target,
-                include_dependencies=True,
-            )
+            inspection = inspect_target(self.args.work_dir, target)
             fileset = {
-                "rtl": list(sources.rtl_source_files),
-                "tb": list(sources.tb_files),
+                "rtl": list(inspection.rtl_files),
+                "tb": list(inspection.tb_files),
             }
-        except Exception:  # observability only; never fail the run over it
+        except Exception:  # noqa: BLE001 — report context is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -619,12 +616,7 @@ class ElaborateFlow(BooleyFlow):
         """
         seen: dict[str, None] = {}
         for tgt in targets:
-            sources = fusesoc_registry.target_source_files(
-                self.args.work_dir,
-                tgt,
-                include_dependencies=True,
-            )
-            for rel in sources.rtl_source_files:
+            for rel in inspect_target(self.args.work_dir, tgt).rtl_files:
                 seen.setdefault(rel, None)
         return [rel for rel in seen if Path(rel).suffix.lower() in _HDL_SUFFIXES]
 
