@@ -1636,8 +1636,43 @@ class TestWriteTraceOverlay:
     ):
         core = _CORE_TEXT.replace(
             "    flow_options:\n      tool: verilator\n",
-            "    flow_options:\n      tool: verilator\n"
-            f"      verilator_options: [{options}]\n",
+            f"    flow_options:\n      tool: verilator\n      verilator_options: [{options}]\n",
+        )
+        _write_core(tmp_path / "ip", core)
+
+        with pytest.raises(FuseSocError, match=message):
+            write_trace_overlay("sim", project_root=tmp_path)
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            (
+                "-CFLAGS, -DVM_TRACE_FMT_FST",
+                "VM_TRACE_FMT_FST.*requires --trace-fst",
+            ),
+            (
+                "--trace-vcd, -CFLAGS, -DVM_TRACE_FMT_FST",
+                "FST CFLAG.*VCD trace option",
+            ),
+            (
+                "--trace-fst, -CFLAGS, -DVM_TRACE_FMT_VCD",
+                "VCD CFLAG.*native FST trace option",
+            ),
+            (
+                "-CFLAGS, '-DVM_TRACE_FMT_FST -DVM_TRACE_FMT_VCD'",
+                "both FST and VCD CFLAGS",
+            ),
+        ],
+    )
+    def test_rejects_incoherent_trace_format_cflags(
+        self,
+        tmp_path: Path,
+        options: str,
+        message: str,
+    ):
+        core = _CORE_TEXT.replace(
+            "    flow_options:\n      tool: verilator\n",
+            f"    flow_options:\n      tool: verilator\n      verilator_options: [{options}]\n",
         )
         _write_core(tmp_path / "ip", core)
 

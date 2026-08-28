@@ -38,7 +38,12 @@ from booley.fusesoc.core_projection import (
     projected_core_path,
     projection_enabled,
 )
-from booley.sim.trace_recipe import TraceMode
+from booley.sim.trace_recipe import (
+    TraceMode,
+    TraceRecipeError,
+    require_cocotb_trace_mode,
+    resolve_verilator_trace_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +56,6 @@ DEFAULT_TRACE_DEPTH = 99
 # base core (verified: FuseSoC scopes Targets per-VLNV, so the overlay can reuse
 # the base Target *name* under this distinct VLNV and resolve unambiguously).
 _TRACE_OVERLAY_VLNV_SUFFIX = "-booleytrace"
-
-# Verilator trace-format flags that resolve the build/run recipe. An authored
-# format belongs to the Target: preserving it keeps its C++ trace harness and
-# Verilator options coherent. When none is authored, the overlay supplies VCD
-# tracing and the run-half streams that VCD through B-Wave.
-_TRACE_FORMAT_FLAGS = frozenset({"--trace", "--trace-vcd", "--trace-fst", "--trace-saif"})
 
 # The Booley sim-harness dump module (``sim/booley_vcd_dump.sv``): an
 # uninstantiated convention module whose ``$dumpvars(0)`` fires on ``+trace``.
@@ -157,26 +156,14 @@ def _with_trace_options(
     return out
 
 
-def _authored_trace_mode(verilator_options: Sequence[Any]) -> TraceMode | None:
-    """Return the Target's declared trace recipe, or ``None`` when absent."""
+def validate_cocotb_trace_mode(target: str, mode: TraceMode) -> None:
+    """Raise a registry-shaped error when Cocotb cannot honor *mode*."""
     from booley.fusesoc.fusesoc_registry import FuseSocError
 
-    options = {str(option) for option in verilator_options}
-    if "--trace-saif" in options:
-        raise FuseSocError(
-            "SAIF tracing is not supported by Booley's waveform pipeline; "
-            "use an authored --trace-fst recipe or VCD tracing"
-        )
-    if "--trace-fst" in options and "--trace-vcd" in options:
-        raise FuseSocError(
-            "trace Target requests both native FST and VCD; remove one explicit "
-            "format flag so Booley can resolve a coherent trace recipe"
-        )
-    if "--trace-fst" in options:
-        return TraceMode.NATIVE_FST
-    if options & _TRACE_FORMAT_FLAGS:
-        return TraceMode.VCD_FIFO
-    return None
+    try:
+        require_cocotb_trace_mode(target, mode)
+    except TraceRecipeError as exc:
+        raise FuseSocError(str(exc)) from exc
 
 
 def _with_icarus_dump_root(iverilog_options: Sequence[Any]) -> list[str]:
@@ -405,7 +392,10 @@ def write_trace_overlay(
     injected: Path | None = None  # set when the overlay supplies the dump module
     if eda_tool == "verilator":
         authored_options = flow_options.get("verilator_options") or []
-        mode = _authored_trace_mode(authored_options)
+        try:
+            mode = resolve_verilator_trace_mode(authored_options)
+        except TraceRecipeError as exc:
+            raise FuseSocError(str(exc)) from exc
         if mode is None:
             mode = TraceMode.VCD_FIFO
             flow_options["verilator_options"] = _with_trace_options(

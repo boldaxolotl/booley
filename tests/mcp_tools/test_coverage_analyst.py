@@ -2795,11 +2795,11 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
-                "booley.specialists.coverage_analyst._resolve_trace_args",
+                "booley.specialists.coverage_analyst.resolve_trace_args",
                 return_value=["--trace={file}"],
             ),
             patch(
-                "booley.specialists.coverage_analyst._resolve_trace_files",
+                "booley.specialists.coverage_analyst.resolve_trace_files",
                 return_value=["hardcoded.fst"],
             ),
             patch(

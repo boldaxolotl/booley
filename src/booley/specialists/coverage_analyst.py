@@ -41,11 +41,6 @@ from booley.core.models import AgentCallParams
 from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
-from booley.flows.sim.flow import (
-    _resolve_run_cwd,
-    _resolve_trace_args,
-    _resolve_trace_files,
-)
 from booley.flows.target_campaign import (
     TargetCampaign,
     describe_target_campaign,
@@ -64,6 +59,7 @@ from booley.mcp.base import (
 from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
+from booley.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
 from booley.sim.trace_recipe import TraceMode
 from booley.sim.trace_session import TraceSession, trace_cache_key
 
@@ -2979,12 +2975,9 @@ abort path". Omit this field or leave empty if all criteria are already met.
                 )
             )
             run_cmd.extend(
-                f"--trace-arg={argument}"
-                for argument in _resolve_trace_args(context.work_dir)
+                f"--trace-arg={argument}" for argument in resolve_trace_args(context.work_dir)
             )
-        run_cmd.extend(
-            f"--trace-file={path}" for path in _resolve_trace_files(context.work_dir)
-        )
+        run_cmd.extend(f"--trace-file={path}" for path in resolve_trace_files(context.work_dir))
         run_cmd.extend(
             (
                 "--work-dir",
@@ -3005,11 +2998,10 @@ abort path". Omit this field or leave empty if all criteria are already met.
         cocotb_modules = fusesoc_registry.target_cocotb_modules(context.work_dir)
         cocotb_module = lookup_target_section(cocotb_modules, self.args.target)
         if cocotb_module:
-            if context.trace_mode is TraceMode.NATIVE_FST:
-                raise fusesoc_registry.FuseSocError(
-                    f"Cocotb Target {self.args.target!r} requests native FST tracing, "
-                    "but the Cocotb run-half currently owns a VCD dump"
-                )
+            fusesoc_registry.validate_cocotb_trace_mode(
+                self.args.target,
+                context.trace_mode,
+            )
             return self._cocotb_trace_run_cmd(
                 context,
                 str(cocotb_module),
@@ -3051,7 +3043,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         )
         build_dir = edam_layer.relpath_for_make(resolved.build_root, work_dir)
         build_cmd = edam_layer.make_command(build_dir)
-        run_cwd = _resolve_run_cwd(work_dir)
+        run_cwd = resolve_run_cwd(work_dir)
         context = _TraceRunContext(
             eda_tool=eda_tool,
             resolved=resolved,

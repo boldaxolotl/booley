@@ -73,7 +73,7 @@ class TestPreRunEnvContract:
         assert env["BOOLEY_TEST_NAMES"] == "smoke stress"
         assert "BOOLEY_BUILD_ROOT" not in env
 
-    @patch("booley.flows.sim.flow._resolve_run_cwd", return_value="util/sim")
+    @patch("booley.flows.sim.flow.resolve_run_cwd", return_value="util/sim")
     def test_run_cwd_knob_wins(self, _mock_cwd, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
         env = flow._pre_run_env("lite", None, {}, None)

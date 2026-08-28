@@ -2311,5 +2311,6 @@ from .fusesoc_trace_overlay import (  # noqa: F401  # re-exported for backward c
     TraceOverlay,
     target_includes_dump_module,
     trace_overlay_vlnv,
+    validate_cocotb_trace_mode,
     write_trace_overlay,
 )
