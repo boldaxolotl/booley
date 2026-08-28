@@ -96,11 +96,7 @@ def current_build_metadata() -> BuildMetadata:
         image_built_at=os.environ.get("BOOLEY_IMAGE_BUILT_AT", ""),
         payload_fingerprint=(
             _embedded_payload_fingerprint()
-            or (
-                os.environ.get("BOOLEY_PAYLOAD_FINGERPRINT", "")
-                if package_matches_image
-                else ""
-            )
+            or (os.environ.get("BOOLEY_PAYLOAD_FINGERPRINT", "") if package_matches_image else "")
         ),
     )
 

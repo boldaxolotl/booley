@@ -93,9 +93,7 @@ def _wire(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
         (stable_id, {"io.booley.runtime-base.contract": "stable-contract"}),
     )
     if lifecycle.BASE_IMAGE in docker.images:
-        docker.images[lifecycle.BASE_IMAGE][1].setdefault(
-            lifecycle.LABEL_BUILD_ORIGIN, "local"
-        )
+        docker.images[lifecycle.BASE_IMAGE][1].setdefault(lifecycle.LABEL_BUILD_ORIGIN, "local")
         if lifecycle.LABEL_SCHEMA in docker.images[lifecycle.BASE_IMAGE][1]:
             docker.images[lifecycle.BASE_IMAGE][1].setdefault(
                 lifecycle.LABEL_PARENT_ARTIFACT,
@@ -161,9 +159,9 @@ def test_check_rejects_local_base_when_stable_contract_changed(tmp_path: Path, m
         }
     )
     _wire(monkeypatch, docker)
-    docker.images[lifecycle.STABLE_RUNTIME_BASE_IMAGE][1][
-        "io.booley.runtime-base.contract"
-    ] = "old-contract"
+    docker.images[lifecycle.STABLE_RUNTIME_BASE_IMAGE][1]["io.booley.runtime-base.contract"] = (
+        "old-contract"
+    )
 
     result = lifecycle.reconcile(root, lifecycle.Intent.CHECK)
 
@@ -198,9 +196,7 @@ def test_packaged_install_accepts_exact_local_parent_when_contract_is_unavailabl
     assert lifecycle.reconcile(root, lifecycle.Intent.CHECK).status is lifecycle.Status.CURRENT
 
 
-def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(
-    tmp_path: Path, monkeypatch
-):
+def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(tmp_path: Path, monkeypatch):
     root = _project(tmp_path, "booley-sandbox-riscv")
     base_id = "sha256:" + "b" * 64
     docker = FakeDocker(
@@ -270,9 +266,7 @@ def test_explicit_external_image_receives_zero_mutations(tmp_path: Path, monkeyp
     assert not docker.mutations
 
 
-def test_ensure_generates_project_recipe_for_configured_requirements(
-    tmp_path: Path, monkeypatch
-):
+def test_ensure_generates_project_recipe_for_configured_requirements(tmp_path: Path, monkeypatch):
     root = _project(tmp_path)
     requirement = root / "requirements.txt"
     requirement.write_text("cocotb==2.0.1\n", encoding="utf-8")
@@ -352,9 +346,7 @@ def test_check_uses_desired_requirements_without_rewriting_recipe(tmp_path: Path
     assert generated_recipe.read_bytes() == before
 
 
-def test_checkout_project_dir_override_wins_over_literal_directory(
-    tmp_path: Path, monkeypatch
-):
+def test_checkout_project_dir_override_wins_over_literal_directory(tmp_path: Path, monkeypatch):
     root = tmp_path / "project"
     local = root / ".booley_project"
     custom = root / "control"

@@ -871,9 +871,7 @@ class TestUp:
 
         assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
 
-    def test_old_container_cleanup_failure_keeps_verified_replacement(
-        self, wired, caplog
-    ):
+    def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
         workspace, run = wired
         name = sr.session_container_name(workspace)
         backup = f"{name}-pre-refresh"
@@ -1815,8 +1813,7 @@ class TestSessionRefresh:
             init_cmd.subprocess,
             "run",
             lambda argv, **_kwargs: (
-                calls.append(argv)
-                or subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+                calls.append(argv) or subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
             ),
         )
 

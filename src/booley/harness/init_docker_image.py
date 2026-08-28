@@ -84,9 +84,7 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
     values = {
         "BOOLEY_IMAGE_BUILT_AT": built_at,
         "BOOLEY_PAYLOAD_FINGERPRINT": (
-            resolve_payload_fingerprint(booley_root)
-            or embedded_payload_fingerprint()
-            or "unknown"
+            resolve_payload_fingerprint(booley_root) or embedded_payload_fingerprint() or "unknown"
         ),
         "BOOLEY_SOURCE_REVISION": (
             resolve_build_commit(booley_root) if is_checkout else "unknown"
@@ -157,6 +155,7 @@ def _docker_image_id(image: str) -> str | None:
 # silently runs old code. ``booley init`` normally *skips* the build when the
 # image already exists, so drift went unnoticed. We fingerprint the baked-in
 # sources, stamp it as an image label at build time, and rebuild on mismatch.
+
 
 @dataclass(frozen=True)
 class _DockerBuildSpec:

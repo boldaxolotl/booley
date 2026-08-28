@@ -1202,9 +1202,7 @@ def refresh_session_image(project_root: Path, *, verbose: bool = False) -> Lifec
     return result
 
 
-def reissue_session_spec(
-    project_root: Path, image_id: str, *, verbose: bool = False
-) -> None:
+def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
     pdk_root = _step_nangate_pdk(ctx)

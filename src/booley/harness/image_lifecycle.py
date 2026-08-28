@@ -32,6 +32,7 @@ BASE_IMAGE = "booley-sandbox"
 STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
 FLAVOR_RECIPES = {"booley-sandbox-riscv": "Dockerfile.riscv"}
 
+
 class Intent(StrEnum):
     """Caller intent for one image-lifecycle reconciliation."""
 
@@ -254,9 +255,7 @@ def _flavor_node(reference: str, parent: _ImageNode, payload: PayloadProvenance)
     )
 
 
-def _project_recipe_fingerprint(
-    project_root: Path, requirements_body: str | None
-) -> str:
+def _project_recipe_fingerprint(project_root: Path, requirements_body: str | None) -> str:
     docker_dir = _direct_project_dir(project_root) / "docker"
     dockerfile = docker_dir / "Dockerfile"
     requirements = docker_dir / "requirements.txt"
@@ -266,10 +265,7 @@ def _project_recipe_fingerprint(
     ) and project_image.is_managed_generated_file(requirements)
     if requirements_body is None and managed_recipe and dockerfile.is_file():
         return hashlib.sha256(b"<no-managed-project-image>").hexdigest()
-    if (
-        requirements_body is not None
-        and managed_recipe
-    ):
+    if requirements_body is not None and managed_recipe:
         dockerfile_body, requirements_content = project_image.managed_project_image_files(
             requirements_body
         )
@@ -387,9 +383,7 @@ def _build_origin_and_base_parent_current(node: _ImageNode, docker: _DockerPort)
         expected_contract = runtime_base_contract(docker_data_dir().parents[3])
     except (OSError, ValueError):
         return docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
-    stable_contract = docker.label(
-        STABLE_RUNTIME_BASE_IMAGE, "io.booley.runtime-base.contract"
-    )
+    stable_contract = docker.label(STABLE_RUNTIME_BASE_IMAGE, "io.booley.runtime-base.contract")
     return (
         stable_contract == expected_contract
         and docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
@@ -415,9 +409,7 @@ def _uses_accepted_legacy_provenance(node: _ImageNode, docker: _DockerPort) -> b
 
 
 def _backup_tag(project_root: Path, reference: str) -> str:
-    identity = hashlib.sha256(
-        f"{project_root.resolve()}\0{reference}".encode()
-    ).hexdigest()[:16]
+    identity = hashlib.sha256(f"{project_root.resolve()}\0{reference}".encode()).hexdigest()[:16]
     return f"booley-lifecycle-backup-{identity}:prior"
 
 
@@ -442,9 +434,7 @@ def _retain_prior_tags(
     return backups
 
 
-def _restore_prior_tags(
-    backups: list[tuple[str, str | None]], docker: _DockerPort
-) -> list[str]:
+def _restore_prior_tags(backups: list[tuple[str, str | None]], docker: _DockerPort) -> list[str]:
     failures = []
     for reference, backup in reversed(backups):
         try:
@@ -703,7 +693,5 @@ def _docker_adapter() -> _DockerPort:
     return _DockerCli()
 
 
-def _build_adapter(
-    project_root: Path, _docker: _DockerPort, *, verbose: bool
-) -> _BuildPort:
+def _build_adapter(project_root: Path, _docker: _DockerPort, *, verbose: bool) -> _BuildPort:
     return _LegacyBuildAdapter(project_root, verbose=verbose)

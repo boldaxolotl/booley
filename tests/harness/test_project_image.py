@@ -237,7 +237,9 @@ class TestDockerfile:
         monkeypatch.setattr(pi.subprocess, "run", fake_run)
 
         assert pi.build_project_image("img", docker_dir) is True
-        inspect = next(command for command in calls if command[:3] == ["docker", "image", "inspect"])
+        inspect = next(
+            command for command in calls if command[:3] == ["docker", "image", "inspect"]
+        )
         build = next(command for command in calls if command[:2] == ["docker", "build"])
         assert inspect[3] == "booley-sandbox-riscv:old"
         assert "io.booley.build.parent-artifact=sha256:old" in build
@@ -252,9 +254,7 @@ class TestDockerfile:
         assert pi.dockerfile_parent_image(dockerfile) is None
 
         dockerfile.write_text(
-            "# booley:parent=booley-sandbox\n"
-            "FROM booley-sandbox AS build\n"
-            "FROM build AS final\n",
+            "# booley:parent=booley-sandbox\nFROM booley-sandbox AS build\nFROM build AS final\n",
             encoding="utf-8",
         )
         assert pi.dockerfile_parent_image(dockerfile) == "booley-sandbox"

@@ -4772,9 +4772,7 @@ def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, mon
     assert not passes
 
 
-def test_image_bakes_current_booley_passes_when_provenance_is_current(
-    tmp_path, monkeypatch
-):
+def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)

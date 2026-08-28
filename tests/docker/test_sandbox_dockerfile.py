@@ -167,7 +167,9 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "booley-sandbox=docker-image://" in workflow
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
-    assert "io.booley.build.parent-artifact=${{ steps.base-artifact.outputs.image-id }}" in workflow
+    assert (
+        "io.booley.build.parent-artifact=${{ steps.base-artifact.outputs.image-id }}" in workflow
+    )
 
 
 def test_release_base_records_exact_stable_runtime_parent() -> None:
@@ -175,8 +177,7 @@ def test_release_base_records_exact_stable_runtime_parent() -> None:
 
     assert "id: runtime-base-artifact" in workflow
     assert (
-        "io.booley.build.parent-artifact="
-        "${{ steps.runtime-base-artifact.outputs.image-id }}"
+        "io.booley.build.parent-artifact=${{ steps.runtime-base-artifact.outputs.image-id }}"
     ) in workflow
 
 

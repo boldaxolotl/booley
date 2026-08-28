@@ -453,7 +453,9 @@ def _park_session_for_rebuild(name: str) -> _ParkedSession:
     if was_running:
         stopped = _run(["docker", "stop", name])
         if stopped.returncode != 0:
-            raise SessionError(f"could not stop existing Session Runtime: {stopped.stderr.strip()}")
+            raise SessionError(
+                f"could not stop existing Session Runtime: {stopped.stderr.strip()}"
+            )
     renamed = _run(["docker", "rename", name, backup])
     if renamed.returncode != 0:
         if was_running:
@@ -508,9 +510,7 @@ class _UpRequest:
     relay: Any
 
 
-def _validate_up_request(
-    workspace: Path, image_override: str | None
-) -> _UpRequest:
+def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequest:
     from booley.eda import runtime_spec
 
     spec = _load_spec(workspace)
