@@ -2304,8 +2304,10 @@ def try_resolve_target(
 # (doctor, simulate, coverage_analyst, tests) keep working.
 from .fusesoc_trace_overlay import (  # noqa: F401  # re-exported for backward compatibility
     DEFAULT_TRACE_DEPTH,
+    TraceMode,
     TraceOverlay,
     target_includes_dump_module,
     trace_overlay_vlnv,
+    validate_cocotb_trace_mode,
     write_trace_overlay,
 )
