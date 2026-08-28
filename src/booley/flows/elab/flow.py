@@ -472,7 +472,7 @@ class ElaborateFlow(BooleyFlow):
             cmd = self._dry_run_command(target)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:  # report context is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -496,7 +496,7 @@ class ElaborateFlow(BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:  # report context is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
