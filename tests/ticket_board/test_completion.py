@@ -186,6 +186,10 @@ def test_acceptance_journal_rejects_corrupt_or_mismatched_state(
         ({"sources": []}, "sources must be a mapping"),
         ({"sources": {"outer": "short"}}, "full Git commit SHA"),
         (
+            {"policy": {"merge": True, "cleanup": True}},
+            "cleanup policy changed",
+        ),
+        (
             {
                 "candidates": {
                     "outer": {
@@ -218,9 +222,48 @@ def test_acceptance_journal_validates_every_recovery_field(
         completion._load_journal(journal, "change-target", contract)
 
 
+def test_schema_one_done_journal_resumes_cleanup_as_accepted(tmp_path: Path) -> None:
+    contract = _boundary_contract()
+    data = completion._initial_journal("change-target", contract)
+    transaction = data["transaction"]
+    data.update(
+        {
+            "schema": 1,
+            "state": "done",
+            "sources": {"outer": "a" * 40},
+            "candidates": {
+                "outer": {
+                    "sha": "d" * 40,
+                    "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
+                    "expected_destination_sha": "e" * 40,
+                }
+            },
+            "published": ["outer"],
+        }
+    )
+    data.pop("policy")
+    data.pop("cleaned")
+    journal = tmp_path / "acceptance.json"
+    journal.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = completion._load_journal(journal, "change-target", contract, cleanup=True)
+
+    assert loaded["schema"] == 2
+    assert loaded["state"] == "accepted"
+    assert loaded["policy"] == {"merge": True, "cleanup": True}
+    assert loaded["cleaned"] == []
+
+
 def test_complete_requires_merge_policy() -> None:
-    with pytest.raises(completion.CompletionError, match="requires merge policy"):
+    with pytest.raises(completion.CompletionError, match="requires merge policy to be true"):
         complete_review_ticket(_BoundaryTicketIO(None), "missing", _Policy(merge=False))
+
+    with pytest.raises(completion.CompletionError, match="cleanup policy to be boolean"):
+        complete_review_ticket(
+            _BoundaryTicketIO(None),
+            "missing",
+            _Policy(cleanup="yes"),  # type: ignore[arg-type]
+        )
 
 
 def test_complete_reports_missing_ticket(capsys: pytest.CaptureFixture[str]) -> None:
@@ -256,6 +299,58 @@ def test_complete_rejects_legacy_contract_schema(
     assert "target_contract.schema must be 3" in capsys.readouterr().err
 
 
+def test_complete_rejects_retired_integration_metadata(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tio = _BoundaryTicketIO(
+        {
+            "file": "board/review/ambiguous.md",
+            "status": "review",
+            "branch": "main",
+            "integration_base": "main~1",
+            "target_contract": _boundary_contract().as_dict(),
+        }
+    )
+
+    assert complete_review_ticket(tio, "ambiguous", _Policy()) is False
+    error = capsys.readouterr().err
+    assert "integration_base" in error
+    assert "schema-3 Tickets" in error
+
+
+def test_complete_rejects_destination_ref_as_cleanup_target(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    contract = _boundary_contract()
+    participant = contract.participants[0]
+    unsafe = TargetContract(
+        outer_sha=contract.outer_sha,
+        project_sha="",
+        surface_digest=contract.surface_digest,
+        targets=(),
+        participants=(
+            ContractParticipant(
+                role="outer",
+                sealed_sha=participant.sealed_sha,
+                ticket_ref=participant.destination_ref,
+                destination_ref=participant.destination_ref,
+                destination_sha=participant.destination_sha,
+            ),
+        ),
+    )
+    tio = _BoundaryTicketIO(
+        {
+            "file": "board/review/unsafe.md",
+            "status": "review",
+            "branch": "main",
+            "target_contract": unsafe.as_dict(),
+        }
+    )
+
+    assert complete_review_ticket(tio, "unsafe", _Policy(cleanup=True)) is False
+    assert "Ticket ref is also the destination ref" in capsys.readouterr().err
+
+
 def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     base = _repository(root)
@@ -279,6 +374,243 @@ def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> No
     ]
     journals = list((root / ".booley_project" / ".runtime" / "acceptance").glob("*.json"))
     assert len(journals) == 1
+
+
+def test_complete_merges_ticket_onto_advanced_destination_without_rebasing(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        role="outer",
+        sealed_sha=ticket_sha,
+        ticket_ref="refs/heads/change-target",
+        destination_ref="refs/heads/main",
+        destination_sha=base,
+    )
+    contract = _contract(root, (participant,))
+    (root / "baseline.txt").write_text("advanced baseline\n", encoding="utf-8")
+    _git(root, "add", "baseline.txt")
+    _git(root, "commit", "-m", "advance baseline")
+    advanced = _git(root, "rev-parse", "HEAD")
+    tio = _TicketIO(root, contract)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is True
+
+    assert _git(root, "show", "main:design.txt") == "implemented"
+    assert _git(root, "show", "main:baseline.txt") == "advanced baseline"
+    parents = _git(root, "show", "-s", "--format=%P", "main").split()
+    assert parents == [advanced, ticket_sha]
+
+
+def test_complete_cleans_recorded_ticket_ref_after_acceptance(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        role="outer",
+        sealed_sha=ticket_sha,
+        ticket_ref="refs/heads/change-target",
+        destination_ref="refs/heads/main",
+        destination_sha=base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+
+    result = complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+
+    assert result is True
+    assert _git(root, "show", "main:design.txt") == "implemented"
+    assert (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/change-target"],
+            cwd=root,
+            check=False,
+        ).returncode
+        == 1
+    )
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "done"
+    assert journal["cleaned"] == ["outer"]
+
+
+def test_retry_cannot_change_frozen_cleanup_policy(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=False)) is True
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is False
+    assert "cleanup policy changed" in capsys.readouterr().err
+    assert completion._ref_commit(root, participant.ticket_ref) == ticket_sha
+
+
+def test_cleanup_refuses_moved_ticket_ref_and_retry_uses_recorded_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    _git(root, "switch", "-c", "late-source", ticket_sha)
+    (root / "design.txt").write_text("late movement\n", encoding="utf-8")
+    _git(root, "add", "design.txt")
+    _git(root, "commit", "-m", "late source")
+    late_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "switch", "main")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+    validate_surface = completion._validate_source_surface
+
+    def move_ref(*args: Any, **kwargs: Any) -> None:
+        validate_surface(*args, **kwargs)
+        _git(root, "branch", "-f", "change-target", late_sha)
+
+    monkeypatch.setattr(completion, "_validate_source_surface", move_ref)
+
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert _git(root, "rev-parse", "change-target") == late_sha
+    assert "cleanup is pending" in capsys.readouterr().err
+
+    monkeypatch.setattr(completion, "_validate_source_surface", validate_surface)
+    _git(root, "branch", "-f", "change-target", ticket_sha)
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert (
+        subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", "refs/heads/change-target"],
+            cwd=root,
+            check=False,
+        ).returncode
+        == 1
+    )
+
+
+def test_cleanup_preserves_dirty_ticket_worktree_until_retry(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    ticket_worktree = tmp_path / "ticket-worktree"
+    _git(root, "worktree", "add", str(ticket_worktree), "change-target")
+    (ticket_worktree / "design.txt").write_text("dirty\n", encoding="utf-8")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert ticket_worktree.exists()
+    assert _git(root, "rev-parse", "change-target") == ticket_sha
+    assert "dirty Ticket worktree" in capsys.readouterr().err
+
+    _git(ticket_worktree, "restore", "design.txt")
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert not ticket_worktree.exists()
+
+
+def test_retry_resumes_after_project_cleanup_completed_before_journal_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "rtl"
+    outer_base = _repository(root)
+    outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
+    project = root / ".booley_project"
+    project_base = _repository(project)
+    project_ticket = _ticket_commit(
+        project, "booley-ticket/change-target", "project implementation\n"
+    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    participants = (
+        ContractParticipant(
+            "outer",
+            outer_ticket,
+            "refs/heads/change-target",
+            "refs/heads/main",
+            outer_base,
+        ),
+        ContractParticipant(
+            "project",
+            project_ticket,
+            "refs/heads/booley-ticket/change-target",
+            "refs/heads/main",
+            project_base,
+        ),
+    )
+    tio = _TicketIO(root, _contract(root, participants))
+    write_journal = completion._write_journal
+    failed = False
+
+    def interrupt_project_checkpoint(path: Path, journal: dict[str, Any]) -> None:
+        nonlocal failed
+        if journal.get("state") == "cleanup-project" and not failed:
+            failed = True
+            raise OSError("simulated cleanup checkpoint interruption")
+        write_journal(path, journal)
+
+    monkeypatch.setattr(completion, "_write_journal", interrupt_project_checkpoint)
+
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert "cleanup is pending" in capsys.readouterr().err
+    assert completion._ref_commit(project, "refs/heads/booley-ticket/change-target") is None
+    assert completion._ref_commit(root, "refs/heads/change-target") == outer_ticket
+
+    monkeypatch.setattr(completion, "_write_journal", write_journal)
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    assert completion._ref_commit(root, "refs/heads/change-target") is None
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "done"
+    assert journal["cleaned"] == ["project", "outer"]
+
+
+def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    acceptance = root / ".booley_project" / ".runtime" / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "earlier.json").write_text(
+        json.dumps({"ticket": "earlier", "state": "prepared"}), encoding="utf-8"
+    )
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    tio = _TicketIO(root, _contract(root, (participant,)))
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert "resume it first" in capsys.readouterr().err
+    assert _git(root, "show", "main:design.txt") == "base"
 
 
 def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monkeypatch) -> None:

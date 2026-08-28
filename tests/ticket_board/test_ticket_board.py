@@ -508,6 +508,25 @@ class TestValidateTicketFields:
         errors = validate_ticket_fields(fields, "## Description\nSome text")
         assert errors == [f"on_success.{field} must be true or false"]
 
+    def test_integration_base_is_rejected_for_schema_3_tickets(self):
+        fields = {
+            "summary": "Do something",
+            "type": "feature",
+            "branch": "main",
+            "integration_base": "main~1",
+            "scope": ["rtl/foo.sv"],
+            "criteria": {
+                "mandatory": {"sim_pass": ["tb/foo_tb.sv @ default @ all @ pass -> pass"]}
+            },
+        }
+
+        errors = validate_ticket_fields(fields, "## Description\nSome text")
+
+        assert errors == [
+            "Deprecated field 'integration_base': schema-3 Tickets publish their "
+            "sealed Ticket refs directly to destination refs"
+        ]
+
     def test_missing_fields(self):
         errors = validate_ticket_fields({}, "## Description\ntext")
         missing = [e for e in errors if "Missing required field" in e]
@@ -3357,7 +3376,18 @@ class TestFormatStageDetailIncidents:
 
 
 class TestEnqueueOnSuccess:
-    """Test on_success and integration_base fields in enqueue_ticket."""
+    """Test on_success fields and retired enqueue arguments."""
+
+    def test_enqueue_rejects_integration_base_override(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "queue", "ticket-a", extra_fields={"summary": "Ticket A"})
+
+        assert tio.enqueue_ticket("ticket-a", integration_base="main~1") is False
+
+        assert "--integration-base is retired" in capsys.readouterr().err
+        path, _ = find_ticket_file(tio.tickets_dir, "ticket-a")
+        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+        assert "integration_base" not in fields
 
     def test_enqueue_with_on_success(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -3374,47 +3404,6 @@ class TestEnqueueOnSuccess:
         assert fields["on_success"]["destination"] == "done"
         assert fields["on_success"]["merge"] is False
         assert fields["on_success"]["cleanup"] is True
-
-    def test_enqueue_with_integration_base(self, tmp_path):
-        tio = make_tio(tmp_path)
-        make_ticket_in_dir(
-            tio,
-            "queue",
-            "ticket-a",
-            extra_fields={"summary": "Ticket A", "integration_base": "devel_branch"},
-        )
-        tio.enqueue_ticket(
-            "ticket-a", "Ticket A", "feature", "int/enc-dec", integration_base="devel_branch"
-        )
-        path, _ = find_ticket_file(tio.tickets_dir, "ticket-a")
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["integration_base"] == "devel_branch"
-
-    def test_enqueue_with_on_success_and_integration_base(self, tmp_path):
-        tio = make_tio(tmp_path)
-        on_success = {"destination": "done", "merge": True, "cleanup": True}
-        make_ticket_in_dir(
-            tio,
-            "queue",
-            "ticket-a",
-            extra_fields={
-                "summary": "Ticket A",
-                "on_success": on_success,
-                "integration_base": "devel_branch",
-            },
-        )
-        tio.enqueue_ticket(
-            "ticket-a",
-            "Ticket A",
-            "feature",
-            "int/enc-dec",
-            on_success=on_success,
-            integration_base="devel_branch",
-        )
-        path, _ = find_ticket_file(tio.tickets_dir, "ticket-a")
-        fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"]["destination"] == "done"
-        assert fields["integration_base"] == "devel_branch"
 
     def test_enqueue_default_no_on_success(self, tmp_path):
         """Without on_success param, field should not be stamped by enqueue."""
@@ -4350,7 +4339,7 @@ class TestCollectAllMessagesRecovered:
 
 
 class TestEnqueueAppliesParams:
-    """Test that enqueue_ticket writes on_success and integration_base to frontmatter."""
+    """Test that enqueue_ticket writes on_success to frontmatter."""
 
     def test_on_success_applied(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -4365,13 +4354,11 @@ class TestEnqueueAppliesParams:
                 "feature",
                 "master",
                 on_success=on_success,
-                integration_base="dev-branch",
             )
         path = tio.tickets_dir / "board" / "queue" / "t1.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
         assert fields["on_success"]["destination"] == "done"
         assert fields["on_success"]["merge"] is False
-        assert fields.get("integration_base") == "dev-branch"
 
     def test_no_on_success_by_default(self, tmp_path):
         tio = make_tio(tmp_path)

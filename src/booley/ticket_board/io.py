@@ -641,7 +641,7 @@ class TicketIO:
         done_slugs = compute_done_slugs(all_tickets)
         return not all(d in done_slugs for d in deps), False
 
-    def _enqueue_locked(self, slug, ticket_path, on_success, integration_base, has_unmet):
+    def _enqueue_locked(self, slug, ticket_path, on_success, has_unmet):
         """Perform locked enqueue mutations: stamp, progress, move, transition."""
         recheck_path, _ = find_ticket_file(self.tickets_dir, slug)
         if recheck_path is not None:
@@ -659,8 +659,6 @@ class TicketIO:
                 print(f"Error: invalid on_success: {'; '.join(errors)}", file=sys.stderr)
                 return False
             fm_updates["on_success"] = on_success
-        if integration_base:
-            fm_updates["integration_base"] = integration_base
         update_frontmatter(ticket_path, fm_updates)
 
         initial_progress = copy.deepcopy(PROGRESS_DEFAULTS)
@@ -700,6 +698,13 @@ class TicketIO:
 
         Returns True/False.
         """
+        if integration_base:
+            print(
+                "Error: --integration-base is retired; schema-3 Tickets publish "
+                "their sealed Ticket refs directly to destination refs",
+                file=sys.stderr,
+            )
+            return False
         ticket_path, skip = self._resolve_enqueue_path(slug)
         if skip:
             return False
@@ -737,7 +742,7 @@ class TicketIO:
             return False
 
         with self._ticket_lock(slug):
-            return self._enqueue_locked(slug, ticket_path, on_success, integration_base, has_unmet)
+            return self._enqueue_locked(slug, ticket_path, on_success, has_unmet)
 
     def _enqueue_validation_root(self, slug: str, fields: dict[str, Any]) -> Path:
         """Validate sealed tickets against their immutable authoring checkout."""

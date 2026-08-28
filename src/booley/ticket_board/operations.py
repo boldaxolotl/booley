@@ -24,7 +24,6 @@ from .git_ops import (
     find_worktree_for_branch,
     prune_worktrees,
     remove_worktree,
-    remove_worktree_for_branch,
 )
 from .helpers import compute_done_slugs, parse_arrow, slug_from_file
 from .io import scan_all_tickets
@@ -620,19 +619,6 @@ def op_promote_waiting(tio: Any) -> list[dict[str, str]]:
     return promoted
 
 
-def _cleanup_merged_branch(merge_from: str) -> bool:
-    if merge_from:
-        remove_worktree_for_branch(merge_from)
-        prune_worktrees()
-        # The merge may have landed in an integration branch other than the
-        # caller's current HEAD.  A plain `git branch -d` checks only HEAD and
-        # therefore rejects a branch that we just proved was merged above.
-        if not delete_branch(merge_from, force=True):
-            print(f"Error: could not delete merged branch '{merge_from}'", file=sys.stderr)
-            return False
-    return True
-
-
 def _do_cleanup(slug: str, entry: dict, on_success: OnSuccess, project_root: Path) -> bool:
     """Perform the cleanup step of op_complete."""
     ok, _detail = TicketWorkspace.retire(
@@ -703,6 +689,10 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
     slug = Path(str(entry["file"])).stem
 
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
+    policy_errors = on_success.validate()
+    if policy_errors:
+        print(f"Error: cannot complete '{slug}': {policy_errors[0]}", file=sys.stderr)
+        return False
 
     status = entry.get("status", "")
     if status != "review" and not (status == "done" and on_success.merge):
@@ -721,27 +711,15 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
         return False
 
     if on_success.merge:
-        from .completion import complete_review_ticket
+        from .completion import cleanup_finished, complete_review_ticket
 
         if not complete_review_ticket(tio, slug, on_success):
             print(f"Error: merge failed for '{slug}'; ticket stays in review", file=sys.stderr)
             return False
-        if on_success.cleanup:
-            # Publication is already durable and the board is done.  Worktree
-            # and branch removal is therefore garbage collection: report a
-            # failure but never misrepresent the accepted Ticket as incomplete.
-            project_ok, project_detail = TicketWorkspace.retire(
-                tio._project_root,
-                slug,
-                WorkspaceDisposition.DISCARD,
-            )
-            outer_ok = _cleanup_merged_branch(slug)
-            if not project_ok or not outer_ok:
-                detail = project_detail or "outer repository cleanup failed"
-                print(
-                    f"Warning: accepted '{slug}' but cleanup is pending: {detail}", file=sys.stderr
-                )
-        _finish_completed_ticket(tio, slug, cleanup=on_success.cleanup)
+        finished_cleanup = on_success.cleanup and cleanup_finished(
+            Path(tio._project_root).resolve(), slug
+        )
+        _finish_completed_ticket(tio, slug, cleanup=finished_cleanup)
         return True
 
     if (
