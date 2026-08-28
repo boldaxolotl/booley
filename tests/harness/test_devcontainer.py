@@ -30,6 +30,7 @@ class TestBuildSpec:
     def test_egress_network_and_reaper_label(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
         assert spec["runArgs"] == [
+            "--init",
             "--network",
             dc.EGRESS_NETWORK,
             "--label",
@@ -48,6 +49,7 @@ class TestBuildSpec:
         regardless of the optional memory limit."""
         for app in dc.SUPPORTED_APPS:
             args = dc.build_devcontainer_spec(app, memory="8g")["runArgs"]
+            assert "--init" in args
             assert args[args.index("--cap-drop") + 1] == "ALL"
             assert args[args.index("--security-opt") + 1] == "no-new-privileges"
             assert int(args[args.index("--pids-limit") + 1]) == dc.SESSION_PIDS_LIMIT

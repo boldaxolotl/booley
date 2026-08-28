@@ -537,6 +537,25 @@ incomplete calibration, never a successful PPA result.
 The slot store is per-project. It does not arbitrate separate Projects' shared
 host resources such as commercial-license seats.
 
+Each admitted holder has a renewable recovery lease that is separate from its
+optional work timeout. A Job launched through an explicit Runtime Attachment
+command inherits that execution's opaque ID; zero or many Job leases may link
+to the same execution. When an owner disappears or a lease expires, recovery
+atomically changes the lease from `active` to `cancelling` and requests scoped
+execution cancellation. The slot remains occupied until the supervisor has
+reaped the complete execution tree and published a terminal record, so a dead
+root PID can never free capacity while EDA descendants still run.
+
+Unattached and legacy callers remain process-owned for compatibility. Their
+entries use PID namespace, process start time, zombie state, and the existing
+argv/work-timeout guards where available. They cannot prove complete-tree
+terminality after the owner dies, so the stronger cancellation-and-reap
+guarantee applies only to execution-owned leases. Unknown future slot schemas
+and incomplete execution records fail closed rather than freeing capacity.
+Complete execution records are retained for seven days; an active Job lease
+pins its referenced record, and nonterminal or unfamiliar records are never
+garbage-collected automatically.
+
 ### Auto-retry on transient crashes (`[developer.auto_retry]`)
 
 When the Developer Agent dies to a server-side failure (today, an `API Error:

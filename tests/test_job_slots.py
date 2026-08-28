@@ -8,6 +8,9 @@ directory, with its own fake PID, and the test controls which PIDs are
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -66,6 +69,24 @@ def make_store(root: Path, world: FakeWorld, caps: SlotCaps | None = None) -> Sl
     )
 
 
+def make_execution_store(
+    root: Path,
+    world: FakeWorld,
+    *,
+    execution_terminal,
+    cancellations: list[str],
+) -> SlotStore:
+    return SlotStore(
+        root,
+        is_pid_alive=world.is_pid_alive,
+        read_cmdline=world.read_cmdline,
+        now=world.now,
+        sleep=lambda _seconds: None,
+        execution_is_terminal=execution_terminal,
+        cancel_execution=cancellations.append,
+    )
+
+
 def spawn(world: FakeWorld, pid: int, argv: list[str] | None = None):
     world.alive[pid] = argv
 
@@ -77,6 +98,19 @@ class TestSingleProcess:
         tok = store.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
         assert store.refresh(tok).state == HOLDING
         assert tok.is_holder
+
+    def test_acquire_renews_production_lease_until_release(self, root, monkeypatch):
+        monkeypatch.setattr(job_slots, "LEASE_DURATION_SECONDS", 0.2)
+        monkeypatch.setattr(job_slots, "LEASE_RENEW_INTERVAL_SECONDS", 0.02)
+        store = SlotStore(root)
+        token = store.acquire(CLASS_HEAVY, pid=os.getpid(), poll_interval=0.01)
+        try:
+            time.sleep(0.08)
+            holder = store.snapshot(CLASS_HEAVY)[0][0]
+            assert holder.lease_generation >= 2
+            assert holder.lease_state == job_slots.LEASE_ACTIVE
+        finally:
+            store.release(token)
 
     def test_release_frees_the_slot(self, root, world):
         spawn(world, 100)
@@ -319,6 +353,143 @@ class TestGhostReaping:
         tok = a.submit(CLASS_HEAVY, pid=100, argv=["python", "-m", "x"])
         assert a.refresh(tok).state == HOLDING
         assert a.reap(CLASS_HEAVY) == []
+
+    def test_linked_dead_owner_waits_for_complete_execution_tree(self, root, world):
+        execution_id = "a" * 32
+        terminal = False
+        cancellations: list[str] = []
+        spawn(world, 100)
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: terminal,
+            cancellations=cancellations,
+        )
+        token = store.submit(CLASS_HEAVY, pid=100, execution_id=execution_id)
+        assert store.refresh(token).state == HOLDING
+        del world.alive[100]
+
+        assert store.reap(CLASS_HEAVY) == []
+        assert token.path.exists()
+        assert cancellations == [execution_id]
+
+        terminal = True
+        assert store.reap(CLASS_HEAVY) == [token.path.name]
+
+    def test_expired_lease_claims_recovery_without_freeing_capacity(self, root, world):
+        execution_id = "b" * 32
+        terminal = False
+        cancellations: list[str] = []
+        spawn(world, 100)
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: terminal,
+            cancellations=cancellations,
+        )
+        token = store.submit(CLASS_HEAVY, pid=100, execution_id=execution_id)
+        assert store.refresh(token).state == HOLDING
+        world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+
+        assert store.reap(CLASS_HEAVY) == []
+        holder = store.snapshot(CLASS_HEAVY)[0][0]
+        assert holder.lease_state == job_slots.LEASE_CANCELLING
+        assert cancellations == [execution_id]
+        assert store.renew(token) is False
+        store.release(token)
+        assert token.path.exists()
+
+        terminal = True
+        store.release(token)
+        assert not token.path.exists()
+
+    def test_execution_id_is_inherited_and_persisted(self, root, world, monkeypatch):
+        execution_id = "c" * 32
+        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
+        spawn(world, 100)
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: False,
+            cancellations=[],
+        )
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+
+        holder = store.snapshot(CLASS_HEAVY)[0][0]
+        assert holder.execution_id == execution_id
+        assert holder.owner_kind == "execution"
+        assert holder.lease_id
+        assert holder.lease_expires_at is not None
+
+    def test_one_runtime_execution_can_own_multiple_job_leases(
+        self, root, world, monkeypatch
+    ):
+        execution_id = "e" * 32
+        monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", execution_id)
+        spawn(world, 100)
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: False,
+            cancellations=[],
+        )
+
+        heavy = store.submit(CLASS_HEAVY, pid=100)
+        light = store.submit(CLASS_LIGHT, pid=100)
+        assert store.refresh(heavy).state == HOLDING
+        assert store.refresh(light).state == HOLDING
+
+        holders = [*store.snapshot(CLASS_HEAVY)[0], *store.snapshot(CLASS_LIGHT)[0]]
+        assert {token.execution_id for token in holders} == {execution_id}
+        assert len({token.lease_id for token in holders}) == 2
+
+    def test_unattached_job_lease_keeps_process_owner_compatibility(self, root, world):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+
+        holder = store.snapshot(CLASS_HEAVY)[0][0]
+        assert holder.execution_id is None
+        assert holder.owner_kind == "process"
+
+    def test_linked_missing_promotion_metadata_uses_recovery_deadline(self, root, world):
+        execution_id = "d" * 32
+        terminal = False
+        cancellations: list[str] = []
+        spawn(world, 100)
+        store = make_execution_store(
+            root,
+            world,
+            execution_terminal=lambda _execution_id: terminal,
+            cancellations=cancellations,
+        )
+        token = store.submit(CLASS_HEAVY, pid=100, execution_id=execution_id)
+        assert store.refresh(token).state == HOLDING
+        payload = json.loads(token.path.read_text(encoding="utf-8"))
+        payload["promoted_at"] = None
+        payload["lease_expires_at"] = None
+        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+
+        assert store.reap(CLASS_HEAVY) == []
+        assert cancellations == [execution_id]
+        assert store.snapshot(CLASS_HEAVY)[0][0].lease_state == job_slots.LEASE_CANCELLING
+
+    @pytest.mark.parametrize("unknown_schema", [job_slots.SLOT_SCHEMA_VERSION + 1, "future"])
+    def test_unknown_future_slot_schema_fails_closed(self, root, world, unknown_schema):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        payload = json.loads(token.path.read_text(encoding="utf-8"))
+        payload["schema_version"] = unknown_schema
+        token.path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        del world.alive[100]
+
+        assert store.reap(CLASS_HEAVY) == []
+        assert token.path.exists()
 
     def test_holder_past_deadline_is_reaped(self, root, world):
         spawn(world, 100)

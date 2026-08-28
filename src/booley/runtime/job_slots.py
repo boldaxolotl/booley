@@ -45,17 +45,35 @@ import contextlib
 import json
 import logging
 import os
+import re
+import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.execution_records import (
+    RUNTIME_EXECUTION_ENV,
+    execution_paths,
+    read_json,
+    request_cancellation,
+)
 from booley.runtime.job_records import (
     DEADLINE_SLACK_SECONDS,
     _proc_cmdline,
     parse_stamp,
 )
-from booley.runtime.pid import is_pid_alive
+from booley.runtime.pid import (
+    DEAD,
+    REUSED,
+    ZOMBIE,
+    ProcessIdentity,
+    ProcessObservation,
+    capture_process_identity,
+    is_pid_alive,
+    observe_process,
+)
 from booley.runtime.timefmt import rfc3339_from_epoch
 
 logger = logging.getLogger(__name__)
@@ -99,6 +117,16 @@ _ENTRY_IO_RETRY_SECONDS = 0.01
 # either rename becomes visible, then both promote. O_EXCL creation is atomic on
 # the local filesystems supported by the Session Runtime and Windows CI.
 _PROMOTION_GATE_NAME = ".promotion.lock"
+
+# Versioned holder identity + renewable recovery lease. Work budgets remain a
+# separate field: a Developer Agent may legitimately have no work timeout, but
+# every new holder must still be recoverable after its owner stops renewing.
+SLOT_SCHEMA_VERSION = 2
+LEASE_ACTIVE = "active"
+LEASE_CANCELLING = "cancelling"
+LEASE_DURATION_SECONDS = 30.0
+LEASE_RENEW_INTERVAL_SECONDS = 10.0
+_EXECUTION_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 class QueueFullError(RuntimeError):
@@ -195,6 +223,14 @@ class SlotToken:
     # the payload rewrite). The holder deadline anchors here, NOT at
     # created_at: queue wait must never count against the run budget.
     promoted_at: str | None = None
+    schema_version: int = 1
+    lease_id: str = ""
+    execution_id: str | None = None
+    lease_state: str = LEASE_ACTIVE
+    lease_generation: int = 0
+    lease_expires_at: str | None = None
+    owner_identity: ProcessIdentity | None = None
+    owner_kind: str = "process"
 
     @property
     def is_holder(self) -> bool:
@@ -220,6 +256,19 @@ def slots_dir() -> Path | None:
     except Exception:  # noqa: BLE001 — no project ⇒ no admission (bare runs)
         return None
     return project / "runtime" / "jobs" / "slots"
+
+
+def _default_execution_is_terminal(execution_id: str) -> bool:
+    payload = read_json(execution_paths(execution_id).record)
+    return bool(
+        payload is not None
+        and payload.get("state") == "terminal"
+        and payload.get("tree_terminal") is True
+    )
+
+
+def _default_cancel_execution(execution_id: str) -> None:
+    request_cancellation(execution_paths(execution_id))
 
 
 def _entry_name(state: str, priority: int, seq: int, pid: int, n: int) -> str:
@@ -332,6 +381,10 @@ class SlotStore:
         read_cmdline: Callable[[int], list[str] | None] = _proc_cmdline,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        capture_identity: Callable[[int], ProcessIdentity | None] = capture_process_identity,
+        observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
+        execution_is_terminal: Callable[[str], bool] = _default_execution_is_terminal,
+        cancel_execution: Callable[[str], None] = _default_cancel_execution,
     ) -> None:
         self.root = root
         self.caps = caps or SlotCaps()
@@ -339,7 +392,13 @@ class SlotStore:
         self._read_cmdline = read_cmdline
         self._now = now
         self._sleep = sleep
+        self._capture_identity = capture_identity
+        self._observe_identity = observe_identity
+        self._execution_is_terminal = execution_is_terminal
+        self._cancel_execution = cancel_execution
         self._n = 0  # per-store counter: distinct entries from one process
+        self._auto_renew = now is time.time and sleep is time.sleep
+        self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
 
     # ---------------------------------------------------------------- submit
 
@@ -351,6 +410,7 @@ class SlotStore:
         argv: list[str] | None = None,
         role: str = ROLE_INTERACTIVE,
         timeout_s: float | None = None,
+        execution_id: str | None = None,
     ) -> SlotToken:
         """Join the admission order for *job_class*.
 
@@ -373,7 +433,19 @@ class SlotStore:
 
         priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_TICKET])
         created = self._now()
-        token = self._create_entry(cls_dir, priority, pid, argv or [], role, timeout_s, created)
+        linked_execution = execution_id or os.environ.get(RUNTIME_EXECUTION_ENV) or None
+        if linked_execution is not None and _EXECUTION_ID_RE.fullmatch(linked_execution) is None:
+            raise ValueError("execution_id must be 32 lowercase hexadecimal characters")
+        token = self._create_entry(
+            cls_dir,
+            priority,
+            pid,
+            argv or [],
+            role,
+            timeout_s,
+            created,
+            linked_execution,
+        )
 
         # Post-create backstop: if a racing submit pushed us past the bound,
         # withdraw our own entry and refuse — the queue must stay bounded.
@@ -391,13 +463,24 @@ class SlotStore:
         role: str,
         timeout_s: float | None,
         created: float,
+        execution_id: str | None,
     ) -> SlotToken:
         """Create a uniquely-named waiter entry; atomic full-content appearance."""
+        owner_identity = self._capture_identity(pid)
+        lease_id = uuid.uuid4().hex
         payload_base = {
+            "schema_version": SLOT_SCHEMA_VERSION,
             "role": role,
             "argv": argv,
             "created_at": _utc_stamp(created),
             "timeout_s": timeout_s,
+            "lease_id": lease_id,
+            "execution_id": execution_id,
+            "owner_kind": "execution" if execution_id is not None else "process",
+            "lease_state": LEASE_ACTIVE,
+            "lease_generation": 0,
+            "lease_expires_at": None,
+            "owner_identity": self._identity_payload(owner_identity),
         }
         while True:
             seq = self._next_seq(cls_dir)
@@ -425,7 +508,22 @@ class SlotStore:
                 created_at=payload["created_at"],
                 timeout_s=timeout_s,
                 path=path,
+                schema_version=SLOT_SCHEMA_VERSION,
+                lease_id=lease_id,
+                execution_id=execution_id,
+                owner_identity=owner_identity,
+                owner_kind="execution" if execution_id is not None else "process",
             )
+
+    @staticmethod
+    def _identity_payload(identity: ProcessIdentity | None) -> dict | None:
+        if identity is None:
+            return None
+        return {
+            "pid": identity.pid,
+            "pid_namespace": identity.pid_namespace,
+            "start_ticks": identity.start_ticks,
+        }
 
     def _next_seq(self, cls_dir: Path) -> int:
         """Max seq among live entries + 1. Ties across processes are fine —
@@ -477,6 +575,8 @@ class SlotStore:
 
     def _promote(self, token: SlotToken) -> TokenState:
         """Rename one eligible waiter while its class promotion gate is held."""
+        if not self._stamp_promoted(token):
+            return TokenState(QUEUED, position=0)
         holder_path = token.path.with_name(
             _entry_name(_HOLDER, token.priority, token.seq, token.pid, token.n)
         )
@@ -485,7 +585,6 @@ class SlotStore:
             # waiter still exists, leave it queued and retry next poll.
             return TokenState(QUEUED, position=0) if token.path.exists() else TokenState(LOST)
         token.path = holder_path
-        self._stamp_promoted(token)
         return TokenState(HOLDING)
 
     @contextlib.contextmanager
@@ -546,33 +645,48 @@ class SlotStore:
                 return False
         return False
 
-    def _stamp_promoted(self, token: SlotToken) -> None:
-        """Rewrite the freshly-promoted entry with a ``promoted_at`` stamp.
-
-        The holder deadline (``_is_stale``) anchors at promotion, not entry
-        creation — an entry can legitimately queue for longer than its own run
-        budget, and charging that wait against the deadline would reap a
-        *live* holder (freeing a slot that is still occupied → overcommit).
-        Atomic tmp + replace so a concurrent reader sees old or new payload,
-        never a partial one. Best-effort: on failure the entry simply keeps no
-        deadline, exactly the pre-stamp behavior.
-        """
-        token.promoted_at = _utc_stamp(self._now())
-        payload = {
+    def _token_payload(self, token: SlotToken) -> dict:
+        return {
+            "schema_version": token.schema_version,
             "role": token.role,
             "argv": token.argv,
             "created_at": token.created_at,
             "timeout_s": token.timeout_s,
             "seq": token.seq,
             "promoted_at": token.promoted_at,
+            "lease_id": token.lease_id,
+            "execution_id": token.execution_id,
+            "owner_kind": token.owner_kind,
+            "lease_state": token.lease_state,
+            "lease_generation": token.lease_generation,
+            "lease_expires_at": token.lease_expires_at,
+            "owner_identity": self._identity_payload(token.owner_identity),
         }
-        tmp = token.path.with_name(f".{token.path.name}.{token.pid}.promote.tmp")
+
+    def _rewrite_token(self, token: SlotToken) -> bool:
+        tmp = token.path.with_name(f".{token.path.name}.{os.getpid()}.rewrite.tmp")
         try:
-            tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+            tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
             tmp.replace(token.path)
         except OSError:
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
+            return False
+        return True
+
+    def _stamp_promoted(self, token: SlotToken) -> bool:
+        """Stamp complete holder metadata before the waiter→holder rename.
+
+        The holder deadline (``_is_stale``) anchors at promotion, not entry
+        creation — an entry can legitimately queue for longer than its own run
+        budget, and charging that wait against the deadline would reap a
+        *live* holder. Writing before rename makes a crash leave either a
+        waiter or a fully described holder, never an immortal half-promotion.
+        """
+        promoted = self._now()
+        token.promoted_at = _utc_stamp(promoted)
+        token.lease_expires_at = _utc_stamp(promoted + LEASE_DURATION_SECONDS)
+        return self._rewrite_token(token)
 
     def acquire(
         self,
@@ -617,6 +731,7 @@ class SlotStore:
                     )
                 state = self.refresh(token)
                 if state.state == HOLDING:
+                    self._start_renewal(token)
                     return token
                 if state.state == LOST:
                     raise ClaimLostError(
@@ -637,7 +752,91 @@ class SlotStore:
 
     def release(self, token: SlotToken) -> None:
         """Release a slot or withdraw a queued entry. Idempotent, never raises."""
-        self._unlink_entry(token.path)
+        renewal = self._renewals.pop(token.lease_id, None)
+        if renewal is not None:
+            stop, thread = renewal
+            stop.set()
+            if thread is not threading.current_thread():
+                thread.join(timeout=1)
+        with self._lease_gate(token) as acquired:
+            if not acquired:
+                return
+            current = self._load_token(token.path)
+            if current is None:
+                return
+            if current.lease_id and current.lease_id != token.lease_id:
+                return
+            if (
+                current.lease_state == LEASE_CANCELLING
+                and current.execution_id is not None
+                and not self._execution_is_terminal(current.execution_id)
+            ):
+                return
+            self._unlink_entry(token.path)
+
+    def renew(self, token: SlotToken) -> bool:
+        """Extend one active holder lease; refuse after recovery has claimed it."""
+        with self._lease_gate(token) as acquired:
+            if not acquired:
+                return False
+            current = self._load_token(token.path)
+            if (
+                current is None
+                or not current.is_holder
+                or current.lease_id != token.lease_id
+                or current.lease_state != LEASE_ACTIVE
+            ):
+                return False
+            current.lease_generation += 1
+            current.lease_expires_at = _utc_stamp(self._now() + LEASE_DURATION_SECONDS)
+            if not self._rewrite_token(current):
+                return False
+            token.lease_generation = current.lease_generation
+            token.lease_expires_at = current.lease_expires_at
+            return True
+
+    def _start_renewal(self, token: SlotToken) -> None:
+        if not self._auto_renew or not token.lease_id or token.lease_id in self._renewals:
+            return
+        stop = threading.Event()
+
+        def maintain() -> None:
+            while not stop.wait(LEASE_RENEW_INTERVAL_SECONDS):
+                if not self.renew(token):
+                    return
+
+        thread = threading.Thread(target=maintain, name=f"booley-lease-{token.lease_id[:8]}")
+        thread.daemon = True
+        self._renewals[token.lease_id] = (stop, thread)
+        thread.start()
+
+    @contextlib.contextmanager
+    def _lease_gate(self, token: SlotToken) -> Iterator[bool]:
+        if not token.lease_id:
+            yield True  # legacy entries never race renewal
+            return
+        gate = token.path.parent / f".{token.lease_id}.lease.lock"
+        acquired = False
+        for attempt in range(_ENTRY_IO_ATTEMPTS):
+            try:
+                gate.mkdir()
+            except FileExistsError:
+                if self._is_old_junk(gate):
+                    with contextlib.suppress(OSError):
+                        gate.rmdir()
+                elif attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
+            except OSError:
+                break
+            else:
+                acquired = True
+                break
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                with contextlib.suppress(OSError):
+                    gate.rmdir()
 
     def _unlink_entry(self, path: Path) -> bool:
         """Remove an entry, retrying transient Windows sharing violations."""
@@ -700,6 +899,16 @@ class SlotStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, ValueError):
             return None
+        owner_payload = payload.get("owner_identity")
+        owner_identity: ProcessIdentity | None = None
+        if isinstance(owner_payload, dict):
+            owner_pid = owner_payload.get("pid")
+            namespace = owner_payload.get("pid_namespace")
+            start_ticks = owner_payload.get("start_ticks")
+            if isinstance(owner_pid, int) and isinstance(namespace, str) and isinstance(
+                start_ticks, int
+            ):
+                owner_identity = ProcessIdentity(owner_pid, namespace, start_ticks)
         return SlotToken(
             job_class=path.parent.name,
             role=payload.get("role", ROLE_INTERACTIVE),
@@ -712,6 +921,14 @@ class SlotStore:
             timeout_s=payload.get("timeout_s"),
             path=path,
             promoted_at=payload.get("promoted_at"),
+            schema_version=payload.get("schema_version", 1),
+            lease_id=payload.get("lease_id", ""),
+            execution_id=payload.get("execution_id"),
+            lease_state=payload.get("lease_state", LEASE_ACTIVE),
+            lease_generation=payload.get("lease_generation", 0),
+            lease_expires_at=payload.get("lease_expires_at"),
+            owner_identity=owner_identity,
+            owner_kind=payload.get("owner_kind", "legacy"),
         )
 
     def cancel_waiter(self, pid: int) -> bool:
@@ -787,32 +1004,84 @@ class SlotStore:
         parsed = _parse_entry_name(path.name)
         if parsed is None:
             return self._is_old_junk(path)
-        state, _priority, _seq, pid, _n = parsed
+        state, _priority, _seq, _pid, _n = parsed
 
         tok = self._load_token(path)
         if tok is None:
             # Named like an entry but unreadable — corrupt; same junk rule.
             return self._is_old_junk(path)
 
-        if not self._is_pid_alive(pid):
-            return True
-        if tok.argv:
-            cmdline = self._read_cmdline(pid)
-            if cmdline is not None and cmdline != tok.argv:
-                return True  # PID recycled by an unrelated process
+        # Unknown future schemas fail closed: this process cannot safely infer
+        # ownership or recovery rules from fields it does not understand.
+        if not isinstance(tok.schema_version, int) or isinstance(tok.schema_version, bool):
+            return False
+        if tok.schema_version > SLOT_SCHEMA_VERSION:
+            return False
 
-        if state == _HOLDER and tok.timeout_s is not None:
-            # Anchor at promotion, never at entry creation: queue wait must
-            # not count against the run budget. A holder without promoted_at
-            # (crashed between rename and payload rewrite, or a pre-stamp
-            # writer) gets no deadline — the PID guards still cover it.
-            started = parse_stamp(tok.promoted_at)
-            if (
-                started is not None
-                and self._now() > started + tok.timeout_s + DEADLINE_SLACK_SECONDS
-            ):
-                return True  # orphaned holder past any possible budget
+        if tok.execution_id is not None:
+            return self._linked_execution_is_stale(tok, state)
+        return self._process_owner_is_stale(tok, state)
+
+    def _linked_execution_is_stale(self, tok: SlotToken, state: str) -> bool:
+        if self._execution_is_terminal(tok.execution_id or ""):
+            return self._begin_execution_recovery(tok, request_cancel=False)
+        owner_stale = self._owner_is_stale(tok)
+        deadline_reached = state == _HOLDER and (
+            self._lease_expired(tok) or self._work_deadline_expired(tok)
+        )
+        if owner_stale or deadline_reached:
+            self._begin_execution_recovery(tok, request_cancel=True)
         return False
+
+    def _process_owner_is_stale(self, tok: SlotToken, state: str) -> bool:
+        if self._owner_is_stale(tok):
+            return True
+        return state == _HOLDER and self._work_deadline_expired(tok)
+
+    def _owner_is_stale(self, tok: SlotToken) -> bool:
+        if tok.owner_identity is not None:
+            return self._observe_identity(tok.owner_identity).state in {DEAD, REUSED, ZOMBIE}
+        return not self._is_pid_alive(tok.pid) or self._argv_was_reused(tok)
+
+    def _argv_was_reused(self, tok: SlotToken) -> bool:
+        if not tok.argv:
+            return False
+        cmdline = self._read_cmdline(tok.pid)
+        return cmdline is not None and cmdline != tok.argv
+
+    def _lease_expired(self, tok: SlotToken) -> bool:
+        deadline = parse_stamp(tok.lease_expires_at)
+        if deadline is None:
+            anchor = parse_stamp(tok.promoted_at) or parse_stamp(tok.created_at)
+            deadline = anchor + LEASE_DURATION_SECONDS if anchor is not None else None
+        return deadline is not None and self._now() > deadline
+
+    def _work_deadline_expired(self, tok: SlotToken) -> bool:
+        if tok.timeout_s is None:
+            return False
+        started = parse_stamp(tok.promoted_at)
+        return bool(
+            started is not None
+            and self._now() > started + tok.timeout_s + DEADLINE_SLACK_SECONDS
+        )
+
+    def _begin_execution_recovery(self, tok: SlotToken, *, request_cancel: bool) -> bool:
+        if tok.execution_id is None:
+            return False
+        if tok.lease_state == LEASE_CANCELLING:
+            return True
+        claimed = False
+        with self._lease_gate(tok) as acquired:
+            current = self._load_token(tok.path) if acquired else None
+            if current is not None and current.lease_state == LEASE_CANCELLING:
+                claimed = True
+            elif current is not None and current.lease_state == LEASE_ACTIVE:
+                current.lease_state = LEASE_CANCELLING
+                current.lease_generation += 1
+                claimed = self._rewrite_token(current)
+                if claimed and request_cancel:
+                    self._cancel_execution(current.execution_id or tok.execution_id)
+        return claimed
 
     def _is_old_junk(self, path: Path) -> bool:
         try:

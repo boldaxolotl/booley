@@ -816,6 +816,17 @@ so the idle reaper owns its lifecycle either way. `booley session enter` is the
 headless equivalent of a container terminal, so every container-only command
 works through it.
 
+An explicit command after `--` runs as one supervised Runtime Attachment
+execution. `Ctrl-C`, `SIGTERM`, a lost Docker attachment, or an expired host
+heartbeat requests scoped cancellation inside the runtime. Booley escalates
+through a bounded grace period, reaps descendants even when they create a new
+session, and returns only after the complete owned process tree is terminal. A
+second interrupt requests immediate force cleanup. Normal exit codes and the
+usual `128 + signal` shell convention are preserved; if the command handles an
+interrupt and exits normally, its own exit code wins. If a pre-refresh Session
+Runtime does not support the execution protocol, the command fails with exit
+125 and tells you to run `booley session refresh`.
+
 ## Scope
 
 Each ticket declares the files it's expected to touch. That's a plan, not a
