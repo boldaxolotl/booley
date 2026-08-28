@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Coverage Campaign schema</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17211f;
+      --muted: #63706c;
+      --paper: #f7f8f5;
+      --panel: #ffffff;
+      --line: #d8ded9;
+      --accent: #087f5b;
+      --accent-soft: #e8f5ef;
+      --warn: #9a6700;
+      --warn-soft: #fff5d6;
+      --bad: #b42318;
+      --bad-soft: #feeceb;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 38px 0 70px; }
+    h1, h2, h3 { line-height: 1.15; margin: 0; }
+    h1 { font-size: clamp(28px, 4vw, 45px); letter-spacing: -0.04em; }
+    h2 { font-size: 22px; margin-bottom: 14px; }
+    h3 { font-size: 15px; margin-bottom: 8px; }
+    p { max-width: 82ch; }
+    code, pre { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .eyebrow { color: var(--accent); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    .lede { color: #34413e; font-size: 17px; }
+    .question { border-left: 4px solid var(--accent); padding-left: 16px; margin: 24px 0 32px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-top: 18px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+    .fact { grid-column: span 3; border: 1px solid var(--line); border-radius: 9px; padding: 12px; min-height: 92px; }
+    .fact.wide { grid-column: span 6; }
+    .fact.full { grid-column: 1 / -1; }
+    .fact dt { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .fact dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+    .good { color: var(--accent); font-weight: 800; }
+    .warn { color: var(--warn); font-weight: 800; }
+    .bad { color: var(--bad); font-weight: 800; }
+    .muted { color: var(--muted); }
+    .toolbar, .tabs, .steps { display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      border: 1px solid #aeb9b3;
+      border-radius: 8px;
+      background: white;
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+      padding: 8px 11px;
+    }
+    button:hover { border-color: var(--accent); }
+    button:disabled { cursor: default; opacity: .48; }
+    button.primary, button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: white; }
+    button.danger { color: var(--bad); border-color: #e8aaa5; }
+    .scenario-copy { min-height: 76px; }
+    .step { align-items: center; display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; width: 100%; border-top: 1px solid var(--line); padding: 10px 0; }
+    .step:first-child { border-top: 0; }
+    .step-number { align-items: center; background: #eef1ee; border-radius: 50%; display: inline-flex; height: 25px; justify-content: center; width: 25px; }
+    .step.done .step-number { background: var(--accent-soft); color: var(--accent); }
+    .step.current { font-weight: 700; }
+    .two-up { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .json { background: #15201d; color: #d8eee4; border-radius: 9px; max-height: 620px; overflow: auto; padding: 14px; white-space: pre; }
+    ul.compact { margin: 4px 0 0; padding-left: 20px; }
+    .finding { border-radius: 7px; margin-top: 7px; padding: 8px 10px; }
+    .finding.error { background: var(--bad-soft); color: var(--bad); }
+    .finding.info { background: var(--accent-soft); color: #075a42; }
+    .legend { background: var(--warn-soft); border-radius: 8px; color: #684600; padding: 10px 12px; }
+    @media (max-width: 850px) {
+      .fact, .fact.wide { grid-column: span 6; }
+      .two-up { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) { .fact, .fact.wide { grid-column: 1 / -1; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Throwaway logic prototype</div>
+  <h1>One truthful Coverage Campaign document</h1>
+  <div class="question">
+    <p><strong>Question:</strong> does this V1 per-Target <code>coverage.json</code> state model preserve exact evidence and point identity, make unknown and incompatible collection explicit, and give policy evaluators everything they need without leaking Verilator mechanics to callers?</p>
+    <p class="muted">The page is disposable. The candidate interface and invariants are the things to judge.</p>
+  </div>
+
+  <section class="panel">
+    <h2>Candidate seam</h2>
+    <p><code>decode_coverage_campaign(document, expected_target) -&gt; CoverageCampaign</code> is the one external operation. It accepts already-read JSON, returns one immutable typed campaign, and reports all structural and semantic findings together with stable codes and JSON Pointers. File I/O, native parsing, policy configuration, and report rendering stay outside this interface.</p>
+    <div class="legend"><strong>Deliberate distinction:</strong> a document can be schema-valid while recording a collector error, incomplete evidence, failed Criterion, or incompatible native format. Validation asks whether the document tells the truth consistently—not whether coverage passed.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Current document</h2>
+    <div id="facts" class="grid"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Free play</h2>
+    <p class="muted">Each action changes the same V1 document, then runs the candidate decoder again.</p>
+    <div id="actions" class="toolbar"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Guided awkward cases</h2>
+    <div id="tabs" class="tabs" role="tablist"></div>
+    <div class="scenario-copy">
+      <p id="scenario-intro"></p>
+      <p id="scenario-verdict" class="muted"></p>
+    </div>
+    <div id="steps" class="steps"></div>
+  </section>
+
+  <section class="two-up">
+    <div class="panel">
+      <h2>Decoder findings</h2>
+      <div id="findings"></div>
+    </div>
+    <div class="panel">
+      <h2>Exact <code>coverage.json</code></h2>
+      <pre id="json" class="json"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+// Candidate portable module. It is pure: no DOM access, storage, or file I/O.
+const CoverageCampaignModel = (() => {
+  const SCHEMA = "booley.coverage-campaign/v1";
+  const TARGET = "acme:demo:counter:1.0#sim_counter";
+  const SCORED_METRICS = new Set(["line", "branch", "expression", "toggle", "cover_property"]);
+  const metricSemantics = Object.freeze({
+    line: "One Verilator basic-block point; covered when its count is greater than zero.",
+    branch: "One branch outcome; each outcome is a separate point covered when count is greater than zero.",
+    expression: "One collector-reported expression outcome; each outcome is a separate point covered when count is greater than zero.",
+    toggle: "One direction for one signal bit; 0→1 and 1→0 are separate points.",
+    cover_property: "One user-authored cover-property point; covered when count is greater than zero.",
+    fsm: "Collector-reported native FSM point, retained but not scored in V1.",
+    covergroup: "Collector-reported native covergroup point, retained but not scored in V1."
+  });
+
+  function copy(value) { return JSON.parse(JSON.stringify(value)); }
+  function canonical(value) {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+  function base64url(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = "";
+    bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  }
+  function pointId(identity) { return `cp1:${base64url(canonical(identity))}`; }
+  function identity(metric, line, subject) {
+    return {
+      metric,
+      location: {source: "rtl/counter.sv", start: {line, column: 3}, end: {line, column: 28}},
+      hierarchy: "TOP.counter",
+      subject,
+      collector: {record_type: `v_${metric}`, native_key: `${line}:${JSON.stringify(subject)}`}
+    };
+  }
+  function point(metric, line, subject, hits, disposition = {kind: "eligible"}) {
+    const exact = identity(metric, line, subject);
+    return {id: pointId(exact), identity: exact, hits_by_run: hits, disposition};
+  }
+  function fingerprint(char) { return `sha256:${char.repeat(64)}`; }
+
+  function newDocument() {
+    const document = {
+      schema: SCHEMA,
+      campaign_id: "campaign:sim_counter:2026-08-28T14:30:00Z",
+      target: {identity: TARGET, selector: "sim_counter"},
+      collector: {
+        kind: "verilator",
+        version: "5.052",
+        native_format: {name: "verilator-coverage", compatibility: "compatible"},
+        capabilities: [
+          {metric: "line", collection: "supported", scoring: "scored_v1"},
+          {metric: "branch", collection: "supported", scoring: "scored_v1"},
+          {metric: "expression", collection: "supported", scoring: "scored_v1"},
+          {metric: "toggle", collection: "supported", scoring: "scored_v1"},
+          {metric: "cover_property", collection: "supported", scoring: "scored_v1"},
+          {metric: "fsm", collection: "reported", scoring: "reported_only"},
+          {metric: "covergroup", collection: "reported", scoring: "reported_only"}
+        ]
+      },
+      coverage_window: {mode: "whole_run", hook_evidence_artifacts: []},
+      fingerprints: {
+        target_definition: fingerprint("1"), rtl_sources: fingerprint("2"),
+        testbench_sources: fingerprint("3"), test_declarations: fingerprint("4"),
+        instrumented_build: fingerprint("5")
+      },
+      tests: {
+        declared: ["reset", "wrap"],
+        selected: ["reset", "wrap"],
+        runs: [
+          {id: "run:reset", test: "reset", simulation_verdict: "pass", collection: "included", raw_artifact: "artifact:raw-reset"},
+          {id: "run:wrap", test: "wrap", simulation_verdict: "fail", collection: "included", raw_artifact: "artifact:raw-wrap"}
+        ]
+      },
+      artifacts: [
+        {id: "artifact:raw-reset", kind: "raw_native", owner_run: "run:reset", path: "native/raw/reset.dat", sha256: fingerprint("a"), bytes: 4120, state: "fresh_queryable"},
+        {id: "artifact:raw-wrap", kind: "raw_native", owner_run: "run:wrap", path: "native/raw/wrap.dat", sha256: fingerprint("b"), bytes: 4198, state: "fresh_queryable"},
+        {id: "artifact:merged", kind: "merged_native", path: "native/merged/coverage.dat", sha256: fingerprint("c"), bytes: 6250, state: "fresh_queryable"}
+      ],
+      normalization: {status: "complete", unrecognized_records: []},
+      points: [
+        point("line", 10, {basic_block: 0}, {"run:reset": 1, "run:wrap": 1}),
+        point("branch", 12, {branch: 0, outcome: "true"}, {"run:reset": 1}),
+        point("branch", 12, {branch: 0, outcome: "false"}, {"run:wrap": 2}),
+        point("expression", 12, {expression: 0, outcome: "true"}, {"run:reset": 1}),
+        point("toggle", 9, {signal: "count", bit: 0, direction: "0_to_1"}, {"run:reset": 3, "run:wrap": 2}),
+        point("toggle", 9, {signal: "count", bit: 0, direction: "1_to_0"}, {}),
+        point("cover_property", 18, {property: "wraps_to_zero"}, {"run:wrap": 1}),
+        point("fsm", 9, {machine: "counter_state", transition: "RUN_to_WRAP"}, {"run:wrap": 1}, {kind: "unscored", reason: "reported_only_v1"})
+      ],
+      rollups: [],
+      collection: {
+        status: "complete",
+        merge: {status: "equivalent", artifact: "artifact:merged"},
+        diagnostics: []
+      },
+      evaluation: {status: "not_requested", criterion_fingerprint: null, suite: {status: "not_evaluated"}, thresholds: {}, metrics: [], diagnostics: []}
+    };
+    return refreshDerived(document);
+  }
+
+  function hits(pointRecord) {
+    return Object.values(pointRecord.hits_by_run || {}).reduce((sum, count) => sum + count, 0);
+  }
+  function calculateRollups(document) {
+    return [...SCORED_METRICS].map(metric => {
+      const metricPoints = document.points.filter(item => item.identity.metric === metric);
+      const waived = metricPoints.filter(item => item.disposition.kind === "waived");
+      const eligible = metricPoints.filter(item => item.disposition.kind === "eligible");
+      const covered = eligible.filter(item => hits(item) > 0);
+      return {
+        metric,
+        semantics: metricSemantics[metric],
+        total_points: metricPoints.length,
+        eligible_points: eligible.length,
+        covered_points: covered.length,
+        waived_points: waived.length,
+        percent: eligible.length ? Number((covered.length * 100 / eligible.length).toFixed(2)) : null
+      };
+    }).filter(row => row.total_points > 0);
+  }
+  function refreshDerived(input) {
+    const document = copy(input);
+    document.rollups = calculateRollups(document);
+    if (document.evaluation.status === "pass" || document.evaluation.status === "fail") {
+      document.evaluation.metrics = document.rollups
+        .filter(row => Object.hasOwn(document.evaluation.thresholds, row.metric))
+        .map(row => ({metric: row.metric, actual_percent: row.percent, minimum_percent: document.evaluation.thresholds[row.metric], verdict: row.percent >= document.evaluation.thresholds[row.metric] ? "pass" : "fail"}));
+      document.evaluation.status = document.evaluation.metrics.every(row => row.verdict === "pass") ? "pass" : "fail";
+    }
+    return document;
+  }
+
+  function finding(code, pointer, message) { return {severity: "error", code, pointer, message}; }
+  function validate(input, expectedTarget = TARGET) {
+    const document = copy(input);
+    const findings = [];
+    if (document.schema !== SCHEMA) findings.push(finding("COV_SCHEMA_VERSION_UNSUPPORTED", "/schema", `Expected ${SCHEMA}.`));
+    if (document.target?.identity !== expectedTarget) findings.push(finding("COV_TARGET_MISMATCH", "/target/identity", "coverage.json belongs to a different Target."));
+
+    const declared = document.tests?.declared || [];
+    const selected = document.tests?.selected || [];
+    if (new Set(declared).size !== declared.length) findings.push(finding("COV_DECLARED_TEST_DUPLICATE", "/tests/declared", "Declared tests must be unique."));
+    if (new Set(selected).size !== selected.length) findings.push(finding("COV_SELECTED_TEST_DUPLICATE", "/tests/selected", "Selected tests must be unique."));
+    selected.filter(test => !declared.includes(test)).forEach(test => findings.push(finding("COV_SELECTED_TEST_UNDECLARED", "/tests/selected", `${test} is not declared by the Target.`)));
+
+    const runs = document.tests?.runs || [];
+    const runIds = new Set(runs.map(run => run.id));
+    if (runIds.size !== runs.length) findings.push(finding("COV_RUN_ID_DUPLICATE", "/tests/runs", "Run ids must be unique."));
+    selected.forEach(test => {
+      if (runs.filter(run => run.test === test).length !== 1) findings.push(finding("COV_SELECTED_TEST_RUN_CARDINALITY", "/tests/runs", `V1 requires exactly one simulator run for selected test ${test}.`));
+    });
+    runs.filter(run => !selected.includes(run.test)).forEach(run => findings.push(finding("COV_RUN_FOR_UNSELECTED_TEST", "/tests/runs", `${run.id} belongs to an unselected test.`)));
+
+    const artifacts = new Map((document.artifacts || []).map(artifact => [artifact.id, artifact]));
+    runs.filter(run => run.collection === "included").forEach(run => {
+      const raw = artifacts.get(run.raw_artifact);
+      if (!raw || raw.kind !== "raw_native" || raw.owner_run !== run.id || raw.state !== "fresh_queryable") {
+        findings.push(finding("COV_INCLUDED_RUN_RAW_INVALID", "/tests/runs", `${run.id} is included without its own fresh, queryable raw artifact.`));
+      }
+    });
+    (document.artifacts || []).forEach((artifact, index) => {
+      if (artifact.path?.startsWith("/") || artifact.path?.split("/").includes("..")) findings.push(finding("COV_ARTIFACT_PATH_UNSAFE", `/artifacts/${index}/path`, "Artifact paths must be report-root-relative and cannot escape the report."));
+    });
+
+    const capability = new Map((document.collector?.capabilities || []).map(item => [item.metric, item]));
+    const pointIds = new Set();
+    (document.points || []).forEach((item, index) => {
+      const pointer = `/points/${index}`;
+      if (item.id !== pointId(item.identity)) findings.push(finding("COV_POINT_ID_MISMATCH", `${pointer}/id`, "Point id must be the lossless canonical encoding of its full identity."));
+      if (pointIds.has(item.id)) findings.push(finding("COV_POINT_ID_DUPLICATE", `${pointer}/id`, "The same most-specific point appears more than once."));
+      pointIds.add(item.id);
+      Object.entries(item.hits_by_run || {}).forEach(([runId, count]) => {
+        if (!runIds.has(runId)) findings.push(finding("COV_POINT_RUN_UNKNOWN", `${pointer}/hits_by_run/${runId}`, "Incidence references an unknown run."));
+        if (!Number.isInteger(count) || count <= 0) findings.push(finding("COV_POINT_HIT_NONPOSITIVE", `${pointer}/hits_by_run/${runId}`, "Sparse incidence records only positive integer hit counts; omission means zero."));
+      });
+      const metric = item.identity?.metric;
+      if (!capability.has(metric)) findings.push(finding("COV_POINT_CAPABILITY_MISSING", `${pointer}/identity/metric`, `No collector capability fact exists for ${metric}.`));
+      if (item.disposition?.kind === "eligible" && !SCORED_METRICS.has(metric)) findings.push(finding("COV_UNSCORABLE_POINT_ELIGIBLE", `${pointer}/disposition`, `${metric} is not scored in V1.`));
+      if (item.disposition?.kind === "waived" && (!item.disposition.waiver_id || !item.disposition.waiver_file || !item.disposition.waiver_fingerprint)) findings.push(finding("COV_WAIVER_REFERENCE_INCOMPLETE", `${pointer}/disposition`, "A waived point must identify the approved record, source-anchored waiver file, and exact file fingerprint."));
+    });
+
+    const expectedRollups = calculateRollups(document);
+    if (canonical(document.rollups) !== canonical(expectedRollups)) findings.push(finding("COV_ROLLUP_MISMATCH", "/rollups", "Rollups must be a deterministic derivation of the most-specific points and dispositions."));
+
+    if (document.collection?.status === "complete") {
+      if (runs.some(run => run.collection !== "included")) findings.push(finding("COV_COMPLETE_EXCLUDES_RUN", "/collection/status", "Complete collection must include every selected run regardless of simulation verdict."));
+      if (document.collection.merge?.status !== "equivalent") findings.push(finding("COV_COMPLETE_MERGE_UNVERIFIED", "/collection/merge/status", "Complete collection requires a queryable native merge equivalent to normalized rollups."));
+    }
+    if (document.collector?.native_format?.compatibility === "incompatible" && document.normalization?.status !== "incompatible") findings.push(finding("COV_INCOMPATIBLE_FORMAT_NORMALIZED", "/normalization/status", "An incompatible native format cannot claim successful normalization."));
+    if (["pass", "fail"].includes(document.evaluation?.status) && document.collection?.status !== "complete") findings.push(finding("COV_INCOMPLETE_EVALUATED", "/evaluation/status", "Scoring must fail closed unless collection is complete."));
+    if (["pass", "fail"].includes(document.evaluation?.status)) {
+      const expected = refreshDerived(document).evaluation;
+      if (canonical(document.evaluation.metrics) !== canonical(expected.metrics) || document.evaluation.status !== expected.status) findings.push(finding("COV_EVALUATION_MISMATCH", "/evaluation", "Evaluation must be deterministically derived from rollups and the recorded threshold inputs."));
+    }
+
+    const suiteRelation = selected.length === declared.length && selected.every(test => declared.includes(test)) ? "all_declared_selected" : "partial_selection";
+    return {
+      valid: findings.length === 0,
+      findings,
+      derived: {suite_relation: suiteRelation, metric_semantics: metricSemantics, point_count: (document.points || []).length}
+    };
+  }
+
+  function reduce(input, action) {
+    let document = copy(input);
+    switch (action.type) {
+      case "RESET": return newDocument();
+      case "SELECT_PARTIAL": {
+        document.tests.selected = ["reset"];
+        document.tests.runs = document.tests.runs.filter(run => run.test === "reset");
+        document.artifacts = document.artifacts.filter(artifact => artifact.owner_run !== "run:wrap");
+        document.points.forEach(item => { delete item.hits_by_run["run:wrap"]; });
+        document.collection.diagnostics = [{code: "COV_PARTIAL_SELECTION", detail: "One of two declared tests was selected; Criterion policy has not yet judged whether that is permitted."}];
+        break;
+      }
+      case "REQUEST_THRESHOLDS":
+        document.evaluation = {status: "fail", criterion_fingerprint: fingerprint("d"), suite: {status: "complete"}, thresholds: {toggle: 100, branch: 100}, metrics: [], diagnostics: []};
+        break;
+      case "WAIVE_UNHIT_TOGGLE": {
+        const target = document.points.find(item => item.identity.metric === "toggle" && hits(item) === 0);
+        if (target) target.disposition = {kind: "waived", waiver_id: "counter.sv:unused-falling-edge", waiver_file: "waivers/rtl/counter.sv.toml", waiver_fingerprint: fingerprint("e")};
+        break;
+      }
+      case "FAIL_WITH_FRESH_DATA":
+        document.tests.runs[0].simulation_verdict = "fail";
+        break;
+      case "LOSE_RAW": {
+        const run = document.tests.runs[0];
+        run.collection = "collector_error";
+        document.artifacts = document.artifacts.filter(artifact => artifact.id !== run.raw_artifact);
+        delete run.raw_artifact;
+        document.collection.status = "incomplete";
+        document.collection.merge = {status: "not_attempted"};
+        document.collection.diagnostics = [{code: "COV_RAW_FILE_MISSING", run: run.id}];
+        document.evaluation = {status: "blocked", criterion_fingerprint: document.evaluation.criterion_fingerprint, suite: {status: "unknown"}, thresholds: document.evaluation.thresholds, metrics: [], diagnostics: [{code: "COV_COLLECTION_INCOMPLETE"}]};
+        break;
+      }
+      case "MERGE_MISMATCH":
+        document.collection.status = "incomplete";
+        document.collection.merge.status = "mismatch";
+        document.collection.diagnostics = [{code: "COV_NATIVE_MERGE_MISMATCH"}];
+        document.evaluation = {status: "blocked", criterion_fingerprint: document.evaluation.criterion_fingerprint, suite: {status: "unknown"}, thresholds: document.evaluation.thresholds, metrics: [], diagnostics: [{code: "COV_COLLECTION_INCOMPLETE"}]};
+        break;
+      case "ADD_UNKNOWN_RECORD":
+        document.collector.capabilities.push({metric: "native:mystery-27", collection: "unknown", scoring: "reported_only"});
+        document.normalization.status = "complete_with_unknown_records";
+        document.normalization.unrecognized_records.push({raw_artifact: "artifact:raw-reset", record_ordinal: 27, native_type: "mystery-27", state: "unknown_retained"});
+        break;
+      case "INCOMPATIBLE_FORMAT":
+        document.collector.native_format.compatibility = "incompatible";
+        document.normalization = {status: "incompatible", unrecognized_records: []};
+        document.points = [];
+        document.collection.status = "incompatible";
+        document.collection.merge = {status: "not_attempted"};
+        document.collection.diagnostics = [{code: "COV_NATIVE_FORMAT_INCOMPATIBLE"}];
+        document.evaluation = {status: "blocked", criterion_fingerprint: document.evaluation.criterion_fingerprint, suite: {status: "unknown"}, thresholds: document.evaluation.thresholds, metrics: [], diagnostics: [{code: "COV_NORMALIZATION_INCOMPATIBLE"}]};
+        break;
+      case "CORRUPT_POINT_ID":
+        document.points[0].id = "cp1:not-the-identity";
+        break;
+      case "CHANGE_TARGET":
+        document.target.identity = "acme:demo:other:1.0#sim_other";
+        break;
+      case "UNSAFE_ARTIFACT":
+        document.artifacts[0].path = "../../outside-report.dat";
+        break;
+    }
+    return refreshDerived(document);
+  }
+
+  return {TARGET, metricSemantics, newDocument, validate, reduce};
+})();
+
+// Throwaway page shell.
+const actionDefinitions = [
+  ["Reset canonical example", {type: "RESET"}],
+  ["Select only one declared test", {type: "SELECT_PARTIAL"}],
+  ["Attach 100% toggle + branch Criterion", {type: "REQUEST_THRESHOLDS"}],
+  ["Apply approved waiver to uncovered toggle", {type: "WAIVE_UNHIT_TOGGLE"}],
+  ["Make a simulation FAIL with fresh coverage", {type: "FAIL_WITH_FRESH_DATA"}],
+  ["Lose one raw database", {type: "LOSE_RAW"}],
+  ["Expose native merge mismatch", {type: "MERGE_MISMATCH"}],
+  ["Retain an unknown native record", {type: "ADD_UNKNOWN_RECORD"}],
+  ["Mark native format incompatible", {type: "INCOMPATIBLE_FORMAT"}],
+  ["Corrupt a point id", {type: "CORRUPT_POINT_ID"}, "danger"],
+  ["Substitute another Target", {type: "CHANGE_TARGET"}, "danger"],
+  ["Escape the report artifact root", {type: "UNSAFE_ARTIFACT"}, "danger"]
+];
+
+const scenarios = [
+  {
+    name: "Exact identity + incidence",
+    intro: "The canonical example includes every V1 scored metric plus one reported-only FSM point. A failed simulation still contributes its fresh coverage. Inspect point ids and sparse per-run hit maps in the JSON.",
+    verdict: "Expected: schema-valid, complete collection, seven scored points, one unscored FSM point, and one uncovered toggle direction.",
+    steps: [["Reset the canonical example", {type: "RESET"}], ["Make the first simulation fail too", {type: "FAIL_WITH_FRESH_DATA"}]]
+  },
+  {
+    name: "Partial suite is a fact",
+    intro: "Collection runs only reset even though reset and wrap are declared. The document records a partial set relation without deciding whether policy permits it.",
+    verdict: "Expected: schema-valid and collection-complete for the selected run; later Coverage Criterion policy decides whether partial_selection can pass.",
+    steps: [["Reset", {type: "RESET"}], ["Select only reset", {type: "SELECT_PARTIAL"}]]
+  },
+  {
+    name: "Waiver changes denominator",
+    intro: "A 100% toggle threshold initially fails because one directional bit point is uncovered. An approved, fingerprinted waiver changes that point's disposition and the derived denominator.",
+    verdict: "Expected: threshold evaluation changes from FAIL to PASS; observations never change and the waiver is traceable to one source-anchored file.",
+    steps: [["Reset", {type: "RESET"}], ["Attach Criterion", {type: "REQUEST_THRESHOLDS"}], ["Apply approved waiver", {type: "WAIVE_UNHIT_TOGGLE"}]]
+  },
+  {
+    name: "Missing evidence stays truthful",
+    intro: "A raw database is missing. The campaign records an incomplete collection and blocked evaluation instead of pretending the JSON itself is malformed.",
+    verdict: "Expected: document validation PASS, collection INCOMPLETE, evaluation BLOCKED, and a stable collector diagnostic.",
+    steps: [["Reset", {type: "RESET"}], ["Lose reset's raw database", {type: "LOSE_RAW"}]]
+  },
+  {
+    name: "Unknown vs incompatible",
+    intro: "First, preserve an unknown record while known metric normalization remains usable. Then mark the whole native format incompatible and refuse all normalization and scoring.",
+    verdict: "Expected: both are explicit schema-valid states; unknown records are retained by artifact+ordinal, whereas incompatible format empties normalized points and blocks evaluation.",
+    steps: [["Reset", {type: "RESET"}], ["Add unknown native record", {type: "ADD_UNKNOWN_RECORD"}], ["Discover incompatible native format", {type: "INCOMPATIBLE_FORMAT"}]]
+  },
+  {
+    name: "Reject identity drift",
+    intro: "Alter a point id without altering its most-specific identity, then substitute a different Target. These are document integrity failures, not coverage failures.",
+    verdict: "Expected: the decoder reports COV_POINT_ID_MISMATCH and COV_TARGET_MISMATCH with exact JSON Pointers.",
+    steps: [["Reset", {type: "RESET"}], ["Corrupt point id", {type: "CORRUPT_POINT_ID"}], ["Substitute Target", {type: "CHANGE_TARGET"}]]
+  }
+];
+
+let documentState = CoverageCampaignModel.newDocument();
+let activeScenario = 0;
+let scenarioStep = 0;
+
+function esc(value) { return String(value).replace(/[&<>\"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[char])); }
+function tone(value) {
+  if (/valid|complete|pass|equivalent|compatible|included|all_declared/i.test(String(value))) return "good";
+  if (/invalid|error|fail|mismatch|incompatible|blocked|unsafe/i.test(String(value))) return "bad";
+  return "warn";
+}
+function renderList(items, empty = "none") {
+  return items.length ? `<ul class="compact">${items.map(item => `<li>${esc(item)}</li>`).join("")}</ul>` : `<span class="muted">${empty}</span>`;
+}
+function currentResult() { return CoverageCampaignModel.validate(documentState); }
+function render() {
+  const result = currentResult();
+  const selected = documentState.tests.selected;
+  const failed = documentState.tests.runs.filter(run => run.simulation_verdict === "fail").map(run => run.test);
+  const waived = documentState.points.filter(point => point.disposition.kind === "waived").length;
+  const unknown = documentState.normalization.unrecognized_records.length;
+  const metrics = documentState.rollups.map(row => `${row.metric}: ${row.covered_points}/${row.eligible_points} (${row.percent ?? "n/a"}%), ${row.waived_points} waived`);
+  document.getElementById("facts").innerHTML = `
+    <dl class="fact"><dt>Document validity</dt><dd class="${result.valid ? "good" : "bad"}">${result.valid ? "VALID" : "INVALID"}</dd></dl>
+    <dl class="fact"><dt>Collection truth</dt><dd class="${tone(documentState.collection.status)}">${esc(documentState.collection.status)}</dd></dl>
+    <dl class="fact"><dt>Evaluation truth</dt><dd class="${tone(documentState.evaluation.status)}">${esc(documentState.evaluation.status)}</dd></dl>
+    <dl class="fact"><dt>Native compatibility</dt><dd class="${tone(documentState.collector.native_format.compatibility)}">${esc(documentState.collector.native_format.compatibility)}</dd></dl>
+    <dl class="fact wide"><dt>Target (document is indivisible across this identity)</dt><dd>${esc(documentState.target.identity)}</dd></dl>
+    <dl class="fact wide"><dt>Declared → selected tests</dt><dd>${esc(documentState.tests.declared.join(", "))} → ${esc(selected.join(", "))}<br><span class="${tone(result.derived.suite_relation)}">${esc(result.derived.suite_relation)}</span></dd></dl>
+    <dl class="fact wide"><dt>Independent simulation FAILs still represented</dt><dd>${renderList(failed, "none")}</dd></dl>
+    <dl class="fact"><dt>Most-specific points</dt><dd>${result.derived.point_count}</dd></dl>
+    <dl class="fact"><dt>Approved dispositions</dt><dd>${waived} waived</dd></dl>
+    <dl class="fact"><dt>Unknown records</dt><dd>${unknown}</dd></dl>
+    <dl class="fact"><dt>Merge verification</dt><dd class="${tone(documentState.collection.merge.status)}">${esc(documentState.collection.merge.status)}</dd></dl>
+    <dl class="fact full"><dt>Derived metric rollups</dt><dd>${renderList(metrics)}</dd></dl>`;
+  document.getElementById("findings").innerHTML = result.valid
+    ? `<div class="finding info"><strong>No decoder errors.</strong> The document is internally consistent even if its collection or evaluation truth is not successful.</div>`
+    : result.findings.map(item => `<div class="finding error"><strong>${esc(item.code)}</strong> at <code>${esc(item.pointer)}</code><br>${esc(item.message)}</div>`).join("");
+  document.getElementById("json").textContent = JSON.stringify(documentState, null, 2);
+}
+function dispatch(action) { documentState = CoverageCampaignModel.reduce(documentState, action); render(); }
+
+function renderActions() {
+  const root = document.getElementById("actions");
+  actionDefinitions.forEach(([label, action, style]) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    if (style) button.className = style;
+    button.addEventListener("click", () => dispatch(action));
+    root.appendChild(button);
+  });
+}
+function startScenario(index) {
+  activeScenario = index;
+  scenarioStep = 0;
+  documentState = CoverageCampaignModel.newDocument();
+  renderScenarios();
+  render();
+}
+function takeStep(index) {
+  if (index !== scenarioStep) return;
+  dispatch(scenarios[activeScenario].steps[index][1]);
+  scenarioStep += 1;
+  renderScenarios();
+}
+function renderScenarios() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  scenarios.forEach((scenario, index) => {
+    const button = document.createElement("button");
+    button.textContent = scenario.name;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(index === activeScenario));
+    button.addEventListener("click", () => startScenario(index));
+    tabs.appendChild(button);
+  });
+  const scenario = scenarios[activeScenario];
+  document.getElementById("scenario-intro").textContent = scenario.intro;
+  document.getElementById("scenario-verdict").textContent = scenario.verdict;
+  const steps = document.getElementById("steps");
+  steps.innerHTML = "";
+  scenario.steps.forEach(([label], index) => {
+    const row = document.createElement("div");
+    row.className = `step ${index < scenarioStep ? "done" : index === scenarioStep ? "current" : ""}`;
+    row.innerHTML = `<span class="step-number">${index + 1}</span><span>${esc(label)}</span>`;
+    const button = document.createElement("button");
+    button.textContent = index < scenarioStep ? "Done" : "Run step";
+    button.disabled = index !== scenarioStep;
+    button.addEventListener("click", () => takeStep(index));
+    row.appendChild(button);
+    steps.appendChild(row);
+  });
+}
+
+renderActions();
+startScenario(0);
+</script>
+</body>
+</html>
