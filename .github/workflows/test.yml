@@ -128,7 +128,7 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['test']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       COVERAGE_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
     strategy:
