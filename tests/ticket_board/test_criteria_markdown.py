@@ -355,6 +355,21 @@ class TestBodyManipulation:
 
 
 class TestBackwardsCompat:
+    def test_legacy_cycle_count_mapping_still_parses(self):
+        body = (
+            "## Criteria\n\n"
+            "- **cycle_count**: "
+            '`{"cycle_count_max":10,"target":"sim_demo","test":"demo"}`'
+        )
+
+        assert parse_criteria_section(body) == {
+            "mandatory": {
+                "cycle_count": [
+                    {"cycle_count_max": 10, "target": "sim_demo", "test": "demo"}
+                ]
+            }
+        }
+
     def test_old_yaml_format_still_parses(self):
         """Ticket with criteria in YAML frontmatter should still work."""
         text = (
