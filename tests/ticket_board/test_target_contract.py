@@ -494,8 +494,14 @@ def test_schema_three_binding_codec_round_trips_without_schema_four_fields() -> 
     assert TargetContract.from_mapping(encoded).as_dict() == encoded
 
 
-def test_schema_three_surface_digest_codec_remains_stable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_schema_three_surface_digest_codec_remains_stable(
+    tmp_path: Path, line_ending: str
+) -> None:
     project = _project(tmp_path)
+    (project / "constraints" / "toy.sdc").write_bytes(
+        f"create_clock -period 10 [get_ports clk]{line_ending}".encode()
+    )
 
     assert surface_digest(project, schema=3) == (
         "73ff7cd9e288c91c39d9987bf7e578ee7cbada8b9135f4349244e9af467e5396"
