@@ -118,7 +118,7 @@ interfaces/modports, some casts), but needs a Yosys-0.67-or-newer image; on an
 older image `synth` fails fast with a message telling you to switch
 frontend or upgrade the image. Both frontends feed the same tech-mapping tail
 (dfflibmap → ABC → `stat`) and the same optional OpenROAD physical path, so the
-choice affects only elaboration, not the PPA methodology.
+choice affects only RTL frontend processing, not the PPA methodology.
 
 **Which to pick.** Stay on `sv2v` unless it fails. Reach for `slang` when the
 design puts **parameterized interfaces on module port lists**, or reads their
@@ -137,8 +137,8 @@ of `assert property` reaches Yosys assertion-free. `slang` instead lowers SVA
 into `$check` cells; the flow strips those cells before tech mapping, so they
 neither reach ABC nor corrupt the netlist handed to OpenROAD. If your design
 guards its assertions behind a define (`NO_ASSERTIONS` and friends), setting it
-on the ASIC Target is still the cleanest option because it keeps elaboration
-cheap.
+on the ASIC Target is still the cleanest option because it keeps RTL frontend
+processing cheap.
 
 ## Versions in the sandbox image
 

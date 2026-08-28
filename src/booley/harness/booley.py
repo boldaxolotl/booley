@@ -94,6 +94,14 @@ class _RetiredEdaToolOptionAction(argparse.Action):
         parser.error(f"{option_string} is retired; use {replacement}")
 
 
+def _agent_auth_arg(value: str) -> str:
+    """Normalize the CLI's hyphenated auth spelling to the TOML vocabulary."""
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized not in {"auto", "subscription", "api_key"}:
+        raise argparse.ArgumentTypeError("choose auto, subscription, or api-key")
+    return normalized
+
+
 def _signal_handler(signum, frame):
     """Set shutdown event on SIGINT/SIGTERM and wake any interruptible sleep."""
     if _shutdown_event:
@@ -614,6 +622,17 @@ def _add_utility_subparsers(sub) -> None:  # noqa: PLR0915 — one declarative C
         "(no project scaffolding); run once per user/Ticket-Mode worktree",
     )
     init_p.add_argument(
+        "--provider",
+        choices=("claude", "codex"),
+        help="Agent provider to record for this project (required for unattended first init)",
+    )
+    init_p.add_argument(
+        "--auth",
+        type=_agent_auth_arg,
+        metavar="{auto,subscription,api-key}",
+        help="Agent authentication policy to record (required for unattended first init)",
+    )
+    init_p.add_argument(
         "--scaffold",
         metavar="IP_NAME",
         help="Scaffold a new IP from scratch in a fresh repo: starter RTL, testbench, "
@@ -1103,15 +1122,14 @@ def _cmd_board_blocked_briefing(args: argparse.Namespace, project_root: Path) ->
     return 0
 
 
-def _report_session_health(project_root: Path, *, prior_checked_at: str | None = None) -> None:
+def _report_session_health(project_root: Path, *, startup_due_reason: str | None = None) -> None:
     """Surface the result, or the scheduled check, after Session Runtime start."""
     from booley.harness import auto_doctor
 
-    report = auto_doctor.load_report(project_root) or {}
-    if prior_checked_at is not None and report.get("checked_at") == prior_checked_at:
+    if startup_due_reason is not None:
         print(
-            "Pre-rebuild Doctor findings were retired; a fresh automatic Doctor "
-            "check is running in the rebuilt Session Runtime.",
+            f"Automatic Doctor is running in the Session Runtime ({startup_due_reason}); "
+            "persisted findings from before startup will not be reported as current.",
             file=sys.stderr,
         )
         return
@@ -1151,8 +1169,7 @@ def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command 
         # Check before creating: afterwards our own container is running too.
         vscode = sr.conflicting_vscode_session(project_root)
         rebuild_session = getattr(args, "rebuild", False) if rebuild is None else rebuild
-        prior_report = auto_doctor.load_report(project_root) if rebuild_session else None
-        prior_checked_at = prior_report.get("checked_at") if prior_report else None
+        startup_due_reason = auto_doctor.due_reason(project_root)
         name = sr.up(
             project_root,
             rebuild=rebuild_session,
@@ -1168,7 +1185,7 @@ def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command 
                 f"container, or close it.",
                 file=sys.stderr,
             )
-        _report_session_health(project_root, prior_checked_at=prior_checked_at)
+        _report_session_health(project_root, startup_due_reason=startup_due_reason)
         print(f"Session Runtime ready: {name}")
         print("  enter it with: booley session enter")
         return 0

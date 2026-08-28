@@ -124,6 +124,30 @@ def test_explicit_ticket_source_is_reused_with_empty_interactive_logs(
     assert review_receipt_drift({"contract": contract}, tmp_path) == ["ticket"]
 
 
+def test_interactive_receipt_needs_no_ticket_mode_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    logs = tmp_path / "interactive-logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+
+    contract = build_review_contract_detail(
+        ReviewInvocation(
+            work_dir=tmp_path,
+            category="rtl",
+            focus="bugs",
+            scope=("rtl/uart.sv",),
+            mode="done",
+            targets=(),
+            target_kind="none",
+        )
+    )
+
+    assert contract["ticket_source"]["ticket"] == ""
+    assert review_receipt_drift({"contract": contract}, tmp_path) == []
+
+
 def test_missing_binding_ticket_fails_loud(tmp_path: Path, monkeypatch) -> None:
     ticket = tmp_path / "interactive-ticket.md"
     ticket.write_text("Implement UART registers.\n", encoding="utf-8")

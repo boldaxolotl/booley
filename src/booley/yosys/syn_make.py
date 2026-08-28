@@ -202,7 +202,7 @@ def _write_yosys_script(spec: SynthSpec, build_dir: Path) -> None:
         yosys_sources = [Path(syn_core.SV2V_OUTPUT_NAME)]
         inc_dirs: list[Path] = []
         # sv2v has already consumed these defines, so read_verilog ignores
-        # them; the post-elaboration parameter guard still needs the original
+        # them; the post-frontend parameter guard still needs the original
         # list to detect an enabled macro that left a same-named top parameter
         # at zero.
         defines = list(spec.defines)
@@ -337,8 +337,8 @@ def _write_boundary_sdc(config: StaTimingConfig, build_dir: Path) -> None:
 def _sv2v_recipe(spec: SynthSpec, build_dir: Path) -> str:
     """The sv2v stage's shell command (build-dir-relative paths, quoted).
 
-    The argv itself comes from :func:`syn_core.sv2v_argv` so the make recipe and
-    ``elaborate``'s ASIC path cannot drift.
+    The argv itself comes from :func:`syn_core.sv2v_argv` so every synthesis
+    entry point uses the same transpilation contract.
     """
     argv = syn_core.sv2v_argv(
         [Path(_rel(f, build_dir)) for f in spec.sources],
@@ -551,8 +551,8 @@ def _effective_parameter_failure(spec: SynthSpec, text: str | None) -> str | Non
     rendered = ", ".join(f"{name}=0" for name in mismatches)
     return (
         "ERROR: effective top-level parameter mismatch: synthesis requested "
-        f"{', '.join(mismatches)} enabled as a preprocessor define, but elaborated "
-        f"top {spec.design_name!r} retained {rendered}. Declare the setting as "
+        f"{', '.join(mismatches)} enabled as a preprocessor define, but the RTL "
+        f"frontend retained {rendered} on top {spec.design_name!r}. Declare the setting as "
         "`paramtype: vlogparam` so Booley applies a top-level parameter override, "
         "or change the RTL so the macro drives the parameter default."
     )

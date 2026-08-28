@@ -77,6 +77,124 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
         runtime_spec.validate(project, spec, path)
 
 
+def test_no_eda_issuance_and_validation_never_open_authority_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+
+    authority.state_dir().mkdir(parents=True, mode=0o700)
+    authority.state_dir().parent.chmod(0o700)
+    authority.state_dir().parent.parent.chmod(0o700)
+    authority.state_path().write_text("not valid authority JSON", encoding="utf-8")
+    authority.state_path().chmod(0o400)
+    monkeypatch.setattr(
+        authority,
+        "resolve_for_issuance",
+        lambda *_args, **_kwargs: pytest.fail("no-EDA runtime opened the authority store"),
+    )
+
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    stamp = runtime_spec.issue(project, spec, path)
+
+    assert runtime_spec.validate(project, spec, path) == stamp
+    assert authority.state_path().read_text(encoding="utf-8") == "not valid authority JSON"
+    assert not (authority.state_dir() / "authority.lock").exists()
+
+
+def test_host_eda_issuance_still_requires_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project_dir = project / ".booley_project"
+    project_dir.mkdir(parents=True)
+    (project_dir / "booley.toml").write_text(
+        '[eda.vivado]\nprovisioning = "host"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "load_eda_config",
+        lambda _project: {"vivado": SimpleNamespace(provisioning="host")},
+    )
+    monkeypatch.setattr(runtime_spec, "_host_vivado_requested", lambda *_args: True)
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+
+    @contextmanager
+    def required(_project: Path, host_provisioning: bool):
+        assert host_provisioning is True
+        raise authority.AuthorityError("host EDA authority was checked")
+        yield None, None
+
+    monkeypatch.setattr(authority, "resolve_for_issuance", required)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="host EDA authority was checked"):
+        runtime_spec.seal(project, spec)
+
+
+def test_requested_license_requires_issued_profile_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = SimpleNamespace(name="site")
+    monkeypatch.setattr(runtime_spec, "_optional_license", lambda _project: profile)
+
+    assert runtime_spec.requested_license(tmp_path, expected_name="site") is profile
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the issued runtime"):
+        runtime_spec.requested_license(tmp_path, expected_name="other")
+
+
+def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trusted_validator: Path,
+) -> None:
+    del trusted_validator
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".booley_project").mkdir()
+    monkeypatch.setattr(runtime_spec, "_vivado_requested", lambda *_args: True)
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+
+    @contextmanager
+    def required(*_args):
+        raise authority.AuthorityError("active Vivado authority was checked")
+        yield None, None
+
+    monkeypatch.setattr(authority, "resolve_for_issuance", required)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="active Vivado authority was checked"):
+        runtime_spec.seal(project, spec)
+
+
 @pytest.mark.parametrize("operation", ["issue", "validate"])
 def test_issuance_paths_reject_any_missing_generated_bind_source(
     issued, tmp_path: Path, operation: str
@@ -394,7 +512,7 @@ provisioning = "host"
     assert config is not None
     assert installation is None
     assert runtime_spec.requested_license(project) is None
-    assert requested == [False]
+    assert requested == []
 
 
 def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(

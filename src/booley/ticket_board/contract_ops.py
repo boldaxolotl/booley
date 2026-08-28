@@ -707,7 +707,7 @@ def revise_contract(
     if raw is None:
         raise ContractOperationError("ticket has no sealed Target contract to revise")
     contract = TargetContract.from_mapping(raw)
-    archive = f"booley-contract-archive/{slug}/{contract.surface_digest[:12]}"
+    archive = _contract_archive_ref(slug, contract)
     outer = resolve_project_dir(root) / "worktrees" / slug
     paired = paired_project_repository(outer) if outer.is_dir() else None
     _archive_ref(root, archive, contract.outer_sha)
@@ -721,6 +721,14 @@ def revise_contract(
     ticket = _reset_contract_ticket(ticket, fields, contract, status)
     safe_rmtree(Path(logs_dir) / slug)
     return open_contract(root, ticket, slug)
+
+
+def _contract_archive_ref(slug: str, contract: TargetContract) -> str:
+    """Name an archive from the complete sealed cross-repository identity."""
+    identities = [contract.surface_digest, contract.outer_sha]
+    if contract.project_sha:
+        identities.append(contract.project_sha)
+    return f"booley-contract-archive/{slug}/{'-'.join(value[:12] for value in identities)}"
 
 
 def _archive_ref(repository: Path, archive: str, source: str) -> None:

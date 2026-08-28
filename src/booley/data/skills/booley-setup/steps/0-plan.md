@@ -285,7 +285,11 @@ script lines) as you go.
   whether it runs at all. For an SV TB, work the source **now** — every wrinkle
   below reads as INCONCLUSIVE, or worse as a false PASS, at the first real run.
   Booley scans **stdout**, so a TB that writes its verdict only to a log file
-  via `$fwrite` (Ibex does) needs a small stdout tee before it can score. And
+  via `$fwrite` (Ibex does) needs a project-owned adapter, wrapper, or monitor
+  that relays the existing verdict before it can score. Treat vendored and
+  upstream sources as preserved inputs: plan the verdict bridge outside them
+  whenever that is sufficient. Editing an upstream testbench is a separate
+  ownership decision that requires the user's explicit approval. And
   don't assume a tidy `PASSED` exists — some TBs signal success with wording as
   oblique as a final `10. Comparision` line (biRISC-V) and reserve clear strings
   for failures only. Enumerate **four** categories from the TB source, not the
@@ -313,7 +317,7 @@ script lines) as you go.
   matter, and they have **different** answers — do not apply the interface rule
   to a struct:
   - **SystemVerilog interface ports** (`my_axis_if.snk s_axis`) — the module
-    cannot be elaborated standalone, so both flows are dead until you add a thin
+    cannot serve as a standalone lint/synthesis top, so both flows are dead until you add a thin
     **flat-port wrapper** (one small file, not a blocker; `booley doctor` flags
     it at setup time). `sim` is unaffected: a cocotb testbench brings its
     own wrapper. Symptom and wrapper recipe: Booley's `docs/TROUBLESHOOTING.md` ("interface
@@ -323,8 +327,8 @@ script lines) as you go.
     A packed struct is just a bit vector with names on it; the frontends flatten
     it. Plan the Target straight onto the real toplevel. What this shape *does*
     deserve is proof, because it is a known frontend-gap poker (the ravenoc/taxi
-    shape): add an **execution-time check** that the frontend actually elaborates
-    the struct-ported toplevel — the `synth` Target's own frontend is
+    shape): add an **execution-time check** that the frontend reads and lowers
+    the struct-ported toplevel — the `synth` Target's own RTL frontend is
     the check (sv2v by default; the fallback is Target
     `flow_options.frontend: slang`, or `--frontend slang` for a
     one-off). Record the row at `medium` confidence with the check attached, not
@@ -662,16 +666,12 @@ separate columns (see "How a row resolves"). The standard checklist:
     `none` stays the fallback only where the EDA tools differ or the repo has no
     runnable native flow. It is post-gate and never blocks completion, so the
     downside of a wrong `yes` is one skipped optional step.
-19. **Agent backend (provider)** — which model provider the developer and every
-    specialist run on: `claude` (Anthropic) or `codex` (OpenAI GPT-5.x).
-    **Always a grill question, never inferred** — the codebase cannot say which
-    subscription the user intends to bill, and the two authenticate through
-    different credentials (Anthropic OAuth / API key vs `~/.codex/auth.json`);
-    picking silently can bill the wrong account. Writes `[agent] provider`
-    (+ `auth`, e.g. `subscription` to bill an OAuth login rather than an API
-    key) in `booley.toml`. Booley's own default when `[agent]` is omitted is
-    `claude`, but do not lean on it: ask, and only fall back to `claude` when
-    the user explicitly declines to choose.
+19. **Agent backend (provider)** — preserve the provider and auth policy that
+    `booley init` already recorded in `[agent]`. Record the row as `pre-set`
+    with that table as evidence; the setup plan does not re-litigate it. A
+    legacy project may omit one of these fields. In that case ask only for the
+    missing choice and record it explicitly: the codebase cannot reveal which
+    account the user intends to bill, and neither provider may be inferred.
 20. **Stealth mode (`[stealth]`)** — coupled to row 16 when hidden cores are
     authored. **Disabled
     by default during setup; enabling it requires an explicit yes.** When on, a
@@ -761,17 +761,17 @@ Refine the decision sheet with the user, ticket-creation style:
   leave unanswered decisions open rather than silently inferring them. Settled
   roots expose their downstream questions for the next round.
 - **The mandatory rows are non-negotiable.** Rows 4 (TB flavor), 16 (git
-  footprint), 17 (specialists), 18 (parity), 19 (agent backend), 20
+  footprint), 17 (specialists), 18 (parity), 20
   (commit-message scrub), and 21 (feedback mode) are marked *always a grill
   question* — none may be
-  silently defaulted, even for a clean three-question repo. Agent backend in
-  particular has no codebase signal at all, so it is easy to skip by reflex; ask
-  it every time. Two exceptions, both from "How a row resolves":
+  silently defaulted, even for a clean three-question repo. Row 19 is normally
+  `pre-set` by init; if a legacy config leaves a field absent, add that missing
+  choice to the frontier. Two exceptions, both from "How a row resolves":
   **evidence-forced** (rows 4 and 18 can be settled by the repo — then you
   *state* them with their evidence: "all 8 test modules are cocotb, so the
   flavor is cocotb" is a confirmation line, not a question), and **`pre-set`**
   (the value is already hand-set on disk — confirm it in one line, don't
-  re-litigate it). Rows 16, 17, 19, 20, and 21 are never evidence-forced.
+  re-litigate it). Rows 16, 17, 20, and 21 are never evidence-forced.
 - **Codebase first**: never ask what the repo can answer. Ask to *confirm*
   low-confidence inferences, to *choose* where evidence genuinely
   under-determines (TB flavor, the Target set / config variants, style lint,
