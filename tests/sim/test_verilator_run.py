@@ -261,10 +261,7 @@ def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeyp
     source.write_bytes(MINIMAL_FST_BYTES)
     exe = bin_dir / "Vtb_top"
     exe.write_text(
-        "#!/bin/sh\n"
-        "dest=${1#--trace=}\n"
-        f"cp {source} \"$dest\"\n"
-        "echo '[SIM_RESULT] PASSED'\n",
+        f"#!/bin/sh\ndest=${{1#--trace=}}\ncp {source} \"$dest\"\necho '[SIM_RESULT] PASSED'\n",
         encoding="utf-8",
     )
     exe.chmod(0o755)
