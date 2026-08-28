@@ -165,9 +165,24 @@ class TestBooleyFlowExecution:
             "refs/heads/main",
             "b" * 40,
         )
+        core = tmp_path / "changed.core"
+        core.write_text(
+            "CAPI=2:\n"
+            "name: ::changed:0\n"
+            "filesets:\n"
+            "  rtl:\n"
+            "    files: [rtl.v]\n"
+            "    file_type: verilogSource\n"
+            "targets:\n"
+            "  test:\n"
+            "    filesets: [rtl]\n"
+            "    toplevel: top\n",
+            encoding="utf-8",
+        )
         contract = build_contract(
             tmp_path,
             outer_sha="a" * 40,
+            targets=["test"],
             participants=[participant],
         )
         ticket = tmp_path / "ticket.md"
@@ -188,7 +203,10 @@ class TestBooleyFlowExecution:
         assert flow._pre_state_gate() is None
         assert flow._target_contract == contract
 
-        (tmp_path / "changed.core").write_text("CAPI=2:\nname: ::changed:0\n")
+        core.write_text(
+            core.read_text(encoding="utf-8").replace("toplevel: top", "toplevel: changed"),
+            encoding="utf-8",
+        )
         rejected = flow._pre_state_gate()
 
         assert rejected is not None

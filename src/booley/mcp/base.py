@@ -455,6 +455,7 @@ class McpTool(ABC):
         if getattr(self.args, "diagnostic", False) and self.state.strict_criteria:
             logger.info("Diagnostic run: not recording criterion %s", key)
             return
+        key = self._criterion_key_for_source(key, source_target)
         stamped_detail = self._stamp_source_fingerprint(
             key,
             met,
@@ -493,6 +494,18 @@ class McpTool(ABC):
             execution_id=os.environ.get("BOOLEY_EXECUTION_ID", ""),
             target_contract=target_contract,
         )
+
+    def _criterion_key_for_source(self, key: str, source_target: str | None) -> str:
+        """Render a criterion key with the Target name, never a qualified selector."""
+        if not source_target or not key.endswith(source_target):
+            return key
+        try:
+            from booley.targets.target import select_target
+
+            name = select_target(Path(self.args.work_dir), source_target).name
+        except FuseSocError:
+            return key
+        return key[: -len(source_target)] + name
 
     def _stamp_source_fingerprint(
         self,
@@ -763,6 +776,16 @@ class McpTool(ABC):
 
     def _bound_criterion_keys(self, target: str) -> list[str]:
         """Return sealed criteria this endpoint/Target invocation can update."""
+        criterion_target = target
+        target_identity: str | None = None
+        try:
+            from booley.targets.target import select_target
+
+            selected = select_target(Path(self.args.work_dir), target)
+            criterion_target = selected.name
+            target_identity = selected.identity
+        except FuseSocError:
+            pass
         selector = getattr(self.args, "test", None)
         detail = {
             "test_selector": selector or "all",
@@ -770,7 +793,7 @@ class McpTool(ABC):
         }
         bound: list[str] = []
         for family in self.satisfies:
-            generic_key = f"{family}_{target}"
+            generic_key = f"{family}_{criterion_target}"
             if generic_key in self.state.criteria:
                 bound.append(generic_key)
                 continue
@@ -784,10 +807,32 @@ class McpTool(ABC):
                 for key, entry in self.state.criteria.items()
                 if key.startswith(f"{family}_")
                 and isinstance(entry.params, dict)
-                and entry.params.get("target") == target
+                and self._criterion_target_matches(
+                    entry.params.get("target"), target, target_identity
+                )
                 and key not in bound
             )
         return bound
+
+    def _criterion_target_matches(
+        self,
+        authored: Any,
+        invoked: str,
+        invoked_identity: str | None,
+    ) -> bool:
+        """Compare criterion and invocation Targets by identity when resolvable."""
+        if not isinstance(authored, str):
+            return False
+        if authored == invoked:
+            return True
+        if invoked_identity is None:
+            return False
+        try:
+            from booley.targets.target import select_target
+
+            return select_target(Path(self.args.work_dir), authored).identity == invoked_identity
+        except FuseSocError:
+            return False
 
     def _criterion_binding_gate(self) -> McpToolResult | None:
         """Reject an unbound Ticket-mode Target before job admission/EDA."""

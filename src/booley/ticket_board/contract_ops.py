@@ -296,6 +296,9 @@ def _seal_validation(
         check_tb_files=False,
     )
     errors.extend(validate_criterion_targets(fields, worktree))
+    from .target_finalization import validate_remove_targets_for_seal
+
+    errors.extend(validate_remove_targets_for_seal(fields, worktree))
     if errors:
         return errors
     with tempfile.TemporaryDirectory(prefix="booley-contract-dry-run-") as build_root:
@@ -398,55 +401,73 @@ def _sealed_participants(
     return tuple(participants)
 
 
+def _build_sealed_contract(
+    prepared: _SealInputs, slug: str, outer_sha: str, project_sha: str
+) -> TargetContract:
+    from .target_finalization import canonical_remove_targets
+
+    bindings = criterion_targets(prepared.fields.get("criteria"))
+    return build_contract(
+        prepared.outer,
+        outer_sha=outer_sha,
+        project_sha=project_sha,
+        targets=(target for row in bindings for target in (row.target, row.baseline)),
+        removal_targets=canonical_remove_targets(prepared.fields, prepared.outer),
+        bindings=bindings,
+        participants=_sealed_participants(
+            slug,
+            prepared.fields,
+            prepared.outer,
+            outer_sha,
+            prepared.project,
+            project_sha,
+        ),
+    )
+
+
+def _seal_frontmatter_updates(
+    fields: dict[str, object], contract: TargetContract
+) -> dict[str, object]:
+    updates: dict[str, object] = {
+        "base_sha": contract.outer_sha,
+        "target_contract": contract.as_dict(),
+    }
+    on_success = fields.get("on_success")
+    if isinstance(on_success, dict) and "remove_targets" in on_success:
+        normalized_on_success = dict(on_success)
+        normalized_on_success["remove_targets"] = list(contract.removal_targets)
+        updates["on_success"] = normalized_on_success
+    return updates
+
+
 def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) -> TargetContract:
     """Validate, commit all repositories, then atomically publish ticket metadata."""
     prepared = _prepare_seal(project_root, ticket_path, slug)
-    ticket = prepared.ticket
-    fields = prepared.fields
-    outer = prepared.outer
-    outer_changes = prepared.outer_changes
-    project = prepared.project
-    project_changes = prepared.project_changes
-    outer_start = _full_commit(outer, "HEAD")
-    project_start = _full_commit(project, "HEAD") if project is not None else ""
+    outer_start = _full_commit(prepared.outer, "HEAD")
+    project_start = _full_commit(prepared.project, "HEAD") if prepared.project is not None else ""
     outer_sha = outer_start
     project_sha = project_start
     try:
-        if project is not None:
+        if prepared.project is not None:
             project_sha = _commit_changes(
-                project,
-                project_changes,
+                prepared.project,
+                prepared.project_changes,
                 f"chore({slug}): seal project Target contract",
             )
-        outer_sha = _commit_changes(outer, outer_changes, f"chore({slug}): seal Target contract")
-        criterion_bindings = criterion_targets(fields.get("criteria"))
-        contract = build_contract(
-            outer,
-            outer_sha=outer_sha,
-            project_sha=project_sha,
-            targets=(
-                target
-                for binding in criterion_bindings
-                for target in (binding.target, binding.baseline)
-            ),
-            bindings=criterion_bindings,
-            participants=_sealed_participants(
-                slug,
-                fields,
-                outer,
-                outer_sha,
-                project,
-                project_sha,
-            ),
+        outer_sha = _commit_changes(
+            prepared.outer,
+            prepared.outer_changes,
+            f"chore({slug}): seal Target contract",
         )
+        contract = _build_sealed_contract(prepared, slug, outer_sha, project_sha)
         update_frontmatter(
-            ticket,
-            {"base_sha": contract.outer_sha, "target_contract": contract.as_dict()},
+            prepared.ticket,
+            _seal_frontmatter_updates(prepared.fields, contract),
         )
     except Exception:
-        _restore_unpublished_commit(outer, outer_start, outer_sha)
-        if project is not None:
-            _restore_unpublished_commit(project, project_start, project_sha)
+        _restore_unpublished_commit(prepared.outer, outer_start, outer_sha)
+        if prepared.project is not None:
+            _restore_unpublished_commit(prepared.project, project_start, project_sha)
         raise
     return contract
 

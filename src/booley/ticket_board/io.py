@@ -532,6 +532,7 @@ class TicketIO:
                 "merge": True,
                 "cleanup": True,
                 "triage_report": True,
+                "remove_targets": [],
             }
         fields = {
             "summary": spec.summary,
@@ -713,16 +714,20 @@ class TicketIO:
         with ticket_path.open(encoding="utf-8") as f:
             fields, body = parse_frontmatter(f.read())
 
-        contract_errors = self._validate_enqueue_contract(slug, fields)
+        effective_fields = dict(fields)
+        if on_success:
+            effective_fields["on_success"] = on_success
+
+        contract_errors = self._validate_enqueue_contract(slug, effective_fields)
         if contract_errors:
             print("Error: ticket Target contract is not sealed:", file=sys.stderr)
             for err in contract_errors:
                 print(f"  - {err}", file=sys.stderr)
             return False
 
-        validation_root = self._enqueue_validation_root(slug, fields)
+        validation_root = self._enqueue_validation_root(slug, effective_fields)
         validation_results = validate_ticket_fields(
-            fields,
+            effective_fields,
             body,
             check_files=(validation_root / ".booley").is_dir(),
             check_git=False,
@@ -738,7 +743,7 @@ class TicketIO:
                 print(f"  - {err}", file=sys.stderr)
             return False
 
-        has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
+        has_unmet, dep_error = self._check_deps(slug, effective_fields.get("dependencies", []))
         if dep_error:
             return False
 

@@ -18,7 +18,7 @@ import pytest
 
 from booley import __version__
 from booley.audit import config_common, design_size, project_schema, resource_policy
-from booley.fusesoc import selftest_overlay
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.harness import devcontainer as dc
 from booley.harness import developer_probe, doctor, doctor_stamp, session_runtime
 from booley.runtime import (
@@ -26,6 +26,32 @@ from booley.runtime import (
     runtime_context,
 )
 from booley.runtime.project_dir import reset_cache, resolve_project_dir
+
+
+def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
+    (tmp_path / "conditional.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:conditional:1.0\n"
+        "filesets:\n"
+        "  sources:\n"
+        "    files:\n"
+        "      - tool_verilator ? (rtl/selected.sv)\n"
+        "      - tool_icarus ? (rtl/inactive.sv)\n"
+        "      - tool_verilator ? (tb/selected.sv): {tags: [tb]}\n"
+        "targets:\n"
+        "  sim:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator}\n"
+        "    filesets: [sources]\n"
+        "    toplevel: selected\n",
+        encoding="utf-8",
+    )
+    refs = fusesoc_registry.enumerate_targets(tmp_path)
+
+    sources = doctor._CoreAuditInputs(tmp_path, refs).sources_for("sim")
+
+    assert sources.rtl_source_files == ("rtl/selected.sv",)
+    assert sources.tb_files == ("tb/selected.sv",)
 
 
 def _write_project(
@@ -2460,8 +2486,6 @@ class TestCoreAudit:
         assert any("security validation passed" in m for lvl, m in rec.events)
 
     def test_each_root_target_partition_is_read_once(self, tmp_path: Path, monkeypatch):
-        from booley.fusesoc import fusesoc_registry
-
         core = _CLEAN_SIM_CORE.replace(
             "targets:\n",
             "targets:\n"
@@ -2482,15 +2506,16 @@ class TestCoreAudit:
             '$display("[SIM_RESULT] PASSED");\n',
             encoding="utf-8",
         )
-        original = fusesoc_registry.target_source_files_for_ref
-        calls = []
+        original = doctor.inspect_target
+        calls: list[str] = []
 
-        def partition(root, ref, *args, **kwargs):
-            if not kwargs.get("include_dependencies", False):
-                calls.append(ref.name)
-            return original(root, ref, *args, **kwargs)
+        def inspect(root: Path, token: str):
+            result = original(root, token)
+            calls.append(result.handle.name)
+            return result
 
-        monkeypatch.setattr(fusesoc_registry, "target_source_files_for_ref", partition)
+        monkeypatch.setattr(doctor, "inspect_target", inspect)
+        monkeypatch.setattr(doctor, "_audit_native_dependencies", lambda *_args: None)
 
         rec = _audit(tmp_path)
 

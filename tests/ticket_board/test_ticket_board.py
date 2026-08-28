@@ -54,6 +54,7 @@ from booley.ticket_board import (
     op_block,
     op_board_move,
     op_claim,
+    op_complete,
     op_fail,
     op_handoff,
     op_promote_waiting,
@@ -4104,9 +4105,7 @@ class TestOpReturnValues:
             execution_id="run-1",
             target_contract=None,
         )
-        snapshot_path = (
-            tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
-        )
+        snapshot_path = tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
         snapshot_path.write_text('{"tampered":true}\n', encoding="utf-8")
 
         assert op_complete(tio, "t1") is False
@@ -4146,6 +4145,26 @@ class TestOpReturnValues:
         assert op_complete(tio, "t1") is False
         assert "review package binding" in capsys.readouterr().err
 
+    def test_op_complete_rejects_no_merge_with_target_removal(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "review",
+            "t1",
+            extra_fields={
+                "on_success": {
+                    "destination": "review",
+                    "merge": True,
+                    "cleanup": False,
+                    "triage_report": False,
+                    "remove_targets": ["acme:lib:toy:1.0#baseline"],
+                }
+            },
+        )
+
+        assert op_complete(tio, "t1", no_merge=True) is False
+        assert "cannot remove Targets when merge is disabled" in capsys.readouterr().err
+
 
 class TestDraftsDirectory:
     """Test that drafts/ directory is used for new ticket creation."""
@@ -4176,6 +4195,7 @@ class TestDraftsDirectory:
             "merge": False,
             "cleanup": False,
             "triage_report": False,
+            "remove_targets": [],
         }
         path = tio.create_ticket_file(
             "custom-handoff",
@@ -4221,7 +4241,7 @@ class TestDraftsDirectory:
         assert rc == 0
         path = tickets_dir / "board" / "drafts" / "cli-defaults.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"] == on_success
+        assert fields["on_success"] == {**on_success, "remove_targets": []}
 
     @pytest.mark.parametrize(
         ("on_success", "error"),
@@ -4239,6 +4259,7 @@ class TestDraftsDirectory:
                         "merge": False,
                         "cleanup": True,
                         "triage_report": False,
+                        "remove_targets": [],
                         "unexpected": True,
                     }
                 ),
@@ -4251,6 +4272,7 @@ class TestDraftsDirectory:
                         "merge": "no",
                         "cleanup": True,
                         "triage_report": False,
+                        "remove_targets": [],
                     }
                 ),
                 "on_success.merge must be true or false",

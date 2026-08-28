@@ -137,7 +137,7 @@ def test_native_contract_open_seal_and_enqueue(tmp_path: Path) -> None:
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["base_sha"] == sealed["outer_sha"]
     assert fields["target_contract"] == sealed
-    assert sealed["schema"] == 3
+    assert sealed["schema"] == 4
     assert sealed["participants"] == [
         {
             "role": "outer",
@@ -206,6 +206,57 @@ def test_contract_seal_preserves_structured_campaign_criteria(tmp_path: Path) ->
 
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["criteria"]["optional"]["mutation_score"] == [campaign]
+
+
+def test_contract_seal_binds_canonical_target_removal_selector(tmp_path: Path) -> None:
+    _root, tio, ticket = _native_project(tmp_path)
+    update_frontmatter(
+        ticket,
+        {
+            "criteria": {"mandatory": {"lint_clean": ["lint_toy"]}},
+            "on_success": {
+                "destination": "review",
+                "merge": True,
+                "cleanup": True,
+                "triage_report": True,
+                "remove_targets": ["lint_toy"],
+            },
+        },
+    )
+
+    tio.contract_open("change-target")
+    tio.contract_seal("change-target")
+
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    canonical = ["acme:lib:toy:1.0#lint_toy"]
+    assert fields["on_success"]["remove_targets"] == canonical
+    assert fields["target_contract"]["removal_targets"] == canonical
+
+
+def test_enqueue_rejects_target_removal_changed_after_sealing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _root, tio, ticket = _native_project(tmp_path)
+    policy = {
+        "destination": "review",
+        "merge": True,
+        "cleanup": True,
+        "triage_report": True,
+        "remove_targets": ["lint_toy"],
+    }
+    update_frontmatter(
+        ticket,
+        {
+            "criteria": {"mandatory": {"lint_clean": ["lint_toy"]}},
+            "on_success": policy,
+        },
+    )
+    tio.contract_open("change-target")
+    tio.contract_seal("change-target")
+
+    changed_policy = {**policy, "remove_targets": []}
+    assert tio.enqueue_ticket("change-target", on_success=changed_policy) is False
+    assert "changed after Target Contract sealing" in capsys.readouterr().err
 
 
 def test_sealed_refs_remain_valid_after_authoring_worktree_is_discarded(tmp_path: Path) -> None:
