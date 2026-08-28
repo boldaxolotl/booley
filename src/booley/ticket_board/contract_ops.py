@@ -296,6 +296,9 @@ def _seal_validation(
         check_tb_files=False,
     )
     errors.extend(validate_criterion_targets(fields, worktree))
+    from .target_finalization import validate_remove_targets_for_seal
+
+    errors.extend(validate_remove_targets_for_seal(fields, worktree))
     if errors:
         return errors
     with tempfile.TemporaryDirectory(prefix="booley-contract-dry-run-") as build_root:
@@ -439,9 +442,22 @@ def seal_contract(project_root: Path | str, ticket_path: Path | str, slug: str) 
                 project_sha,
             ),
         )
+        from .target_finalization import canonical_remove_targets
+
+        updates: dict[str, object] = {
+            "base_sha": contract.outer_sha,
+            "target_contract": contract.as_dict(),
+        }
+        on_success = fields.get("on_success")
+        if isinstance(on_success, dict) and "remove_targets" in on_success:
+            normalized_on_success = dict(on_success)
+            normalized_on_success["remove_targets"] = list(
+                canonical_remove_targets(fields, outer)
+            )
+            updates["on_success"] = normalized_on_success
         update_frontmatter(
             ticket,
-            {"base_sha": contract.outer_sha, "target_contract": contract.as_dict()},
+            updates,
         )
     except Exception:
         _restore_unpublished_commit(outer, outer_start, outer_sha)

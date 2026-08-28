@@ -54,6 +54,7 @@ from booley.ticket_board import (
     op_block,
     op_board_move,
     op_claim,
+    op_complete,
     op_fail,
     op_handoff,
     op_promote_waiting,
@@ -4022,6 +4023,26 @@ class TestOpReturnValues:
         make_ticket_in_dir(tio, "review", "t1")
         assert op_approve(tio, "t1") is True
 
+    def test_op_complete_rejects_no_merge_with_target_removal(self, tmp_path, capsys):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(
+            tio,
+            "review",
+            "t1",
+            extra_fields={
+                "on_success": {
+                    "destination": "review",
+                    "merge": True,
+                    "cleanup": False,
+                    "triage_report": False,
+                    "remove_targets": ["acme:lib:toy:1.0#baseline"],
+                }
+            },
+        )
+
+        assert op_complete(tio, "t1", no_merge=True) is False
+        assert "cannot remove Targets when merge is disabled" in capsys.readouterr().err
+
 
 class TestDraftsDirectory:
     """Test that drafts/ directory is used for new ticket creation."""
@@ -4052,6 +4073,7 @@ class TestDraftsDirectory:
             "merge": False,
             "cleanup": False,
             "triage_report": False,
+            "remove_targets": [],
         }
         path = tio.create_ticket_file(
             "custom-handoff",
@@ -4075,6 +4097,7 @@ class TestDraftsDirectory:
             "merge": False,
             "cleanup": True,
             "triage_report": False,
+            "remove_targets": [],
         }
 
         rc = main(
@@ -4106,7 +4129,7 @@ class TestDraftsDirectory:
             (json.dumps([]), "--on-success must be a mapping"),
             (
                 json.dumps({"destination": "done"}),
-                "missing keys: cleanup, merge, triage_report",
+                "missing keys: cleanup, merge, remove_targets, triage_report",
             ),
             (
                 json.dumps(
@@ -4115,6 +4138,7 @@ class TestDraftsDirectory:
                         "merge": False,
                         "cleanup": True,
                         "triage_report": False,
+                        "remove_targets": [],
                         "unexpected": True,
                     }
                 ),
@@ -4127,6 +4151,7 @@ class TestDraftsDirectory:
                         "merge": "no",
                         "cleanup": True,
                         "triage_report": False,
+                        "remove_targets": [],
                     }
                 ),
                 "on_success.merge must be true or false",

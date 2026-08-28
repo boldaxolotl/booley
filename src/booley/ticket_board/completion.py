@@ -8,6 +8,7 @@ subsequent roll-forward publication.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,11 @@ from .target_contract import (
     TargetContract,
     TargetContractError,
     verify_surface,
+)
+from .target_finalization import (
+    TargetFinalizationError,
+    apply_target_removals,
+    plan_target_removals,
 )
 
 
@@ -114,9 +120,18 @@ def _write_journal(path: Path, journal: Mapping[str, Any]) -> None:
             temporary_path.unlink()
 
 
-def _initial_journal(slug: str, contract: TargetContract) -> dict[str, Any]:
+def _removal_digest(removal_targets: tuple[str, ...]) -> str:
+    payload = json.dumps(list(removal_targets), separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _initial_journal(
+    slug: str,
+    contract: TargetContract,
+    removal_targets: tuple[str, ...] = (),
+) -> dict[str, Any]:
     return {
-        "schema": 1,
+        "schema": 2,
         "transaction": uuid.uuid4().hex,
         "ticket": slug,
         "state": "initializing",
@@ -124,6 +139,9 @@ def _initial_journal(slug: str, contract: TargetContract) -> dict[str, Any]:
         "sources": {},
         "candidates": {},
         "published": [],
+        "removal_targets": list(removal_targets),
+        "removal_digest": _removal_digest(removal_targets),
+        "finalized": not removal_targets,
     }
 
 
@@ -172,6 +190,9 @@ def _validate_journal_progress(
     sources: dict[str, str],
     candidates: dict[str, dict[str, str]],
     published: list[Any],
+    *,
+    finalized: bool,
+    has_removals: bool,
 ) -> None:
     order = [role for role in ("project", "outer") if role in roles]
     if published != order[: len(published)]:
@@ -194,15 +215,20 @@ def _validate_journal_progress(
     }
     if state in expected_published and published != expected_published[state]:
         raise BoundaryError(f"acceptance journal state {state!r} conflicts with published roles")
+    if published and not finalized:
+        raise BoundaryError("acceptance journal cannot publish unfinalized candidates")
+    if not has_removals and not finalized:
+        raise BoundaryError("acceptance journal without removals must already be finalized")
 
 
-def _validated_journal(
+def _validated_journal(  # noqa: PLR0912 - schema migration and recovery validation are ordered
     value: Any,
     slug: str,
     participants: list[dict[str, str]],
+    removal_targets: tuple[str, ...],
 ) -> dict[str, Any]:
     journal = require_dict(value, field="acceptance journal")
-    expected_fields = {
+    legacy_fields = {
         "schema",
         "transaction",
         "ticket",
@@ -216,10 +242,31 @@ def _validated_journal(
         raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
     if journal.get("participants") != participants:
         raise BoundaryError("sealed repository participants changed after acceptance began")
-    if set(journal) != expected_fields:
-        raise BoundaryError("acceptance journal has invalid fields")
-    if journal.get("schema") != 1:
-        raise BoundaryError("acceptance journal schema must be 1")
+    schema = journal.get("schema")
+    if schema == 1:
+        if removal_targets:
+            raise BoundaryError("acceptance journal removal policy changed after acceptance began")
+        if set(journal) != legacy_fields:
+            raise BoundaryError("acceptance journal has invalid fields")
+        finalized = True
+    elif schema == 2:
+        expected_fields = legacy_fields | {
+            "removal_targets",
+            "removal_digest",
+            "finalized",
+        }
+        if set(journal) != expected_fields:
+            raise BoundaryError("acceptance journal has invalid fields")
+        persisted_targets = journal.get("removal_targets")
+        if persisted_targets != list(removal_targets):
+            raise BoundaryError("acceptance journal removal policy changed after acceptance began")
+        if journal.get("removal_digest") != _removal_digest(removal_targets):
+            raise BoundaryError("acceptance journal removal digest is invalid")
+        finalized = journal.get("finalized")
+        if not isinstance(finalized, bool):
+            raise BoundaryError("acceptance journal finalized must be true or false")
+    else:
+        raise BoundaryError("acceptance journal schema must be 1 or 2")
     transaction = require_str(journal, "transaction")
     if not re.fullmatch(r"[0-9a-f]{32}", transaction):
         raise BoundaryError("acceptance journal transaction is invalid")
@@ -230,9 +277,17 @@ def _validated_journal(
     sources = _validated_string_map(journal.get("sources"), "acceptance journal sources", roles)
     candidates = _validated_candidates(journal.get("candidates"), roles, transaction)
     published = require_list(journal.get("published"), field="acceptance journal published")
-    _validate_journal_progress(state, roles, sources, candidates, published)
+    _validate_journal_progress(
+        state,
+        roles,
+        sources,
+        candidates,
+        published,
+        finalized=finalized,
+        has_removals=bool(removal_targets),
+    )
     return {
-        "schema": 1,
+        "schema": 2,
         "transaction": transaction,
         "ticket": slug,
         "state": state,
@@ -240,19 +295,27 @@ def _validated_journal(
         "sources": sources,
         "candidates": candidates,
         "published": published,
+        "removal_targets": list(removal_targets),
+        "removal_digest": _removal_digest(removal_targets),
+        "finalized": finalized,
     }
 
 
-def _load_journal(path: Path, slug: str, contract: TargetContract) -> dict[str, Any]:
+def _load_journal(
+    path: Path,
+    slug: str,
+    contract: TargetContract,
+    removal_targets: tuple[str, ...] = (),
+) -> dict[str, Any]:
     expected = [item.as_dict() for item in contract.participants]
     if not path.exists():
-        return _initial_journal(slug, contract)
+        return _initial_journal(slug, contract, removal_targets)
     try:
         journal = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise CompletionError(f"acceptance journal is unreadable: {path}: {exc}") from exc
     try:
-        return _validated_journal(journal, slug, expected)
+        return _validated_journal(journal, slug, expected, removal_targets)
     except BoundaryError as exc:
         raise CompletionError(f"acceptance journal is malformed: {path}: {exc}") from exc
 
@@ -440,12 +503,20 @@ def _prepare_all(
     for participant in contract.participants:
         if participant.role in candidates:
             repository = _repository_for(root, project_repository, participant)
-            if (
-                _commit(repository, candidates[participant.role]["staging_ref"])
-                != candidates[participant.role]["sha"]
-            ):
-                raise CompletionError(
-                    f"acceptance staging ref for {participant.role} no longer matches its journal"
+            candidate = candidates[participant.role]
+            actual = _commit(repository, candidate["staging_ref"])
+            if actual != candidate["sha"]:
+                if not journal["finalized"]:
+                    raise CompletionError(
+                        f"acceptance staging ref for {participant.role} no longer matches "
+                        "its journal"
+                    )
+                _commit(repository, candidate["sha"])
+                _require_git(
+                    repository,
+                    "update-ref",
+                    candidate["staging_ref"],
+                    candidate["sha"],
                 )
             continue
         repository = _repository_for(root, project_repository, participant)
@@ -474,6 +545,115 @@ def _prepare_all(
         _write_journal(journal_path, journal)
     journal["state"] = "prepared"
     _write_journal(journal_path, journal)
+
+
+def _commit_finalized_paths(
+    checkout: Path,
+    paths: list[Path],
+    slug: str,
+) -> str:
+    if not paths:
+        return _commit(checkout, "HEAD")
+    names = [path.as_posix() for path in paths]
+    _require_git(checkout, "add", "--", *names)
+    _require_git(
+        checkout,
+        "commit",
+        "-m",
+        f"chore({slug}): remove completed Ticket Targets",
+    )
+    return _commit(checkout, "HEAD")
+
+
+def _finalize_all(  # noqa: PLR0912, PLR0915 - ordered multi-repository transaction
+    root: Path,
+    project_repository: Path | None,
+    slug: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    journal_path: Path,
+) -> None:
+    """Apply removals to a composite candidate before either ref is published."""
+    if journal["finalized"]:
+        return
+    temporary = Path(tempfile.mkdtemp(prefix="booley-accept-finalize-"))
+    by_role = {item.role: item for item in contract.participants}
+    project_checkout: Path | None = None
+    try:
+        _require_git(
+            root,
+            "worktree",
+            "add",
+            "--detach",
+            str(temporary),
+            journal["candidates"]["outer"]["staging_ref"],
+        )
+        if "project" in by_role:
+            if project_repository is None:
+                raise CompletionError("sealed project repository is unavailable")
+            try:
+                project_relative = checkout_project_dir_relative_to(root)
+            except (FileNotFoundError, ValueError) as exc:
+                raise CompletionError(str(exc)) from exc
+            project_checkout = temporary / project_relative
+            _require_git(
+                project_repository,
+                "worktree",
+                "add",
+                "--detach",
+                str(project_checkout),
+                journal["candidates"]["project"]["staging_ref"],
+            )
+        try:
+            removal_targets = tuple(journal["removal_targets"])
+            plan = plan_target_removals(temporary, removal_targets, contract.bindings)
+            changed = apply_target_removals(temporary, plan)
+        except (TargetFinalizationError, OSError, ValueError) as exc:
+            raise CompletionError(f"Target finalization failed: {exc}") from exc
+
+        project_paths: list[Path] = []
+        outer_paths: list[Path] = []
+        if project_checkout is not None:
+            project_prefix = project_checkout.relative_to(temporary)
+            for path in changed:
+                if path.is_relative_to(project_prefix):
+                    project_paths.append(path.relative_to(project_prefix))
+                else:
+                    outer_paths.append(path)
+        else:
+            outer_paths.extend(changed)
+
+        finalized: dict[str, str] = {}
+        if project_checkout is not None:
+            finalized["project"] = _commit_finalized_paths(
+                project_checkout, project_paths, slug
+            )
+        finalized["outer"] = _commit_finalized_paths(temporary, outer_paths, slug)
+
+        for role, sha in finalized.items():
+            journal["candidates"][role]["sha"] = sha
+        journal["finalized"] = True
+        _write_journal(journal_path, journal)
+        for role, sha in finalized.items():
+            repository = _repository_for(root, project_repository, by_role[role])
+            _require_git(
+                repository,
+                "update-ref",
+                journal["candidates"][role]["staging_ref"],
+                sha,
+            )
+    finally:
+        if project_checkout is not None and project_repository is not None:
+            _git(
+                project_repository,
+                "worktree",
+                "remove",
+                "--force",
+                str(project_checkout),
+            )
+        _git(root, "worktree", "remove", "--force", str(temporary))
+        with suppress(FileNotFoundError):
+            temporary.rmdir()
 
 
 def _publish_all(
@@ -584,8 +764,9 @@ def _execute_completion(
     contract: TargetContract,
     path: Path,
     allowed_board_rename: tuple[Path, Path],
+    removal_targets: tuple[str, ...],
 ) -> None:
-    journal = _load_journal(path, slug, contract)
+    journal = _load_journal(path, slug, contract, removal_targets)
     _write_journal(path, journal)
     if journal["state"] == "done":
         if entry.get("status") == "done":
@@ -607,6 +788,7 @@ def _execute_completion(
     )
     _validate_source_surface(root, project_repository, contract, journal["sources"])
     _prepare_all(root, project_repository, slug, contract, journal, path)
+    _finalize_all(root, project_repository, slug, contract, journal, path)
     _publish_all(
         root,
         project_repository,
@@ -619,6 +801,24 @@ def _execute_completion(
         _finish_approval(tio, slug, contract, journal, path)
 
 
+def _validate_removal_targets(
+    contract: TargetContract, removal_targets: tuple[str, ...]
+) -> None:
+    bound_targets = {
+        target
+        for binding in contract.bindings
+        for target in (binding.baseline, binding.candidate)
+    }
+    if (
+        tuple(sorted(set(removal_targets))) != removal_targets
+        or not set(removal_targets) <= bound_targets
+    ):
+        raise TargetContractError(
+            "on_success.remove_targets must contain sorted canonical Targets bound by "
+            "the sealed contract"
+        )
+
+
 def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
     """Prepare, publish, and approve one schema-3 review Ticket.
 
@@ -628,6 +828,7 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
     """
     if not effective_policy.merge:
         raise CompletionError("journaled completion requires merge policy")
+    removal_targets = tuple(getattr(effective_policy, "remove_targets", ()))
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -641,6 +842,7 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
         return False
     try:
         contract = TargetContract.from_mapping(entry.get("target_contract"))
+        _validate_removal_targets(contract, removal_targets)
     except TargetContractError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return False
@@ -665,6 +867,7 @@ def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
                 contract,
                 path,
                 allowed_board_rename,
+                removal_targets,
             )
     except LockContentionError:
         print(f"Error: acceptance is already running for '{slug}'", file=sys.stderr)

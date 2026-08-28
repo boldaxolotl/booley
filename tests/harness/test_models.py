@@ -54,6 +54,7 @@ class TestOnSuccess:
         assert os.merge is True
         assert os.cleanup is True
         assert os.triage_report is True
+        assert os.remove_targets == ()
 
     def test_from_dict_none(self):
         os = OnSuccess.from_dict(None)
@@ -74,12 +75,14 @@ class TestOnSuccess:
                 "merge": False,
                 "cleanup": True,
                 "triage_report": False,
+                "remove_targets": ["acme:lib:toy:1.0#baseline"],
             }
         )
         assert os.destination == "done"
         assert os.merge is False
         assert os.cleanup is True
         assert os.triage_report is False
+        assert os.remove_targets == ("acme:lib:toy:1.0#baseline",)
 
     def test_validate_ok(self):
         assert OnSuccess().validate() == []
@@ -93,6 +96,16 @@ class TestOnSuccess:
     def test_validate_bad_triage_report(self):
         errors = OnSuccess(triage_report="yes").validate()  # type: ignore[arg-type]
         assert errors == ["on_success.triage_report must be true or false"]
+
+    def test_remove_targets_requires_merge(self):
+        errors = OnSuccess(merge=False, remove_targets=("baseline",)).validate()
+        assert errors == ["on_success.remove_targets requires on_success.merge: true"]
+
+    def test_remove_targets_must_be_unique_non_empty_strings(self):
+        errors = OnSuccess(remove_targets=("baseline", "", "baseline")).validate()
+        assert errors == [
+            "on_success.remove_targets must contain unique non-empty strings"
+        ]
 
 
 class TestExecutionContext:

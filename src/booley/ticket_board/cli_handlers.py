@@ -494,7 +494,9 @@ def _cmd_init(tio, args):
     return 2
 
 
-_ON_SUCCESS_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
+_ON_SUCCESS_KEYS = frozenset(
+    {"destination", "merge", "cleanup", "triage_report", "remove_targets"}
+)
 
 
 def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
@@ -528,6 +530,7 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
         "merge": model.merge,
         "cleanup": model.cleanup,
         "triage_report": model.triage_report,
+        "remove_targets": list(model.remove_targets),
     }, None
 
 
@@ -616,12 +619,14 @@ def _cmd_enqueue(tio, args):
     merge = getattr(args, "merge", None)
     cleanup = getattr(args, "cleanup", None)
     triage_report = getattr(args, "triage_report", None)
-    if any(value is not None for value in (dest, merge, cleanup, triage_report)):
+    remove_targets = getattr(args, "remove_targets", None)
+    if any(value is not None for value in (dest, merge, cleanup, triage_report, remove_targets)):
         on_success = {
             "destination": dest or "review",
             "merge": merge if merge is not None else True,
             "cleanup": cleanup if cleanup is not None else True,
             "triage_report": triage_report if triage_report is not None else True,
+            "remove_targets": remove_targets or [],
         }
     success = tio.enqueue_ticket(
         args.slug,

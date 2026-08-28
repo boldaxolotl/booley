@@ -208,6 +208,29 @@ def test_contract_seal_preserves_structured_campaign_criteria(tmp_path: Path) ->
     assert fields["criteria"]["optional"]["mutation_score"] == [campaign]
 
 
+def test_contract_seal_canonicalizes_target_removal_selector(tmp_path: Path) -> None:
+    _root, tio, ticket = _native_project(tmp_path)
+    update_frontmatter(
+        ticket,
+        {
+            "criteria": {"mandatory": {"lint_clean": ["lint_toy"]}},
+            "on_success": {
+                "destination": "review",
+                "merge": True,
+                "cleanup": True,
+                "triage_report": True,
+                "remove_targets": ["lint_toy"],
+            },
+        },
+    )
+
+    tio.contract_open("change-target")
+    tio.contract_seal("change-target")
+
+    fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
+    assert fields["on_success"]["remove_targets"] == ["acme:lib:toy:1.0#lint_toy"]
+
+
 def test_sealed_refs_remain_valid_after_authoring_worktree_is_discarded(tmp_path: Path) -> None:
     root, tio, _ticket = _native_project(tmp_path)
     opened = tio.contract_open("change-target")

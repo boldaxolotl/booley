@@ -1,0 +1,3 @@
+# Remove temporary Ticket Targets during acceptance
+
+Keep the schema-3 Target Contract immutable through development and review, and express any criterion-bound Target that must not land in the destination as `on_success.remove_targets` at Ticket creation. Acceptance prepares every ordinary repository merge candidate first, then removes only the uniquely resolved `.core` Target definitions and their unambiguously-owned `tests.toml` tables before validation and publication; shared design inputs remain. The Acceptance Journal binds the canonical removal set for recovery. This preserves user control and trustworthy baseline comparisons without giving the Developer Agent a mutable Target recipe or introducing a second contract lifecycle.

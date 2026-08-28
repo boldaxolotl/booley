@@ -526,6 +526,7 @@ class TicketIO:
                 "merge": True,
                 "cleanup": True,
                 "triage_report": True,
+                "remove_targets": [],
             }
         fields = {
             "summary": spec.summary,

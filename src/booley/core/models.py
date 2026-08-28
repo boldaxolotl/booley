@@ -21,22 +21,29 @@ class OnSuccess:
     merge: whether to merge the feature branch into the base branch.
     cleanup: whether to delete the worktree and (if not merged) force-delete the branch.
     triage_report: whether to prepare the rich HTML explanation before handoff.
+    remove_targets: sealed Targets to delete from the accepted merge candidate.
     """
 
     destination: str = "review"  # "review" | "done"
     merge: bool = True
     cleanup: bool = True
     triage_report: bool = True
+    remove_targets: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, d: dict | None) -> OnSuccess:
         if not d:
             return cls()
+        remove_targets = d.get("remove_targets", [])
+        normalized_targets = (
+            tuple(remove_targets) if isinstance(remove_targets, list) else remove_targets
+        )
         return cls(
             destination=d.get("destination", "review"),
             merge=d.get("merge", True),
             cleanup=d.get("cleanup", True),
             triage_report=d.get("triage_report", True),
+            remove_targets=normalized_targets,
         )
 
     def validate(self) -> list[str]:
@@ -51,6 +58,14 @@ class OnSuccess:
             errors.append("on_success.merge must be true or false")
         if not isinstance(self.cleanup, bool):
             errors.append("on_success.cleanup must be true or false")
+        if not (
+            isinstance(self.remove_targets, tuple)
+            and all(isinstance(item, str) and item.strip() for item in self.remove_targets)
+            and len(set(self.remove_targets)) == len(self.remove_targets)
+        ):
+            errors.append("on_success.remove_targets must contain unique non-empty strings")
+        elif self.remove_targets and self.merge is not True:
+            errors.append("on_success.remove_targets requires on_success.merge: true")
         return errors
 
 

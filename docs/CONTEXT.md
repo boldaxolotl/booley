@@ -207,7 +207,7 @@ The disposable checkout set materialized from a Ticket's sealed repository refs 
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
 **Acceptance Journal**:
-The recoverable record of a Ticket's prepared and published repository candidates. It lets acceptance roll forward after a partial multi-repository publication and keeps the Ticket in review until every destination ref has landed.
+The recoverable record of a Ticket's prepared, finalized, and published repository candidates. It binds any creation-time Target removals to the transaction, lets acceptance roll forward after a partial multi-repository publication, and keeps the Ticket in review until every destination ref has landed.
 _Avoid_: merge log, rollback record, transaction database
 
 **Scope**:
