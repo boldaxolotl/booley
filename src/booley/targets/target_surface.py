@@ -23,22 +23,7 @@ from typing import Any
 
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
-
-# The five build Booley Flows represented by the Target compatibility surface.
-# These are the values ``booley targets --for`` accepts.
-TARGET_AWARE_FLOWS: tuple[str, ...] = (
-    "synth",
-    "elab",
-    "fpga",
-    "lint",
-    "sim",
-)
-
-# Declared-EDA-tool families used only as the fallback classification for
-# legacy upstream FuseSoC `tools:`-style Targets, which enumerate with flow=None (doctor flags
-# the authoring; `--for` should still not hide them).
-_SIM_EDA_TOOLS = frozenset({"verilator", "icarus", "iverilog"})
-_LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
+from booley.targets.target import TARGET_AWARE_FLOWS, flow_can_drive
 
 # Glob metacharacters: a `booley targets` positional containing any of these is
 # a filter pattern; anything else is a selection token for the detail view.
@@ -48,40 +33,6 @@ _GLOB_CHARS = frozenset("*?[")
 def is_glob(token: str) -> bool:
     """True when a ``booley targets`` positional is a filter pattern."""
     return any(c in _GLOB_CHARS for c in token)
-
-
-def flow_can_drive(flow: str, ref: TargetRef) -> bool:
-    """Could *flow* drive *ref*? Compatibility, not Doctor selection.
-
-    simulate and elaborate want a sim-flow Target (elaborate builds the sim
-    executable without running it); lint wants a lint-flow Target; the two
-    synthesis Flows key off the declared EDA tool, because CAPI2 has no
-    "synth" flow — a yosys and a vivado Target are both ``generic``.
-
-    Raises :class:`ValueError` for anything outside
-    :data:`TARGET_AWARE_FLOWS` (Specialists are not target-aware).
-    """
-    from booley.targets.flow_names import canonical
-
-    flow = canonical(flow)
-    if flow not in TARGET_AWARE_FLOWS:
-        raise ValueError(
-            f"{flow!r} is not a target-aware Booley Flow; "
-            f"choose one of: {', '.join(TARGET_AWARE_FLOWS)}"
-        )
-    if flow in ("sim", "elab"):
-        # A ``flow: sim`` declaration alone is not an execution entitlement.
-        # Commercial simulator Targets may remain in a vendor core, but Booley
-        # deliberately does not present them as drivable until an equivalently
-        # proven Session-Runtime policy exists.  Apply the same allow-list to
-        # modern and legacy ``tools:`` shapes so ``booley targets --for sim``
-        # cannot advertise Xcelium/VCS merely because their CAPI2 flow says sim.
-        return ref.eda_tool in _SIM_EDA_TOOLS and (ref.flow == "sim" or ref.flow is None)
-    if flow == "lint":
-        return ref.flow == "lint" or (ref.flow is None and ref.eda_tool in _LINT_EDA_TOOLS)
-    if flow == "synth":
-        return ref.eda_tool == "yosys"
-    return ref.eda_tool == "vivado"  # fpga
 
 
 @dataclass(frozen=True)

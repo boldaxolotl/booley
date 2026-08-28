@@ -39,8 +39,17 @@ def criterion_family(key: str) -> str | None:
     return max(matches, key=len, default=None)
 
 
-def criterion_target(key: str, entry: Any, family: str) -> str | None:
+def criterion_target(  # noqa: PLR0911 - ordered ownership and evidence fallbacks
+    key: str, entry: Any, family: str
+) -> str | None:
     """Resolve a criterion's exact Target from params, evidence, or its key."""
+    try:
+        _command, per_target = _endpoint_contracts()[family]
+    except (KeyError, TypeError):
+        return None
+    if not per_target:
+        return None
+
     params = getattr(entry, "params", {}) or {}
     target = params.get("target")
     if isinstance(target, str) and target:
@@ -53,11 +62,7 @@ def criterion_target(key: str, entry: Any, family: str) -> str | None:
         if isinstance(target, str) and target:
             return target
 
-    try:
-        _command, per_target = _endpoint_contracts()[family]
-    except (KeyError, TypeError):
-        return None
-    if not per_target or not key.startswith(f"{family}_"):
+    if not key.startswith(f"{family}_"):
         return None
 
     # Structured simulation keys contain the TB path before the Target, so
@@ -73,11 +78,16 @@ def planned_invocation(key: str, entry: Any) -> str | None:
     if family is None:
         return None
     command, _per_target = _endpoint_contracts()[family]
-    target = criterion_target(key, entry, family)
+    params = getattr(entry, "params", {}) or {}
+    sealed_selector = params.get("_target_selector")
+    target = (
+        sealed_selector
+        if isinstance(sealed_selector, str) and sealed_selector
+        else criterion_target(key, entry, family)
+    )
     if target and "--target" not in command:
         command = f"{command} --target {target}"
 
-    params = getattr(entry, "params", {}) or {}
     selector = params.get("test_selector") or params.get("selector")
     if family == "sim_pass" and isinstance(selector, str) and selector not in {"", "all"}:
         command = f"{command} --test {selector}"

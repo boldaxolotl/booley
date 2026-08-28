@@ -222,6 +222,23 @@ def test_ticket_create_applies_free_form_project_guidance_only_during_creation()
         "merge, add/remove, or inheritance syntax",
     ):
         assert retired not in contract
+    assert "all five on_success fields" in contract
+    assert "remove_targets" in contract
+
+
+def test_ticket_create_fixes_target_removal_at_creation_time():
+    skill = _skill_text("booley-ticket-create")
+    template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
+    contract = " ".join(skill.split())
+
+    for required in (
+        "Decide `on_success.remove_targets` during Ticket creation",
+        "Every selector must resolve uniquely",
+        "Target remains sealed",
+        "Do not use this field as general file cleanup",
+    ):
+        assert required in contract
+    assert "remove_targets: []" in template
 
 
 def test_ticket_creation_template_is_packaged_free_form_markdown():

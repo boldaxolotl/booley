@@ -1,8 +1,8 @@
 """Shared data models used across more than one Booley layer.
 
-These types are dependency-free (stdlib only) and sit at the bottom of the
-import graph so that ``booley.dev_support`` and ``booley.ticket_board`` can depend on
-them without importing *upward* into ``booley.harness``. ``harness.models``
+These types depend only on the standard library and ``booley.core`` boundary
+helpers.  They sit below ``booley.dev_support`` and ``booley.ticket_board`` so
+those layers do not import upward into ``booley.harness``. ``harness.models``
 re-exports them for backward compatibility.
 """
 
@@ -11,6 +11,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from booley.core.boundary import BoundaryError, is_str_list, require_list
+
+
+def _remove_target_tuple(value: Any) -> tuple[str, ...] | Any:
+    """Normalize a valid external list while preserving invalid input for diagnostics."""
+    try:
+        items = require_list(value, field="on_success.remove_targets")
+    except BoundaryError:
+        return value
+    if not is_str_list(items):
+        return value
+    return tuple(items)
 
 
 @dataclass(frozen=True)
@@ -21,12 +34,14 @@ class OnSuccess:
     merge: whether to merge the feature branch into the base branch.
     cleanup: whether to delete the worktree and (if not merged) force-delete the branch.
     triage_report: whether to prepare the rich HTML explanation before handoff.
+    remove_targets: sealed Targets to delete from the accepted merge candidate.
     """
 
     destination: str = "review"  # "review" | "done"
     merge: bool = True
     cleanup: bool = True
     triage_report: bool = True
+    remove_targets: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, d: dict | None) -> OnSuccess:
@@ -37,6 +52,7 @@ class OnSuccess:
             merge=d.get("merge", True),
             cleanup=d.get("cleanup", True),
             triage_report=d.get("triage_report", True),
+            remove_targets=_remove_target_tuple(d.get("remove_targets", [])),
         )
 
     def validate(self) -> list[str]:
@@ -51,6 +67,15 @@ class OnSuccess:
             errors.append("on_success.merge must be true or false")
         if not isinstance(self.cleanup, bool):
             errors.append("on_success.cleanup must be true or false")
+        if not (
+            isinstance(self.remove_targets, tuple)
+            and is_str_list(list(self.remove_targets))
+            and all(item.strip() for item in self.remove_targets)
+            and len(set(self.remove_targets)) == len(self.remove_targets)
+        ):
+            errors.append("on_success.remove_targets must contain unique non-empty strings")
+        elif self.remove_targets and self.merge is not True:
+            errors.append("on_success.remove_targets requires on_success.merge: true")
         return errors
 
 

@@ -16,6 +16,11 @@ import pytest
 
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
+from booley.ticket_board.target_contract import (
+    ContractParticipant,
+    ContractTargetBinding,
+    TargetContract,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,6 +34,69 @@ _MINIMAL_FIELDS = {
     "scope_new": [],
     "criteria": {},
 }
+
+
+def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
+    tmp_path: Path,
+) -> None:
+    from booley.dev_support.criteria_actions import planned_invocation
+    from booley.dev_support.development_state import CriterionEntry
+    from booley.harness.setup.intake import _apply_contract_selectors
+
+    contract = TargetContract(
+        outer_sha="a" * 40,
+        project_sha=None,
+        surface_digest="b" * 64,
+        targets=("acme:ip:uart:1.0#lint_uart",),
+        bindings=(
+            ContractTargetBinding(
+                flow="lint",
+                criterion="lint_clean",
+                baseline="acme:ip:uart:1.0#lint_uart",
+                candidate="acme:ip:uart:1.0#lint_uart",
+                baseline_selector="uart#lint_uart",
+                candidate_selector="uart#lint_uart",
+            ),
+        ),
+        participants=(
+            ContractParticipant(
+                role="outer",
+                sealed_sha="a" * 40,
+                ticket_ref="refs/heads/ticket",
+                destination_ref="refs/heads/main",
+                destination_sha="c" * 40,
+            ),
+        ),
+    )
+    ctx = TicketContext(
+        slug="qualified-target",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="bugfix",
+        branch="main",
+        summary="Qualified target",
+        project_root=tmp_path,
+        target_contract=contract,
+    )
+    expanded = {"lint_clean_acme:ip:uart:1.0#lint_uart": True}
+    criterion_params: dict[str, dict[str, object]] = {}
+
+    _apply_contract_selectors(ctx, expanded, criterion_params)
+
+    assert criterion_params == {
+        "lint_clean_acme:ip:uart:1.0#lint_uart": {
+            "target": "acme:ip:uart:1.0#lint_uart",
+            "_target_selector": "uart#lint_uart",
+        }
+    }
+    entry = CriterionEntry(
+        met=False,
+        mandatory=True,
+        params=criterion_params["lint_clean_acme:ip:uart:1.0#lint_uart"],
+    )
+    assert (
+        planned_invocation("lint_clean_acme:ip:uart:1.0#lint_uart", entry)
+        == "lint --target uart#lint_uart"
+    )
 
 
 def _mock_cli_defaults(mock_cli, *, action="fresh", stage="", fields=None):
