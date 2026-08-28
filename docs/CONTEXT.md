@@ -221,11 +221,11 @@ _Avoid_: spec gap, blocker, impediment
 ### Waveform analysis
 
 **B-Wave**:
-An agent-facing MCP tool for waveform queries over FST trace stores. Converts VCD simulation output into FST, then supports signal queries, virtual signal evaluation, and text-mode waveform display. CLI entry point: `bwave`. (The custom `.bwave` store is retired in favor of FST.)
+The agent-facing query surface for FST trace stores. It reads native FST output directly and ingests VCD output into FST before exposing signal queries, virtual signals, and text-mode waveforms.
 _Avoid_: waveform viewer, VCD parser, `.bwave` format
 
 **Trace Artifact**:
-Waveform evidence produced by a traced simulation. The preferred Trace Artifact is a valid FST store; a VCD file is also valid evidence when FST conversion is unavailable or delayed.
+Fresh waveform evidence produced by a traced simulation and proven queryable by B-Wave. A Trace Artifact is an FST store; VCD is an input or intermediate, not successful trace evidence.
 _Avoid_: sim output, log, no-sim
 
 **Simulation Sentinel**:
