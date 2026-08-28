@@ -691,6 +691,16 @@ class TestRunLogAndBuildContext:
         report = json.loads((tmp_path / "reports" / "elab_default.json").read_text())
         assert report["log"] == ".booley_project/.runtime/edalize/elab/default/run.log"
 
+    def test_compile_command_failure_is_cached_as_unavailable(self, tmp_path):
+        flow = _make_flow(tmp_path)
+        with patch.object(
+            flow, "_dry_run_command", side_effect=RuntimeError("unavailable")
+        ) as dry_run:
+            assert flow._compile_command_str("default") is None
+            assert flow._compile_command_str("default") is None
+
+        dry_run.assert_called_once_with("default")
+
     def test_report_and_failure_card_carry_build_context(self, tmp_path):
         """With an authored .core, the report gains compile_command + fileset
         and the failure card names both compactly (the invisible half of most

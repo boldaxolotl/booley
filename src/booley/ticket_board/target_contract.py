@@ -393,6 +393,8 @@ def _identity(root: Path, path: Path) -> str:
 
 def _entry(root: Path, path: Path, kind: str, data: bytes | None = None) -> ContractSurfaceEntry:
     payload = path.read_bytes() if data is None else data
+    if kind == "constraint":
+        payload = payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     return ContractSurfaceEntry(_identity(root, path), kind, _sha256(payload))
 
 

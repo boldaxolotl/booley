@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .acceptance_journal import JournalState
 from .analytics import compute_step_cost
 from .constants import (
     PRIORITY_ORDER,
@@ -306,8 +307,20 @@ def _colorize_status(status: str) -> str:
         "done": green,
         "draft": chrome,
     }
-    color_fn = _STATUS_COLOR.get(status, dim)
+    color_fn = _STATUS_COLOR.get(status.partition("/")[0], dim)
     return color_fn(status)
+
+
+def _status_with_acceptance(ticket: dict[str, Any]) -> str:
+    status = ticket.get("status", "queued")
+    raw_state = ticket.get("acceptance_state")
+    if raw_state is None:
+        return status
+    state = JournalState(raw_state)
+    if state is JournalState.DONE:
+        return status
+    progress = "cleanup-pending" if status == "done" and state.cleanup_pending else str(state)
+    return f"{status}/{progress}"
 
 
 def _colorize_priority(prio: str) -> str:
@@ -385,7 +398,7 @@ def _build_board_rows(
             (
                 ticket_name,
                 t.get("priority", "medium"),
-                status,
+                _status_with_acceptance(t),
                 step,
                 endpoints_str,
                 updated,
