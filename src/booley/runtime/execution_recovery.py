@@ -33,10 +33,14 @@ from booley.runtime.process_tree import descendant_pids
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _POLL_SECONDS = 0.05
-_RECOVERY_STAGES = (
-    (signal.SIGINT, 2.0),
-    (signal.SIGTERM, 2.0),
-    (signal.SIGKILL, 5.0),
+_RECOVERY_STAGES = tuple(
+    (signum, timeout_s)
+    for signal_name, timeout_s in (
+        ("SIGINT", 2.0),
+        ("SIGTERM", 2.0),
+        ("SIGKILL", 5.0),
+    )
+    if (signum := getattr(signal, signal_name, None)) is not None
 )
 
 
