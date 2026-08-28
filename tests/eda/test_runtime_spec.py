@@ -128,10 +128,21 @@ def test_host_eda_issuance_still_requires_authority(
         '[eda.vivado]\nprovisioning = "host"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setattr("booley.eda.config.sys.platform", "linux")
+    monkeypatch.setattr(
+        runtime_spec,
+        "load_eda_config",
+        lambda _project: {"vivado": SimpleNamespace(provisioning="host")},
+    )
     monkeypatch.setattr(runtime_spec, "_host_vivado_requested", lambda *_args: True)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
+
+    @contextmanager
+    def required(_project: Path, host_provisioning: bool):
+        assert host_provisioning is True
+        raise authority.AuthorityError("host EDA authority was checked")
+        yield None, None
+
+    monkeypatch.setattr(authority, "resolve_for_issuance", required)
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         mcp_start_command=dc.mcp_post_start_command(),
@@ -139,8 +150,20 @@ def test_host_eda_issuance_still_requires_authority(
     )
     runtime_spec.pin_image(spec)
 
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="no exact vivado grant"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="host EDA authority was checked"):
         runtime_spec.seal(project, spec)
+
+
+def test_requested_license_requires_issued_profile_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = SimpleNamespace(name="site")
+    monkeypatch.setattr(runtime_spec, "_optional_license", lambda _project: profile)
+
+    assert runtime_spec.requested_license(tmp_path, expected_name="site") is profile
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the issued runtime"):
+        runtime_spec.requested_license(tmp_path, expected_name="other")
 
 
 def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
