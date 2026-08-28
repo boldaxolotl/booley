@@ -161,6 +161,30 @@ def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path
     assert TargetContract.from_mapping(parsed["target_contract"]) == contract
 
 
+def test_contract_binds_successful_run_target_removals(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    criteria = {"mandatory": {"lint_clean": ["lint_toy"]}}
+    canonical = "acme:lib:toy:1.0#lint_toy"
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["lint_toy"],
+        removal_targets=[canonical],
+        bindings=criterion_targets(criteria),
+        participants=[_participant()],
+    )
+    fields = {
+        "base_sha": contract.outer_sha,
+        "criteria": criteria,
+        "on_success": {"remove_targets": []},
+        "target_contract": contract.as_dict(),
+    }
+
+    assert validate_contract_fields(fields) == [
+        "on_success.remove_targets changed after Target Contract sealing"
+    ]
+
+
 def test_schema_three_seals_repository_participants_and_surface_entries(tmp_path: Path) -> None:
     project = _project(tmp_path)
     outer = ContractParticipant(

@@ -199,7 +199,7 @@ The filesystem-backed state machine that tracks one Ticket from draft through ex
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Target Contract**:
-The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets and control surface to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
+The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets, control surface, and canonical creation-time Target-removal disposition to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
 _Avoid_: target snapshot, config patch, mutable recipe
 
 **Ticket Workspace**:

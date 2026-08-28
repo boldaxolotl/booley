@@ -494,9 +494,8 @@ def _cmd_init(tio, args):
     return 2
 
 
-_ON_SUCCESS_KEYS = frozenset(
-    {"destination", "merge", "cleanup", "triage_report", "remove_targets"}
-)
+_ON_SUCCESS_REQUIRED_KEYS = frozenset({"destination", "merge", "cleanup", "triage_report"})
+_ON_SUCCESS_KEYS = _ON_SUCCESS_REQUIRED_KEYS | {"remove_targets"}
 
 
 def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | None]:
@@ -511,7 +510,7 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
     except BoundaryError as exc:
         return None, str(exc)
 
-    missing = _ON_SUCCESS_KEYS - mapping.keys()
+    missing = _ON_SUCCESS_REQUIRED_KEYS - mapping.keys()
     unknown = mapping.keys() - _ON_SUCCESS_KEYS
     key_errors = []
     if missing:
@@ -521,6 +520,7 @@ def _parse_on_success_arg(value: str) -> tuple[dict[str, object] | None, str | N
     if key_errors:
         return None, "; ".join(key_errors)
 
+    mapping.setdefault("remove_targets", [])
     model = OnSuccess.from_dict(mapping)
     errors = model.validate()
     if errors:

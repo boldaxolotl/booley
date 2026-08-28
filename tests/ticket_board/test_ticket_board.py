@@ -4097,7 +4097,6 @@ class TestDraftsDirectory:
             "merge": False,
             "cleanup": True,
             "triage_report": False,
-            "remove_targets": [],
         }
 
         rc = main(
@@ -4120,7 +4119,7 @@ class TestDraftsDirectory:
         assert rc == 0
         path = tickets_dir / "board" / "drafts" / "cli-defaults.md"
         fields, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
-        assert fields["on_success"] == on_success
+        assert fields["on_success"] == {**on_success, "remove_targets": []}
 
     @pytest.mark.parametrize(
         ("on_success", "error"),
@@ -4129,7 +4128,7 @@ class TestDraftsDirectory:
             (json.dumps([]), "--on-success must be a mapping"),
             (
                 json.dumps({"destination": "done"}),
-                "missing keys: cleanup, merge, remove_targets, triage_report",
+                "missing keys: cleanup, merge, triage_report",
             ),
             (
                 json.dumps(

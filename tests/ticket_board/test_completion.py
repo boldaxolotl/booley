@@ -206,7 +206,7 @@ def test_acceptance_journal_validates_every_recovery_field(
     tmp_path: Path, update: dict[str, Any], message: str
 ) -> None:
     contract = _boundary_contract()
-    data = completion._initial_journal("change-target", contract)
+    data = completion._initial_journal("change-target", contract).as_dict()
     candidates = update.get("candidates")
     if isinstance(candidates, dict) and "outer" in candidates:
         candidates["outer"]["staging_ref"] = candidates["outer"]["staging_ref"].format(
@@ -237,7 +237,7 @@ def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str])
     assert "cannot complete 'bad-contract'" in capsys.readouterr().err
 
 
-def test_complete_rejects_noncanonical_or_unbound_target_removal(
+def test_complete_rejects_removal_policy_changed_after_sealing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     contract = _boundary_contract()
@@ -253,7 +253,7 @@ def test_complete_rejects_noncanonical_or_unbound_target_removal(
     assert complete_review_ticket(
         tio, "change-target", _Policy(remove_targets=("baseline",))
     ) is False
-    assert "sorted canonical Targets bound by the sealed contract" in capsys.readouterr().err
+    assert "changed after Target Contract sealing" in capsys.readouterr().err
 
 
 def test_complete_rejects_legacy_contract_schema(
@@ -331,6 +331,7 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
         project_sha="",
         surface_digest=surface_digest(root),
         targets=("baseline", "candidate"),
+        removal_targets=(canonical,),
         bindings=(
             ContractTargetBinding(
                 "lint",
@@ -408,6 +409,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         project_sha=project_ticket,
         surface_digest=surface_digest(root),
         targets=("baseline", "candidate"),
+        removal_targets=(canonical,),
         bindings=(
             ContractTargetBinding(
                 "lint",
@@ -438,7 +440,7 @@ def test_retry_rejects_changed_target_removal_policy(tmp_path: Path) -> None:
     journal_path = tmp_path / "acceptance.json"
     first = completion._initial_journal(
         "change-target", contract, ("acme:lib:toy:1.0#baseline",)
-    )
+    ).as_dict()
     journal_path.write_text(json.dumps(first), encoding="utf-8")
 
     with pytest.raises(completion.CompletionError, match="removal policy changed"):
@@ -553,9 +555,9 @@ def test_retry_finishes_journal_after_board_approval_write_failure(
     write_journal = completion._write_journal
     failed = False
 
-    def fail_done_write(path: Path, journal: dict[str, Any]) -> None:
+    def fail_done_write(path: Path, journal: completion.AcceptanceJournal) -> None:
         nonlocal failed
-        if journal.get("state") == "done" and not failed:
+        if journal.state == "done" and not failed:
             failed = True
             raise OSError("simulated journal write failure")
         write_journal(path, journal)
