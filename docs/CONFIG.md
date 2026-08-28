@@ -281,9 +281,13 @@ a header-only FST. Declare the contract:
 trace_args = ["--trace={file}"]
 ```
 
-`{file}` interpolates the trace destination; args without it are passed as-is
+`{file}` interpolates the destination selected from the Target's trace recipe.
+For an authored Verilator `--trace-fst` setup it is a regular `trace.fst` file;
+Booley leaves the Target's FST build options intact and B-Wave reads that file
+directly. For VCD tracing it is the live FIFO that B-Wave converts to FST. Args
+without `{file}` are passed as-is
 (`["-t"]`). This **replaces** the default pair, so include every argument the
-binary needs. Booley also rejects a header-only waveform.
+binary needs. Booley rejects header-only or otherwise unqueryable waveforms.
 
 ### Where the testbench drops its dump (`[flows.sim].trace_files`)
 
@@ -296,14 +300,16 @@ reported as `--trace requested but no waveform was produced`. Declare it:
 
 ```toml
 [flows.sim]
-trace_files = ["fpu.vcd"]        # globs allowed: ["dump_*.vcd"]
+trace_files = ["fpu.vcd"]        # .fst is also accepted; globs are allowed
 ```
 
 Each entry is resolved against `run_cwd`, then the trace/work dir, then the
 build dir (absolute paths are used as given), and is consulted **only when
-Booley's own artifacts are absent** — it is a fallback, not an override. A
-matched `.vcd` goes through the normal VCD→bwave conversion, so the result is
-queryable by `bwave` like any other trace.
+Booley's own artifacts are absent** — it is a fallback, not an override. Only a
+file created or changed by the current run is accepted. A matched `.fst` is read
+directly; a matched `.vcd` under the finalize-time size cap is converted to FST.
+An oversized VCD is retained for incident diagnostics, but never reported as
+`TRACE_OK`; convert it separately with `bwave build` or reduce the dump scope.
 
 ### Per-run disk budget (`[flows.sim].max_rundir_bytes`)
 
@@ -960,11 +966,11 @@ provider = "claude"   # or "codex"
 ```
 
 `booley init` records this choice before it seeds the Session Runtime. A TTY
-prompts with no default; unattended initialization must pass, for example,
-`--provider claude --auth subscription`. Existing explicit `[agent]` values are
-preserved on re-run. An older provider-only project must explicitly select its
-missing policy on the next init (for example, `--auth auto`); init then records
-it rather than silently applying it.
+offers `claude` and `auto` as the defaults; unattended initialization applies
+the same defaults unless flags override them (for example,
+`--provider codex --auth subscription`). Existing explicit `[agent]` values are
+preserved on re-run. An older provider-only project receives the documented
+`auto` policy on its next init, which is then recorded in the project config.
 
 #### Pinning what bills (`[agent] auth`)
 

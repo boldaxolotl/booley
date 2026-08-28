@@ -17,9 +17,12 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # Make sure the src tree is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR
 from booley.specialists.coverage_analyst import (
     BranchResult,
@@ -2777,15 +2780,36 @@ class TestBuildEdalizeTraceCmd:
     def _resolved(self, build_root):
         return types.SimpleNamespace(build_root=Path(build_root), toplevel="tb_top")
 
+    def _overlay(self, mode):
+        return types.SimpleNamespace(
+            vlnv="::demo-booleytrace:0",
+            mode=mode,
+            cleanup=lambda: None,
+        )
+
     def test_ships_make_and_verilator_run_one_shell(self, tmp_path):
         work_dir = tmp_path
         build_root = tmp_path / ".edalize" / "coverage" / "config_a"
         endpoint = _make_endpoint_with_args(
             work_dir=str(work_dir), target="config_a", tb_top="tb_top", test=""
         )
-        with patch(
-            "booley.fusesoc.fusesoc_registry.resolve_target",
-            return_value=self._resolved(build_root),
+        with (
+            patch(
+                "booley.specialists.coverage_analyst.resolve_trace_args",
+                return_value=["--trace={file}"],
+            ),
+            patch(
+                "booley.specialists.coverage_analyst.resolve_trace_files",
+                return_value=["hardcoded.fst"],
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
+                return_value=self._overlay(fusesoc_registry.TraceMode.NATIVE_FST),
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.resolve_target",
+                return_value=self._resolved(build_root),
+            ),
         ):
             cmd = endpoint._build_edalize_trace_cmd(
                 work_dir,
@@ -2799,6 +2823,9 @@ class TestBuildEdalizeTraceCmd:
         assert "make -C" in script
         assert "booley.sim.verilator_run" in script
         assert "--trace" in script
+        assert "--trace-mode native_fst" in script
+        assert "--trace-arg=--trace={file}" in script
+        assert "--trace-file=hardcoded.fst" in script
         assert "--trace-scope dut" in script
         assert "--top tb_top" in script
         # build failure guard short-circuits the run
@@ -2814,6 +2841,10 @@ class TestBuildEdalizeTraceCmd:
         )
         endpoint._coverage_test = "regress"
         with (
+            patch(
+                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
+                return_value=self._overlay(fusesoc_registry.TraceMode.VCD_FIFO),
+            ),
             patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=self._resolved(build_root),
@@ -2839,6 +2870,10 @@ class TestBuildEdalizeTraceCmd:
         )
         with (
             patch(
+                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
+                return_value=self._overlay(fusesoc_registry.TraceMode.VCD_FIFO),
+            ),
+            patch(
                 "booley.fusesoc.fusesoc_registry.resolve_target",
                 return_value=self._resolved(build_root),
             ),
@@ -2859,6 +2894,29 @@ class TestBuildEdalizeTraceCmd:
         assert "--test=smoke" in script
         assert "--test=corner" in script
         assert "--trace" in script
+
+    def test_cocotb_trace_rejects_native_fst(self, tmp_path):
+        endpoint = _make_endpoint_with_args(
+            work_dir=str(tmp_path),
+            target="sim_cocotb",
+            tb_top="dut",
+        )
+        with (
+            patch(
+                "booley.fusesoc.fusesoc_registry.write_trace_overlay",
+                return_value=self._overlay(fusesoc_registry.TraceMode.NATIVE_FST),
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.resolve_target",
+                return_value=self._resolved(tmp_path / "build"),
+            ),
+            patch(
+                "booley.fusesoc.fusesoc_registry.target_cocotb_modules",
+                return_value={"sim_cocotb": "test_dut"},
+            ),
+            pytest.raises(fusesoc_registry.FuseSocError, match=r"Cocotb.*native FST"),
+        ):
+            endpoint._build_edalize_trace_cmd(tmp_path, tmp_path / "trace", "", 600)
 
 
 def test_qualified_target_uses_distinct_trace_dirs_per_test(tmp_path):

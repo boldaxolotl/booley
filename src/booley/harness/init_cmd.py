@@ -4,9 +4,9 @@ Replaces bootstrap.py with package-aware logic. Uses booley.runtime.paths for al
 package data resolution and booley.runtime.project_dir for project directory discovery.
 
 Idempotent — safe to re-run. Each step checks preconditions and skips if
-already satisfied. A first init requires an explicit agent provider and auth
-policy: a terminal prompts without defaults, while unattended callers pass
-``--provider`` and ``--auth``.
+already satisfied. A first init defaults to Claude with automatic credential
+selection; flags, existing configuration, or terminal answers override those
+defaults.
 
 Steps, in the order :func:`run_init` runs them. The number the user sees is
 allocated at print time by :meth:`InitContext.step_banner`, so it is always
@@ -49,6 +49,7 @@ from pathlib import Path
 from booley import __version__
 from booley.config.guidance_links import ensure_guidance_links, plan_guidance_links
 from booley.config.settings import InteractiveConfig, load_interactive_config
+from booley.core.boundary import require_dict
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
@@ -510,7 +511,7 @@ def _step_tickets(ctx: InitContext) -> None:
 
 @dataclass(frozen=True)
 class AgentSelection:
-    """The explicit provider and billing policy initialization must persist."""
+    """The provider and billing policy that initialization must persist."""
 
     provider: str
     auth: str
@@ -533,28 +534,33 @@ def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
         return None, None
     with path.open("rb") as config_file:
         data = tomllib.load(config_file)
-    agent = data.get("agent", {})
-    if not isinstance(agent, dict):
-        raise ValueError("booley.toml [agent] must be a table")
+    agent = require_dict(data.get("agent", {}), field="booley.toml [agent]")
     from booley.config.agent import parse_auth, parse_provider
 
     return parse_provider(agent), parse_auth(agent)
 
 
-def _prompt_agent_choice(label: str, choices: tuple[str, ...]) -> str | None:
-    """Prompt for one required choice; an empty answer is never a default."""
+def _prompt_agent_choice(
+    label: str,
+    choices: tuple[str, ...],
+    *,
+    default: str | None = None,
+) -> str | None:
+    """Prompt for one choice, accepting the documented default when provided."""
     options = "/".join(choice.replace("_", "-") for choice in choices)
     for _attempt in range(3):
         try:
-            value = (
-                input(f"  Select agent {label} ({options}): ").strip().lower().replace("-", "_")
-            )
+            suffix = f" [{default.replace('_', '-')}]" if default else ""
+            value = input(f"  Select agent {label} ({options}){suffix}: ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
+        if not value and default:
+            return default
+        value = value.lower().replace("-", "_")
         if value in choices:
             return value
-        info(f"choose one of: {options.replace('/', ', ')} (there is no default)")
+        info(f"choose one of: {options.replace('/', ', ')}")
     err(f"agent {label} selection aborted after 3 invalid answers")
     return None
 
@@ -566,6 +572,7 @@ def _resolve_selection_value(
     configured: str | None,
     requested: str | None,
     choices: tuple[str, ...],
+    default: str,
 ) -> tuple[str | None, bool]:
     """Resolve one field and whether it must be added to booley.toml."""
     if configured is not None:
@@ -579,18 +586,14 @@ def _resolve_selection_value(
     if requested is not None:
         return requested, True
     if ctx.interactive:
-        return _prompt_agent_choice(name, choices), True
-    err(
-        f"agent {name} is not configured; unattended init requires "
-        f"--{name} {{{','.join(choice.replace('_', '-') for choice in choices)}}}"
-    )
-    return None, False
+        return _prompt_agent_choice(name, choices, default=default), True
+    return default, True
 
 
 def _resolve_agent_selection(
     ctx: InitContext, args: argparse.Namespace
 ) -> tuple[AgentSelection, Path] | None:
-    """Resolve flags/config/prompts without guessing either agent setting."""
+    """Resolve flags, config, prompts, and documented agent defaults."""
     config_path = _agent_config_path(ctx.project_root)
     try:
         provider, auth = _read_agent_selection(config_path)
@@ -604,9 +607,10 @@ def _resolve_agent_selection(
         configured=provider,
         requested=getattr(args, "provider", None),
         choices=("claude", "codex"),
+        default="claude",
     )
     if provider is None:
-        ctx.record("agent_config", "err", "explicit provider/auth required")
+        ctx.record("agent_config", "err", "agent selection aborted")
         return None
     auth, write_auth = _resolve_selection_value(
         ctx,
@@ -614,9 +618,10 @@ def _resolve_agent_selection(
         configured=auth,
         requested=getattr(args, "auth", None),
         choices=("auto", "subscription", "api_key"),
+        default="auto",
     )
     if auth is None:
-        ctx.record("agent_config", "err", "explicit provider/auth required")
+        ctx.record("agent_config", "err", "agent selection aborted")
         return None
     return AgentSelection(provider, auth, write_provider, write_auth), config_path
 
@@ -2249,48 +2254,47 @@ def _print_init_banner(ctx: InitContext) -> None:
     info(f"platform      : {'Windows' if IS_WINDOWS else 'POSIX'}")
 
 
-def run_init(  # noqa: PLR0911 - each return is a fail-fast initialization boundary
-    args: argparse.Namespace, project_root: Path
-) -> int:
-    """Run the project initialization wizard."""
-    _configure_progress_output()
-    ctx = InitContext(
+def _init_context(args: argparse.Namespace, project_root: Path) -> InitContext:
+    """Build the shared initialization context from CLI arguments."""
+    return InitContext(
         project_root=project_root,
         check_only=getattr(args, "check_only", False),
         force=getattr(args, "force", False),
         verbose=getattr(args, "verbose", False),
         fix_line_endings=getattr(args, "fix_line_endings", False),
     )
-    _print_init_banner(ctx)
 
-    resolved_selection = _resolve_agent_selection(ctx, args)
-    if resolved_selection is None:
-        return _print_summary(ctx)
-    selection, agent_config_path = resolved_selection
 
-    # Docker is the execution substrate for every supported EDA flow. Fail
-    # before creating or changing project files when its daemon is unavailable;
-    # a half-initialized tree cannot be used and obscures the real prerequisite.
-    if not _step_eda_tool_detection(ctx):
-        return _print_summary(ctx)
-
-    guidance_plan = None
+def _plan_existing_guidance(ctx: InitContext) -> tuple[InitPlan | None, bool]:
+    """Inspect existing guidance links and report whether init may proceed."""
     canon = ctx.project_root / ".booley_project" / "AGENTS.md"
-    if canon.is_file():
-        try:
-            guidance_plan = plan_guidance_links(
-                ctx.project_root,
-                ctx.project_root / ".booley_project",
-            )
-        except (OSError, FileNotFoundError, ValueError) as exc:
-            err(f"initialization filesystem inspection failed: {exc}")
-            ctx.record("filesystem_plan", "err", "inspection failed")
-            return _print_summary(ctx)
-        if guidance_plan.blockers:
-            for action in guidance_plan.blockers:
-                err(f"initialization blocked by {action.path}: {action.blocker}")
-            ctx.record("filesystem_plan", "err", "guidance ownership conflict")
-            return _print_summary(ctx)
+    if not canon.is_file():
+        return None, True
+    try:
+        guidance_plan = plan_guidance_links(
+            ctx.project_root,
+            ctx.project_root / ".booley_project",
+        )
+    except (OSError, FileNotFoundError, ValueError) as exc:
+        err(f"initialization filesystem inspection failed: {exc}")
+        ctx.record("filesystem_plan", "err", "inspection failed")
+        return None, False
+    if not guidance_plan.blockers:
+        return guidance_plan, True
+    for action in guidance_plan.blockers:
+        err(f"initialization blocked by {action.path}: {action.blocker}")
+    ctx.record("filesystem_plan", "err", "guidance ownership conflict")
+    return guidance_plan, False
+
+
+def _run_project_init_steps(
+    ctx: InitContext,
+    args: argparse.Namespace,
+    selection: AgentSelection,
+    agent_config_path: Path,
+    guidance_plan: InitPlan | None,
+) -> int:
+    """Run seed-only or full project mutations after preflight succeeds."""
 
     if getattr(args, "seed", False):
         if not _step_agent_config(ctx, selection, agent_config_path):
@@ -2322,3 +2326,24 @@ def run_init(  # noqa: PLR0911 - each return is a fail-fast initialization bound
     _step_advisories(ctx)
 
     return _print_summary(ctx)
+
+
+def run_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Run the project initialization wizard."""
+    _configure_progress_output()
+    ctx = _init_context(args, project_root)
+    _print_init_banner(ctx)
+
+    resolved_selection = _resolve_agent_selection(ctx, args)
+    if resolved_selection is None:
+        return _print_summary(ctx)
+    selection, agent_config_path = resolved_selection
+
+    # Docker is the execution substrate for every supported EDA flow. Fail
+    # before changing project files so a missing daemon cannot leave partial setup.
+    if not _step_eda_tool_detection(ctx):
+        return _print_summary(ctx)
+    guidance_plan, may_proceed = _plan_existing_guidance(ctx)
+    if not may_proceed:
+        return _print_summary(ctx)
+    return _run_project_init_steps(ctx, args, selection, agent_config_path, guidance_plan)

@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -62,6 +63,7 @@ def _op_move_and_log(
     *,
     expected_status: str | None = None,
     expected_execution_id: str | None = None,
+    before_move: Callable[[], bool] | None = None,
 ):
     """Move ticket, update fields, log transition atomically.
 
@@ -79,6 +81,7 @@ def _op_move_and_log(
         enforce_lifecycle=True,
         expected_status=locked_status,
         expected_execution_id=expected_execution_id,
+        before_move=before_move,
     )
     if not success:
         print(f"Error: operation failed for '{slug}'", file=sys.stderr)
@@ -405,6 +408,9 @@ def _handoff_to_review(
         append_step="summary",
         expected_status="running" if expected_execution_id is not None else None,
         expected_execution_id=expected_execution_id,
+        before_move=lambda: _prepare_handoff_snapshot(
+            tio, slug, entry, expected_execution_id
+        ),
     )
     if ok and is_event_enabled("review"):
         ticket_name = entry.get("summary", slug) if entry else slug
@@ -412,6 +418,78 @@ def _handoff_to_review(
         body = digest[:120] if digest else ""
         ntfy_send(f"REVIEW: {ticket_name}", body)
     return ok
+
+
+def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gates
+    tio: Any,
+    slug: str,
+    entry: dict | None,
+    expected_execution_id: str | None,
+) -> bool:
+    """Fence Jobs and freeze live acceptance before a review transition."""
+    from booley.dev_support.development_state import DevelopmentState
+    from booley.harness.job_fence import active_ticket_jobs
+
+    from .acceptance_ledger import (
+        AcceptanceLedgerError,
+        bind_review_package,
+        freeze_acceptance,
+        read_acceptance,
+    )
+    from .criteria_acceptance import check_criteria_acceptance
+
+    log_dir = ticket_log_dir(tio.logs_dir, slug)
+    active = active_ticket_jobs(log_dir)
+    if active:
+        names = ", ".join(f"{job.endpoint} ({job.run_id})" for job in active)
+        print(
+            f"Error: cannot hand off '{slug}' while endpoint Jobs are active: {names}",
+            file=sys.stderr,
+        )
+        return False
+    accepted = read_acceptance(log_dir)
+    if accepted.kind == "accepted":
+        if accepted.snapshot is None:
+            print(
+                f"Error: cannot hand off '{slug}': accepted snapshot is unreadable",
+                file=sys.stderr,
+            )
+            return False
+        try:
+            bind_review_package(log_dir, accepted.snapshot)
+        except AcceptanceLedgerError as exc:
+            print(f"Error: cannot bind review package for '{slug}': {exc}", file=sys.stderr)
+            return False
+        return True
+    if accepted.kind == "corrupt":
+        print(f"Error: cannot hand off '{slug}': {accepted.reason}", file=sys.stderr)
+        return False
+
+    state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+    if not state_path.exists():
+        return True  # Legacy Ticket: no durable snapshot can be reconstructed honestly.
+    state = DevelopmentState.load(state_path)
+    work_dir = Path(state.work_dir) if state.work_dir else None
+    verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
+    if verdict.disposition != "review":
+        print(
+            f"Error: cannot hand off '{slug}': acceptance is {verdict.disposition}",
+            file=sys.stderr,
+        )
+        return False
+    execution_id = expected_execution_id or str((entry or {}).get("execution_id", ""))
+    try:
+        snapshot = freeze_acceptance(
+            log_dir,
+            DevelopmentState.load(state_path),
+            execution_id=execution_id,
+            target_contract=(entry or {}).get("target_contract"),
+        )
+        bind_review_package(log_dir, snapshot)
+    except AcceptanceLedgerError as exc:
+        print(f"Error: cannot freeze acceptance for '{slug}': {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def op_handoff(
@@ -438,7 +516,6 @@ def op_handoff(
 
     if not _validate_transitions_for_handoff(tio, slug, entry):
         return False
-
     from booley.core.models import OnSuccess
 
     on_success = OnSuccess.from_dict(entry.get("on_success") if entry else None)
@@ -458,6 +535,9 @@ def op_handoff(
             append_step="summary",
             expected_status="running" if expected_execution_id is not None else None,
             expected_execution_id=expected_execution_id,
+            before_move=lambda: _prepare_handoff_snapshot(
+                tio, slug, entry, expected_execution_id
+            ),
         )
         return ok and op_complete(tio, slug)
 
@@ -677,6 +757,44 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
     )
 
 
+def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
+    """Refuse destructive terminal actions when durable acceptance is broken."""
+    from booley.dev_support.development_state import DevelopmentState
+
+    from .acceptance_ledger import (
+        AcceptanceLedgerError,
+        read_acceptance,
+        validate_review_package_binding,
+    )
+
+    log_dir = ticket_log_dir(tio.logs_dir, slug)
+    accepted = read_acceptance(log_dir)
+    if accepted.kind == "accepted":
+        if accepted.snapshot is None:
+            print(f"Error: accepted snapshot for '{slug}' is unreadable", file=sys.stderr)
+            return False
+        try:
+            validate_review_package_binding(log_dir, accepted.snapshot)
+        except AcceptanceLedgerError as exc:
+            print(
+                f"Error: review package binding for '{slug}' is corrupt: {exc}",
+                file=sys.stderr,
+            )
+            return False
+        return True
+    if accepted.kind == "corrupt":
+        print(
+            f"Error: accepted snapshot for '{slug}' is corrupt: {accepted.reason}",
+            file=sys.stderr,
+        )
+        return False
+    state_path = existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+    if state_path.exists() and DevelopmentState.load(state_path).strict_criteria:
+        print(f"Error: accepted snapshot for '{slug}' is unavailable", file=sys.stderr)
+        return False
+    return True  # Legacy review Ticket created before durable acceptance.
+
+
 def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
     tio: Any,
     slug: str,
@@ -717,6 +835,8 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
             f"Error: cannot complete '{slug}' from status '{status}'; must be in review",
             file=sys.stderr,
         )
+        return False
+    if not _completion_acceptance_valid(tio, slug):
         return False
 
     from .target_contract import TargetContract, TargetContractError

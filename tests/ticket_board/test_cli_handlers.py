@@ -8,6 +8,8 @@ from argparse import Namespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from booley.dev_support.development_state import DevelopmentState
+from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.cli_handlers import (
     _cmd_board,
     _cmd_classify,
@@ -224,6 +226,27 @@ class TestCmdShow:
     def test_unknown_slug_returns_2(self, tio, capsys):
         rc = _cmd_show(tio, Namespace(slug="nope"))
         assert rc == 2
+
+    def test_done_ticket_reads_accepted_snapshot_after_runtime_cleanup(self, tio, capsys):
+        make_ticket_file(tio, "done", "completed")
+        state_path = existing_runtime_file(tio.logs_dir, "completed", "booley_state.json")
+        state = DevelopmentState.load(state_path)
+        state.slug = "completed"
+        state.init_criteria({"sim_pass": True}, strict=True)
+        state.set_criterion("sim_pass", True, detail={"passed_tests": ["smoke"]})
+        state.save()
+        freeze_acceptance(
+            tio.logs_dir / "completed",
+            state,
+            execution_id="run-1",
+            target_contract=None,
+        )
+        state_path.unlink()
+
+        rc = _cmd_show(tio, Namespace(slug="completed"))
+
+        assert rc == 0
+        assert "mandatory 1/1 met" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

@@ -1812,57 +1812,54 @@ def sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
     return bool(src.rtl_source_files) and not src.tb_files
 
 
+def _selection_resolver() -> Callable[[Path | str, str], TargetRef]:
+    """Choose the public or Doctor-internal Target resolver."""
+    from booley.fusesoc import selftest_overlay
+
+    doctor_selftest = (
+        os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
+    )
+    return resolve_ref if doctor_selftest else resolve_public_ref
+
+
+def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -> None:
+    """Reject a known Target that the requested Flow cannot drive."""
+    if for_flow is None:
+        return
+    from booley.targets.target_surface import flow_can_drive
+
+    if flow_can_drive(for_flow, ref):
+        return
+    from booley.targets.flow_names import canonical
+
+    flow = canonical(for_flow)
+    raise IncompatibleTargetError(
+        f"Target {token!r} cannot be driven by the {flow!r} Flow "
+        f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
+        f"Choose a compatible Target with `booley targets --for {flow}`."
+    )
+
+
 def resolve_target_selection(
     target_arg: str | None,
     project_root: Path | str,
     *,
     for_flow: str | None = None,
 ) -> list[str]:
-    """Split a ``--target`` string into validated selection tokens (ADR 0030).
+    """Split and validate ``--target`` tokens, including Flow compatibility.
 
-    Each comma-separated token is validated via :func:`resolve_ref`: a bare name
-    must be unambiguous, a ``vlnv#name`` qualifier disambiguates. Unknown or
-    ambiguous tokens raise (:class:`UnknownTargetError` /
-    :class:`AmbiguousTargetError`), and the returned token is what the caller
-    passes back to the ref-taking functions (which also route through
-    :func:`resolve_ref`). An empty selection returns ``[]`` — there is **no**
-    enumerate-all fallback (ADR 0030): a Booley Flow invoked with no ``--target``
-    refuses rather than sweeping every core. Targets marked
-    ``flow_options.booley.doctor_selftest`` are accepted only during Doctor's
-    internal bad run and otherwise behave as unknown. A resolvable
-    ``.core`` Target is a precondition for every Booley Flow (ADR 0039), so every
-    token is validated unconditionally — the old zero-``.core`` transitional
-    skip silently accepted any name and made mixed projects hard-fail later.
-
-    When *for_flow* is provided, selection also enforces the same compatibility
-    contract exposed by ``booley targets --for``. This is an execution gate,
-    not merely a listing filter: a known but incompatible Target is rejected
-    before FuseSoC setup or an EDA tool can run.
+    An empty selection returns ``[]`` rather than enumerating every Target.
+    Bare names must be unambiguous; ``vlnv#name`` qualifiers disambiguate.
+    Doctor's private self-test Targets remain hidden from public selection.
     """
-    selected = [c.strip() for c in (target_arg or "").split(",") if c.strip()]
+    selected = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
     if not selected:
         return []
-    from booley.fusesoc import selftest_overlay
 
-    doctor_selftest = (
-        os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND
-    )
-    resolver = resolve_ref if doctor_selftest else resolve_public_ref
+    resolver = _selection_resolver()
     for token in selected:
-        ref = resolver(project_root, token)  # raises on unknown / ambiguous
-        if for_flow is None:
-            continue
-        from booley.targets.target_surface import flow_can_drive
-
-        if not flow_can_drive(for_flow, ref):
-            from booley.targets.flow_names import canonical
-
-            flow = canonical(for_flow)
-            raise IncompatibleTargetError(
-                f"Target {token!r} cannot be driven by the {flow!r} Flow "
-                f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-                f"Choose a compatible Target with `booley targets --for {flow}`."
-            )
+        ref = resolver(project_root, token)
+        _require_flow_compatible(for_flow, token, ref)
     return selected
 
 
@@ -2307,8 +2304,10 @@ def try_resolve_target(
 # (doctor, simulate, coverage_analyst, tests) keep working.
 from .fusesoc_trace_overlay import (  # noqa: F401  # re-exported for backward compatibility
     DEFAULT_TRACE_DEPTH,
+    TraceMode,
     TraceOverlay,
     target_includes_dump_module,
     trace_overlay_vlnv,
+    validate_cocotb_trace_mode,
     write_trace_overlay,
 )
