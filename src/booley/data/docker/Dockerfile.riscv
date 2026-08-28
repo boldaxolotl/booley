@@ -20,7 +20,7 @@
 # When the project ALSO has Python deps to bake (e.g. ibex), hand-author
 # .booley_project/docker/Dockerfile as `FROM booley-sandbox-riscv` + your pip
 # install, mark it `# booley:keep`, and point [sandbox].image at that image
-# instead (see docs/CONFIG.md).
+# instead (see docs/user/CONFIG.md).
 #
 # IMPORTANT: keep this file COPY-free. `booley init` builds it with data/docker/
 # as the context so a pip-installed Booley (no repo root) can build it too.

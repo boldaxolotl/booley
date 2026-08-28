@@ -2,7 +2,7 @@
 
 Single source of truth: ``data/criteria.toml`` (base) plus an optional project
 ``.booley_project/criteria.toml``. The ``booley cheat`` CLI renders these blocks
-live, while ``docs/USAGE.md`` and ``data/cheatsheet.md`` embed committed copies
+live, while ``docs/user/USAGE.md`` and ``data/cheatsheet.md`` embed committed copies
 between paired ``<!-- BEGIN GENERATED: <name> -->`` / ``<!-- END GENERATED: <name> -->``
 markers that a pytest keeps byte-identical to this renderer. Add, rename, or retire
 a criterion (or a threshold param) and every reference updates from this one place.
@@ -21,7 +21,7 @@ The "Set by" column is derived from the MCP-tool registry's ``satisfies`` metada
 
 Regenerate the committed doc blocks with::
 
-    python -m booley.dev_support.criteria_reference docs/USAGE.md src/booley/data/cheatsheet.md
+    python -m booley.dev_support.criteria_reference docs/user/USAGE.md src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations

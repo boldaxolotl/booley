@@ -9,10 +9,10 @@ it uses this troubleshooting guide before improvising a fix and verifies both pl
 Doctor before calling the project healthy.
 
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
-[SETUP.md](SETUP.md), for day-to-day driving see [USAGE.md](USAGE.md), and for
-the config knobs named below see [CONFIG.md](CONFIG.md). For the Booley-specific
+[SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md), for day-to-day driving see [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md), and for
+the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md). For the Booley-specific
 terms below (Session Runtime, Target, EDA Provisioning, Specialist, Booley Flow, Developer
-Agent) see the glossary in [CONTEXT.md](CONTEXT.md).
+Agent) see the glossary in [CONTEXT.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTEXT.md).
 
 ## VS Code says “A mount config is invalid” while reopening the container
 
@@ -46,8 +46,10 @@ A healthy server answers the slashed URL with `406` — it wants an SSE `Accept`
 header, which is exactly what a live MCP endpoint does; `200`/`405` are equally
 fine. Connection refused means it's not up. Your *client* URL stays `/mcp` (the
 redirect is transparent to it). The log is at `/tmp/booley_mcp_http.log`.
-Re-running `python -m booley.runtime.incontainer_register` by hand starts the server if
-it never came up.
+Reload the VS Code window first. If the service still does not return after the
+Session Runtime restarts, run `booley init --seed` on the host and rebuild or
+reopen the container. A server that remains absent after that supported
+lifecycle is a Booley bug; report it with the Doctor output and MCP log.
 
 ## An MCP tool is missing from `/mcp`
 
@@ -75,7 +77,7 @@ For any other missing MCP tool:
 4. Check whether the MCP server was deliberately narrowed for a nested agent or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
-See [MCP-TOOLS.md](MCP-TOOLS.md#default-discovery-and-explicit-opt-out) for the complete
+See [MCP-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/MCP-TOOLS.md#default-discovery-and-explicit-opt-out) for the complete
 discovery model.
 
 ## `bwave gui` fails on a scoped view
@@ -121,31 +123,6 @@ CLI in its own virtualenv and links the `booley` executable into `~/.local/bin`
 pipx install booley-rtl
 ```
 
-## `python3 -m venv` fails with `ensurepip is not available`
-
-Different problem, same distributions. Debian and Ubuntu split `venv` out of the
-Python package, so a stock system has the interpreter but not the bits
-`python3 -m venv` needs, and the development setup in
-[CONTRIBUTING.md](https://github.com/boldaxolotl/Booley/blob/main/docs/CONTRIBUTING.md#getting-set-up) dies with:
-
-```
-The virtual environment was not created successfully because ensurepip is not
-available. On Debian/Ubuntu systems, you need to install the python3-venv package
-```
-
-Install the package **matching your interpreter's minor version** — plain
-`python3-venv` tracks the distro default and does nothing for a
-`python3.13 -m venv`:
-
-```bash
-python3 --version                       # e.g. Python 3.12.3
-sudo apt install python3.12-venv        # the version you just printed
-```
-
-Then re-run `python3 -m venv .venv`. If the half-made `.venv/` is still there,
-delete it first — a failed run leaves a directory that looks valid but has no
-`pip`.
-
 ## The wrong `booley` runs (stale install shadowing)
 
 `booley init` and `booley session ...` are host commands that shell out to
@@ -153,15 +130,10 @@ Docker, so whichever environment you install into has to be the one your shell
 resolves `booley` from. If `booley --version` and `pip show booley-rtl`
 **disagree**, an older install is shadowing this one on `PATH`.
 
-For a development (editable) install the executable lives in `.venv/bin` and is
-on `PATH` only while the venv is active. To use it without activating, link it
-once:
-
-```bash
-ln -s "$PWD/.venv/bin/booley" ~/.local/bin/booley
-```
-
-Then make sure nothing earlier on `PATH` (a `pipx`/system copy) resolves first.
+Run `command -v -a booley` (or `where.exe booley` on Windows) and remove or
+upgrade older `pipx`, user, or system installations that appear before the one
+you intend to use. Reinstalling with `pipx install --force booley-rtl` restores
+the normal isolated CLI entry point.
 
 ## Windows first-run problems
 
@@ -265,11 +237,11 @@ booley shell -- riscv-none-elf-gcc -march=<theirs> ...
 ```
 
 Better to plan for it during setup planning (Step 0 of the
-[`booley-setup`](SETUP.md#the-booley-setup-skill) skill, whose setup plan
+[`booley-setup`](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md#the-booley-setup-skill) skill, whose setup plan
 carries this probe on its execution-time checks list) than to learn it after
 the config is written. For the image
 contents and how to layer EDA tools on top, see
-[CONFIG.md → RISC-V toolchain image](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
+[CONFIG.md → RISC-V toolchain image](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 ## Agents turn into "Not logged in" partway through an unattended run
 
@@ -292,7 +264,7 @@ re-seeds the devcontainer spec; Booley then injects it on every container start.
 **Rebuild an existing container once** so the read-only mount exists.
 `booley auth --status` reports which credential each agent would use, and
 `booley doctor` warns when a run is about to rely on a refreshing one. Full
-billing and precedence detail is in [USAGE.md](USAGE.md#auth--billing).
+billing and precedence detail is in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing).
 
 ## Two interactive agents keep clobbering each other's edits
 
@@ -301,7 +273,7 @@ on each other's tree. **Interactive tabs and terminals don't**: they all share
 the repo you opened, so two interactive agents editing the same worktree trip
 over each other's changes. When you want an interactive agent to work in
 parallel with others, tell it up front to create a fresh worktree and work
-there. (Background on the two modes: [USAGE.md](USAGE.md#interactive-mode).)
+there. (Background on the two modes: [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#interactive-mode).)
 
 ## RTL simulates cleanly but `synth` rejects it under `slang`
 
@@ -315,7 +287,7 @@ than the `$size` call. **Workaround:** hoist the count into a named constant
 instantiation. This is not a Booley bug and not a dead end; the fix is usually a
 two-line RTL change. The running list of `slang` limitations (and where to add a
 new one) is in
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
+[SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 If you don't need `slang`, stay on the default `sv2v` frontend.
 
 ## Simulation stalls at time zero without results
@@ -332,7 +304,7 @@ to modernize the testbench for cocotb 1.9+ or 2.x (`cocotb.fork` becomes
 `cocotb.start_soon`, with a few import moves). The more expensive alternative is
 a project image containing a mutually compatible old Verilator and Python
 stack. The supported selection dialects and current image versions are in
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows).
+[SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#built-in-flows).
 
 ## Yosys rejects transpiled Verilog after `sv2v` succeeds
 
@@ -347,7 +319,7 @@ parser rejects even though `sv2v` exited successfully.
 Switch the synthesis Target to `frontend = "slang"`, which reads the interfaces
 natively. This is an upstream `sv2v` limitation rather than something the flow
 can repair. Frontend selection and requirements are in
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
+[SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 
 ## Verilator 5 rejects Verilator-4-era RTL
 

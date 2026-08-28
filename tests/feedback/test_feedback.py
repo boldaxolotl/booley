@@ -27,10 +27,10 @@ from booley.feedback.render import (
 
 PUBLIC_FEEDBACK_DOCS = (
     "README.md",
-    "docs/CONFIG.md",
+    "docs/user/CONFIG.md",
     "docs/CONTEXT.md",
-    "docs/CONTRIBUTING.md",
-    "docs/USAGE.md",
+    "docs/internals/CONTRIBUTING.md",
+    "docs/user/USAGE.md",
     "src/booley/data/cheatsheet.md",
 )
 
@@ -303,7 +303,7 @@ class TestDocsEvidence:
         finding = Finding(
             title="CONFIG.md documents a removed table",
             bucket="docs",
-            component="docs/CONFIG.md",
+            component="docs/user/CONFIG.md",
             observed="describes [sources.rtl]",
         )
         assert finding.is_filable()

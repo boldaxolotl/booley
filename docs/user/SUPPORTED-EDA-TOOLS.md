@@ -4,8 +4,8 @@
 
 This doc assumes a few Booley terms: **Booley Flow** (Booley's deterministic
 end-to-end orchestration), **Target** (a named FuseSoC `.core` build target),
-and **EDA provisioning** (where an approved tool installation comes from). If any are new, read the
-glossary in [CONTEXT.md](CONTEXT.md) first; the [README](../README.md) and
+and **EDA provisioning** (where an approved tool installation comes from). If any are new, consult the
+glossary in [CONTEXT.md](../CONTEXT.md); the [README](../../README.md) and
 [SETUP.md](SETUP.md) give the wider picture. Everything below is the detail
 layer on top of that vocabulary.
 
@@ -178,4 +178,4 @@ top of these; see
 Future commercial EDA integrations require their own built-in provisioning,
 licensing, Doctor, security, and full-Flow evidence before they can join this
 matrix. Planned integrations live in
-[ROADMAP.md](ROADMAP.md#commercial-eda-tools).
+[ROADMAP.md](../internals/ROADMAP.md#commercial-eda-tools).

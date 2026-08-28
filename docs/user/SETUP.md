@@ -1,7 +1,7 @@
 # Setup
 
 This guide connects an installed Booley CLI to a specific RTL project. It
-assumes you have completed the [README installation](../README.md#installation)
+assumes you have completed the [README installation](../../README.md#installation)
 and that `booley --version` works.
 
 Project setup has two parts: `booley init` bootstraps the repository, then the
@@ -33,7 +33,7 @@ verdict—and `enabled`/EDA provisioning), see [CONFIG.md](CONFIG.md).
 > This guide is written for a person setting up a project. An agent can follow
 > it too: point it at this file. After the bootstrap it hands off to the
 > `booley-setup` skill. It assumes you've skimmed the
-> [README](../README.md); [CONTEXT.md](CONTEXT.md) defines any Booley-specific
+> [README](../../README.md); [CONTEXT.md](../CONTEXT.md) defines any Booley-specific
 > term you hit here (Booley Flow, Specialist, Ticket/Interactive Mode).
 
 ## Ports
@@ -45,7 +45,7 @@ Their build systems have nothing in common (FuseSoC, bare Makefiles, a vendor te
 ## Bootstrap the project · host
 
 Run the bootstrap on the host before the skill takes over. The host versus
-Session Runtime split is described in [ARCHITECTURE.md](ARCHITECTURE.md#overview).
+Session Runtime split is described in [ARCHITECTURE.md](../internals/ARCHITECTURE.md#overview).
 
 > **`booley init` is the host command; the workflow CLI is container-only.**
 > `booley run`, `booley board`, and `bwave` refuse to run on the host (Reopen
@@ -258,7 +258,7 @@ project details leak into history). Stealth mode itself is covered in
 
 ## See also
 
-- [README installation](../README.md#installation): host prerequisites and CLI installation.
+- [README installation](../../README.md#installation): host prerequisites and CLI installation.
 - [CONFIG.md](CONFIG.md): configuration field reference and advanced setups
   (custom image/EDA tools and post-setup hook).
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at

@@ -1,33 +1,37 @@
-# Booley Flows: Build and Evidence Contracts
+# Built-in Booley Flow implementation
 
-This document is the implementation reference for Booley's built-in
-deterministic EDA flows. It follows a FuseSoC Target through command generation,
-execution, verdict interpretation, and durable evidence.
+This document is the implementation and evidence-contract reference for
+Booley's built-in deterministic Flows. It follows a FuseSoC Target through
+command generation, execution, verdict interpretation, and durable evidence.
+The public invocation and result interface lives in
+[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md).
 
 ## Document boundary
 
-The documentation is split by responsibility, not by reader type:
+The documentation is split at the public-interface seam:
 
 | Document | Owns |
 |---|---|
 | **This document** | The implementation and evidence contracts of the built-in `sim`, `elab`, `lint`, `synth`, and `fpga` Booley Flows |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | Public invocation, verdict, Criteria, report, and artifact behavior for those built-in Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
-| [CONFIG.md](CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
-| [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
+| [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
+| [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
-Configuration is mentioned here only where its ownership or effect is part of a
-build contract. Use `CONFIG.md`, not this document, to configure a project. Use
-`MCP-TOOLS.md` when implementing or extending the MCP tool abstraction itself.
+Public behavior is mentioned only where an implementation invariant needs
+context. Use `FLOW_REFERENCE.md` to operate a built-in Flow, `CONFIG.md` to
+configure a project, and `MCP-TOOLS.md` to implement or extend the generic MCP
+tool abstraction.
 
 ## Overview
 
 Booley owns a unified build system built on **FuseSoC** rather than adapting each
 project's Makefiles and TCL scripts. The design is described once in a `.core`
 file, and every Flow run is generated from that description. Existing projects
-therefore port their build description when adopting Booley; [SETUP.md](SETUP.md)
+therefore port their build description when adopting Booley; [SETUP.md](../user/SETUP.md)
 covers that process.
 
-Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [CONTEXT.md](CONTEXT.md) glossary) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
+Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [CONTEXT.md](../CONTEXT.md) glossary) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
 
 A deterministic **Booley Flow** has to do two things: turn the caller's request into a real EDA tool invocation, and turn the result back into facts Booley can reason about. This doc covers both halves for the built-ins: the **invocation** half (FuseSoC and Edalize generate the command) and the **interpretation** half (the per-Flow evidence contract). See [ARCHITECTURE.md](ARCHITECTURE.md) for where this layer sits in the whole system.
 
@@ -41,7 +45,7 @@ must return. The remaining sections are per-Flow references for `sim`, `elab`,
 
 Rather than hand-build commands per EDA tool, Booley builds command generation on two upstream libraries: **FuseSoC** resolves the design description and **Edalize** emits the backend command. These are internal building blocks, not external services. The deliberate line Booley draws is in *what it delegates to them*: it uses them to generate the command, but interpreting the result back into facts stays in Booley's own code.
 
-The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool to use (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). The `--target` argument to `sim`, `lint`, `elab`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
+The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool to use (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). The `--target` argument to `sim`, `lint`, `elab`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
 
 Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
 side-effect-free parse of the `.core` YAML (to validate `--target` names and
@@ -67,7 +71,7 @@ Configuration is split across three files by **owner and concern**:
 | `.booley_project/tests.toml` | Booley | Verification intent: per-Target test lists and the run-time test selector (e.g. a `+test_id=` plusarg template; a plusarg is a `+name=value` simulator argument) |
 | `.booley_project/booley.toml` | Booley | Project metadata, source dirs, per-Flow policy, and approved EDA provisioning requests |
 
-[CONFIG.md](CONFIG.md) owns the exact schemas, defaults, and configuration
+[CONFIG.md](../user/CONFIG.md) owns the exact schemas, defaults, and configuration
 examples for all three. The table is repeated here only because ownership of an
 input determines which layer may interpret it.
 
@@ -78,7 +82,7 @@ policy. Project configuration requests host provisioning, while the exact host
 Grant selects the Installation Registration; Project data cannot select a host
 path, command, execution location, or license server.
 The support matrix lives in
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows). The per-Flow sections
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows). The per-Flow sections
 below describe only how a built-in Flow uses its selected EDA tool.
 
 Normalized reports produced in the Session Runtime live under the project
@@ -179,9 +183,9 @@ rather than a plusarg.
 
 `[flows.sim]` holds execution and verdict policy; `tests.toml` holds the
 per-Target test list and run-time selector; the FuseSoC Target holds the build
-inputs and simulator choice. [CONFIG.md](CONFIG.md#simulation--passfail-sentinels-flowssim)
+inputs and simulator choice. [CONFIG.md](../user/CONFIG.md#simulation--passfail-sentinels-flowssim)
 owns the exact simulation keys and defaults, while its
-[design-description section](CONFIG.md#design-description-core-and-tests-teststoml)
+[design-description section](../user/CONFIG.md#design-description-core-and-tests-teststoml)
 owns the `tests.toml` schema.
 
 The CLI selectors `--test` (substring include-filter), `--skip`, `--trace`
@@ -294,7 +298,7 @@ The selected Target owns sources, toplevel, parameters, and frontend choice.
 `[flows.elab]` owns `enabled`, the default Target, build-tree retention, and the
 standalone probe frontend. Edalize-backed builds and ASIC frontend checks both
 run inside the Session Runtime.
-[CONFIG.md](CONFIG.md#elaboration-flowselab) owns the exact keys and defaults.
+[CONFIG.md](../user/CONFIG.md#elaboration-flowselab) owns the exact keys and defaults.
 
 The public selectors are `--target`, `--dry-run`, `--timeout`, and
 `--standalone`. A Ticket that declares `elaborate_standalone` requests the
@@ -348,7 +352,7 @@ never "Verilator-clean".
 
 The Target selects the linter and owns its rules and waivers. `[flows.lint]`
 holds execution policy, including whether warnings affect the process exit.
-[CONFIG.md](CONFIG.md#lint-flowslint) owns the exact keys and defaults.
+[CONFIG.md](../user/CONFIG.md#lint-flowslint) owns the exact keys and defaults.
 
 Lint *policy*, which rules fire and what is waived, is design description,
 not Booley config, so it lives on the Target: a `.vlt` file for Verilator,
@@ -356,7 +360,7 @@ not Booley config, so it lives on the Target: a `.vlt` file for Verilator,
 flow options) for Verible. Booley adds no severity tiers and no waiver
 machinery of its own: every finding counts against the Criterion, and a waiver
 edit lands in the diff like any other change, where ticket Scope and the
-Reviewer agent ([CONTEXT.md](CONTEXT.md)) are the control.
+Reviewer agent ([CONTEXT.md](../CONTEXT.md)) are the control.
 
 The CLI adds `--scope` (comma-separated path fragments, which filter the findings
 *and* the Criteria counts with them), `--dry-run`, and `--timeout` (ms, default
@@ -434,7 +438,7 @@ latch/loop conditions into a per-target `synthesis_ok_{target}` Criterion.
 > after quick floorplan / global placement / setup repair but are still
 > pre-layout estimates, not a tape-out flow. `logical` is a faster mapped-area
 > flow with only a rough logic-delay frequency estimate. See
-> [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows).
+> [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows).
 
 ### Configuration boundary
 
@@ -442,7 +446,7 @@ The `.core` Target owns the persistent recipe and timing inputs: frontend,
 profile, flattening, synthesis mode, backend overrides, source files, SDC, and
 toplevel. `[flows.synth]` owns execution and verdict policy such as the default
 Target, timeout, and intentional-latch allowance.
-[CONFIG.md](CONFIG.md#asic-synthesis-flowssynth) owns the exact keys, defaults,
+[CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth) owns the exact keys, defaults,
 and examples.
 
 `ppa_profile` and `synth_mode` are the main synthesis controls. The built-in
@@ -450,7 +454,7 @@ backend translates the profile to Yosys and OpenROAD settings; backend-specific
 knobs live under `advanced_settings_yosys` and `advanced_settings_openroad`.
 Per-call profile and expert overrides are resolved before command generation;
 their precedence and profile contents are part of the
-[configuration reference](CONFIG.md#asic-synthesis-flowssynth).
+[configuration reference](../user/CONFIG.md#asic-synthesis-flowssynth).
 
 Timing intent lives in the Target's SDC fileset (below), not in config scalars.
 
@@ -460,7 +464,7 @@ Timing constraints are **design intent** (clock period, I/O delays,
 false/multicycle paths), so they live on the FuseSoC Target as a `file_type:
 SDC` fileset, source-controlled and per-target like the RTL, symmetric with how
 FPGA XDC is a Target fileset. The configuration shape and example live in
-[CONFIG.md](CONFIG.md#asic-synthesis-flowssynth).
+[CONFIG.md](../user/CONFIG.md#asic-synthesis-flowssynth).
 
 A physical Target with **no** SDC fileset **and** no explicit clock is a **hard
 error**, not a silent default: the run fails loudly, naming the Target and the
@@ -548,7 +552,7 @@ requirement, not a preference. Both frontends feed the same tech-mapping and
 timing tail, so the choice affects RTL frontend processing only, not the PPA
 methodology.
 For the full comparison and known `slang` limitations, see
-[SUPPORTED-EDA-TOOLS.md → RTL frontend](SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
+[SUPPORTED-EDA-TOOLS.md → RTL frontend](../user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 
 ### Verdict semantics
 
@@ -608,7 +612,7 @@ timing is met.
 
 The selected Target owns FPGA build intent: device part, out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
-policy and default Target selection. [CONFIG.md](CONFIG.md#fpga-implementation-flowsfpga)
+policy and default Target selection. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
 owns the exact keys, defaults, and examples.
 
 The device `part`, `out_of_context` choice, and other build-recipe inputs live
@@ -627,7 +631,7 @@ host path, `vivado_path`, arbitrary mount, or execution-location knob.
 License Profiles are also host-owned. When one is authorized, the runtime
 receives only a fixed pointer to its session-owned relay, never a Project-chosen
 license environment or destination. See
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) for the currently validated
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) for the currently validated
 Vivado version, platform, and licensing status.
 
 ### Constraints (XDC)
@@ -640,7 +644,7 @@ fileset.
 The source is a `file_type: xdc` fileset in the `.core`:
 source-controlled and per-target. Multiple XDC files are supported; the
 configuration shape and example live in
-[CONFIG.md](CONFIG.md#fpga-implementation-flowsfpga).
+[CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga).
 
 The `file_type: xdc` fileset is the **sole** source: a Target with no such
 fileset is a hard error naming the Target and the fix. XDC is mandatory, and
@@ -652,30 +656,9 @@ therefore lives at `flow_options.part`. Keeping it beside the Target prevents a
 single global Flow section from silently applying the wrong device to another
 Target.
 
-### Public CLI
-
-```bash
-booley flow fpga --target <target>[,<target>...] [--baseline <ref>] [--no-cache] [--dry-run] \
-  [--timeout <ms>]
-```
-
-`fpga` selects a FuseSoC Target via `--target`. Per-call build-time flags are
-limited to the controls shown above; design inputs come from the Target and
-Flow configuration.
-
-Field rules:
-
-- `--target`: one or more FuseSoC Target names; required on every invocation.
-- `--baseline`: compare against a git ref. The baseline is built in an
-  ephemeral `git worktree`, so it works in Interactive Mode as well as Ticket
-  Mode (the two execution modes; see [CONTEXT.md](CONTEXT.md)). A Ticket Mode
-  criterion with a relative threshold supplies its immutable `base_sha`
-  automatically.
-- `--no-cache`: force a fresh implementation even when a matching reusable
-  result exists. The fresh result replaces the cache after it completes.
-- `--dry-run`: validate inputs and print the planned Vivado build
-  (part/top/XDC and resolved source counts) without running Vivado.
-- `--timeout`: per-target timeout in milliseconds (default 7200000).
+The public controls and baseline behavior are documented in
+[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md#fpga). The implementation receives
+those already-validated arguments from the common Flow interface.
 
 All build-time inputs come from the Target, not the Flow policy section: the
 part from `flow_options.part`, XDC from the Target's `file_type: xdc`
@@ -755,7 +738,7 @@ period is unknown.
 Timing thresholds (`fpga_impl_ok`) gate on these per-clock values. A **flat**
 `critical_path_ps_max` / `fmax_mhz_min` gates the timing-worst clock, so every
 clock must pass, while a **clock-scoped** `clk_i.fmax_mhz_min` gates just
-clock `clk_i` (see [USAGE.md](USAGE.md#synthesis--fpga-threshold-flavours)).
+clock `clk_i` (see [USAGE.md](../user/USAGE.md#synthesis--fpga-threshold-flavours)).
 
 ### Verdict semantics
 
