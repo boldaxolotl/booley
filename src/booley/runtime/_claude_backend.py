@@ -8,8 +8,6 @@ import io
 import json
 import logging
 import os
-import platform
-import shutil
 import time
 from collections import deque
 from collections.abc import Callable
@@ -92,60 +90,6 @@ class _StreamState:
     pending_file_edits: dict[str, str] = field(default_factory=dict)
 
 
-# --- CLI path resolution (Windows cmd.exe bypass) ---
-
-# Entry-script basenames the @anthropic-ai/claude-code package has shipped over
-# time. Newer releases dropped `cli.js` and ship `cli-wrapper.cjs` instead, so
-# probing only `cli.js` made the node path unresolvable on current images and
-# silently fell back to the legacy PATH shim (QA_REPORT C1a). node runs a .cjs
-# entry the same way, so the shim insertion downstream is unchanged.
-_CLI_ENTRY_NAMES = ("cli.js", "cli-wrapper.cjs")
-
-
-def _resolve_node_cli_shim() -> tuple[str, str] | None:
-    """Return (node_exe, cli_entry) for a direct spawn bypassing cmd.exe."""
-    env_node = os.environ.get("BOOLEY_NODE")
-    env_js = os.environ.get("BOOLEY_CLI_JS")
-    if env_node and env_js and Path(env_node).exists() and Path(env_js).exists():
-        return env_node, env_js
-
-    node = shutil.which("node")
-    if not node:
-        return None
-
-    base_dirs: list[Path] = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        base_dirs.append(Path(appdata) / "npm" / "node_modules" / "@anthropic-ai" / "claude-code")
-    claude_hit = shutil.which("claude.cmd") or shutil.which("claude")
-    if claude_hit:
-        # `claude` is frequently a bin symlink; resolve it so we can find the
-        # package dir relative to the real file, not just the link's directory.
-        for anchor in {Path(claude_hit), Path(claude_hit).resolve()}:
-            base_dirs.append(anchor.parent / "node_modules" / "@anthropic-ai" / "claude-code")
-
-    for base in base_dirs:
-        for name in _CLI_ENTRY_NAMES:
-            cand = base / name
-            if cand.exists():
-                return node, str(cand)
-    return None
-
-
-def _resolve_legacy_cli_path() -> str | None:
-    """Fallback: find any claude shim on PATH."""
-    override = os.environ.get("BOOLEY_CLAUDE_CLI")
-    if override and Path(override).exists():
-        return override
-
-    is_win = platform.system() == "Windows"
-    for name in ("claude.cmd", "claude.exe", "claude") if is_win else ("claude",):
-        hit = shutil.which(name)
-        if hit and "_bundled" not in str(Path(hit).resolve()).replace("\\", "/"):
-            return hit
-    return None
-
-
 class ClaudeSDKBackend:
     """Agent backend using the Claude Agent SDK (claude-agent-sdk package).
 
@@ -157,9 +101,6 @@ class ClaudeSDKBackend:
     """
 
     def __init__(self, auth_mode: str = "auto") -> None:
-        self._cli_path: str | None = None
-        self._cli_js_path: str | None = None
-        self._resolved = False
         self._auth_mode = auth_mode
 
     @property
@@ -185,9 +126,6 @@ class ClaudeSDKBackend:
                 "(no login at ~/.claude/.credentials.json and no CLAUDE_CODE_OAUTH_TOKEN) — "
                 "run `claude login` or `booley auth`"
             )
-        self._resolve_cli_shim_once()
-        if self._cli_path is None:
-            return "No system Claude Code CLI found (using SDK-bundled CLI)"
         return None
 
     async def call(
@@ -199,8 +137,7 @@ class ClaudeSDKBackend:
         on_event = kwargs.pop("on_event", None)
         budget: DeveloperBudget | None = kwargs.pop("developer_budget", None)
 
-        self._resolve_cli_shim_once()
-        options = _build_sdk_options(params, self._cli_path, auth_mode=self._auth_mode)
+        options = _build_sdk_options(params, auth_mode=self._auth_mode)
         _log_call_start(params)
 
         # --- Retry loop ---
@@ -442,72 +379,8 @@ class ClaudeSDKBackend:
 
         options.stderr = _stderr_callback
 
-        logger.debug("Agent CLI: %s", getattr(options, "cli_path", None) or "<bundled>")
+        logger.debug("Agent CLI: %s", getattr(options, "cli_path", None) or "<SDK-selected>")
         return transcript_path, counters, stderr_buffer
-
-    # Class-level guard: the monkey-patch modifies a class method globally,
-    # so it must only be applied once across all instances. Without this,
-    # a second instance (e.g. after backend swap) captures the already-patched
-    # method, causing cli_js to be inserted twice: [node, cli.js, cli.js, ...].
-    _cli_shim_patched: bool = False
-    _cli_shim_cli_path: str | None = None
-    _cli_shim_cli_js_path: str | None = None
-
-    def _resolve_cli_shim_once(self) -> None:
-        """Lazily resolve the CLI shim on first use."""
-        if self._resolved:
-            return
-        self._resolved = True
-
-        cls = type(self)
-        if cls._cli_shim_patched:
-            self._cli_path = cls._cli_shim_cli_path
-            self._cli_js_path = cls._cli_shim_cli_js_path
-            return
-
-        node_shim = _resolve_node_cli_shim()
-        if node_shim is not None:
-            self._cli_path = node_shim[0]
-            self._cli_js_path = node_shim[1]
-            logger.debug("Using node.exe + cli.js: %s %s", self._cli_path, self._cli_js_path)
-
-            from claude_agent_sdk._internal.transport import subprocess_cli as _sdk_transport
-
-            _orig_build_command = _sdk_transport.SubprocessCLITransport._build_command
-            cli_js = self._cli_js_path
-
-            def _build_command_with_cli_js(self_transport):
-                cmd = _orig_build_command(self_transport)
-                return [cmd[0], cli_js, *cmd[1:]]
-
-            _sdk_transport.SubprocessCLITransport._build_command = _build_command_with_cli_js
-
-            os.environ.setdefault("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
-        else:
-            self._cli_path = _resolve_legacy_cli_path()
-            self._cli_js_path = None
-            if self._cli_path:
-                # The node+cli.js shim exists to bypass cmd.exe argument
-                # mangling on Windows; everywhere else spawning the `claude`
-                # binary directly IS the normal, supported path, not a
-                # degradation. Warning about it on every specialist run in a
-                # Linux sandbox — where the package layout routinely defeats
-                # the entry-script probe — was pure noise (SETUP-F-46), so only
-                # Windows, where the risk is real, still warrants a WARN.
-                if platform.system() == "Windows":
-                    logger.warning(
-                        "Using PATH claude shim: %s (cmd.exe metachar leak risk)",
-                        self._cli_path,
-                    )
-                else:
-                    logger.debug("Using system claude CLI: %s", self._cli_path)
-            else:
-                logger.warning("No system Claude Code CLI found; using SDK-bundled CLI.")
-
-        os.environ.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-        cls._cli_shim_patched = True
-        cls._cli_shim_cli_path = self._cli_path
-        cls._cli_shim_cli_js_path = self._cli_js_path
 
     # _call_once is defined above (after call), remaining helpers below.
 
@@ -534,8 +407,12 @@ def _log_call_start(params: AgentCallParams) -> None:
     logger.debug("Agent prompt (%d chars): %s", len(params.prompt), prompt_preview)
 
 
-def _auth_env_overrides(auth_mode: str) -> dict[str, str]:
-    """Auth-related env the agent CLI must see, keyed by the ``[agent] auth`` policy.
+def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
+    """Child-process env the Claude CLI must see.
+
+    Nonessential traffic is disabled by default without mutating the parent
+    process. An explicit ambient value is preserved. Authentication entries
+    are keyed by the ``[agent] auth`` policy.
 
     Under ``subscription``, the CLI's own precedence would bill an exported
     ``ANTHROPIC_API_KEY`` over the subscription, and its prescribed remedy is
@@ -557,7 +434,11 @@ def _auth_env_overrides(auth_mode: str) -> dict[str, str]:
     """
     from booley.runtime import auth_token
 
-    env_overrides: dict[str, str] = {}
+    env_overrides = {
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": os.environ.get(
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"
+        )
+    }
     if auth_mode == "subscription":
         env_overrides["ANTHROPIC_API_KEY"] = ""
     if auth_mode != "api_key":
@@ -569,7 +450,6 @@ def _auth_env_overrides(auth_mode: str) -> dict[str, str]:
 
 def _build_sdk_options(
     params: AgentCallParams,
-    cli_path: str | None,
     auth_mode: str = "auto",
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions from AgentCallParams."""
@@ -580,12 +460,10 @@ def _build_sdk_options(
         permission_mode="bypassPermissions",
     )
 
-    env_overrides = _auth_env_overrides(auth_mode)
+    env_overrides = _claude_env_overrides(auth_mode)
     if env_overrides:
         options.env = env_overrides
 
-    if cli_path is not None:
-        options.cli_path = cli_path
     if params.max_turns is not None:
         options.max_turns = params.max_turns
     if params.allowed_agent_capabilities is not None:
@@ -798,7 +676,7 @@ def _dispatch_on_event(on_event: Any, message: AssistantMessage) -> None:
         if chunks:
             try:
                 on_event({"type": etype, "text": "\n".join(chunks)})
-            except Exception:  # display callback is best-effort; failure must not abort streaming
+            except Exception:  # display failure is best-effort; do not abort a paid turn
                 logger.debug("on_event error (swallowed)", exc_info=True)
 
 
@@ -907,7 +785,7 @@ def _dispatch_completed_file_edits(
         return
     try:
         on_event({"type": "file_change", "paths": paths})
-    except Exception:  # display callback is best-effort; failure must not abort streaming
+    except Exception:  # display failure is best-effort; do not abort a paid turn
         logger.debug("on_event file change error (swallowed)", exc_info=True)
 
 
@@ -934,7 +812,7 @@ def _dispatch_usage(on_event: Any, counters: _UsageCounters, model: str) -> None
                 "context_limit": context_limit(model),
             }
         )
-    except Exception:  # display callback is best-effort; failure must not abort streaming
+    except Exception:  # display failure is best-effort; do not abort a paid turn
         logger.debug("on_event usage error (swallowed)", exc_info=True)
 
 

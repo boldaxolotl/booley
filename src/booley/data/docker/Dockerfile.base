@@ -193,11 +193,12 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 # them at runtime.
 #
 # claude-agent-sdk ships a private, full-size Claude CLI even though this
-# image already installs the normal npm CLI above.  Booley resolves that
-# system CLI and passes its path to ClaudeAgentOptions, so retaining the SDK
-# copy wastes ~324 MB and is not a fallback in this runtime.  Remove it in
-# the SAME layer that pip creates it; a later-layer deletion would hide the
-# file from the merged filesystem without reclaiming any image storage.
+# image already installs the normal npm CLI above. The SDK owns executable
+# discovery; removing its duplicate makes it fall back to that system CLI.
+# This build-time size optimization knowingly depends on the SDK's private
+# bundle layout, but production runtime code does not. Remove it in the SAME
+# layer that pip creates it; a later-layer deletion would hide the file from
+# the merged filesystem without reclaiming any image storage.
 COPY pyproject.toml /tmp/booley-build/pyproject.toml
 COPY src/booley/data/docker/export_project_dependencies.py /tmp/booley-build/export_project_dependencies.py
 RUN python -m ensurepip --default-pip \
@@ -207,6 +208,7 @@ RUN python -m ensurepip --default-pip \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
         --requirement /tmp/booley-build/project-dependencies.txt \
     && rm -f /tmp/booley-build/project-dependencies.txt \
+    && python -m pip check \
     && CLAUDE_SDK_BUNDLED_CLI="$(python -c 'from pathlib import Path; import claude_agent_sdk; print(Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude")')" \
     && test -x "$(command -v claude)" \
     && test -x "$CLAUDE_SDK_BUNDLED_CLI" \

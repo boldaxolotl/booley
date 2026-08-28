@@ -69,7 +69,7 @@ def test_claude_backend_always_denies_provider_web_tools(tmp_path: Path) -> None
         disallowed_agent_capabilities=["Bash"],
     )
 
-    options = _claude_backend._build_sdk_options(params, None)
+    options = _claude_backend._build_sdk_options(params)
 
     assert options.disallowed_agent_capabilities == ["Bash", "WebFetch", "WebSearch"]
 

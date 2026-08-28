@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from claude_agent_sdk import ClaudeSDKError
 
 from booley.harness.models import AgentCallParams
 from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
@@ -388,7 +389,8 @@ class TestInvokeAgentWithResume:
         assert result is mock_result
         mock_inv.assert_called_once_with(params, on_event=None)
 
-    def test_falls_back_on_runtime_error(self):
+    @pytest.mark.parametrize("error_type", [RuntimeError, ClaudeSDKError])
+    def test_falls_back_on_resumable_error(self, error_type):
         endpoint = ReviewSpecialist()
         endpoint.name = "test_endpoint"
         fresh_result = MagicMock()
@@ -397,7 +399,7 @@ class TestInvokeAgentWithResume:
         def _side(p, on_event=None):
             calls.append(p)
             if len(calls) == 1:
-                raise RuntimeError("stale session")
+                raise error_type("stale session")
             return fresh_result
 
         with patch.object(endpoint, "_invoke_agent", side_effect=_side):
