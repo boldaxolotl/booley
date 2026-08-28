@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Verilator Coverage Adapter</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #637083;
+      --line: #d9e0e8;
+      --panel: #f7f9fc;
+      --accent: #2257c7;
+      --accent-soft: #e9efff;
+      --good: #18794e;
+      --warn: #9a6700;
+      --bad: #b42318;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #fff;
+      color: var(--ink);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 38px 24px 72px; }
+    h1, h2, h3 { line-height: 1.2; }
+    h1 { margin: 8px 0 10px; font-size: 30px; }
+    h2 { margin: 36px 0 14px; font-size: 21px; }
+    h3 { margin: 0 0 10px; font-size: 16px; }
+    p { max-width: 86ch; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { font-size: .92em; }
+    pre {
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      color: #e5e7eb;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .prototype-label {
+      display: inline-block;
+      padding: 4px 9px;
+      border-radius: 999px;
+      color: var(--bad);
+      background: #fff0ee;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      font-size: 12px;
+    }
+    .question {
+      border-left: 4px solid var(--accent);
+      padding: 13px 16px;
+      background: var(--accent-soft);
+      border-radius: 0 8px 8px 0;
+    }
+    .muted { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #fff; }
+    .state-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .state-field { padding: 11px; border-radius: 8px; background: var(--panel); min-height: 72px; }
+    .state-field dt { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .state-field dd { margin: 5px 0 0; font-weight: 650; overflow-wrap: anywhere; }
+    .wide { grid-column: 1 / -1; }
+    .status-good { color: var(--good); }
+    .status-warn { color: var(--warn); }
+    .status-bad { color: var(--bad); }
+    .controls { display: flex; flex-wrap: wrap; gap: 9px; align-items: end; }
+    label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+    select, input, button {
+      min-height: 38px;
+      border: 1px solid #aeb9c7;
+      border-radius: 7px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+    select, input { padding: 7px 9px; }
+    button { padding: 8px 12px; cursor: pointer; font-weight: 650; }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button.danger { border-color: #e5a7a1; color: var(--bad); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .event-log { margin: 0; padding-left: 22px; max-height: 210px; overflow: auto; }
+    .event-log li { margin: 5px 0; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+    .tab[aria-selected="true"] { color: #fff; background: var(--accent); border-color: var(--accent); }
+    .scenario-intro { min-height: 50px; }
+    .step-list { display: grid; gap: 9px; }
+    .step { display: grid; grid-template-columns: 30px 1fr auto; gap: 10px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+    .step-number { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--panel); font-weight: 700; }
+    .step.done { background: #f1fbf5; border-color: #9bd2b7; }
+    .step.current { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .step button { min-width: 105px; }
+    .split { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 14px; }
+    ul.compact { margin: 7px 0 0; padding-left: 20px; }
+    ul.compact li { margin: 4px 0; }
+    .verdict-box { margin-top: 14px; padding: 13px; border: 1px dashed #aeb9c7; border-radius: 8px; background: var(--panel); }
+    @media (max-width: 820px) {
+      .grid, .split, .state-grid { grid-template-columns: 1fr; }
+      .wide { grid-column: auto; }
+      .step { grid-template-columns: 30px 1fr; }
+      .step button { grid-column: 2; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <span class="prototype-label">Throwaway prototype</span>
+  <h1>Verilator coverage adapter decision lab</h1>
+  <p class="question"><strong>Question:</strong> Does one deep adapter operation give the Simulation Flow enough leverage while keeping Verilator coverage mechanics local—across instrumentation, generated/Cocotb/custom mains, reset windows, unique raw files, parsing, native-merge verification, freshness, and collector-specific failures?</p>
+  <p class="muted">This demo models a candidate interface; it does not implement coverage. Drive the awkward cases and look for a fact the Simulation Flow still needs to know, or a policy the adapter has swallowed that belongs elsewhere.</p>
+
+  <h2>Candidate interface</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>What the Simulation Flow calls</h3>
+      <pre>collection = adapter.collect(
+    request: CoverageCollectionRequest,
+    execution: SimulationExecutionPort,
+) -&gt; CoverageCollectionResult</pre>
+      <ul class="compact">
+        <li><code>request</code>: resolved Target, selected tests, report-artifact root, reset window, and trace dimension. Coverage Criterion policy is deliberately absent.</li>
+        <li><code>execution</code>: the existing generic build/run capability; the adapter chooses the variant and run envelopes.</li>
+        <li><code>result</code>: simulation verdicts, collection status, native capability facts, collector errors, and durable artifact pointers.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>What remains private</h3>
+      <ul class="compact">
+        <li>Explicit Verilator instrumentation flags and per-instance enablement</li>
+        <li>Generated-main, Cocotb, and custom-main write/reset hooks</li>
+        <li>Unique raw database names, freshness stamps, and queryability checks</li>
+        <li>Version/header-gated native parsing and unknown record capabilities</li>
+        <li>Native merge invocation and independent merge-equivalence verification</li>
+        <li>Collector-specific error taxonomy and remediation text</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Current state</h2>
+  <div id="state" class="card" aria-live="polite"></div>
+
+  <div class="split">
+    <section>
+      <h2>Free play</h2>
+      <div class="card">
+        <div class="controls">
+          <label>Harness
+            <select id="harness">
+              <option value="generated">Generated main</option>
+              <option value="cocotb">Cocotb main</option>
+              <option value="custom-ready">Custom main with hooks</option>
+              <option value="custom-missing">Custom main without hooks</option>
+            </select>
+          </label>
+          <label>Reset window
+            <select id="reset-window">
+              <option value="post-reset">Post-reset only</option>
+              <option value="whole-run">Initialization and reset included</option>
+            </select>
+          </label>
+          <label>Build dimension
+            <select id="trace">
+              <option value="false">Coverage</option>
+              <option value="true">Trace + coverage</option>
+            </select>
+          </label>
+          <label>Coverage Criterion
+            <select id="criterion">
+              <option value="true">Present</option>
+              <option value="false">Absent (collection only)</option>
+            </select>
+          </label>
+          <label>Tests
+            <input id="tests" type="number" value="2" min="1" max="4">
+          </label>
+          <button id="apply-config" class="primary">Apply configuration</button>
+        </div>
+        <div id="actions" class="button-row"></div>
+      </div>
+    </section>
+    <section>
+      <h2>Event log</h2>
+      <div class="card"><ol id="events" class="event-log"></ol></div>
+    </section>
+  </div>
+
+  <h2>Guided walkthroughs</h2>
+  <div class="card">
+    <div id="scenario-tabs" class="tabs" role="tablist"></div>
+    <p id="scenario-intro" class="scenario-intro"></p>
+    <div id="scenario-steps" class="step-list"></div>
+    <div id="scenario-verdict" class="verdict-box"></div>
+  </div>
+</main>
+
+<script>
+// Pure prototype module. It knows nothing about the DOM; the page below is a thin shell.
+const CoverageAdapterModel = (() => {
+  const privateInstrumentation = [
+    "--coverage-line",
+    "--coverage-toggle",
+    "--coverage-expr",
+    "--coverage-user",
+    "--coverage-per-instance"
+  ];
+
+  const harnessFacts = {
+    generated: {
+      label: "generated main",
+      writes: true,
+      resetHook: false,
+      writeMechanism: "+verilator+coverage+file+…",
+      resetMechanism: "no project reset-release hook declared"
+    },
+    cocotb: {
+      label: "Cocotb main",
+      writes: true,
+      resetHook: false,
+      writeMechanism: "Cocotb VM_COVERAGE wrap-up + unique file plusarg",
+      resetMechanism: "no project reset-release hook declared"
+    },
+    "custom-ready": {
+      label: "custom main with declared hooks",
+      writes: true,
+      resetHook: true,
+      writeMechanism: "declared custom-main write hook",
+      resetMechanism: "declared custom-main reset-release hook"
+    },
+    "custom-missing": {
+      label: "custom main without declared hooks",
+      writes: false,
+      resetHook: false,
+      writeMechanism: "none declared",
+      resetMechanism: "none declared"
+    }
+  };
+
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function newState(config = {}) {
+    const tests = Math.max(1, Math.min(4, Number(config.tests || 2)));
+    return {
+      phase: "unplanned",
+      flowContext: {
+        criterionPresent: config.criterionPresent !== false
+      },
+      request: {
+        target: "sim_cpu",
+        edaTool: config.edaTool || "verilator",
+        harness: config.harness || "generated",
+        resetWindow: config.resetWindow || "post-reset",
+        trace: Boolean(config.trace),
+        tests: Array.from({length: tests}, (_, index) => `test_${index + 1}`),
+        artifactRoot: "flow-reports/sim_sim_cpu/artifacts/coverage"
+      },
+      publicResult: {
+        collectionStatus: "not started",
+        simulationVerdicts: [],
+        resetSemantics: "not established",
+        capabilities: [],
+        errors: [],
+        artifacts: []
+      },
+      privateState: {
+        buildVariant: "not chosen",
+        instrumentation: [],
+        harnessPath: "not inspected",
+        currentTest: null,
+        nextTestIndex: 0,
+        runResetZeroed: false,
+        rawFiles: [],
+        parsedFiles: [],
+        nativeMerge: "not run",
+        mergeVerification: "not run"
+      },
+      events: ["Configuration loaded; Simulation Flow has not called the adapter."],
+      terminal: false
+    };
+  }
+
+  function addError(state, code, message) {
+    state.publicResult.errors.push({code, message});
+    state.publicResult.collectionStatus = "collector error";
+    state.phase = "error";
+    state.terminal = true;
+    state.events.push(`${code}: ${message}`);
+  }
+
+  function activeRaw(state) {
+    const current = state.privateState.currentTest;
+    return state.privateState.rawFiles.find(file => file.test === current);
+  }
+
+  function reduce(previous, action) {
+    const state = clone(previous);
+    if (action.type === "RESET") {
+      return newState(action.config || {
+        ...state.request,
+        criterionPresent: state.flowContext.criterionPresent,
+        tests: state.request.tests.length
+      });
+    }
+    if (state.terminal && action.type !== "RESET") {
+      state.events.push(`Ignored ${action.type}: collection is terminal; reset to try another case.`);
+      return state;
+    }
+
+    switch (action.type) {
+      case "PLAN": {
+        if (state.phase !== "unplanned") break;
+        if (state.request.edaTool !== "verilator") {
+          addError(state, "COV_UNSUPPORTED_EDA", "Coverage is atomic across selected Targets; Icarus must fail Preflight before any Target runs.");
+          break;
+        }
+        const harness = harnessFacts[state.request.harness];
+        state.privateState.harnessPath = harness.label;
+        if (!harness.writes) {
+          addError(state, "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED", "The custom main declares no native coverage write hook. No simulation or build was started.");
+          break;
+        }
+        if (state.request.resetWindow === "post-reset" && !harness.resetHook) {
+          addError(state, "COV_RESET_HOOK_REQUIRED", "Post-reset coverage was requested, but this harness cannot zero counters at deterministic reset release.");
+          break;
+        }
+        state.privateState.buildVariant = state.request.trace ? "trace-coverage" : "coverage";
+        state.privateState.instrumentation = privateInstrumentation.slice();
+        state.publicResult.resetSemantics = state.request.resetWindow === "post-reset"
+          ? "counters begin at deterministic reset release"
+          : "initialization and reset activity are included";
+        state.publicResult.collectionStatus = "planned";
+        state.phase = "planned";
+        state.events.push(`Adapter planned isolated ${state.privateState.buildVariant} build; flags and harness branch remain private.`);
+        break;
+      }
+      case "BUILD": {
+        if (state.phase !== "planned") break;
+        state.phase = "built";
+        state.publicResult.collectionStatus = "ready";
+        state.events.push(`Instrumented ${state.privateState.buildVariant} variant built without clobbering normal, trace, or sibling variants.`);
+        break;
+      }
+      case "START_TEST": {
+        if (!['built', 'between-tests'].includes(state.phase)) break;
+        const index = state.privateState.nextTestIndex;
+        if (index >= state.request.tests.length) {
+          state.events.push("All selected tests have already run.");
+          break;
+        }
+        const test = state.request.tests[index];
+        const raw = `${state.request.artifactRoot}/raw/${String(index + 1).padStart(3, '0')}-${test}.dat`;
+        state.privateState.currentTest = test;
+        state.privateState.runResetZeroed = state.request.resetWindow === "whole-run";
+        state.privateState.rawFiles.push({test, path: raw, freshness: "reserved and absent", queryable: "unchecked", count: 0});
+        state.phase = "running";
+        state.publicResult.collectionStatus = "collecting";
+        state.events.push(`Adapter reserved unique raw path for ${test}, proved it absent, and selected ${harnessFacts[state.request.harness].writeMechanism}.`);
+        break;
+      }
+      case "RELEASE_RESET": {
+        if (state.phase !== "running") break;
+        if (state.request.resetWindow === "whole-run") {
+          state.events.push("Reset-release signal observed; whole-run policy intentionally keeps earlier counts.");
+        } else {
+          state.privateState.runResetZeroed = true;
+          state.events.push(`Counters zeroed through ${harnessFacts[state.request.harness].resetMechanism}.`);
+        }
+        break;
+      }
+      case "FINISH_TEST": {
+        if (state.phase !== "running") break;
+        if (state.request.resetWindow === "post-reset" && !state.privateState.runResetZeroed) {
+          addError(state, "COV_RESET_WINDOW_NOT_ESTABLISHED", "The test finished without evidence that counters were zeroed at reset release.");
+          break;
+        }
+        const raw = activeRaw(state);
+        const verdict = action.verdict || "pass";
+        state.publicResult.simulationVerdicts.push({test: state.privateState.currentTest, verdict});
+        if (action.raw === "missing") {
+          addError(state, "COV_RAW_FILE_MISSING", `Simulation ${verdict} is preserved, but ${state.privateState.currentTest} produced no native database.`);
+          break;
+        }
+        raw.freshness = action.raw === "stale" ? "stale" : "fresh";
+        raw.count = action.raw === "empty" ? 0 : 17 + state.privateState.nextTestIndex;
+        if (raw.freshness !== "fresh") {
+          addError(state, "COV_RAW_FILE_STALE", `Simulation ${verdict} is preserved, but the native database was not written by this run.`);
+          break;
+        }
+        state.phase = "raw-ready";
+        state.events.push(`${state.privateState.currentTest} ended ${verdict}; its fresh native database is durable even if later collection fails.`);
+        break;
+      }
+      case "PARSE": {
+        if (state.phase !== "raw-ready") break;
+        const raw = activeRaw(state);
+        if (action.format === "incompatible") {
+          addError(state, "COV_NATIVE_FORMAT_INCOMPATIBLE", "Native header/version is unsupported; raw evidence is retained and scoring is refused.");
+          break;
+        }
+        raw.queryable = action.queryable === false ? "no" : "yes";
+        if (raw.queryable !== "yes") {
+          addError(state, "COV_RAW_NOT_QUERYABLE", "The current raw database cannot be parsed or queried by the selected Verilator installation.");
+          break;
+        }
+        const index = state.privateState.nextTestIndex;
+        state.privateState.parsedFiles.push({
+          test: state.privateState.currentTest,
+          records: raw.count,
+          nativeTypes: index === 0 ? ["line", "branch", "expr", "toggle", "user", "covergroup"] : ["line", "branch", "expr", "toggle", "user"]
+        });
+        if (index === 0) {
+          state.publicResult.capabilities.push({type: "covergroup", support: "reported, retained, not scored in V1"});
+        }
+        state.privateState.nextTestIndex += 1;
+        state.privateState.currentTest = null;
+        state.phase = state.privateState.nextTestIndex < state.request.tests.length ? "between-tests" : "parsed-all";
+        state.events.push("Adapter parsed the raw database before merge, preserving per-test incidence and unknown/deferred record types.");
+        break;
+      }
+      case "MERGE": {
+        if (state.phase !== "parsed-all") break;
+        state.privateState.nativeMerge = "written";
+        state.publicResult.artifacts = [
+          ...state.privateState.rawFiles.map(file => ({kind: "raw", path: file.path})),
+          {kind: "native-merged", path: `${state.request.artifactRoot}/merged/coverage.dat`}
+        ];
+        state.privateState.mergeVerification = action.match === false ? "mismatch" : "equivalent";
+        if (action.match === false) {
+          addError(state, "COV_NATIVE_MERGE_MISMATCH", "Independent normalized roll-up disagrees with Verilator's native merge; all raw and merged artifacts are retained.");
+          break;
+        }
+        state.phase = "complete";
+        state.terminal = true;
+        state.publicResult.collectionStatus = "complete";
+        state.events.push("Native merge is queryable and equivalent to the independently derived roll-up. Coverage collection is complete.");
+        break;
+      }
+      default:
+        state.events.push(`Unknown action: ${action.type}`);
+    }
+    return state;
+  }
+
+  return {newState, reduce, harnessFacts};
+})();
+
+// Throwaway page shell.
+const actionDefinitions = [
+  ["Plan", {type: "PLAN"}],
+  ["Build variant", {type: "BUILD"}],
+  ["Start next test", {type: "START_TEST"}],
+  ["Release reset", {type: "RELEASE_RESET"}],
+  ["Finish PASS", {type: "FINISH_TEST", verdict: "pass"}],
+  ["Finish FAIL", {type: "FINISH_TEST", verdict: "fail"}],
+  ["Finish, raw missing", {type: "FINISH_TEST", verdict: "pass", raw: "missing"}],
+  ["Finish, raw stale", {type: "FINISH_TEST", verdict: "pass", raw: "stale"}],
+  ["Parse + validate", {type: "PARSE"}],
+  ["Parse incompatible", {type: "PARSE", format: "incompatible"}],
+  ["Merge + verify", {type: "MERGE"}],
+  ["Merge mismatch", {type: "MERGE", match: false}]
+];
+
+const scenarios = [
+  {
+    name: "Generated happy path",
+    intro: "Two generated-main tests, whole-run counts, and no tracing. Watch the adapter reserve and validate one raw database per test before it performs a verified native merge.",
+    config: {harness: "generated", resetWindow: "whole-run", trace: false, criterionPresent: true, tests: 2},
+    steps: [
+      ["Plan collection", {type: "PLAN"}], ["Build isolated variant", {type: "BUILD"}],
+      ["Start test 1", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Finish test 1", {type: "FINISH_TEST", verdict: "pass"}], ["Parse test 1", {type: "PARSE"}],
+      ["Start test 2", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Finish test 2", {type: "FINISH_TEST", verdict: "pass"}], ["Parse test 2", {type: "PARSE"}],
+      ["Merge and verify", {type: "MERGE"}]
+    ],
+    verdict: "Question to answer: Is the single collect operation deep enough, or does the Flow need a public prepare/finalize lifecycle?"
+  },
+  {
+    name: "Post-reset needs a hook",
+    intro: "A generated main can write coverage at completion, but it does not inherently know the Project's reset-release boundary. Post-reset collection must fail before build unless that hook is declared.",
+    config: {harness: "generated", resetWindow: "post-reset", trace: false, criterionPresent: true, tests: 1},
+    steps: [["Plan post-reset collection", {type: "PLAN"}]],
+    verdict: "Question to answer: Where should a Project declare the deterministic reset-release hook that the adapter consumes?"
+  },
+  {
+    name: "Cocotb, ungated + trace",
+    intro: "Coverage collection is requested without a Coverage Criterion and alongside tracing. It must remain valid, ungated, and isolated in a trace+coverage build variant.",
+    config: {harness: "cocotb", resetWindow: "whole-run", trace: true, criterionPresent: false, tests: 1},
+    steps: [
+      ["Plan collection", {type: "PLAN"}], ["Build trace+coverage", {type: "BUILD"}],
+      ["Start Cocotb test", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Finish test", {type: "FINISH_TEST", verdict: "pass"}], ["Parse native data", {type: "PARSE"}],
+      ["Merge and verify", {type: "MERGE"}]
+    ],
+    verdict: "Question to answer: Does collection-without-Criterion belong in this request, or should gating policy be entirely downstream?"
+  },
+  {
+    name: "Custom main rejected early",
+    intro: "A custom C++ main declares neither a native-write hook nor a reset-release hook. The adapter should reject it before building or simulating rather than discover the contract gap after a long run.",
+    config: {harness: "custom-missing", resetWindow: "post-reset", trace: false, criterionPresent: true, tests: 1},
+    steps: [["Plan collection", {type: "PLAN"}]],
+    verdict: "Question to answer: Should custom-main capability be an explicit Target declaration, or should the adapter probe generated build metadata?"
+  },
+  {
+    name: "PASS but no fresh raw data",
+    intro: "The simulation passes, but no current native database appears. The simulation verdict must survive unchanged while coverage collection fails with a collector-specific error.",
+    config: {harness: "generated", resetWindow: "whole-run", trace: false, criterionPresent: true, tests: 1},
+    steps: [
+      ["Plan collection", {type: "PLAN"}], ["Build variant", {type: "BUILD"}],
+      ["Start test", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Finish without raw", {type: "FINISH_TEST", verdict: "pass", raw: "missing"}]
+    ],
+    verdict: "Question to answer: Should a coverage collector error make the whole Simulation Flow ERROR while retaining the independent simulation PASS?"
+  },
+  {
+    name: "Merge mismatch",
+    intro: "Both tests produce parseable raw data, but Verilator's native merge disagrees with the independently derived roll-up. Evidence stays durable and scoring fails closed.",
+    config: {harness: "custom-ready", resetWindow: "whole-run", trace: false, criterionPresent: true, tests: 2},
+    steps: [
+      ["Plan", {type: "PLAN"}], ["Build", {type: "BUILD"}],
+      ["Start test 1", {type: "START_TEST"}], ["Finish test 1", {type: "FINISH_TEST", verdict: "pass"}], ["Parse test 1", {type: "PARSE"}],
+      ["Start test 2", {type: "START_TEST"}], ["Finish test 2", {type: "FINISH_TEST", verdict: "fail"}], ["Parse test 2", {type: "PARSE"}],
+      ["Expose mismatch", {type: "MERGE", match: false}]
+    ],
+    verdict: "Question to answer: Is merge verification part of collection completeness, and should a failed test's coverage remain in the campaign?"
+  }
+];
+
+let state = CoverageAdapterModel.newState();
+let activeScenario = 0;
+let scenarioStep = 0;
+
+function esc(value) {
+  return String(value).replace(/[&<>\"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[char]));
+}
+
+function statusClass(value) {
+  if (/complete|equivalent|fresh|yes|pass/i.test(String(value))) return "status-good";
+  if (/error|missing|stale|mismatch|incompatible|fail/i.test(String(value))) return "status-bad";
+  return "status-warn";
+}
+
+function list(items, empty = "none") {
+  if (!items.length) return `<span class="muted">${empty}</span>`;
+  return `<ul class="compact">${items.map(item => `<li>${esc(typeof item === 'string' ? item : JSON.stringify(item))}</li>`).join('')}</ul>`;
+}
+
+function renderState() {
+  const harness = CoverageAdapterModel.harnessFacts[state.request.harness];
+  const publicErrors = state.publicResult.errors.map(error => `${error.code}: ${error.message}`);
+  const artifacts = state.publicResult.artifacts.map(artifact => `${artifact.kind}: ${artifact.path}`);
+  const raw = state.privateState.rawFiles.map(file => `${file.test}: ${file.freshness}, queryable ${file.queryable} — ${file.path}`);
+  document.getElementById("state").innerHTML = `
+    <div class="state-grid">
+      <dl class="state-field"><dt>Adapter phase</dt><dd class="${statusClass(state.phase)}">${esc(state.phase)}</dd></dl>
+      <dl class="state-field"><dt>Public collection status</dt><dd class="${statusClass(state.publicResult.collectionStatus)}">${esc(state.publicResult.collectionStatus)}</dd></dl>
+      <dl class="state-field"><dt>Target / harness</dt><dd>${esc(state.request.target)} / ${esc(harness.label)}</dd></dl>
+      <dl class="state-field"><dt>Build variant</dt><dd>${esc(state.privateState.buildVariant)}</dd></dl>
+      <dl class="state-field"><dt>Reset semantics</dt><dd>${esc(state.publicResult.resetSemantics)}</dd></dl>
+      <dl class="state-field"><dt>Criterion relationship</dt><dd>${state.flowContext.criterionPresent ? "Coverage Criterion evaluates downstream; adapter is unaware" : "collection only; ungated; adapter result is unchanged"}</dd></dl>
+      <dl class="state-field wide"><dt>Simulation verdicts returned to Flow</dt><dd>${list(state.publicResult.simulationVerdicts)}</dd></dl>
+      <dl class="state-field wide"><dt>Raw native databases (adapter-private lifecycle)</dt><dd>${list(raw)}</dd></dl>
+      <dl class="state-field"><dt>Native merge</dt><dd>${esc(state.privateState.nativeMerge)}</dd></dl>
+      <dl class="state-field"><dt>Merge verification</dt><dd class="${statusClass(state.privateState.mergeVerification)}">${esc(state.privateState.mergeVerification)}</dd></dl>
+      <dl class="state-field"><dt>Capabilities surfaced</dt><dd>${list(state.publicResult.capabilities)}</dd></dl>
+      <dl class="state-field wide"><dt>Collector errors</dt><dd class="${publicErrors.length ? 'status-bad' : ''}">${list(publicErrors)}</dd></dl>
+      <dl class="state-field wide"><dt>Durable artifacts returned to Flow</dt><dd>${list(artifacts)}</dd></dl>
+    </div>`;
+  document.getElementById("events").innerHTML = state.events.map(event => `<li>${esc(event)}</li>`).join("");
+  document.getElementById("events").scrollTop = document.getElementById("events").scrollHeight;
+}
+
+function dispatch(action) {
+  state = CoverageAdapterModel.reduce(state, action);
+  renderState();
+}
+
+function renderActions() {
+  const root = document.getElementById("actions");
+  root.innerHTML = "";
+  actionDefinitions.forEach(([label, action]) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    if (/missing|stale|incompatible|mismatch/.test(label.toLowerCase())) button.className = "danger";
+    button.addEventListener("click", () => dispatch(action));
+    root.appendChild(button);
+  });
+  const reset = document.createElement("button");
+  reset.textContent = "Reset current configuration";
+  reset.addEventListener("click", () => dispatch({type: "RESET"}));
+  root.appendChild(reset);
+}
+
+function configurationFromControls() {
+  return {
+    harness: document.getElementById("harness").value,
+    resetWindow: document.getElementById("reset-window").value,
+    trace: document.getElementById("trace").value === "true",
+    criterionPresent: document.getElementById("criterion").value === "true",
+    tests: Number(document.getElementById("tests").value)
+  };
+}
+
+function startScenario(index) {
+  activeScenario = index;
+  scenarioStep = 0;
+  state = CoverageAdapterModel.newState(scenarios[index].config);
+  renderState();
+  renderScenarios();
+}
+
+function takeScenarioStep(index) {
+  if (index !== scenarioStep) return;
+  dispatch(scenarios[activeScenario].steps[index][1]);
+  scenarioStep += 1;
+  renderScenarios();
+}
+
+function renderScenarios() {
+  const tabs = document.getElementById("scenario-tabs");
+  tabs.innerHTML = "";
+  scenarios.forEach((scenario, index) => {
+    const button = document.createElement("button");
+    button.className = "tab";
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(index === activeScenario));
+    button.textContent = scenario.name;
+    button.addEventListener("click", () => startScenario(index));
+    tabs.appendChild(button);
+  });
+  const scenario = scenarios[activeScenario];
+  document.getElementById("scenario-intro").textContent = scenario.intro;
+  document.getElementById("scenario-verdict").textContent = scenario.verdict;
+  const steps = document.getElementById("scenario-steps");
+  steps.innerHTML = "";
+  scenario.steps.forEach(([label], index) => {
+    const row = document.createElement("div");
+    row.className = `step ${index < scenarioStep ? 'done' : index === scenarioStep ? 'current' : ''}`;
+    row.innerHTML = `<span class="step-number">${index + 1}</span><span>${esc(label)}</span>`;
+    const button = document.createElement("button");
+    button.textContent = index < scenarioStep ? "Done" : "Run step";
+    button.disabled = index !== scenarioStep;
+    button.addEventListener("click", () => takeScenarioStep(index));
+    row.appendChild(button);
+    steps.appendChild(row);
+  });
+}
+
+document.getElementById("apply-config").addEventListener("click", () => {
+  state = CoverageAdapterModel.newState(configurationFromControls());
+  renderState();
+});
+renderActions();
+startScenario(0);
+</script>
+</body>
+</html>
