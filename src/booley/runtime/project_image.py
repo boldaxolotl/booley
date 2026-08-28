@@ -65,6 +65,10 @@ _FROM_RE = re.compile(
 _PARENT_DIRECTIVE_RE = re.compile(r"^\s*#\s*booley:parent=(?P<image>\S+)\s*$", re.MULTILINE)
 
 
+class DockerImageError(RuntimeError):
+    """Docker could not authoritatively inspect a Session Image."""
+
+
 def _content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
@@ -107,21 +111,14 @@ def dockerfile_parent_image(dockerfile: Path) -> str | None:
         return None
     directive = _PARENT_DIRECTIVE_RE.search(text)
     if directive is not None:
-        return _untagged_image(directive.group("image"))
+        return directive.group("image")
     matches = list(_FROM_RE.finditer(text))
     if len(matches) != 1:
         return None
     image = matches[0].group("image")
     if image.startswith("$"):
         return None
-    return _untagged_image(image)
-
-
-def _untagged_image(image: str) -> str:
-    without_digest = image.split("@", 1)[0]
-    prefix, separator, tail = without_digest.rpartition("/")
-    name = tail.split(":", 1)[0]
-    return f"{prefix}{separator}{name}" if separator else name
+    return image
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +426,11 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
         f"{LABEL_BUILD_ORIGIN}=local",
     ]
     parent = dockerfile_parent_image(dockerfile)
-    parent_id = _docker_image_id(parent) if parent else None
+    try:
+        parent_id = docker_image_id(parent) if parent else None
+    except DockerImageError as exc:
+        logger.error("project image parent inspection failed: %s", exc)
+        return False
     if parent_id:
         labels += ["--label", f"{LABEL_PARENT_ARTIFACT}={parent_id}"]
     cmd = ["docker", "build", "-t", image, *labels, "-f", str(dockerfile), str(docker_dir)]
@@ -451,8 +452,8 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
     return True
 
 
-def _docker_image_id(image: str) -> str | None:
-    """Resolve a local Docker artifact without depending on harness code."""
+def docker_image_id(image: str) -> str | None:
+    """Resolve a local Docker artifact; return ``None`` only when it is absent."""
     try:
         result = subprocess.run(
             ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
@@ -461,7 +462,16 @@ def _docker_image_id(image: str) -> str | None:
             timeout=30,
             check=False,
         )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return None
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        raise DockerImageError(f"could not inspect Docker image {image!r}: {exc}") from exc
     value = result.stdout.strip()
-    return value if result.returncode == 0 and value else None
+    if result.returncode == 0:
+        if value:
+            return value
+        raise DockerImageError(f"Docker returned no immutable ID for image {image!r}")
+    detail = (result.stderr or result.stdout).strip()
+    if "no such image" in detail.lower():
+        return None
+    raise DockerImageError(
+        f"could not inspect Docker image {image!r}: {detail or f'Docker exited {result.returncode}'}"
+    )

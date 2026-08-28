@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import stat
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
@@ -16,16 +17,24 @@ LABEL_VERSION = "org.opencontainers.image.version"
 LEGACY_FINGERPRINT_LABEL = "booley.build-fingerprint"
 
 
+class ImageProvenanceError(RuntimeError):
+    """A required provenance input could not be read exactly."""
+
+
+def _read_input(path: Path) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ImageProvenanceError(f"could not read provenance input {path}: {exc}") from exc
+
+
 def resolve_recipe_fingerprint(paths: Iterable[Path]) -> str:
     """Return the canonical fingerprint for one ordered image-build recipe."""
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.name.encode())
         digest.update(b"\0")
-        try:
-            digest.update(path.read_bytes())
-        except OSError:
-            digest.update(b"<missing>")
+        digest.update(_read_input(path))
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -35,14 +44,28 @@ def resolve_build_context_fingerprint(
 ) -> str:
     """Fingerprint every regular file in a Docker build context."""
     digest = hashlib.sha256()
-    try:
-        contents = {
-            path.relative_to(root).as_posix(): path.read_bytes()
-            for path in root.rglob("*")
-            if path.is_file()
-        }
-    except OSError:
-        contents = {}
+    if not root.is_dir():
+        if overrides is None:
+            raise ImageProvenanceError(f"provenance build context is not a directory: {root}")
+        contents: dict[str, bytes] = {}
+    else:
+        try:
+            discovered = tuple(root.rglob("*"))
+        except OSError as exc:
+            raise ImageProvenanceError(
+                f"could not enumerate provenance context {root}: {exc}"
+            ) from exc
+        paths = []
+        for path in discovered:
+            try:
+                mode = path.stat().st_mode
+            except OSError as exc:
+                raise ImageProvenanceError(
+                    f"could not inspect provenance input {path}: {exc}"
+                ) from exc
+            if stat.S_ISREG(mode):
+                paths.append(path)
+        contents = {path.relative_to(root).as_posix(): _read_input(path) for path in paths}
     contents.update(overrides or {})
     for relative, content in sorted(contents.items()):
         digest.update(relative.encode())

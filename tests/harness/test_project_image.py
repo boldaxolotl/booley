@@ -203,7 +203,14 @@ class TestDockerfile:
         ("from_line", "expected"),
         [
             ("FROM booley-sandbox-riscv", "booley-sandbox-riscv"),
-            ("FROM --platform=linux/amd64 booley-sandbox:latest AS runtime", "booley-sandbox"),
+            (
+                "FROM --platform=linux/amd64 booley-sandbox:latest AS runtime",
+                "booley-sandbox:latest",
+            ),
+            (
+                "FROM ghcr.io/acme/booley-sandbox@sha256:abc",
+                "ghcr.io/acme/booley-sandbox@sha256:abc",
+            ),
             ("FROM ${BASE_IMAGE}", None),
         ],
     )
@@ -212,6 +219,28 @@ class TestDockerfile:
         dockerfile.write_text(from_line + "\n", encoding="utf-8")
 
         assert pi.dockerfile_parent_image(dockerfile) == expected
+
+    def test_build_stamps_the_exact_tagged_parent_artifact(self, tmp_path, monkeypatch):
+        docker_dir = tmp_path / "docker"
+        docker_dir.mkdir()
+        (docker_dir / "Dockerfile").write_text(
+            "FROM booley-sandbox-riscv:old\n",
+            encoding="utf-8",
+        )
+        calls = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(cmd)
+            stdout = "sha256:old\n" if cmd[:3] == ["docker", "image", "inspect"] else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(pi.subprocess, "run", fake_run)
+
+        assert pi.build_project_image("img", docker_dir) is True
+        inspect = next(command for command in calls if command[:3] == ["docker", "image", "inspect"])
+        build = next(command for command in calls if command[:2] == ["docker", "build"])
+        assert inspect[3] == "booley-sandbox-riscv:old"
+        assert "io.booley.build.parent-artifact=sha256:old" in build
 
     def test_multistage_parent_requires_explicit_directive(self, tmp_path):
         dockerfile = tmp_path / "Dockerfile"

@@ -1652,6 +1652,13 @@ class TestEnterAlwaysSetsTERM:
 
 
 class TestSessionRefresh:
+    def test_session_command_coordinator_fits_on_a_screen(self):
+        import inspect
+
+        from booley.harness import booley
+
+        assert len(inspect.getsourcelines(booley._cmd_session)[0]) <= 50
+
     def test_parser_exposes_refresh_subcommand(self):
         from booley.harness.booley import _build_parser
 

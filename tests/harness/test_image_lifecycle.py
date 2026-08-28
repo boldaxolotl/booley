@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -293,6 +294,43 @@ def test_ensure_generates_project_recipe_for_configured_requirements(
     assert "cocotb==2.0.1" in (docker_dir / "requirements.txt").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ("[sandbox\n", "could not parse"),
+        ("sandbox = 'wrong shape'\n", "sandbox.*mapping"),
+        ("[sandbox]\nimage = 42\n", "sandbox.image.*string"),
+        ("[sandbox]\npip_requirements = [42]\n", "pip_requirements.*strings"),
+    ],
+)
+def test_invalid_sandbox_configuration_fails_loudly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    message: str,
+) -> None:
+    root = _project(tmp_path)
+    (root / ".booley_project" / "booley.toml").write_text(body, encoding="utf-8")
+    _wire(monkeypatch, FakeDocker({}))
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=message):
+        lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+
+
+def test_missing_configured_requirement_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    (root / ".booley_project" / "booley.toml").write_text(
+        '[sandbox]\npip_requirements = ["missing.txt"]\n',
+        encoding="utf-8",
+    )
+    _wire(monkeypatch, FakeDocker({}))
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match=r"missing\.txt"):
+        lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+
+
 def test_check_uses_desired_requirements_without_rewriting_recipe(tmp_path: Path, monkeypatch):
     root = _project(tmp_path)
     requirement = root / "requirements.txt"
@@ -498,6 +536,114 @@ def test_legacy_adapter_builds_user_owned_project_recipe_without_rewriting(
 
     assert calls == [(node.reference, docker_dir, True)]
     assert dockerfile.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("reference", [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"])
+def test_packaged_refresh_uses_pull_capable_builder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reference: str,
+) -> None:
+    from booley.harness import init_docker_image
+
+    root = _project(tmp_path)
+    docker_dir = tmp_path / "installed" / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    recipe = docker_dir / (
+        "Dockerfile" if reference == lifecycle.BASE_IMAGE else "Dockerfile.riscv"
+    )
+    recipe.write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    pulls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        init_docker_image,
+        "_try_pull_image",
+        lambda version, image=lifecycle.BASE_IMAGE: pulls.append((version, image)) or True,
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "_step_docker_image",
+        lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a source build"),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "ensure_flavor_image",
+        lambda *_args, **_kwargs: pytest.fail("packaged refresh attempted a flavor build"),
+    )
+    node = lifecycle._ImageNode(
+        reference,
+        recipe,
+        lifecycle.PayloadProvenance("1", "0.2.6", "payload"),
+        lifecycle.BuildProvenance("recipe", None),
+    )
+
+    lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
+
+    assert pulls == [("0.2.6", reference)]
+
+
+def test_docker_inspect_daemon_failure_is_not_an_absent_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 125, stdout="", stderr="Cannot connect to the Docker daemon"
+        ),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon"):
+        lifecycle._DockerCli().image_id("booley-sandbox")
+
+
+def test_docker_label_daemon_failure_is_not_an_absent_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 125, stdout="", stderr="Cannot connect to the Docker daemon"
+        ),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon"):
+        lifecycle._DockerCli().label("booley-sandbox", lifecycle.LABEL_SCHEMA)
+
+
+def test_docker_tag_removal_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="image is in use"
+        ),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="image is in use"):
+        lifecycle._DockerCli().remove_tag("booley-lifecycle-backup:prior")
+
+
+def test_tagged_parent_is_treated_as_its_exact_external_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path)
+    dockerfile = root / ".booley_project" / "docker" / "Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text(
+        "# booley:keep\nFROM booley-sandbox-riscv:old\nRUN echo mine\n",
+        encoding="utf-8",
+    )
+    exact_parent = "booley-sandbox-riscv:old"
+    docker = FakeDocker({exact_parent: ("sha256:" + "e" * 64, {})})
+    _wire(monkeypatch, docker)
+    selected = lifecycle.project_image.project_image_name(root)
+
+    nodes = lifecycle._nodes(root, selected, docker)
+
+    assert [node.reference for node in nodes] == [selected]
+    assert nodes[0].parent == exact_parent
 
 
 def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: Path):

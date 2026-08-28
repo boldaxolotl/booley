@@ -10,6 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from booley.core.boundary import BoundaryError, is_str_list, require_dict, require_opt_str
 from booley.harness.build_stamp import embedded_payload_fingerprint
 from booley.runtime import project_image
 from booley.runtime.image_provenance import (
@@ -50,13 +51,6 @@ class Status(StrEnum):
 
 class ImageLifecycleError(RuntimeError):
     """A managed Session Image could not be reconciled or verified."""
-
-
-@dataclass(frozen=True)
-class ArtifactId:
-    """Docker's immutable identity for one locally available image artifact."""
-
-    value: str
 
 
 @dataclass(frozen=True)
@@ -159,25 +153,47 @@ def _direct_project_dir(project_root: Path) -> Path:
     return resolve_checkout_project_dir(project_root)
 
 
-def _sandbox_config(project_root: Path) -> dict:
-    try:
-        config = _direct_project_dir(project_root) / "booley.toml"
-        with config.open("rb") as config_file:
-            raw = tomllib.load(config_file).get("sandbox", {})
-    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError, AttributeError):
+def _sandbox_config(project_root: Path) -> dict[str, object]:
+    config = _direct_project_dir(project_root) / "booley.toml"
+    if not config.is_file():
         return {}
-    return raw if isinstance(raw, dict) else {}
+    try:
+        with config.open("rb") as config_file:
+            document = tomllib.load(config_file)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ImageLifecycleError(f"could not read {config}: {exc}") from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise ImageLifecycleError(f"could not parse {config}: {exc}") from exc
+    raw = document.get("sandbox")
+    if raw is None:
+        return {}
+    try:
+        return require_dict(raw, field="[sandbox]")
+    except BoundaryError as exc:
+        raise ImageLifecycleError(f"invalid {config}: {exc}") from exc
 
 
 def _configured_image(project_root: Path) -> str | None:
-    raw = _sandbox_config(project_root).get("image")
-    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+    sandbox = _sandbox_config(project_root)
+    try:
+        raw = require_opt_str(sandbox, "image", field="sandbox.image")
+    except BoundaryError as exc:
+        raise ImageLifecycleError(f"invalid sandbox.image: {exc}") from exc
+    return raw.strip() if raw is not None else None
 
 
 def _project_requirements_body(project_root: Path) -> str | None:
     raw = _sandbox_config(project_root).get("pip_requirements")
-    requested = [str(value) for value in raw] if isinstance(raw, list) else None
-    requirements, _missing = project_image.resolve_requirements(project_root, requested)
+    if raw is not None and not is_str_list(raw):
+        raise ImageLifecycleError("[sandbox].pip_requirements must be a list of strings")
+    requested = raw if isinstance(raw, list) else None
+    requirements, missing = project_image.resolve_requirements(project_root, requested)
+    if missing:
+        raise ImageLifecycleError(
+            "configured sandbox pip requirements are missing: " + ", ".join(missing)
+        )
     if not requirements:
         return None
     body, kept, _skipped, _dropped = project_image.consolidated_requirements(
@@ -264,7 +280,9 @@ def _project_recipe_fingerprint(
     return resolve_build_context_fingerprint(docker_dir, overrides)
 
 
-def _project_node(project_root: Path, parent: _ImageNode, payload: PayloadProvenance) -> _ImageNode:
+def _project_node(
+    project_root: Path, parent_reference: str, payload: PayloadProvenance
+) -> _ImageNode:
     docker_dir = _direct_project_dir(project_root) / "docker"
     dockerfile = docker_dir / "Dockerfile"
     return _ImageNode(
@@ -273,9 +291,9 @@ def _project_node(project_root: Path, parent: _ImageNode, payload: PayloadProven
         payload=payload,
         build=BuildProvenance(
             _project_recipe_fingerprint(project_root, _project_requirements_body(project_root)),
-            parent.reference,
+            parent_reference,
         ),
-        parent=parent.reference,
+        parent=parent_reference,
     )
 
 
@@ -285,14 +303,14 @@ def _nodes(project_root: Path, selected: str, docker: _DockerPort) -> tuple[_Ima
         _expected_version(),
         _expected_payload_fingerprint(),
     )
-    base = _base_node(payload)
-    nodes = [base]
+    if selected == BASE_IMAGE:
+        return _with_parent_artifacts((_base_node(payload),), docker)
     if selected in FLAVOR_RECIPES:
-        nodes.append(_flavor_node(selected, base, payload))
-        return _with_parent_artifacts(tuple(nodes), docker)
+        base = _base_node(payload)
+        return _with_parent_artifacts((base, _flavor_node(selected, base, payload)), docker)
     generated = project_image.project_image_name(project_root)
     if selected != generated:
-        return _with_parent_artifacts(tuple(nodes), docker)
+        raise ImageLifecycleError(f"unsupported managed Session Image {selected!r}")
     parent_name = project_image.dockerfile_parent_image(
         _direct_project_dir(project_root) / "docker" / "Dockerfile"
     )
@@ -302,16 +320,18 @@ def _nodes(project_root: Path, selected: str, docker: _DockerPort) -> tuple[_Ima
             "the automatically managed project image has ambiguous ancestry; "
             "use a single concrete FROM or add '# booley:parent=<image>'"
         )
-    parent = base
+    nodes: list[_ImageNode] = []
+    parent_reference = BASE_IMAGE
     if parent_name in FLAVOR_RECIPES:
+        base = _base_node(payload)
         parent = _flavor_node(parent_name, base, payload)
-        nodes.append(parent)
-    elif parent_name not in (None, BASE_IMAGE):
-        raise ImageLifecycleError(
-            "the automatically managed project image has an external or ambiguous parent; "
-            "declare it explicitly in [sandbox].image to manage it outside Booley"
-        )
-    nodes.append(_project_node(project_root, parent, payload))
+        nodes.extend((base, parent))
+        parent_reference = parent.reference
+    elif parent_name in (None, BASE_IMAGE):
+        nodes.append(_base_node(payload))
+    else:
+        parent_reference = parent_name
+    nodes.append(_project_node(project_root, parent_reference, payload))
     return _with_parent_artifacts(tuple(nodes), docker)
 
 
@@ -566,17 +586,9 @@ def reconcile(
 class _DockerCli:
     def image_id(self, image: str) -> str | None:
         try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        value = result.stdout.strip()
-        return value if result.returncode == 0 and value else None
+            return project_image.docker_image_id(image)
+        except project_image.DockerImageError as exc:
+            raise ImageLifecycleError(str(exc)) from exc
 
     def label(self, image: str, name: str) -> str | None:
         try:
@@ -594,22 +606,42 @@ class _DockerCli:
                 timeout=15,
                 check=False,
             )
-        except (OSError, subprocess.SubprocessError):
-            return None
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(f"could not inspect Docker label {name!r}: {exc}") from exc
         value = result.stdout.strip()
-        return value if result.returncode == 0 and value and value != "<no value>" else None
+        if result.returncode == 0:
+            return value if value and value != "<no value>" else None
+        detail = (result.stderr or result.stdout).strip()
+        if "no such image" in detail.lower():
+            return None
+        raise ImageLifecycleError(
+            f"could not inspect Docker label {name!r} on {image!r}: "
+            f"{detail or f'Docker exited {result.returncode}'}"
+        )
 
     def tag(self, source: str, target: str) -> None:
-        result = subprocess.run(
-            ["docker", "tag", source, target], capture_output=True, text=True, check=False
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "tag", source, target], capture_output=True, text=True, check=False
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(f"could not retain image {source}: {exc}") from exc
         if result.returncode != 0:
             raise ImageLifecycleError(f"could not retain image {source}: {result.stderr.strip()}")
 
     def remove_tag(self, image: str) -> None:
-        subprocess.run(
-            ["docker", "image", "rm", image], capture_output=True, text=True, check=False
-        )
+        try:
+            result = subprocess.run(
+                ["docker", "image", "rm", image], capture_output=True, text=True, check=False
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(f"could not remove retained tag {image}: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise ImageLifecycleError(
+                f"could not remove retained tag {image}: "
+                f"{detail or f'Docker exited {result.returncode}'}"
+            )
 
 
 class _LegacyBuildAdapter:
@@ -620,7 +652,20 @@ class _LegacyBuildAdapter:
     def build(self, node: _ImageNode, *, force: bool) -> None:
         from booley.harness import init_cmd
         from booley.harness.init_common import InitContext
-        from booley.harness.init_docker_image import _step_docker_image, ensure_flavor_image
+        from booley.harness.init_docker_image import (
+            _step_docker_image,
+            _try_pull_image,
+            ensure_flavor_image,
+        )
+
+        shipped = node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES
+        source_root = docker_data_dir().parents[3]
+        if shipped and not (source_root / "pyproject.toml").is_file():
+            if not _try_pull_image(node.payload.version, node.reference):
+                raise ImageLifecycleError(
+                    f"could not pull current packaged Session Image {node.reference}"
+                )
+            return
 
         context = InitContext(
             project_root=self.project_root,

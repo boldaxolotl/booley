@@ -521,13 +521,13 @@ def _validate_up_request(
             f"refusing Session Runtime startup: {exc}; run `booley init --seed` on the host"
         ) from exc
     _warn_on_image_drift(spec, workspace)
-    _warn_on_stale_booley_bake(workspace)
     if image_override is not None and image_override != spec.get("image"):
         raise SessionError(
             "session refresh cannot bypass a host-issued spec; re-run `booley init --seed`"
         )
     profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
+    _warn_on_stale_booley_bake(workspace)
     return _UpRequest(
         spec,
         issuance,
