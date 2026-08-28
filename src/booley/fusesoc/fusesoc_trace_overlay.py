@@ -5,7 +5,7 @@ job is design-description *discovery and resolution* — list Target names from 
 you trust, resolve through the ``fusesoc`` program. This module carries a distinct,
 orthogonal responsibility: **synthesising a generated, agent-immutable-safe
 ``--trace`` build overlay** for a sim Target. Its one reason to change is the
-mechanics of how a trace overlay ``.core`` is constructed (owned Verilator flags,
+mechanics of how a trace overlay ``.core`` is constructed (Verilator recipe resolution,
 per-simulator dump-root rooting, the overlay VLNV/marker convention, the on-disk
 ``.core`` emission) — none of which touches how base cores are enumerated or
 resolved.
@@ -38,6 +38,7 @@ from booley.fusesoc.core_projection import (
     projected_core_path,
     projection_enabled,
 )
+from booley.sim.trace_recipe import TraceMode
 
 logger = logging.getLogger(__name__)
 
@@ -51,21 +52,11 @@ DEFAULT_TRACE_DEPTH = 99
 # the base Target *name* under this distinct VLNV and resolve unambiguously).
 _TRACE_OVERLAY_VLNV_SUFFIX = "-booleytrace"
 
-# Verilator flags whose presence we own on the overlay — stripped from the copied
-# base options before the canonical pair is appended, so a base Target that itself
-# baked ``--trace`` (or a different ``--trace-depth``) does not double up or fight
-# the overlay's depth. ``--trace-fst`` is dropped too: the run-half FIFO/bwave
-# pipeline (``booley.sim.verilator_run``) is VCD-shaped, so the overlay forces VCD.
-#
-# FST-migration note (ADR 0041): the migration plan proposed
-# switching Verilator to native ``--trace-fst`` dumping and skipping the VCD
-# conversion. That is NOT done here because the ``+tracefile`` trace main is
-# *design-description* — a ``cppSource`` fileset member in the user's ``.core``
-# built around ``VerilatedVcdC`` (decision 4 / Stealth Mode: Booley cannot
-# rewrite it). Forcing ``--trace-fst`` would break those mains at compile time.
-# The conversion output is now ``.fst`` either way; native Verilator FST stays
-# a per-project opt-in for projects whose main uses ``VerilatedFstC``.
-_OWNED_TRACE_FLAGS = frozenset({"--trace", "--trace-fst"})
+# Verilator trace-format flags that resolve the build/run recipe. An authored
+# format belongs to the Target: preserving it keeps its C++ trace harness and
+# Verilator options coherent. When none is authored, the overlay supplies VCD
+# tracing and the run-half streams that VCD through B-Wave.
+_TRACE_FORMAT_FLAGS = frozenset({"--trace", "--trace-vcd", "--trace-fst", "--trace-saif"})
 
 # The Booley sim-harness dump module (``sim/booley_vcd_dump.sv``): an
 # uninstantiated convention module whose ``$dumpvars(0)`` fires on ``+trace``.
@@ -148,8 +139,8 @@ def _with_trace_options(
 ) -> list[str]:
     """Return *verilator_options* with a single canonical ``--trace``/``--trace-depth``.
 
-    Drops any owned trace flag the base Target carried (and a stray
-    ``--trace-depth <n>`` pair) so the overlay's fixed pair is authoritative.
+    Used only when the Target has no authored trace format, so the overlay's
+    fixed VCD pair can be appended without rewriting project-owned options.
     """
     out: list[str] = []
     skip_value = False
@@ -161,11 +152,31 @@ def _with_trace_options(
         if opt == "--trace-depth":
             skip_value = True
             continue
-        if opt in _OWNED_TRACE_FLAGS:
-            continue
         out.append(opt)
     out += ["--trace", "--trace-depth", str(trace_depth)]
     return out
+
+
+def _authored_trace_mode(verilator_options: Sequence[Any]) -> TraceMode | None:
+    """Return the Target's declared trace recipe, or ``None`` when absent."""
+    from booley.fusesoc.fusesoc_registry import FuseSocError
+
+    options = {str(option) for option in verilator_options}
+    if "--trace-saif" in options:
+        raise FuseSocError(
+            "SAIF tracing is not supported by Booley's waveform pipeline; "
+            "use an authored --trace-fst recipe or VCD tracing"
+        )
+    if "--trace-fst" in options and "--trace-vcd" in options:
+        raise FuseSocError(
+            "trace Target requests both native FST and VCD; remove one explicit "
+            "format flag so Booley can resolve a coherent trace recipe"
+        )
+    if "--trace-fst" in options:
+        return TraceMode.NATIVE_FST
+    if options & _TRACE_FORMAT_FLAGS:
+        return TraceMode.VCD_FIFO
+    return None
 
 
 def _with_icarus_dump_root(iverilog_options: Sequence[Any]) -> list[str]:
@@ -246,6 +257,9 @@ class TraceOverlay:
     vlnv: str
     """The overlay's derived VLNV — what :func:`resolve_target` is handed."""
 
+    mode: TraceMode = TraceMode.VCD_FIFO
+    """The coherent build/run recipe selected for this overlay."""
+
     extra_files: tuple[Path, ...] = ()
     """Overlay-*supplied* source files (e.g. an injected dump module) to remove
     alongside the ``.core`` — empty when the design's own fileset carried them."""
@@ -323,12 +337,12 @@ def write_trace_overlay(
 ) -> TraceOverlay:
     """Write a co-located ``--trace`` overlay ``.core`` for a supported sim Target.
 
-    Booley never edits a committed Target — it stays agent-immutable, and a sim
-    Target is trace-free so pass/fail runs stay fast. To trace, this generates an
-    overlay: a deep copy of the base Target's declaring core under a derived VLNV
-    (:func:`trace_overlay_vlnv`) whose copy of *target* carries the fixed
-    ``--trace``/``--trace-depth`` ``verilator_options`` for Verilator
-    (:func:`_with_trace_options`).
+    Booley never edits a committed Target — it stays agent-immutable. To trace,
+    this generates an overlay: a deep copy of the base Target's declaring core
+    under a derived VLNV (:func:`trace_overlay_vlnv`). For Verilator, an authored
+    VCD or FST format and all of its options are preserved. A Target with no
+    authored format receives Booley's canonical ``--trace``/``--trace-depth``
+    VCD options (:func:`_with_trace_options`).
 
     A copy — **not** a CAPI2 ``depend`` — because a dependency resolves through the
     dependency's *default* Target, which omits the testbench filesets a sim Target
@@ -340,9 +354,9 @@ def write_trace_overlay(
 
     EDA-tool-aware injection (every supported sim simulator traces via an overlay):
 
-    * **Verilator** — inject the canonical ``--trace``/``--trace-depth``
-      ``verilator_options`` (compile-time; the C++ ``--exe`` main + run-half own
-      the VCD/bwave lifecycle).
+    * **Verilator** — preserve an authored trace recipe or inject the canonical
+      VCD recipe. The returned :class:`TraceOverlay` identifies whether the
+      run-half should read native FST directly or stream VCD through B-Wave.
     For Icarus the ``booley_vcd_dump`` module must be a compiled
     source to root. If the design's own tb fileset carries it that source is
     used; otherwise the overlay **supplies** it from Booley's ``refs/``
@@ -390,11 +404,18 @@ def write_trace_overlay(
     flow_options = target_def.setdefault("flow_options", {})
     injected: Path | None = None  # set when the overlay supplies the dump module
     if eda_tool == "verilator":
-        flow_options["verilator_options"] = _with_trace_options(
-            flow_options.get("verilator_options") or [],
-            trace_depth,
-        )
+        authored_options = flow_options.get("verilator_options") or []
+        mode = _authored_trace_mode(authored_options)
+        if mode is None:
+            mode = TraceMode.VCD_FIFO
+            flow_options["verilator_options"] = _with_trace_options(
+                authored_options,
+                trace_depth,
+            )
+        else:
+            flow_options["verilator_options"] = [str(option) for option in authored_options]
     else:  # Icarus — runtime +trace via an explicitly rooted dump module
+        mode = TraceMode.VCD_FIFO
         injected = _inject_runtime_dump_trace(
             overlay_doc,
             doc,
@@ -420,5 +441,6 @@ def write_trace_overlay(
     return TraceOverlay(
         core_file=overlay_path,
         vlnv=overlay_vlnv,
+        mode=mode,
         extra_files=tuple(path for path in (injected, projected_overlay) if path is not None),
     )

@@ -7,9 +7,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.conftest import MINIMAL_FST_BYTES
 
 from booley.sim import verilator_run as vr
 from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX
+from booley.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
 
 
 def test_find_binary_locates_flat_vtop(tmp_path: Path):
@@ -27,7 +29,7 @@ def test_build_run_cmd_appends_plusargs(tmp_path: Path):
     # bare plusargs gain a leading +, already-prefixed ones are left alone
     assert "+test_id=1" in cmd
     assert "+already" in cmd
-    # Trace arguments are appended by _setup_bwave, which owns the destination.
+    # Trace arguments are appended by _setup_trace, which owns the destination.
     assert "+trace" not in cmd
     # LD_LIBRARY_PATH widened to the binary dir (harmless for a static binary)
     if "LD_LIBRARY_PATH" in env:
@@ -80,9 +82,19 @@ class TestTraceArgContract:
         # The `=` form is mandatory for an option-like value: passing it as a
         # separate argv item makes argparse read it as a runner option (F-12).
         args = vr._parse_args(
-            ["--bin-dir", "build/sim", "--top", "tb", "--trace", "--trace-arg=--trace={file}"]
+            [
+                "--bin-dir",
+                "build/sim",
+                "--top",
+                "tb",
+                "--trace",
+                "--trace-mode",
+                "native_fst",
+                "--trace-arg=--trace={file}",
+            ]
         )
         assert args.trace_args == ["--trace={file}"]
+        assert args.trace_mode == vr.TraceMode.NATIVE_FST
 
 
 def test_parse_args_round_trips_run_options():
@@ -239,6 +251,102 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     # No binary present → returns early after the mkdir, before any run.
     vr.run_verilated_binary(top_module="tb_top", bin_dir=bin_dir, work_dir=work_dir)
     assert work_dir.is_dir()
+
+
+def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeypatch):
+    bin_dir = tmp_path / "build"
+    work_dir = tmp_path / "trace"
+    bin_dir.mkdir()
+    source = tmp_path / "known-good.fst"
+    source.write_bytes(MINIMAL_FST_BYTES)
+    exe = bin_dir / "Vtb_top"
+    exe.write_text(
+        "#!/bin/sh\n"
+        "dest=${1#--trace=}\n"
+        f"cp {source} \"$dest\"\n"
+        "echo '[SIM_RESULT] PASSED'\n",
+        encoding="utf-8",
+    )
+    exe.chmod(0o755)
+    monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+    monkeypatch.setattr(
+        vr.subprocess,
+        "run",
+        lambda *_args, **_kwargs: vr.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "data": {
+                        "scope_prefix": "tb_top",
+                        "root_scopes": ["tb_top"],
+                        "signal_count": 1,
+                        "total_ticks": 2,
+                        "signals": [{"name": "clk"}],
+                    }
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    output = vr.run_verilated_binary(
+        top_module="tb_top",
+        bin_dir=bin_dir,
+        work_dir=work_dir,
+        vcd=True,
+        trace_mode=vr.TraceMode.NATIVE_FST,
+        trace_args=["--trace={file}"],
+    )
+
+    assert f"TRACE_OK: {work_dir / 'trace.fst'}" in output
+    assert "TRACE_METADATA:" in output
+    assert (work_dir / "trace.fst").read_bytes() == MINIMAL_FST_BYTES
+    assert not (work_dir / "trace.fifo").exists()
+
+
+def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path, monkeypatch):
+    bin_dir = tmp_path / "build"
+    bin_dir.mkdir()
+    stale = bin_dir / "hardcoded.fst"
+    stale.write_bytes(MINIMAL_FST_BYTES)
+    exe = bin_dir / "Vtb_top"
+    exe.write_text("#!/bin/sh\necho '[SIM_RESULT] PASSED'\n", encoding="utf-8")
+    exe.chmod(0o755)
+    monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
+    monkeypatch.setattr(
+        vr.subprocess,
+        "run",
+        lambda *_args, **_kwargs: vr.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "data": {
+                        "scope_prefix": "tb_top",
+                        "root_scopes": ["tb_top"],
+                        "signal_count": 1,
+                        "total_ticks": 2,
+                        "signals": [{"name": "clk"}],
+                    }
+                }
+            ),
+            stderr="",
+        ),
+    )
+
+    output = vr.run_verilated_binary(
+        top_module="tb_top",
+        bin_dir=bin_dir,
+        vcd=True,
+        trace_mode=vr.TraceMode.NATIVE_FST,
+        trace_args=["-t"],
+        trace_files=["hardcoded.fst"],
+    )
+
+    assert "TRACE_OK:" not in output
+    assert "TRACE_INCIDENT:" in output
+    assert "current run" in output
 
 
 @pytest.mark.parametrize("bad", ["0", "-5"])
@@ -447,6 +555,17 @@ class TestDeclaredTraceFiles:
         def find(self):
             return self.store
 
+        def inspect(self, path: Path) -> TraceInspection:
+            return TraceInspection(
+                TraceArtifact(
+                    path=path,
+                    size_bytes=path.stat().st_size,
+                    top_scope="tb",
+                    signal_count=1,
+                    total_ticks=1,
+                )
+            )
+
     def test_declared_vcd_is_postprocessed_and_adopted(self, tmp_path: Path):
         run_cwd = tmp_path / "tests"
         run_cwd.mkdir()
@@ -484,6 +603,22 @@ class TestDeclaredTraceFiles:
 
         assert found == big  # the dump itself, not a store
         assert trace.postprocessed == []  # no unbounded conversion was attempted
+
+    def test_huge_raw_vcd_cannot_earn_trace_ok(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(vr, "_MAX_ADOPTED_VCD_BYTES", 16)
+        (tmp_path / "huge.vcd").write_bytes(b"0" * 64)
+
+        suffix = vr._finalize_trace(
+            TraceSession(tmp_path),
+            None,
+            None,
+            trace_files=["huge.vcd"],
+            search_dirs=[tmp_path],
+        )
+
+        assert "TRACE_OK:" not in suffix
+        assert "TRACE_INCIDENT:" in suffix
+        assert "not a queryable FST" in suffix
 
     def test_vcd_under_the_cap_is_still_converted(self, tmp_path: Path):
         store = tmp_path / "trace.fst"

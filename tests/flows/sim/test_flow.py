@@ -1831,6 +1831,7 @@ class TestEdalizeSimPath:
         overlay = fusesoc_registry.TraceOverlay(
             core_file=overlay_file,
             vlnv="::sim_demo-booleytrace:0",
+            mode=fusesoc_registry.TraceMode.NATIVE_FST,
         )
         trace_build_root = (
             tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite-trace"
@@ -1872,6 +1873,7 @@ class TestEdalizeSimPath:
         script = cmd[2]
         assert "booley.sim.verilator_run" in script
         assert "--trace" in script
+        assert "--trace-mode native_fst" in script
         assert "--trace-scope" not in script  # full-hierarchy trace, no scope knob
 
     def test_trace_build_root_is_reset_once_for_a_multi_test_run(self, tmp_path: Path):
@@ -1890,6 +1892,27 @@ class TestEdalizeSimPath:
         flow._reset_trace_build_root(build_root)
 
         assert current_model.exists(), "later tests must reuse this invocation's fresh build"
+
+    def test_cocotb_rejects_authored_native_fst_recipe(self, tmp_path: Path):
+        """Cocotb's current runner owns a VCD dump and cannot consume FST."""
+        from booley.fusesoc import fusesoc_registry
+
+        flow = _make_flow(tmp_path, extra_args=["--trace"])
+        overlay_file = tmp_path / "demo.booleytrace.core"
+        overlay_file.write_text("CAPI=2:\nname: ::sim_demo-booleytrace:0\n")
+        overlay = fusesoc_registry.TraceOverlay(
+            core_file=overlay_file,
+            vlnv="::sim_demo-booleytrace:0",
+            mode=fusesoc_registry.TraceMode.NATIVE_FST,
+        )
+
+        with (
+            patch.object(fusesoc_registry, "write_trace_overlay", return_value=overlay),
+            pytest.raises(fusesoc_registry.FuseSocError, match=r"Cocotb.*native FST"),
+        ):
+            flow._prepare_cocotb_sim_command("lite", ["run_test_001"])
+
+        assert not overlay_file.exists()
 
     def test_trace_missing_waveform_fails_the_test(self, tmp_path: Path):
         """--trace that produces no waveform fails loudly (no silent PASS)."""

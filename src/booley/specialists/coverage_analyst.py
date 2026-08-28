@@ -41,7 +41,11 @@ from booley.core.models import AgentCallParams
 from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
-from booley.flows.sim.flow import _resolve_run_cwd
+from booley.flows.sim.flow import (
+    _resolve_run_cwd,
+    _resolve_trace_args,
+    _resolve_trace_files,
+)
 from booley.flows.target_campaign import (
     TargetCampaign,
     describe_target_campaign,
@@ -60,6 +64,7 @@ from booley.mcp.base import (
 from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
+from booley.sim.trace_recipe import TraceMode
 from booley.sim.trace_session import TraceSession, trace_cache_key
 
 from .coverage_verilog_utils import (
@@ -494,6 +499,7 @@ class _TraceRunContext:
     trace_dir: Path
     work_dir: Path
     run_timeout: int
+    trace_mode: TraceMode
 
 
 _VSC_PROMPT_TEMPLATE = """You are a virtual signal creator. Your job is to define virtual signals
@@ -2899,43 +2905,28 @@ abort path". Omit this field or leave empty if all criteria are already met.
         fusesoc_registry: Any,
         edam_layer: Any,
         work_dir: Path,
-        is_icarus: bool,
-    ) -> Any:
-        """FuseSoC-resolve the traced sim Target, returning the resolved handle.
-
-        Icarus needs the trace overlay (an ``-s<dump-module>`` root so
-        ``booley_vcd_dump`` elaborates) and its own ``variant="trace"`` build
-        dir; the overlay is resolved then cleaned up, exactly like simulate.
-        """
-        if is_icarus:
-            # Icarus traces at runtime (+trace → $dumpvars), but edalize's
-            # -s <toplevel> prunes the uninstantiated booley_vcd_dump; the
-            # overlay roots it. Distinct VLNV → its own variant="trace" build dir.
-            build_root = edam_layer.work_root_for(
-                work_dir,
-                "coverage",
-                self.args.target,
-                variant="trace",
-            )
-            overlay = fusesoc_registry.write_trace_overlay(
-                self.args.target,
-                project_root=work_dir,
-            )
-            try:
-                return fusesoc_registry.resolve_target(
-                    self.args.target,
-                    project_root=work_dir,
-                    build_root=build_root,
-                    vlnv=overlay.vlnv,
-                )
-            finally:
-                overlay.cleanup()
-        build_root = edam_layer.work_root_for(work_dir, "coverage", self.args.target)
-        return fusesoc_registry.resolve_target(
+    ) -> tuple[Any, TraceMode]:
+        """Resolve one isolated traced Target and its coherent trace mode."""
+        build_root = edam_layer.work_root_for(
+            work_dir,
+            "coverage",
+            self.args.target,
+            variant="trace",
+        )
+        overlay = fusesoc_registry.write_trace_overlay(
             self.args.target,
             project_root=work_dir,
-            build_root=build_root,
         )
+        try:
+            resolved = fusesoc_registry.resolve_target(
+                self.args.target,
+                project_root=work_dir,
+                build_root=build_root,
+                vlnv=overlay.vlnv,
+            )
+            return resolved, overlay.mode
+        finally:
+            overlay.cleanup()
 
     def _cocotb_trace_run_cmd(
         self,
@@ -2979,7 +2970,21 @@ abort path". Omit this field or leave empty if all criteria are already met.
             context.build_dir,
         ]
         if not is_icarus:
-            run_cmd.extend(("--top", context.resolved.toplevel))
+            run_cmd.extend(
+                (
+                    "--top",
+                    context.resolved.toplevel,
+                    "--trace-mode",
+                    context.trace_mode.value,
+                )
+            )
+            run_cmd.extend(
+                f"--trace-arg={argument}"
+                for argument in _resolve_trace_args(context.work_dir)
+            )
+        run_cmd.extend(
+            f"--trace-file={path}" for path in _resolve_trace_files(context.work_dir)
+        )
         run_cmd.extend(
             (
                 "--work-dir",
@@ -3000,6 +3005,11 @@ abort path". Omit this field or leave empty if all criteria are already met.
         cocotb_modules = fusesoc_registry.target_cocotb_modules(context.work_dir)
         cocotb_module = lookup_target_section(cocotb_modules, self.args.target)
         if cocotb_module:
+            if context.trace_mode is TraceMode.NATIVE_FST:
+                raise fusesoc_registry.FuseSocError(
+                    f"Cocotb Target {self.args.target!r} requests native FST tracing, "
+                    "but the Cocotb run-half currently owns a VCD dump"
+                )
             return self._cocotb_trace_run_cmd(
                 context,
                 str(cocotb_module),
@@ -3034,12 +3044,10 @@ abort path". Omit this field or leave empty if all criteria are already met.
         eda_tool = sim_edam.normalize_eda_tool(
             fusesoc_registry.target_eda_tools(work_dir).get(self.args.target)
         )
-        is_icarus = eda_tool == "icarus"
-        resolved = self._resolve_trace_target(
+        resolved, trace_mode = self._resolve_trace_target(
             fusesoc_registry,
             edam_layer,
             work_dir,
-            is_icarus,
         )
         build_dir = edam_layer.relpath_for_make(resolved.build_root, work_dir)
         build_cmd = edam_layer.make_command(build_dir)
@@ -3051,6 +3059,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
             trace_dir=trace_dir,
             work_dir=work_dir,
             run_timeout=run_timeout,
+            trace_mode=trace_mode,
         )
         run_cmd, marker = self._trace_run_cmd(context)
         self._add_trace_run_options(run_cmd, trace_scope, run_cwd)

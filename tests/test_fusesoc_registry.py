@@ -24,6 +24,7 @@ from booley.fusesoc.fusesoc_registry import (
     MissingSourceError,
     ResolvedTarget,
     TargetResolutionError,
+    TraceMode,
     UnknownTargetError,
     _enumerate_all,
     all_referenced_files,
@@ -1570,7 +1571,7 @@ class TestWriteTraceOverlay:
         finally:
             overlay.cleanup()
 
-    def test_normalizes_pre_existing_trace_flags(self, tmp_path: Path):
+    def test_preserves_authored_vcd_recipe(self, tmp_path: Path):
         core = _CORE_TEXT.replace(
             "    flow_options:\n      tool: verilator\n",
             "    flow_options:\n      tool: verilator\n"
@@ -1583,14 +1584,65 @@ class TestWriteTraceOverlay:
             opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
                 "verilator_options"
             ]
-            # The base's own --trace / --trace-depth 5 are replaced by the single
-            # canonical pair (no duplicate --trace, depth is the overlay's).
+            # An authored recipe is one contract: Booley must not rewrite its
+            # format or depth while leaving the project's harness untouched.
             assert opts.count("--trace") == 1
             assert opts.count("--trace-depth") == 1
-            assert opts[opts.index("--trace-depth") + 1] == "99"
+            assert opts[opts.index("--trace-depth") + 1] == "5"
             assert "--timing" in opts  # non-trace options preserved
+            assert overlay.mode is TraceMode.VCD_FIFO
         finally:
             overlay.cleanup()
+
+    def test_preserves_authored_native_fst_recipe(self, tmp_path: Path):
+        core = _CORE_TEXT.replace(
+            "    flow_options:\n      tool: verilator\n",
+            "    flow_options:\n      tool: verilator\n"
+            "      verilator_options: [--timing, --trace, --trace-fst, "
+            "--trace-depth, '7', -CFLAGS, -DVM_TRACE_FMT_FST]\n",
+        )
+        _write_core(tmp_path / "ip", core)
+
+        overlay = write_trace_overlay("sim", project_root=tmp_path)
+        try:
+            opts = read_core(overlay.core_file)["targets"]["sim"]["flow_options"][
+                "verilator_options"
+            ]
+            assert opts == [
+                "--timing",
+                "--trace",
+                "--trace-fst",
+                "--trace-depth",
+                "7",
+                "-CFLAGS",
+                "-DVM_TRACE_FMT_FST",
+            ]
+            assert overlay.mode is TraceMode.NATIVE_FST
+        finally:
+            overlay.cleanup()
+
+    @pytest.mark.parametrize(
+        ("options", "message"),
+        [
+            ("--trace-fst, --trace-vcd", "both native FST and VCD"),
+            ("--trace-saif", "SAIF tracing is not supported"),
+        ],
+    )
+    def test_rejects_unsupported_authored_trace_recipe(
+        self,
+        tmp_path: Path,
+        options: str,
+        message: str,
+    ):
+        core = _CORE_TEXT.replace(
+            "    flow_options:\n      tool: verilator\n",
+            "    flow_options:\n      tool: verilator\n"
+            f"      verilator_options: [{options}]\n",
+        )
+        _write_core(tmp_path / "ip", core)
+
+        with pytest.raises(FuseSocError, match=message):
+            write_trace_overlay("sim", project_root=tmp_path)
 
     def test_cleanup_is_idempotent(self, tmp_path: Path):
         _write_core(tmp_path / "ip")

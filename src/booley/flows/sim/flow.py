@@ -39,6 +39,7 @@ from booley.sim.sim_result import (
     run_log_is_current,
     write_run_log,
 )
+from booley.sim.trace_recipe import TraceMode
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent
 from booley.targets.target import inspect_target, select_target, select_targets
@@ -1750,12 +1751,14 @@ class SimulateFlow(BooleyFlow):
         self._reset_trace_build_root(build_root)
         overlay = None
         resolve_vlnv = None
+        trace_mode = TraceMode.VCD_FIFO
         if self.args.trace:
             overlay = fusesoc_registry.write_trace_overlay(
                 target,
                 project_root=self.args.work_dir,
             )
             resolve_vlnv = overlay.vlnv
+            trace_mode = overlay.mode
         try:
             resolved = fusesoc_registry.resolve_target(
                 target,
@@ -1800,7 +1803,14 @@ class SimulateFlow(BooleyFlow):
             # subprocess (paths stay relative to the project root, the shell's
             # start cwd). It owns run_cwd
             # anchoring and re-emits the [SIM_SUMMARY] verdict sentinel.
-            run_line = shlex.join(self._verilator_run_cmd(rel, resolved.toplevel, plusargs))
+            run_line = shlex.join(
+                self._verilator_run_cmd(
+                    rel,
+                    resolved.toplevel,
+                    plusargs,
+                    trace_mode=trace_mode,
+                )
+            )
         return [
             "sh",
             "-c",
@@ -1855,6 +1865,8 @@ class SimulateFlow(BooleyFlow):
         rel: str,
         toplevel: str,
         plusargs: list[str],
+        *,
+        trace_mode: TraceMode = TraceMode.VCD_FIFO,
     ) -> list[str]:
         """Build the ``booley.sim.verilator_run`` invocation for one sim run.
 
@@ -1880,7 +1892,7 @@ class SimulateFlow(BooleyFlow):
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
-            cmd.append("--trace")
+            cmd += ["--trace", "--trace-mode", trace_mode.value]
         for pa in plusargs:
             # The ``=`` form is required when a project's test selector is a
             # getopt-style token (for example ``--meminit=ram,firmware.elf``).
@@ -2003,6 +2015,12 @@ class SimulateFlow(BooleyFlow):
             )
             resolve_vlnv = overlay.vlnv
         try:
+            if overlay is not None and overlay.mode is TraceMode.NATIVE_FST:
+                raise fusesoc_registry.FuseSocError(
+                    f"Cocotb Target {target!r} requests native FST tracing, but "
+                    "the Cocotb run-half currently owns a VCD dump; use a VCD "
+                    "trace recipe for this Target"
+                )
             resolved = fusesoc_registry.resolve_target(
                 target,
                 project_root=self.args.work_dir,

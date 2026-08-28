@@ -9,8 +9,8 @@ verdict sentinel the criteria layer scrapes.
 This module is the edalize successor to the retired legacy Verilator
 run-half. It is deliberately a **self-contained subprocess entry-point**
 (``python -m booley.sim.verilator_run …``) so a Booley Flow can supervise the
-whole run — including the FIFO/bwave streaming lifecycle — as one Session
-Runtime subprocess.
+whole run — including either the FIFO/B-Wave conversion lifecycle or a
+Target-owned native-FST lifecycle — as one Session Runtime subprocess.
 
 Unlike the legacy runner it does **not** build anything and reads no
 ``configs.toml``/``build_file_list`` design-description: the binary location is
@@ -41,6 +41,7 @@ from booley.sim.sim_result import (
     write_run_log,
     write_run_log_progress,
 )
+from booley.sim.trace_recipe import TraceMode
 from booley.sim.trace_session import TraceSession
 
 #: How often the streaming loop refreshes run.log with a live tail (seconds).
@@ -110,9 +111,9 @@ def _render_trace_args(trace_args: list[str] | None, trace_file: Path | None) ->
     contract is configurable (``[flows.sim].trace_args``), with Booley's
     own convention as the default.
 
-    ``{file}`` interpolates the trace destination. Arguments that reference it
-    are dropped when there is no destination (the non-FIFO Windows path),
-    since a template with nowhere to write is not a meaningful argument.
+    ``{file}`` interpolates the resolved trace destination: a VCD FIFO for the
+    conversion recipe or a regular FST file for the native recipe. Arguments
+    that reference it are dropped when no destination is available.
     """
     rendered = []
     for arg in trace_args or DEFAULT_TRACE_ARGS:
@@ -130,7 +131,7 @@ def _build_run_cmd(
 ) -> tuple[list[str], dict[str, str]]:
     """Assemble the binary invocation and environment (mirrors the legacy cmd).
 
-    Trace arguments are appended separately by :func:`_setup_bwave`, which is
+    Trace arguments are appended separately by :func:`_setup_trace`, which is
     the only place that knows the trace destination. ``LD_LIBRARY_PATH`` is
     widened to *lib_dir* harmlessly (the edalize binary is static, but a DPI
     ``.so`` placed alongside still resolves, matching the legacy runner).
@@ -164,6 +165,19 @@ def _setup_bwave(
     bwave_proc, use_fifo, keepalive_fd = trace.start_fifo()
     cmd.extend(_render_trace_args(trace_args, trace.fifo_path if use_fifo else None))
     return bwave_proc, use_fifo, keepalive_fd
+
+
+def _setup_trace(
+    trace: TraceSession,
+    cmd: list[str],
+    trace_args: list[str] | None,
+    trace_mode: TraceMode,
+) -> tuple[subprocess.Popen | None, bool, int | None]:
+    """Configure the selected trace adapter and append its run arguments."""
+    if trace_mode is TraceMode.NATIVE_FST:
+        cmd.extend(_render_trace_args(trace_args, trace.work_bwave_path))
+        return None, False, None
+    return _setup_bwave(trace, cmd, trace_args)
 
 
 def _kill_with_reason(
@@ -493,11 +507,63 @@ def _resolve_single_scope(trace_scope: str | None) -> str | None:
 #: complaint), the user just converts it by hand or scopes the dump down.
 _MAX_ADOPTED_VCD_BYTES = 2 * 1024**3
 
+TraceFileSnapshot = dict[Path, tuple[int, int, int]]
+
+
+def _trace_file_stamp(path: Path) -> tuple[int, int, int] | None:
+    """Return a cheap identity for freshness checks, or ``None`` if absent."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size, stat.st_ino
+
+
+def _declared_trace_matches(pattern: str, search_dirs: list[Path]) -> list[Path]:
+    """Resolve one declared artifact pattern using the documented search order."""
+    candidate = Path(pattern)
+    if candidate.is_absolute():
+        return sorted(path for path in candidate.parent.glob(candidate.name) if path.is_file())
+    for base in search_dirs:
+        matches = sorted(path for path in base.glob(pattern) if path.is_file())
+        if matches:
+            return matches
+    return []
+
+
+def snapshot_declared_trace_files(
+    trace_files: list[str] | None,
+    search_dirs: list[Path],
+) -> TraceFileSnapshot:
+    """Snapshot declared artifacts so only output from this run can be adopted."""
+    snapshot: TraceFileSnapshot = {}
+    for pattern in trace_files or []:
+        for match in _declared_trace_matches(pattern, search_dirs):
+            stamp = _trace_file_stamp(match)
+            if stamp is not None:
+                snapshot[match.resolve()] = stamp
+    return snapshot
+
+
+def _prepare_trace_artifacts(
+    trace: TraceSession | None,
+    trace_files: list[str] | None,
+    run_cwd: Path,
+    work_dir: Path,
+    bin_dir: Path,
+) -> tuple[list[Path], TraceFileSnapshot]:
+    """Reset Booley-owned output and snapshot project-owned trace locations."""
+    if trace is not None:
+        trace.reset_for_run()
+    search_dirs = [run_cwd, work_dir, bin_dir]
+    return search_dirs, snapshot_declared_trace_files(trace_files, search_dirs)
+
 
 def adopt_declared_trace_files(
     trace: TraceSession,
     trace_files: list[str] | None,
     search_dirs: list[Path],
+    before: TraceFileSnapshot | None = None,
 ) -> Path | None:
     """Adopt the first declared custom trace artifact that exists; None if none do.
 
@@ -511,23 +577,16 @@ def adopt_declared_trace_files(
     Entries are paths relative to each of *search_dirs* in order (absolute paths
     are used as given), and may be globs. A ``.vcd`` under
     :data:`_MAX_ADOPTED_VCD_BYTES` is fed through the ``TraceSession`` VCD→bwave
-    postprocess so the result is genuinely queryable; a bigger one is adopted
-    raw rather than risking the caller's budget on the conversion. An artifact
-    that is already a store is published as found.
+    postprocess so the result is genuinely queryable. A bigger one is retained
+    only for incident diagnostics rather than risking the caller's budget on
+    conversion; it cannot earn ``TRACE_OK``. An artifact that is already an FST
+    store is inspected as found.
     """
     for pattern in trace_files or []:
-        candidate = Path(pattern)
-        matches: list[Path] = []
-        if candidate.is_absolute():
-            # An absolute entry names one place; keep glob support for the
-            # basename (a dump numbered by run, say) without re-rooting it.
-            matches = sorted(p for p in candidate.parent.glob(candidate.name) if p.is_file())
-        else:
-            for base in search_dirs:
-                matches = sorted(p for p in base.glob(pattern) if p.is_file())
-                if matches:
-                    break
+        matches = _declared_trace_matches(pattern, search_dirs)
         for match in matches:
+            if before is not None and before.get(match.resolve()) == _trace_file_stamp(match):
+                continue
             if not match.is_file() or (size := match.stat().st_size) == 0:
                 continue
             if match.suffix.lower() == ".vcd":
@@ -536,8 +595,9 @@ def adopt_declared_trace_files(
                     print(
                         f"WARNING: declared trace {match} is {size:,} bytes, over the "
                         f"{_MAX_ADOPTED_VCD_BYTES:,}-byte finalize-time conversion cap; "
-                        "adopting the raw VCD instead (convert it separately with "
-                        "`bwave build`, or scope the dump down)"
+                        "retaining the raw VCD for incident diagnostics; it cannot "
+                        "earn TRACE_OK (convert it separately with `bwave build`, "
+                        "or scope the dump down)"
                     )
                     return match
                 trace.postprocess(match)
@@ -549,31 +609,76 @@ def adopt_declared_trace_files(
     return None
 
 
-def _finalize_trace(trace, proc, bwave_proc, trace_files=None, search_dirs=None) -> str:
+def _find_current_trace(
+    trace: TraceSession,
+    trace_files: list[str] | None,
+    search_dirs: list[Path],
+    before: TraceFileSnapshot | None,
+) -> Path | None:
+    """Find one artifact proven new or changed by the current simulation."""
+    found = trace.find()
+    if (
+        found is not None
+        and before is not None
+        and before.get(found.resolve()) == _trace_file_stamp(found)
+    ):
+        found = None
+    if found is None and trace_files:
+        found = adopt_declared_trace_files(trace, trace_files, search_dirs, before=before)
+    return found
+
+
+def _missing_trace_reason(trace_files: list[str] | None) -> str:
+    """Explain why no current trace artifact could be retained."""
+    reason = "trace requested but no fresh .fst store or convertible .vcd was produced"
+    if trace_files:
+        return reason + " (no fresh declared artifact was produced by the current run)"
+    return reason + (
+        " (a testbench with its own C++ main() writes its dump under a name "
+        "Booley cannot guess — declare it in [flows.sim].trace_files)"
+    )
+
+
+def _finalize_trace(
+    trace: TraceSession,
+    proc: subprocess.Popen | None,
+    bwave_proc: subprocess.Popen | None,
+    trace_files: list[str] | None = None,
+    search_dirs: list[Path] | None = None,
+    trace_files_before: TraceFileSnapshot | None = None,
+) -> str:
     """Locate the produced waveform and emit the TRACE_OK / TRACE_INCIDENT line.
 
     Returns the text to append to the run's captured output.
     """
-    found = trace.find()
-    if found is None and trace_files:
-        # F-22: the project declared where its custom main() drops the dump.
-        found = adopt_declared_trace_files(trace, trace_files, search_dirs or [])
+    found = _find_current_trace(
+        trace,
+        trace_files,
+        search_dirs or [],
+        trace_files_before,
+    )
     if found is None:
-        reason = "trace requested but no queryable .fst store or .vcd was produced"
-        if not trace_files:
-            reason += (
-                " (a testbench with its own C++ main() writes its dump under a name "
-                "Booley cannot guess — declare it in [flows.sim].trace_files)"
-            )
-        incident = trace.write_incident(reason, sim_proc=proc, bwave_proc=bwave_proc)
-        print(f"ERROR: {reason}")
+        failure_reason = _missing_trace_reason(trace_files)
+    else:
+        inspection = trace.inspect(found)
+        failure_reason = "" if inspection.usable else (
+            "trace requested but the retained waveform is not queryable: "
+            f"{inspection.failure_reason}"
+        )
+    if failure_reason:
+        incident = trace.write_incident(
+            failure_reason,
+            sim_proc=proc,
+            bwave_proc=bwave_proc,
+        )
+        print(f"ERROR: {failure_reason}")
         print(f"TRACE_INCIDENT: {incident}")
-        return f"\nERROR: {reason}\nTRACE_INCIDENT: {incident}"
-    # Positive assertion: a queryable waveform really landed. Callers that
-    # delegated tracing (simulate's --trace overlay path) scrape this so a
-    # silently-traceless run can no longer pass as success.
-    print(f"TRACE_OK: {found}")
-    return f"\nTRACE_OK: {found}"
+        return f"\nERROR: {failure_reason}\nTRACE_INCIDENT: {incident}"
+    artifact = inspection.artifact
+    assert artifact is not None
+    output = f"TRACE_OK: {artifact.path}\n{artifact.metadata_line()}"
+    print(output)
+    return f"\n{output}"
 
 
 def run_verilated_binary(
@@ -588,6 +693,7 @@ def run_verilated_binary(
     trace_scope: str | None = None,
     trace_args: list[str] | None = None,
     trace_files: list[str] | None = None,
+    trace_mode: TraceMode = TraceMode.VCD_FIFO,
     pass_sentinels: list[str] | None = None,
     fail_sentinels: list[str] | None = None,
     max_rundir_bytes: int = 0,
@@ -598,8 +704,9 @@ def run_verilated_binary(
     that opens vectors/firmware relative to cwd needs the project's sim cwd),
     defaulting to *bin_dir*; *work_dir* is the trace/result output dir (where the
     ``.fst`` store and ``result.json`` land, and what ``TraceSession.find()``
-    discovers), defaulting to *bin_dir*. Tracing wraps the run in a
-    ``TraceSession`` FIFO/bwave stream exactly as the legacy runner did.
+    discovers), defaulting to *bin_dir*. Tracing uses the recipe resolved from
+    the Target: VCD is streamed through B-Wave, while native FST is written to a
+    regular file and inspected directly.
     """
     from booley.runtime.heartbeat import Heartbeat
 
@@ -625,10 +732,11 @@ def run_verilated_binary(
 
     cmd, env = _build_run_cmd(exe, bin_dir, plusargs)
     trace = _new_trace_session(work_dir, scope) if vcd else None
-    if trace:
-        trace.reset_for_run()
+    trace_search_dirs, trace_files_before = _prepare_trace_artifacts(
+        trace, trace_files, run_cwd, work_dir, bin_dir
+    )
     bwave_proc, use_fifo, keepalive_fd = (
-        _setup_bwave(trace, cmd, trace_args) if trace else (None, False, None)
+        _setup_trace(trace, cmd, trace_args, trace_mode) if trace else (None, False, None)
     )
 
     print(f"\n{'=' * 60}")
@@ -663,7 +771,7 @@ def run_verilated_binary(
         return output
     finally:
         hb.stop()
-        if trace:
+        if trace and trace_mode is TraceMode.VCD_FIFO:
             trace.cleanup_fifo(bwave_proc, keepalive_fd)
 
     output = "".join(lines)
@@ -677,7 +785,7 @@ def run_verilated_binary(
         fail_sentinels=fail_sentinels,
     )
 
-    if vcd and not use_fifo and trace:
+    if vcd and trace_mode is TraceMode.VCD_FIFO and not use_fifo and trace:
         trace.postprocess(work_dir / "trace.vcd")
     if trace:
         # run_cwd first: a custom main() writes its dump relative to the cwd it
@@ -687,7 +795,8 @@ def run_verilated_binary(
             proc,
             bwave_proc,
             trace_files=trace_files,
-            search_dirs=[run_cwd, work_dir, bin_dir],
+            search_dirs=trace_search_dirs,
+            trace_files_before=trace_files_before,
         )
 
     return output
@@ -720,6 +829,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="kill the run if the run dir exceeds this many bytes (0=off; SETUP-25)",
     )
     p.add_argument("--trace", action="store_true", help="stream a live B-Wave trace")
+    p.add_argument(
+        "--trace-mode",
+        type=TraceMode,
+        choices=list(TraceMode),
+        default=TraceMode.VCD_FIFO,
+        help="resolved trace recipe supplied by the parent Simulation Flow",
+    )
     p.add_argument("--trace-scope", default=None, help="scope the trace to a hierarchy")
     p.add_argument(
         "--trace-arg",
@@ -784,6 +900,7 @@ def main(argv: list[str] | None = None) -> int:
         trace_scope=args.trace_scope,
         trace_args=args.trace_args or None,
         trace_files=args.trace_files or None,
+        trace_mode=args.trace_mode,
         pass_sentinels=args.pass_sentinels or None,
         fail_sentinels=args.fail_sentinels or None,
         max_rundir_bytes=args.max_rundir_bytes,
