@@ -72,3 +72,32 @@ def test_explicit_target_must_contain_scope(tmp_path: Path) -> None:
             category="tb",
             target_hint="sim_cocotb",
         )
+
+
+def test_scope_matching_uses_condition_selected_target_inputs(tmp_path: Path) -> None:
+    (tmp_path / "conditional.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:ip:conditional:1.0\n"
+        "filesets:\n"
+        "  tb:\n"
+        "    files:\n"
+        "      - tool_verilator ? (tb/selected.py): {tags: [tb]}\n"
+        "      - tool_icarus ? (tb/unselected.py): {tags: [tb]}\n"
+        "targets:\n"
+        "  sim:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, cocotb_module: selected}\n"
+        "    filesets: [tb]\n"
+        "    toplevel: dut\n",
+        encoding="utf-8",
+    )
+
+    contract = resolve_review_target(
+        tmp_path,
+        ["tb/selected.py"],
+        category="tb",
+        target_hint="sim",
+    )
+
+    assert contract.selectors == ("sim",)
+    assert contract.kind == "cocotb"

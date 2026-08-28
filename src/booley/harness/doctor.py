@@ -96,6 +96,7 @@ from booley.runtime.project_dir import (
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.flow_names import config_section
+from booley.targets.target import inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
@@ -249,9 +250,11 @@ class _CoreAuditInputs:
     def sources_for(self, name: str) -> fusesoc_registry.CoreSources:
         """Return one Target partition, reading it once per audit."""
         if name not in self._sources:
-            self._sources[name] = fusesoc_registry.target_source_files_for_ref(
-                self._root,
-                self.refs[name],
+            ref = self.refs[name]
+            inspection = inspect_target(self._root, f"{ref.vlnv}#{ref.name}")
+            self._sources[name] = fusesoc_registry.CoreSources(
+                rtl_source_files=inspection.rtl_files,
+                tb_files=inspection.tb_files,
             )
         return self._sources[name]
 
@@ -4327,7 +4330,10 @@ def _check_sim_target_setup(
     for name, ref in sorted(inputs.refs.items()):
         if ref.flow != "sim":
             continue
-        sources = inputs.sources_for(name)
+        try:
+            sources = inputs.sources_for(name)
+        except fusesoc_registry.FuseSocError:
+            continue  # malformed CAPI2 is already reported by the schema audit
         _check_sim_target_tb_staging(name, sources, _pass, _fail)
         _check_sim_verdict_setup(
             project,
@@ -4582,7 +4588,11 @@ def _check_sim_verdict_setup(
     sentinels, configured = _sim_pass_sentinels(project)
     if sources is None:
         try:
-            sources = fusesoc_registry.target_source_files(root, name)
+            inspection = inspect_target(root, f"{ref.vlnv}#{ref.name}")
+            sources = fusesoc_registry.CoreSources(
+                rtl_source_files=inspection.rtl_files,
+                tb_files=inspection.tb_files,
+            )
         except fusesoc_registry.FuseSocError:
             return
     tb_files = sources.tb_files
@@ -5689,11 +5699,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     sources: list[str] = []
     for token in seeds:
         try:
-            sources.extend(
-                fusesoc_registry.target_source_files(
-                    root, token, include_dependencies=True
-                ).rtl_source_files
-            )
+            sources.extend(inspect_target(root, token).rtl_files)
         except fusesoc_registry.FuseSocError:
             continue  # an unresolvable Target is already reported elsewhere
 

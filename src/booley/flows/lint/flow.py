@@ -29,6 +29,7 @@ from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.sim.sim_result import write_run_log
 from booley.targets.flow_names import config_section
+from booley.targets.target import select_target, select_targets
 
 from .. import artifacts
 from .. import edam as edam_layer
@@ -421,17 +422,14 @@ class LintFlow(BooleyFlow):
     def _get_targets(self) -> list[str]:
         """Validated Target selection for this run (ADR 0030).
 
-        Drives off ``resolve_target_selection``: each ``--target`` token is
+        Drives off canonical Target selection: each ``--target`` token is
         validated (a bare name must be unambiguous, a ``vlnv#name`` qualifier
         disambiguates; unknown/ambiguous names raise). An empty ``--target``
         returns ``[]`` — there is **no** enumerate-all sweep (ADR 0030): to lint
         several Targets, name them (``--target a,b``). An empty ``--target``
         returns no selection rather than linting every core.
         """
-        return fusesoc_registry.resolve_target_selection(
-            self.args.target,
-            self.args.work_dir,
-        )
+        return [target.selector for target in select_targets(self.args.work_dir, self.args.target)]
 
     def _prepare_lint_command(
         self,
@@ -516,7 +514,7 @@ class LintFlow(BooleyFlow):
         Verilator family, keeping the historical path byte-for-byte.
         """
         try:
-            ref = fusesoc_registry.resolve_ref(self.args.work_dir, target)
+            ref = select_target(self.args.work_dir, target)
         except Exception:  # noqa: BLE001 — best-effort EDA-tool lookup; default preserves behavior
             return "verilator"
         return _lint_eda_tool_family(ref.eda_tool)
@@ -531,7 +529,7 @@ class LintFlow(BooleyFlow):
         """
         for tgt in targets:
             try:
-                ref = fusesoc_registry.resolve_ref(self.args.work_dir, tgt)
+                ref = select_target(self.args.work_dir, tgt)
             except Exception:  # noqa: BLE001 — advisory only; resolution errors surface later
                 continue
             if ref.flow and ref.flow != "lint":

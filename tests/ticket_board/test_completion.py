@@ -14,6 +14,7 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board import completion
 from booley.ticket_board.completion import complete_review_ticket
 from booley.ticket_board.target_contract import (
+    SCHEMA_VERSION,
     ContractParticipant,
     ContractTargetBinding,
     TargetContract,
@@ -99,16 +100,22 @@ class _BoundaryTicketIO:
         return self.entry
 
 
-def _contract(root: Path, participants: tuple[ContractParticipant, ...]) -> TargetContract:
+def _contract(
+    root: Path,
+    participants: tuple[ContractParticipant, ...],
+    *,
+    schema: int = SCHEMA_VERSION,
+) -> TargetContract:
     outer = next(item for item in participants if item.role == "outer")
     project = next((item for item in participants if item.role == "project"), None)
     return TargetContract(
         outer_sha=outer.sealed_sha,
         project_sha=project.sealed_sha if project else "",
-        surface_digest=surface_digest(root),
+        surface_digest=surface_digest(root, schema=schema),
         targets=(),
         participants=participants,
         surface_entries=surface_entries(root),
+        schema=schema,
     )
 
 
@@ -275,7 +282,7 @@ def test_complete_rejects_legacy_contract_schema(
     )
 
     assert complete_review_ticket(tio, "legacy", _Policy()) is False
-    assert "target_contract.schema must be 3" in capsys.readouterr().err
+    assert "target_contract.schema must be one of [3, 4]" in capsys.readouterr().err
 
 
 def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> None:
@@ -310,8 +317,8 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
         "CAPI=2:\n"
         "name: acme:lib:toy:1.0\n"
         "targets:\n"
-        "  baseline: {flow: lint}\n"
-        "  candidate: {flow: lint}\n",
+        "  baseline: {flow: lint, toplevel: toy}\n"
+        "  candidate: {flow: lint, toplevel: toy}\n",
         encoding="utf-8",
     )
     _git(root, "add", "toy.core")
@@ -339,6 +346,8 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
                 "lint_clean",
                 canonical,
                 "acme:lib:toy:1.0#candidate",
+                "baseline",
+                "candidate",
             ),
         ),
         participants=(participant,),
@@ -373,8 +382,8 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         "CAPI=2:\n"
         "name: acme:lib:toy:1.0\n"
         "targets:\n"
-        "  baseline: {flow: lint}\n"
-        "  candidate: {flow: lint}\n",
+        "  baseline: {flow: lint, toplevel: toy}\n"
+        "  candidate: {flow: lint, toplevel: toy}\n",
         encoding="utf-8",
     )
     (project / "tests.toml").write_text(
@@ -417,6 +426,8 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
                 "lint_clean",
                 canonical,
                 "acme:lib:toy:1.0#candidate",
+                "baseline",
+                "candidate",
             ),
         ),
         participants=participants,
@@ -607,7 +618,7 @@ def test_ticket_ref_move_after_pinning_does_not_change_candidate(
     assert _git(root, "show", "main:design.txt") == "implemented"
 
 
-def test_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> None:
+def test_schema_3_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     _repository(root)
     (root / "toy.core").write_text(
@@ -624,7 +635,7 @@ def test_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> 
         "refs/heads/main",
         base,
     )
-    contract = _contract(root, (participant,))
+    contract = _contract(root, (participant,), schema=3)
     (root / ".booley_project").mkdir()
     _git(root, "switch", "change-target")
     (root / "toy.core").write_text(

@@ -968,7 +968,7 @@ def _completion_context(tio: Any, slug: str, effective_policy: Any) -> _Completi
 
 
 def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
-    """Prepare, publish, and approve one schema-3 review Ticket."""
+    """Prepare, publish, and approve one sealed review Ticket."""
     if not effective_policy.merge:
         raise CompletionError("journaled completion requires merge policy")
     context = _completion_context(tio, slug, effective_policy)

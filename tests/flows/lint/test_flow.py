@@ -33,12 +33,16 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root):
-        return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
+    def _lenient(project_root, target_arg):
+        del project_root
+        return tuple(
+            MagicMock(selector=token.strip())
+            for token in (target_arg or "").split(",")
+            if token.strip()
+        )
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
+    monkeypatch.setattr("booley.flows.lint.flow.select_targets", _lenient)
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from booley.fusesoc import fusesoc_registry
+from booley.targets.target import TargetInspection, inspect_target, select_targets
 
 
 class ReviewContractError(ValueError):
@@ -36,20 +37,17 @@ def _normalize(path: str) -> str:
 
 
 def _matches_scope(
-    project_root: Path,
-    ref: fusesoc_registry.TargetRef,
+    inspection: TargetInspection,
     scope: set[str],
     *,
     category: str,
 ) -> bool:
-    sources = fusesoc_registry.target_source_files_for_ref(
-        project_root,
-        ref,
-        include_dependencies=True,
-        include_headers=True,
-    )
-    candidates = sources.tb_files if category == "tb" else sources.rtl_source_files
-    return scope.issubset({_normalize(path) for path in candidates})
+    candidates = {
+        _normalize(item.path)
+        for item in inspection.inputs
+        if ("tb" in item.tags) == (category == "tb")
+    }
+    return scope.issubset(candidates)
 
 
 def _candidate_refs(
@@ -58,28 +56,36 @@ def _candidate_refs(
     *,
     category: str,
     target_hint: str | None,
-) -> list[tuple[str, fusesoc_registry.TargetRef]]:
+) -> list[tuple[str, TargetInspection]]:
     if target_hint:
-        selected = fusesoc_registry.resolve_target_selection(target_hint, project_root)
+        selected = select_targets(project_root, target_hint)
         if category == "tb" and len(selected) != 1:
             raise ReviewContractError("TB review requires exactly one --target selector")
         return [
-            (selector, fusesoc_registry.resolve_ref(project_root, selector))
-            for selector in selected
+            (handle.selector, inspect_target(project_root, handle.identity)) for handle in selected
         ]
-    return [
-        (fusesoc_registry.minimal_selector(ref, bucket), ref)
+    candidates = [
+        inspect_target(project_root, f"{ref.vlnv}#{ref.name}")
         for bucket in declarations.values()
         for ref in bucket
+        if not ref.doctor_selftest
+    ]
+    unique = {inspection.handle.identity: inspection for inspection in candidates}
+    return [
+        (inspection.handle.selector, inspection)
+        for inspection in sorted(unique.values(), key=lambda item: item.handle.identity)
     ]
 
 
 def _target_contract(
-    matches: list[tuple[str, fusesoc_registry.TargetRef]],
+    matches: list[tuple[str, TargetInspection]],
     *,
     category: str,
 ) -> ReviewTargetContract:
-    kinds = {"cocotb" if ref.cocotb_module else "hdl" for _, ref in matches}
+    kinds = {
+        "cocotb" if inspection.flow_options.get("cocotb_module") else "hdl"
+        for _, inspection in matches
+    }
     selectors = tuple(sorted(selector for selector, _ in matches))
     if len(kinds) == 1:
         return ReviewTargetContract(selectors, next(iter(kinds)))
@@ -116,9 +122,9 @@ def resolve_review_target(
         target_hint=target_hint,
     )
     matches = [
-        (selector, ref)
-        for selector, ref in refs
-        if _matches_scope(project_root, ref, normalized_scope, category=category)
+        (selector, inspection)
+        for selector, inspection in refs
+        if _matches_scope(inspection, normalized_scope, category=category)
     ]
     if target_hint and not matches:
         raise ReviewContractError(

@@ -115,16 +115,18 @@ Ticket Mode treats the Target recipe as acceptance input, not implementation
 work. Ticket creation opens a Ticket Workspace before enqueue, so new or changed
 Targets are authored on Ticket-owned branches without changing the Project's
 destination branches or making Doctor observe a half-configured Target. Schema
-3 records the exact outer and optional project-data participants, their durable
+4 records the exact outer and optional project-data participants, their durable
 Ticket and destination refs, the criterion Targets, a normalized surface
-manifest, and its SHA-256 digest; compatibility `base_sha` equals the outer
-sealed commit. It also seals each Criterion's directed Target Pair using
-canonical Target identities. Schema 3 is the only supported Target Contract
-format; recreate older Tickets before enqueueing them.
+control manifest, and a semantic SHA-256 digest; compatibility `base_sha`
+equals the outer sealed commit. It also seals each Criterion's directed Target Pair using
+canonical Target identities and exact callable selectors. Schema 3 remains
+readable with its historical binding and digest codec; recreate older Tickets
+before enqueueing them.
 
-The digest covers every `.core`, the test registry, Target-selecting Flow
-configuration, selected SDC/XDC, and referenced generators or hooks. Paths are
-part of the identity. RTL and testbench contents remain editable.
+The schema 4 digest covers FuseSoC-selected Target declarations, the test
+registry, Target-selecting Flow configuration, selected SDC/XDC, and referenced
+hooks. Equivalent CAPI2 spellings therefore produce the same digest. Paths are
+part of the identity; RTL and testbench existence and contents remain editable.
 
 Contract metadata is published only after every repository validates and
 commits. Worktrees can then be discarded and reconstructed from the sealed
