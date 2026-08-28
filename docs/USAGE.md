@@ -819,6 +819,15 @@ booley session refresh                  # rebuild configured image, recreate ses
 booley session down                     # stop and remove
 ```
 
+`session refresh` is transactional for the headless runtime. It keeps the old
+container recoverable until the replacement is running on the reconciled
+immutable image ID and an isolated in-container probe confirms the expected
+Booley payload. It refuses to replace a runtime currently owned by VS Code;
+use the editor's **Dev Containers: Rebuild Container** command in that case.
+For a licensed headless runtime, run `booley session down` first so refresh does
+not risk replacing the deterministic license-relay topology beneath a recoverable
+old container.
+
 These are **host** commands (they need Docker), and `booley init` must have run
 first: it builds the image and creates the network, proxy, and reaper. The
 container carries the same `booley.role=interactive` label as the VS Code one,

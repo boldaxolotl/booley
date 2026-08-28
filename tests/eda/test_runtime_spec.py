@@ -42,6 +42,25 @@ def trusted_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return executable
 
 
+def test_pin_image_preserves_reconciled_immutable_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    image_id = "sha256:" + "a" * 64
+    spec = {"image": "booley-sandbox"}
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda image: image)
+
+    assert runtime_spec.pin_image(spec, expected_image_id=image_id) == image_id
+    assert spec["image"] == image_id
+
+
+def test_pin_image_rejects_reconciled_id_that_changed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = "sha256:" + "a" * 64
+    monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="no longer resolves"):
+        runtime_spec.pin_image({"image": "booley-sandbox"}, expected_image_id=expected)
+
+
 @pytest.fixture
 def issued(
     tmp_path: Path,

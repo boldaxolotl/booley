@@ -64,6 +64,7 @@ from booley.ticket_board.io import TicketFileSpec, TicketIO
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
+    from booley.harness.image_lifecycle import LifecycleResult
     from booley.mcp.registry import McpToolInfo
 
 # --- Constants ---
@@ -1167,92 +1168,133 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
         return
 
 
-def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command cohesive
-    args: argparse.Namespace, project_root: Path
-) -> int:
-    """Drive the Session Runtime container headlessly (no VS Code, no UI).
-
-    The host-side counterpart to "Reopen in Container": it runs the very
-    ``.devcontainer/devcontainer.json`` that `booley init` generated, so an
-    agent, a CI job, or a Windows host with no `devcontainer` CLI reaches the
-    same container VS Code would have opened.
-    """
+def _session_up(args: argparse.Namespace, project_root: Path) -> int:
+    """Create or resume the headless Session Runtime."""
+    from booley.harness import auto_doctor
     from booley.harness import session_runtime as sr
 
-    def _up(
-        *,
-        rebuild: bool | None = None,
-        image_override: str | None = None,
-    ) -> int:
-        from booley.harness import auto_doctor
-
-        # Check before creating: afterwards our own container is running too.
-        vscode = sr.conflicting_vscode_session(project_root)
-        rebuild_session = getattr(args, "rebuild", False) if rebuild is None else rebuild
-        startup_due_reason = auto_doctor.due_reason(project_root)
-        name = sr.up(
-            project_root,
-            rebuild=rebuild_session,
-            image_override=image_override,
+    vscode = sr.conflicting_vscode_session(project_root)
+    startup_due_reason = auto_doctor.due_reason(project_root)
+    name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
+    if vscode:
+        print(
+            f"warning: VS Code is already running a Session Runtime for this "
+            f"folder ({vscode}).\n"
+            f"  Both mount the agent's home-state volume read-write, so two "
+            f"agents now share one\n"
+            f"  set of credentials, transcripts, and todos. Prefer the VS Code "
+            f"container, or close it.",
+            file=sys.stderr,
         )
-        if vscode:
-            print(
-                f"warning: VS Code is already running a Session Runtime for this "
-                f"folder ({vscode}).\n"
-                f"  Both mount the agent's home-state volume read-write, so two "
-                f"agents now share one\n"
-                f"  set of credentials, transcripts, and todos. Prefer the VS Code "
-                f"container, or close it.",
-                file=sys.stderr,
-            )
-        _report_session_health(project_root, startup_due_reason=startup_due_reason)
-        print(f"Session Runtime ready: {name}")
-        print("  enter it with: booley session enter")
-        return 0
+    _report_session_health(project_root, startup_due_reason=startup_due_reason)
+    print(f"Session Runtime ready: {name}")
+    print("  enter it with: booley session enter")
+    return 0
 
-    def _refresh() -> int:
-        from booley.harness.init_cmd import refresh_session_image, reissue_session_spec
 
-        image = refresh_session_image(project_root, verbose=getattr(args, "verbose", False))
-        reissue_session_spec(project_root, verbose=getattr(args, "verbose", False))
-        print(f"Refreshed sandbox image: {image}")
-        return _up(rebuild=True)
+def _replace_refreshed_session(
+    project_root: Path, result: LifecycleResult, *, verbose: bool
+) -> None:
+    """Reissue host state and replace the runtime as one recoverable transaction."""
+    from booley.harness import session_runtime as sr
+    from booley.harness.init_cmd import (
+        capture_session_spec,
+        reissue_session_spec,
+        restore_session_spec,
+    )
 
-    def _enter() -> int:
-        # `booley session enter -- cmd` and `... enter cmd` both mean "run cmd".
-        raw = list(getattr(args, "exec_cmd", []) or [])
-        if raw and raw[0] == "--":
-            raw = raw[1:]
-        tty = sys.stdin.isatty() and sys.stdout.isatty()
-        return sr.enter(project_root, raw or None, tty=tty)
+    assert result.selected_id is not None
+    snapshot = capture_session_spec(project_root)
+    try:
+        reissue_session_spec(project_root, result.selected_id, verbose=verbose)
+        sr.up(
+            project_root,
+            rebuild=True,
+            expected_image_id=result.selected_id,
+            expected_payload_fingerprint=result.payload_fingerprint,
+        )
+    except BaseException:
+        restore_session_spec(project_root, snapshot)
+        raise
 
-    def _down() -> int:
-        if sr.down(project_root):
-            print(f"removed {sr.session_container_name(project_root)}")
-        else:
-            print("no Session Runtime container for this folder")
-        return 0
 
-    def _status() -> int:
-        print(sr.status(project_root))
-        return 0
+def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
+    """Reconcile the Session Image and replace its Session Runtime."""
+    from booley.harness import auto_doctor
+    from booley.harness import session_runtime as sr
+    from booley.harness.init_cmd import refresh_session_image
 
-    def _validate() -> int:
-        print(sr.validate(project_root))
-        return 0
+    vscode = sr.conflicting_vscode_session(project_root)
+    if vscode:
+        raise sr.SessionError(
+            f"VS Code owns the active Session Runtime {vscode!r}; use "
+            "'Dev Containers: Rebuild Container' so the editor can replace it safely"
+        )
+    verbose = getattr(args, "verbose", False)
+    result = refresh_session_image(project_root, verbose=verbose)
+    if result.selected_id is None:
+        raise sr.SessionError("image refresh did not return an immutable Session Image ID")
+    _replace_refreshed_session(project_root, result, verbose=verbose)
+    _report_session_health(
+        project_root,
+        startup_due_reason=auto_doctor.due_reason(project_root),
+    )
+    print(f"Refreshed Session Runtime: {result.selected_reference} ({result.selected_id})")
+    return 0
 
-    def _prepare() -> int:
-        print(sr.prepare(project_root))
-        return 0
 
-    handlers = {
-        "up": _up,
-        "enter": _enter,
-        "down": _down,
-        "status": _status,
-        "validate": _validate,
-        "prepare": _prepare,
-        "refresh": _refresh,
+def _session_enter(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import session_runtime as sr
+
+    raw = list(getattr(args, "exec_cmd", []) or [])
+    if raw and raw[0] == "--":
+        raw = raw[1:]
+    return sr.enter(project_root, raw or None, tty=sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import session_runtime as sr
+
+    if sr.down(project_root):
+        print(f"removed {sr.session_container_name(project_root)}")
+    else:
+        print("no Session Runtime container for this folder")
+    return 0
+
+
+def _session_status(_args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import session_runtime as sr
+
+    print(sr.status(project_root))
+    return 0
+
+
+def _session_validate(_args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import session_runtime as sr
+
+    print(sr.validate(project_root))
+    return 0
+
+
+def _session_prepare(_args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness import session_runtime as sr
+
+    print(sr.prepare(project_root))
+    return 0
+
+
+def _cmd_session(args: argparse.Namespace, project_root: Path) -> int:
+    """Drive the Session Runtime container headlessly (no VS Code, no UI)."""
+    from booley.harness import session_runtime as sr
+
+    handlers: dict[str, Callable[[argparse.Namespace, Path], int]] = {
+        "up": _session_up,
+        "enter": _session_enter,
+        "down": _session_down,
+        "status": _session_status,
+        "validate": _session_validate,
+        "prepare": _session_prepare,
+        "refresh": _session_refresh,
     }
     sub = getattr(args, "session_command", None) or "up"
     handler = handlers.get(sub)
@@ -1260,7 +1302,7 @@ def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command 
         print(f"ERROR: unknown session subcommand {sub!r}", file=sys.stderr)
         return 2
     try:
-        return handler()
+        return handler(args, project_root)
     except sr.SessionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

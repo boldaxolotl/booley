@@ -486,12 +486,14 @@ class TestInitInteractive:
         monkeypatch.setattr(
             init_cmd,
             "_step_interactive",
-            lambda _ctx, *, nangate_pdk_root: seen.append(nangate_pdk_root),
+            lambda _ctx, *, nangate_pdk_root, session_image_id=None: seen.append(
+                (nangate_pdk_root, session_image_id)
+            ),
         )
 
-        init_cmd.reissue_session_spec(tmp_path)
+        init_cmd.reissue_session_spec(tmp_path, "sha256:fresh")
 
-        assert seen == [pdk]
+        assert seen == [(pdk, "sha256:fresh")]
 
     def test_seeds_mask_mounts_from_sandbox_knob(self, tmp_path, monkeypatch):
         # [sandbox].mask_paths: each entry becomes a read-only empty bind over
