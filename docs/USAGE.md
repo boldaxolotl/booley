@@ -974,7 +974,7 @@ itself is full (`queue_max`, default 8).
 
 This section is about what pays for the tokens, and about one failure mode that bites unattended runs specifically.
 
-Booley's LLM agents (the Ticket Mode Developer Agent and the Specialists `reviewer` and `mutation_tester`) run through whichever **agent provider** you select with `[agent] provider` in `booley.toml`: `claude` (the Claude Agent SDK, the default) or `codex` (the Codex CLI). Each provider authenticates exactly as its own app does, with the same two options either way: a **subscription** or an **API key**:
+Booley's LLM agents (the Ticket Mode Developer Agent and the Specialists `reviewer` and `mutation_tester`) run through whichever **agent provider** you select during `booley init` and record as `[agent] provider` in `booley.toml`: `claude` (the Claude Agent SDK) or `codex` (the Codex CLI). Init never infers this choice from installed CLIs. Each provider authenticates exactly as its own app does, with the same two options either way: a **subscription** or an **API key**:
 
 | provider | subscription | API key |
 |---|---|---|

@@ -394,7 +394,10 @@ def test_revise_archives_identity_resets_evidence_and_reopens(tmp_path: Path) ->
 
     reopened = tio.contract_revise("change-target")
 
-    archive = f"booley-contract-archive/change-target/{sealed['surface_digest'][:12]}"
+    archive = (
+        "booley-contract-archive/change-target/"
+        f"{sealed['surface_digest'][:12]}-{sealed['outer_sha'][:12]}"
+    )
     assert _git(root, "rev-parse", archive) == sealed["outer_sha"]
     assert Path(reopened["outer_worktree"]).is_dir()
     assert not evidence.exists()
@@ -402,6 +405,37 @@ def test_revise_archives_identity_resets_evidence_and_reopens(tmp_path: Path) ->
     assert "target_contract" not in fields
     assert "base_sha" not in fields
     assert sealed["surface_digest"] in fields["target_contract_history"][0]
+
+
+def test_revise_twice_archives_distinct_paired_project_identities(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    _init_repo(root)
+    (root / "rtl").mkdir()
+    (root / "rtl" / "toy.sv").write_text("module toy; endmodule\n")
+    _write_core(root)
+    (root / ".gitignore").write_text("/.booley_project\n")
+    _commit_all(root, "initial RTL")
+
+    project = root / ".booley_project"
+    _init_repo(project)
+    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project / ".gitignore").write_text("/worktrees/\n")
+    (project / "booley.toml").write_text("[flows.lint]\ndefault_target = 'lint_toy'\n")
+    _commit_all(project, "initial project data")
+    tio = TicketIO(project / "tickets", project_root=root)
+    _create_ticket(tio)
+
+    tio.contract_open("change-target")
+    first = tio.contract_seal("change-target")
+    (project / "findings.jsonl").write_text('{"id":"F-1"}\n')
+    _commit_all(project, "advance non-contract project data")
+    tio.contract_revise("change-target")
+    second = tio.contract_seal("change-target")
+
+    assert first["surface_digest"] == second["surface_digest"]
+    assert first["project_sha"] != second["project_sha"]
+    reopened = tio.contract_revise("change-target")
+    assert Path(reopened["outer_worktree"]).is_dir()
 
 
 def test_blocked_contract_revision_returns_ticket_to_draft(tmp_path: Path) -> None:

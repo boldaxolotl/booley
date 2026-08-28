@@ -20,6 +20,7 @@ from booley.fusesoc.fusesoc_registry import (
     AmbiguousTargetError,
     CoreCollisionError,
     FuseSocError,
+    IncompatibleTargetError,
     MissingSourceError,
     ResolvedTarget,
     TargetResolutionError,
@@ -617,6 +618,26 @@ class TestResolveConfigSelection:
         # fallback (a Flow with no --target and no configured Target refuses).
         _write_core(tmp_path / "ip")
         assert resolve_target_selection("", tmp_path) == []
+
+    def test_flow_compatible_target_is_selectable_for_execution(self, tmp_path: Path):
+        _write_core(tmp_path / "ip")
+        assert resolve_target_selection("sim", tmp_path, for_flow="elab") == ["sim"]
+
+    def test_flow_incompatible_target_is_rejected_before_execution(self, tmp_path: Path):
+        core = _CORE_TEXT.replace(
+            "  sim:\n",
+            "  synth:\n"
+            "    default_tool: yosys\n"
+            "    flow: generic\n"
+            "    flow_options: {tool: yosys}\n"
+            "    filesets: [rtl]\n"
+            "    toplevel: counter\n"
+            "  sim:\n",
+        )
+        _write_core(tmp_path / "ip", core)
+
+        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for elab"):
+            resolve_target_selection("synth", tmp_path, for_flow="elab")
 
     def test_no_core_rejects_any_token(self, tmp_path: Path):
         """ADR 0039: a resolvable .core Target is a precondition — the old

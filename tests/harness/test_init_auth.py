@@ -1,16 +1,9 @@
-"""Tests for init Step 3 agent-authentication reporting (``_step_auth``).
-
-The step probes each supported provider and reports which have usable auth. The
-guarantee under test: when *any* provider resolves, a missing alternate is
-demoted to an informational line — never a bare ``[!!]`` warning that reads as a
-setup failure (SETUP-REPORT F1). Only a *total* absence of auth warns.
-"""
+"""Tests for init's configured-provider authentication reporting."""
 
 from __future__ import annotations
 
 import pytest
 
-from booley.config.agent import _DEFAULT_PROVIDER
 from booley.harness import init_cmd
 from booley.harness.init_common import InitContext
 
@@ -30,43 +23,45 @@ def captured(monkeypatch):
 
 
 def _fake_modes(monkeypatch, modes: dict[str, str | None]) -> None:
-    monkeypatch.setattr(init_cmd, "_detect_auth_mode", modes.get)
+    monkeypatch.setattr(
+        init_cmd, "_detect_auth_mode", lambda provider, _policy: modes.get(provider)
+    )
 
 
-def test_missing_alternate_is_info_not_warn_when_default_resolves(captured, monkeypatch):
-    # Claude present, codex absent → codex's "not detected" must be info, not warn.
+def test_reports_only_the_configured_provider(captured, monkeypatch):
     _fake_modes(monkeypatch, {"claude": "subscription", "codex": None})
     ctx = InitContext()
-    init_cmd._step_auth(ctx)
+    init_cmd._step_auth(ctx, init_cmd.AgentSelection("claude", "subscription"))
 
-    assert captured["warn"] == []  # nothing scary when a provider resolved
-    assert any("codex auth not detected" in m for m in captured["info"])
-    assert any("auth available: claude/subscription" in m for m in captured["ok"])
+    assert captured["warn"] == []
+    assert not any("codex" in message for messages in captured.values() for message in messages)
+    assert any("detected subscription auth for claude" in m for m in captured["ok"])
     assert ctx.results[-1].status == "ok"
 
 
-def test_default_provider_reported_first(captured, monkeypatch):
-    # Both resolve → the default provider's detect line leads the output.
-    _fake_modes(monkeypatch, {"claude": "subscription", "codex": "api_key"})
-    init_cmd._step_auth(ctx := InitContext())
-    detects = [m for m in captured["ok"] if m.startswith("detected ")]
-    assert detects[0].endswith(_DEFAULT_PROVIDER)
+def test_selected_policy_is_used_for_detection(captured, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        init_cmd,
+        "_detect_auth_mode",
+        lambda provider, policy: calls.append((provider, policy)) or "api_key",
+    )
+    init_cmd._step_auth(ctx := InitContext(), init_cmd.AgentSelection("codex", "api_key"))
+    assert calls == [("codex", "api_key")]
     assert ctx.results[-1].status == "ok"
 
 
-def test_no_provider_resolves_warns(captured, monkeypatch):
-    # Total absence of auth is the one case that legitimately warns.
+def test_selected_provider_without_auth_warns(captured, monkeypatch):
     _fake_modes(monkeypatch, {"claude": None, "codex": None})
-    init_cmd._step_auth(ctx := InitContext())
-    assert any("no agent auth detected" in m for m in captured["warn"])
+    init_cmd._step_auth(ctx := InitContext(), init_cmd.AgentSelection("codex", "subscription"))
+    assert any("no subscription auth available for codex" in m for m in captured["warn"])
     assert ctx.results[-1].status == "warn"
 
 
-def test_info_banner_names_the_real_default(captured, monkeypatch):
-    # The intro line must name the actual default provider, not a stale literal.
+def test_info_banner_names_explicit_selection(captured, monkeypatch):
     _fake_modes(monkeypatch, {"claude": "subscription", "codex": None})
-    init_cmd._step_auth(InitContext())
-    assert any(f"defaults to {_DEFAULT_PROVIDER}" in m for m in captured["info"])
+    init_cmd._step_auth(InitContext(), init_cmd.AgentSelection("claude", "subscription"))
+    assert "configured agent: claude/subscription" in captured["info"]
 
 
 def test_detect_auth_mode_reports_what_actually_bills(tmp_path, monkeypatch):

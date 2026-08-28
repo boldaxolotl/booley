@@ -258,7 +258,7 @@ def _stub_prepare(
         lambda _path: workspace / ".booley_project",
     )
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
     monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
 
 
@@ -416,7 +416,7 @@ class TestPrepareMigration:
             lambda _path: workspace / ".booley_project",
         )
         monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
+        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
         remove = Mock()
         monkeypatch.setattr(sr, "_run", remove)
@@ -457,7 +457,7 @@ class TestPrepareMigration:
             lambda _path: workspace / ".booley_project",
         )
         monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
-        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path: None)
+        monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
 
         assert sr.prepare(workspace) == "current-spec"
@@ -620,7 +620,9 @@ class TestPrepareMigration:
             lambda _path: workspace / ".booley_project",
         )
         monkeypatch.setattr("booley.eda.runtime_spec.validate", lambda *_args: issuance)
-        monkeypatch.setattr("booley.eda.runtime_spec.requested_license", lambda _path: None)
+        monkeypatch.setattr(
+            "booley.eda.runtime_spec.requested_license", lambda _path, **_kwargs: None
+        )
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
 
@@ -1075,7 +1077,10 @@ class TestPreflight:
     def test_missing_image_names_booley_init(self, workspace: Path):
         _write_spec(workspace, _spec())
         with (
-            patch("booley.eda.runtime_spec.validate", return_value=SimpleNamespace()),
+            patch(
+                "booley.eda.runtime_spec.validate",
+                return_value=SimpleNamespace(license_profile=None),
+            ),
             patch.object(sr.idk, "network_exists", return_value=True),
             patch.object(sr.idk, "image_exists", return_value=False),
             pytest.raises(sr.SessionError, match="not built"),
@@ -1632,3 +1637,34 @@ class TestSessionRefresh:
             assert booley._cmd_session(args, tmp_path) == 0
 
         assert events == ["image", "reissue", "up:True"]
+
+    def test_down_up_never_announces_persisted_stale_doctor_findings(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from booley.harness import auto_doctor, booley
+        from booley.harness.booley import _build_parser
+
+        monkeypatch.setattr(sr, "down", lambda _root: True)
+        monkeypatch.setattr(sr, "session_container_name", lambda _root: "session")
+        down_args = _build_parser().parse_args(["session", "down"])
+        assert booley._cmd_session(down_args, tmp_path) == 0
+        capsys.readouterr()
+
+        monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
+        monkeypatch.setattr(sr, "up", lambda *_args, **_kwargs: "session")
+        monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: "Doctor inputs changed")
+        monkeypatch.setattr(
+            auto_doctor,
+            "consume_changed_summary",
+            lambda *_args, **_kwargs: pytest.fail("stale Doctor summary was consumed"),
+        )
+        up_args = _build_parser().parse_args(["session", "up"])
+
+        assert booley._cmd_session(up_args, tmp_path) == 0
+        output = capsys.readouterr()
+        assert "Automatic Doctor is running" in output.err
+        assert "Doctor inputs changed" in output.err
+        assert "Session Runtime ready: session" in output.out

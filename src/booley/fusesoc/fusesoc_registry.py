@@ -148,6 +148,10 @@ class AmbiguousTargetError(FuseSocError):
     """
 
 
+class IncompatibleTargetError(FuseSocError):
+    """A Target exists but its declared Flow/EDA tool cannot drive this run."""
+
+
 @dataclass(frozen=True)
 class CoreSetupHazard:
     """A statically detectable condition that makes FuseSoC setup unsafe."""
@@ -1811,6 +1815,8 @@ def sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
 def resolve_target_selection(
     target_arg: str | None,
     project_root: Path | str,
+    *,
+    for_flow: str | None = None,
 ) -> list[str]:
     """Split a ``--target`` string into validated selection tokens (ADR 0030).
 
@@ -1827,6 +1833,11 @@ def resolve_target_selection(
     ``.core`` Target is a precondition for every Booley Flow (ADR 0039), so every
     token is validated unconditionally — the old zero-``.core`` transitional
     skip silently accepted any name and made mixed projects hard-fail later.
+
+    When *for_flow* is provided, selection also enforces the same compatibility
+    contract exposed by ``booley targets --for``. This is an execution gate,
+    not merely a listing filter: a known but incompatible Target is rejected
+    before FuseSoC setup or an EDA tool can run.
     """
     selected = [c.strip() for c in (target_arg or "").split(",") if c.strip()]
     if not selected:
@@ -1838,7 +1849,20 @@ def resolve_target_selection(
     )
     resolver = resolve_ref if doctor_selftest else resolve_public_ref
     for token in selected:
-        resolver(project_root, token)  # raises on unknown / ambiguous
+        ref = resolver(project_root, token)  # raises on unknown / ambiguous
+        if for_flow is None:
+            continue
+        from booley.targets.target_surface import flow_can_drive
+
+        if not flow_can_drive(for_flow, ref):
+            from booley.targets.flow_names import canonical
+
+            flow = canonical(for_flow)
+            raise IncompatibleTargetError(
+                f"Target {token!r} cannot be driven by the {flow!r} Flow "
+                f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
+                f"Choose a compatible Target with `booley targets --for {flow}`."
+            )
     return selected
 
 
