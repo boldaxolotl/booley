@@ -37,6 +37,11 @@ from .target_contract import (
     TargetContractError,
     verify_surface,
 )
+from .target_finalization import (
+    TargetFinalizationError,
+    apply_target_removals,
+    plan_target_removals,
+)
 from .validation import retired_ticket_field_errors
 
 
@@ -124,11 +129,13 @@ def _initial_journal(
     contract: TargetContract,
     *,
     cleanup: bool = False,
+    removal_targets: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     return initial_journal(
         slug,
         [item.as_dict() for item in contract.participants],
         cleanup=cleanup,
+        removal_targets=removal_targets,
     )
 
 
@@ -138,12 +145,21 @@ def _load_journal(
     contract: TargetContract,
     *,
     cleanup: bool = False,
+    removal_targets: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     expected = [item.as_dict() for item in contract.participants]
     if not path.exists():
-        return _initial_journal(slug, contract, cleanup=cleanup)
+        return _initial_journal(
+            slug, contract, cleanup=cleanup, removal_targets=removal_targets
+        )
     try:
-        return load_journal(path, slug, expected, cleanup=cleanup)
+        return load_journal(
+            path,
+            slug,
+            expected,
+            cleanup=cleanup,
+            removal_targets=removal_targets,
+        )
     except AcceptanceJournalError as exc:
         raise CompletionError(str(exc)) from exc
 
@@ -449,9 +465,14 @@ def _import_candidate(repository: Path, plan: _CandidatePlan) -> None:
     _commit(repository, plan.details["sha"])
 
 
-def _install_staging_ref(repository: Path, candidate: Mapping[str, str]) -> None:
+def _install_staging_ref(
+    repository: Path, candidate: Mapping[str, str], *, finalized: bool = False
+) -> None:
     current = _ref_commit(repository, candidate["staging_ref"])
     if current is None:
+        _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
+    elif current != candidate["sha"] and finalized:
+        _commit(repository, candidate["sha"])
         _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
     elif current != candidate["sha"]:
         raise CompletionError(
@@ -477,7 +498,7 @@ def _persist_candidate_plans(
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, by_role[role])
         _commit(repository, candidate["sha"])
-        _install_staging_ref(repository, candidate)
+        _install_staging_ref(repository, candidate, finalized=journal["finalized"])
 
 
 def _prepare_all(
@@ -508,6 +529,163 @@ def _prepare_all(
     if not journal["published"]:
         journal["state"] = JournalState.PREPARED
         _write_journal(journal_path, journal)
+
+
+def _commit_finalized_paths(
+    checkout: Path,
+    paths: list[Path],
+    slug: str,
+) -> str:
+    if not paths:
+        return _commit(checkout, "HEAD")
+    names = [path.as_posix() for path in paths]
+    _require_git(checkout, "add", "--", *names)
+    _require_git(
+        checkout,
+        "commit",
+        "-m",
+        f"chore({slug}): remove completed Ticket Targets",
+    )
+    return _commit(checkout, "HEAD")
+
+
+def _add_finalization_worktrees(
+    root: Path,
+    temporary: Path,
+    project_repository: Path | None,
+    has_project: bool,
+    journal: Mapping[str, Any],
+) -> Path | None:
+    _require_git(
+        root,
+        "worktree",
+        "add",
+        "--detach",
+        str(temporary),
+        journal["candidates"]["outer"]["staging_ref"],
+    )
+    if not has_project:
+        return None
+    if project_repository is None:
+        raise CompletionError("sealed project repository is unavailable")
+    try:
+        project_relative = checkout_project_dir_relative_to(root)
+    except (FileNotFoundError, ValueError) as exc:
+        raise CompletionError(str(exc)) from exc
+    project_checkout = temporary / project_relative
+    _require_git(
+        project_repository,
+        "worktree",
+        "add",
+        "--detach",
+        str(project_checkout),
+        journal["candidates"]["project"]["staging_ref"],
+    )
+    return project_checkout
+
+
+def _planned_finalization_paths(
+    temporary: Path, contract: TargetContract, journal: Mapping[str, Any]
+) -> list[Path]:
+    try:
+        plan = plan_target_removals(
+            temporary,
+            journal["removal_targets"],
+            contract.bindings,
+        )
+        return apply_target_removals(temporary, plan)
+    except (TargetFinalizationError, OSError, ValueError) as exc:
+        raise CompletionError(f"Target finalization failed: {exc}") from exc
+
+
+def _partition_finalization_paths(
+    temporary: Path,
+    project_checkout: Path | None,
+    changed: list[Path],
+) -> tuple[list[Path], list[Path]]:
+    if project_checkout is None:
+        return [], changed
+    project_prefix = project_checkout.relative_to(temporary)
+    project_paths = [
+        path.relative_to(project_prefix) for path in changed if path.is_relative_to(project_prefix)
+    ]
+    outer_paths = [path for path in changed if not path.is_relative_to(project_prefix)]
+    return project_paths, outer_paths
+
+
+def _commit_finalized_candidates(
+    temporary: Path,
+    project_checkout: Path | None,
+    changed: list[Path],
+    slug: str,
+) -> dict[str, str]:
+    project_paths, outer_paths = _partition_finalization_paths(
+        temporary, project_checkout, changed
+    )
+    finalized: dict[str, str] = {}
+    if project_checkout is not None:
+        finalized["project"] = _commit_finalized_paths(project_checkout, project_paths, slug)
+    finalized["outer"] = _commit_finalized_paths(temporary, outer_paths, slug)
+    return finalized
+
+
+def _update_finalized_refs(
+    root: Path,
+    project_repository: Path | None,
+    participants: Mapping[str, ContractParticipant],
+    journal: Mapping[str, Any],
+    finalized: Mapping[str, str],
+) -> None:
+    for role, sha in finalized.items():
+        repository = _repository_for(root, project_repository, participants[role])
+        _require_git(
+            repository,
+            "update-ref",
+            journal["candidates"][role]["staging_ref"],
+            sha,
+        )
+
+
+def _remove_finalization_worktrees(
+    root: Path,
+    temporary: Path,
+    project_repository: Path | None,
+    project_checkout: Path | None,
+) -> None:
+    if project_checkout is not None and project_repository is not None:
+        _git(project_repository, "worktree", "remove", "--force", str(project_checkout))
+    _git(root, "worktree", "remove", "--force", str(temporary))
+    if temporary.exists():
+        temporary.rmdir()
+
+
+def _finalize_all(
+    root: Path,
+    project_repository: Path | None,
+    slug: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    journal_path: Path,
+) -> None:
+    """Apply removals to a composite candidate before either ref is published."""
+    if journal["finalized"]:
+        return
+    temporary = Path(tempfile.mkdtemp(prefix="booley-accept-finalize-"))
+    by_role = {item.role: item for item in contract.participants}
+    project_checkout: Path | None = None
+    try:
+        project_checkout = _add_finalization_worktrees(
+            root, temporary, project_repository, "project" in by_role, journal
+        )
+        changed = _planned_finalization_paths(temporary, contract, journal)
+        finalized = _commit_finalized_candidates(temporary, project_checkout, changed, slug)
+        for role, sha in finalized.items():
+            journal["candidates"][role]["sha"] = sha
+        journal["finalized"] = True
+        _write_journal(journal_path, journal)
+        _update_finalized_refs(root, project_repository, by_role, journal, finalized)
+    finally:
+        _remove_finalization_worktrees(root, temporary, project_repository, project_checkout)
 
 
 def _publish_all(
@@ -662,8 +840,15 @@ def _execute_completion(
     allowed_board_rename: tuple[Path, Path],
     *,
     cleanup: bool,
+    removal_targets: tuple[str, ...],
 ) -> None:
-    journal = _load_journal(path, slug, contract, cleanup=cleanup)
+    journal = _load_journal(
+        path,
+        slug,
+        contract,
+        cleanup=cleanup,
+        removal_targets=removal_targets,
+    )
     _write_journal(path, journal)
     state = JournalState(journal["state"])
     if state is JournalState.DONE:
@@ -687,6 +872,7 @@ def _execute_completion(
         )
         _validate_source_surface(root, project_repository, contract, journal["sources"])
         _prepare_all(root, project_repository, slug, contract, journal, path)
+        _finalize_all(root, project_repository, slug, contract, journal, path)
         _publish_all(
             root,
             project_repository,
@@ -763,6 +949,7 @@ def _completion_inputs(
         raise CompletionError("journaled completion requires merge policy to be true")
     if not isinstance(getattr(effective_policy, "cleanup", None), bool):
         raise CompletionError("journaled completion requires cleanup policy to be boolean")
+    removal_targets = tuple(getattr(effective_policy, "remove_targets", ()))
     entry = tio.find_ticket(slug)
     if not entry:
         print(f"Error: ticket '{slug}' not found", file=sys.stderr)
@@ -780,6 +967,10 @@ def _completion_inputs(
         return None
     try:
         contract = TargetContract.from_mapping(entry.get("target_contract"))
+        if removal_targets != contract.removal_targets:
+            raise TargetContractError(
+                "on_success.remove_targets changed after Target Contract sealing"
+            )
     except TargetContractError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
@@ -816,6 +1007,7 @@ def _run_locked_completion(
             path,
             allowed_board_rename,
             cleanup=effective_policy.cleanup,
+            removal_targets=tuple(getattr(effective_policy, "remove_targets", ())),
         )
 
 

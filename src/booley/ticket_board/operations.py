@@ -689,6 +689,12 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
     slug = Path(str(entry["file"])).stem
 
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
+    if on_success.remove_targets and not on_success.merge:
+        print(
+            f"Error: cannot remove Targets when merge is disabled for '{slug}'",
+            file=sys.stderr,
+        )
+        return False
     policy_errors = on_success.validate()
     if policy_errors:
         print(f"Error: cannot complete '{slug}': {policy_errors[0]}", file=sys.stderr)

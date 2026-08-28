@@ -530,6 +530,7 @@ class TicketIO:
                 "merge": True,
                 "cleanup": True,
                 "triage_report": True,
+                "remove_targets": [],
             }
         fields = {
             "summary": spec.summary,
@@ -707,7 +708,7 @@ class TicketIO:
         ticket_path, skip = self._resolve_enqueue_path(slug)
         if skip:
             return False
-        fields = self._validated_enqueue_fields(slug, ticket_path)
+        fields = self._validated_enqueue_fields(slug, ticket_path, on_success)
         if fields is None:
             return False
         has_unmet, dep_error = self._check_deps(slug, fields.get("dependencies", []))
@@ -728,17 +729,20 @@ class TicketIO:
         return True
 
     def _validated_enqueue_fields(
-        self, slug: str, ticket_path: Path
+        self, slug: str, ticket_path: Path, on_success: dict[str, Any] | None
     ) -> dict[str, Any] | None:
         with ticket_path.open(encoding="utf-8") as handle:
             fields, body = parse_frontmatter(handle.read())
-        contract_errors = self._validate_enqueue_contract(slug, fields)
+        effective_fields = dict(fields)
+        if on_success:
+            effective_fields["on_success"] = on_success
+        contract_errors = self._validate_enqueue_contract(slug, effective_fields)
         if contract_errors:
             self._print_enqueue_errors("ticket Target contract is not sealed", contract_errors)
             return None
-        validation_root = self._enqueue_validation_root(slug, fields)
+        validation_root = self._enqueue_validation_root(slug, effective_fields)
         results = validate_ticket_fields(
-            fields,
+            effective_fields,
             body,
             check_files=(validation_root / ".booley").is_dir(),
             check_git=False,
@@ -751,7 +755,7 @@ class TicketIO:
         if errors:
             self._print_enqueue_errors("ticket validation failed", errors)
             return None
-        return fields
+        return effective_fields
 
     @staticmethod
     def _print_enqueue_errors(summary: str, errors: list[str]) -> None:

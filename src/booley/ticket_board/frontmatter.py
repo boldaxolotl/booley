@@ -436,11 +436,14 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return fields, body
 
 
-def _format_nested_dict(key, val, lines):
+def _format_nested_dict(key, val, lines):  # noqa: PLR0912 - bounded YAML subset formatter
     """Format a nested block dict (criteria, on_success) as YAML lines."""
     lines.append(f"{key}:")
     for section_name, section_val in val.items():
-        if isinstance(section_val, dict):
+        if isinstance(section_val, list):
+            items = ", ".join(_yaml_inline_value(item) for item in section_val)
+            lines.append(f"  {section_name}: [{items}]")
+        elif isinstance(section_val, dict):
             lines.append(f"  {section_name}:")
             for sk, sv in section_val.items():
                 if isinstance(sv, list):
