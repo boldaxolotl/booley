@@ -253,6 +253,42 @@ def make_ticket_in_dir(tio, subdir, slug, extra_fields=None, body="## Descriptio
 # ===========================================================================
 
 
+class TestAcceptanceProgress:
+    def test_find_and_scan_expose_validated_journal_state(self, tmp_path):
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "review", "partial")
+        acceptance = tmp_path / ".runtime" / "acceptance"
+        acceptance.mkdir(parents=True)
+        (acceptance / "partial.json").write_text(
+            json.dumps(
+                {
+                    "schema": 2,
+                    "transaction": "a" * 32,
+                    "ticket": "partial",
+                    "state": "initializing",
+                    "policy": {"merge": True, "cleanup": True},
+                    "participants": [
+                        {
+                            "role": "outer",
+                            "sealed_sha": "b" * 40,
+                            "ticket_ref": "refs/heads/partial",
+                            "destination_ref": "refs/heads/main",
+                            "destination_sha": "c" * 40,
+                        }
+                    ],
+                    "sources": {},
+                    "candidates": {},
+                    "published": [],
+                    "cleaned": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert tio.find_ticket("partial")["acceptance_state"] == "initializing"
+        assert scan_all_tickets(tio.tickets_dir)[0]["acceptance_state"] == "initializing"
+
+
 class TestGenerateSlug:
     def test_normal_text(self):
         assert generate_slug("Add ALU pipeline module") == "add-alu-pipeline-module"

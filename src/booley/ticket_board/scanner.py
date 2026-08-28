@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .acceptance_journal import acceptance_state
 from .constants import DIR_STATUS_MAP, TICKET_DIRS
 from .execution import next_from_planned
 from .frontmatter import parse_frontmatter
@@ -206,6 +207,9 @@ def scan_all_tickets(tickets_dir: str | Path) -> list[dict[str, Any]]:
             rt = progress if progress is not None else fields
 
             entry = _build_ticket_entry(md_file, d, dir_status, fields, rt)
+            journal_state = acceptance_state(tickets_dir, md_file.stem)
+            if journal_state is not None:
+                entry["acceptance_state"] = str(journal_state)
             _enrich_from_state(entry, logs_dir, md_file.stem)
             result.append(entry)
 

@@ -142,6 +142,8 @@ def _cmd_show(tio, args):
     wt_note = "" if worktree.is_dir() else "  (absent)"
     print(f"ticket:    {slug}")
     print(f"status:    {entry.get('status', '')}")
+    if entry.get("acceptance_state"):
+        print(f"acceptance: {entry['acceptance_state']}")
     print(f"file:      {ticket_file}")
     print(f"logs:      {logs_dir}")
     print(f"worktree:  {worktree}{wt_note}")

@@ -127,6 +127,37 @@ def _boundary_contract() -> TargetContract:
     )
 
 
+def _paired_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, _TicketIO, tuple[ContractParticipant, ...]]:
+    root = tmp_path / "rtl"
+    outer_base = _repository(root)
+    outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
+    project = root / ".booley_project"
+    project_base = _repository(project)
+    project_ticket = _ticket_commit(
+        project, "booley-ticket/change-target", "project implementation\n"
+    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    participants = (
+        ContractParticipant(
+            "outer",
+            outer_ticket,
+            "refs/heads/change-target",
+            "refs/heads/main",
+            outer_base,
+        ),
+        ContractParticipant(
+            "project",
+            project_ticket,
+            "refs/heads/booley-ticket/change-target",
+            "refs/heads/main",
+            project_base,
+        ),
+    )
+    return root, project, _TicketIO(root, _contract(root, participants)), participants
+
+
 def test_git_failures_report_repository_and_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -594,10 +625,42 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
     root = tmp_path / "rtl"
     base = _repository(root)
     ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    contract = _contract(root, (participant,))
+    data = completion._initial_journal("earlier", contract)
+    data["sources"] = {"outer": ticket_sha}
+    data["candidates"] = {
+        "outer": {
+            "sha": ticket_sha,
+            "staging_ref": f"refs/booley/acceptance/{data['transaction']}/outer",
+            "expected_destination_sha": base,
+        }
+    }
+    data["state"] = "prepared"
+    acceptance = root / ".booley_project" / ".runtime" / "acceptance"
+    acceptance.mkdir(parents=True)
+    (acceptance / "earlier.json").write_text(json.dumps(data), encoding="utf-8")
+    tio = _TicketIO(root, contract)
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert "resume it first" in capsys.readouterr().err
+    assert _git(root, "show", "main:design.txt") == "base"
+
+
+def test_malformed_finished_journal_blocks_another_ticket(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "rtl"
+    base = _repository(root)
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
     acceptance = root / ".booley_project" / ".runtime" / "acceptance"
     acceptance.mkdir(parents=True)
     (acceptance / "earlier.json").write_text(
-        json.dumps({"ticket": "earlier", "state": "prepared"}), encoding="utf-8"
+        json.dumps({"ticket": "earlier", "state": "done"}), encoding="utf-8"
     )
     participant = ContractParticipant(
         "outer",
@@ -609,8 +672,63 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
     tio = _TicketIO(root, _contract(root, (participant,)))
 
     assert complete_review_ticket(tio, "change-target", _Policy()) is False
-    assert "resume it first" in capsys.readouterr().err
+    assert "earlier acceptance journal" in capsys.readouterr().err
     assert _git(root, "show", "main:design.txt") == "base"
+
+
+def test_cleanup_status_reader_rejects_corrupt_journal(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    (root / ".booley_project" / ".runtime" / "acceptance").mkdir(parents=True)
+    journal = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal.write_text("{", encoding="utf-8")
+
+    with pytest.raises(completion.CompletionError, match="acceptance journal is unreadable"):
+        completion.cleanup_finished(root, "change-target")
+
+
+def test_cross_repository_plan_conflict_leaves_repositories_unmodified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, _participants = _paired_completion(tmp_path, monkeypatch)
+    (project / "design.txt").write_text("conflicting destination\n", encoding="utf-8")
+    _git(project, "add", "design.txt")
+    _git(project, "commit", "-m", "conflict with Ticket")
+    outer_worktrees = _git(root, "worktree", "list", "--porcelain")
+    project_worktrees = _git(project, "worktree", "list", "--porcelain")
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+
+    assert _git(root, "for-each-ref", "--format=%(refname)", "refs/booley/acceptance") == ""
+    assert _git(project, "for-each-ref", "--format=%(refname)", "refs/booley/acceptance") == ""
+    assert _git(root, "worktree", "list", "--porcelain") == outer_worktrees
+    assert _git(project, "worktree", "list", "--porcelain") == project_worktrees
+
+
+def test_cleanup_validates_every_identity_before_removing_any_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root, project, tio, participants = _paired_completion(tmp_path, monkeypatch)
+    finish_approval = completion._finish_approval
+
+    def move_outer_staging_ref(*args: Any, **kwargs: Any) -> None:
+        finish_approval(*args, **kwargs)
+        journal = args[3]
+        staging_ref = journal["candidates"]["outer"]["staging_ref"]
+        _git(root, "update-ref", staging_ref, participants[0].destination_sha)
+
+    monkeypatch.setattr(completion, "_finish_approval", move_outer_staging_ref)
+
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+
+    assert "cleanup is pending" in capsys.readouterr().err
+    assert completion._ref_commit(root, participants[0].ticket_ref) == participants[0].sealed_sha
+    assert (
+        completion._ref_commit(project, participants[1].ticket_ref)
+        == participants[1].sealed_sha
+    )
 
 
 def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monkeypatch) -> None:
@@ -860,3 +978,95 @@ def test_complete_rejects_unrelated_dirty_product_edit(tmp_path: Path) -> None:
 
     assert _git(root, "show", "main:design.txt") == "base"
     assert tio.entry["status"] == "review"
+
+
+def _assert_paired_completion_finished(
+    root: Path,
+    project: Path,
+    tio: _TicketIO,
+    participants: tuple[ContractParticipant, ...],
+    *,
+    cleanup: bool,
+) -> None:
+    assert tio.entry["status"] == "done"
+    assert _git(root, "show", "main:design.txt") == "outer implementation"
+    assert _git(project, "show", "main:design.txt") == "project implementation"
+    if cleanup:
+        assert completion._ref_commit(root, participants[0].ticket_ref) is None
+        assert completion._ref_commit(project, participants[1].ticket_ref) is None
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    assert json.loads(journal_path.read_text(encoding="utf-8"))["state"] == "done"
+
+
+@pytest.mark.parametrize("write_index", range(10))
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_retry_survives_every_journal_write_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_index: int,
+    timing: str,
+) -> None:
+    root, project, tio, participants = _paired_completion(tmp_path, monkeypatch)
+    write_journal = completion._write_journal
+    calls = 0
+
+    def interrupt(path: Path, journal: dict[str, Any]) -> None:
+        nonlocal calls
+        current = calls
+        calls += 1
+        if current == write_index and timing == "before":
+            raise OSError(f"before journal write {write_index}")
+        write_journal(path, journal)
+        if current == write_index and timing == "after":
+            raise OSError(f"after journal write {write_index}")
+
+    monkeypatch.setattr(completion, "_write_journal", interrupt)
+    complete_review_ticket(tio, "change-target", _Policy(cleanup=True))
+    assert calls > write_index
+
+    monkeypatch.setattr(completion, "_write_journal", write_journal)
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=True)) is True
+    _assert_paired_completion_finished(root, project, tio, participants, cleanup=True)
+
+
+@pytest.mark.parametrize(
+    ("boundary", "function_name", "cleanup"),
+    [
+        ("candidate preparation", "_plan_candidate", False),
+        ("publication", "_publish_candidate", False),
+        ("retirement", "_cleanup_participant", True),
+    ],
+)
+@pytest.mark.parametrize("role", ["project", "outer"])
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_retry_survives_each_repository_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    function_name: str,
+    cleanup: bool,
+    role: str,
+    timing: str,
+) -> None:
+    root, project, tio, participants = _paired_completion(tmp_path, monkeypatch)
+    operation = getattr(completion, function_name)
+    interrupted = False
+
+    def interrupt(*args: Any, **kwargs: Any) -> Any:
+        nonlocal interrupted
+        participant = args[1]
+        if participant.role != role or interrupted:
+            return operation(*args, **kwargs)
+        interrupted = True
+        if timing == "before":
+            raise completion.CompletionError(f"before {role} {boundary}")
+        operation(*args, **kwargs)
+        raise completion.CompletionError(f"after {role} {boundary}")
+
+    monkeypatch.setattr(completion, function_name, interrupt)
+    complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup))
+    assert interrupted is True
+
+    monkeypatch.setattr(completion, function_name, operation)
+    assert complete_review_ticket(tio, "change-target", _Policy(cleanup=cleanup)) is True
+    _assert_paired_completion_finished(root, project, tio, participants, cleanup=cleanup)
