@@ -113,10 +113,7 @@ def test_release_validation_skips_credentials_and_cannot_promote() -> None:
 
     assert "booley init --skip-credentials | tee" in workflow
     assert "OPENAI_API_KEY: ci-presence-check-only" not in workflow
-    assert (
-        "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"
-        in workflow
-    )
+    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
 
 
 def _demo_project(tmp_path: Path) -> Path:
