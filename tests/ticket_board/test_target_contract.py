@@ -185,6 +185,34 @@ def test_contract_binds_successful_run_target_removals(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("removal_targets", "message"),
+    [
+        (
+            ["acme:lib:toy:1.0#lint_toy", "acme:lib:toy:1.0#lint_toy"],
+            "must be sorted and unique",
+        ),
+        (["acme:lib:toy:1.0#missing"], "only criterion-bound Targets"),
+    ],
+)
+def test_contract_rejects_invalid_bound_removal_targets(
+    tmp_path: Path, removal_targets: list[str], message: str
+) -> None:
+    project = _project(tmp_path)
+    criteria = {"mandatory": {"lint_clean": ["lint_toy"]}}
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["lint_toy"],
+        bindings=criterion_targets(criteria),
+        participants=[_participant()],
+    ).as_dict()
+    contract["removal_targets"] = removal_targets
+
+    with pytest.raises(TargetContractError, match=message):
+        TargetContract.from_mapping(contract)
+
+
 def test_schema_three_seals_repository_participants_and_surface_entries(tmp_path: Path) -> None:
     project = _project(tmp_path)
     outer = ContractParticipant(

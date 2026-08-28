@@ -84,6 +84,14 @@ class TestOnSuccess:
         assert os.triage_report is False
         assert os.remove_targets == ("acme:lib:toy:1.0#baseline",)
 
+    def test_from_dict_preserves_invalid_remove_targets_for_validation(self):
+        for remove_targets in ("baseline", [1]):
+            model = OnSuccess.from_dict({"remove_targets": remove_targets})
+
+            assert model.validate() == [
+                "on_success.remove_targets must contain unique non-empty strings"
+            ]
+
     def test_validate_ok(self):
         assert OnSuccess().validate() == []
         assert OnSuccess(destination="done").validate() == []
