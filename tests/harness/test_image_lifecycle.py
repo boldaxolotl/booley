@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -657,3 +658,218 @@ def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: P
     after = lifecycle._project_node(root, parent, payload).build.recipe_fingerprint
 
     assert before != after
+
+
+def test_docker_cli_preserves_label_and_mutation_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    cli = lifecycle._DockerCli()
+
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="No such image: absent"
+        ),
+    )
+    assert cli.label("absent", lifecycle.LABEL_SCHEMA) is None
+
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
+    )
+    with pytest.raises(lifecycle.ImageLifecycleError, match="inspect Docker label"):
+        cli.label("image", lifecycle.LABEL_SCHEMA)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="retain image"):
+        cli.tag("source", "target")
+    with pytest.raises(lifecycle.ImageLifecycleError, match="remove retained tag"):
+        cli.remove_tag("backup")
+
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="tag rejected"
+        ),
+    )
+    with pytest.raises(lifecycle.ImageLifecycleError, match="tag rejected"):
+        cli.tag("source", "target")
+
+
+def test_packaged_builder_reports_pull_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import init_docker_image
+
+    root = _project(tmp_path)
+    docker_dir = tmp_path / "installed" / "src" / "booley" / "data" / "docker"
+    docker_dir.mkdir(parents=True)
+    recipe = docker_dir / "Dockerfile"
+    recipe.write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "docker_data_dir", lambda: docker_dir)
+    monkeypatch.setattr(init_docker_image, "_try_pull_image", lambda *_args: False)
+    node = lifecycle._ImageNode(
+        lifecycle.BASE_IMAGE,
+        recipe,
+        lifecycle.PayloadProvenance("1", "0.2.6", "payload"),
+        lifecycle.BuildProvenance("recipe", None),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="could not pull"):
+        lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=True)
+
+
+def test_local_builder_dispatches_each_managed_recipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import init_cmd, init_docker_image
+
+    root = _project(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        init_docker_image,
+        "_step_docker_image",
+        lambda *_args: calls.append(lifecycle.BASE_IMAGE),
+    )
+    monkeypatch.setattr(
+        init_docker_image,
+        "ensure_flavor_image",
+        lambda *_args: calls.append("booley-sandbox-riscv"),
+    )
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_project_image",
+        lambda *_args: calls.append("project-booley-sandbox"),
+    )
+    payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")
+    for reference in (
+        lifecycle.BASE_IMAGE,
+        "booley-sandbox-riscv",
+        "project-booley-sandbox",
+    ):
+        node = lifecycle._ImageNode(
+            reference,
+            tmp_path / "recipe",
+            payload,
+            lifecycle.BuildProvenance("recipe", None),
+        )
+        lifecycle._LegacyBuildAdapter(root, verbose=False).build(node, force=False)
+
+    assert calls == [
+        lifecycle.BASE_IMAGE,
+        "booley-sandbox-riscv",
+        "project-booley-sandbox",
+    ]
+
+
+def test_local_builder_reports_step_and_user_recipe_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.harness import init_docker_image
+
+    root = _project(tmp_path)
+    payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")
+    base = lifecycle._ImageNode(
+        lifecycle.BASE_IMAGE,
+        tmp_path / "recipe",
+        payload,
+        lifecycle.BuildProvenance("recipe", None),
+    )
+
+    def fail_step(context, _reference) -> None:
+        context.results.append(SimpleNamespace(status="err", detail="base build failed"))
+
+    monkeypatch.setattr(init_docker_image, "_step_docker_image", fail_step)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="base build failed"):
+        lifecycle._LegacyBuildAdapter(root, verbose=False).build(base, force=True)
+
+    docker_dir = root / ".booley_project" / "docker"
+    docker_dir.mkdir()
+    requirements = docker_dir / "requirements.txt"
+    requirements.write_text("user-owned\n", encoding="utf-8")
+    project_node = lifecycle._ImageNode(
+        "project-booley-sandbox",
+        docker_dir / "Dockerfile",
+        payload,
+        lifecycle.BuildProvenance("recipe", lifecycle.BASE_IMAGE),
+        lifecycle.BASE_IMAGE,
+    )
+    with pytest.raises(lifecycle.ImageLifecycleError, match=r"Dockerfile.*missing"):
+        lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
+
+    project_node.recipe.write_text("FROM scratch\n", encoding="utf-8")
+    monkeypatch.setattr(
+        lifecycle.project_image, "build_project_image", lambda *_args, **_kwargs: False
+    )
+    with pytest.raises(lifecycle.ImageLifecycleError, match="failed to rebuild"):
+        lifecycle._LegacyBuildAdapter(root, verbose=False).build(project_node, force=True)
+
+
+def test_failed_backup_creation_cleans_earlier_backup(tmp_path: Path) -> None:
+    class BackupFailureDocker(FakeDocker):
+        def tag(self, source: str, target: str) -> None:
+            if source == "sha256:second":
+                raise lifecycle.ImageLifecycleError("second backup failed")
+            super().tag(source, target)
+
+    docker = BackupFailureDocker(
+        {
+            "first": ("sha256:first", {}),
+            "second": ("sha256:second", {}),
+        }
+    )
+    payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")
+    nodes = tuple(
+        lifecycle._ImageNode(
+            reference,
+            tmp_path / reference,
+            payload,
+            lifecycle.BuildProvenance("recipe", None),
+        )
+        for reference in ("first", "second")
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="second backup failed"):
+        lifecycle._retain_prior_tags(tmp_path, nodes, docker)
+
+    assert [mutation[0] for mutation in docker.mutations] == ["tag", "remove_tag"]
+
+
+def test_mutation_retries_unstamped_build_then_fails(tmp_path: Path) -> None:
+    class NoOpBuilder:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def build(self, _node, *, force: bool) -> None:
+            del force
+            self.calls += 1
+
+    node = lifecycle._base_node(lifecycle.PayloadProvenance("1", "0.2.6", "payload"))
+    docker = FakeDocker({})
+    builder = NoOpBuilder()
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="expected provenance"):
+        lifecycle._mutate(tmp_path, (node,), lifecycle.Intent.ENSURE, docker, builder)
+
+    assert builder.calls == 2
+
+
+def test_mutation_reports_failed_rollback_with_recovery_tag(tmp_path: Path) -> None:
+    class RestoreFailureDocker(FakeDocker):
+        def tag(self, source: str, target: str) -> None:
+            if source.startswith("booley-lifecycle-backup-"):
+                raise lifecycle.ImageLifecycleError("restore rejected")
+            super().tag(source, target)
+
+    node = lifecycle._base_node(lifecycle.PayloadProvenance("1", "0.2.6", "payload"))
+    docker = RestoreFailureDocker(
+        {node.reference: ("sha256:old", {lifecycle.LABEL_SCHEMA: "stale"})}
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="recovery names"):
+        lifecycle._mutate(
+            tmp_path,
+            (node,),
+            lifecycle.Intent.REFRESH,
+            docker,
+            FailingBuilder(docker),
+        )
