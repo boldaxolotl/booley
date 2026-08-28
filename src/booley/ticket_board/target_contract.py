@@ -87,6 +87,7 @@ class TargetContract:
     project_sha: str
     surface_digest: str
     targets: tuple[str, ...]
+    removal_targets: tuple[str, ...] = ()
     bindings: tuple[ContractTargetBinding, ...] = ()
     participants: tuple[ContractParticipant, ...] = ()
     surface_entries: tuple[ContractSurfaceEntry, ...] = ()
@@ -99,6 +100,7 @@ class TargetContract:
                 f"{sorted(SUPPORTED_SCHEMA_VERSIONS)}, got {self.schema!r}"
             )
         _validate_participants(self.participants, self.outer_sha, self.project_sha)
+        _validate_contract_removal_targets(self.removal_targets, self.bindings)
 
     @classmethod
     def from_mapping(cls, value: Any) -> TargetContract:
@@ -117,6 +119,7 @@ class TargetContract:
         project_sha = _optional_string(value, "project_sha")
         digest = _required_string(value, "surface_digest").lower()
         targets = _string_tuple(value.get("targets"), "targets")
+        removal_targets = _string_tuple(value.get("removal_targets", []), "removal_targets")
         bindings = _binding_tuple(value.get("bindings"), schema=schema)
         participants = _participant_tuple(value.get("participants"))
         entries = _surface_entry_tuple(value.get("surface_entries"))
@@ -137,6 +140,7 @@ class TargetContract:
             project_sha=project_sha.lower(),
             surface_digest=digest,
             targets=targets,
+            removal_targets=removal_targets,
             bindings=bindings,
             participants=participants,
             surface_entries=entries,
@@ -152,6 +156,8 @@ class TargetContract:
             "surface_digest": self.surface_digest,
             "targets": list(self.targets),
         }
+        if self.schema >= SCHEMA_VERSION or self.removal_targets:
+            result["removal_targets"] = list(self.removal_targets)
         result["bindings"] = [binding.as_dict(schema=self.schema) for binding in self.bindings]
         result["participants"] = [participant.as_dict() for participant in self.participants]
         result["surface_entries"] = [entry.as_dict() for entry in self.surface_entries]
@@ -180,6 +186,20 @@ class ContractTargetBinding:
             result["baseline_selector"] = self.baseline_selector
             result["candidate_selector"] = self.candidate_selector
         return result
+
+
+def _validate_contract_removal_targets(
+    removal_targets: tuple[str, ...], bindings: tuple[ContractTargetBinding, ...]
+) -> None:
+    if tuple(sorted(set(removal_targets))) != removal_targets:
+        raise TargetContractError("target_contract.removal_targets must be sorted and unique")
+    bound_targets = {
+        target for binding in bindings for target in (binding.baseline, binding.candidate)
+    }
+    if not set(removal_targets) <= bound_targets:
+        raise TargetContractError(
+            "target_contract.removal_targets must contain only criterion-bound Targets"
+        )
 
 
 @dataclass(frozen=True)
@@ -912,6 +932,12 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
         return [str(exc)]
     if fields.get("base_sha") != contract.outer_sha:
         return ["base_sha must equal target_contract.outer_sha"]
+    on_success = fields.get("on_success")
+    declared_removals = (
+        on_success.get("remove_targets", []) if isinstance(on_success, Mapping) else []
+    )
+    if is_str_list(declared_removals) and tuple(declared_removals) != contract.removal_targets:
+        return ["on_success.remove_targets changed after Target Contract sealing"]
     declared = set(contract.targets)
     criterion_bindings = criterion_targets(fields.get("criteria"))
     referenced = {
@@ -1000,6 +1026,7 @@ def build_contract(
     outer_sha: str,
     project_sha: str = "",
     targets: Iterable[str] = (),
+    removal_targets: Iterable[str] = (),
     bindings: Iterable[CriterionTarget] = (),
     participants: Iterable[ContractParticipant],
 ) -> TargetContract:
@@ -1010,6 +1037,7 @@ def build_contract(
         project_sha=project_sha.lower(),
         surface_digest=surface_digest(project_root, targets=sealed_targets),
         targets=sealed_targets,
+        removal_targets=tuple(sorted(set(removal_targets))),
         bindings=canonical_contract_bindings(project_root, bindings),
         participants=tuple(sorted(set(participants))),
         surface_entries=surface_entries(project_root),

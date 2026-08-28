@@ -153,7 +153,7 @@ only how to *infer* a value from the conversation and the repo.
 | `branch` | `git branch --show-current` |
 | `scope` | From grilling results. `[new]` for new files. Unknown bugfix → `["*"]` (prefer narrow) |
 | `spec` | Include when an arch spec exists near scope |
-| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Benchmark: `{destination: done, merge: false, cleanup: true, triage_report: true}` |
+| `on_success` | Start with `{destination: review, merge: true, cleanup: true, triage_report: true, remove_targets: []}`, then apply relevant §E guidance. Set `triage_report: false` to skip the rich HTML explanation. Put a criterion-bound Target in `remove_targets` only when it must exist for execution/review but must not land in the destination; this requires `merge: true`. Benchmark: `{destination: done, merge: false, cleanup: true, triage_report: true, remove_targets: []}` |
 | `dependencies` | From scan (§A) + grilling; user confirms |
 | `priority` | Default `medium` |
 | `criteria` | Start with §D defaults, then apply relevant §E guidance; user confirms/edits. **feature** → from grilling. **refactor** → all `pass -> pass`. **bugfix** → the failing entry `fail -> pass`, rest `pass -> pass`. **verification** → TB-only work |
@@ -186,7 +186,7 @@ python -m booley.ticket_board create-file "$SLUG" \
   --scope rtl/foo.sv tb/foo_tb.sv \      # nargs="*" — space-separated; omit for []
   [--spec "$SPEC"] [--dependencies dep-slug-a dep-slug-b] [--priority "$PRIORITY"] \
   --criteria "$CRITERIA_JSON" \          # JSON: {"mandatory":{...},"optional":{...}}
-  --on-success "$ON_SUCCESS_JSON" \      # JSON: all four on_success fields
+  --on-success "$ON_SUCCESS_JSON" \      # JSON: all five on_success fields
   --body-file "$BODY"
 
 # E4. Open isolated outer and paired project-data authoring worktrees.
@@ -300,6 +300,12 @@ the candidate determines the expanded Criterion name.
   its Scope `[new]` RTL/TB paths.
 - If a blocked ticket needs a different Target recipe, use `revise-contract`; it
   archives the old identity, discards execution evidence, and restarts authoring.
+- Decide `on_success.remove_targets` during Ticket creation. Every selector must resolve
+  uniquely and name a Target bound by that Ticket's Criteria. The Target remains sealed and
+  available through development and review; acceptance removes only its `.core` definition
+  and unambiguously-owned `tests.toml` tables from the prepared merge candidate. Shared
+  filesets, sources, parameters, constraints, generators, and hooks are retained. Do not use
+  this field as general file cleanup.
 
 ## §E. Ticket Creation Guidance
 

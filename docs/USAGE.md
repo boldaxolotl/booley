@@ -723,9 +723,19 @@ on_success:
   merge: true             # merge the ticket branch into its base
   cleanup: true           # remove the worktree and branch afterwards
   triage_report: true     # add an LLM-generated HTML explanation to the review package
+  remove_targets: []      # criterion-bound Targets omitted from the accepted destination
 ```
 
 `destination: review` parks the finished ticket in `board/review/` for you to look at, and **keeps its worktree and branch**. That preserved workspace is where a reviewer makes any small in-place correction and invokes Flows or Specialists again. `cleanup: true` is deferred until the review ends in `done`, `archived`, or an explicit full reset. Review never sends retained work back to the queue for partial rework. `destination: done` skips the pause and merges, cleans up, and closes in one step.
+
+`remove_targets` handles Targets that must exist while the Ticket runs—for example, a
+frozen comparison baseline—but must not remain in the accepted Project. It is fixed and
+bound into the Target Contract during sealing, requires `merge: true`, and may name only
+uniquely resolved Targets bound by that Ticket's Criteria. The Targets remain available
+throughout development and review.
+Acceptance prepares the normal merge candidate first, then removes only the declared
+Target definitions and their unambiguously-owned `tests.toml` tables before publication;
+shared filesets, sources, parameters, constraints, generators, and hooks remain.
 
 Every review-bound run persists a versioned, machine-readable JSON package at
 `logs/<slug>/.runtime/triage-prep/briefing.json`. Human Markdown and HTML views

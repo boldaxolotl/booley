@@ -704,6 +704,13 @@ def op_complete(  # noqa: PLR0911 - ordered validation and terminal-action paths
 
     on_success = _effective_on_success(entry, no_merge=no_merge, no_cleanup=no_cleanup)
 
+    if on_success.remove_targets and not on_success.merge:
+        print(
+            f"Error: cannot remove Targets when merge is disabled for '{slug}'",
+            file=sys.stderr,
+        )
+        return False
+
     status = entry.get("status", "")
     if status != "review" and not (status == "done" and on_success.merge):
         print(

@@ -13,6 +13,7 @@ on_success:
   merge: true                       # merge feature branch on completion
   cleanup: true                     # delete worktree/branch on completion
   triage_report: true               # prepare rich HTML explanation before review
+  remove_targets: []                # criterion-bound Targets deleted only from accepted merge
 dependencies: []
 priority: medium
 
