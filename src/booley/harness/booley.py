@@ -645,6 +645,11 @@ def _add_init_subparser(sub) -> None:
         "--check-only", action="store_true", help="Run health checks without modifying anything"
     )
     init_p.add_argument(
+        "--skip-credentials",
+        action="store_true",
+        help="Skip agent credential inspection; provider and auth policy are still recorded",
+    )
+    init_p.add_argument(
         "--force", action="store_true", help="Overwrite existing configuration files"
     )
     init_p.add_argument(

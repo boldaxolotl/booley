@@ -1020,6 +1020,12 @@ Booley's LLM agents (the Ticket Mode Developer Agent and the Specialists `review
 
 Under either provider, both options work for Ticket Mode *and* for Specialists in Interactive Mode: there is no API-key-only restriction.
 
+`booley init --skip-credentials` is available for CI and other setup-only
+environments that intentionally have no provider secret. It skips credential
+inspection only: init still resolves, validates, and records the provider/auth
+policy. Normal user setup should omit the flag so init can report whether the
+selected credential is ready.
+
 On a subscription, usage counts against that plan's limits: Booley detects a subscription/usage cap, waits, then requeues the ticket rather than failing. With an API key it's pay-per-token. With several credentials present, the agent CLI, not Booley, picks one, in its own order. For Claude that order is an exported `ANTHROPIC_API_KEY` first, then `CLAUDE_CODE_OAUTH_TOKEN` (the credential `booley auth` stores, below), then the subscription login; for Codex, an exported `OPENAI_API_KEY` outranks the `auth.json` login. Either way an exported API key outbids everything else, including a stored `booley auth` token. `booley init`, `booley doctor`, and `booley auth --status` report the credential that actually wins, and name anything it overrides. To *pin* the choice instead of leaving it to the environment, set `[agent] auth = "subscription"` (Booley then scrubs the API key from agent environments) or `"api_key"` (fails loud when the key is missing). See [CONFIG.md](CONFIG.md#pinning-what-bills-agent-auth).
 
 For long unattended runs, run **`booley auth`**. It stores the app's *rotation-free* credential at `~/.config/booley/` (mode 0600, deliberately outside every repo and bind mount so it cannot be committed) and re-seeds the devcontainer spec. Booley then injects it into containers itself, with no `export` needed. `booley auth --status` reports which credential each agent would use, and `booley doctor` warns when a run is about to rely on a refreshing one.
