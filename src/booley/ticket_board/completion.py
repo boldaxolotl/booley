@@ -8,31 +8,27 @@ subsequent roll-forward publication.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
-import uuid
 from collections.abc import Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import (
-    BoundaryError,
-    require_bool,
-    require_dict,
-    require_list,
-    require_str,
-)
 from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
 from booley.runtime.project_dir import checkout_project_dir_relative_to, runtime_dir
 from booley.runtime.ticket_repositories import resolve_inner_project_repo
 
+from .acceptance_journal import (
+    AcceptanceJournalError,
+    JournalState,
+    initial_journal,
+    load_journal,
+    load_persisted_journal,
+)
 from .contract_ops import ContractOperationError, pin_sealed_refs
 from .git_ops import worktree_is_clean
 from .target_contract import (
@@ -46,73 +42,11 @@ from .target_finalization import (
     apply_target_removals,
     plan_target_removals,
 )
+from .validation import retired_ticket_field_errors
 
 
 class CompletionError(RuntimeError):
     """A sealed Ticket could not be prepared or published safely."""
-
-
-@dataclass
-class AcceptanceJournal:
-    """Validated recovery state and its legal acceptance transitions."""
-
-    transaction: str
-    ticket: str
-    state: str
-    participants: list[dict[str, str]]
-    sources: dict[str, str]
-    candidates: dict[str, dict[str, str]]
-    published: list[str]
-    removal_targets: tuple[str, ...]
-    finalized: bool
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the stable schema-2 persistence representation."""
-        return {
-            "schema": 2,
-            "transaction": self.transaction,
-            "ticket": self.ticket,
-            "state": self.state,
-            "participants": self.participants,
-            "sources": self.sources,
-            "candidates": self.candidates,
-            "published": self.published,
-            "removal_targets": list(self.removal_targets),
-            "removal_digest": _removal_digest(self.removal_targets),
-            "finalized": self.finalized,
-        }
-
-    def checkpoint(self, path: Path) -> None:
-        """Persist the current recovery state atomically."""
-        _write_journal(path, self)
-
-    def mark_prepared(self, path: Path) -> None:
-        self.state = "prepared"
-        self.checkpoint(path)
-
-    def mark_finalized(self, shas: Mapping[str, str], path: Path) -> None:
-        for role, sha in shas.items():
-            self.candidates[role]["sha"] = sha
-        self.finalized = True
-        self.checkpoint(path)
-
-    def mark_published(self, role: str, path: Path) -> None:
-        self.published.append(role)
-        self.state = f"published-{role}"
-        self.checkpoint(path)
-
-    def mark_done(self, path: Path) -> None:
-        self.state = "done"
-        self.checkpoint(path)
-
-
-@dataclass(frozen=True)
-class _CompletionContext:
-    entry: Mapping[str, Any]
-    contract: TargetContract
-    journal_path: Path
-    allowed_board_rename: tuple[Path, Path]
-    removal_targets: tuple[str, ...]
 
 
 def _git(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -167,14 +101,14 @@ def _journal_path(root: Path, slug: str) -> Path:
     return directory / f"{slug}.json"
 
 
-def _write_journal(path: Path, journal: AcceptanceJournal) -> None:
+def _write_journal(path: Path, journal: Mapping[str, Any]) -> None:
     """Atomically persist and fsync a recovery checkpoint."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(journal.as_dict(), handle, indent=2, sort_keys=True)
+            json.dump(journal, handle, indent=2, sort_keys=True)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -190,185 +124,18 @@ def _write_journal(path: Path, journal: AcceptanceJournal) -> None:
             temporary_path.unlink()
 
 
-def _removal_digest(removal_targets: tuple[str, ...]) -> str:
-    payload = json.dumps(list(removal_targets), separators=(",", ":")).encode()
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _initial_journal(
     slug: str,
     contract: TargetContract,
-    removal_targets: tuple[str, ...] = (),
-) -> AcceptanceJournal:
-    return AcceptanceJournal(
-        transaction=uuid.uuid4().hex,
-        ticket=slug,
-        state="initializing",
-        participants=[item.as_dict() for item in contract.participants],
-        sources={},
-        candidates={},
-        published=[],
-        removal_targets=removal_targets,
-        finalized=not removal_targets,
-    )
-
-
-def _validated_string_map(value: Any, field: str, roles: set[str]) -> dict[str, str]:
-    mapping = require_dict(value, field=field)
-    if not set(mapping) <= roles:
-        raise BoundaryError(f"{field} contains an unknown participant role")
-    result: dict[str, str] = {}
-    for role in mapping:
-        item = require_str(mapping, role)
-        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item):
-            raise BoundaryError(f"{field}.{role} must be a full Git commit SHA")
-        result[role] = item
-    return result
-
-
-def _validated_candidates(
-    value: Any,
-    roles: set[str],
-    transaction: str,
-) -> dict[str, dict[str, str]]:
-    mapping = require_dict(value, field="acceptance journal candidates")
-    if not set(mapping) <= roles:
-        raise BoundaryError("acceptance journal candidates contains an unknown role")
-    result: dict[str, dict[str, str]] = {}
-    for role, raw in mapping.items():
-        candidate = require_dict(raw, field=f"acceptance journal candidates.{role}")
-        if set(candidate) != {"sha", "staging_ref", "expected_destination_sha"}:
-            raise BoundaryError(f"acceptance journal candidate {role!r} has invalid fields")
-        strings = {key: require_str(candidate, key) for key in candidate}
-        for key in ("sha", "expected_destination_sha"):
-            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", strings[key]):
-                raise BoundaryError(f"acceptance journal candidates.{role}.{key} is invalid")
-        expected_ref = f"refs/booley/acceptance/{transaction}/{role}"
-        if strings["staging_ref"] != expected_ref:
-            raise BoundaryError(
-                f"acceptance journal candidates.{role}.staging_ref must be {expected_ref!r}"
-            )
-        result[str(role)] = strings
-    return result
-
-
-def _validate_journal_progress(
-    state: str,
-    roles: set[str],
-    sources: dict[str, str],
-    candidates: dict[str, dict[str, str]],
-    published: list[Any],
     *,
-    finalized: bool,
-    has_removals: bool,
-) -> None:
-    order = [role for role in ("project", "outer") if role in roles]
-    if published != order[: len(published)]:
-        raise BoundaryError("acceptance journal published roles are out of order")
-    if candidates and not sources:
-        raise BoundaryError("acceptance journal candidates require pinned sources")
-    if sources and set(sources) != roles:
-        raise BoundaryError("acceptance journal sources must pin every participant")
-    if set(candidates) - set(sources) or set(published) - set(candidates):
-        raise BoundaryError("acceptance journal checkpoints are inconsistent")
-    if state == "initializing" and published:
-        raise BoundaryError("initializing acceptance journal cannot contain publications")
-    if state != "initializing" and set(candidates) != roles:
-        raise BoundaryError(f"acceptance journal state {state!r} requires every candidate")
-    expected_published = {
-        "prepared": [],
-        "published-project": ["project"],
-        "published-outer": order,
-        "done": order,
-    }
-    if state in expected_published and published != expected_published[state]:
-        raise BoundaryError(f"acceptance journal state {state!r} conflicts with published roles")
-    if published and not finalized:
-        raise BoundaryError("acceptance journal cannot publish unfinalized candidates")
-    if not has_removals and not finalized:
-        raise BoundaryError("acceptance journal without removals must already be finalized")
-
-
-_LEGACY_JOURNAL_FIELDS = {
-    "schema",
-    "transaction",
-    "ticket",
-    "state",
-    "participants",
-    "sources",
-    "candidates",
-    "published",
-}
-_JOURNAL_FIELDS = _LEGACY_JOURNAL_FIELDS | {
-    "removal_targets",
-    "removal_digest",
-    "finalized",
-}
-
-
-def _validated_finalization_state(
-    journal: Mapping[str, Any], removal_targets: tuple[str, ...]
-) -> bool:
-    schema = journal.get("schema")
-    if schema == 1:
-        if removal_targets:
-            raise BoundaryError("acceptance journal removal policy changed after acceptance began")
-        if set(journal) != _LEGACY_JOURNAL_FIELDS:
-            raise BoundaryError("acceptance journal has invalid fields")
-        return True
-    if schema != 2:
-        raise BoundaryError("acceptance journal schema must be 1 or 2")
-    if set(journal) != _JOURNAL_FIELDS:
-        raise BoundaryError("acceptance journal has invalid fields")
-    if journal.get("removal_targets") != list(removal_targets):
-        raise BoundaryError("acceptance journal removal policy changed after acceptance began")
-    if journal.get("removal_digest") != _removal_digest(removal_targets):
-        raise BoundaryError("acceptance journal removal digest is invalid")
-    return require_bool(journal, "finalized", field="acceptance journal finalized")
-
-
-def _validated_journal(
-    value: Any,
-    slug: str,
-    participants: list[dict[str, str]],
-    removal_targets: tuple[str, ...],
-) -> AcceptanceJournal:
-    journal = require_dict(value, field="acceptance journal")
-    if require_str(journal, "ticket") != slug:
-        raise BoundaryError(f"acceptance journal does not belong to Ticket {slug!r}")
-    if journal.get("participants") != participants:
-        raise BoundaryError("sealed repository participants changed after acceptance began")
-    finalized = _validated_finalization_state(journal, removal_targets)
-    transaction = require_str(journal, "transaction")
-    if not re.fullmatch(r"[0-9a-f]{32}", transaction):
-        raise BoundaryError("acceptance journal transaction is invalid")
-    state = require_str(journal, "state")
-    if state not in {"initializing", "prepared", "published-project", "published-outer", "done"}:
-        raise BoundaryError(f"acceptance journal state {state!r} is invalid")
-    roles = {item["role"] for item in participants}
-    sources = _validated_string_map(journal.get("sources"), "acceptance journal sources", roles)
-    candidates = _validated_candidates(journal.get("candidates"), roles, transaction)
-    raw_published = require_list(journal.get("published"), field="acceptance journal published")
-    published = [require_str({"role": item}, "role") for item in raw_published]
-    _validate_journal_progress(
-        state,
-        roles,
-        sources,
-        candidates,
-        published,
-        finalized=finalized,
-        has_removals=bool(removal_targets),
-    )
-    return AcceptanceJournal(
-        transaction=transaction,
-        ticket=slug,
-        state=state,
-        participants=participants,
-        sources=sources,
-        candidates=candidates,
-        published=published,
+    cleanup: bool = False,
+    removal_targets: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    return initial_journal(
+        slug,
+        [item.as_dict() for item in contract.participants],
+        cleanup=cleanup,
         removal_targets=removal_targets,
-        finalized=finalized,
     )
 
 
@@ -376,19 +143,23 @@ def _load_journal(
     path: Path,
     slug: str,
     contract: TargetContract,
+    *,
+    cleanup: bool = False,
     removal_targets: tuple[str, ...] = (),
-) -> AcceptanceJournal:
+) -> dict[str, Any]:
     expected = [item.as_dict() for item in contract.participants]
     if not path.exists():
-        return _initial_journal(slug, contract, removal_targets)
+        return _initial_journal(slug, contract, cleanup=cleanup, removal_targets=removal_targets)
     try:
-        journal = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CompletionError(f"acceptance journal is unreadable: {path}: {exc}") from exc
-    try:
-        return _validated_journal(journal, slug, expected, removal_targets)
-    except BoundaryError as exc:
-        raise CompletionError(f"acceptance journal is malformed: {path}: {exc}") from exc
+        return load_journal(
+            path,
+            slug,
+            expected,
+            cleanup=cleanup,
+            removal_targets=removal_targets,
+        )
+    except AcceptanceJournalError as exc:
+        raise CompletionError(str(exc)) from exc
 
 
 def _changed_paths(repository: Path, before: str, after: str) -> set[str]:
@@ -423,43 +194,66 @@ def _validate_participant(
     return destination
 
 
-def _prepare_candidate(
+@dataclass(frozen=True)
+class _CandidatePlan:
+    details: dict[str, str]
+    source_repository: Path | None
+
+
+def _clone_checkout(repository: Path, destination: Path, commit: str) -> None:
+    _require_git(
+        repository,
+        "clone",
+        "--shared",
+        "--no-checkout",
+        str(repository),
+        str(destination),
+    )
+    _copy_commit_identity(repository, destination)
+    _require_git(destination, "checkout", "--detach", commit)
+
+
+def _copy_commit_identity(repository: Path, destination: Path) -> None:
+    """Preserve repository-local commit identity in an isolated shared clone."""
+    for key in ("user.name", "user.email"):
+        configured = _git(repository, "config", "--get", key)
+        value = configured.stdout.strip()
+        if configured.returncode == 0 and value:
+            _require_git(destination, "config", key, value)
+
+
+def _plan_candidate(
     repository: Path,
     participant: ContractParticipant,
     source: str,
     transaction: str,
     slug: str,
     protected_paths: set[str],
-) -> dict[str, str]:
+    plan_directory: Path,
+) -> _CandidatePlan:
     destination = _validate_participant(repository, participant, source, protected_paths)
     staging_ref = f"refs/booley/acceptance/{transaction}/{participant.role}"
     if _is_ancestor(repository, source, destination):
         candidate = destination
+        candidate_repository = None
     else:
-        temporary = Path(tempfile.mkdtemp(prefix=f"booley-accept-{participant.role}-"))
-        try:
-            _require_git(repository, "worktree", "add", "--detach", str(temporary), destination)
-            try:
-                _require_git(
-                    temporary,
-                    "merge",
-                    "--no-ff",
-                    source,
-                    "-m",
-                    f"merge({slug}): sealed Ticket completed",
-                )
-                candidate = _commit(temporary, "HEAD")
-            finally:
-                _git(repository, "worktree", "remove", "--force", str(temporary))
-        finally:
-            with suppress(FileNotFoundError):
-                temporary.rmdir()
-    _require_git(repository, "update-ref", staging_ref, candidate)
-    return {
+        candidate_repository = plan_directory / participant.role
+        _clone_checkout(repository, candidate_repository, destination)
+        _require_git(
+            candidate_repository,
+            "merge",
+            "--no-ff",
+            source,
+            "-m",
+            f"merge({slug}): sealed Ticket completed",
+        )
+        candidate = _commit(candidate_repository, "HEAD")
+    details = {
         "sha": candidate,
         "staging_ref": staging_ref,
         "expected_destination_sha": destination,
     }
+    return _CandidatePlan(details, candidate_repository)
 
 
 def _validate_source_surface(
@@ -470,10 +264,9 @@ def _validate_source_surface(
 ) -> None:
     """Rebuild the sealed composite checkout and reject contract-control drift."""
     participants = {item.role: item for item in contract.participants}
-    temporary = Path(tempfile.mkdtemp(prefix="booley-accept-surface-"))
-    project_checkout: Path | None = None
-    try:
-        _require_git(root, "worktree", "add", "--detach", str(temporary), sources["outer"])
+    with tempfile.TemporaryDirectory(prefix="booley-accept-surface-") as directory:
+        temporary = Path(directory) / "outer"
+        _clone_checkout(root, temporary, sources["outer"])
         project = participants.get("project")
         if project is not None:
             if project_repository is None:
@@ -483,30 +276,11 @@ def _validate_source_surface(
             except (FileNotFoundError, ValueError) as exc:
                 raise CompletionError(str(exc)) from exc
             project_checkout = temporary / project_relative
-            _require_git(
-                project_repository,
-                "worktree",
-                "add",
-                "--detach",
-                str(project_checkout),
-                sources["project"],
-            )
+            _clone_checkout(project_repository, project_checkout, sources["project"])
         try:
             verify_surface(contract, temporary)
         except TargetContractError as exc:
             raise CompletionError(str(exc)) from exc
-    finally:
-        if project_checkout is not None and project_repository is not None:
-            _git(
-                project_repository,
-                "worktree",
-                "remove",
-                "--force",
-                str(project_checkout),
-            )
-        _git(root, "worktree", "remove", "--force", str(temporary))
-        with suppress(FileNotFoundError):
-            temporary.rmdir()
 
 
 def _checked_out_at(repository: Path, destination_ref: str) -> Path | None:
@@ -520,6 +294,92 @@ def _checked_out_at(repository: Path, destination_ref: str) -> Path | None:
         elif not line:
             worktree = None
     return None
+
+
+def _ref_commit(repository: Path, ref: str) -> str | None:
+    """Return one full-ref commit, or ``None`` when the ref is absent."""
+    result = _git(repository, "show-ref", "--verify", "--quiet", ref)
+    if result.returncode == 0:
+        return _commit(repository, ref)
+    if result.returncode == 1:
+        return None
+    detail = (result.stderr or result.stdout).strip()
+    raise CompletionError(f"could not inspect {ref} in {repository}: {detail}")
+
+
+def _delete_ref_at(repository: Path, ref: str, expected: str) -> None:
+    """Delete one ref only while it points at its journaled identity."""
+    current = _ref_commit(repository, ref)
+    if current is None:
+        return
+    if current != expected:
+        raise CompletionError(f"refusing to delete {ref}: expected {expected}, found {current}")
+    result = _git(repository, "update-ref", "-d", ref, expected)
+    if result.returncode == 0 or _ref_commit(repository, ref) is None:
+        return
+    detail = (result.stderr or result.stdout).strip()
+    raise CompletionError(f"could not delete {ref} at {expected}: {detail}")
+
+
+def _validate_ref_at(repository: Path, ref: str, expected: str) -> None:
+    current = _ref_commit(repository, ref)
+    if current is not None and current != expected:
+        raise CompletionError(f"refusing to delete {ref}: expected {expected}, found {current}")
+
+
+def _validate_ticket_worktree(
+    repository: Path, participant: ContractParticipant, source: str
+) -> None:
+    checkout = _checked_out_at(repository, participant.ticket_ref)
+    if checkout is None:
+        return
+    head = _commit(checkout, "HEAD")
+    if head != source:
+        raise CompletionError(
+            f"refusing to remove {checkout}: expected Ticket HEAD {source}, found {head}"
+        )
+    if not worktree_is_clean(str(checkout)):
+        raise CompletionError(f"refusing to remove dirty Ticket worktree {checkout}")
+
+
+def _validate_cleanup_participant(
+    repository: Path,
+    participant: ContractParticipant,
+    source: str,
+    candidate: Mapping[str, str],
+) -> None:
+    if participant.ticket_ref == participant.destination_ref:
+        raise CompletionError(
+            f"refusing cleanup because {participant.ticket_ref} is also the destination ref"
+        )
+    _validate_ticket_worktree(repository, participant, source)
+    _validate_ref_at(repository, participant.ticket_ref, source)
+    _validate_ref_at(repository, candidate["staging_ref"], candidate["sha"])
+
+
+def _remove_ticket_worktree(
+    repository: Path, participant: ContractParticipant, source: str
+) -> None:
+    _validate_ticket_worktree(repository, participant, source)
+    checkout = _checked_out_at(repository, participant.ticket_ref)
+    if checkout is None:
+        return
+    result = _git(repository, "worktree", "remove", str(checkout))
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise CompletionError(f"could not remove Ticket worktree {checkout}: {detail}")
+
+
+def _cleanup_participant(
+    repository: Path,
+    participant: ContractParticipant,
+    source: str,
+    candidate: Mapping[str, str],
+) -> None:
+    _validate_cleanup_participant(repository, participant, source, candidate)
+    _remove_ticket_worktree(repository, participant, source)
+    _delete_ref_at(repository, participant.ticket_ref, source)
+    _delete_ref_at(repository, candidate["staging_ref"], candidate["sha"])
 
 
 def _publish_candidate(
@@ -556,27 +416,10 @@ def _publish_candidate(
     )
 
 
-def _restore_candidate_ref(
-    repository: Path,
-    role: str,
-    candidate: Mapping[str, str],
-    finalized: bool,
-) -> None:
-    actual = _commit(repository, candidate["staging_ref"])
-    if actual == candidate["sha"]:
-        return
-    if not finalized:
-        raise CompletionError(f"acceptance staging ref for {role} no longer matches its journal")
-    _commit(repository, candidate["sha"])
-    _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
-
-
-def _protected_candidate_paths(
-    participant: ContractParticipant,
-    contract: TargetContract,
-    project_prefix: str,
-    has_project: bool,
+def _protected_paths(
+    contract: TargetContract, participant: ContractParticipant, project_prefix: str
 ) -> set[str]:
+    has_project = any(item.role == "project" for item in contract.participants)
     if participant.role == "project":
         return {
             item.path.removeprefix(project_prefix)
@@ -592,42 +435,104 @@ def _protected_candidate_paths(
     return {item.path for item in contract.surface_entries}
 
 
+def _plan_missing_candidates(
+    root: Path,
+    project_repository: Path | None,
+    slug: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    plan_directory: Path,
+    project_prefix: str,
+) -> dict[str, _CandidatePlan]:
+    plans: dict[str, _CandidatePlan] = {}
+    for participant in contract.participants:
+        if participant.role in journal["candidates"]:
+            continue
+        repository = _repository_for(root, project_repository, participant)
+        plans[participant.role] = _plan_candidate(
+            repository,
+            participant,
+            journal["sources"][participant.role],
+            journal["transaction"],
+            slug,
+            _protected_paths(contract, participant, project_prefix),
+            plan_directory,
+        )
+    return plans
+
+
+def _import_candidate(repository: Path, plan: _CandidatePlan) -> None:
+    if plan.source_repository is not None:
+        _require_git(
+            repository,
+            "fetch",
+            "--no-write-fetch-head",
+            str(plan.source_repository),
+            plan.details["sha"],
+        )
+    _commit(repository, plan.details["sha"])
+
+
+def _install_staging_ref(
+    repository: Path, candidate: Mapping[str, str], *, finalized: bool = False
+) -> None:
+    current = _ref_commit(repository, candidate["staging_ref"])
+    if current is None:
+        _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
+    elif current != candidate["sha"] and finalized:
+        _commit(repository, candidate["sha"])
+        _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
+    elif current != candidate["sha"]:
+        raise CompletionError(f"acceptance staging ref moved from {candidate['sha']} to {current}")
+
+
+def _persist_candidate_plans(
+    root: Path,
+    project_repository: Path | None,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    path: Path,
+    plans: dict[str, _CandidatePlan],
+) -> None:
+    by_role = {item.role: item for item in contract.participants}
+    for role, plan in plans.items():
+        repository = _repository_for(root, project_repository, by_role[role])
+        _import_candidate(repository, plan)
+        journal["candidates"][role] = plan.details
+    if plans:
+        _write_journal(path, journal)
+    for role, candidate in journal["candidates"].items():
+        repository = _repository_for(root, project_repository, by_role[role])
+        _commit(repository, candidate["sha"])
+        _install_staging_ref(repository, candidate, finalized=journal["finalized"])
+
+
 def _prepare_all(
     root: Path,
     project_repository: Path | None,
     slug: str,
     contract: TargetContract,
-    journal: AcceptanceJournal,
+    journal: dict[str, Any],
     journal_path: Path,
 ) -> None:
-    has_project = any(item.role == "project" for item in contract.participants)
     try:
         project_prefix = checkout_project_dir_relative_to(root).as_posix().rstrip("/") + "/"
     except (FileNotFoundError, ValueError) as exc:
         raise CompletionError(str(exc)) from exc
-    for participant in contract.participants:
-        repository = _repository_for(root, project_repository, participant)
-        if participant.role in journal.candidates:
-            _restore_candidate_ref(
-                repository,
-                participant.role,
-                journal.candidates[participant.role],
-                journal.finalized,
-            )
-            continue
-        protected_paths = _protected_candidate_paths(
-            participant, contract, project_prefix, has_project
-        )
-        journal.candidates[participant.role] = _prepare_candidate(
-            repository,
-            participant,
-            journal.sources[participant.role],
-            journal.transaction,
+    with tempfile.TemporaryDirectory(prefix="booley-accept-plan-") as directory:
+        plans = _plan_missing_candidates(
+            root,
+            project_repository,
             slug,
-            protected_paths,
+            contract,
+            journal,
+            Path(directory),
+            project_prefix,
         )
-        journal.checkpoint(journal_path)
-    journal.mark_prepared(journal_path)
+        _persist_candidate_plans(root, project_repository, contract, journal, journal_path, plans)
+    if not journal["published"]:
+        journal["state"] = JournalState.PREPARED
+        _write_journal(journal_path, journal)
 
 
 def _commit_finalized_paths(
@@ -653,7 +558,7 @@ def _add_finalization_worktrees(
     temporary: Path,
     project_repository: Path | None,
     has_project: bool,
-    journal: AcceptanceJournal,
+    journal: Mapping[str, Any],
 ) -> Path | None:
     _require_git(
         root,
@@ -661,7 +566,7 @@ def _add_finalization_worktrees(
         "add",
         "--detach",
         str(temporary),
-        journal.candidates["outer"]["staging_ref"],
+        journal["candidates"]["outer"]["staging_ref"],
     )
     if not has_project:
         return None
@@ -678,18 +583,18 @@ def _add_finalization_worktrees(
         "add",
         "--detach",
         str(project_checkout),
-        journal.candidates["project"]["staging_ref"],
+        journal["candidates"]["project"]["staging_ref"],
     )
     return project_checkout
 
 
 def _planned_finalization_paths(
-    temporary: Path, contract: TargetContract, journal: AcceptanceJournal
+    temporary: Path, contract: TargetContract, journal: Mapping[str, Any]
 ) -> list[Path]:
     try:
         plan = plan_target_removals(
             temporary,
-            journal.removal_targets,
+            journal["removal_targets"],
             contract.bindings,
         )
         return apply_target_removals(temporary, plan)
@@ -732,7 +637,7 @@ def _update_finalized_refs(
     root: Path,
     project_repository: Path | None,
     participants: Mapping[str, ContractParticipant],
-    journal: AcceptanceJournal,
+    journal: Mapping[str, Any],
     finalized: Mapping[str, str],
 ) -> None:
     for role, sha in finalized.items():
@@ -740,7 +645,7 @@ def _update_finalized_refs(
         _require_git(
             repository,
             "update-ref",
-            journal.candidates[role]["staging_ref"],
+            journal["candidates"][role]["staging_ref"],
             sha,
         )
 
@@ -754,7 +659,7 @@ def _remove_finalization_worktrees(
     if project_checkout is not None and project_repository is not None:
         _git(project_repository, "worktree", "remove", "--force", str(project_checkout))
     _git(root, "worktree", "remove", "--force", str(temporary))
-    with suppress(FileNotFoundError):
+    if temporary.exists():
         temporary.rmdir()
 
 
@@ -763,11 +668,11 @@ def _finalize_all(
     project_repository: Path | None,
     slug: str,
     contract: TargetContract,
-    journal: AcceptanceJournal,
+    journal: dict[str, Any],
     journal_path: Path,
 ) -> None:
     """Apply removals to a composite candidate before either ref is published."""
-    if journal.finalized:
+    if journal["finalized"]:
         return
     temporary = Path(tempfile.mkdtemp(prefix="booley-accept-finalize-"))
     by_role = {item.role: item for item in contract.participants}
@@ -778,7 +683,10 @@ def _finalize_all(
         )
         changed = _planned_finalization_paths(temporary, contract, journal)
         finalized = _commit_finalized_candidates(temporary, project_checkout, changed, slug)
-        journal.mark_finalized(finalized, journal_path)
+        for role, sha in finalized.items():
+            journal["candidates"][role]["sha"] = sha
+        journal["finalized"] = True
+        _write_journal(journal_path, journal)
         _update_finalized_refs(root, project_repository, by_role, journal, finalized)
     finally:
         _remove_finalization_worktrees(root, temporary, project_repository, project_checkout)
@@ -788,7 +696,7 @@ def _publish_all(
     root: Path,
     project_repository: Path | None,
     contract: TargetContract,
-    journal: AcceptanceJournal,
+    journal: dict[str, Any],
     journal_path: Path,
     allowed_board_rename: tuple[Path, Path],
 ) -> None:
@@ -797,17 +705,19 @@ def _publish_all(
     # moves last, after every candidate is known to be conflict-free.
     roles = [role for role in ("project", "outer") if role in by_role]
     for role in roles:
-        if role in journal.published:
+        if role in journal["published"]:
             continue
         participant = by_role[role]
         repository = _repository_for(root, project_repository, participant)
         _publish_candidate(
             repository,
             participant,
-            journal.candidates[role],
+            journal["candidates"][role],
             allowed_board_rename,
         )
-        journal.mark_published(role, journal_path)
+        journal["published"].append(role)
+        journal["state"] = JournalState(f"published-{role}")
+        _write_journal(journal_path, journal)
 
 
 def _approve(tio: Any, slug: str) -> bool:
@@ -832,7 +742,7 @@ def _ensure_sources(
     slug: str,
     destination_branch: str,
     contract: TargetContract,
-    journal: AcceptanceJournal,
+    journal: dict[str, Any],
     path: Path,
 ) -> None:
     try:
@@ -844,12 +754,12 @@ def _ensure_sources(
         )
     except ContractOperationError as exc:
         raise CompletionError(str(exc)) from exc
-    if not journal.sources:
-        journal.sources = current
-        journal.checkpoint(path)
+    if not journal["sources"]:
+        journal["sources"] = current
+        _write_journal(path, journal)
         return
     participants = {item.role: item for item in contract.participants}
-    for role, source in journal.sources.items():
+    for role, source in journal["sources"].items():
         participant = participants[role]
         repository = _repository_for(root, project_repository, participant)
         _commit(repository, source)
@@ -863,11 +773,11 @@ def _finish_approval(
     tio: Any,
     slug: str,
     contract: TargetContract,
-    journal: AcceptanceJournal,
+    journal: dict[str, Any],
     path: Path,
 ) -> None:
     expected = {item.role for item in contract.participants}
-    if set(journal.published) != expected:
+    if set(journal["published"]) != expected:
         raise CompletionError("cannot approve before every repository is published")
     entry = tio.find_ticket(slug)
     status = entry.get("status", "") if entry else ""
@@ -879,7 +789,50 @@ def _finish_approval(
         raise CompletionError(
             f"repository publication succeeded but Ticket status is {status!r}; inspect and retry"
         )
-    journal.mark_done(path)
+    journal["state"] = JournalState.ACCEPTED
+    _write_journal(path, journal)
+
+
+def _cleanup_all(
+    root: Path,
+    project_repository: Path | None,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    path: Path,
+) -> None:
+    if not journal["policy"]["cleanup"]:
+        journal["state"] = JournalState.DONE
+        _write_journal(path, journal)
+        return
+    by_role = {item.role: item for item in contract.participants}
+    roles = [role for role in ("project", "outer") if role in by_role]
+    for role in roles:
+        if role in journal["cleaned"]:
+            continue
+        participant = by_role[role]
+        repository = _repository_for(root, project_repository, participant)
+        _validate_cleanup_participant(
+            repository,
+            participant,
+            journal["sources"][role],
+            journal["candidates"][role],
+        )
+    for role in roles:
+        if role in journal["cleaned"]:
+            continue
+        participant = by_role[role]
+        repository = _repository_for(root, project_repository, participant)
+        _cleanup_participant(
+            repository,
+            participant,
+            journal["sources"][role],
+            journal["candidates"][role],
+        )
+        journal["cleaned"].append(role)
+        journal["state"] = JournalState(f"cleanup-{role}")
+        _write_journal(path, journal)
+    journal["state"] = JournalState.DONE
+    _write_journal(path, journal)
 
 
 def _execute_completion(
@@ -889,11 +842,20 @@ def _execute_completion(
     contract: TargetContract,
     path: Path,
     allowed_board_rename: tuple[Path, Path],
+    *,
+    cleanup: bool,
     removal_targets: tuple[str, ...],
 ) -> None:
-    journal = _load_journal(path, slug, contract, removal_targets)
-    journal.checkpoint(path)
-    if journal.state == "done":
+    journal = _load_journal(
+        path,
+        slug,
+        contract,
+        cleanup=cleanup,
+        removal_targets=removal_targets,
+    )
+    _write_journal(path, journal)
+    state = JournalState(journal["state"])
+    if state is JournalState.DONE:
         if entry.get("status") == "done":
             return
         raise CompletionError("acceptance journal is done but the Ticket is not")
@@ -902,38 +864,95 @@ def _execute_completion(
     destination_branch = entry.get("branch")
     if not isinstance(destination_branch, str) or not destination_branch:
         raise CompletionError("Ticket has no destination branch")
-    _ensure_sources(
-        root,
-        project_repository,
-        slug,
-        destination_branch,
-        contract,
-        journal,
-        path,
-    )
-    _validate_source_surface(root, project_repository, contract, journal.sources)
-    _prepare_all(root, project_repository, slug, contract, journal, path)
-    _finalize_all(root, project_repository, slug, contract, journal, path)
-    _publish_all(
-        root,
-        project_repository,
-        contract,
-        journal,
-        path,
-        allowed_board_rename,
-    )
-    if journal.state != "done":
-        _finish_approval(tio, slug, contract, journal, path)
-
-
-def _validate_removal_targets(contract: TargetContract, removal_targets: tuple[str, ...]) -> None:
-    if removal_targets != contract.removal_targets:
-        raise TargetContractError(
-            "on_success.remove_targets changed after Target Contract sealing"
+    if state.publication_pending:
+        _ensure_sources(
+            root,
+            project_repository,
+            slug,
+            destination_branch,
+            contract,
+            journal,
+            path,
         )
+        _validate_source_surface(root, project_repository, contract, journal["sources"])
+        _prepare_all(root, project_repository, slug, contract, journal, path)
+        _finalize_all(root, project_repository, slug, contract, journal, path)
+        _publish_all(
+            root,
+            project_repository,
+            contract,
+            journal,
+            path,
+            allowed_board_rename,
+        )
+        _finish_approval(tio, slug, contract, journal, path)
+    if JournalState(journal["state"]) is not JournalState.DONE:
+        _cleanup_all(root, project_repository, contract, journal, path)
 
 
-def _completion_context(tio: Any, slug: str, effective_policy: Any) -> _CompletionContext | None:
+def _assert_completion_slot(directory: Path, slug: str) -> None:
+    """Serialize publication while an earlier Ticket still has public work pending."""
+    for candidate in directory.glob("*.json"):
+        if candidate.stem == slug:
+            continue
+        try:
+            journal = load_persisted_journal(candidate)
+        except AcceptanceJournalError as exc:
+            raise CompletionError(
+                f"cannot inspect earlier acceptance journal {candidate}: {exc}"
+            ) from exc
+        state = JournalState(journal["state"])
+        if state.publication_pending:
+            ticket = journal.get("ticket", candidate.stem)
+            raise CompletionError(
+                f"Ticket {ticket!r} has unfinished repository publication; resume it first"
+            )
+
+
+def cleanup_finished(root: Path, slug: str) -> bool:
+    """Return whether a journaled acceptance finished its configured cleanup."""
+    path = _journal_path(root, slug)
+    if not path.exists():
+        return False
+    try:
+        journal = load_persisted_journal(path)
+    except AcceptanceJournalError as exc:
+        raise CompletionError(str(exc)) from exc
+    return bool(
+        journal.get("policy") == {"merge": True, "cleanup": True}
+        and JournalState(journal["state"]) is JournalState.DONE
+    )
+
+
+def _cleanup_pending(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        journal = load_persisted_journal(path)
+    except AcceptanceJournalError as exc:
+        raise CompletionError(str(exc)) from exc
+    state = JournalState(journal["state"])
+    return journal.get("policy") == {"merge": True, "cleanup": True} and state.cleanup_pending
+
+
+def _validate_completion_plan(contract: TargetContract, *, cleanup: bool) -> None:
+    if not cleanup:
+        return
+    for participant in contract.participants:
+        if participant.ticket_ref == participant.destination_ref:
+            raise CompletionError(
+                f"cannot clean {participant.role} participant because its Ticket ref "
+                "is also the destination ref"
+            )
+
+
+def _completion_inputs(
+    tio: Any, slug: str, effective_policy: Any
+) -> tuple[Mapping[str, Any], TargetContract] | None:
+    if getattr(effective_policy, "merge", None) is not True:
+        raise CompletionError("journaled completion requires merge policy to be true")
+    if not isinstance(getattr(effective_policy, "cleanup", None), bool):
+        raise CompletionError("journaled completion requires cleanup policy to be boolean")
     removal_targets = tuple(getattr(effective_policy, "remove_targets", ()))
     entry = tio.find_ticket(slug)
     if not entry:
@@ -946,54 +965,81 @@ def _completion_context(tio: Any, slug: str, effective_policy: Any) -> _Completi
             file=sys.stderr,
         )
         return None
+    retired_errors = retired_ticket_field_errors(entry)
+    if retired_errors:
+        print(f"Error: cannot complete '{slug}': {retired_errors[0]}", file=sys.stderr)
+        return None
     try:
         contract = TargetContract.from_mapping(entry.get("target_contract"))
-        _validate_removal_targets(contract, removal_targets)
+        if removal_targets != contract.removal_targets:
+            raise TargetContractError(
+                "on_success.remove_targets changed after Target Contract sealing"
+            )
     except TargetContractError as exc:
         print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
         return None
-    root = Path(tio._project_root).resolve()
+    try:
+        _validate_completion_plan(contract, cleanup=effective_policy.cleanup)
+    except CompletionError as exc:
+        print(f"Error: cannot complete '{slug}': {exc}", file=sys.stderr)
+        return None
+    return entry, contract
+
+
+def _run_locked_completion(
+    tio: Any,
+    slug: str,
+    entry: Mapping[str, Any],
+    contract: TargetContract,
+    effective_policy: Any,
+    path: Path,
+) -> None:
     ticket_name = Path(str(entry["file"])).name
     allowed_board_rename = (
         tio.tickets_dir / "board" / "queue" / ticket_name,
         tio.tickets_dir / str(entry["file"]),
     )
-    return _CompletionContext(
-        entry=entry,
-        contract=contract,
-        journal_path=_journal_path(root, slug),
-        allowed_board_rename=allowed_board_rename,
-        removal_targets=removal_targets,
-    )
+    lock_path = path.parent / ".lock"
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+        _assert_completion_slot(path.parent, slug)
+        _execute_completion(
+            tio,
+            slug,
+            entry,
+            contract,
+            path,
+            allowed_board_rename,
+            cleanup=effective_policy.cleanup,
+            removal_targets=tuple(getattr(effective_policy, "remove_targets", ())),
+        )
+
+
+def _report_completion_failure(tio: Any, slug: str, path: Path, exc: Exception) -> bool:
+    current = tio.find_ticket(slug)
+    if current and current.get("status") == "done" and _cleanup_pending(path):
+        print(f"Warning: accepted '{slug}' but cleanup is pending: {exc}", file=sys.stderr)
+        return True
+    print(f"Error: completion failed for '{slug}': {exc}", file=sys.stderr)
+    return False
 
 
 def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
-    """Prepare, publish, and approve one sealed review Ticket."""
-    if not effective_policy.merge:
-        raise CompletionError("journaled completion requires merge policy")
-    context = _completion_context(tio, slug, effective_policy)
-    if context is None:
+    """Prepare, publish, and approve one sealed review Ticket.
+
+    The journal makes calls idempotent after an interruption. A retry reuses
+    pinned candidates and continues toward the review-to-done transition.
+    """
+    inputs = _completion_inputs(tio, slug, effective_policy)
+    if inputs is None:
         return False
-    lock_path = context.journal_path.with_suffix(".lock")
-    lock_path.touch(exist_ok=True)
+    entry, contract = inputs
+    path = _journal_path(Path(tio._project_root).resolve(), slug)
     try:
-        with (
-            lock_path.open("a+", encoding="utf-8") as handle,
-            nonblocking_file_lock(handle),
-        ):
-            _execute_completion(
-                tio,
-                slug,
-                context.entry,
-                context.contract,
-                context.journal_path,
-                context.allowed_board_rename,
-                context.removal_targets,
-            )
+        _run_locked_completion(tio, slug, entry, contract, effective_policy, path)
     except LockContentionError:
-        print(f"Error: acceptance is already running for '{slug}'", file=sys.stderr)
+        print("Error: another acceptance is already running", file=sys.stderr)
         return False
     except (CompletionError, OSError, ValueError) as exc:
-        print(f"Error: completion failed for '{slug}': {exc}", file=sys.stderr)
-        return False
+        return _report_completion_failure(tio, slug, path, exc)
     return True
