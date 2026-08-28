@@ -728,6 +728,12 @@ def test_malformed_finished_journal_blocks_another_ticket(tmp_path: Path, capsys
     assert _git(root, "show", "main:design.txt") == "base"
 
 
+def test_cleanup_status_is_false_without_acceptance_journal(tmp_path: Path) -> None:
+    (tmp_path / ".booley_project").mkdir()
+
+    assert completion.cleanup_finished(tmp_path, "change-target") is False
+
+
 def test_cleanup_status_reader_rejects_corrupt_journal(tmp_path: Path) -> None:
     root = tmp_path / "rtl"
     (root / ".booley_project" / ".runtime" / "acceptance").mkdir(parents=True)
