@@ -9,7 +9,7 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
-from booley.ticket_board.target_contract import TargetContract
+from booley.ticket_board.target_contract import SCHEMA_VERSION, TargetContract
 
 
 class ImplementationComparisonError(ValueError):
@@ -42,7 +42,7 @@ def _sealed_pair(
     criterion: str,
     state_pair: TargetPair,
 ) -> TargetPair:
-    """Resolve one execution pair from sealed Target identities."""
+    """Resolve one execution pair from sealed identities and selectors."""
     try:
         candidate = _canonical_selector(project_root, state_pair.candidate)
         state_baseline = _canonical_selector(project_root, state_pair.baseline)
@@ -66,9 +66,10 @@ def _sealed_pair(
             f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
             "match the sealed contract"
         )
-    # The state selector has just resolved to the sealed canonical identity.
-    # Keep its authored spelling so execution evidence matches the recipe
-    # snapshot sealed at intake; resolution still guarantees the same Target.
+    if contract.schema >= SCHEMA_VERSION:
+        return TargetPair(sealed.baseline_selector, sealed.candidate_selector)
+    # Schema 3 did not persist callable selectors, so retain the authored
+    # spelling after proving that it resolves to the sealed identity.
     return state_pair
 
 

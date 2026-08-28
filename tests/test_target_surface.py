@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
 from booley.targets import target_surface
+from booley.targets.target import inspect_target, select_target, select_targets
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
@@ -120,6 +121,101 @@ def project(tmp_path: Path) -> Path:
 
 def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surface.TargetEntry:
     return next(e for e in surface.entries() if e.selector == selector)
+
+
+class TestTargetInterface:
+    def test_inspection_resolves_conditional_files_with_fusesoc_semantics(self, tmp_path: Path):
+        (tmp_path / "conditional.core").write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:ip:conditional:1.0
+                filesets:
+                  harness:
+                    files:
+                      - tool_verilator ? (ibex_simple_system_main.cc)
+                      - tool_icarus ? (unused_main.cc)
+                targets:
+                  sim:
+                    flow: sim
+                    flow_options: {tool: verilator}
+                    filesets: [harness]
+                    toplevel: ibex_simple_system
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        inspection = inspect_target(tmp_path, "sim")
+
+        assert inspection.handle.identity == "acme:ip:conditional:1.0#sim"
+        assert inspection.handle.selector == "sim"
+        assert [item.path for item in inspection.inputs] == ["ibex_simple_system_main.cc"]
+        assert inspection.toplevel == "ibex_simple_system"
+        assert inspection.eda_tool == "verilator"
+
+    def test_selection_keeps_identity_separate_from_callable_selector(self, project: Path):
+        selected = select_target(project, "acme:ip:alpha:1.0#lint", for_flow="lint")
+
+        assert selected.identity == "acme:ip:alpha:1.0#lint"
+        assert selected.selector == "alpha#lint"
+        assert selected.name == "lint"
+
+    def test_endpoint_selection_returns_exact_callable_selectors(self, project: Path):
+        selected = select_targets(
+            project,
+            "acme:ip:alpha:1.0#lint,acme:ip:beta:1.0#fpga",
+        )
+
+        assert tuple(item.identity for item in selected) == (
+            "acme:ip:alpha:1.0#lint",
+            "acme:ip:beta:1.0#fpga",
+        )
+        assert tuple(item.selector for item in selected) == ("alpha#lint", "fpga")
+
+    def test_inspection_includes_condition_selected_dependency_inputs(self, tmp_path: Path):
+        dep = tmp_path / "dep"
+        dep.mkdir()
+        (dep / "dep.core").write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:lib:dep:1.0
+                filesets:
+                  rtl: {files: [rtl/dep.sv]}
+                targets:
+                  default: {filesets: [rtl]}
+                """
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "top.core").write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: acme:ip:top:1.0
+                filesets:
+                  rtl:
+                    depend: [acme:lib:dep]
+                    files:
+                      - tool_verilator ? (rtl/top.sv)
+                targets:
+                  sim:
+                    flow: sim
+                    flow_options: {tool: verilator}
+                    filesets: [rtl]
+                    toplevel: top
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        inspection = inspect_target(tmp_path, "sim")
+
+        assert [(item.core, item.path) for item in inspection.inputs] == [
+            ("acme:lib:dep:1.0", "dep/rtl/dep.sv"),
+            ("acme:ip:top:1.0", "rtl/top.sv"),
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -29,9 +29,11 @@ from booley.dev_support.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target_surface import flow_can_drive
+from booley.targets.target import flow_can_drive, inspect_target, select_target
 
-SCHEMA_VERSION = 3
+WORKSPACE_SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+SUPPORTED_SCHEMA_VERSIONS = frozenset({WORKSPACE_SCHEMA_VERSION, SCHEMA_VERSION})
 CONTRACT_BLOCK_REASON = "target-contract-change-required"
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -92,9 +94,10 @@ class TargetContract:
     schema: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema != SCHEMA_VERSION:
+        if self.schema not in SUPPORTED_SCHEMA_VERSIONS:
             raise TargetContractError(
-                f"target_contract.schema must be {SCHEMA_VERSION}, got {self.schema!r}"
+                "target_contract.schema must be one of "
+                f"{sorted(SUPPORTED_SCHEMA_VERSIONS)}, got {self.schema!r}"
             )
         _validate_participants(self.participants, self.outer_sha, self.project_sha)
         _validate_contract_removal_targets(self.removal_targets, self.bindings)
@@ -107,16 +110,17 @@ class TargetContract:
         except BoundaryError as exc:
             raise TargetContractError(str(exc)) from exc
         schema = value.get("schema")
-        if schema != SCHEMA_VERSION:
+        if schema not in SUPPORTED_SCHEMA_VERSIONS:
             raise TargetContractError(
-                f"target_contract.schema must be {SCHEMA_VERSION}, got {schema!r}"
+                "target_contract.schema must be one of "
+                f"{sorted(SUPPORTED_SCHEMA_VERSIONS)}, got {schema!r}"
             )
         outer_sha = _required_string(value, "outer_sha")
         project_sha = _optional_string(value, "project_sha")
         digest = _required_string(value, "surface_digest").lower()
         targets = _string_tuple(value.get("targets"), "targets")
         removal_targets = _string_tuple(value.get("removal_targets", []), "removal_targets")
-        bindings = _binding_tuple(value.get("bindings"))
+        bindings = _binding_tuple(value.get("bindings"), schema=schema)
         participants = _participant_tuple(value.get("participants"))
         entries = _surface_entry_tuple(value.get("surface_entries"))
         if not _COMMIT_RE.fullmatch(outer_sha.lower()):
@@ -151,9 +155,10 @@ class TargetContract:
             "project_sha": self.project_sha,
             "surface_digest": self.surface_digest,
             "targets": list(self.targets),
-            "removal_targets": list(self.removal_targets),
         }
-        result["bindings"] = [binding.as_dict() for binding in self.bindings]
+        if self.schema >= SCHEMA_VERSION or self.removal_targets:
+            result["removal_targets"] = list(self.removal_targets)
+        result["bindings"] = [binding.as_dict(schema=self.schema) for binding in self.bindings]
         result["participants"] = [participant.as_dict() for participant in self.participants]
         result["surface_entries"] = [entry.as_dict() for entry in self.surface_entries]
         return result
@@ -161,20 +166,26 @@ class TargetContract:
 
 @dataclass(frozen=True, order=True)
 class ContractTargetBinding:
-    """Canonical directed Target binding persisted in Target contracts."""
+    """Canonical directed Target identities and their callable selectors."""
 
     flow: str
     criterion: str
     baseline: str
     candidate: str
+    baseline_selector: str = ""
+    candidate_selector: str = ""
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self, *, schema: int = SCHEMA_VERSION) -> dict[str, str]:
+        result = {
             "flow": self.flow,
             "criterion": self.criterion,
             "baseline": self.baseline,
             "candidate": self.candidate,
         }
+        if schema >= SCHEMA_VERSION:
+            result["baseline_selector"] = self.baseline_selector
+            result["candidate_selector"] = self.candidate_selector
+        return result
 
 
 def _validate_contract_removal_targets(
@@ -252,7 +263,7 @@ def _string_tuple(value: Any, key: str) -> tuple[str, ...]:
     return normalized
 
 
-def _binding_tuple(value: Any) -> tuple[ContractTargetBinding, ...]:
+def _binding_tuple(value: Any, *, schema: int) -> tuple[ContractTargetBinding, ...]:
     try:
         raw_bindings = require_list(value, field="target_contract.bindings")
     except BoundaryError as exc:
@@ -264,13 +275,16 @@ def _binding_tuple(value: Any) -> tuple[ContractTargetBinding, ...]:
             mapping = require_dict(raw, field=field)
         except BoundaryError as exc:
             raise TargetContractError(str(exc)) from exc
-        if set(mapping) != {"flow", "criterion", "baseline", "candidate"}:
+        keys = {"flow", "criterion", "baseline", "candidate"}
+        if schema >= SCHEMA_VERSION:
+            keys.update({"baseline_selector", "candidate_selector"})
+        if set(mapping) != keys:
             raise TargetContractError(
-                f"target_contract.bindings[{index}] must contain exactly flow, criterion, "
-                "baseline, and candidate"
+                f"target_contract.bindings[{index}] must contain exactly "
+                + ", ".join(sorted(keys))
             )
         fields: dict[str, str] = {}
-        for key in ("flow", "criterion", "baseline", "candidate"):
+        for key in sorted(keys):
             try:
                 item = require_str(mapping, key).strip()
             except BoundaryError as exc:
@@ -478,10 +492,97 @@ def surface_entries(project_root: Path | str) -> tuple[ContractSurfaceEntry, ...
     return tuple(sorted(rows, key=lambda row: (row.path, row.kind)))
 
 
-def surface_digest(project_root: Path | str) -> str:
-    """Hash the normalized Target/control-plane manifest."""
+def _inspection_tokens(root: Path, targets: Iterable[str]) -> tuple[str, ...]:
+    selected = tuple(sorted(set(targets)))
+    if selected:
+        return selected
+    identities = {
+        f"{ref.vlnv}#{ref.name}"
+        for refs in fusesoc_registry.target_declarations(root).values()
+        for ref in refs
+        if not ref.doctor_selftest
+    }
+    return tuple(sorted(identities))
+
+
+def _semantic_surface(project_root: Path | str, targets: Iterable[str]) -> dict[str, Any]:
+    """Project selected FuseSoC semantics without source existence or spelling."""
+    root = Path(project_root).resolve()
+    projected: list[dict[str, Any]] = []
+    auxiliary: set[Path] = set()
+    for token in _inspection_tokens(root, targets):
+        inspection = inspect_target(root, token)
+        inputs = [
+            {
+                "path": item.path,
+                "core": item.core,
+                "file_type": item.file_type,
+                "tags": list(item.tags),
+                "is_include": item.is_include,
+                "attributes": dict(item.attributes),
+            }
+            for item in inspection.inputs
+        ]
+        projected.append(
+            {
+                "identity": inspection.handle.identity,
+                "selector": inspection.handle.selector,
+                "toplevel": inspection.toplevel,
+                "flow": inspection.flow,
+                "eda_tool": inspection.eda_tool,
+                "flow_options": dict(inspection.flow_options),
+                "parameters": dict(inspection.parameters),
+                "inputs": inputs,
+            }
+        )
+        for item in inspection.inputs:
+            path = root / item.path
+            if path.suffix.casefold() in {".sdc", ".xdc"} and path.is_file():
+                auxiliary.add(path)
+        auxiliary.update(
+            referenced_program_paths(
+                {
+                    "flow_options": inspection.flow_options,
+                    "parameters": inspection.parameters,
+                },
+                search_roots=(inspection.handle.core_file.parent,),
+                project_root=root,
+            )
+        )
+
+    controls: dict[tuple[str, str], ContractSurfaceEntry] = {}
+    for path, kind, data in _project_control_files(root):
+        row = _entry(root, path, kind, data)
+        controls[(row.path, row.kind)] = row
+        if kind == "target-selection":
+            auxiliary.update(_config_auxiliary_paths(root, path))
+    for path in sorted(auxiliary):
+        kind = "constraint" if path.suffix.casefold() in {".sdc", ".xdc"} else "hook"
+        row = _entry(root, path, kind)
+        controls[(row.path, row.kind)] = row
+    return {
+        "targets": sorted(projected, key=lambda item: item["identity"]),
+        "controls": [controls[key].as_dict() for key in sorted(controls)],
+    }
+
+
+def surface_digest(
+    project_root: Path | str,
+    *,
+    schema: int = SCHEMA_VERSION,
+    targets: Iterable[str] = (),
+) -> str:
+    """Hash the versioned Target/control-plane projection."""
+    if schema == SCHEMA_VERSION:
+        return _sha256(
+            _canonical_bytes(
+                {"schema": schema, "surface": _semantic_surface(project_root, targets)}
+            )
+        )
+    if schema != WORKSPACE_SCHEMA_VERSION:
+        raise TargetContractError(f"unsupported Target contract schema {schema!r}")
     manifest = [row.as_dict() for row in surface_entries(project_root)]
-    return _sha256(_canonical_bytes({"schema": SCHEMA_VERSION, "files": manifest}))
+    return _sha256(_canonical_bytes({"schema": schema, "files": manifest}))
 
 
 def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
@@ -584,26 +685,46 @@ def _new_scope_matches(scope: Any, path: str) -> bool:
     return False
 
 
-def _missing_target_sources(root: Path, target: str) -> list[str]:
-    sources = fusesoc_registry.target_source_files(
-        root, target, include_dependencies=True, include_headers=True
-    )
+def _missing_target_sources(
+    root: Path,
+    target: str,
+    *,
+    schema: int = SCHEMA_VERSION,
+) -> list[str]:
+    if schema == WORKSPACE_SCHEMA_VERSION:
+        sources = fusesoc_registry.target_source_files(
+            root,
+            target,
+            include_dependencies=True,
+            include_headers=True,
+        )
+        selected = (*sources.rtl_source_files, *sources.tb_files)
+    else:
+        selected = tuple(item.path for item in inspect_target(root, target).inputs)
     missing: list[str] = []
-    for name in (*sources.rtl_source_files, *sources.tb_files):
-        candidate = Path(name)
+    for path in selected:
+        candidate = Path(path)
         if not candidate.is_absolute():
             candidate = root / candidate
         if not candidate.exists():
-            missing.append(name)
+            missing.append(path)
     return sorted(set(missing))
+
+
+def _validation_schema(fields: Mapping[str, Any]) -> int:
+    contract = fields.get("target_contract")
+    if isinstance(contract, Mapping) and contract.get("schema") == WORKSPACE_SCHEMA_VERSION:
+        return WORKSPACE_SCHEMA_VERSION
+    return SCHEMA_VERSION
 
 
 def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | str) -> list[str]:
     """Validate every mandatory/optional criterion Target without running tools."""
     root = Path(project_root)
+    schema = _validation_schema(fields)
     errors: list[str] = []
     for binding in criterion_targets(fields.get("criteria")):
-        errors.extend(_validate_binding(binding, fields, root))
+        errors.extend(_validate_binding(binding, fields, root, schema=schema))
     return errors
 
 
@@ -616,34 +737,43 @@ def validate_targets_for_seal(
 ) -> list[str]:
     """Validate bindings and dry-resolve criterion and changed Targets."""
     root = Path(project_root)
+    schema = _validation_schema(fields)
     errors = validate_criterion_targets(fields, root)
     if errors:
         return errors
     bindings = criterion_targets(fields.get("criteria"))
-    required = _required_targets(root, bindings)
+    required = _required_targets(root, bindings, schema=schema)
     errors.extend(_validate_required_targets(root, Path(build_root), required))
     for binding in bindings:
         if binding.baseline != binding.target and not _missing_target_sources(
-            root, binding.target
+            root, binding.target, schema=schema
         ):
             errors.extend(_validate_comparison_basis(binding, root, Path(build_root)))
     errors.extend(
         _validate_changed_targets(
-            fields, root, Path(build_root), changed_targets, seen=set(required)
+            fields,
+            root,
+            Path(build_root),
+            changed_targets,
+            seen=set(required),
+            schema=schema,
         )
     )
     return errors
 
 
 def _required_targets(
-    root: Path, bindings: Iterable[CriterionTarget]
+    root: Path,
+    bindings: Iterable[CriterionTarget],
+    *,
+    schema: int = SCHEMA_VERSION,
 ) -> dict[str, tuple[CriterionTarget, bool]]:
     # A Target used as a baseline anywhere always receives the stronger
     # executable-at-base requirement, even if another pair also uses it as a
     # candidate whose [new] sources could otherwise defer resolution.
     required: dict[str, tuple[CriterionTarget, bool]] = {}
     for binding in bindings:
-        candidate_missing = bool(_missing_target_sources(root, binding.target))
+        candidate_missing = bool(_missing_target_sources(root, binding.target, schema=schema))
         prior = required.get(binding.target)
         required[binding.target] = (
             binding,
@@ -675,13 +805,14 @@ def _validate_changed_targets(
     changed_targets: Iterable[str],
     *,
     seen: set[str],
+    schema: int = SCHEMA_VERSION,
 ) -> list[str]:
     errors: list[str] = []
     for target in changed_targets:
         if target in seen:
             continue
         seen.add(target)
-        missing = _missing_target_sources(root, target)
+        missing = _missing_target_sources(root, target, schema=schema)
         undeclared = [
             path for path in missing if not _new_scope_matches(fields.get("scope"), path)
         ]
@@ -784,14 +915,18 @@ def _dry_resolve_binding(
 
 
 def _validate_binding(
-    binding: CriterionTarget, fields: Mapping[str, Any], root: Path
+    binding: CriterionTarget,
+    fields: Mapping[str, Any],
+    root: Path,
+    *,
+    schema: int = SCHEMA_VERSION,
 ) -> list[str]:
     errors: list[str] = []
     for role, target in (("candidate", binding.target), ("baseline", binding.baseline)):
         if role == "baseline" and target == binding.target:
             continue
         try:
-            ref = fusesoc_registry.resolve_ref(root, target)
+            ref = select_target(root, target)
         except fusesoc_registry.FuseSocError as exc:
             errors.append(f"{binding.label}: {role} target {target!r}: {exc}")
             continue
@@ -801,7 +936,7 @@ def _validate_binding(
                 f"with Flow {binding.flow} (flow={ref.flow!r}, EDA tool={ref.eda_tool!r})"
             )
             continue
-        missing = _missing_target_sources(root, target)
+        missing = _missing_target_sources(root, target, schema=schema)
         if not missing:
             continue
         if role == "baseline" or (binding.relative and binding.baseline == binding.target):
@@ -851,7 +986,9 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
         return [f"target_contract.targets omits criterion Target(s): {', '.join(missing)}"]
     if project_root is not None:
         try:
-            expected = canonical_contract_bindings(project_root, criterion_bindings)
+            expected = canonical_contract_bindings(
+                project_root, criterion_bindings, schema=contract.schema
+            )
         except fusesoc_registry.FuseSocError as exc:
             return [f"target_contract.bindings cannot be resolved: {exc}"]
         if expected != contract.bindings:
@@ -862,19 +999,23 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
 def canonical_contract_bindings(
     project_root: Path | str,
     bindings: Iterable[CriterionTarget],
+    *,
+    schema: int = SCHEMA_VERSION,
 ) -> tuple[ContractTargetBinding, ...]:
-    """Resolve criterion bindings to sorted full-VLNV directed identities."""
+    """Resolve bindings to durable identities and current callable selectors."""
     root = Path(project_root)
     rows: set[ContractTargetBinding] = set()
     for binding in bindings:
-        baseline = fusesoc_registry.resolve_ref(root, binding.baseline)
-        candidate = fusesoc_registry.resolve_ref(root, binding.target)
+        baseline = select_target(root, binding.baseline)
+        candidate = select_target(root, binding.target)
         rows.add(
             ContractTargetBinding(
                 flow=binding.flow,
                 criterion=binding.key,
-                baseline=f"{baseline.vlnv}#{baseline.name}",
-                candidate=f"{candidate.vlnv}#{candidate.name}",
+                baseline=baseline.identity,
+                candidate=candidate.identity,
+                baseline_selector=(baseline.selector if schema >= SCHEMA_VERSION else ""),
+                candidate_selector=(candidate.selector if schema >= SCHEMA_VERSION else ""),
             )
         )
     return tuple(sorted(rows))
@@ -899,7 +1040,7 @@ def resolve_commit(repository: Path | str, sha: str) -> str:
 
 def verify_surface(contract: TargetContract, project_root: Path | str) -> None:
     """Raise when the checkout's current contract surface differs from sealed data."""
-    actual = surface_digest(project_root)
+    actual = surface_digest(project_root, schema=contract.schema, targets=contract.targets)
     if actual != contract.surface_digest:
         raise TargetContractError(
             f"{CONTRACT_BLOCK_REASON}: Target surface digest is {actual}, "
@@ -908,7 +1049,7 @@ def verify_surface(contract: TargetContract, project_root: Path | str) -> None:
 
 
 def load_ticket_contract(ticket_path: Path | str) -> TargetContract | None:
-    """Read a schema-3 contract from a ticket file, or None when unsealed."""
+    """Read a supported contract from a ticket file, or None when unsealed."""
     from .frontmatter import parse_frontmatter
 
     path = Path(ticket_path)
@@ -928,11 +1069,12 @@ def build_contract(
     participants: Iterable[ContractParticipant],
 ) -> TargetContract:
     """Build a sealed contract from already committed repository state."""
+    sealed_targets = tuple(sorted(set(targets)))
     return TargetContract(
         outer_sha=outer_sha.lower(),
         project_sha=project_sha.lower(),
-        surface_digest=surface_digest(project_root),
-        targets=tuple(sorted(set(targets))),
+        surface_digest=surface_digest(project_root, targets=sealed_targets),
+        targets=sealed_targets,
         removal_targets=tuple(sorted(set(removal_targets))),
         bindings=canonical_contract_bindings(project_root, bindings),
         participants=tuple(sorted(set(participants))),
