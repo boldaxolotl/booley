@@ -482,7 +482,7 @@ class FpgaImplFlow(BooleyFlow):
             prepared = self._prepare_fpga_command(target)
             run_cmd, work_root = prepared
         except (
-            Exception
+            Exception  # noqa: BLE001
         ) as exc:  # isolate EDAM/configure failure; surfaced as returncode-2 infra_error
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")

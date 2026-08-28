@@ -765,7 +765,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
             )
     except ValueError:
         raise
-    except Exception:  # unreadable config falls back to empty config
+    except Exception:  # unreadable config falls back to empty config  # noqa: BLE001
         logger.debug("Failed to load endpoint config from booley.toml", exc_info=True)
     return {}, {}
 
@@ -1486,7 +1486,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]
         return payload
-    except Exception:  # best-effort enrichment; any failure means text-only
+    except Exception:  # best-effort enrichment; any failure means text-only  # noqa: BLE001
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -3144,7 +3144,9 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # best-effort preload; a config hiccup must not block server startup
+    except (
+        Exception  # noqa: BLE001
+    ):  # best-effort preload; a config hiccup must not block server startup
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 
