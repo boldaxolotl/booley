@@ -98,9 +98,7 @@ def test_schema_three_executes_selector_verified_against_sealed_pair(tmp_path: P
 def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
     contract = _sealed_project(tmp_path, schema=4)
     criteria = {
-        "synthesis_ok_synth_after": SimpleNamespace(
-            params={BASELINE_TARGET_PARAM: "synth_before"}
-        )
+        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
     }
 
     pairs = target_pairs_for_candidates(

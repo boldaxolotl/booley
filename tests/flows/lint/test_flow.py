@@ -33,6 +33,7 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
+
     def _lenient(project_root, target_arg):
         del project_root
         return tuple(

@@ -429,10 +429,7 @@ class LintFlow(BooleyFlow):
         several Targets, name them (``--target a,b``). An empty ``--target``
         returns no selection rather than linting every core.
         """
-        return [
-            target.selector
-            for target in select_targets(self.args.work_dir, self.args.target)
-        ]
+        return [target.selector for target in select_targets(self.args.work_dir, self.args.target)]
 
     def _prepare_lint_command(
         self,

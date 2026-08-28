@@ -61,7 +61,9 @@ def _candidate_refs(
         selected = select_targets(project_root, target_hint)
         if category == "tb" and len(selected) != 1:
             raise ReviewContractError("TB review requires exactly one --target selector")
-        return [(handle.selector, inspect_target(project_root, handle.identity)) for handle in selected]
+        return [
+            (handle.selector, inspect_target(project_root, handle.identity)) for handle in selected
+        ]
     candidates = [
         inspect_target(project_root, f"{ref.vlnv}#{ref.name}")
         for bucket in declarations.values()

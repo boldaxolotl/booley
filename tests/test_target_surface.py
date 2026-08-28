@@ -124,9 +124,7 @@ def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surfa
 
 
 class TestTargetInterface:
-    def test_inspection_resolves_conditional_files_with_fusesoc_semantics(
-        self, tmp_path: Path
-    ):
+    def test_inspection_resolves_conditional_files_with_fusesoc_semantics(self, tmp_path: Path):
         (tmp_path / "conditional.core").write_text(
             textwrap.dedent(
                 """\

@@ -50,4 +50,6 @@ def test_target_independent_reviewer_action_omits_fabricated_target_guidance() -
         params={"target": "acme:ip:uart:1.0#sim_uart"},
     )
 
-    assert planned_invocation("review_rtl_spec_done", entry) == "reviewer --category rtl --focus spec"
+    assert (
+        planned_invocation("review_rtl_spec_done", entry) == "reviewer --category rtl --focus spec"
+    )

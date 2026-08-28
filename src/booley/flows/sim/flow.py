@@ -1317,9 +1317,7 @@ class SimulateFlow(BooleyFlow):
         Verilator.
         """
         try:
-            eda_tool = select_target(
-                self.args.work_dir, target, for_flow="sim"
-            ).eda_tool
+            eda_tool = select_target(self.args.work_dir, target, for_flow="sim").eda_tool
         except Exception:  # noqa: BLE001 — best-effort Target-EDA-tool read; degrades to default (Verilator)
             eda_tool = None
         normalized = sim_edam.normalize_eda_tool(eda_tool)

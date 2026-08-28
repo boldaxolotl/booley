@@ -575,7 +575,9 @@ def surface_digest(
     """Hash the versioned Target/control-plane projection."""
     if schema == SCHEMA_VERSION:
         return _sha256(
-            _canonical_bytes({"schema": schema, "surface": _semantic_surface(project_root, targets)})
+            _canonical_bytes(
+                {"schema": schema, "surface": _semantic_surface(project_root, targets)}
+            )
         )
     if schema != WORKSPACE_SCHEMA_VERSION:
         raise TargetContractError(f"unsupported Target contract schema {schema!r}")
