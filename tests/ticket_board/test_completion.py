@@ -767,8 +767,7 @@ def test_cleanup_validates_every_identity_before_removing_any_ref(
     assert "cleanup is pending" in capsys.readouterr().err
     assert completion._ref_commit(root, participants[0].ticket_ref) == participants[0].sealed_sha
     assert (
-        completion._ref_commit(project, participants[1].ticket_ref)
-        == participants[1].sealed_sha
+        completion._ref_commit(project, participants[1].ticket_ref) == participants[1].sealed_sha
     )
 
 
@@ -796,9 +795,7 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
         targets=("baseline", "candidate"),
         removal_targets=(canonical,),
         bindings=(
-            ContractTargetBinding(
-                "lint", "lint_clean", canonical, "acme:lib:toy:1.0#candidate"
-            ),
+            ContractTargetBinding("lint", "lint_clean", canonical, "acme:lib:toy:1.0#candidate"),
         ),
         participants=(participant,),
         surface_entries=surface_entries(root),
@@ -864,9 +861,7 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
         targets=("baseline", "candidate"),
         removal_targets=(canonical,),
         bindings=(
-            ContractTargetBinding(
-                "lint", "lint_clean", canonical, "acme:lib:toy:1.0#candidate"
-            ),
+            ContractTargetBinding("lint", "lint_clean", canonical, "acme:lib:toy:1.0#candidate"),
         ),
         participants=participants,
         surface_entries=surface_entries(root),

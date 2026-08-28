@@ -149,9 +149,7 @@ def _load_journal(
 ) -> dict[str, Any]:
     expected = [item.as_dict() for item in contract.participants]
     if not path.exists():
-        return _initial_journal(
-            slug, contract, cleanup=cleanup, removal_targets=removal_targets
-        )
+        return _initial_journal(slug, contract, cleanup=cleanup, removal_targets=removal_targets)
     try:
         return load_journal(
             path,
@@ -475,9 +473,7 @@ def _install_staging_ref(
         _commit(repository, candidate["sha"])
         _require_git(repository, "update-ref", candidate["staging_ref"], candidate["sha"])
     elif current != candidate["sha"]:
-        raise CompletionError(
-            f"acceptance staging ref moved from {candidate['sha']} to {current}"
-        )
+        raise CompletionError(f"acceptance staging ref moved from {candidate['sha']} to {current}")
 
 
 def _persist_candidate_plans(
@@ -523,9 +519,7 @@ def _prepare_all(
             Path(directory),
             project_prefix,
         )
-        _persist_candidate_plans(
-            root, project_repository, contract, journal, journal_path, plans
-        )
+        _persist_candidate_plans(root, project_repository, contract, journal, journal_path, plans)
     if not journal["published"]:
         journal["state"] = JournalState.PREPARED
         _write_journal(journal_path, journal)

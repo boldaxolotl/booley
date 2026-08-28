@@ -221,13 +221,17 @@ def _validate_progress(
         raise BoundaryError("acceptance journal published roles are out of order")
     if cleaned != order[: len(cleaned)]:
         raise BoundaryError("acceptance journal cleaned roles are out of order")
-    _validate_checkpoint_dependencies(state, roles, cleanup, sources, candidates, published, cleaned)
+    _validate_checkpoint_dependencies(
+        state, roles, cleanup, sources, candidates, published, cleaned
+    )
     if state.expected_published(order) not in (None, published):
         raise BoundaryError(
             f"acceptance journal state {str(state)!r} conflicts with published roles"
         )
     if state.expected_cleaned(order, cleanup) not in (None, cleaned):
-        raise BoundaryError(f"acceptance journal state {str(state)!r} conflicts with cleaned roles")
+        raise BoundaryError(
+            f"acceptance journal state {str(state)!r} conflicts with cleaned roles"
+        )
     if published and not finalized:
         raise BoundaryError("acceptance journal cannot publish unfinalized candidates")
     if not has_removals and not finalized:
@@ -445,9 +449,7 @@ def load_persisted_journal(path: Path) -> dict[str, Any]:
 def _persisted_cleanup(journal: dict[str, Any]) -> bool:
     schema = journal.get("schema")
     fields = set(journal)
-    if schema == 1 or (
-        schema == 2 and fields == _BASE_JOURNAL_FIELDS | _FINALIZATION_FIELDS
-    ):
+    if schema == 1 or (schema == 2 and fields == _BASE_JOURNAL_FIELDS | _FINALIZATION_FIELDS):
         return False
     if schema not in {2, 3}:
         raise BoundaryError("acceptance journal schema must be 1, 2, or 3")
