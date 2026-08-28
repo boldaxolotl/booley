@@ -222,7 +222,7 @@ class TestCheatCommand:
         for path in (
             "booley.toml",
             "tests.toml",
-            "ticket_defaults.md",
+            "ticket_creation.md",
             "doctor-waivers.toml",
             "AGENTS.md",
         ):
