@@ -127,10 +127,20 @@ def _cmd_show(tio, args):
     mandatory = criteria.get("mandatory") or {}
     optional = criteria.get("optional") or {}
 
-    # Cross-reference live met-status from booley_state.json so the counts match
-    # the board rather than the (possibly stale) ticket frontmatter.
-    state_data = _load_state_data(existing_runtime_file(tio.logs_dir, slug, "booley_state.json"))
-    state_crit = (state_data or {}).get("criteria", {}) if isinstance(state_data, dict) else {}
+    # Active Tickets use the live projection. Accepted Tickets use their
+    # durable snapshot so runtime cleanup cannot turn a recorded pass into 0/N.
+    accepted_error = ""
+    if entry.get("status") in {"review", "done"}:
+        from .acceptance_ledger import read_acceptance
+
+        accepted = read_acceptance(logs_dir)
+        state_crit = accepted.snapshot.criteria if accepted.snapshot is not None else {}
+        accepted_error = accepted.reason if accepted.kind != "accepted" else ""
+    else:
+        state_data = _load_state_data(
+            existing_runtime_file(tio.logs_dir, slug, "booley_state.json")
+        )
+        state_crit = (state_data or {}).get("criteria", {}) if isinstance(state_data, dict) else {}
 
     def _met(key: str) -> bool:
         entry = state_crit.get(key)
@@ -147,10 +157,16 @@ def _cmd_show(tio, args):
     print(f"worktree:  {worktree}{wt_note}")
     print(f"branch:    {entry.get('branch', '') or '(none)'}")
     print(f"feature:   {entry.get('feature_branch', slug)}")
-    print(
-        f"criteria:  mandatory {mand_met}/{len(mandatory)} met, "
-        f"optional {opt_met}/{len(optional)} met"
-    )
+    if accepted_error:
+        print(
+            f"criteria:  mandatory ?/{len(mandatory)}, optional ?/{len(optional)} "
+            f"({accepted_error})"
+        )
+    else:
+        print(
+            f"criteria:  mandatory {mand_met}/{len(mandatory)} met, "
+            f"optional {opt_met}/{len(optional)} met"
+        )
     return 0
 
 

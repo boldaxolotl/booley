@@ -408,6 +408,42 @@ class TestMcpToolSetCriterion:
         st2 = DevelopmentState.load(state_file)
         assert st2.is_met("lint_clean_lite") is True
 
+    def test_set_criterion_records_normalized_acceptance_evidence(self, tmp_path: Path):
+        logs_dir = tmp_path / "logs" / "test"
+        state_file = logs_dir / ".runtime" / "booley_state.json"
+        state = DevelopmentState.load(state_file)
+        state.slug = "test"
+        state.init_criteria(
+            {"sim_pass_uart_default": True},
+            strict=True,
+            flow_key_aliases={"sim_pass_default": ["sim_pass_uart_default"]},
+        )
+        state.save()
+
+        env = _env_with_state(state_file)
+        env.update(
+            {
+                "BOOLEY_EXECUTION_ID": "execution-2",
+                "BOOLEY_LOGS_DIR": str(logs_dir),
+            }
+        )
+        endpoint = ConcreteMcpTool()
+        with mock.patch.dict(os.environ, env):
+            endpoint.parse_args([])
+            endpoint.read_state()
+            endpoint.set_criterion(
+                "sim_pass_default",
+                True,
+                detail={"pending": [{"summary": "still failing"}]},
+            )
+
+        records = list((logs_dir / "acceptance" / "evidence").glob("*/record.json"))
+        assert len(records) == 1
+        record = json.loads(records[0].read_text(encoding="utf-8"))
+        assert record["criterion"] == "sim_pass_uart_default"
+        assert record["met"] is False
+        assert record["execution_id"] == "execution-2"
+
     def test_set_criterion_noop_without_state_file(self):
         """In human mode, set_criterion works but doesn't persist."""
         endpoint = ConcreteMcpTool()
@@ -756,14 +792,16 @@ class TestMcpToolMain:
         assert st2.timeline[0]["exit_code"] == 0
 
     def test_code_modifying_main_records_resets_in_timeline(self, tmp_path: Path):
-        state_file = tmp_path / "state.json"
+        logs_dir = tmp_path / "logs" / "test"
+        state_file = logs_dir / ".runtime" / "booley_state.json"
         st = DevelopmentState.load(state_file)
         st.slug = "test"
-        st.init_criteria({"lint_clean_lite": True})
+        st.init_criteria({"lint_clean_lite": True}, strict=True)
         st.set_criterion("lint_clean_lite", True)
         st.save()
 
         env = _env_with_state(state_file)
+        env["BOOLEY_LOGS_DIR"] = str(logs_dir)
         endpoint = ConcreteMcpTool(code_modifying=True, modifies_category=CATEGORY_RTL)
         with mock.patch.dict(os.environ, env):
             exit_code = endpoint.main([])
@@ -772,6 +810,13 @@ class TestMcpToolMain:
         assert st2.is_met("lint_clean_lite") is False
         # Timeline records the reset with ~ prefix
         assert any("~lint_clean_lite" in (e.get("criteria_set") or []) for e in st2.timeline)
+        records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (logs_dir / "acceptance" / "evidence").glob("*/record.json")
+        ]
+        assert [(record["criterion"], record["reason"]) for record in records] == [
+            ("lint_clean_lite", "source-invalidated")
+        ]
 
     def test_exception_returns_error(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

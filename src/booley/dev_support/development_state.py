@@ -125,6 +125,18 @@ class CriterionEntry:
 
 
 @dataclass(frozen=True)
+class CriterionChange:
+    """One normalized effective mutation of a declared Criterion."""
+
+    key: str
+    met: bool
+    reason: str
+    detail: dict[str, Any]
+    mandatory: bool
+    params: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class _RecipeEvidence:
     complete: bool
     expected_recipe: Any
@@ -364,7 +376,7 @@ class DevelopmentState:
         met: bool,
         *,
         detail: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> list[CriterionChange]:
         """Set a criterion's status. Creates it (as optional) if unknown.
 
         If *key* is not a known criterion but has aliases (file-specific
@@ -372,23 +384,23 @@ class DevelopmentState:
         fans out to all aliased keys instead.
         """
         if key in self.criteria:
-            self._set_criterion_entry(key, met, detail=detail)
-            return
+            return [self._set_criterion_entry(key, met, detail=detail)]
 
         # Fan out to file-specific aliases when the generic key isn't
         # a direct criterion (e.g. "sim_pass_default" → [...]).
         aliases = self.flow_key_aliases.get(key)
         if aliases:
+            changes: list[CriterionChange] = []
             for alias_key in aliases:
                 if alias_key in self.criteria and self._alias_matches_run(alias_key, detail):
-                    self._set_criterion_entry(alias_key, met, detail=detail)
+                    changes.append(self._set_criterion_entry(alias_key, met, detail=detail))
                 elif alias_key not in self.criteria:
                     logger.warning(
                         "Alias target %r (from %r) not in criteria",
                         alias_key,
                         key,
                     )
-            return
+            return changes
 
         # Single-target fallback: "sim_pass_default" → "sim_pass" when
         # the ticket declared a flat scalar criterion and only one target exists.
@@ -401,8 +413,7 @@ class DevelopmentState:
                     key,
                     base_key,
                 )
-                self._set_criterion_entry(base_key, met, detail=detail)
-                return
+                return [self._set_criterion_entry(base_key, met, detail=detail)]
 
         if self.strict_criteria:
             logger.error(
@@ -410,7 +421,7 @@ class DevelopmentState:
                 key,
                 self.slug,
             )
-            return
+            return []
 
         # A Flow reported a criterion the ticket never declared (e.g. a bare
         # `simulate` run during setup/onboarding, where no `sim_pass_*` criterion
@@ -426,6 +437,17 @@ class DevelopmentState:
             updated_at=now,
             detail=detail or {},
         )
+        entry = self.criteria[key]
+        return [
+            CriterionChange(
+                key,
+                entry.met,
+                "outcome",
+                dict(entry.detail),
+                entry.mandatory,
+                dict(entry.params),
+            )
+        ]
 
     def _alias_matches_run(self, alias_key: str, detail: dict[str, Any] | None) -> bool:
         """Whether one structured simulation alias was evaluated by this run."""
@@ -444,7 +466,7 @@ class DevelopmentState:
         met: bool,
         *,
         detail: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> CriterionChange:
         """Update an existing criterion entry.
 
         After setting met/detail, evaluates threshold params (if any) against
@@ -493,6 +515,14 @@ class DevelopmentState:
                     "detail": dict(entry.detail or {}),
                 }
             )
+        return CriterionChange(
+            key,
+            entry.met,
+            "outcome",
+            dict(entry.detail),
+            entry.mandatory,
+            dict(entry.params),
+        )
 
     # -- Threshold evaluation --------------------------------------------------
 

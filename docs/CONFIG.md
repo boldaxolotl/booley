@@ -966,11 +966,11 @@ provider = "claude"   # or "codex"
 ```
 
 `booley init` records this choice before it seeds the Session Runtime. A TTY
-prompts with no default; unattended initialization must pass, for example,
-`--provider claude --auth subscription`. Existing explicit `[agent]` values are
-preserved on re-run. An older provider-only project must explicitly select its
-missing policy on the next init (for example, `--auth auto`); init then records
-it rather than silently applying it.
+offers `claude` and `auto` as the defaults; unattended initialization applies
+the same defaults unless flags override them (for example,
+`--provider codex --auth subscription`). Existing explicit `[agent]` values are
+preserved on re-run. An older provider-only project receives the documented
+`auto` policy on its next init, which is then recorded in the project config.
 
 #### Pinning what bills (`[agent] auth`)
 
