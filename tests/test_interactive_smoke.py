@@ -601,14 +601,14 @@ class TestInitInteractive:
         statuses = {r.name: r.status for r in ctx.results}
         assert statuses.get("interactive") == "warn"
 
-    def test_app_selection_prefers_claude(self, monkeypatch):
+    def test_app_selection_never_infers_from_installed_clis(self, monkeypatch):
         from booley.harness import init_cmd
 
         monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: True)
         monkeypatch.setattr(init_cmd, "_detect_codex", lambda: True)
-        assert init_cmd._select_interactive_app() == "claude"
+        assert init_cmd._select_interactive_app() == "none"
         monkeypatch.setattr(init_cmd, "_detect_claude_code", lambda: False)
-        assert init_cmd._select_interactive_app() == "codex"
+        assert init_cmd._select_interactive_app() == "none"
         monkeypatch.setattr(init_cmd, "_detect_codex", lambda: False)
         assert init_cmd._select_interactive_app() == "none"
 
@@ -671,7 +671,14 @@ class TestInitInteractive:
         monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", lambda _ctx: True)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
 
-        args = argparse.Namespace(seed=True, check_only=False, force=False, verbose=False)
+        args = argparse.Namespace(
+            seed=True,
+            check_only=False,
+            force=False,
+            verbose=False,
+            provider="claude",
+            auth="subscription",
+        )
         rc = init_cmd.run_init(args, tmp_path)
 
         assert rc == 2

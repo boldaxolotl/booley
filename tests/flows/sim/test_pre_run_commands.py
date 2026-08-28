@@ -79,12 +79,10 @@ class TestPreRunEnvContract:
         env = flow._pre_run_env("lite", None, {}, None)
         assert env["BOOLEY_RUN_CWD"] == str(tmp_path / "util" / "sim")
 
-    def test_default_run_dir_used_when_knob_unset(self, tmp_path: Path):
-        # The boundary path passes the work root used by the Runtime command.
+    def test_build_root_does_not_replace_unset_project_run_cwd(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="lite")
-        work_root = tmp_path / "wr"
-        env = flow._pre_run_env("lite", None, {}, None, default_run_dir=work_root)
-        assert env["BOOLEY_RUN_CWD"] == str(work_root)
+        env = flow._pre_run_env("lite", None, {}, tmp_path / "build")
+        assert env["BOOLEY_RUN_CWD"] == str(tmp_path)
 
     def test_project_dir_exported_when_present(self, tmp_path: Path):
         import os

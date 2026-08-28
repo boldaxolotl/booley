@@ -165,6 +165,23 @@ class TestRoundTrip:
         parsed = parse_criteria_section(rendered)
         assert parsed == criteria
 
+    def test_round_trip_mapping_valued_cycle_count(self):
+        criteria = {
+            "mandatory": {
+                "cycle_count": [
+                    {
+                        "target": "sim_waitstate",
+                        "test": "hello_test",
+                        "cycle_count_max": 14000,
+                    }
+                ]
+            }
+        }
+
+        rendered = render_criteria_section(criteria)
+
+        assert parse_criteria_section(rendered) == criteria
+
     def test_round_trip_scalar_string(self):
         criteria = {"mandatory": {"mutation_score": "8/10"}}
         rendered = render_criteria_section(criteria)

@@ -4,8 +4,9 @@ Replaces bootstrap.py with package-aware logic. Uses booley.runtime.paths for al
 package data resolution and booley.runtime.project_dir for project directory discovery.
 
 Idempotent — safe to re-run. Each step checks preconditions and skips if
-already satisfied. Interactive prompts are skipped in --check-only mode
-or when stdin is not a terminal.
+already satisfied. A first init requires an explicit agent provider and auth
+policy: a terminal prompts without defaults, while unattended callers pass
+``--provider`` and ``--auth``.
 
 Steps, in the order :func:`run_init` runs them. The number the user sees is
 allocated at print time by :meth:`InitContext.step_banner`, so it is always
@@ -42,6 +43,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley import __version__
@@ -499,7 +501,176 @@ def _step_tickets(ctx: InitContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _detect_auth_mode(provider: str) -> str | None:
+@dataclass(frozen=True)
+class AgentSelection:
+    """The explicit provider and billing policy initialization must persist."""
+
+    provider: str
+    auth: str
+    write_provider: bool = False
+    write_auth: bool = False
+
+
+def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
+    """Return this init run's project config path without walking on normal init."""
+    direct = project_root / ".booley_project" / "booley.toml"
+    if direct.is_file() or not seed:
+        return direct
+    try:
+        return resolve_project_dir(project_root) / "booley.toml"
+    except FileNotFoundError:
+        return direct
+
+
+def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
+    """Read declared selection fields, failing loud on malformed configuration."""
+    if not path.is_file():
+        return None, None
+    with path.open("rb") as config_file:
+        data = tomllib.load(config_file)
+    agent = data.get("agent", {})
+    if not isinstance(agent, dict):
+        raise ValueError("booley.toml [agent] must be a table")
+    from booley.config.agent import parse_auth, parse_provider
+
+    return parse_provider(agent), parse_auth(agent)
+
+
+def _prompt_agent_choice(label: str, choices: tuple[str, ...]) -> str | None:
+    """Prompt for one required choice; an empty answer is never a default."""
+    options = "/".join(choice.replace("_", "-") for choice in choices)
+    for _attempt in range(3):
+        try:
+            value = (
+                input(f"  Select agent {label} ({options}): ").strip().lower().replace("-", "_")
+            )
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if value in choices:
+            return value
+        info(f"choose one of: {options.replace('/', ', ')} (there is no default)")
+    err(f"agent {label} selection aborted after 3 invalid answers")
+    return None
+
+
+def _resolve_selection_value(
+    ctx: InitContext,
+    *,
+    name: str,
+    configured: str | None,
+    requested: str | None,
+    choices: tuple[str, ...],
+) -> tuple[str | None, bool]:
+    """Resolve one field and whether it must be added to booley.toml."""
+    if configured is not None:
+        if requested is not None and requested != configured:
+            err(
+                f"--{name}={requested} conflicts with booley.toml [agent] "
+                f"{name}={configured!r}; edit the project config to change it"
+            )
+            return None, False
+        return configured, False
+    if requested is not None:
+        return requested, True
+    if ctx.interactive:
+        return _prompt_agent_choice(name, choices), True
+    err(
+        f"agent {name} is not configured; unattended init requires "
+        f"--{name} {{{','.join(choice.replace('_', '-') for choice in choices)}}}"
+    )
+    return None, False
+
+
+def _resolve_agent_selection(
+    ctx: InitContext, args: argparse.Namespace
+) -> tuple[AgentSelection, Path] | None:
+    """Resolve flags/config/prompts without guessing either agent setting."""
+    config_path = _agent_config_path(ctx.project_root, seed=getattr(args, "seed", False))
+    try:
+        provider, auth = _read_agent_selection(config_path)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        err(f"cannot select an agent from {config_path}: {exc}")
+        ctx.record("agent_config", "err", "invalid booley.toml")
+        return None
+    provider, write_provider = _resolve_selection_value(
+        ctx,
+        name="provider",
+        configured=provider,
+        requested=getattr(args, "provider", None),
+        choices=("claude", "codex"),
+    )
+    if provider is None:
+        ctx.record("agent_config", "err", "explicit provider/auth required")
+        return None
+    auth, write_auth = _resolve_selection_value(
+        ctx,
+        name="auth",
+        configured=auth,
+        requested=getattr(args, "auth", None),
+        choices=("auto", "subscription", "api_key"),
+    )
+    if auth is None:
+        ctx.record("agent_config", "err", "explicit provider/auth required")
+        return None
+    return AgentSelection(provider, auth, write_provider, write_auth), config_path
+
+
+def _insert_agent_fields(content: str, fields: list[str]) -> str:
+    """Insert missing fields into an existing [agent] table, preserving the file."""
+    lines = content.splitlines(keepends=True)
+    header = next(
+        (index for index, line in enumerate(lines) if line.split("#", 1)[0].strip() == "[agent]"),
+        None,
+    )
+    if header is None:
+        prefix = "" if not content or content.endswith("\n") else "\n"
+        separator = "" if not content else "\n"
+        return content + prefix + separator + "[agent]\n" + "".join(fields)
+    end = next(
+        (
+            index
+            for index in range(header + 1, len(lines))
+            if lines[index].lstrip().startswith("[")
+        ),
+        len(lines),
+    )
+    insertion = "".join(fields)
+    if end > 0 and not lines[end - 1].endswith(("\n", "\r")):
+        insertion = "\n" + insertion
+    lines[end:end] = [insertion]
+    return "".join(lines)
+
+
+def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) -> bool:
+    """Persist a complete [agent] choice before auth checks and Session seeding."""
+    ctx.step_banner("agent provider and authentication policy")
+    fields = []
+    if selection.write_provider:
+        fields.append(f'provider = "{selection.provider}"\n')
+    if selection.write_auth:
+        fields.append(f'auth = "{selection.auth}"\n')
+    if not fields:
+        skip(f"using existing [agent] {selection.provider}/{selection.auth}")
+        ctx.record("agent_config", "skip", f"{selection.provider}/{selection.auth}")
+        return True
+    if ctx.check_only:
+        warn(f"would record [agent] {selection.provider}/{selection.auth} in {path}")
+        ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
+        return True
+    if not path.parent.is_dir():
+        err(f"cannot persist agent selection: project directory is missing at {path.parent}")
+        ctx.record("agent_config", "err", "project directory missing")
+        return False
+    content = path.read_text(encoding="utf-8") if path.is_file() else ""
+    updated = _insert_agent_fields(content, fields)
+    path.write_text(updated, encoding="utf-8")
+    ok(f"recorded [agent] {selection.provider}/{selection.auth} in {path}")
+    ctx.record("agent_config", "ok", f"{selection.provider}/{selection.auth}")
+    return True
+
+
+def _detect_auth_mode(provider: str, policy: str = "auto") -> str | None:
     """The auth mode *provider*'s agents would actually run (and bill) under.
 
     Resolved with the agent CLI's own precedence (env API key first, then the
@@ -508,13 +679,13 @@ def _detect_auth_mode(provider: str) -> str | None:
     file: with both an exported API key and a subscription login, the key is
     what bills, and reporting "subscription" here would misstate that.
     """
-    effective = auth_token.effective_credential(provider)
+    effective = auth_token.effective_credential(provider, policy)
     return effective.mode if effective else None
 
 
-def _check_provider_creds(provider: str, auth_mode: str) -> None:
+def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -> None:
     """Name the winning credential's source, and anything it silently outranks."""
-    effective = auth_token.effective_credential(provider)
+    effective = auth_token.effective_credential(provider, policy)
     if effective is None or effective.mode != auth_mode:
         # The environment changed between detection and reporting — say nothing
         # rather than something stale.
@@ -524,48 +695,22 @@ def _check_provider_creds(provider: str, auth_mode: str) -> None:
         info(f"{loser} is present but NOT used — {effective.source} takes precedence")
 
 
-def _step_auth(ctx: InitContext) -> None:
-    from booley.config.agent import _DEFAULT_PROVIDER
-
+def _step_auth(ctx: InitContext, selection: AgentSelection) -> None:
     ctx.step_banner("agent authentication")
-    info(
-        "Booley runs on a single provider; select it via [agent] provider / auth "
-        f"in booley.toml (defaults to {_DEFAULT_PROVIDER})."
+    info(f"configured agent: {selection.provider}/{selection.auth}")
+    mode = _detect_auth_mode(selection.provider, selection.auth)
+    if mode:
+        ok(f"detected {mode} auth for {selection.provider}")
+        _check_provider_creds(selection.provider, mode, selection.auth)
+        ctx.record("auth", "ok", f"{selection.provider}/{mode}")
+        return
+    key_var = "ANTHROPIC_API_KEY" if selection.provider == "claude" else "OPENAI_API_KEY"
+    login = "claude login" if selection.provider == "claude" else "codex login"
+    warn(
+        f"no {selection.auth} auth available for {selection.provider} — "
+        f"set {key_var} or run '{login}' as appropriate"
     )
-
-    # Probe the default provider first so its result leads the output, then any
-    # alternates. Report detected auth for each so the user can pick one.
-    providers = [
-        ("claude", "ANTHROPIC_API_KEY", "claude login"),
-        ("codex", "OPENAI_API_KEY", "codex login"),
-    ]
-    providers.sort(key=lambda p: p[0] != _DEFAULT_PROVIDER)
-
-    detected: dict[str, str] = {}
-    misses: list[str] = []
-    for provider, env_var, login in providers:
-        mode = _detect_auth_mode(provider)
-        if mode:
-            ok(f"detected {mode} auth for {provider}")
-            _check_provider_creds(provider, mode)
-            detected[provider] = mode
-        else:
-            misses.append(f"{provider} auth not detected — set {env_var} or run '{login}'")
-
-    if detected:
-        # At least one provider resolved: a missing alternate is not an error,
-        # so demote those lines to informational (a bare `[!!]` reads as failure
-        # and could scare a newcomer into aborting a setup that's actually fine).
-        for msg in misses:
-            info(msg)
-        summary = ", ".join(f"{p}/{m}" for p, m in detected.items())
-        ok(f"auth available: {summary}")
-        ctx.record("auth", "ok", summary)
-    else:
-        for msg in misses:
-            warn(msg)
-        warn("no agent auth detected — configure a provider before running booley")
-        ctx.record("auth", "warn", "none detected")
+    ctx.record("auth", "warn", f"{selection.provider}/{selection.auth} unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -1175,12 +1320,7 @@ def _detect_vscode() -> tuple[str, str]:
 
 
 def _select_interactive_app(project_root: Path | None = None) -> str:
-    """Pick the agent app for the devcontainer: claude, codex, or none.
-
-    An explicit project ``[agent].provider`` is authoritative. Otherwise,
-    prefer Claude Code (the flagship VS Code integration) when present, then
-    Codex, else ``none`` (a devcontainer with no agent extension is still valid).
-    """
+    """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
         from booley.config.agent import _VALID_PROVIDERS, _parse_provider
         from booley.core.config_paths import resolve_booley_toml
@@ -1198,10 +1338,6 @@ def _select_interactive_app(project_root: Path | None = None) -> str:
                 provider = None
             if provider in _VALID_PROVIDERS:
                 return provider
-    if _detect_claude_code():
-        return dc.APP_CLAUDE
-    if _detect_codex():
-        return dc.APP_CODEX
     return dc.APP_NONE
 
 
@@ -1503,6 +1639,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     ctx: InitContext,
     *,
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
+    agent_app: str | None = None,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
@@ -1527,7 +1664,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         ctx.record("interactive", "err", "Nangate45 cache unavailable")
         return
 
-    app = _select_interactive_app(ctx.project_root)
+    app = agent_app or _select_interactive_app(ctx.project_root)
     from booley.eda import authority as eda_authority
     from booley.eda import runtime_spec as eda_runtime_spec
     from booley.eda.config import EdaConfigError
@@ -2064,7 +2201,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
     ctx.record("guidance_links", "ok", f"{len(links)} link(s)")
 
 
-def _run_seed(ctx: InitContext) -> int:
+def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     """Seed only the Interactive Mode devcontainer for this folder/worktree.
 
     Used per user-created worktree and per Ticket Mode worktree: the long-lived
@@ -2079,10 +2216,10 @@ def _run_seed(ctx: InitContext) -> int:
         "BOOLEY_PROJECT_DIR" not in os.environ
         and not (ctx.project_root / ".booley_project").is_dir()
     ):
-        _step_interactive(ctx)
+        _step_interactive(ctx, agent_app=selection.provider)
         return _print_summary(ctx)
     pdk_root = _step_nangate_pdk(ctx)
-    _step_interactive(ctx, nangate_pdk_root=pdk_root)
+    _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
     return _print_summary(ctx)
 
 
@@ -2107,7 +2244,9 @@ def _print_init_banner(ctx: InitContext) -> None:
     info(f"platform      : {'Windows' if IS_WINDOWS else 'POSIX'}")
 
 
-def run_init(args: argparse.Namespace, project_root: Path) -> int:
+def run_init(  # noqa: PLR0911 - each return is a fail-fast initialization boundary
+    args: argparse.Namespace, project_root: Path
+) -> int:
     """Run the project initialization wizard."""
     _configure_progress_output()
     ctx = InitContext(
@@ -2118,6 +2257,11 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         fix_line_endings=getattr(args, "fix_line_endings", False),
     )
     _print_init_banner(ctx)
+
+    resolved_selection = _resolve_agent_selection(ctx, args)
+    if resolved_selection is None:
+        return _print_summary(ctx)
+    selection, agent_config_path = resolved_selection
 
     # Docker is the execution substrate for every supported EDA flow. Fail
     # before creating or changing project files when its daemon is unavailable;
@@ -2144,7 +2288,9 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
             return _print_summary(ctx)
 
     if getattr(args, "seed", False):
-        return _run_seed(ctx)
+        if not _step_agent_config(ctx, selection, agent_config_path):
+            return _print_summary(ctx)
+        return _run_seed(ctx, selection)
 
     # --scaffold: emit a runnable starter IP (RTL + TB + .core + populated
     # config) before the regular steps, which then backfill around it. A
@@ -2154,9 +2300,11 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
         return _print_summary(ctx)
 
     _step_project_dir(ctx)
+    if not _step_agent_config(ctx, selection, agent_config_path):
+        return _print_summary(ctx)
     _step_core_projections(ctx)
     _step_tickets(ctx)
-    _step_auth(ctx)
+    _step_auth(ctx, selection)
     _deploy_skills(ctx)
     pdk_root = _step_nangate_pdk(ctx)
     _step_sandbox_images(ctx)
@@ -2165,7 +2313,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     _step_worktree_prune_guard(ctx)
     _step_line_endings(ctx)
     _step_guidance_links(ctx, guidance_plan)
-    _step_interactive(ctx, nangate_pdk_root=pdk_root)
+    _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
     _step_advisories(ctx)
 
     return _print_summary(ctx)

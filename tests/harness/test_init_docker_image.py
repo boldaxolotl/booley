@@ -46,6 +46,8 @@ def test_init_aborts_before_writing_when_docker_is_unavailable(tmp_path, monkeyp
         check_only=False,
         force=False,
         verbose=False,
+        provider="claude",
+        auth="subscription",
     )
 
     assert init_cmd.run_init(args, tmp_path) == 2

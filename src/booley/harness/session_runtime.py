@@ -462,7 +462,10 @@ def up(
         raise SessionError(
             "session refresh cannot bypass a host-issued spec; re-run `booley init --seed`"
         )
-    profile = runtime_spec.requested_license(workspace)
+    profile = runtime_spec.requested_license(
+        workspace,
+        expected_name=getattr(issuance, "license_profile", ""),
+    )
     _preflight(spec, license_required=profile is not None)
     name = session_container_name(workspace)
     labels = runtime_spec.labels(issuance)
@@ -541,7 +544,10 @@ def prepare(workspace: Path) -> str:
             f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
         ) from exc
     _reconcile_stopped_vscode_containers(workspace, issuance)
-    profile = runtime_spec.requested_license(workspace)
+    profile = runtime_spec.requested_license(
+        workspace,
+        expected_name=getattr(issuance, "license_profile", ""),
+    )
     _preflight(spec, license_required=profile is not None)
     if profile is None:
         return issuance.spec_sha256

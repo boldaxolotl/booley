@@ -36,14 +36,6 @@ from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.sim.sim_result import write_run_log
 from booley.targets.parameter_integrity import validate_top_parameter_intent
-from booley.yosys.syn_core import (
-    DEFAULT_FRONTEND,
-    SV2V_OUTPUT_NAME,
-    build_elaborate_script,
-    resolve_frontend,
-    resolve_slang_options,
-    sv2v_argv,
-)
 
 from .. import edam as edam_layer
 from .. import execution, output_budget
@@ -185,32 +177,6 @@ def _scan_hdl_declarations(text: str) -> tuple[list[str], bool]:
     return modules, has_shared
 
 
-# Epilogue printed when the sv2v stage of an ASIC elaborate fails. The stderr
-# above it comes from sv2v and reads nothing like a Yosys diagnostic — without
-# this line the user is left guessing which eda_tool rejected the design (the same
-# "downstream symptom never names the cause" family as F-30). Deliberately
-# apostrophe-free: it is embedded in a shell command, and shlex quoting would
-# shred it into unreadable '"'"' fragments.
-_SV2V_STAGE_FAILED = (
-    "ERROR: elab: the sv2v transpile FAILED. The errors above come from sv2v, "
-    "not from Yosys, which never read the design. This is a real elaboration "
-    "failure, not an EDA tool problem: the Target uses [flows.synth] "
-    'frontend = "sv2v", so asic_synthesize runs the very same transpile first and '
-    "will fail identically until the source is fixed. (A design whose SystemVerilog "
-    'sv2v cannot handle can switch to frontend = "slang".)'
-)
-
-
-@dataclass(frozen=True)
-class _AsicElabInputs:
-    """RTL inputs for an ASIC Target's elaborate, relative to the worktree."""
-
-    sources: list[Path]
-    inc_dirs: list[Path]
-    defines: list[str]
-    params: dict[str, str]
-
-
 @dataclass
 class _StandaloneOutcome:
     """Result of one standalone-elaboration sweep, ready to merge into _run."""
@@ -315,9 +281,6 @@ class ElaborateFlow(BooleyFlow):
         independent of the Runtime's absolute workspace path. Raises on setup
         failure so the caller records it as a Flow error.
 
-        One exception to the make-driving rule: a Target that synthesizes
-        through the slang frontend is elaborated by Booley's own Yosys script
-        instead (see :meth:`_slang_elab_command`, F-31).
         """
         build_root = edam_layer.work_root_for(self.args.work_dir, "elab", target)
         resolved = fusesoc_registry.resolve_target(
@@ -329,147 +292,8 @@ class ElaborateFlow(BooleyFlow):
         self._ensure_warnings_nonfatal(resolved)
         self._record_eda_tool(target, getattr(resolved, "eda_tool", None))
         self._record_build_dir(target, getattr(resolved, "build_root", None))
-        asic_cmd = self._asic_elab_command(target, resolved)
-        if asic_cmd is not None:
-            return asic_cmd
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        command = edam_layer.make_command(rel)
-        if getattr(resolved, "eda_tool", None) == "vivado":
-            return [*command, "synth"]
-        return command
-
-    # ------------------------------------------------------------------
-    # ASIC frontend parity (F-31)
-    # ------------------------------------------------------------------
-
-    def _asic_elab_command(self, target: str, resolved: Any) -> list[str] | None:
-        """The elaborate command for an ASIC (Yosys) Target, or ``None``.
-
-        ``None`` means "keep make-driving Edalize" — every Target that is not a
-        Yosys Target with a toplevel.
-
-        Why ASIC Targets need their own path (ravenoc F-31): Edalize's Yosys
-        flow reads RTL with a generic ``read_verilog``, which cannot parse a
-        package ``import`` and dies with ``syntax error, unexpected
-        TOK_IMPORT``. That made *every* SystemVerilog ASIC Target
-        un-elaboratable, whichever frontend the project had configured. Booley
-        instead reads the design exactly the way ``asic_synthesize`` will:
-
-        * ``slang`` — one ``yosys -p`` running ``read_slang`` with the Target's
-          include dirs, defines, params and ``slang_options``;
-        * ``sv2v`` (the default) — the sv2v transpile first, then ``yosys -p``
-          over the transpiled file, the same two stages the synthesis Makefile
-          chains (see :meth:`_sv2v_elab_command`).
-
-        Both are composed from :mod:`booley.yosys.syn_core`'s shared builders,
-        so elaborate's verdict cannot drift from the one synthesis reaches.
-        """
-        # No toplevel means no elaboration root for `--top`; leave such a Target
-        # to the Edalize path, which reports the gap in its own vocabulary
-        # rather than through a truncated Yosys command line.
-        if getattr(resolved, "eda_tool", None) != "yosys" or not getattr(resolved, "toplevel", ""):
-            return None
-        recipe = dict(resolved.flow_options)
-        frontend = (
-            resolve_frontend(
-                recipe,
-                field=f"Target {target!r} flow_options.frontend",
-            )
-            or DEFAULT_FRONTEND
-        )
-        inputs = self._asic_frontend_inputs(resolved)
-        self._asic_targets().add(target)
-        if frontend == "slang":
-            script = build_elaborate_script(
-                inputs.sources,
-                resolved.toplevel,
-                frontend="slang",
-                inc_dirs=inputs.inc_dirs,
-                defines=inputs.defines,
-                params=inputs.params,
-                slang_options=resolve_slang_options(
-                    recipe,
-                    field=f"Target {target!r} flow_options.slang_options",
-                ),
-            )
-            return ["yosys", "-p", script]
-        return self._sv2v_elab_command(resolved, inputs)
-
-    def _asic_frontend_inputs(self, resolved: Any) -> _AsicElabInputs:
-        """The RTL inputs an ASIC Target hands its frontend, worktree-relative.
-
-        The same slice ``asic_synthesize`` forwards to ``run_yosys_syn``: HDL
-        sources (headers excluded — they arrive as ``-I`` dirs), the Target's
-        ``vlogdefine`` params, and its ``vlogparam`` overrides. Paths are relative because the
-        commands run with the work dir as cwd.
-        """
-        # Imported lazily: this is the same
-        # FuseSoC-params -> Yosys-inputs mapping asic_synthesize forwards, and
-        # elaborate must apply it identically or the two Flows read different
-        # RTL configurations.
-        from ..target_parameters import vlogdefine_args, vlogparam_args
-
-        work_dir = Path(self.args.work_dir)
-        return _AsicElabInputs(
-            sources=[
-                Path(posix_relpath(f.absolute(resolved.build_root), work_dir))
-                for f in resolved.rtl_hdl_source_files
-            ],
-            inc_dirs=[Path(posix_relpath(inc, work_dir)) for inc in resolved.rtl_include_dirs],
-            defines=vlogdefine_args(resolved.parameters),
-            params=dict(a.split("=", 1) for a in vlogparam_args(resolved.parameters)),
-        )
-
-    def _sv2v_elab_command(self, resolved: Any, inputs: _AsicElabInputs) -> list[str]:
-        """Transpile with sv2v, then elaborate the result — the sv2v frontend.
-
-        Two stages, chained in one ``sh -c`` because a Target's elaborate run is
-        a single command: ``sv2v -I… -D… <sources> -w sv2v_converted.v`` (argv
-        from :func:`syn_core.sv2v_argv`, shared with the synthesis Makefile
-        recipe) followed by ``yosys -p`` over that one transpiled file. Exactly
-        the ``sv2v`` → ``yosys`` chain ``asic_synthesize``'s generated Makefile
-        runs, minus tech-mapping.
-
-        The transpiled file lands in the Target's resolved build dir, so it is
-        removed with that dir on a clean run (F-33) and kept for triage on a
-        failing one.
-
-        A failing transpile aborts before Yosys ever reads the design, and its
-        stderr looks nothing like a Yosys diagnostic — so the epilogue names
-        sv2v as the stage that failed. It is a genuine elaboration failure and
-        graded as one (exit 1, not a Flow error): the same transpile runs first
-        in synthesis, so the Target does not elaborate *or* synthesize until it
-        is fixed.
-        """
-        work_dir = Path(self.args.work_dir)
-        build_dir = Path(posix_relpath(Path(resolved.build_root), work_dir))
-        transpiled = build_dir / SV2V_OUTPUT_NAME
-        sv2v = shlex.join(sv2v_argv(inputs.sources, inputs.inc_dirs, inputs.defines, transpiled))
-        script = build_elaborate_script(
-            [transpiled],
-            resolved.toplevel,
-            frontend="sv2v",
-            params=inputs.params,
-        )
-        yosys = shlex.join(["yosys", "-p", script])
-        return [
-            "sh",
-            "-c",
-            f"{sv2v} || {{ rc=$?; echo {shlex.quote(_SV2V_STAGE_FAILED)}; exit $rc; }}\n{yosys}\n",
-        ]
-
-    def _asic_targets(self) -> set[str]:
-        """Targets whose command is a local ASIC elaborate, not a boundary ``make``.
-
-        ``yosys -p`` / the ``sh -c`` sv2v+yosys chain are not
-        Boundary-Command-Contract commands (ADR 0037 §5 crossings are
-        relocatable ``make`` argvs only), so — like the standalone sweep's
-        ``iverilog`` probes — they run as local subprocesses in the Session
-        Runtime and never route to the host.
-        """
-        if not hasattr(self, "_asic_elab_targets"):
-            self._asic_elab_targets: set[str] = set()
-        return self._asic_elab_targets
+        return edam_layer.make_command(rel)
 
     def _record_eda_tool(self, target: str, eda_tool: str | None) -> None:
         """Remember *target*'s resolved EDA tool (e.g. ``"verilator"``).
@@ -1220,10 +1044,14 @@ class ElaborateFlow(BooleyFlow):
         err = self._validate_interactive_args()
         if err is not None:
             return err
-        targets = fusesoc_registry.resolve_target_selection(
-            self.args.target,
-            self.args.work_dir,
-        )
+        try:
+            targets = fusesoc_registry.resolve_target_selection(
+                self.args.target,
+                self.args.work_dir,
+                for_flow=self.name,
+            )
+        except fusesoc_registry.IncompatibleTargetError as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"elab: {exc}")
         if not targets:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -1361,12 +1189,7 @@ class ElaborateFlow(BooleyFlow):
                 }
                 self._append_target_result(results, result, stream=len(targets) > 1)
                 continue
-            # An ASIC Target runs Booley's own frontend chain directly (F-31);
-            # everything else make-drives Edalize through the shared executor.
-            if target in self._asic_targets():
-                proc = self._execute(cmd)
-            else:
-                proc = self._execute_boundary(cmd)
+            proc = self._execute_boundary(cmd)
             elapsed = time.monotonic() - t0
             combined = proc.stdout + proc.stderr
             passed = proc.returncode == 0
