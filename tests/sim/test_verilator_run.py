@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -253,18 +254,38 @@ def test_run_verilated_binary_creates_missing_work_dir(tmp_path: Path):
     assert work_dir.is_dir()
 
 
+class _FinishedProcess:
+    """Small cross-platform stand-in for a successfully exited simulator."""
+
+    pid = 0
+    returncode = 0
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+def _stub_verilated_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    trace_path: Path | None = None,
+) -> None:
+    """Replace OS process startup while retaining run-finalization behavior."""
+
+    def execute(*_args, **_kwargs):
+        if trace_path is not None:
+            trace_path.write_bytes(MINIMAL_FST_BYTES)
+        return deque(["[SIM_RESULT] PASSED\n"]), _FinishedProcess()
+
+    monkeypatch.setattr(vr, "_execute_with_heartbeat", execute)
+
+
 def test_native_fst_run_writes_regular_file_without_fifo(tmp_path: Path, monkeypatch):
     bin_dir = tmp_path / "build"
     work_dir = tmp_path / "trace"
     bin_dir.mkdir()
-    source = tmp_path / "known-good.fst"
-    source.write_bytes(MINIMAL_FST_BYTES)
     exe = bin_dir / "Vtb_top"
-    exe.write_text(
-        f"#!/bin/sh\ndest=${{1#--trace=}}\ncp {source} \"$dest\"\necho '[SIM_RESULT] PASSED'\n",
-        encoding="utf-8",
-    )
-    exe.chmod(0o755)
+    exe.touch()
+    _stub_verilated_execution(monkeypatch, trace_path=work_dir / "trace.fst")
     monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
     monkeypatch.setattr(
         vr.subprocess,
@@ -308,8 +329,8 @@ def test_declared_native_fst_must_be_fresh_for_current_run(tmp_path: Path, monke
     stale = bin_dir / "hardcoded.fst"
     stale.write_bytes(MINIMAL_FST_BYTES)
     exe = bin_dir / "Vtb_top"
-    exe.write_text("#!/bin/sh\necho '[SIM_RESULT] PASSED'\n", encoding="utf-8")
-    exe.chmod(0o755)
+    exe.touch()
+    _stub_verilated_execution(monkeypatch)
     monkeypatch.setattr("booley.sim.bwave_fifo._find_bwave_bin", lambda: "/bin/bwave")
     monkeypatch.setattr(
         vr.subprocess,
