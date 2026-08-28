@@ -45,6 +45,7 @@ RUN WHEEL="$(find /tmp/booley-build -maxdepth 1 -name 'booley_rtl-*.whl' -print 
     && test -n "$WHEEL" \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
         --no-deps "$WHEEL" \
+    && python -m pip check \
     && cd /tmp \
     && BOOLEY_CONTAINER=1 python /tmp/booley-build/validate_installed_artifact.py \
         --inventory /tmp/booley-installed-files.txt \
@@ -91,10 +92,11 @@ ENV BOOLEY_BWAVE_BIN=/usr/local/libexec/booley/bwave
 RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
     > /usr/local/bin/bwave && chmod +x /usr/local/bin/bwave
 
-# Candidate-aware runtime sanity stays after installation: the normal npm CLI
-# must win over the SDK's removed private copy, and invariant integrations must
-# remain importable alongside the installed application.
-RUN python -c 'from booley.runtime._claude_backend import ClaudeSDKBackend; backend = ClaudeSDKBackend(); backend._resolve_cli_shim_once(); assert backend._cli_path and "_bundled" not in backend._cli_path' \
+# Candidate-aware runtime sanity stays after installation: the SDK owns CLI
+# discovery, its duplicate bundle remains absent, and the native system CLI
+# plus invariant integrations remain available alongside the application.
+RUN test -x "$(command -v claude)" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.250" \
     && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
 
 

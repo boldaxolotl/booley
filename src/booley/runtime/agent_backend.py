@@ -3,7 +3,7 @@
 Thin facade — re-exports from focused submodules:
   - _retry: transient error detection, backoff computation
   - _cost: model pricing, cost estimation, usage formatting
-  - _claude_backend: ClaudeSDKBackend (Agent SDK + CLI shim)
+  - _claude_backend: ClaudeSDKBackend (Claude Agent SDK)
   - _codex_backend: CodexBackend (Codex CLI subprocess)
 """
 
@@ -34,10 +34,10 @@ class AgentBackend(Protocol):
         ...
 
     def health_check(self) -> str | None:
-        """Quick availability probe.
+        """Quick local configuration probe.
 
         Returns None if healthy, or a human-readable warning string.
-        Must be fast (no network calls).
+        Must be fast: no CLI launch or network calls.
         """
         ...
 
