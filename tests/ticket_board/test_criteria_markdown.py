@@ -165,7 +165,7 @@ class TestRoundTrip:
         parsed = parse_criteria_section(rendered)
         assert parsed == criteria
 
-    def test_round_trip_mapping_valued_cycle_count(self):
+    def test_round_trip_cycle_count_mapping(self):
         criteria = {
             "mandatory": {
                 "cycle_count": [
@@ -177,10 +177,9 @@ class TestRoundTrip:
                 ]
             }
         }
-
         rendered = render_criteria_section(criteria)
-
-        assert parse_criteria_section(rendered) == criteria
+        parsed = parse_criteria_section(rendered)
+        assert parsed == criteria
 
     def test_round_trip_scalar_string(self):
         criteria = {"mandatory": {"mutation_score": "8/10"}}
@@ -372,6 +371,19 @@ class TestBodyManipulation:
 
 
 class TestBackwardsCompat:
+    def test_legacy_cycle_count_mapping_still_parses(self):
+        body = (
+            "## Criteria\n\n"
+            "- **cycle_count**: "
+            '`{"cycle_count_max":10,"target":"sim_demo","test":"demo"}`'
+        )
+
+        assert parse_criteria_section(body) == {
+            "mandatory": {
+                "cycle_count": [{"cycle_count_max": 10, "target": "sim_demo", "test": "demo"}]
+            }
+        }
+
     def test_old_yaml_format_still_parses(self):
         """Ticket with criteria in YAML frontmatter should still work."""
         text = (

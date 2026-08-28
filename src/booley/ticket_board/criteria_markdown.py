@@ -14,7 +14,7 @@ from typing import Any
 _COVERAGE_PREFIX = "coverage_"
 _REVIEW_CLEAN_RE = re.compile(r"^review_(.+)_clean$")
 _BULLET_RE = re.compile(r"^-\s+\*\*(.+?)\*\*(?:\s*\(.*?\))?(?::\s*(.*))?$")
-_LEGACY_STRUCTURED_LIST_CRITERIA = frozenset({"cycle_count", "mutation_score"})
+_STRUCTURED_LIST_CRITERIA = frozenset({"cycle_count", "mutation_score"})
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +212,7 @@ def _parse_bullets(lines: list[str]) -> dict[str, Any]:
         else:
             result[key] = _parse_value(
                 raw_val,
-                legacy_structured_items=key in _LEGACY_STRUCTURED_LIST_CRITERIA,
+                structured_list_items=key in _STRUCTURED_LIST_CRITERIA,
             )
 
     return result
@@ -235,11 +235,11 @@ def _expand_reviews(text: str, result: dict[str, Any]) -> None:
             result[f"review_{focus}_clean"] = True
 
 
-def _parse_value(text: str, *, legacy_structured_items: bool = False) -> Any:
+def _parse_value(text: str, *, structured_list_items: bool = False) -> Any:
     """Parse a bullet value into the appropriate Python type."""
     backticks = re.findall(r"`([^`]+)`", text)
     if backticks:
-        return _parse_backticks(backticks, legacy_structured_items=legacy_structured_items)
+        return _parse_backticks(backticks, structured_list_items=structured_list_items)
     if text.lower() == "true":
         return True
     if text.lower() == "false":
@@ -251,14 +251,14 @@ def _parse_value(text: str, *, legacy_structured_items: bool = False) -> Any:
     return text
 
 
-def _parse_backticks(values: list[str], *, legacy_structured_items: bool) -> Any:
-    """Decode canonical structured lists and legacy backticked mappings."""
+def _parse_backticks(values: list[str], *, structured_list_items: bool) -> Any:
+    """Decode canonical structured lists and legacy mutation campaigns."""
     if len(values) == 1 and values[0].startswith("json:"):
         try:
             return json.loads(values[0].removeprefix("json:"))
         except json.JSONDecodeError:
             return values
-    if legacy_structured_items:
+    if structured_list_items:
         return [_parse_backtick_value(value) for value in values]
     return values
 
