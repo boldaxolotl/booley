@@ -78,11 +78,16 @@ def planned_invocation(key: str, entry: Any) -> str | None:
     if family is None:
         return None
     command, _per_target = _endpoint_contracts()[family]
-    target = criterion_target(key, entry, family)
+    params = getattr(entry, "params", {}) or {}
+    sealed_selector = params.get("_target_selector")
+    target = (
+        sealed_selector
+        if isinstance(sealed_selector, str) and sealed_selector
+        else criterion_target(key, entry, family)
+    )
     if target and "--target" not in command:
         command = f"{command} --target {target}"
 
-    params = getattr(entry, "params", {}) or {}
     selector = params.get("test_selector") or params.get("selector")
     if family == "sim_pass" and isinstance(selector, str) and selector not in {"", "all"}:
         command = f"{command} --test {selector}"

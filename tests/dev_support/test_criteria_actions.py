@@ -27,6 +27,22 @@ def test_structured_sim_action_uses_sealed_target_and_selector() -> None:
     )
 
 
+def test_action_prefers_sealed_callable_selector_over_durable_identity() -> None:
+    entry = CriterionEntry(
+        met=False,
+        mandatory=True,
+        params={
+            "target": "acme:ip:uart:1.0#lint_uart",
+            "_target_selector": "uart#lint_uart",
+        },
+    )
+
+    assert (
+        planned_invocation("lint_clean_acme:ip:uart:1.0#lint_uart", entry)
+        == "lint --target uart#lint_uart"
+    )
+
+
 def test_target_independent_reviewer_action_omits_fabricated_target_guidance() -> None:
     entry = CriterionEntry(
         met=False,
