@@ -121,6 +121,21 @@ _AUDITED_FLOWS = ("sim", "lint", "synth")
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
 _SELFTEST_FLOWS = ("sim", "lint")
 _LINT_SELFTEST_BAD_TARGET = "lint_selftest_bad"
+_TICKET_CONTEXT_ENV = frozenset(
+    {
+        "BOOLEY_AGENT_ROLE",
+        "BOOLEY_EXECUTION_ID",
+        "BOOLEY_LOGS_DIR",
+        "BOOLEY_PAIRED_PROJECT_REPOSITORY",
+        "BOOLEY_RUNTIME_DIR",
+        "BOOLEY_SLUG",
+        "BOOLEY_STATE_FILE",
+        "BOOLEY_TICKET_FILE",
+        "BOOLEY_TICKET_SLUG",
+        "BOOLEY_TICKET_TYPE",
+        "BOOLEY_WORKTREE",
+    }
+)
 #: Per-Flow footprint note appended to the "fail-path unvalidated" advisory.
 #: Adding a selftest is a *project-footprint* decision — a known-bad fixture
 #: is a broken artifact living in someone's repo — and no doc said so, which is
@@ -4966,8 +4981,8 @@ def _check_icarus_sv_language_mode(
 # Verilator's own build-a-binary entry points: both generate the vanilla auto
 # main (`traceEverOn(true)` but no tracer object), so `simulate --trace` has
 # nothing to hook. A trace-capable Verilator sim Target instead ships a cppSource
-# `--exe` main that opens the VerilatedVcdC on `+trace` — so the presence of
-# either flag is the definitive "cannot trace via the overlay" signal.
+# `--exe` main that opens the VCD or FST tracer matching its authored options —
+# so the presence of either flag is the definitive "cannot trace" signal.
 _VERILATOR_AUTO_MAIN_FLAGS = frozenset({"--main", "--binary"})
 
 
@@ -4979,15 +4994,15 @@ def _check_sim_traceable(
 ) -> None:
     """Warn when a Verilator sim Target cannot produce a waveform under --trace.
 
-    Booley traces a Verilator Target by injecting `--trace` through a generated
-    overlay ``.core`` and passing ``+trace +tracefile=`` at run time
-    (:mod:`booley.fusesoc.fusesoc_trace_overlay`) — it never *synthesises* a tracer. A
-    Target built with Verilator's auto ``--main`` (or ``--binary``) has no C++
-    main to construct a ``VerilatedVcdC``, so ``--trace`` hooks into nothing: the
+    Booley traces a Verilator Target through a generated overlay ``.core``. It
+    preserves an authored VCD/FST recipe, or injects VCD tracing when no format
+    is authored, and never *synthesises* a tracer. A Target built with Verilator's
+    auto ``--main`` (or ``--binary``) has no C++ main to construct a
+    ``VerilatedVcdC`` or ``VerilatedFstC``, so the trace option hooks into nothing: the
     run PASSES but the store is a bare ~443-byte FST header with **0 signals** —
     a silent trap that otherwise surfaces only on the first trace run. The
     remedy is the convention traceable sim Targets already follow: a committed
-    ``cppSource`` ``--exe`` main that opens the tracer on ``+trace``, and drop
+    ``cppSource`` ``--exe`` main that opens the matching tracer, and drop
     ``--main``.
 
     Verilator-only by design: for Icarus/Xcelium/VCS the trace overlay
@@ -5026,7 +5041,7 @@ def _check_sim_traceable(
             "Verilator's auto --main/--binary, which has no tracer for "
             "`sim --trace` to hook, so a trace run PASSES with an empty "
             "0-signal waveform store and no error. Give each a cppSource --exe "
-            "main that opens VerilatedVcdC on +trace and drop --main from "
+            "main that opens the matching VCD/FST tracer and drop --main from "
             "verilator_options (mirror a traceable sim Target's tb_cpp fileset)."
         )
 
@@ -6255,11 +6270,17 @@ def _prepare_selftest_invocation(
             "run 'booley init --seed' and retry",
         )
         return None
-    env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env = _doctor_subprocess_env(project)
     env[selftest_overlay.INTERNAL_KIND_ENV] = kind
     timeout_s = _deep_timeout_s(project, flow_name)
     return cmd, env, timeout_s
+
+
+def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
+    """Return a diagnostic environment with Ticket context removed."""
+    env = {key: value for key, value in os.environ.items() if key not in _TICKET_CONTEXT_ENV}
+    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    return env
 
 
 def _execute_selftest(
@@ -6444,8 +6465,7 @@ def _run_flow_check_subprocess(
     _fail: Fail,
 ) -> subprocess.CompletedProcess | None:
     """Run *cmd* for a Flow check; ``None`` means a FAIL was already reported."""
-    env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env = _doctor_subprocess_env(project)
     try:
         return subprocess.run(
             cmd,
@@ -6918,6 +6938,7 @@ def _flow_argv(
         report_dir,
         "--target",
         target,
+        "--diagnostic",
     ]
     if dry_run:
         argv.extend(["--dry-run", "--timeout", "30000"])
@@ -6959,11 +6980,9 @@ def _flow_command(
         f"booley.flows.{implementation_module(flow_name)}",
         *argv,
     ]
-    command_env = (
-        {selftest_overlay.INTERNAL_KIND_ENV: doctor_selftest_kind}
-        if doctor_selftest_kind is not None
-        else None
-    )
+    command_env = dict.fromkeys(_TICKET_CONTEXT_ENV, "")
+    if doctor_selftest_kind is not None:
+        command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind
     return flow_runtime.command(inner, env=command_env)
 
 

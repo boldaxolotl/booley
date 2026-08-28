@@ -32,6 +32,7 @@ from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResul
 from booley.runtime import job_slots
 from booley.runtime.platform_paths import bash_bin, posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
 from booley.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.sim.sim_result import (
     RUN_LOG_NAME,
@@ -39,6 +40,7 @@ from booley.sim.sim_result import (
     run_log_is_current,
     write_run_log,
 )
+from booley.sim.trace_recipe import TraceMode
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent
 from booley.targets.target import inspect_target, select_target, select_targets
@@ -474,30 +476,6 @@ def parse_sva_errors(output: str) -> int:
         return count
 
 
-def _resolve_run_cwd(work_dir: Path | None = None) -> str:
-    """Working directory for the sim *run*, relative to the project root.
-
-    Some testbenches ``$readmemh`` vectors / firmware via paths relative to the
-    process cwd (e.g. ``data/...`` and ``../fw/...``). Edalize runs the
-    Verilated binary from the project root, so those reads miss. Setting
-    ``[flows.sim].run_cwd`` in booley.toml points the run at the directory
-    the TB's relative paths are authored against (e.g. the testbench dir).
-    Returns ``.`` when unset so every direct runner receives the documented
-    project-root cwd explicitly instead of falling back to its build directory.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            val = config_section(cfg.get("flows", {}), "sim").get("run_cwd")
-            if val:
-                return str(val)
-    except ImportError:
-        pass
-    return "."
-
-
 def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
     """Project shell lines run before each sim run.
 
@@ -629,54 +607,6 @@ def _resolve_cycle_sentinels(work_dir: Path | None = None) -> list[str]:
     root = work_dir if work_dir is not None else Path.cwd()
     raw = _load_flow_config("sim", root).get("cycle_sentinels")
     return [sentinel for sentinel in as_str_list(raw) if sentinel]
-
-
-def _resolve_trace_args(work_dir: Path | None = None) -> list[str]:
-    """Trace-enable arguments from booley.toml ``[flows.sim].trace_args``.
-
-    Booley's own convention is ``+trace +tracefile=<file>``, which the shipped
-    ``booley_vcd_dump.sv`` consumes. A project that owns its C++ ``main()``
-    defines its own trace CLI instead — Ibex's ``VerilatorSimCtrl`` takes only
-    getopt ``-t``/``--trace[=FILE]`` — and the mismatch is silent: the binary
-    ignores the unknown plusarg, the run passes, and the dump holds nothing
-    but a header. Declaring the contract is cheaper than wrapping the
-    testbench. Empty means "use the default convention".
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            sim = config_section(cfg.get("flows", {}), "sim")
-            return [str(a) for a in (sim.get("trace_args") or [])]
-    except ImportError:
-        pass
-    return []
-
-
-def _resolve_trace_files(work_dir: Path | None = None) -> list[str]:
-    """Custom trace-artifact paths from ``[flows.sim].trace_files``.
-
-    Booley's trace checker looks for the artifacts *Booley* asked for:
-    ``trace.{fst,fifo,vcd}`` in the build dir plus the bwave cache. A testbench
-    that owns its C++ ``main()`` writes whatever it likes wherever its cwd is —
-    fpu's writes a hardcoded ``fpu.vcd`` into ``run_cwd`` — and the run was then
-    reported as "no waveform produced" on a run that had produced a 4.66 GB one,
-    with no way to say otherwise (F-22). Each entry is a path (glob allowed)
-    resolved against ``run_cwd``, then the trace/work dir, then the build dir;
-    absolute paths are used as given. Empty means "only Booley's own artifacts
-    count", the previous behaviour.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            sim = config_section(cfg.get("flows", {}), "sim")
-            return [str(f) for f in (sim.get("trace_files") or [])]
-    except ImportError:
-        pass
-    return []
 
 
 def _get_test_names() -> dict[str, list[str]]:
@@ -1485,7 +1415,7 @@ class SimulateFlow(BooleyFlow):
             (harness.setup.workspace), kept identical here.
         """
         work_dir = Path(self.args.work_dir)
-        run_cwd = _resolve_run_cwd(self.args.work_dir)
+        run_cwd = resolve_run_cwd(self.args.work_dir)
         run_dir = work_dir / run_cwd
         env = {
             "BOOLEY_TARGET": target,
@@ -1697,115 +1627,87 @@ class SimulateFlow(BooleyFlow):
             variants.append("doctor-selftest-bad")
         return "-".join(variants)
 
+    def _resolve_sim_target(
+        self,
+        target: str,
+        *,
+        cocotb: bool = False,
+    ) -> tuple[fusesoc_registry.ResolvedTarget, TraceMode]:
+        """Resolve one base or traced Target and clean its transient overlay."""
+        build_root = edam_layer.work_root_for(
+            self.args.work_dir,
+            "sim",
+            target,
+            variant=self._build_variant(),
+        )
+        self._reset_trace_build_root(build_root)
+        overlay = (
+            fusesoc_registry.write_trace_overlay(target, project_root=self.args.work_dir)
+            if self.args.trace
+            else None
+        )
+        trace_mode = overlay.mode if overlay is not None else TraceMode.VCD_FIFO
+        try:
+            if cocotb:
+                fusesoc_registry.validate_cocotb_trace_mode(target, trace_mode)
+            resolved = fusesoc_registry.resolve_target(
+                target,
+                project_root=self.args.work_dir,
+                build_root=build_root,
+                vlnv=overlay.vlnv if overlay is not None else None,
+            )
+            validate_top_parameter_intent(resolved, flow="sim")
+            self._remember_resolved_target(target, resolved)
+            return resolved, trace_mode
+        finally:
+            if overlay is not None:
+                overlay.cleanup()
+
+    def _native_run_line(
+        self,
+        resolved: fusesoc_registry.ResolvedTarget,
+        rel: str,
+        plusargs: list[str],
+        trace_mode: TraceMode,
+    ) -> tuple[str, str]:
+        """Return the compile-failure marker and EDA-specific run command."""
+        if sim_edam.normalize_eda_tool(resolved.eda_tool) == "icarus":
+            return "iverilog compilation failed", shlex.join(self._icarus_run_cmd(rel, plusargs))
+        command = self._verilator_run_cmd(
+            rel,
+            resolved.toplevel,
+            plusargs,
+            trace_mode=trace_mode,
+        )
+        return "Verilator elaboration failed", shlex.join(command)
+
     def _prepare_sim_command(
         self,
         target: str,
         test_name: str | None,
         test_names_map: dict[str, list[str]],
     ) -> list[str]:
-        """Resolve the sim Target through FuseSoC and return the build+run command.
-
-        ADR 0022 (decision 4): FuseSoC owns design-description. ``resolve_target``
-        runs ``fusesoc run --setup`` (which runs Edalize ``configure()``) and
-        leaves a ready-to-``make`` build dir — superseding the Booley-built sim
-        EDAM of 0019 (mirrors ``elaborate._prepare_elab_command``). simulate keeps
-        the **run half** elaborate drops: the default ``make`` builds the
-        ``V<top>`` binary, then Booley runs that binary itself with the
-        test-selection plusargs so it can recover the verdict sentinel
-        (``reemit_sim_summary``). The returned command compiles **and** runs in
-        one shell step (``make … && ./V<top> +plusargs``); the single subprocess
-        keeps the "raw run → post-process" shape the verdict layer expects.
-
-        Everything the legacy path hand-assembled now lives in the ``.core`` sim
-        Target: sources, ``toplevel`` (decision 12), the
-        ``--timing``/``--trace``/``-Wno-fatal`` option set
-        (``flow_options.verilator_options``), and the custom ``--timing`` C++
-        main + ``booley_vcd_dump.sv`` — compiled sources, so fileset members (a
-        ``cppSource`` main wired through ``--exe``), not files Booley generates.
-        Defines are declared ``vlogdefine`` params (decision 8); ``config`` is
-        the FuseSoC Target name (decision 10). The resolved build dir is
-        relocatable, so the ``make``/binary paths are independent of the
-        Session Runtime's absolute workspace path. Raises on setup failure
-        (caller records it).
-
-        Run-time test selection renders the Target's tests.toml ``select``
-        plusarg template (decision 16) via ``_sim_plusargs`` — the default
-        template reproduces the legacy ``+test_id=N`` contract.
-        """
-        # --trace builds a distinct, trace-enabled overlay Target (a copy of the
-        # committed sim Target — the base stays agent-immutable and trace-free —
-        # with its own VLNV and ``variant="trace"`` build root, so the traced
-        # build never clobbers the fast pass/fail build and caching is keyed by
-        # the overlay). The overlay is eda_tool-aware (write_trace_overlay): Verilator
-        # gets compile-time --trace; Icarus gets an extra -s<dump-module> root so
-        # its runtime +trace → $dumpvars fires (edalize prunes the uninstantiated
-        # booley_vcd_dump otherwise).
-        variant = self._build_variant()
-        build_root = edam_layer.work_root_for(
-            self.args.work_dir,
-            "sim",
-            target,
-            variant=variant,
-        )
-        self._reset_trace_build_root(build_root)
-        overlay = None
-        resolve_vlnv = None
-        if self.args.trace:
-            overlay = fusesoc_registry.write_trace_overlay(
-                target,
-                project_root=self.args.work_dir,
-            )
-            resolve_vlnv = overlay.vlnv
-        try:
-            resolved = fusesoc_registry.resolve_target(
-                target,
-                project_root=self.args.work_dir,
-                build_root=build_root,
-                vlnv=resolve_vlnv,
-            )
-            validate_top_parameter_intent(resolved, flow="sim")
-            self._remember_resolved_target(target, resolved)
-        finally:
-            # The overlay is needed only until resolve copies its filesets into the
-            # build root; the resolved dir is self-contained, so drop the transient
-            # .core whether resolution succeeded or raised.
-            if overlay is not None:
-                overlay.cleanup()
-        # The run-half persists the full raw output as run.log (next to
-        # result.json) in the resolved build dir; remember that dir so the
-        # end-of-report headline block can print the log's path.
+        """Resolve one native-HDL Target and compose its build-and-run command."""
+        resolved, trace_mode = self._resolve_sim_target(target)
         self._record_run_log_dir(target, resolved.build_root)
         self._record_eda_tool(target, resolved.eda_tool)
         self._stage_doctor_selftest_overlay(resolved.build_root)
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
         build_cmd = edam_layer.make_command(rel)
-        plusargs = self._sim_plusargs(target, test_name, test_names_map, resolved.parameters)
-        # Build-failure marker + quoting rationale live in _build_run_script.
-        # The run-half family comes from the resolved Target's EDA tool. A
-        # missing binary surfaces as a spawn failure.
-        eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
-        is_icarus = eda_tool == "icarus"
-        marker = "iverilog compilation failed" if is_icarus else "Verilator elaboration failed"
-        if is_icarus:
-            # Icarus: ship the run half through booley.sim.iverilog_run — the
-            # edalize Icarus run-half. It runs the vvp image directly (not
-            # ``make run``), anchors run_cwd for cwd-relative TB vectors, owns the
-            # runtime +trace → $dumpvars → VCD→bwave trace lifecycle, and
-            # re-emits the [SIM_SUMMARY] verdict sentinel — the Icarus mirror of
-            # the verilator_run path below.
-            run_line = shlex.join(self._icarus_run_cmd(rel, plusargs))
-        else:
-            # Verilator: ship the run half through booley.sim.verilator_run so the
-            # FIFO/bwave trace lifecycle travels as one unit through the Runtime
-            # subprocess (paths stay relative to the project root, the shell's
-            # start cwd). It owns run_cwd
-            # anchoring and re-emits the [SIM_SUMMARY] verdict sentinel.
-            run_line = shlex.join(self._verilator_run_cmd(rel, resolved.toplevel, plusargs))
-        return [
-            "sh",
-            "-c",
-            _build_run_script(build_cmd, marker, run_line, self._target_sim_env(target)),
-        ]
+        plusargs = self._sim_plusargs(
+            target,
+            test_name,
+            test_names_map,
+            resolved.parameters,
+        )
+        marker, run_line = self._native_run_line(resolved, rel, plusargs, trace_mode)
+        script = _build_run_script(
+            build_cmd,
+            marker,
+            run_line,
+            self._target_sim_env(target),
+        )
+        return ["sh", "-c", script]
 
     def _rundir_budget_args(self) -> list[str]:
         """``--max-rundir-bytes`` flag from booley.toml (empty when disabled).
@@ -1844,10 +1746,10 @@ class SimulateFlow(BooleyFlow):
         # The ``=`` form is required: a project's trace argument is usually
         # itself option-like (``--trace={file}``), and passing it as the next
         # argv item makes argparse read it as a new runner option (F-12).
-        args = [f"--trace-arg={a}" for a in _resolve_trace_args(self.args.work_dir)]
+        args = [f"--trace-arg={a}" for a in resolve_trace_args(self.args.work_dir)]
         # F-22: where the TB's own main() drops its dump, so the checker stops
         # false-reporting "no waveform produced" on a run that produced one.
-        args += [f"--trace-file={f}" for f in _resolve_trace_files(self.args.work_dir)]
+        args += [f"--trace-file={f}" for f in resolve_trace_files(self.args.work_dir)]
         return args
 
     def _verilator_run_cmd(
@@ -1855,6 +1757,8 @@ class SimulateFlow(BooleyFlow):
         rel: str,
         toplevel: str,
         plusargs: list[str],
+        *,
+        trace_mode: TraceMode = TraceMode.VCD_FIFO,
     ) -> list[str]:
         """Build the ``booley.sim.verilator_run`` invocation for one sim run.
 
@@ -1876,11 +1780,11 @@ class SimulateFlow(BooleyFlow):
             str(max(1, self._effective_timeout_ms() // 1000)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = _resolve_run_cwd(self.args.work_dir)
+        run_cwd = resolve_run_cwd(self.args.work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
-            cmd.append("--trace")
+            cmd += ["--trace", "--trace-mode", trace_mode.value]
         for pa in plusargs:
             # The ``=`` form is required when a project's test selector is a
             # getopt-style token (for example ``--meminit=ram,firmware.elf``).
@@ -1912,7 +1816,7 @@ class SimulateFlow(BooleyFlow):
             str(max(1, self._effective_timeout_ms() // 1000)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = _resolve_run_cwd(self.args.work_dir)
+        run_cwd = resolve_run_cwd(self.args.work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1959,7 +1863,7 @@ class SimulateFlow(BooleyFlow):
             str(_resolve_sim_time_grace_s(self.args.work_dir)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = _resolve_run_cwd(self.args.work_dir)
+        run_cwd = resolve_run_cwd(self.args.work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1968,55 +1872,12 @@ class SimulateFlow(BooleyFlow):
             cmd.append(f"--plusarg={plusarg}")
         return cmd
 
-    def _prepare_cocotb_sim_command(
-        self,
+    @staticmethod
+    def _cocotb_target_details(
         target: str,
-        tests: list[str],
-    ) -> list[str]:
-        """Resolve a Cocotb Target and return its batched build+run command.
-
-        The cocotb mirror of :meth:`_prepare_sim_command`: same
-        ``fusesoc run --setup`` resolution (the build half needs **no** cocotb
-        changes — VPI linkage bakes in from the ``.core`` flow options through
-        ``--setup`` + ``make``), same trace-overlay lifecycle, but the run half
-        is one :mod:`booley.sim.cocotb_run` invocation for the whole selected
-        set (decision 5: tests batch into a single sim process). The resolved
-        flow options are the cocotb authority (decision 2): a Target whose
-        resolution lost its ``cocotb_module``, or one resolving to a commercial
-        simulator, raises (B3 — cocotb supports the Icarus and Verilator
-        run-halves only).
-        """
-        variant = self._build_variant()
-        build_root = edam_layer.work_root_for(
-            self.args.work_dir,
-            "sim",
-            target,
-            variant=variant,
-        )
-        self._reset_trace_build_root(build_root)
-        overlay = None
-        resolve_vlnv = None
-        if self.args.trace:
-            overlay = fusesoc_registry.write_trace_overlay(
-                target,
-                project_root=self.args.work_dir,
-            )
-            resolve_vlnv = overlay.vlnv
-        try:
-            resolved = fusesoc_registry.resolve_target(
-                target,
-                project_root=self.args.work_dir,
-                build_root=build_root,
-                vlnv=resolve_vlnv,
-            )
-            validate_top_parameter_intent(resolved, flow="sim")
-            self._remember_resolved_target(target, resolved)
-        finally:
-            if overlay is not None:
-                overlay.cleanup()
-        self._record_run_log_dir(target, resolved.build_root)
-        self._record_eda_tool(target, resolved.eda_tool)
-        self._stage_doctor_selftest_overlay(resolved.build_root)
+        resolved: fusesoc_registry.ResolvedTarget,
+    ) -> tuple[str, str]:
+        """Return the validated Cocotb module and supported EDA-tool family."""
         module = resolved.cocotb_module
         if not module:
             raise ValueError(
@@ -2031,10 +1892,26 @@ class SimulateFlow(BooleyFlow):
                 f"only in v1: Target {target!r} resolves to {eda_tool}. Use an "
                 "icarus or verilator Cocotb Target."
             )
+        return module, eda_tool
+
+    def _prepare_cocotb_sim_command(
+        self,
+        target: str,
+        tests: list[str],
+    ) -> list[str]:
+        """Resolve one Cocotb Target and compose its batched build-and-run command."""
+        resolved, _trace_mode = self._resolve_sim_target(target, cocotb=True)
+        self._record_run_log_dir(target, resolved.build_root)
+        self._record_eda_tool(target, resolved.eda_tool)
+        self._stage_doctor_selftest_overlay(resolved.build_root)
+        module, eda_tool = self._cocotb_target_details(target, resolved)
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
         build_cmd = edam_layer.make_command(rel)
-        is_icarus = eda_tool == "icarus"
-        marker = "iverilog compilation failed" if is_icarus else "Verilator elaboration failed"
+        marker = (
+            "iverilog compilation failed"
+            if eda_tool == "icarus"
+            else "Verilator elaboration failed"
+        )
         plusargs = self._target_parameter_plusargs(resolved.parameters)
         run_line = shlex.join(
             self._cocotb_run_cmd(
@@ -2046,11 +1923,8 @@ class SimulateFlow(BooleyFlow):
                 trace_scope=resolved.toplevel,
             )
         )
-        return [
-            "sh",
-            "-c",
-            _build_run_script(build_cmd, marker, run_line, self._target_sim_env(target)),
-        ]
+        script = _build_run_script(build_cmd, marker, run_line, self._target_sim_env(target))
+        return ["sh", "-c", script]
 
     def _dry_run_command(
         self,
@@ -2851,7 +2725,7 @@ class SimulateFlow(BooleyFlow):
         if resolved is None:
             return
         work_dir = Path(self.args.work_dir).resolve()
-        run_cwd = _resolve_run_cwd(work_dir)
+        run_cwd = resolve_run_cwd(work_dir)
         resolved_run_cwd = (work_dir / run_cwd).resolve()
         try:
             normalized_run_cwd = resolved_run_cwd.relative_to(work_dir).as_posix()

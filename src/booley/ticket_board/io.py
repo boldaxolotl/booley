@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -335,6 +336,7 @@ class TicketIO:
         enforce_lifecycle: bool = False,
         expected_status: str | None = None,
         expected_execution_id: str | None = None,
+        before_move: Callable[[], bool] | None = None,
     ) -> bool:
         """Atomic move + field update under per-ticket lock.
 
@@ -352,6 +354,8 @@ class TicketIO:
                              unless the locked filesystem state still matches.
             expected_execution_id: Reject unless the locked execution generation
                                    matches the caller's activation generation.
+            before_move: Optional integrity callback run after compare-and-swap
+                         validation while the per-ticket lock is still held.
 
         Returns True on success, False if ticket not found.
         """
@@ -390,6 +394,8 @@ class TicketIO:
                 return False
             new_path, source, destination = resolved
             transition = self._canonical_transition(transition, source, destination)
+            if before_move is not None and not before_move():
+                return False
 
             spec_updates = self._apply_updates(progress, updates, append_step)
             save_progress(self.logs_dir, slug, progress)

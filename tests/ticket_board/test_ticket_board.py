@@ -1219,6 +1219,30 @@ class TestScanAllTickets:
         assert t["status"] == "queued"
         assert t["file"] == "board/queue/t1.md"
 
+    def test_done_ticket_criteria_come_from_accepted_snapshot(self, tmp_path):
+        from booley.dev_support.development_state import DevelopmentState
+        from booley.ticket_board.acceptance_ledger import freeze_acceptance
+
+        tio = make_tio(tmp_path)
+        make_ticket_file(tio, "done", "t1")
+        state_path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
+        state = DevelopmentState.load(state_path)
+        state.slug = "t1"
+        state.init_criteria({"sim_pass": True})
+        state.set_criterion("sim_pass", True)
+        state.save()
+        freeze_acceptance(
+            tio.logs_dir / "t1",
+            state,
+            execution_id="generation-1",
+            target_contract=None,
+        )
+        state_path.unlink()
+
+        [ticket] = scan_all_tickets(tio.tickets_dir)
+
+        assert (ticket["criteria_passed"], ticket["criteria_total"]) == (1, 1)
+
     def test_feature_branch_uses_filename_stem(self, tmp_path):
         """feature_branch must be the filename stem, not generate_slug(summary).
 
@@ -1413,6 +1437,44 @@ def _make_handoff_ready_ticket(tio, slug, stages=None):
 
 
 class TestOpHandoff:
+    def test_freezes_live_acceptance_before_review(self, tmp_path):
+        import json
+
+        from booley.dev_support.development_state import DevelopmentState
+        from booley.ticket_board.acceptance_ledger import read_acceptance
+
+        tio = make_tio(tmp_path)
+        _make_handoff_ready_ticket(tio, "t1")
+        state_path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
+        state = DevelopmentState.load(state_path)
+        state.slug = "t1"
+        state.ticket_type = "feature"
+        state.init_criteria({"sim_pass": True, "_report_submitted": True})
+        state.set_criterion("sim_pass", True)
+        state.set_criterion("_report_submitted", True)
+        state.save()
+        prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
+        prep_dir.mkdir(parents=True)
+        briefing = prep_dir / "briefing.json"
+        briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
+        (prep_dir / "manifest.json").write_text(
+            json.dumps({"status": "ready", "briefing_path": str(briefing)}),
+            encoding="utf-8",
+        )
+
+        assert op_handoff(tio, "t1") is True
+
+        accepted = read_acceptance(tio.logs_dir / "t1")
+        assert accepted.kind == "accepted"
+        assert accepted.snapshot is not None
+        assert accepted.snapshot.criteria["sim_pass"]["met"] is True
+        binding = json.loads(
+            (tio.logs_dir / "t1" / "acceptance" / "review-package.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert binding["snapshot_digest"] == accepted.snapshot.digest
+
     def test_moves_and_updates(self, tmp_path):
         tio = make_tio(tmp_path)
         _make_handoff_ready_ticket(tio, "t1")
@@ -1435,6 +1497,7 @@ class TestOpHandoff:
         _path, status = find_ticket_file(tio.tickets_dir, "t1")
         assert status == "running"
         assert "execution changed concurrently" in capsys.readouterr().err
+        assert not (tio.logs_dir / "t1" / "acceptance" / "accepted.json").exists()
 
     def test_review_handoff_announces_deferred_cleanup(self, tmp_path, capsys):
         """cleanup:true + destination:review keeps the worktree — say so (F-55)."""
@@ -4047,6 +4110,65 @@ class TestOpReturnValues:
         tio = make_tio(tmp_path)
         make_ticket_in_dir(tio, "review", "t1")
         assert op_approve(tio, "t1") is True
+
+    def test_complete_rejects_corrupt_accepted_snapshot(self, tmp_path, capsys):
+        from booley.dev_support.development_state import DevelopmentState
+        from booley.ticket_board.acceptance_ledger import freeze_acceptance
+        from booley.ticket_board.operations import op_complete
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "review", "t1")
+        state_path = runtime_file(tio.logs_dir, "t1", "booley_state.json")
+        state = DevelopmentState.load(state_path)
+        state.slug = "t1"
+        state.init_criteria({"sim_pass": True}, strict=True)
+        state.set_criterion("sim_pass", True)
+        state.save()
+        frozen = freeze_acceptance(
+            tio.logs_dir / "t1",
+            state,
+            execution_id="run-1",
+            target_contract=None,
+        )
+        snapshot_path = tio.logs_dir / "t1" / "acceptance" / "snapshots" / f"{frozen.digest}.json"
+        snapshot_path.write_text('{"tampered":true}\n', encoding="utf-8")
+
+        assert op_complete(tio, "t1") is False
+        assert "accepted snapshot" in capsys.readouterr().err
+
+    def test_complete_rejects_review_package_changed_after_binding(self, tmp_path, capsys):
+        import json
+
+        from booley.dev_support.development_state import DevelopmentState
+        from booley.ticket_board.acceptance_ledger import bind_review_package, freeze_acceptance
+        from booley.ticket_board.operations import op_complete
+
+        tio = make_tio(tmp_path)
+        make_ticket_in_dir(tio, "review", "t1")
+        state = DevelopmentState.load(runtime_file(tio.logs_dir, "t1", "booley_state.json"))
+        state.slug = "t1"
+        state.init_criteria({"sim_pass": True}, strict=True)
+        state.set_criterion("sim_pass", True)
+        state.save()
+        snapshot = freeze_acceptance(
+            tio.logs_dir / "t1",
+            state,
+            execution_id="run-1",
+            target_contract=None,
+        )
+        prep_dir = tio.logs_dir / "t1" / ".runtime" / "triage-prep"
+        prep_dir.mkdir(parents=True)
+        briefing = prep_dir / "briefing.json"
+        briefing.write_text('{"assessment": {}}\n', encoding="utf-8")
+        (prep_dir / "manifest.json").write_text(
+            json.dumps({"status": "ready", "briefing_path": str(briefing)}),
+            encoding="utf-8",
+        )
+        assert bind_review_package(tio.logs_dir / "t1", snapshot)
+        briefing.write_text('{"assessment": {"changed": true}}\n', encoding="utf-8")
+
+        assert op_complete(tio, "t1") is False
+        assert "review package binding" in capsys.readouterr().err
 
     def test_op_complete_rejects_no_merge_with_target_removal(self, tmp_path, capsys):
         tio = make_tio(tmp_path)

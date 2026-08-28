@@ -1483,7 +1483,7 @@ class TestEdalizeSimPath:
         reported PASS. The contract has to reach both Runtime run-halves.
         """
         with patch(
-            "booley.flows.sim.flow._resolve_trace_args",
+            "booley.flows.sim.flow.resolve_trace_args",
             return_value=["--trace={file}"],
         ):
             ic = _make_flow(tmp_path, extra_args=["--trace"])._icarus_run_cmd("d", [])
@@ -1495,7 +1495,7 @@ class TestEdalizeSimPath:
     def test_run_cmds_omit_trace_args_when_not_tracing(self, tmp_path: Path):
         """No --trace -> no trace contract flags, even when configured."""
         with patch(
-            "booley.flows.sim.flow._resolve_trace_args",
+            "booley.flows.sim.flow.resolve_trace_args",
             return_value=["--trace={file}"],
         ):
             cmd = _make_flow(tmp_path)._verilator_run_cmd("d", "tb", [])
@@ -1503,7 +1503,7 @@ class TestEdalizeSimPath:
 
     def test_resolve_trace_args_reads_booley_toml(self, tmp_path: Path):
         """[flows.sim].trace_args is read from booley.toml; unset -> empty."""
-        from booley.flows.sim.flow import _resolve_trace_args
+        from booley.sim.config import resolve_trace_args
 
         proj = tmp_path / ".booley_project"
         proj.mkdir()
@@ -1511,9 +1511,9 @@ class TestEdalizeSimPath:
             '[flows.sim]\ntrace_args = ["--trace={file}"]\n',
             encoding="utf-8",
         )
-        assert _resolve_trace_args(tmp_path) == ["--trace={file}"]
+        assert resolve_trace_args(tmp_path) == ["--trace={file}"]
         # Unconfigured -> empty, so the run-half keeps its own convention.
-        assert _resolve_trace_args(tmp_path / "nowhere") == []
+        assert resolve_trace_args(tmp_path / "nowhere") == []
 
     def test_run_cmds_forward_rundir_budget(self, tmp_path: Path):
         """The disk-budget knob (SETUP-25) rides both run-half commands."""
@@ -1831,6 +1831,7 @@ class TestEdalizeSimPath:
         overlay = fusesoc_registry.TraceOverlay(
             core_file=overlay_file,
             vlnv="::sim_demo-booleytrace:0",
+            mode=fusesoc_registry.TraceMode.NATIVE_FST,
         )
         trace_build_root = (
             tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite-trace"
@@ -1872,6 +1873,7 @@ class TestEdalizeSimPath:
         script = cmd[2]
         assert "booley.sim.verilator_run" in script
         assert "--trace" in script
+        assert "--trace-mode native_fst" in script
         assert "--trace-scope" not in script  # full-hierarchy trace, no scope knob
 
     def test_trace_build_root_is_reset_once_for_a_multi_test_run(self, tmp_path: Path):
@@ -1890,6 +1892,27 @@ class TestEdalizeSimPath:
         flow._reset_trace_build_root(build_root)
 
         assert current_model.exists(), "later tests must reuse this invocation's fresh build"
+
+    def test_cocotb_rejects_authored_native_fst_recipe(self, tmp_path: Path):
+        """Cocotb's current runner owns a VCD dump and cannot consume FST."""
+        from booley.fusesoc import fusesoc_registry
+
+        flow = _make_flow(tmp_path, extra_args=["--trace"])
+        overlay_file = tmp_path / "demo.booleytrace.core"
+        overlay_file.write_text("CAPI=2:\nname: ::sim_demo-booleytrace:0\n")
+        overlay = fusesoc_registry.TraceOverlay(
+            core_file=overlay_file,
+            vlnv="::sim_demo-booleytrace:0",
+            mode=fusesoc_registry.TraceMode.NATIVE_FST,
+        )
+
+        with (
+            patch.object(fusesoc_registry, "write_trace_overlay", return_value=overlay),
+            pytest.raises(fusesoc_registry.FuseSocError, match=r"Cocotb.*native FST"),
+        ):
+            flow._prepare_cocotb_sim_command("lite", ["run_test_001"])
+
+        assert not overlay_file.exists()
 
     def test_trace_missing_waveform_fails_the_test(self, tmp_path: Path):
         """--trace that produces no waveform fails loudly (no silent PASS)."""
@@ -3359,7 +3382,7 @@ class TestTraceFilesKnob:
     """fpu F-22b: declare where a custom main() drops its dump."""
 
     def test_resolve_trace_files_reads_booley_toml(self, tmp_path: Path):
-        from booley.flows.sim.flow import _resolve_trace_files
+        from booley.sim.config import resolve_trace_files
 
         proj = tmp_path / ".booley_project"
         proj.mkdir()
@@ -3367,12 +3390,12 @@ class TestTraceFilesKnob:
             '[flows.sim]\ntrace_files = ["fpu.vcd", "dump_*.fst"]\n',
             encoding="utf-8",
         )
-        assert _resolve_trace_files(tmp_path) == ["fpu.vcd", "dump_*.fst"]
-        assert _resolve_trace_files(tmp_path / "nowhere") == []
+        assert resolve_trace_files(tmp_path) == ["fpu.vcd", "dump_*.fst"]
+        assert resolve_trace_files(tmp_path / "nowhere") == []
 
     def test_forwarded_to_both_run_halves_only_when_tracing(self, tmp_path: Path):
         with patch(
-            "booley.flows.sim.flow._resolve_trace_files",
+            "booley.flows.sim.flow.resolve_trace_files",
             return_value=["fpu.vcd"],
         ):
             traced = _make_flow(tmp_path, config="lite", extra_args=["--trace"])

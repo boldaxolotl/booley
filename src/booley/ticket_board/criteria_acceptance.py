@@ -242,7 +242,13 @@ def _has_matching_failing_evidence(entry) -> bool:
         if not isinstance(detail, dict):
             continue
         stamp = detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
-        if not isinstance(stamp, dict) or not isinstance(stamp.get("fingerprint"), str):
+        if not isinstance(stamp, dict):
+            continue
+        fingerprint = stamp.get("fingerprint")
+        if not (
+            (isinstance(fingerprint, dict) and fingerprint)
+            or (isinstance(fingerprint, str) and fingerprint)
+        ):
             continue
         failed_raw = detail.get("failed_tests")
         if not isinstance(failed_raw, list) or not all(

@@ -256,3 +256,56 @@ def test_fail_to_pass_rejects_a_sibling_tests_red_evidence(tmp_path: Path) -> No
     assert verdict.unmet_mandatory == [criterion_key]
     entry = DevelopmentState.load(state._file_path).criteria[criterion_key]
     assert "matching fingerprinted failing evidence" in entry.detail["acceptance_error"]
+
+
+def test_fail_to_pass_accepts_structured_fingerprinted_red_evidence(tmp_path: Path) -> None:
+    """The canonical structured source receipt is valid red-run provenance."""
+    project = _project(tmp_path)
+    template = CriteriaTemplate.from_yaml(
+        {
+            "mandatory": {
+                "sim_pass": [
+                    "tb/test_uart.py @ sim_uart @ test_transmit @ fail -> pass",
+                ]
+            }
+        }
+    )
+    state = DevelopmentState.load(tmp_path / "booley_state.json")
+    state.slug = "issue-88-f46-structured-red"
+    state.work_dir = str(project)
+    state.init_criteria(
+        {**template.expand(["sim_uart"]), "_report_submitted": True},
+        criterion_params=template.expand_params(["sim_uart"]),
+        flow_key_aliases=template.flow_key_aliases(),
+        strict=True,
+    )
+    state.set_criterion(
+        "sim_pass_sim_uart",
+        False,
+        detail={
+            "test_selector": "test_transmit",
+            "selected_tests": ["test_transmit"],
+            "passed_tests": [],
+            "failed_tests": ["test_transmit"],
+            SOURCE_FINGERPRINT_DETAIL_KEY: _source_stamp(project),
+        },
+    )
+    state.set_criterion(
+        "sim_pass_sim_uart",
+        True,
+        detail={
+            "tests_passed": 1,
+            "tests_total": 1,
+            "test_selector": "test_transmit",
+            "selected_tests": ["test_transmit"],
+            "passed_tests": ["test_transmit"],
+            "failed_tests": [],
+            SOURCE_FINGERPRINT_DETAIL_KEY: _source_stamp(project),
+        },
+    )
+    state.set_criterion("_report_submitted", True)
+    state.save()
+
+    verdict = check_criteria_acceptance(state._file_path, work_dir=project)
+
+    assert verdict.disposition == "review"
