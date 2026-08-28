@@ -380,9 +380,7 @@ class TestBackwardsCompat:
 
         assert parse_criteria_section(body) == {
             "mandatory": {
-                "cycle_count": [
-                    {"cycle_count_max": 10, "target": "sim_demo", "test": "demo"}
-                ]
+                "cycle_count": [{"cycle_count_max": 10, "target": "sim_demo", "test": "demo"}]
             }
         }
 
