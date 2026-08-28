@@ -33,7 +33,7 @@ jobs:
 
       - name: Build sdist and wheel
         run: |
-          pip install build==1.5.0 twine==7.0.0
+          pip install build==1.6.0 twine==7.0.0
           PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import write_build_stamp; write_build_stamp(Path.cwd())'
           trap 'rm -f src/booley/_build_commit.py' EXIT
           python -m build

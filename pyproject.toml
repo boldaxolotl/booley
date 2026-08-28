@@ -61,7 +61,7 @@ test = [
 ]
 quality = [
     "pyright==1.1.411",
-    "ruff==0.16.4",
+    "ruff==0.16.5",
 ]
 mutation = [
     "mutmut==3.7.0",
@@ -92,7 +92,7 @@ dev = [
     # .github/workflows/test.yml — a floor here let three different ruff versions
     # coexist locally, so `ruff format --check` disagreed with CI. Bump both files
     # in the same commit, and re-run `ruff check .` + `ruff format --check .` first.
-    "ruff==0.16.4",
+    "ruff==0.16.5",
 ]
 
 [project.scripts]

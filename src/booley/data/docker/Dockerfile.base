@@ -163,7 +163,7 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.247" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.250" \
     && test "$(codex --version | awk '{print $2}')" = "0.150.1" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*

@@ -139,7 +139,7 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.247"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.250"' in lock
     assert '"@openai/codex": "0.150.1"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
@@ -163,7 +163,7 @@ def test_source_builds_fetch_immutable_commits() -> None:
 def test_riscv_release_consumes_base_job_digest() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
-    assert "pip install build==1.5.0" in workflow
+    assert "pip install build==1.6.0" in workflow
     assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "booley-sandbox=docker-image://" in workflow
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
