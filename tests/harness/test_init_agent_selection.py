@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from types import SimpleNamespace
 
 from booley.harness import init_cmd
 from booley.harness.init_common import InitContext
@@ -74,6 +75,40 @@ def test_terminal_prompt_stops_after_three_invalid_answers(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     assert init_cmd._prompt_agent_choice("provider", ("claude", "codex")) is None
+
+
+def test_agent_selection_records_an_aborted_auth_prompt(tmp_path, monkeypatch):
+    choices = iter(("claude", None))
+    monkeypatch.setattr(init_cmd, "_prompt_agent_choice", lambda *_args, **_kwargs: next(choices))
+    ctx = InitContext(project_root=tmp_path, interactive=True)
+
+    assert init_cmd._resolve_agent_selection(ctx, _args()) is None
+    assert ctx.results[-1].detail == "agent selection aborted"
+
+
+def test_existing_guidance_plan_can_proceed(tmp_path, monkeypatch):
+    canon = tmp_path / ".booley_project" / "AGENTS.md"
+    canon.parent.mkdir()
+    canon.write_text("# Project\n", encoding="utf-8")
+    plan = SimpleNamespace(blockers=[])
+    monkeypatch.setattr(init_cmd, "plan_guidance_links", lambda *_args: plan)
+
+    assert init_cmd._plan_existing_guidance(InitContext(project_root=tmp_path)) == (plan, True)
+
+
+def test_existing_guidance_inspection_failure_stops_init(tmp_path, monkeypatch):
+    canon = tmp_path / ".booley_project" / "AGENTS.md"
+    canon.parent.mkdir()
+    canon.write_text("# Project\n", encoding="utf-8")
+    monkeypatch.setattr(
+        init_cmd,
+        "plan_guidance_links",
+        lambda *_args: (_ for _ in ()).throw(OSError("unreadable")),
+    )
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._plan_existing_guidance(ctx) == (None, False)
+    assert ctx.results[-1].detail == "inspection failed"
 
 
 def test_persist_selection_preserves_existing_config_text(tmp_path):

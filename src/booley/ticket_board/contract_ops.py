@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -745,11 +746,13 @@ def revise_contract(
 
 
 def _contract_archive_ref(slug: str, contract: TargetContract) -> str:
-    """Name an archive from the complete sealed cross-repository identity."""
+    """Hash the complete sealed identity into a portable archive ref component."""
     identities = [contract.surface_digest, contract.outer_sha]
     if contract.project_sha:
         identities.append(contract.project_sha)
-    return f"booley-contract-archive/{slug}/{'-'.join(identities)}"
+    payload = "\0".join(("booley-contract-archive-v1", *identities))
+    digest = hashlib.sha256(payload.encode("ascii")).hexdigest()
+    return f"booley-contract-archive/{slug}/{digest}"
 
 
 def _archive_ref(repository: Path, archive: str, source: str) -> None:
