@@ -199,7 +199,7 @@ The filesystem-backed state machine that tracks one Ticket from draft through ex
 _Avoid_: bare "Board", kanban, tracker, backlog
 
 **Target Contract**:
-The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets and control surface to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
+The immutable acceptance-input manifest sealed during Ticket creation. It binds the permitted Targets, control surface, and canonical creation-time Target-removal disposition to durable Ticket Branch commits in every participating repository, so those inputs can exist before acceptance without changing the Project's destination branches.
 _Avoid_: target snapshot, config patch, mutable recipe
 
 **Ticket Workspace**:
@@ -207,7 +207,7 @@ The disposable checkout set materialized from a Ticket's sealed repository refs 
 _Avoid_: permanent worktree, ticket sandbox, integration checkout
 
 **Acceptance Journal**:
-The recoverable record of a Ticket's prepared and published repository candidates. It lets acceptance roll forward after a partial multi-repository publication and keeps the Ticket in review until every destination ref has landed.
+The recoverable record of a Ticket's prepared, finalized, and published repository candidates. It binds any creation-time Target removals to the transaction, lets acceptance roll forward after a partial multi-repository publication, and keeps the Ticket in review until every destination ref has landed.
 _Avoid_: merge log, rollback record, transaction database
 
 **Scope**:

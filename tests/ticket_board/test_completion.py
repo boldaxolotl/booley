@@ -15,6 +15,7 @@ from booley.ticket_board import completion
 from booley.ticket_board.completion import complete_review_ticket
 from booley.ticket_board.target_contract import (
     ContractParticipant,
+    ContractTargetBinding,
     TargetContract,
     surface_digest,
     surface_entries,
@@ -63,6 +64,7 @@ def _ticket_commit(repo: Path, branch: str, content: str) -> str:
 class _Policy:
     merge: bool = True
     cleanup: bool = False
+    remove_targets: tuple[str, ...] = ()
 
 
 class _TicketIO:
@@ -204,7 +206,7 @@ def test_acceptance_journal_validates_every_recovery_field(
     tmp_path: Path, update: dict[str, Any], message: str
 ) -> None:
     contract = _boundary_contract()
-    data = completion._initial_journal("change-target", contract)
+    data = completion._initial_journal("change-target", contract).as_dict()
     candidates = update.get("candidates")
     if isinstance(candidates, dict) and "outer" in candidates:
         candidates["outer"]["staging_ref"] = candidates["outer"]["staging_ref"].format(
@@ -233,6 +235,26 @@ def test_complete_reports_malformed_contract(capsys: pytest.CaptureFixture[str])
 
     assert complete_review_ticket(tio, "bad-contract", _Policy()) is False
     assert "cannot complete 'bad-contract'" in capsys.readouterr().err
+
+
+def test_complete_rejects_removal_policy_changed_after_sealing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    contract = _boundary_contract()
+    tio = _BoundaryTicketIO(
+        {
+            "file": "board/review/change-target.md",
+            "status": "review",
+            "branch": "main",
+            "target_contract": contract.as_dict(),
+        }
+    )
+
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=("baseline",)))
+        is False
+    )
+    assert "changed after Target Contract sealing" in capsys.readouterr().err
 
 
 def test_complete_rejects_legacy_contract_schema(
@@ -279,6 +301,156 @@ def test_complete_publishes_sealed_branch_before_approving(tmp_path: Path) -> No
     ]
     journals = list((root / ".booley_project" / ".runtime" / "acceptance").glob("*.json"))
     assert len(journals) == 1
+
+
+def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path) -> None:
+    root = tmp_path / "rtl"
+    _repository(root)
+    (root / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "targets:\n"
+        "  baseline: {flow: lint}\n"
+        "  candidate: {flow: lint}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "toy.core")
+    _git(root, "commit", "-m", "add target pair")
+    base = _git(root, "rev-parse", "HEAD")
+    ticket_sha = _ticket_commit(root, "change-target", "implemented\n")
+    (root / ".booley_project").mkdir()
+    participant = ContractParticipant(
+        "outer",
+        ticket_sha,
+        "refs/heads/change-target",
+        "refs/heads/main",
+        base,
+    )
+    canonical = "acme:lib:toy:1.0#baseline"
+    contract = TargetContract(
+        outer_sha=ticket_sha,
+        project_sha="",
+        surface_digest=surface_digest(root),
+        targets=("baseline", "candidate"),
+        removal_targets=(canonical,),
+        bindings=(
+            ContractTargetBinding(
+                "lint",
+                "lint_clean",
+                canonical,
+                "acme:lib:toy:1.0#candidate",
+            ),
+        ),
+        participants=(participant,),
+        surface_entries=surface_entries(root),
+    )
+    tio = _TicketIO(root, contract)
+
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+    merged_core = _git(root, "show", "main:toy.core")
+    assert "  baseline:" not in merged_core
+    assert "  candidate:" in merged_core
+    assert "  baseline:" in _git(root, "show", "change-target:toy.core")
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["removal_targets"] == [canonical]
+    assert journal["finalized"] is True
+
+
+def test_complete_finalizes_target_in_project_repository_before_outer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "rtl"
+    outer_base = _repository(root)
+    outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
+    project = root / ".booley_project"
+    _repository(project)
+    (project / "cores").mkdir()
+    (project / "cores" / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "targets:\n"
+        "  baseline: {flow: lint}\n"
+        "  candidate: {flow: lint}\n",
+        encoding="utf-8",
+    )
+    (project / "tests.toml").write_text(
+        '[baseline]\ntests = ["old"]\n\n[candidate]\ntests = ["new"]\n',
+        encoding="utf-8",
+    )
+    _git(project, "add", "cores/toy.core", "tests.toml")
+    _git(project, "commit", "-m", "add project target pair")
+    project_base = _git(project, "rev-parse", "HEAD")
+    project_ticket = _ticket_commit(
+        project, "booley-ticket/change-target", "project implementation\n"
+    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    participants = (
+        ContractParticipant(
+            "outer",
+            outer_ticket,
+            "refs/heads/change-target",
+            "refs/heads/main",
+            outer_base,
+        ),
+        ContractParticipant(
+            "project",
+            project_ticket,
+            "refs/heads/booley-ticket/change-target",
+            "refs/heads/main",
+            project_base,
+        ),
+    )
+    canonical = "acme:lib:toy:1.0#baseline"
+    contract = TargetContract(
+        outer_sha=outer_ticket,
+        project_sha=project_ticket,
+        surface_digest=surface_digest(root),
+        targets=("baseline", "candidate"),
+        removal_targets=(canonical,),
+        bindings=(
+            ContractTargetBinding(
+                "lint",
+                "lint_clean",
+                canonical,
+                "acme:lib:toy:1.0#candidate",
+            ),
+        ),
+        participants=participants,
+        surface_entries=surface_entries(root),
+    )
+    tio = _TicketIO(root, contract)
+
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+    assert "  baseline:" not in _git(project, "show", "main:cores/toy.core")
+    assert "  candidate:" in _git(project, "show", "main:cores/toy.core")
+    merged_tests = _git(project, "show", "main:tests.toml")
+    assert "[baseline]" not in merged_tests
+    assert "[candidate]" in merged_tests
+    assert _git(root, "show", "main:design.txt") == "outer implementation"
+
+
+def test_retry_rejects_changed_target_removal_policy(tmp_path: Path) -> None:
+    contract = _boundary_contract()
+    journal_path = tmp_path / "acceptance.json"
+    first = completion._initial_journal(
+        "change-target", contract, ("acme:lib:toy:1.0#baseline",)
+    ).as_dict()
+    journal_path.write_text(json.dumps(first), encoding="utf-8")
+
+    with pytest.raises(completion.CompletionError, match="removal policy changed"):
+        completion._load_journal(
+            journal_path,
+            "change-target",
+            contract,
+            ("acme:lib:toy:1.0#candidate",),
+        )
 
 
 def test_complete_publishes_project_repository_before_outer(tmp_path: Path, monkeypatch) -> None:
@@ -384,9 +556,9 @@ def test_retry_finishes_journal_after_board_approval_write_failure(
     write_journal = completion._write_journal
     failed = False
 
-    def fail_done_write(path: Path, journal: dict[str, Any]) -> None:
+    def fail_done_write(path: Path, journal: completion.AcceptanceJournal) -> None:
         nonlocal failed
-        if journal.get("state") == "done" and not failed:
+        if journal.state == "done" and not failed:
             failed = True
             raise OSError("simulated journal write failure")
         write_journal(path, journal)
