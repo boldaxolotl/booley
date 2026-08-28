@@ -95,7 +95,16 @@ FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -c \
   'import sys; from pathlib import Path; from booley.harness.init_cmd import _image_build_fingerprint; print(_image_build_fingerprint(Path(sys.argv[1])) or "")' \
   "$BOOLEY_ROOT" 2>/dev/null || true)"
 LABEL_ARGS=()
-[ -n "$FINGERPRINT" ] && LABEL_ARGS=(--label "booley.build-fingerprint=$FINGERPRINT")
+[ -n "$FINGERPRINT" ] && LABEL_ARGS=(
+  --label "booley.build-fingerprint=$FINGERPRINT"
+  --label "io.booley.provenance.schema=1"
+  --label "io.booley.payload.fingerprint=$FINGERPRINT"
+  --label "io.booley.build.origin=local"
+)
+RECIPE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "$PYBUILD" -c \
+  'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' \
+  "$SCRIPT_DIR/Dockerfile")"
+LABEL_ARGS+=(--label "io.booley.build.recipe-fingerprint=$RECIPE_FINGERPRINT")
 SOURCE_UPDATED_AT="$(git -C "$BOOLEY_ROOT" log -1 --format=%cI HEAD 2>/dev/null || true)"
 IMAGE_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_METADATA_ARGS=(
@@ -103,6 +112,7 @@ BUILD_METADATA_ARGS=(
   --build-arg "BOOLEY_SOURCE_REVISION=${COMMIT:-unknown}"
   --build-arg "BOOLEY_SOURCE_UPDATED_AT=${SOURCE_UPDATED_AT:-unknown}"
   --build-arg "BOOLEY_IMAGE_BUILT_AT=$IMAGE_BUILT_AT"
+  --build-arg "BOOLEY_PAYLOAD_FINGERPRINT=${FINGERPRINT:-unknown}"
 )
 
 BASE_CONTRACT="$($PYBUILD "$BOOLEY_ROOT/.github/scripts/docker_base_contract.py" \
@@ -116,10 +126,12 @@ BASE_METADATA_ARGS=(
 echo ">>> Building stable EDA/runtime base (cacheable across candidate changes)..."
 docker build "${BASE_METADATA_ARGS[@]}" "$@" \
   -t booley-runtime-base:local -f "$SCRIPT_DIR/Dockerfile.base" "$BOOLEY_ROOT"
+RUNTIME_BASE_ID="$(docker image inspect booley-runtime-base:local --format '{{.Id}}')"
+LABEL_ARGS+=(--label "io.booley.build.parent-artifact=$RUNTIME_BASE_ID")
 
 echo ">>> Building booley-sandbox Docker image..."
 docker build "${LABEL_ARGS[@]}" "${BUILD_METADATA_ARGS[@]}" "$@" \
-  --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=booley-runtime-base:local" \
+  --build-arg "BOOLEY_RUNTIME_BASE_IMAGE=$RUNTIME_BASE_ID" \
   --build-context booley-runtime-base=docker-image://booley-runtime-base:local \
   -t booley-sandbox -f "$SCRIPT_DIR/Dockerfile" "$BOOLEY_ROOT"
 echo "✓ booley-sandbox image built successfully"

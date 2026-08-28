@@ -101,10 +101,10 @@ through:
    non-commercial/benchmarking terms beside the files. Booley does not include
    this library in its repository, package, or sandbox image; setup mounts the
    cache read-only at `/opt/pdk`.
-7. Providing the base sandbox image: pulled pre-built from the GitHub
-   Container Registry (`ghcr.io/boldaxolotl/booley-sandbox`), or built locally
-   (~20 min) if the pull is unavailable, then the project sandbox image (if
-   `.booley_project/docker/Dockerfile` exists)
+7. Reconciling the selected Session Image and every Booley-managed parent in
+   dependency order. Published images come from GitHub Container Registry;
+   unavailable or stale artifacts are built locally. Payload, recipe, and
+   direct-parent provenance are checked independently before the image is used.
 8. Installing git hooks (repo-level and project commit-msg)
 9. Writing the Interactive Mode devcontainer config
 10. Post-setup advisories

@@ -13,7 +13,6 @@ it never imports back from ``init_cmd``.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import os
 import re
 import shutil
@@ -24,13 +23,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.build_stamp import (
-    STAMP_RELPATH,
     build_stamp,
+    embedded_payload_fingerprint,
+    iter_payload_files,
     resolve_build_commit,
+    resolve_payload_fingerprint,
     resolve_source_updated_at,
 )
 from booley.harness.docker_base_contract import contract as runtime_base_contract
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
+from booley.runtime.image_provenance import resolve_recipe_fingerprint
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -81,6 +83,11 @@ def _image_build_metadata_args(booley_root: Path) -> list[str]:
     is_checkout = (booley_root / ".git").exists()
     values = {
         "BOOLEY_IMAGE_BUILT_AT": built_at,
+        "BOOLEY_PAYLOAD_FINGERPRINT": (
+            resolve_payload_fingerprint(booley_root)
+            or embedded_payload_fingerprint()
+            or "unknown"
+        ),
         "BOOLEY_SOURCE_REVISION": (
             resolve_build_commit(booley_root) if is_checkout else "unknown"
         ),
@@ -151,22 +158,6 @@ def _docker_image_id(image: str) -> str | None:
 # image already exists, so drift went unnoticed. We fingerprint the baked-in
 # sources, stamp it as an image label at build time, and rebuild on mismatch.
 
-# Source trees (recursively) and individual files whose content ends up in the
-# image. Kept in sync with what the Dockerfile COPYs / builds; ``crates/bwave``
-# excludes the huge ``target/`` build dir by only hashing its ``src`` + manifests.
-_FINGERPRINT_TREES = (
-    "src/booley",  # the Python package -> the installed wheel
-    "crates/bwave/src",  # bwave Rust sources -> the in-image binary
-)
-_FINGERPRINT_FILES = (
-    ".dockerignore",
-    "pyproject.toml",
-    "VERSION",
-    "crates/bwave/Cargo.toml",
-    "crates/bwave/Cargo.lock",
-)
-
-
 @dataclass(frozen=True)
 class _DockerBuildSpec:
     """Inputs that vary between sandbox, runtime-base, and flavor builds."""
@@ -180,33 +171,12 @@ class _DockerBuildSpec:
     build_note: str = "this can take 20-30 minutes on first build"
     build_contexts: tuple[tuple[str, str], ...] = ()
     build_args: tuple[str, ...] = ()
-
-
-#: Generated build artifacts that live inside a fingerprinted tree but must not
-#: contribute to the digest. The commit stamp exists only while a wheel build is
-#: in flight, and the two builders remove it at different points — hashing it
-#: would make ``build.sh``'s label and ``booley init``'s recomputation disagree,
-#: so every init after a ``build.sh`` build would declare the image stale and
-#: rebuild it for 20 minutes. Its content is redundant anyway: a commit that
-#: changed the baked sources already moves the digest via those sources.
-_FINGERPRINT_EXCLUDED = frozenset({STAMP_RELPATH})
+    parent_artifact: str | None = None
 
 
 def _iter_fingerprint_files(booley_root: Path):
     """Yield every source file that contributes to the sandbox image build."""
-    for rel in _FINGERPRINT_TREES:
-        root = booley_root / rel
-        if root.is_dir():
-            for p in root.rglob("*"):
-                if not p.is_file() or "__pycache__" in p.parts or p.suffix == ".pyc":
-                    continue
-                if p.relative_to(booley_root).as_posix() in _FINGERPRINT_EXCLUDED:
-                    continue
-                yield p
-    for rel in _FINGERPRINT_FILES:
-        p = booley_root / rel
-        if p.is_file():
-            yield p
+    yield from iter_payload_files(booley_root)
 
 
 def _image_build_fingerprint(booley_root: Path) -> str | None:
@@ -217,16 +187,7 @@ def _image_build_fingerprint(booley_root: Path) -> str | None:
     flow is left untouched. Path-then-content is hashed so a rename or deletion
     changes the digest, not just an edit.
     """
-    files = sorted(set(_iter_fingerprint_files(booley_root)))
-    if not files:
-        return None
-    h = hashlib.sha256()
-    for p in files:
-        h.update(p.relative_to(booley_root).as_posix().encode())
-        h.update(b"\0")
-        h.update(p.read_bytes())
-        h.update(b"\0")
-    return h.hexdigest()
+    return resolve_payload_fingerprint(booley_root) or embedded_payload_fingerprint()
 
 
 def _image_label(image: str, label: str) -> str | None:
@@ -443,9 +404,9 @@ def _try_pull_image(version: str, image: str = DOCKER_IMAGE) -> bool:
         warn(f"could not tag pulled image {tag} as {image}: {exc}")
         return False
 
-    # Mark provenance so the staleness guard leaves this pre-built image
-    # alone (its content can't match a local source fingerprint).
-    _stamp_image_fingerprint(image, f"pulled:{version}")
+    # Provenance belongs to the published artifact. Do not wrap a pulled image
+    # merely to record acquisition history: doing so changes its immutable ID
+    # and conflates "pulled" with evidence that its payload is current.
     return True
 
 
@@ -643,6 +604,12 @@ def _docker_local_build(
     if not _docker_build_runtime_base(ctx, base_dockerfile, booley_root):
         return
 
+    runtime_base_id = _docker_image_id(LOCAL_RUNTIME_BASE_IMAGE)
+    if runtime_base_id is None:
+        err("could not resolve the stable runtime-base artifact after its build")
+        ctx.record("docker_image", "err", "runtime-base identity missing")
+        return
+
     if not _docker_build_wheel(ctx, booley_root):
         return
 
@@ -652,7 +619,8 @@ def _docker_local_build(
         exists=exists,
         fingerprint=fingerprint,
         build_contexts=(("booley-runtime-base", f"docker-image://{LOCAL_RUNTIME_BASE_IMAGE}"),),
-        build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={LOCAL_RUNTIME_BASE_IMAGE}"),
+        build_args=("--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={runtime_base_id}"),
+        parent_artifact=runtime_base_id,
     )
     returncode = _docker_build_image(ctx, build)
     if returncode is None:
@@ -821,10 +789,35 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     # 20-60 minute build.
     if spec.fingerprint:
         build_cmd += ["--label", f"{LABEL_FINGERPRINT}={spec.fingerprint}"]
+        from booley.runtime.image_provenance import (
+            LABEL_BUILD_ORIGIN,
+            LABEL_PAYLOAD_FINGERPRINT,
+            LABEL_RECIPE_FINGERPRINT,
+            LABEL_SCHEMA,
+            PROVENANCE_SCHEMA,
+        )
+
+        build_cmd += [
+            "--label",
+            f"{LABEL_SCHEMA}={PROVENANCE_SCHEMA}",
+            "--label",
+            f"{LABEL_PAYLOAD_FINGERPRINT}={spec.fingerprint}",
+            "--label",
+            f"{LABEL_RECIPE_FINGERPRINT}={resolve_recipe_fingerprint((spec.dockerfile,))}",
+            "--label",
+            f"{LABEL_BUILD_ORIGIN}=local",
+        ]
+    if spec.parent_artifact:
+        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
+
+        build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={spec.parent_artifact}"]
     if spec.image in FLAVOR_IMAGES:
+        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
+
         base_image_id = _docker_image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
+            build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={base_image_id}"]
     if spec.image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(spec.context)
     build_cmd += spec.build_args

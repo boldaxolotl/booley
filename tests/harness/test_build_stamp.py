@@ -22,6 +22,7 @@ from booley.harness.build_stamp import (
     STAMP_RELPATH,
     build_stamp,
     resolve_build_commit,
+    resolve_payload_fingerprint,
     resolve_source_updated_at,
     stamp_path,
     write_build_stamp,
@@ -52,7 +53,8 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "T")
     (root / "README").write_text("hi\n", encoding="utf-8")
-    _git(root, "add", "README")
+    (root / "src" / "booley" / "payload.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(root, "add", "README", "src/booley/payload.py")
     _git(root, "commit", "-m", "init")
     return root
 
@@ -98,6 +100,16 @@ class TestWriteBuildStamp:
         namespace: dict = {}
         exec(compile(text, "_build_commit.py", "exec"), namespace)
         assert namespace["COMMIT"] == commit != ""
+        assert namespace["PAYLOAD_FINGERPRINT"] == resolve_payload_fingerprint(repo)
+
+    def test_payload_fingerprint_changes_for_dirty_source_at_same_head(self, repo: Path):
+        before = resolve_payload_fingerprint(repo)
+        head = resolve_build_commit(repo)
+
+        (repo / "src" / "booley" / "payload.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+        assert resolve_payload_fingerprint(repo) != before
+        assert resolve_build_commit(repo).removesuffix("+dirty") == head
 
     def test_context_manager_always_removes_the_stamp(self, repo: Path):
         """Leaving it behind makes the checkout claim a commit it doesn't have."""

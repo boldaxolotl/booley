@@ -109,10 +109,16 @@ def initialize_command(executable: str = "booley") -> list[str]:
     ]
 
 
-def pin_image(spec: dict[str, Any]) -> str:
+def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> str:
     """Replace a generated image reference with its immutable local image ID."""
-    image = _require_string(spec, "image")
-    image_id = _resolve_image_id(image)
+    if expected_image_id is None:
+        image_id = _resolve_image_id(_require_string(spec, "image"))
+    else:
+        image_id = _resolve_image_id(expected_image_id)
+        if image_id != expected_image_id:
+            raise RuntimeSpecError(
+                "reconciled Session Image ID no longer resolves to the same artifact"
+            )
     spec["image"] = image_id
     return image_id
 

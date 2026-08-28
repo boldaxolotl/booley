@@ -35,6 +35,16 @@ LABEL_ARGS=()
 [ -n "$FINGERPRINT" ] && LABEL_ARGS=(--label "booley.build-fingerprint=$FINGERPRINT")
 BASE_IMAGE_ID="$(docker image inspect booley-sandbox --format '{{.Id}}')"
 [ -n "$BASE_IMAGE_ID" ] && LABEL_ARGS+=(--label "booley.base-image-id=$BASE_IMAGE_ID")
+[ -n "$FINGERPRINT" ] && LABEL_ARGS+=(
+  --label "io.booley.provenance.schema=1"
+  --label "io.booley.payload.fingerprint=$FINGERPRINT"
+  --label "io.booley.build.origin=local"
+)
+[ -n "$BASE_IMAGE_ID" ] && LABEL_ARGS+=(--label "io.booley.build.parent-artifact=$BASE_IMAGE_ID")
+RECIPE_FINGERPRINT="$(PYTHONPATH="$BOOLEY_ROOT/src" "${FP_PY:-python3}" -c \
+  'import sys; from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path(sys.argv[1]),)))' \
+  "$SCRIPT_DIR/Dockerfile.riscv")"
+LABEL_ARGS+=(--label "io.booley.build.recipe-fingerprint=$RECIPE_FINGERPRINT")
 
 echo ">>> Building booley-sandbox-riscv Docker image..."
 docker build "${LABEL_ARGS[@]}" "$@" -t booley-sandbox-riscv \

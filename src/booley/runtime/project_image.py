@@ -26,6 +26,13 @@ import re
 import subprocess
 from pathlib import Path
 
+from booley.runtime.image_provenance import (
+    LABEL_BUILD_ORIGIN,
+    LABEL_PARENT_ARTIFACT,
+    LABEL_RECIPE_FINGERPRINT,
+    resolve_build_context_fingerprint,
+)
+
 logger = logging.getLogger(__name__)
 
 BASE_IMAGE = "booley-sandbox"
@@ -55,6 +62,7 @@ _FROM_RE = re.compile(
     r"^\s*FROM(?:\s+--platform=\S+)?\s+(?P<image>[^\s]+)",
     re.IGNORECASE | re.MULTILINE,
 )
+_PARENT_DIRECTIVE_RE = re.compile(r"^\s*#\s*booley:parent=(?P<image>\S+)\s*$", re.MULTILINE)
 
 
 def _content_digest(text: str) -> str:
@@ -92,18 +100,28 @@ def project_image_name(project_root: Path) -> str:
 
 
 def dockerfile_parent_image(dockerfile: Path) -> str | None:
-    """Return the first concrete image named by a Dockerfile ``FROM`` line."""
+    """Return an unambiguous direct parent, or ``None`` for a complex recipe."""
     try:
         text = dockerfile.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    match = _FROM_RE.search(text)
-    if match is None:
+    directive = _PARENT_DIRECTIVE_RE.search(text)
+    if directive is not None:
+        return _untagged_image(directive.group("image"))
+    matches = list(_FROM_RE.finditer(text))
+    if len(matches) != 1:
         return None
-    image = match.group("image")
+    image = matches[0].group("image")
     if image.startswith("$"):
         return None
-    return image.split("@", 1)[0].split(":", 1)[0]
+    return _untagged_image(image)
+
+
+def _untagged_image(image: str) -> str:
+    without_digest = image.split("@", 1)[0]
+    prefix, separator, tail = without_digest.rpartition("/")
+    name = tail.split(":", 1)[0]
+    return f"{prefix}{separator}{name}" if separator else name
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +378,17 @@ def write_managed_dockerfile(docker_dir: Path) -> Path:
     """
     docker_dir.mkdir(parents=True, exist_ok=True)
     dockerfile = docker_dir / "Dockerfile"
-    dockerfile.write_text(_stamp_content_hash(_dockerfile_body()), encoding="utf-8")
+    dockerfile_body, _requirements_body = managed_project_image_files("")
+    dockerfile.write_text(dockerfile_body, encoding="utf-8")
     return dockerfile
+
+
+def managed_project_image_files(requirements_body: str) -> tuple[str, str]:
+    """Return the exact managed Dockerfile and requirements-file contents."""
+    return (
+        _stamp_content_hash(_dockerfile_body()),
+        _stamp_content_hash(requirements_body),
+    )
 
 
 def write_project_image_files(
@@ -375,9 +402,12 @@ def write_project_image_files(
     (user-owned, SETUP-6) — see :func:`is_managed_generated_file`.
     """
     docker_dir.mkdir(parents=True, exist_ok=True)
-    req = docker_dir / "requirements.txt"
-    req.write_text(_stamp_content_hash(requirements_body), encoding="utf-8")
-    return write_managed_dockerfile(docker_dir), req
+    dockerfile_body, requirements_content = managed_project_image_files(requirements_body)
+    dockerfile = docker_dir / "Dockerfile"
+    requirements = docker_dir / "requirements.txt"
+    dockerfile.write_text(dockerfile_body, encoding="utf-8")
+    requirements.write_text(requirements_content, encoding="utf-8")
+    return dockerfile, requirements
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +422,17 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
     if not dockerfile.is_file():
         logger.error("project image Dockerfile not found at %s", dockerfile)
         return False
-    cmd = ["docker", "build", "-t", image, "-f", str(dockerfile), str(docker_dir)]
+    labels = [
+        "--label",
+        f"{LABEL_RECIPE_FINGERPRINT}={resolve_build_context_fingerprint(docker_dir)}",
+        "--label",
+        f"{LABEL_BUILD_ORIGIN}=local",
+    ]
+    parent = dockerfile_parent_image(dockerfile)
+    parent_id = _docker_image_id(parent) if parent else None
+    if parent_id:
+        labels += ["--label", f"{LABEL_PARENT_ARTIFACT}={parent_id}"]
+    cmd = ["docker", "build", "-t", image, *labels, "-f", str(dockerfile), str(docker_dir)]
     try:
         result = subprocess.run(
             cmd,
@@ -409,3 +449,19 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
         logger.error("project image build failed (rc=%s): %s", result.returncode, detail[-500:])
         return False
     return True
+
+
+def _docker_image_id(image: str) -> str | None:
+    """Resolve a local Docker artifact without depending on harness code."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None

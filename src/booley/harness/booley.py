@@ -1163,6 +1163,8 @@ def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command 
         *,
         rebuild: bool | None = None,
         image_override: str | None = None,
+        expected_image_id: str | None = None,
+        expected_payload_fingerprint: str | None = None,
     ) -> int:
         from booley.harness import auto_doctor
 
@@ -1174,6 +1176,8 @@ def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command 
             project_root,
             rebuild=rebuild_session,
             image_override=image_override,
+            expected_image_id=expected_image_id,
+            expected_payload_fingerprint=expected_payload_fingerprint,
         )
         if vscode:
             print(
@@ -1191,12 +1195,46 @@ def _cmd_session(  # noqa: PLR0915 - nested handlers keep one lifecycle command 
         return 0
 
     def _refresh() -> int:
-        from booley.harness.init_cmd import refresh_session_image, reissue_session_spec
+        from booley.harness.init_cmd import (
+            capture_session_spec,
+            refresh_session_image,
+            reissue_session_spec,
+            restore_session_spec,
+        )
 
-        image = refresh_session_image(project_root, verbose=getattr(args, "verbose", False))
-        reissue_session_spec(project_root, verbose=getattr(args, "verbose", False))
-        print(f"Refreshed sandbox image: {image}")
-        return _up(rebuild=True)
+        vscode = sr.conflicting_vscode_session(project_root)
+        if vscode:
+            raise sr.SessionError(
+                f"VS Code owns the active Session Runtime {vscode!r}; use "
+                "'Dev Containers: Rebuild Container' so the editor can replace it safely"
+            )
+        result = refresh_session_image(project_root, verbose=getattr(args, "verbose", False))
+        if result.selected_id is None:
+            raise sr.SessionError("image refresh did not return an immutable Session Image ID")
+        snapshot = capture_session_spec(project_root)
+        try:
+            reissue_session_spec(
+                project_root,
+                result.selected_id,
+                verbose=getattr(args, "verbose", False),
+            )
+            sr.up(
+                project_root,
+                rebuild=True,
+                expected_image_id=result.selected_id,
+                expected_payload_fingerprint=result.payload_fingerprint,
+            )
+        except BaseException:
+            restore_session_spec(project_root, snapshot)
+            raise
+        from booley.harness import auto_doctor
+
+        _report_session_health(
+            project_root,
+            startup_due_reason=auto_doctor.due_reason(project_root),
+        )
+        print(f"Refreshed Session Runtime: {result.selected_reference} ({result.selected_id})")
+        return 0
 
     def _enter() -> int:
         # `booley session enter -- cmd` and `... enter cmd` both mean "run cmd".

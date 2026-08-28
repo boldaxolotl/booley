@@ -204,10 +204,15 @@ def _patch_environment(
     # Keep the suite hermetic: the host-clock check (F-5) probes an HTTP Date
     # header over the real network.
     monkeypatch.setattr(doctor, "_check_host_clock", lambda *a, **k: None)
-    # Likewise the exact image-fingerprint probe: it hashes the real checkout
-    # and inspects real docker labels — force "no verdict" so the flow tests
-    # keep exercising the deterministic mtime fallback.
-    monkeypatch.setattr(doctor, "source_fingerprint_mismatch", lambda _img: None)
+    monkeypatch.setattr(
+        doctor.image_lifecycle,
+        "reconcile",
+        lambda _root, _intent: doctor.image_lifecycle.LifecycleResult(
+            "booley-sandbox",
+            "sha256:fixture",
+            doctor.image_lifecycle.Status.CURRENT,
+        ),
+    )
 
     calls: list[list[str]] = []
 
@@ -4680,6 +4685,10 @@ targets:
 # ---------------------------------------------------------------------------
 
 
+def _image_lifecycle_result(image: str, status) -> object:
+    return doctor.image_lifecycle.LifecycleResult(image, "sha256:test", status)
+
+
 def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monkeypatch):
     # Exact path: the build-fingerprint label differs from the checkout hash →
     # WARN without ever consulting the mtime heuristic.
@@ -4687,12 +4696,16 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
-    monkeypatch.setattr(doctor, "source_fingerprint_mismatch", lambda _img: True)
+    monkeypatch.setattr(
+        doctor.image_lifecycle,
+        "reconcile",
+        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.STALE),
+    )
 
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert warns and "build-fingerprint label differs" in warns[0]
+    assert warns and "image provenance differs" in warns[0]
     assert not passes
 
 
@@ -4701,7 +4714,11 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
-    monkeypatch.setattr(doctor, "source_fingerprint_mismatch", lambda _img: False)
+    monkeypatch.setattr(
+        doctor.image_lifecycle,
+        "reconcile",
+        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.CURRENT),
+    )
     # The mtime fallback must not run; poison it to prove that.
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1 / 0)
 
@@ -4712,18 +4729,16 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
     assert not warns
 
 
-def test_image_bakes_current_booley_warns_when_source_newer(tmp_path, monkeypatch):
-    # Host Booley source edited after the image was built → sandbox runs stale
-    # code (egress locked, can't pip-install the fix). Doctor must flag it.
-    # Fingerprint gives no verdict here (e.g. unlabeled image) → mtime fallback.
+def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
-    monkeypatch.setattr(doctor, "source_fingerprint_mismatch", lambda _img: None)
-    monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
-    monkeypatch.setattr(doctor, "_booley_package_dir", lambda: tmp_path / "src")
-    monkeypatch.setattr(doctor, "_newest_source_mtime", lambda _p: 2000.0)  # newer than image
+    monkeypatch.setattr(
+        doctor.image_lifecycle,
+        "reconcile",
+        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.STALE),
+    )
 
     warns: list[str] = []
     passes: list[str] = []
@@ -4732,20 +4747,23 @@ def test_image_bakes_current_booley_warns_when_source_newer(tmp_path, monkeypatc
     assert not passes
 
 
-def test_image_bakes_current_booley_passes_when_image_newer(tmp_path, monkeypatch):
+def test_image_bakes_current_booley_passes_when_provenance_is_current(
+    tmp_path, monkeypatch
+):
     proj = tmp_path / "myproj"
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
-    monkeypatch.setattr(doctor, "source_fingerprint_mismatch", lambda _img: None)
-    monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 3000.0)
-    monkeypatch.setattr(doctor, "_booley_package_dir", lambda: tmp_path / "src")
-    monkeypatch.setattr(doctor, "_newest_source_mtime", lambda _p: 2000.0)  # older than image
+    monkeypatch.setattr(
+        doctor.image_lifecycle,
+        "reconcile",
+        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.CURRENT),
+    )
 
     warns: list[str] = []
     passes: list[str] = []
     doctor._check_image_bakes_current_booley(project, "docker", image, passes.append, warns.append)
-    assert passes and "no older than the host" in passes[0]
+    assert passes and "exactly this checkout" in passes[0]
     assert not warns
 
 
@@ -4775,9 +4793,11 @@ def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeyp
     (proj / ".booley_project").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
-    monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: None)  # image absent
-    monkeypatch.setattr(doctor, "_booley_package_dir", lambda: tmp_path / "src")
-    monkeypatch.setattr(doctor, "_newest_source_mtime", lambda _p: 2000.0)
+    monkeypatch.setattr(
+        doctor.image_lifecycle,
+        "reconcile",
+        lambda *_args: _image_lifecycle_result(image, doctor.image_lifecycle.Status.EXTERNAL),
+    )
 
     warns: list[str] = []
     passes: list[str] = []
