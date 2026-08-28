@@ -184,7 +184,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
 
             parsed = get_rtl_source_dirs(), get_tb_source_dirs()
         except (
-            Exception
+            Exception  # noqa: BLE001
         ):  # legacy CWD path unavailable; warn and fall back to default category dirs
             logger.warning(
                 "Could not resolve category dirs from project config — "

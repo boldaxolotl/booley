@@ -676,7 +676,9 @@ def _dispatch_on_event(on_event: Any, message: AssistantMessage) -> None:
         if chunks:
             try:
                 on_event({"type": etype, "text": "\n".join(chunks)})
-            except Exception:  # display failure is best-effort; do not abort a paid turn
+            except (
+                Exception  # noqa: BLE001
+            ):  # display failure is best-effort; do not abort a paid turn
                 logger.debug("on_event error (swallowed)", exc_info=True)
 
 
@@ -785,7 +787,7 @@ def _dispatch_completed_file_edits(
         return
     try:
         on_event({"type": "file_change", "paths": paths})
-    except Exception:  # display failure is best-effort; do not abort a paid turn
+    except Exception:  # display failure is best-effort; do not abort a paid turn  # noqa: BLE001
         logger.debug("on_event file change error (swallowed)", exc_info=True)
 
 
@@ -812,7 +814,7 @@ def _dispatch_usage(on_event: Any, counters: _UsageCounters, model: str) -> None
                 "context_limit": context_limit(model),
             }
         )
-    except Exception:  # display failure is best-effort; do not abort a paid turn
+    except Exception:  # display failure is best-effort; do not abort a paid turn  # noqa: BLE001
         logger.debug("on_event usage error (swallowed)", exc_info=True)
 
 
