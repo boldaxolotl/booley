@@ -45,6 +45,7 @@ RUN WHEEL="$(find /tmp/booley-build -maxdepth 1 -name 'booley_rtl-*.whl' -print 
     && test -n "$WHEEL" \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
         --no-deps "$WHEEL" \
+    && python -m pip check \
     && cd /tmp \
     && BOOLEY_CONTAINER=1 python /tmp/booley-build/validate_installed_artifact.py \
         --inventory /tmp/booley-installed-files.txt \
@@ -96,7 +97,6 @@ RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
 # plus invariant integrations remain available alongside the application.
 RUN test -x "$(command -v claude)" \
     && test "$(claude --version | awk '{print $1}')" = "2.1.250" \
-    && python -c 'import importlib.metadata; from pathlib import Path; import claude_agent_sdk; version = tuple(map(int, importlib.metadata.version("claude-agent-sdk").split(".")[:3])); bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"; assert version >= (0, 2, 124), version; assert not bundled.exists(), bundled' \
     && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
 
 

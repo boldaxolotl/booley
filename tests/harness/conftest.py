@@ -68,6 +68,7 @@ if "claude_agent_sdk" not in sys.modules:
             "__init__": lambda self, **kw: self.__dict__.update(kw),
         },
     )
+    _sdk.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
     _sdk.ProcessError = type("ProcessError", (Exception,), {})
     _sdk.RateLimitEvent = type("RateLimitEvent", (), {})
     _sdk.ResultMessage = type(

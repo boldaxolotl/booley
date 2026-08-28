@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
+
+
+def test_production_code_uses_only_public_claude_sdk_imports() -> None:
+    private_imports: list[str] = []
+    for path in Path("src/booley").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "claude_agent_sdk._"
+            ):
+                private_imports.append(f"{path}:{node.lineno}: {node.module}")
+            elif isinstance(node, ast.Import):
+                private_imports.extend(
+                    f"{path}:{node.lineno}: {alias.name}"
+                    for alias in node.names
+                    if alias.name.startswith("claude_agent_sdk._")
+                )
+
+    assert not private_imports, "private Claude SDK imports:\n" + "\n".join(private_imports)
 
 
 def test_windows_batch_cli_fails_closed_without_execution(tmp_path) -> None:

@@ -208,7 +208,7 @@ RUN python -m ensurepip --default-pip \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
         --requirement /tmp/booley-build/project-dependencies.txt \
     && rm -f /tmp/booley-build/project-dependencies.txt \
-    && python -c 'import importlib.metadata; version = tuple(map(int, importlib.metadata.version("claude-agent-sdk").split(".")[:3])); assert version >= (0, 2, 124), version' \
+    && python -m pip check \
     && CLAUDE_SDK_BUNDLED_CLI="$(python -c 'from pathlib import Path; import claude_agent_sdk; print(Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude")')" \
     && test -x "$(command -v claude)" \
     && test -x "$CLAUDE_SDK_BUNDLED_CLI" \

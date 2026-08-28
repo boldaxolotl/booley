@@ -35,6 +35,30 @@ from booley.runtime.agent_backend import (
     _transcript_path_for_attempt,
 )
 
+
+def _capturing_successful_query():
+    from claude_agent_sdk import ResultMessage
+
+    captured_options = []
+
+    async def fake_query(*, prompt, options):
+        captured_options.append(options)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="test-session",
+            total_cost_usd=0,
+            usage={},
+            result="done",
+            structured_output=None,
+        )
+
+    return captured_options, fake_query
+
+
 # ===========================================================================
 # Protocol conformance
 # ===========================================================================
@@ -59,28 +83,10 @@ class TestProtocolConformance:
 class TestClaudeSdkLaunchContract:
     @pytest.mark.asyncio
     async def test_call_delegates_cli_selection_to_sdk(self, monkeypatch, tmp_path):
-        from claude_agent_sdk import ResultMessage
-
         from booley.core.models import AgentCallParams
         from booley.runtime import _claude_backend as cb
 
-        captured_options = []
-
-        async def fake_query(*, prompt, options):
-            captured_options.append(options)
-            yield ResultMessage(
-                subtype="success",
-                duration_ms=1,
-                duration_api_ms=1,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0,
-                usage={},
-                result="done",
-                structured_output=None,
-            )
-
+        captured_options, fake_query = _capturing_successful_query()
         monkeypatch.setattr(cb, "query", fake_query)
 
         result = await ClaudeSDKBackend().call(
@@ -95,30 +101,12 @@ class TestClaudeSdkLaunchContract:
     async def test_backend_swaps_keep_options_independent_and_parent_env_unchanged(
         self, monkeypatch, tmp_path
     ):
-        from claude_agent_sdk import ResultMessage
-
         from booley.core.models import AgentCallParams
         from booley.runtime import _claude_backend as cb
 
         monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
-        captured_options = []
-
-        async def fake_query(*, prompt, options):
-            captured_options.append(options)
-            yield ResultMessage(
-                subtype="success",
-                duration_ms=1,
-                duration_api_ms=1,
-                is_error=False,
-                num_turns=1,
-                session_id="test-session",
-                total_cost_usd=0,
-                usage={},
-                result="done",
-                structured_output=None,
-            )
-
+        captured_options, fake_query = _capturing_successful_query()
         monkeypatch.setattr(cb, "query", fake_query)
         params = AgentCallParams(prompt="p", model="sonnet", cwd=tmp_path)
 
