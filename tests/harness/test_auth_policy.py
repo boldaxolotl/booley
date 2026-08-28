@@ -10,6 +10,7 @@ otherwise silently fall back to — and bill — the subscription.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from booley.core.models import AgentCallParams
 from booley.runtime import auth_token
 
 _TOKEN = "sk-ant-oat01-abcdef123456"
+_TRAFFIC_ENV = {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
 
 
 @pytest.fixture
@@ -32,6 +34,7 @@ def clean_env(tmp_path, monkeypatch):
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
         "BOOLEY_PRIMARY_AUTH",
         "BOOLEY_PROJECT_DIR",
     ):
@@ -94,16 +97,24 @@ class TestClaudeSubscriptionScrub:
         from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(prompt="p", model="claude-sonnet-4-6", cwd=".")
-        return _build_sdk_options(params, None, auth_mode=auth_mode)
+        return _build_sdk_options(params, auth_mode=auth_mode)
+
+    def test_nonessential_traffic_is_disabled_in_child_env(self, clean_env):
+        assert self._options("auto").env == {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+
+    def test_ambient_nonessential_traffic_setting_is_preserved(self, clean_env, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "0")
+        assert self._options("auto").env == {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "0"}
 
     def test_subscription_blanks_the_api_key(self, clean_env):
-        assert self._options("subscription").env == {"ANTHROPIC_API_KEY": ""}
+        assert self._options("subscription").env == {
+            **_TRAFFIC_ENV,
+            "ANTHROPIC_API_KEY": "",
+        }
 
     @pytest.mark.parametrize("mode", ["auto", "api_key"])
-    def test_other_modes_do_not_touch_env(self, mode, clean_env):
-        # getattr: the test stub of ClaudeAgentOptions may lack the attribute
-        # entirely — either way, nothing must be scrubbed outside subscription.
-        assert not getattr(self._options(mode), "env", None)
+    def test_other_modes_do_not_touch_auth_env(self, mode, clean_env):
+        assert self._options(mode).env == _TRAFFIC_ENV
 
 
 class TestClaudeStoredTokenInjection:
@@ -118,39 +129,56 @@ class TestClaudeStoredTokenInjection:
         from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(prompt="p", model="claude-sonnet-4-6", cwd=".")
-        return _build_sdk_options(params, None, auth_mode=auth_mode)
+        return _build_sdk_options(params, auth_mode=auth_mode)
 
     def test_auto_injects_the_stored_token(self, clean_env):
         auth_token.store_token(_TOKEN)
-        assert self._options("auto").env == {auth_token.ENV_VAR: _TOKEN}
+        assert self._options("auto").env == {
+            **_TRAFFIC_ENV,
+            auth_token.ENV_VAR: _TOKEN,
+        }
 
     def test_subscription_injects_alongside_the_api_key_scrub(self, clean_env):
         auth_token.store_token(_TOKEN)
         assert self._options("subscription").env == {
+            **_TRAFFIC_ENV,
             "ANTHROPIC_API_KEY": "",
             auth_token.ENV_VAR: _TOKEN,
         }
 
     def test_api_key_mode_never_injects(self, clean_env):
         auth_token.store_token(_TOKEN)
-        assert not getattr(self._options("api_key"), "env", None)
+        assert self._options("api_key").env == _TRAFFIC_ENV
 
     def test_ambient_env_token_wins_over_stored(self, clean_env, monkeypatch):
         # An exported value already reaches the CLI process env — injecting the
         # stored one would silently override the user's explicit choice.
         auth_token.store_token(_TOKEN)
         monkeypatch.setenv(auth_token.ENV_VAR, "sk-ant-oat01-ambient")
-        assert not getattr(self._options("auto"), "env", None)
+        assert self._options("auto").env == _TRAFFIC_ENV
 
     def test_container_token_seed_is_injected(self, clean_env, monkeypatch):
         # In-container there is no ~/.config/booley store; the spec bind-mounts
         # the host's stored credential at a home sidecar instead.
         home = clean_env / "userhome"
         (home / auth_token.TOKEN_SEED_BASENAME[auth_token.APP_CLAUDE]).write_text(f"{_TOKEN}\n")
-        assert self._options("auto").env == {auth_token.ENV_VAR: _TOKEN}
+        assert self._options("auto").env == {
+            **_TRAFFIC_ENV,
+            auth_token.ENV_VAR: _TOKEN,
+        }
 
 
 class TestClaudeHealthCheck:
+    def test_auto_mode_is_auth_only_and_does_not_mutate_process_env(self, clean_env, monkeypatch):
+        from booley.runtime._claude_backend import ClaudeSDKBackend
+
+        monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
+
+        assert ClaudeSDKBackend(auth_mode="auto").health_check() is None
+        assert "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK" not in os.environ
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in os.environ
+
     def test_api_key_mode_without_key_fails_loud(self, clean_env):
         from booley.runtime._claude_backend import ClaudeSDKBackend
 

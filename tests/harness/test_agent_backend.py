@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import textwrap
 from collections import deque
 from pathlib import Path
@@ -55,37 +56,84 @@ class TestProtocolConformance:
         assert CodexBackend().name == "Codex"
 
 
-class TestCliShimLogging:
-    """SETUP-F-46: spawning the `claude` binary directly IS the supported path
-    off Windows — the node+cli.js shim only exists to dodge cmd.exe argument
-    mangling. WARNing about it on every specialist run was pure noise."""
+class TestClaudeSdkLaunchContract:
+    @pytest.mark.asyncio
+    async def test_call_delegates_cli_selection_to_sdk(self, monkeypatch, tmp_path):
+        from claude_agent_sdk import ResultMessage
 
-    def _resolve(self, monkeypatch, system: str, tmp_path: Path):
+        from booley.core.models import AgentCallParams
         from booley.runtime import _claude_backend as cb
 
-        shim = tmp_path / "claude"
-        shim.write_text("#!/bin/sh\n", encoding="utf-8")
-        monkeypatch.setattr(cb, "_resolve_node_cli_shim", lambda: None)
-        monkeypatch.setattr(cb, "_resolve_legacy_cli_path", lambda: str(shim))
-        monkeypatch.setattr(cb.platform, "system", lambda: system)
-        # The class-level patch guard is a process singleton — reset it so the
-        # resolution path actually runs.
-        monkeypatch.setattr(ClaudeSDKBackend, "_cli_shim_patched", False)
+        captured_options = []
 
-        backend = ClaudeSDKBackend()
-        backend._resolve_cli_shim_once()
-        return backend
+        async def fake_query(*, prompt, options):
+            captured_options.append(options)
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session",
+                total_cost_usd=0,
+                usage={},
+                result="done",
+                structured_output=None,
+            )
 
-    def test_posix_direct_cli_does_not_warn(self, monkeypatch, tmp_path: Path, caplog):
-        with caplog.at_level("WARNING", logger="booley.runtime._claude_backend"):
-            backend = self._resolve(monkeypatch, "Linux", tmp_path)
-        assert backend._cli_path is not None
-        assert caplog.records == []
+        monkeypatch.setattr(cb, "query", fake_query)
 
-    def test_windows_still_warns_about_the_real_risk(self, monkeypatch, tmp_path: Path, caplog):
-        with caplog.at_level("WARNING", logger="booley.runtime._claude_backend"):
-            self._resolve(monkeypatch, "Windows", tmp_path)
-        assert any("cmd.exe metachar" in r.getMessage() for r in caplog.records)
+        result = await ClaudeSDKBackend().call(
+            AgentCallParams(prompt="p", model="sonnet", cwd=tmp_path)
+        )
+
+        assert result.output == "done"
+        assert len(captured_options) == 1
+        assert getattr(captured_options[0], "cli_path", None) is None
+
+    @pytest.mark.asyncio
+    async def test_backend_swaps_keep_options_independent_and_parent_env_unchanged(
+        self, monkeypatch, tmp_path
+    ):
+        from claude_agent_sdk import ResultMessage
+
+        from booley.core.models import AgentCallParams
+        from booley.runtime import _claude_backend as cb
+
+        monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
+        captured_options = []
+
+        async def fake_query(*, prompt, options):
+            captured_options.append(options)
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="test-session",
+                total_cost_usd=0,
+                usage={},
+                result="done",
+                structured_output=None,
+            )
+
+        monkeypatch.setattr(cb, "query", fake_query)
+        params = AgentCallParams(prompt="p", model="sonnet", cwd=tmp_path)
+
+        await ClaudeSDKBackend(auth_mode="subscription").call(params)
+        await ClaudeSDKBackend(auth_mode="api_key").call(params)
+
+        assert len(captured_options) == 2
+        subscription, api_key = captured_options
+        assert subscription is not api_key
+        assert getattr(subscription, "cli_path", None) is None
+        assert getattr(api_key, "cli_path", None) is None
+        assert subscription.env["ANTHROPIC_API_KEY"] == ""
+        assert "ANTHROPIC_API_KEY" not in api_key.env
+        assert "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK" not in os.environ
+        assert "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" not in os.environ
 
 
 # ===========================================================================
@@ -774,7 +822,7 @@ class TestBuildSdkOptionsResume:
             session_id="abc-123",
             resume_session=True,
         )
-        options = _build_sdk_options(params, None)
+        options = _build_sdk_options(params)
         assert options.resume == "abc-123"
         assert options.continue_conversation is True
 
@@ -787,7 +835,7 @@ class TestBuildSdkOptionsResume:
             model="sonnet",
             cwd=str(tmp_path),
         )
-        options = _build_sdk_options(params, None)
+        options = _build_sdk_options(params)
         assert getattr(options, "resume", None) is None
         assert getattr(options, "continue_conversation", False) is False
 
@@ -808,7 +856,7 @@ class TestBuildSdkOptionsMcp:
             cwd=str(tmp_path),
             **kwargs,
         )
-        return _build_sdk_options(params, None)
+        return _build_sdk_options(params)
 
     def test_booley_mcp_server_always_wired(self, tmp_path):
         options = self._options(tmp_path)

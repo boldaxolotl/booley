@@ -70,28 +70,16 @@ if "claude_agent_sdk" not in sys.modules:
     )
     _sdk.ProcessError = type("ProcessError", (Exception,), {})
     _sdk.RateLimitEvent = type("RateLimitEvent", (), {})
-    _sdk.ResultMessage = type("ResultMessage", (), {})
+    _sdk.ResultMessage = type(
+        "ResultMessage",
+        (),
+        {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        },
+    )
     _sdk.UserMessage = type("UserMessage", (), {})
     _sdk.query = AsyncMock()
     sys.modules["claude_agent_sdk"] = _sdk
-
-    # Stub _internal.transport.subprocess_cli for the node.exe monkey-patch
-    _internal = ModuleType("claude_agent_sdk._internal")
-    _transport = ModuleType("claude_agent_sdk._internal.transport")
-    _subprocess_cli = ModuleType("claude_agent_sdk._internal.transport.subprocess_cli")
-    _subprocess_cli.SubprocessCLITransport = type(
-        "SubprocessCLITransport",
-        (),
-        {
-            "_build_command": lambda self: [],
-        },
-    )
-    _sdk._internal = _internal
-    _internal.transport = _transport
-    _transport.subprocess_cli = _subprocess_cli
-    sys.modules["claude_agent_sdk._internal"] = _internal
-    sys.modules["claude_agent_sdk._internal.transport"] = _transport
-    sys.modules["claude_agent_sdk._internal.transport.subprocess_cli"] = _subprocess_cli
 
 from booley.harness.models import (
     AgentResult,

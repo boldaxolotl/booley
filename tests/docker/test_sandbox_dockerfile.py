@@ -20,6 +20,8 @@ def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     assert "CLAUDE_SDK_BUNDLED_CLI=" in install_layer
     assert 'rm -f "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
     assert 'test ! -e "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
+    assert "claude-agent-sdk" in install_layer
+    assert ">= (0, 2, 124)" in install_layer
     assert "ClaudeSDKBackend" not in install_layer
 
 
@@ -46,7 +48,12 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert "COPY src/booley/data/edalize/verible.py" in candidate
     assert "--no-deps" in candidate
     assert '--wheel "$WHEEL"' in candidate
-    assert "ClaudeSDKBackend" in candidate
+    assert "ClaudeSDKBackend" not in candidate
+    assert 'test -x "$(command -v claude)"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.250"' in candidate
+    assert "claude-agent-sdk" in candidate
+    assert ">= (0, 2, 124)" in candidate
+    assert "_bundled" in candidate
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:

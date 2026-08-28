@@ -91,10 +91,12 @@ ENV BOOLEY_BWAVE_BIN=/usr/local/libexec/booley/bwave
 RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
     > /usr/local/bin/bwave && chmod +x /usr/local/bin/bwave
 
-# Candidate-aware runtime sanity stays after installation: the normal npm CLI
-# must win over the SDK's removed private copy, and invariant integrations must
-# remain importable alongside the installed application.
-RUN python -c 'from booley.runtime._claude_backend import ClaudeSDKBackend; backend = ClaudeSDKBackend(); backend._resolve_cli_shim_once(); assert backend._cli_path and "_bundled" not in backend._cli_path' \
+# Candidate-aware runtime sanity stays after installation: the SDK owns CLI
+# discovery, its duplicate bundle remains absent, and the native system CLI
+# plus invariant integrations remain available alongside the application.
+RUN test -x "$(command -v claude)" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.250" \
+    && python -c 'import importlib.metadata; from pathlib import Path; import claude_agent_sdk; version = tuple(map(int, importlib.metadata.version("claude-agent-sdk").split(".")[:3])); bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"; assert version >= (0, 2, 124), version; assert not bundled.exists(), bundled' \
     && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
 
 

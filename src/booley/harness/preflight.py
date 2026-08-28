@@ -172,7 +172,7 @@ def _check_in_progress_ops(git_cwd: str, project_root: Path) -> list[str]:
 
 
 def _check_agent_backend() -> None:
-    """Probe the active agent backend. Log warning if degraded."""
+    """Validate local backend configuration without launching its CLI."""
     try:
         from booley.config.settings import get_backend_config
 
@@ -181,7 +181,10 @@ def _check_agent_backend() -> None:
         if warning:
             logger.warning("Agent backend (%s): %s", cfg.active_backend.name, warning)
         else:
-            logger.debug("Agent backend (%s): OK", cfg.active_backend.name)
+            logger.debug(
+                "Agent backend (%s): configuration OK (CLI startup not exercised)",
+                cfg.active_backend.name,
+            )
     except (ImportError, AttributeError, RuntimeError, OSError) as e:
         logger.warning("Agent backend health check failed: %s", e)
 
