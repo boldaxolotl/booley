@@ -174,9 +174,9 @@ _Avoid_: Custom Tool, plugin, user tool, project tool
 A self-contained unit of hardware development work that carries its own acceptance criteria and lifecycle state, expressed as a Markdown file with YAML frontmatter.
 _Avoid_: task, issue, story
 
-**Ticket Creation Defaults**:
-The complete per-type Criteria and Project-wide successful-run disposition copied into a new Ticket when it is created. They may be overridden for that Ticket, are never read during execution, and never change an existing Ticket.
-_Avoid_: ticket format, ticket preferences, runtime defaults
+**Ticket Creation Guidance**:
+Project-authored prose that guides the Criteria and successful-run disposition chosen while drafting a Ticket. It augments Booley's built-in inference, yields to explicit instructions for that Ticket, is never read during execution, and never changes an existing Ticket.
+_Avoid_: Ticket Creation Defaults, ticket format, user preferences, runtime defaults
 
 **Criterion**:
 A named boolean condition that must be satisfied for ticket completion, bound to a **Target** by name, automatically invalidated when its dependency category (RTL, TB) changes. Tracks whether it was ever met across resets; any Flow requirement not enforced by the Harness itself must be expressed as an explicit Criterion.

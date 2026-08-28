@@ -179,9 +179,9 @@ TESTS_TOML_SKELETON = """\
 """
 
 
-def _ticket_defaults_skeleton() -> str:
-    """Read the inactive Ticket Creation Defaults template shipped with the skill."""
-    template = skills_dir() / "booley-ticket-create" / "TICKET_DEFAULTS_TEMPLATE.md"
+def _ticket_creation_skeleton() -> str:
+    """Read the free-form Ticket Creation Guidance template shipped with the skill."""
+    template = skills_dir() / "booley-ticket-create" / "TICKET_CREATION_TEMPLATE.md"
     return template.read_text(encoding="utf-8")
 
 
@@ -233,14 +233,15 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     """Create missing config skeletons without guessing project-specific values."""
     # configs.toml is deliberately absent: the legacy registry was removed by
     # ADR 0022 (.core owns design-description) and doctor fails on an empty one.
-    # tests.toml carries verification-intent; ticket_defaults.md is inactive
-    # agent guidance. Both are scaffolded alongside booley.toml without guessing
-    # Project-specific values.
+    # tests.toml carries verification-intent; ticket_creation.md is Project-owned
+    # agent guidance. Existing ticket_defaults.md is the legacy fallback filename,
+    # so its presence suppresses the new scaffold rather than shadowing user content.
     skeletons = {
         "booley.toml": BOOLEY_TOML_SKELETON,
         "tests.toml": TESTS_TOML_SKELETON,
-        "ticket_defaults.md": _ticket_defaults_skeleton(),
     }
+    if not (project_dir / "ticket_defaults.md").exists():
+        skeletons["ticket_creation.md"] = _ticket_creation_skeleton()
     added = [
         name
         for name, body in skeletons.items()

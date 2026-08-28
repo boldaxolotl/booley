@@ -3,7 +3,7 @@
 Runs the FULL init flow twice over a scratch git repo, hand-editing every
 scaffolded file in between, and asserts the ownership contract file by file:
 
-- user-owned skeletons (booley.toml, tests.toml, ticket_defaults.md, FUSESOC_IGNORE,
+- user-owned skeletons (booley.toml, tests.toml, ticket_creation.md, FUSESOC_IGNORE,
   .booley_project/.gitignore) keep their hand edits, and
 - fully-managed files (vendored hook scripts, .git/hooks delegators,
   devcontainer.json) come back byte-identical to the first run — hand edits
@@ -123,7 +123,7 @@ class TestFullInitRerun:
         user_owned = [
             pdir / "booley.toml",
             pdir / "tests.toml",
-            pdir / "ticket_defaults.md",
+            pdir / "ticket_creation.md",
             pdir / "FUSESOC_IGNORE",
         ]
         for f in user_owned:
@@ -168,31 +168,45 @@ class TestFullInitRerun:
                 f"managed file {f} not byte-stable across init re-runs"
             )
 
-    def test_missing_ticket_defaults_is_backfilled_without_touching_other_config(self, repo: Path):
+    def test_missing_ticket_creation_is_backfilled_without_touching_other_config(self, repo: Path):
         assert _run_full_init(repo) in (0, 2)
         pdir = repo / ".booley_project"
-        defaults = pdir / "ticket_defaults.md"
-        defaults.unlink()
+        guidance = pdir / "ticket_creation.md"
+        guidance.unlink()
         booley_before = (pdir / "booley.toml").read_bytes()
         tests_before = (pdir / "tests.toml").read_bytes()
 
         assert _run_full_init(repo) in (0, 2)
 
-        assert defaults.read_text(encoding="utf-8").startswith("# Ticket Creation Defaults")
+        assert guidance.read_text(encoding="utf-8").startswith("# Ticket Creation Guidance")
         assert (pdir / "booley.toml").read_bytes() == booley_before
         assert (pdir / "tests.toml").read_bytes() == tests_before
 
-    def test_check_only_reports_ticket_defaults_backfill_without_writing(self, repo: Path, capsys):
+    def test_check_only_reports_ticket_creation_backfill_without_writing(self, repo: Path, capsys):
         assert _run_full_init(repo) in (0, 2)
         pdir = repo / ".booley_project"
-        defaults = pdir / "ticket_defaults.md"
-        defaults.unlink()
+        guidance = pdir / "ticket_creation.md"
+        guidance.unlink()
 
         ctx = InitContext(project_root=repo, check_only=True)
         init_cmd._backfill_config_skeletons(pdir, ctx)
 
-        assert not defaults.exists()
+        assert not guidance.exists()
         assert "would add 1 config skeleton file" in capsys.readouterr().out
+
+    def test_legacy_ticket_defaults_suppresses_new_guidance_scaffold(self, repo: Path):
+        assert _run_full_init(repo) in (0, 2)
+        pdir = repo / ".booley_project"
+        guidance = pdir / "ticket_creation.md"
+        guidance.unlink()
+        legacy = pdir / "ticket_defaults.md"
+        legacy_text = "# Existing project guidance\n\nAlways run the full regression.\n"
+        legacy.write_text(legacy_text, encoding="utf-8")
+
+        assert _run_full_init(repo) in (0, 2)
+
+        assert not guidance.exists()
+        assert legacy.read_text(encoding="utf-8") == legacy_text
 
     def test_step_numbers_are_contiguous_end_to_end(self, repo: Path, capsys):
         """F-2: the emitted sequence used to read 1, 2, 3, 5, 8, 9, 9b, 10,
