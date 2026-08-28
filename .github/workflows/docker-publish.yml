@@ -133,9 +133,11 @@ jobs:
       - name: Read version
         id: version
         run: |
-          echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
-          echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')" >> "$GITHUB_OUTPUT"
-          echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$(cat VERSION)"
+            echo "payload_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
+            echo "recipe_fingerprint=$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.runtime.image_provenance import resolve_recipe_fingerprint; print(resolve_recipe_fingerprint((Path("src/booley/data/docker/Dockerfile.riscv"),)))')"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
