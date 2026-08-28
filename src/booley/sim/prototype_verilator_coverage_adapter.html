@@ -117,10 +117,10 @@
 <main>
   <span class="prototype-label">Throwaway prototype</span>
   <h1>Verilator coverage adapter decision lab</h1>
-  <p class="question"><strong>Question:</strong> Does one deep adapter operation give the Simulation Flow enough leverage while keeping Verilator coverage mechanics local—across instrumentation, generated/Cocotb/custom mains, reset windows, unique raw files, parsing, native-merge verification, freshness, and collector-specific failures?</p>
-  <p class="muted">This demo models a candidate interface; it does not implement coverage. Drive the awkward cases and look for a fact the Simulation Flow still needs to know, or a policy the adapter has swallowed that belongs elsewhere.</p>
+  <p class="question"><strong>Validated answer:</strong> One deep adapter operation gives the Simulation Flow the required leverage while keeping Verilator coverage mechanics local—across instrumentation, generated/Cocotb/custom mains, Coverage Windows, unique raw files, parsing, native-merge verification, freshness, and collector-specific failures.</p>
+  <p class="muted">This demo captures the confirmed interface; it does not implement coverage. The walkthroughs show its invariants and deliberate failure modes.</p>
 
-  <h2>Candidate interface</h2>
+  <h2>Confirmed interface</h2>
   <div class="grid">
     <div class="card">
       <h3>What the Simulation Flow calls</h3>
@@ -129,7 +129,7 @@
     execution: SimulationExecutionPort,
 ) -&gt; CoverageCollectionResult</pre>
       <ul class="compact">
-        <li><code>request</code>: resolved Target, selected tests, report-artifact root, reset window, and trace dimension. Coverage Criterion policy is deliberately absent.</li>
+        <li><code>request</code>: resolved Target, selected tests, report-artifact root, and trace dimension. The Target owns its Coverage Window; Coverage Criterion policy is deliberately absent.</li>
         <li><code>execution</code>: the existing generic build/run capability; the adapter chooses the variant and run envelopes.</li>
         <li><code>result</code>: simulation verdicts, collection status, native capability facts, collector errors, and durable artifact pointers.</li>
       </ul>
@@ -138,7 +138,7 @@
       <h3>What remains private</h3>
       <ul class="compact">
         <li>Explicit Verilator instrumentation flags and per-instance enablement</li>
-        <li>Generated-main, Cocotb, and custom-main write/reset hooks</li>
+        <li>Generated-main, per-process Cocotb, and custom-main write/Window hooks</li>
         <li>Unique raw database names, freshness stamps, and queryability checks</li>
         <li>Version/header-gated native parsing and unknown record capabilities</li>
         <li>Native merge invocation and independent merge-equivalence verification</li>
@@ -163,10 +163,16 @@
               <option value="custom-missing">Custom main without hooks</option>
             </select>
           </label>
-          <label>Reset window
-            <select id="reset-window">
+          <label>Target Coverage Window
+            <select id="coverage-window">
+              <option value="whole-run">Whole run (default)</option>
               <option value="post-reset">Post-reset only</option>
-              <option value="whole-run">Initialization and reset included</option>
+            </select>
+          </label>
+          <label>Window Hook capability
+            <select id="window-hook">
+              <option value="false">Not declared</option>
+              <option value="true">Declared</option>
             </select>
           </label>
           <label>Build dimension
@@ -219,30 +225,22 @@ const CoverageAdapterModel = (() => {
     generated: {
       label: "generated main",
       writes: true,
-      resetHook: false,
-      writeMechanism: "+verilator+coverage+file+…",
-      resetMechanism: "no project reset-release hook declared"
+      writeMechanism: "+verilator+coverage+file+…"
     },
     cocotb: {
       label: "Cocotb main",
       writes: true,
-      resetHook: false,
-      writeMechanism: "Cocotb VM_COVERAGE wrap-up + unique file plusarg",
-      resetMechanism: "no project reset-release hook declared"
+      writeMechanism: "one Cocotb process per test + VM_COVERAGE wrap-up"
     },
     "custom-ready": {
       label: "custom main with declared hooks",
       writes: true,
-      resetHook: true,
-      writeMechanism: "declared custom-main write hook",
-      resetMechanism: "declared custom-main reset-release hook"
+      writeMechanism: "booley_coverage_write() to the adapter-selected path"
     },
     "custom-missing": {
       label: "custom main without declared hooks",
       writes: false,
-      resetHook: false,
-      writeMechanism: "none declared",
-      resetMechanism: "none declared"
+      writeMechanism: "none declared"
     }
   };
 
@@ -261,7 +259,8 @@ const CoverageAdapterModel = (() => {
         target: "sim_cpu",
         edaTool: config.edaTool || "verilator",
         harness: config.harness || "generated",
-        resetWindow: config.resetWindow || "post-reset",
+        coverageWindow: config.coverageWindow || "whole-run",
+        windowHookDeclared: Boolean(config.windowHookDeclared),
         trace: Boolean(config.trace),
         tests: Array.from({length: tests}, (_, index) => `test_${index + 1}`),
         artifactRoot: "flow-reports/sim_sim_cpu/artifacts/coverage"
@@ -269,7 +268,7 @@ const CoverageAdapterModel = (() => {
       publicResult: {
         collectionStatus: "not started",
         simulationVerdicts: [],
-        resetSemantics: "not established",
+        windowSemantics: "not established",
         capabilities: [],
         errors: [],
         artifacts: []
@@ -280,7 +279,9 @@ const CoverageAdapterModel = (() => {
         harnessPath: "not inspected",
         currentTest: null,
         nextTestIndex: 0,
-        runResetZeroed: false,
+        coverageWindowStarted: false,
+        windowHookCalls: 0,
+        collectionTainted: false,
         rawFiles: [],
         parsedFiles: [],
         nativeMerge: "not run",
@@ -291,12 +292,34 @@ const CoverageAdapterModel = (() => {
     };
   }
 
+  function syncRetainedArtifacts(state) {
+    const artifacts = [];
+    state.privateState.rawFiles
+      .filter(file => file.freshness === "fresh")
+      .forEach(file => artifacts.push({kind: "raw", path: file.path}));
+    state.privateState.rawFiles
+      .filter(file => file.windowEvidence && file.windowEvidence.fresh)
+      .forEach(file => artifacts.push({kind: "window-evidence", path: file.windowEvidence.path}));
+    if (state.privateState.nativeMerge === "written") {
+      artifacts.push({kind: "native-merged", path: `${state.request.artifactRoot}/merged/coverage.dat`});
+    }
+    state.publicResult.artifacts = artifacts;
+  }
+
   function addError(state, code, message) {
     state.publicResult.errors.push({code, message});
     state.publicResult.collectionStatus = "collector error";
     state.phase = "error";
     state.terminal = true;
     state.events.push(`${code}: ${message}`);
+    syncRetainedArtifacts(state);
+  }
+
+  function deferErrorUntilSimulationEnds(state, code, message) {
+    state.publicResult.errors.push({code, message});
+    state.publicResult.collectionStatus = "collector error; simulation still running";
+    state.privateState.collectionTainted = true;
+    state.events.push(`${code}: ${message} Simulation continues so its verdict and artifacts remain observable.`);
   }
 
   function activeRaw(state) {
@@ -328,17 +351,17 @@ const CoverageAdapterModel = (() => {
         const harness = harnessFacts[state.request.harness];
         state.privateState.harnessPath = harness.label;
         if (!harness.writes) {
-          addError(state, "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED", "The custom main declares no native coverage write hook. No simulation or build was started.");
+          addError(state, "COV_CUSTOM_MAIN_WRITE_HOOK_REQUIRED", "The custom main does not declare booley_coverage_write(). No simulation or build was started.");
           break;
         }
-        if (state.request.resetWindow === "post-reset" && !harness.resetHook) {
-          addError(state, "COV_RESET_HOOK_REQUIRED", "Post-reset coverage was requested, but this harness cannot zero counters at deterministic reset release.");
+        if (state.request.coverageWindow === "post-reset" && !state.request.windowHookDeclared) {
+          addError(state, "COV_WINDOW_HOOK_UNDECLARED", "The Target requests a post-reset Coverage Window but does not declare the booley_coverage_start() capability.");
           break;
         }
         state.privateState.buildVariant = state.request.trace ? "trace-coverage" : "coverage";
         state.privateState.instrumentation = privateInstrumentation.slice();
-        state.publicResult.resetSemantics = state.request.resetWindow === "post-reset"
-          ? "counters begin at deterministic reset release"
+        state.publicResult.windowSemantics = state.request.coverageWindow === "post-reset"
+          ? "booley_coverage_start() establishes the post-reset Coverage Window"
           : "initialization and reset activity are included";
         state.publicResult.collectionStatus = "planned";
         state.phase = "planned";
@@ -362,29 +385,44 @@ const CoverageAdapterModel = (() => {
         const test = state.request.tests[index];
         const raw = `${state.request.artifactRoot}/raw/${String(index + 1).padStart(3, '0')}-${test}.dat`;
         state.privateState.currentTest = test;
-        state.privateState.runResetZeroed = state.request.resetWindow === "whole-run";
-        state.privateState.rawFiles.push({test, path: raw, freshness: "reserved and absent", queryable: "unchecked", count: 0});
+        state.privateState.coverageWindowStarted = state.request.coverageWindow === "whole-run";
+        state.privateState.windowHookCalls = 0;
+        state.privateState.collectionTainted = false;
+        state.privateState.rawFiles.push({
+          test,
+          path: raw,
+          freshness: "reserved and absent",
+          queryable: "unchecked",
+          count: 0,
+          windowEvidence: state.request.coverageWindow === "post-reset"
+            ? {path: `${state.request.artifactRoot}/windows/${String(index + 1).padStart(3, '0')}-${test}.json`, fresh: false, calls: 0}
+            : null
+        });
         state.phase = "running";
         state.publicResult.collectionStatus = "collecting";
         state.events.push(`Adapter reserved unique raw path for ${test}, proved it absent, and selected ${harnessFacts[state.request.harness].writeMechanism}.`);
         break;
       }
-      case "RELEASE_RESET": {
+      case "START_COVERAGE_WINDOW": {
         if (state.phase !== "running") break;
-        if (state.request.resetWindow === "whole-run") {
-          state.events.push("Reset-release signal observed; whole-run policy intentionally keeps earlier counts.");
+        if (state.request.coverageWindow === "whole-run") {
+          state.events.push("Whole-run collection needs no Coverage Window Hook; initialization and reset counts remain included.");
         } else {
-          state.privateState.runResetZeroed = true;
-          state.events.push(`Counters zeroed through ${harnessFacts[state.request.harness].resetMechanism}.`);
+          const raw = activeRaw(state);
+          state.privateState.windowHookCalls += 1;
+          raw.windowEvidence.fresh = true;
+          raw.windowEvidence.calls = state.privateState.windowHookCalls;
+          if (state.privateState.windowHookCalls > 1) {
+            deferErrorUntilSimulationEnds(state, "COV_WINDOW_HOOK_MULTIPLE", "booley_coverage_start() ran more than once in this simulator process; earlier functional coverage was discarded.");
+            break;
+          }
+          state.privateState.coverageWindowStarted = true;
+          state.events.push("booley_coverage_start() atomically zeroed counters and wrote fresh private Window evidence.");
         }
         break;
       }
       case "FINISH_TEST": {
         if (state.phase !== "running") break;
-        if (state.request.resetWindow === "post-reset" && !state.privateState.runResetZeroed) {
-          addError(state, "COV_RESET_WINDOW_NOT_ESTABLISHED", "The test finished without evidence that counters were zeroed at reset release.");
-          break;
-        }
         const raw = activeRaw(state);
         const verdict = action.verdict || "pass";
         state.publicResult.simulationVerdicts.push({test: state.privateState.currentTest, verdict});
@@ -396,6 +434,18 @@ const CoverageAdapterModel = (() => {
         raw.count = action.raw === "empty" ? 0 : 17 + state.privateState.nextTestIndex;
         if (raw.freshness !== "fresh") {
           addError(state, "COV_RAW_FILE_STALE", `Simulation ${verdict} is preserved, but the native database was not written by this run.`);
+          break;
+        }
+        if (state.request.coverageWindow === "post-reset" && !state.privateState.coverageWindowStarted) {
+          addError(state, "COV_WINDOW_HOOK_MISSING", "The test finished without fresh evidence that booley_coverage_start() ran exactly once.");
+          break;
+        }
+        if (state.privateState.collectionTainted) {
+          state.phase = "error";
+          state.terminal = true;
+          state.publicResult.collectionStatus = "collector error";
+          state.events.push(`${state.privateState.currentTest} ended ${verdict}; its fresh native database and simulation verdict were retained despite the collector error.`);
+          syncRetainedArtifacts(state);
           break;
         }
         state.phase = "raw-ready";
@@ -434,6 +484,9 @@ const CoverageAdapterModel = (() => {
         state.privateState.nativeMerge = "written";
         state.publicResult.artifacts = [
           ...state.privateState.rawFiles.map(file => ({kind: "raw", path: file.path})),
+          ...state.privateState.rawFiles
+            .filter(file => file.windowEvidence)
+            .map(file => ({kind: "window-evidence", path: file.windowEvidence.path})),
           {kind: "native-merged", path: `${state.request.artifactRoot}/merged/coverage.dat`}
         ];
         state.privateState.mergeVerification = action.match === false ? "mismatch" : "equivalent";
@@ -461,7 +514,7 @@ const actionDefinitions = [
   ["Plan", {type: "PLAN"}],
   ["Build variant", {type: "BUILD"}],
   ["Start next test", {type: "START_TEST"}],
-  ["Release reset", {type: "RELEASE_RESET"}],
+  ["Call booley_coverage_start()", {type: "START_COVERAGE_WINDOW"}],
   ["Finish PASS", {type: "FINISH_TEST", verdict: "pass"}],
   ["Finish FAIL", {type: "FINISH_TEST", verdict: "fail"}],
   ["Finish, raw missing", {type: "FINISH_TEST", verdict: "pass", raw: "missing"}],
@@ -476,65 +529,97 @@ const scenarios = [
   {
     name: "Generated happy path",
     intro: "Two generated-main tests, whole-run counts, and no tracing. Watch the adapter reserve and validate one raw database per test before it performs a verified native merge.",
-    config: {harness: "generated", resetWindow: "whole-run", trace: false, criterionPresent: true, tests: 2},
+    config: {harness: "generated", coverageWindow: "whole-run", windowHookDeclared: false, trace: false, criterionPresent: true, tests: 2},
     steps: [
       ["Plan collection", {type: "PLAN"}], ["Build isolated variant", {type: "BUILD"}],
-      ["Start test 1", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Start test 1", {type: "START_TEST"}],
       ["Finish test 1", {type: "FINISH_TEST", verdict: "pass"}], ["Parse test 1", {type: "PARSE"}],
-      ["Start test 2", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Start test 2", {type: "START_TEST"}],
       ["Finish test 2", {type: "FINISH_TEST", verdict: "pass"}], ["Parse test 2", {type: "PARSE"}],
       ["Merge and verify", {type: "MERGE"}]
     ],
-    verdict: "Question to answer: Is the single collect operation deep enough, or does the Flow need a public prepare/finalize lifecycle?"
+    verdict: "Confirmed: Simulation Flow calls one collect operation; the adapter keeps its prepare/run/finalize lifecycle private."
   },
   {
     name: "Post-reset needs a hook",
-    intro: "A generated main can write coverage at completion, but it does not inherently know the Project's reset-release boundary. Post-reset collection must fail before build unless that hook is declared.",
-    config: {harness: "generated", resetWindow: "post-reset", trace: false, criterionPresent: true, tests: 1},
+    intro: "A Target requests post-reset coverage without declaring the stable Coverage Window Hook. The adapter must reject it before build and never fall back to whole-run collection.",
+    config: {harness: "generated", coverageWindow: "post-reset", windowHookDeclared: false, trace: false, criterionPresent: true, tests: 1},
     steps: [["Plan post-reset collection", {type: "PLAN"}]],
-    verdict: "Question to answer: Where should a Project declare the deterministic reset-release hook that the adapter consumes?"
+    verdict: "Confirmed: the Target owns its Coverage Window and explicitly declares post-reset hook support."
+  },
+  {
+    name: "Post-reset hook succeeds",
+    intro: "The Target declares post-reset support and calls booley_coverage_start() once after reset. The hook zeroes counters and writes private freshness evidence atomically.",
+    config: {harness: "generated", coverageWindow: "post-reset", windowHookDeclared: true, trace: false, criterionPresent: true, tests: 1},
+    steps: [
+      ["Plan", {type: "PLAN"}], ["Build", {type: "BUILD"}], ["Start test", {type: "START_TEST"}],
+      ["Call Window Hook", {type: "START_COVERAGE_WINDOW"}], ["Finish test", {type: "FINISH_TEST", verdict: "pass"}],
+      ["Parse native data", {type: "PARSE"}], ["Merge and verify", {type: "MERGE"}]
+    ],
+    verdict: "Confirmed: exactly one hook call establishes the post-reset Coverage Window and leaves a durable sidecar record."
+  },
+  {
+    name: "Duplicate hook rejected",
+    intro: "Calling the Coverage Window Hook twice would erase already-collected functional activity. The second call is therefore a collector error.",
+    config: {harness: "generated", coverageWindow: "post-reset", windowHookDeclared: true, trace: false, criterionPresent: true, tests: 1},
+    steps: [
+      ["Plan", {type: "PLAN"}], ["Build", {type: "BUILD"}], ["Start test", {type: "START_TEST"}],
+      ["Call Window Hook", {type: "START_COVERAGE_WINDOW"}], ["Call it again", {type: "START_COVERAGE_WINDOW"}],
+      ["Let simulation finish", {type: "FINISH_TEST", verdict: "pass"}]
+    ],
+    verdict: "Confirmed: zero or multiple hook calls are collector ERRORs; the simulation verdict remains independent."
+  },
+  {
+    name: "Missing hook at runtime",
+    intro: "The Target declares post-reset support but never calls booley_coverage_start(). A fresh raw database cannot prove post-reset semantics by itself.",
+    config: {harness: "generated", coverageWindow: "post-reset", windowHookDeclared: true, trace: false, criterionPresent: true, tests: 1},
+    steps: [
+      ["Plan", {type: "PLAN"}], ["Build", {type: "BUILD"}], ["Start test", {type: "START_TEST"}],
+      ["Finish without Window Hook", {type: "FINISH_TEST", verdict: "pass"}]
+    ],
+    verdict: "Confirmed: missing fresh hook evidence is a collector ERROR while the simulation PASS and raw artifact remain truthful."
   },
   {
     name: "Cocotb, ungated + trace",
-    intro: "Coverage collection is requested without a Coverage Criterion and alongside tracing. It must remain valid, ungated, and isolated in a trace+coverage build variant.",
-    config: {harness: "cocotb", resetWindow: "whole-run", trace: true, criterionPresent: false, tests: 1},
+    intro: "Coverage collection is requested without a Coverage Criterion and alongside tracing. Each selected Cocotb test gets its own simulator process, raw database, and trace+coverage build variant.",
+    config: {harness: "cocotb", coverageWindow: "whole-run", windowHookDeclared: false, trace: true, criterionPresent: false, tests: 1},
     steps: [
       ["Plan collection", {type: "PLAN"}], ["Build trace+coverage", {type: "BUILD"}],
-      ["Start Cocotb test", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Start Cocotb process", {type: "START_TEST"}],
       ["Finish test", {type: "FINISH_TEST", verdict: "pass"}], ["Parse native data", {type: "PARSE"}],
       ["Merge and verify", {type: "MERGE"}]
     ],
-    verdict: "Question to answer: Does collection-without-Criterion belong in this request, or should gating policy be entirely downstream?"
+    verdict: "Confirmed: Criteria remain downstream, and coverage disables Cocotb batching to preserve per-test incidence."
   },
   {
     name: "Custom main rejected early",
-    intro: "A custom C++ main declares neither a native-write hook nor a reset-release hook. The adapter should reject it before building or simulating rather than discover the contract gap after a long run.",
-    config: {harness: "custom-missing", resetWindow: "post-reset", trace: false, criterionPresent: true, tests: 1},
+    intro: "A custom C++ main does not declare booley_coverage_write(). The adapter rejects it before building or simulating rather than guessing from generated files.",
+    config: {harness: "custom-missing", coverageWindow: "whole-run", windowHookDeclared: false, trace: false, criterionPresent: true, tests: 1},
     steps: [["Plan collection", {type: "PLAN"}]],
-    verdict: "Question to answer: Should custom-main capability be an explicit Target declaration, or should the adapter probe generated build metadata?"
+    verdict: "Confirmed: custom-main support is declared explicitly on the Target and verified through fresh native output."
   },
   {
     name: "PASS but no fresh raw data",
     intro: "The simulation passes, but no current native database appears. The simulation verdict must survive unchanged while coverage collection fails with a collector-specific error.",
-    config: {harness: "generated", resetWindow: "whole-run", trace: false, criterionPresent: true, tests: 1},
+    config: {harness: "generated", coverageWindow: "whole-run", windowHookDeclared: false, trace: false, criterionPresent: true, tests: 1},
     steps: [
       ["Plan collection", {type: "PLAN"}], ["Build variant", {type: "BUILD"}],
-      ["Start test", {type: "START_TEST"}], ["Observe reset release", {type: "RELEASE_RESET"}],
+      ["Start test", {type: "START_TEST"}],
       ["Finish without raw", {type: "FINISH_TEST", verdict: "pass", raw: "missing"}]
     ],
-    verdict: "Question to answer: Should a coverage collector error make the whole Simulation Flow ERROR while retaining the independent simulation PASS?"
+    verdict: "Confirmed: requested coverage returns Flow ERROR while preserving the independent simulation PASS."
   },
   {
     name: "Merge mismatch",
     intro: "Both tests produce parseable raw data, but Verilator's native merge disagrees with the independently derived roll-up. Evidence stays durable and scoring fails closed.",
-    config: {harness: "custom-ready", resetWindow: "whole-run", trace: false, criterionPresent: true, tests: 2},
+    config: {harness: "custom-ready", coverageWindow: "whole-run", windowHookDeclared: false, trace: false, criterionPresent: true, tests: 2},
     steps: [
       ["Plan", {type: "PLAN"}], ["Build", {type: "BUILD"}],
       ["Start test 1", {type: "START_TEST"}], ["Finish test 1", {type: "FINISH_TEST", verdict: "pass"}], ["Parse test 1", {type: "PARSE"}],
       ["Start test 2", {type: "START_TEST"}], ["Finish test 2", {type: "FINISH_TEST", verdict: "fail"}], ["Parse test 2", {type: "PARSE"}],
       ["Expose mismatch", {type: "MERGE", match: false}]
     ],
-    verdict: "Question to answer: Is merge verification part of collection completeness, and should a failed test's coverage remain in the campaign?"
+    verdict: "Confirmed: merge verification is mandatory, and fresh queryable coverage from a failing test remains in the campaign."
   }
 ];
 
@@ -561,14 +646,20 @@ function renderState() {
   const harness = CoverageAdapterModel.harnessFacts[state.request.harness];
   const publicErrors = state.publicResult.errors.map(error => `${error.code}: ${error.message}`);
   const artifacts = state.publicResult.artifacts.map(artifact => `${artifact.kind}: ${artifact.path}`);
-  const raw = state.privateState.rawFiles.map(file => `${file.test}: ${file.freshness}, queryable ${file.queryable} — ${file.path}`);
+  const raw = state.privateState.rawFiles.map(file => {
+    const evidence = file.windowEvidence
+      ? `; Window evidence ${file.windowEvidence.fresh ? 'fresh' : 'missing'}, ${file.windowEvidence.calls} call(s)`
+      : "; whole-run Window needs no hook evidence";
+    return `${file.test}: ${file.freshness}, queryable ${file.queryable}${evidence} — ${file.path}`;
+  });
   document.getElementById("state").innerHTML = `
     <div class="state-grid">
       <dl class="state-field"><dt>Adapter phase</dt><dd class="${statusClass(state.phase)}">${esc(state.phase)}</dd></dl>
       <dl class="state-field"><dt>Public collection status</dt><dd class="${statusClass(state.publicResult.collectionStatus)}">${esc(state.publicResult.collectionStatus)}</dd></dl>
       <dl class="state-field"><dt>Target / harness</dt><dd>${esc(state.request.target)} / ${esc(harness.label)}</dd></dl>
       <dl class="state-field"><dt>Build variant</dt><dd>${esc(state.privateState.buildVariant)}</dd></dl>
-      <dl class="state-field"><dt>Reset semantics</dt><dd>${esc(state.publicResult.resetSemantics)}</dd></dl>
+      <dl class="state-field"><dt>Target Coverage Window</dt><dd>${esc(state.request.coverageWindow)} / hook ${state.request.windowHookDeclared ? 'declared' : 'not declared'}</dd></dl>
+      <dl class="state-field"><dt>Window semantics</dt><dd>${esc(state.publicResult.windowSemantics)}</dd></dl>
       <dl class="state-field"><dt>Criterion relationship</dt><dd>${state.flowContext.criterionPresent ? "Coverage Criterion evaluates downstream; adapter is unaware" : "collection only; ungated; adapter result is unchanged"}</dd></dl>
       <dl class="state-field wide"><dt>Simulation verdicts returned to Flow</dt><dd>${list(state.publicResult.simulationVerdicts)}</dd></dl>
       <dl class="state-field wide"><dt>Raw native databases (adapter-private lifecycle)</dt><dd>${list(raw)}</dd></dl>
@@ -606,7 +697,8 @@ function renderActions() {
 function configurationFromControls() {
   return {
     harness: document.getElementById("harness").value,
-    resetWindow: document.getElementById("reset-window").value,
+    coverageWindow: document.getElementById("coverage-window").value,
+    windowHookDeclared: document.getElementById("window-hook").value === "true",
     trace: document.getElementById("trace").value === "true",
     criterionPresent: document.getElementById("criterion").value === "true",
     tests: Number(document.getElementById("tests").value)
