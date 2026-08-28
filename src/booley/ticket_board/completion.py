@@ -620,7 +620,7 @@ def _execute_completion(
 
 
 def complete_review_ticket(tio: Any, slug: str, effective_policy: Any) -> bool:
-    """Prepare, publish, and approve one schema-3 review Ticket.
+    """Prepare, publish, and approve one sealed review Ticket.
 
     The journal makes calls idempotent after an interruption.  A retry reuses
     pinned candidates, recognizes refs already published, and continues toward

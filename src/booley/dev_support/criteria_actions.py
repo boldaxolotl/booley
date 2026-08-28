@@ -39,8 +39,17 @@ def criterion_family(key: str) -> str | None:
     return max(matches, key=len, default=None)
 
 
-def criterion_target(key: str, entry: Any, family: str) -> str | None:
+def criterion_target(  # noqa: PLR0911 - ordered ownership and evidence fallbacks
+    key: str, entry: Any, family: str
+) -> str | None:
     """Resolve a criterion's exact Target from params, evidence, or its key."""
+    try:
+        _command, per_target = _endpoint_contracts()[family]
+    except (KeyError, TypeError):
+        return None
+    if not per_target:
+        return None
+
     params = getattr(entry, "params", {}) or {}
     target = params.get("target")
     if isinstance(target, str) and target:
@@ -53,11 +62,7 @@ def criterion_target(key: str, entry: Any, family: str) -> str | None:
         if isinstance(target, str) and target:
             return target
 
-    try:
-        _command, per_target = _endpoint_contracts()[family]
-    except (KeyError, TypeError):
-        return None
-    if not per_target or not key.startswith(f"{family}_"):
+    if not key.startswith(f"{family}_"):
         return None
 
     # Structured simulation keys contain the TB path before the Target, so

@@ -45,11 +45,11 @@ def test_qualified_target_uses_declared_icarus_tool(tmp_path: Path) -> None:
     flow = object.__new__(SimulateFlow)
     flow._args = MagicMock(work_dir=tmp_path)
     with patch(
-        "booley.flows.sim.flow.fusesoc_registry.resolve_ref",
+        "booley.flows.sim.flow.select_target",
         return_value=MagicMock(eda_tool="icarus"),
-    ) as resolve:
+    ) as select:
         assert flow._eda_tool_for_target("::fifo:0#sim") == "icarus"
-    resolve.assert_called_once_with(tmp_path, "::fifo:0#sim")
+    select.assert_called_once_with(tmp_path, "::fifo:0#sim", for_flow="sim")
 
 
 def test_human_display_caps_targets_at_three():
@@ -2818,6 +2818,31 @@ class TestBuildContextReporting:
         report = flow._format_summary([passing], [], True)
         assert "build: " not in report
         assert "fileset:" not in report
+
+    def test_report_fileset_uses_condition_selected_inputs(self, tmp_path: Path):
+        (tmp_path / "conditional.core").write_text(
+            "CAPI=2:\n"
+            "name: acme:ip:conditional:1.0\n"
+            "filesets:\n"
+            "  sources:\n"
+            "    files:\n"
+            "      - tool_verilator ? (rtl/selected.sv)\n"
+            "      - tool_icarus ? (rtl/unselected.sv)\n"
+            "      - tb/test.sv: {tags: [tb]}\n"
+            "targets:\n"
+            "  sim:\n"
+            "    flow: sim\n"
+            "    flow_options: {tool: verilator}\n"
+            "    filesets: [sources]\n"
+            "    toplevel: test\n",
+            encoding="utf-8",
+        )
+        flow = _make_flow(tmp_path, config="sim", seed_core=False)
+
+        assert flow._fileset_for_report("sim") == {
+            "rtl": ["rtl/selected.sv"],
+            "tb": ["tb/test.sv"],
+        }
 
 
 # ---------------------------------------------------------------------------

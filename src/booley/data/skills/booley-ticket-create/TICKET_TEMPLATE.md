@@ -18,12 +18,12 @@ priority: medium
 
 # -- Seal fields (written only by contract-seal; never author these) --------
 target_contract:
-  schema: 3
+  schema: 4
   outer_sha: <exact outer contract commit>
   project_sha: <exact paired project-data commit or empty>
   surface_digest: <normalized Target/control-plane SHA-256>
   targets: [<every criterion Target>]
-  bindings: [<canonical directed criterion Target bindings>]
+  bindings: [<criterion Target identities plus exact callable selectors>]
   participants: [<sealed outer and optional project repository routing>]
   surface_entries: [<normalized Target/control-plane manifest>]
 base_sha: <identical to target_contract.outer_sha>
@@ -83,7 +83,7 @@ criteria:
 
 # -- Runtime fields are stamped by Booley or stored in logs/<slug>/.runtime/progress.json --
 # feature_branch, created
-# integration_base is unsupported; schema-3 contracts seal destination refs.
+# integration_base is unsupported; schema-4 contracts seal destination refs.
 # current_tool, tools_completed, last_update, blocked_reason, blocked_tool
 ---
 

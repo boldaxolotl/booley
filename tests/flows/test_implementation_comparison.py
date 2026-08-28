@@ -38,7 +38,7 @@ def test_invalid_persisted_baseline_fails_closed() -> None:
         target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
 
 
-def _sealed_project(tmp_path: Path) -> TargetContract:
+def _sealed_project(tmp_path: Path, *, schema: int = 3) -> TargetContract:
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
 name: acme:lib:toy:1.0
@@ -60,6 +60,8 @@ targets:
                 criterion="synthesis_ok",
                 baseline="acme:lib:toy:1.0#synth_before",
                 candidate="acme:lib:toy:1.0#synth_after",
+                baseline_selector="synth_before" if schema >= 4 else "",
+                candidate_selector="synth_after" if schema >= 4 else "",
             ),
         ),
         participants=(
@@ -71,6 +73,7 @@ targets:
                 "c" * 40,
             ),
         ),
+        schema=schema,
     )
 
 
@@ -78,6 +81,26 @@ def test_schema_three_executes_selector_verified_against_sealed_pair(tmp_path: P
     contract = _sealed_project(tmp_path)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
+    }
+
+    pairs = target_pairs_for_candidates(
+        criteria,
+        "synthesis_ok_",
+        ["synth_after"],
+        contract=contract,
+        project_root=tmp_path,
+        flow="synth",
+    )
+
+    assert pairs == (TargetPair("synth_before", "synth_after"),)
+
+
+def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
+    contract = _sealed_project(tmp_path, schema=4)
+    criteria = {
+        "synthesis_ok_synth_after": SimpleNamespace(
+            params={BASELINE_TARGET_PARAM: "synth_before"}
+        )
     }
 
     pairs = target_pairs_for_candidates(

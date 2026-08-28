@@ -161,7 +161,7 @@ def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path
     assert TargetContract.from_mapping(parsed["target_contract"]) == contract
 
 
-def test_schema_three_seals_repository_participants_and_surface_entries(tmp_path: Path) -> None:
+def test_schema_four_seals_repository_participants_and_surface_entries(tmp_path: Path) -> None:
     project = _project(tmp_path)
     outer = ContractParticipant(
         role="outer",
@@ -180,6 +180,7 @@ def test_schema_three_seals_repository_participants_and_surface_entries(tmp_path
     parsed = TargetContract.from_mapping(contract.as_dict())
 
     assert parsed == contract
+    assert parsed.schema == 4
     assert parsed.participants == (outer,)
     assert parsed.surface_entries
     assert {entry.kind for entry in parsed.surface_entries} >= {"core", "target-selection"}
@@ -419,9 +420,34 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
 
     assert bindings[0].target == "synth_after"
     assert bindings[0].baseline == "synth_before"
-    assert contract.schema == 3
+    assert contract.schema == 4
     assert contract.bindings[0].baseline == "acme:lib:toy:1.0#synth_before"
     assert contract.bindings[0].candidate == "acme:lib:toy:1.0#synth_after"
+    assert contract.bindings[0].baseline_selector == "synth_before"
+    assert contract.bindings[0].candidate_selector == "synth_after"
+
+
+def test_schema_three_binding_codec_round_trips_without_schema_four_fields() -> None:
+    encoded = _schema_three_mapping()
+    encoded["targets"] = ["synth_after", "synth_before"]
+    encoded["bindings"] = [
+        {
+            "flow": "synth",
+            "criterion": "synthesis_ok",
+            "baseline": "acme:lib:toy:1.0#synth_before",
+            "candidate": "acme:lib:toy:1.0#synth_after",
+        }
+    ]
+
+    assert TargetContract.from_mapping(encoded).as_dict() == encoded
+
+
+def test_schema_three_surface_digest_codec_remains_stable(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+
+    assert surface_digest(project, schema=3) == (
+        "73ff7cd9e288c91c39d9987bf7e578ee7cbada8b9135f4349244e9af467e5396"
+    )
 
 
 def test_legacy_contract_schema_is_rejected() -> None:
@@ -444,7 +470,9 @@ def test_legacy_contract_schema_is_rejected() -> None:
         },
     }
 
-    assert validate_contract_fields(fields) == ["target_contract.schema must be 3, got 1"]
+    assert validate_contract_fields(fields) == [
+        "target_contract.schema must be one of [3, 4], got 1"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -527,8 +555,38 @@ def test_legacy_contract_schemas_are_not_supported(schema: int) -> None:
     mapping = _schema_three_mapping()
     mapping["schema"] = schema
 
-    with pytest.raises(TargetContractError, match="schema must be 3"):
+    with pytest.raises(TargetContractError, match=r"schema must be one of \[3, 4\]"):
         TargetContract.from_mapping(mapping)
+
+
+def test_schema_four_digest_uses_selected_capi2_semantics(tmp_path: Path) -> None:
+    literal = tmp_path / "literal"
+    conditional = tmp_path / "conditional"
+    literal.mkdir()
+    conditional.mkdir()
+    _project(literal)
+    _project(conditional)
+    core = conditional / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace(
+            "files: [rtl/toy.sv]",
+            'files: ["tool_verilator ? (rtl/toy.sv)"]',
+        ),
+        encoding="utf-8",
+    )
+
+    assert surface_digest(literal, targets=("sim_toy",)) == surface_digest(
+        conditional, targets=("sim_toy",)
+    )
+
+
+def test_schema_four_digest_excludes_selected_source_existence(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    original = surface_digest(project, targets=("synth_future",))
+
+    (project / "rtl" / "future.sv").write_text("module future; endmodule\n")
+
+    assert surface_digest(project, targets=("synth_future",)) == original
 
 
 def test_surface_covers_referenced_core_and_config_hooks(tmp_path: Path) -> None:
@@ -588,6 +646,36 @@ def test_future_nonrelative_target_accepts_only_scope_new_sources(tmp_path: Path
     fields["scope"] = ["rtl/future.sv"]
     errors = validate_criterion_targets(fields, project)
     assert any("not declared Scope [new]" in error for error in errors)
+
+
+def test_contract_validation_uses_condition_selected_source_paths(tmp_path: Path) -> None:
+    (tmp_path / "conditional.core").write_text(
+        textwrap.dedent(
+            """\
+            CAPI=2:
+            name: acme:ip:conditional:1.0
+            filesets:
+              harness:
+                files:
+                  - tool_verilator ? (ibex_simple_system_main.cc)
+                  - tool_icarus ? (unused_main.cc)
+            targets:
+              sim:
+                flow: sim
+                flow_options: {tool: verilator}
+                filesets: [harness]
+                toplevel: ibex_simple_system
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "ibex_simple_system_main.cc").write_text("int main() {}\n", encoding="utf-8")
+    fields = {
+        "scope": [],
+        "criteria": {"mandatory": {"sim_pass": ["sim"]}},
+    }
+
+    assert validate_criterion_targets(fields, tmp_path) == []
 
 
 def test_future_relative_target_requires_executable_baseline(tmp_path: Path) -> None:

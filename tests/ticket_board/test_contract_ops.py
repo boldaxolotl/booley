@@ -137,7 +137,7 @@ def test_native_contract_open_seal_and_enqueue(tmp_path: Path) -> None:
     fields, _body = parse_frontmatter(ticket.read_text(encoding="utf-8"))
     assert fields["base_sha"] == sealed["outer_sha"]
     assert fields["target_contract"] == sealed
-    assert sealed["schema"] == 3
+    assert sealed["schema"] == 4
     assert sealed["participants"] == [
         {
             "role": "outer",

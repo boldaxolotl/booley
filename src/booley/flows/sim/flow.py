@@ -41,6 +41,7 @@ from booley.sim.sim_result import (
 )
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent
+from booley.targets.target import inspect_target, select_target, select_targets
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
@@ -1316,7 +1317,9 @@ class SimulateFlow(BooleyFlow):
         Verilator.
         """
         try:
-            eda_tool = fusesoc_registry.resolve_ref(self.args.work_dir, target).eda_tool
+            eda_tool = select_target(
+                self.args.work_dir, target, for_flow="sim"
+            ).eda_tool
         except Exception:  # noqa: BLE001 — best-effort Target-EDA-tool read; degrades to default (Verilator)
             eda_tool = None
         normalized = sim_edam.normalize_eda_tool(eda_tool)
@@ -1339,10 +1342,11 @@ class SimulateFlow(BooleyFlow):
         non-cocotb Target or when the read fails (degrades to the SV path).
         """
         try:
-            modules = fusesoc_registry.target_cocotb_modules(self.args.work_dir)
+            options = inspect_target(self.args.work_dir, target).flow_options
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return None
-        return modules.get(target)
+        module = options.get("cocotb_module")
+        return module if isinstance(module, str) and module else None
 
     def is_cocotb_target(self, target: str) -> bool:
         """True when *target* declares a ``cocotb_module`` (a Cocotb Target)."""
@@ -2720,10 +2724,10 @@ class SimulateFlow(BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        targets = fusesoc_registry.resolve_target_selection(
-            self.args.target,
-            self.args.work_dir,
-        )
+        targets = [
+            target.selector
+            for target in select_targets(self.args.work_dir, self.args.target, for_flow="sim")
+        ]
         if targets:
             return targets
         return McpToolResult(
@@ -3063,7 +3067,7 @@ class SimulateFlow(BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # observability only; never fail the run over it
+        except Exception:  # noqa: BLE001 — report context is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3071,9 +3075,9 @@ class SimulateFlow(BooleyFlow):
     def _fileset_for_report(self, target: str) -> dict[str, list[str]] | None:
         """*target*'s declared source fileset, split rtl/tb, or None.
 
-        A cheap ``.core`` read (``target_source_files``, dependency closure
-        included — a layered repo's RTL arrives transitively, F-27), cached
-        per target. Best-effort like :meth:`_compile_command_str`.
+        Uses the canonical pre-setup Target inspection, including FuseSoC's
+        condition evaluation and dependency closure. Cached per Target and
+        best-effort like :meth:`_compile_command_str`.
         """
         cache: dict[str, dict[str, list[str]] | None] = getattr(self, "_fileset_cache", {})
         if not hasattr(self, "_fileset_cache"):
@@ -3082,16 +3086,12 @@ class SimulateFlow(BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            sources = fusesoc_registry.target_source_files(
-                self.args.work_dir,
-                target,
-                include_dependencies=True,
-            )
+            inspection = inspect_target(self.args.work_dir, target)
             fileset = {
-                "rtl": list(sources.rtl_source_files),
-                "tb": list(sources.tb_files),
+                "rtl": list(inspection.rtl_files),
+                "tb": list(inspection.tb_files),
             }
-        except Exception:  # observability only; never fail the run over it
+        except Exception:  # noqa: BLE001 — report context is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset

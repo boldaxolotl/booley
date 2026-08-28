@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
+from booley.targets.target import inspect_target
 
 HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 SKIP_DIRECTORIES = frozenset(
@@ -67,14 +68,10 @@ def _configured_hdl_paths(project_root: Path, targets: Iterable[str]) -> set[Pat
     paths: set[Path] = set()
     for target in targets:
         try:
-            sources = fusesoc_registry.target_source_files(
-                project_root,
-                target,
-                include_dependencies=True,
-            )
+            inspection = inspect_target(project_root, target)
         except fusesoc_registry.FuseSocError:
             continue
-        for relative in (*sources.rtl_source_files, *sources.tb_files):
+        for relative in (*inspection.rtl_files, *inspection.tb_files):
             path = project_root / relative
             if path.suffix.lower() in HDL_SUFFIXES:
                 paths.add(path)

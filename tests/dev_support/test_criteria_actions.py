@@ -25,3 +25,13 @@ def test_structured_sim_action_uses_sealed_target_and_selector() -> None:
         planned_invocation("sim_pass_tb_test_uart.py_sim_uart_test_transmit", entry)
         == "sim --target sim_uart --test test_transmit"
     )
+
+
+def test_target_independent_reviewer_action_omits_fabricated_target_guidance() -> None:
+    entry = CriterionEntry(
+        met=False,
+        mandatory=True,
+        params={"target": "acme:ip:uart:1.0#sim_uart"},
+    )
+
+    assert planned_invocation("review_rtl_spec_done", entry) == "reviewer --category rtl --focus spec"
