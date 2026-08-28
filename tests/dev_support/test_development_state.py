@@ -623,6 +623,26 @@ class TestPendingConsistencyAssertion:
         assert st.criteria["review_rtl_bugs_clean"].met is False
 
 
+class TestCriterionChanges:
+    def test_alias_reports_resolved_effective_outcome(self):
+        state = DevelopmentState()
+        state.init_criteria(
+            {"sim_pass_uart_default": True},
+            flow_key_aliases={"sim_pass_default": ["sim_pass_uart_default"]},
+        )
+
+        changes = state.set_criterion(
+            "sim_pass_default",
+            True,
+            detail={"pending": [{"summary": "still failing"}]},
+        )
+
+        assert [(change.key, change.met) for change in changes] == [
+            ("sim_pass_uart_default", False)
+        ]
+        assert changes[0].reason == "outcome"
+
+
 class TestEverFailedLatch:
     """`ever_failed` records that a tool actually observed a failure (F-53)."""
 
