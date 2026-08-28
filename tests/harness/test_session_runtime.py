@@ -1664,6 +1664,40 @@ class TestSessionRefresh:
         assert args.command == "session"
         assert args.session_command == "refresh"
 
+    def test_small_session_handlers_delegate_and_report(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from booley.harness import booley
+
+        with (
+            patch.object(sr, "enter", return_value=7) as enter,
+            patch.object(booley.sys.stdin, "isatty", return_value=True),
+            patch.object(booley.sys.stdout, "isatty", return_value=True),
+        ):
+            assert (
+                booley._session_enter(SimpleNamespace(exec_cmd=["--", "echo", "ready"]), tmp_path)
+                == 7
+            )
+        enter.assert_called_once_with(tmp_path, ["echo", "ready"], tty=True)
+
+        with (
+            patch.object(sr, "down", return_value=False),
+            patch.object(sr, "status", return_value="stopped"),
+            patch.object(sr, "validate", return_value="valid"),
+            patch.object(sr, "prepare", return_value="prepared"),
+        ):
+            assert booley._session_down(SimpleNamespace(), tmp_path) == 0
+            assert booley._session_status(SimpleNamespace(), tmp_path) == 0
+            assert booley._session_validate(SimpleNamespace(), tmp_path) == 0
+            assert booley._session_prepare(SimpleNamespace(), tmp_path) == 0
+
+        assert capsys.readouterr().out.splitlines() == [
+            "no Session Runtime container for this folder",
+            "stopped",
+            "valid",
+            "prepared",
+        ]
+
     def test_refresh_refuses_active_vscode_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import booley, init_cmd
         from booley.harness.booley import _build_parser
