@@ -1787,7 +1787,8 @@ class TestEdalizeSimPath:
             cmd = flow._prepare_sim_command("lite", "known_bad", {})
 
         assert staged.read_text(encoding="utf-8") == "bad\n"
-        assert f"--run-cwd {staged.parents[1].relative_to(tmp_path)}" in cmd[2]
+        run_cwd = staged.parents[1].relative_to(tmp_path).as_posix()
+        assert f"--run-cwd {run_cwd}" in cmd[2]
 
     def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
         from booley.fusesoc import selftest_overlay
