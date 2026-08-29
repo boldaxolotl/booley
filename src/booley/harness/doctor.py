@@ -3975,7 +3975,8 @@ def _check_agent_backend_health(
         note_sink = _note or _pass
         note_sink(
             f"worker backend configured locally: {cfg.active_backend.name}; "
-            "provider authorization was not exercised by plain Doctor "
+            "provider authorization was not exercised and the CLI was not started "
+            "by plain Doctor "
             "(run `booley doctor --deep` for a live check)"
         )
 

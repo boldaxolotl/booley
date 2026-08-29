@@ -288,10 +288,8 @@ class Specialist(McpTool):
         """
         if not params.resume_session:
             return self._invoke_agent(params, on_event=on_event)
-        try:
-            from claude_agent_sdk._errors import ClaudeSDKError
-        except ImportError:
-            ClaudeSDKError = Exception
+        from claude_agent_sdk import ClaudeSDKError
+
         from booley.runtime.agent_errors import TransientAPIError
 
         try:

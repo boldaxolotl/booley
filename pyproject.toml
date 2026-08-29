@@ -21,7 +21,10 @@ classifiers = [
 ]
 
 dependencies = [
-    "claude-agent-sdk>=0.1.55",
+    # 0.2.124 makes the SDK own safe CLI discovery: native executables are
+    # preferred on Windows and .cmd/.bat launchers fail closed instead of
+    # crossing cmd.exe's argument-reparsing boundary.
+    "claude-agent-sdk>=0.2.124",
     "click>=8.0",
     "colorama>=0.4",
     # EDA invocation/registry layer (ADR 0019 + 0022). Pinned EXACTLY — the

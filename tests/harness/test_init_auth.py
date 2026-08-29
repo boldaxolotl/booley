@@ -11,10 +11,11 @@ from booley.harness.init_common import InitContext
 @pytest.fixture
 def captured(monkeypatch):
     """Capture ok/info/warn lines emitted by ``_step_auth`` by level."""
-    sink: dict[str, list[str]] = {"ok": [], "info": [], "warn": []}
+    sink: dict[str, list[str]] = {"ok": [], "info": [], "skip": [], "warn": []}
     monkeypatch.setattr(init_cmd, "banner", lambda *a, **k: None)
     monkeypatch.setattr(init_cmd, "ok", sink["ok"].append)
     monkeypatch.setattr(init_cmd, "info", sink["info"].append)
+    monkeypatch.setattr(init_cmd, "skip", sink["skip"].append)
     monkeypatch.setattr(init_cmd, "warn", sink["warn"].append)
     # _check_provider_creds emits secondary ok/warn lines of its own; silence it
     # so assertions target only _step_auth's own reporting.
@@ -62,6 +63,26 @@ def test_info_banner_names_explicit_selection(captured, monkeypatch):
     _fake_modes(monkeypatch, {"claude": "subscription", "codex": None})
     init_cmd._step_auth(InitContext(), init_cmd.AgentSelection("claude", "subscription"))
     assert "configured agent: claude/subscription" in captured["info"]
+
+
+def test_skip_credentials_does_not_inspect_or_warn(captured, monkeypatch):
+    monkeypatch.setattr(
+        init_cmd,
+        "_detect_auth_mode",
+        lambda *_args: pytest.fail("credential detection must be skipped"),
+    )
+
+    ctx = InitContext()
+    init_cmd._step_auth(
+        ctx,
+        init_cmd.AgentSelection("codex", "subscription"),
+        skip_credentials=True,
+    )
+
+    assert captured["warn"] == []
+    assert captured["skip"] == ["credential check skipped by --skip-credentials"]
+    assert ctx.results[-1].status == "skip"
+    assert ctx.results[-1].detail == "credential check skipped"
 
 
 def test_detect_auth_mode_reports_what_actually_bills(tmp_path, monkeypatch):

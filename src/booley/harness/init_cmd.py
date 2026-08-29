@@ -712,9 +712,18 @@ def _check_provider_creds(provider: str, auth_mode: str, policy: str = "auto") -
         info(f"{loser} is present but NOT used — {effective.source} takes precedence")
 
 
-def _step_auth(ctx: InitContext, selection: AgentSelection) -> None:
+def _step_auth(
+    ctx: InitContext,
+    selection: AgentSelection,
+    *,
+    skip_credentials: bool = False,
+) -> None:
     ctx.step_banner("agent authentication")
     info(f"configured agent: {selection.provider}/{selection.auth}")
+    if skip_credentials:
+        skip("credential check skipped by --skip-credentials")
+        ctx.record("auth", "skip", "credential check skipped")
+        return
     mode = _detect_auth_mode(selection.provider, selection.auth)
     if mode:
         ok(f"detected {mode} auth for {selection.provider}")
@@ -2389,7 +2398,11 @@ def _run_project_init_steps(
         return _print_summary(ctx)
     _step_core_projections(ctx)
     _step_tickets(ctx)
-    _step_auth(ctx, selection)
+    _step_auth(
+        ctx,
+        selection,
+        skip_credentials=getattr(args, "skip_credentials", False),
+    )
     _deploy_skills(ctx)
     pdk_root = _step_nangate_pdk(ctx)
     _step_image_lifecycle(ctx)

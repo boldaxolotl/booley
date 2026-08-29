@@ -106,6 +106,12 @@ def test_init_parser_accepts_explicit_agent_selection():
     assert args.auth == "api_key"
 
 
+def test_init_parser_accepts_skip_credentials():
+    args = tlr._build_parser().parse_args(["init", "--skip-credentials"])
+
+    assert args.skip_credentials is True
+
+
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
     from booley.harness import auto_doctor
 
