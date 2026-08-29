@@ -1822,6 +1822,11 @@ def _selection_resolver() -> Callable[[Path | str, str], TargetRef]:
     return resolve_ref if doctor_selftest else resolve_public_ref
 
 
+def resolve_selected_ref(project_root: Path | str, token: str) -> TargetRef:
+    """Resolve one Target at the public or Doctor-internal selection boundary."""
+    return _selection_resolver()(project_root, token)
+
+
 def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -> None:
     """Reject a known Target that the requested Flow cannot drive."""
     if for_flow is None:
@@ -1856,9 +1861,8 @@ def resolve_target_selection(
     if not selected:
         return []
 
-    resolver = _selection_resolver()
     for token in selected:
-        ref = resolver(project_root, token)
+        ref = resolve_selected_ref(project_root, token)
         _require_flow_compatible(for_flow, token, ref)
     return selected
 

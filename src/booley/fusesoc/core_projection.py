@@ -110,6 +110,17 @@ def isolated_registry_root(project_root: Path | str) -> Path:
     return Path(project_root) / ISOLATED_REGISTRY_SUBDIR
 
 
+def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
+    """Return the private-registry projection for one authoritative core."""
+    root = Path(project_root)
+    core_root = root / ".booley_project" / "cores"
+    try:
+        relative = core_file.relative_to(core_root).as_posix()
+    except ValueError as exc:
+        raise CoreProjectionError(f"core is outside the stealth core root: {core_file}") from exc
+    return isolated_registry_root(root) / f"{_ISOLATED_CORE_PREFIX}{quote(relative, safe='')}"
+
+
 def reconcile_isolated_registry(project_root: Path | str) -> ProjectionResult:
     """Materialize only stealth-authored cores in a private FuseSoC registry."""
     root = Path(project_root)
@@ -161,13 +172,8 @@ def _expected_projections(root: Path) -> dict[Path, str]:
 
 
 def _expected_isolated_cores(root: Path) -> dict[Path, str]:
-    core_root = root / ".booley_project" / "cores"
-    registry = isolated_registry_root(root)
     return {
-        registry
-        / f"{_ISOLATED_CORE_PREFIX}{quote(core.relative_to(core_root).as_posix(), safe='')}": _render_isolated_core(
-            root, core
-        )
+        isolated_core_path(root, core): _render_isolated_core(root, core)
         for core in authoritative_cores(root)
     }
 
