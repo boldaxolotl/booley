@@ -11,7 +11,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.fusesoc.core_projection import reconcile_projected_cores
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
 from booley.targets import target_surface
 from booley.targets.target import inspect_target, select_target, select_targets
@@ -124,6 +125,44 @@ def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surfa
 
 
 class TestTargetInterface:
+    def test_inspection_uses_isolated_registry_when_native_cores_are_ignored(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\nignore_native_cores = true\n",
+            encoding="utf-8",
+        )
+        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "demo.sv").write_text("module demo; endmodule\n", encoding="utf-8")
+        authored = cores / "demo.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::demo:0
+                filesets:
+                  rtl:
+                    files: [rtl/demo.sv]
+                targets:
+                  synth:
+                    flow: generic
+                    flow_options: {tool: yosys, arch: xilinx}
+                    filesets: [rtl]
+                    toplevel: demo
+                """
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "native.core").write_text("not valid CAPI2\n", encoding="utf-8")
+        reconcile_projected_cores(tmp_path)
+
+        inspection = inspect_target(tmp_path, "synth")
+
+        assert inspection.handle.core_file == authored
+        assert [item.path for item in inspection.inputs] == ["rtl/demo.sv"]
+
     def test_inspection_resolves_conditional_files_with_fusesoc_semantics(self, tmp_path: Path):
         (tmp_path / "conditional.core").write_text(
             textwrap.dedent(
@@ -322,6 +361,16 @@ class TestCollectSurface:
         assert all(e.ref.name != "lint_selftest_bad" for e in collect_surface(project).entries())
         with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
             detail_payload(project, "lint_selftest_bad", resolve=False)
+
+    def test_doctor_can_select_its_private_selftest(self, project: Path, monkeypatch):
+        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+            select_target(project, "lint_selftest_bad", for_flow="lint")
+
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+
+        handle = select_target(project, "lint_selftest_bad", for_flow="lint")
+        assert handle.name == "lint_selftest_bad"
+        assert handle.selector == "lint_selftest_bad"
 
     def test_ambiguous_name_shows_qualified_selector(self, project: Path):
         surface = collect_surface(project)

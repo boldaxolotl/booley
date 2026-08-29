@@ -17,7 +17,7 @@ from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.librarymanager import Library, LibraryManager
 from fusesoc.vlnv import Vlnv
 
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
 
 TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "elab", "fpga", "lint", "sim")
@@ -106,12 +106,11 @@ class _InspectionConfig:
     allow_additional_properties: bool = False
 
 
-def _public_bucket(project_root: Path, ref: TargetRef) -> list[TargetRef]:
-    return [
-        candidate
-        for candidate in fusesoc_registry.target_declarations(project_root)[ref.name]
-        if not candidate.doctor_selftest
-    ]
+def _selection_bucket(project_root: Path, ref: TargetRef) -> list[TargetRef]:
+    bucket = fusesoc_registry.target_declarations(project_root)[ref.name]
+    if ref.doctor_selftest:
+        return bucket
+    return [candidate for candidate in bucket if not candidate.doctor_selftest]
 
 
 def select_target(
@@ -120,16 +119,16 @@ def select_target(
     *,
     for_flow: str | None = None,
 ) -> TargetHandle:
-    """Select one public Target and separate durable identity from invocation."""
+    """Select one user-visible or Doctor-private Target as a durable handle."""
     root = Path(project_root)
-    ref = fusesoc_registry.resolve_public_ref(root, token)
+    ref = fusesoc_registry.resolve_selected_ref(root, token)
     if for_flow is not None and not flow_can_drive(for_flow, ref):
         raise fusesoc_registry.IncompatibleTargetError(
             f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
             f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
             f"Choose a compatible Target with `booley targets --for {for_flow}`."
         )
-    bucket = _public_bucket(root, ref)
+    bucket = _selection_bucket(root, ref)
     return TargetHandle(
         identity=f"{ref.vlnv}#{ref.name}",
         selector=fusesoc_registry.minimal_selector(ref, bucket),
@@ -171,13 +170,19 @@ def _inspection_flags(handle: TargetHandle) -> dict[str, Any]:
 
 
 def _inspection_cores(root: Path, handle: TargetHandle, flags: Mapping[str, Any]) -> list[Any]:
+    library_root = root
+    selected_core = handle.core_file
+    if core_projection.native_cores_ignored(root):
+        core_projection.reconcile_isolated_registry(root)
+        library_root = core_projection.isolated_registry_root(root)
+        selected_core = core_projection.isolated_core_path(root, handle.core_file)
     manager = CoreManager(_InspectionConfig(), library_manager=LibraryManager(""))
-    manager.add_library(Library("project", str(root)), ignored_dirs=set())
+    manager.add_library(Library("project", str(library_root)), ignored_dirs=set())
     top = manager.get_core(Vlnv(handle.vlnv))
-    if Path(top.core_file).resolve() != handle.core_file.resolve():
+    if Path(top.core_file).resolve() != selected_core.resolve():
         raise fusesoc_registry.FuseSocError(
             f"FuseSoC selected {top.core_file} for {handle.vlnv}, "
-            f"but Booley selected {handle.core_file}"
+            f"but Booley selected {selected_core}"
         )
     return manager.get_depends(top.name, dict(flags))
 
