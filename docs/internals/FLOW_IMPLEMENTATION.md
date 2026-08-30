@@ -167,6 +167,34 @@ and structured-output guarantees belong to the generic MCP tool/report contract
 in [MCP-TOOLS.md](MCP-TOOLS.md#common-artifact-contract). Built-in sections below
 name only their EDA-tool-specific directory roles, files, and freshness rules.
 
+### Shared implementation-report envelope
+
+`synth` and `fpga` expose the same versioned `implementation` envelope in their
+per-Target JSON, Criteria detail, aggregate MCP detail, and live progress. The
+legacy Flow-specific fields remain beside it for compatibility. Schema version
+1 has these common sections:
+
+- `identity`: Flow, Target, EDA tool, invocation ID, and timestamp;
+- `status`: the policy-resolved `pass`, `warn`, `fail`, or `error` grade, tool
+  return code, timeout/infrastructure state, completion facts, and bounded
+  diagnostics;
+- `metrics` and `conditions`: common timing vocabulary plus Flow-specific QoR
+  fields (ASIC area/cells or FPGA LUT/FF/BRAM/DSP utilization);
+- `recipe` and `provenance`: normalized recipe evidence, producing run, and a
+  separate cache-consuming invocation identity;
+- `comparison`: resolved baseline identity, mirrored baseline evidence,
+  comparison-basis errors, and a structured current/baseline/delta record per
+  comparable scalar metric;
+- `cache` and `artifacts`: cache evidence and immutable numbered report/log
+  entry points. Mutable build directories are explicitly labeled `live_dirs`.
+
+`status.passed` is true for `pass` and advisory `warn`; `fail` maps to Flow exit
+1 and `error` maps to exit 2. One policy-resolved status feeds the durable
+report, Criterion, aggregate result, and MCP projection, so those surfaces
+cannot disagree about fatal timing or invalid baseline evidence. Missing an
+optional metric makes only that metric's delta unavailable; it does not erase
+otherwise valid comparison data.
+
 ## `sim`
 
 `sim` runs the resolved Target's tests and normalizes the outcome into a
@@ -565,6 +593,8 @@ For each Target, the Flow writes:
 
 ```text
 <runtime>/flow-reports/synth_<target>.json    # per-target metrics (+ baseline)
+<runtime>/flow-reports/synth/<N>/targets/<target>.json # immutable target evidence
+<runtime>/flow-reports/synth/<N>/progress.json # live matrix checkpoint
 <runtime>/flow-reports/synth/<N>/report.json  # per-invocation structured report
 <runtime>/flow-reports/synth.json             # flat compatibility copy of the latest report
 ```
@@ -751,6 +781,8 @@ For each Target, the Flow writes:
 
 ```text
 <runtime>/flow-reports/fpga_<target>.json    # per-target metrics (+ baseline)
+<runtime>/flow-reports/fpga/<N>/targets/<target>.json # immutable target evidence
+<runtime>/flow-reports/fpga/<N>/progress.json # live matrix checkpoint
 <runtime>/flow-reports/fpga/<N>/report.json  # per-invocation structured report
 <runtime>/flow-reports/fpga.json             # flat compatibility copy of the latest report
 ```

@@ -60,6 +60,22 @@ def _recipe_flow(baseline: Any, current: Any) -> str | None:
     return None
 
 
+def _canonical_implementation(detail: dict[str, Any]) -> dict[str, Any] | None:
+    implementation = detail.get("implementation")
+    return implementation if isinstance(implementation, dict) else None
+
+
+def _canonical_recipe_value(
+    implementation: dict[str, Any] | None,
+    section: str,
+    key: str,
+) -> Any:
+    if implementation is None:
+        return None
+    value = implementation.get(section)
+    return value.get(key) if isinstance(value, dict) else None
+
+
 @dataclass
 class CriterionEntry:
     """Single criterion with metadata."""
@@ -153,20 +169,35 @@ class _RecipeEvidence:
 
 def _collect_recipe_evidence(entry: CriterionEntry) -> _RecipeEvidence:
     detail = entry.detail
+    implementation = _canonical_implementation(detail)
+    comparison = implementation.get("comparison") if implementation else None
+    comparison = comparison if isinstance(comparison, dict) else {}
+    baseline = comparison.get("baseline")
+    baseline = baseline if isinstance(baseline, dict) else {}
+    baseline_recipe_detail = baseline.get("recipe")
+    baseline_recipe_detail = (
+        baseline_recipe_detail if isinstance(baseline_recipe_detail, dict) else {}
+    )
     expected_recipe = entry.params.get(RECIPE_FINGERPRINT_PARAM)
-    actual_recipe = detail.get(RECIPE_FINGERPRINT_DETAIL)
+    actual_recipe = _canonical_recipe_value(implementation, "recipe", "fingerprint")
+    actual_recipe = actual_recipe or detail.get(RECIPE_FINGERPRINT_DETAIL)
     expected_ref = entry.params.get(BASELINE_REF_PARAM)
-    actual_ref = detail.get(BASELINE_REF_DETAIL)
-    baseline_recipe = detail.get(BASELINE_RECIPE_FINGERPRINT_DETAIL)
+    actual_ref = comparison.get("resolved_ref") or detail.get(BASELINE_REF_DETAIL)
+    baseline_recipe = baseline_recipe_detail.get("fingerprint") or detail.get(
+        BASELINE_RECIPE_FINGERPRINT_DETAIL
+    )
     complete = actual_recipe is not None
     if expected_ref is not None:
         complete = complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
     baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
-    current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
-    candidate_target = detail.get(CANDIDATE_TARGET_DETAIL)
-    baseline_target = detail.get(BASELINE_TARGET_DETAIL) or entry.params.get(
-        BASELINE_TARGET_PARAM, candidate_target
-    )
+    current_snapshot = _canonical_recipe_value(implementation, "recipe", "snapshot")
+    current_snapshot = current_snapshot or detail.get(RECIPE_SNAPSHOT_DETAIL)
+    identity = implementation.get("identity") if implementation else None
+    identity = identity if isinstance(identity, dict) else {}
+    candidate_target = comparison.get("candidate_target") or identity.get("target")
+    candidate_target = candidate_target or detail.get(CANDIDATE_TARGET_DETAIL)
+    baseline_target = comparison.get("baseline_target") or detail.get(BASELINE_TARGET_DETAIL)
+    baseline_target = baseline_target or entry.params.get(BASELINE_TARGET_PARAM, candidate_target)
     if isinstance(baseline_snapshot, dict):
         complete = complete and isinstance(current_snapshot, dict)
         if isinstance(baseline_target, str):
@@ -538,9 +569,20 @@ class DevelopmentState:
         checks: list[dict[str, Any]] = []
         all_pass = True
 
+        implementation = _canonical_implementation(detail)
+        evaluation_detail = detail
+        if implementation is not None and isinstance(implementation.get("metrics"), dict):
+            evaluation_detail = {**detail, **implementation["metrics"]}
         metric_map = detail.get("_metric_map", _SYNTH_METRIC_MAP)
         min_allowed = set(detail.get("_min_allowed", ["fmax_mhz"]))
         baseline = detail.get("baseline_metrics", {})
+        comparison = implementation.get("comparison") if implementation else None
+        if isinstance(comparison, dict):
+            canonical_baseline = comparison.get("baseline")
+            if isinstance(canonical_baseline, dict) and isinstance(
+                canonical_baseline.get("metrics"), dict
+            ):
+                baseline = canonical_baseline["metrics"]
 
         if not self._evaluate_recipe_evidence(entry, checks):
             all_pass = False
@@ -554,14 +596,14 @@ class DevelopmentState:
                 result = evaluate_cycle_threshold(
                     param_key,
                     threshold,
-                    current=detail.get("cycles"),
+                    current=evaluation_detail.get("cycles"),
                     baseline=detail.get("baseline_cycles"),
                 )
             else:
                 result = self._check_single_threshold(
                     param_key,
                     threshold,
-                    detail,
+                    evaluation_detail,
                     baseline,
                     metric_map,
                     min_allowed,

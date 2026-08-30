@@ -428,6 +428,72 @@ class TestStructuredContent:
             "heavy": {"log": "b/run.log"},
         }
 
+    def test_oversized_implementation_report_keeps_qor_and_nested_artifacts(self):
+        big = {
+            "flow": "fpga",
+            "exit_code": 1,
+            "detail": {
+                "implementation": {
+                    "schema_version": 1,
+                    "targets": ["board"],
+                    "grade": "fail",
+                    "passed": False,
+                    "results": {
+                        "board": {
+                            "schema_version": 1,
+                            "identity": {"flow": "fpga", "target": "board"},
+                            "status": {"grade": "fail", "passed": False},
+                            "metrics": {"lut_count": 123, "wns_ns": -0.2},
+                            "artifacts": {"log": "reports/fpga/1/targets/board/run.log"},
+                        }
+                    },
+                }
+            },
+            "report_text": "x" * (70 * 1024),
+        }
+
+        payload = mcp_server._structured_from_report(big)
+
+        assert payload["implementation"]["results"]["board"]["metrics"] == {
+            "lut_count": 123,
+            "wns_ns": -0.2,
+        }
+        assert payload["artifacts"] == {"board": {"log": "reports/fpga/1/targets/board/run.log"}}
+
+    def test_implementation_budget_truncates_targets_deterministically(self):
+        results = {
+            f"target_{index:03d}": {
+                "identity": {"flow": "synth", "target": f"target_{index:03d}"},
+                "status": {"grade": "pass", "passed": True},
+                "metrics": {"area_kge": float(index)},
+                "conditions": {"diagnostic": "y" * 2_000},
+                "artifacts": {"report": f"reports/synth/1/targets/{index}.json"},
+            }
+            for index in range(100)
+        }
+        big = {
+            "flow": "synth",
+            "exit_code": 0,
+            "detail": {
+                "implementation": {
+                    "schema_version": 1,
+                    "targets": list(results),
+                    "grade": "pass",
+                    "passed": True,
+                    "results": results,
+                }
+            },
+        }
+
+        payload = mcp_server._structured_from_report(big)
+
+        encoded = json.dumps(payload).encode("utf-8")
+        kept = payload["implementation"]["results"]
+        assert len(encoded) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        assert "target_000" in kept
+        assert payload["implementation"]["omitted_targets"][-1] == "target_099"
+        assert kept["target_000"]["metrics"] == {"area_kge": 0.0}
+
     def test_report_artifacts_ignores_nested_entries_without_a_block(self):
         """``detail`` holds plenty of non-artifact dicts (per_clock, evidence,
         complexity); none of them may leak into the rescue payload."""
