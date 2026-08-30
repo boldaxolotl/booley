@@ -1104,6 +1104,14 @@ class TestFailureCapture:
         # A run.log was persisted for this PRIMARY run.
         assert report["metrics"]["log_path"].endswith("run.log")
         assert (tmp_path / report["metrics"]["log_path"]).is_file()
+        assert report["implementation"]["schema_version"] == 1
+        assert report["implementation"]["status"]["grade"] == "error"
+        assert report["implementation"]["metrics"]["lut_count"] == 10
+        progress_paths = list((tmp_path / "reports" / "fpga").glob("*/progress.json"))
+        assert len(progress_paths) == 1
+        progress = json.loads(progress_paths[0].read_text(encoding="utf-8"))
+        assert progress["complete"] is True
+        assert progress["completed_targets"] == ["default"]
         # The display/report text shows the concise reason and the separate
         # subprocess-output + log lines.
         assert "did not reach route_design (exit 1)." in result.report_text

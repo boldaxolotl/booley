@@ -6568,9 +6568,9 @@ def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_
     """Return why a successful deep synth lacks terminal PPA/timing evidence."""
     if flow_name != "synth" or dry_run:
         return ""
-    from booley.flows.synth.flow import synth_target_report_slug
+    from booley.flows.implementation_report import target_report_path
 
-    path = report_dir / f"synth_{synth_target_report_slug(target)}.json"
+    path = target_report_path("synth", target, report_dir)
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -6609,11 +6609,10 @@ def _prepare_flow_report_dir(
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
-    from booley.flows.synth.flow import synth_target_report_slug
+    from booley.flows.implementation_report import target_report_path
 
-    safe_target = synth_target_report_slug(target)
     with contextlib.suppress(OSError):
-        (report_dir / f"synth_{safe_target}.json").unlink(missing_ok=True)
+        target_report_path("synth", target, report_dir).unlink(missing_ok=True)
     return report_dir
 
 
@@ -6719,10 +6718,9 @@ def _record_synth_memory_calibration(
     _warn: Check,
 ) -> None:
     """Record boundary-process peak RSS from a completed Doctor synthesis."""
-    from booley.flows.synth.flow import synth_target_report_slug
+    from booley.flows.implementation_report import target_report_path
 
-    safe_target = synth_target_report_slug(target)
-    path = report_dir / f"synth_{safe_target}.json"
+    path = target_report_path("synth", target, report_dir)
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

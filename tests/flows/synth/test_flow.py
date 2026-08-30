@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.dev_support.criteria import BASELINE_TARGET_PARAM
+from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming, make_clock_timing
@@ -1356,6 +1356,9 @@ class TestSingleConfigRun:
         assert "post_opt_area_um2" not in data
         assert data["cells"] == 100
         assert data["conditions"]["has_critical"] is False
+        assert data["implementation"]["schema_version"] == 1
+        assert data["implementation"]["status"]["grade"] == "pass"
+        assert data["implementation"]["metrics"]["area_um2"] == 6400.0
         # No per-file map: the artifacts block is the two entry points plus the
         # directories holding everything else.
         assert "reports" not in data
@@ -3387,6 +3390,22 @@ class TestFailOnTimingViolation:
         # that does not exist.
         assert "fail_on_timing_violation = true" in result.report_text
         assert "-2.633" in result.report_text
+
+    def test_fatal_timing_is_consistent_in_report_and_criterion(self, flow_and_state):
+        flow, state_file = flow_and_state
+        flow._timing_violation_is_fatal = True
+        flow._target_pairs = (TargetPair("lite", "lite"),)
+        flow._implementation_reports = {}
+        metrics = SynthMetrics(area_kge=1.0, cells=10, wns_ns=-0.25)
+
+        flow._persist_target_outcome("lite", metrics, None, None)
+
+        report = json.loads((flow.args.report_dir / "synth_lite.json").read_text(encoding="utf-8"))
+        assert report["passed"] is False
+        assert report["implementation"]["status"]["grade"] == "fail"
+        entry = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
+        assert entry.met is False
+        assert entry.detail["implementation"]["status"]["grade"] == "fail"
 
     def test_clean_timing_is_unaffected_by_the_knob(self, flow_and_state):
         flow, _ = flow_and_state

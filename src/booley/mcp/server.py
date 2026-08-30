@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -765,7 +766,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
             )
     except ValueError:
         raise
-    except Exception:  # unreadable config falls back to empty config
+    except Exception:  # noqa: BLE001 — unreadable config falls back to empty config
         logger.debug("Failed to load endpoint config from booley.toml", exc_info=True)
     return {}, {}
 
@@ -1422,6 +1423,33 @@ McpToolContent = list[TextContent] | tuple[list[TextContent], dict[str, Any]]
 _MAX_STRUCTURED_REPORT_BYTES = 64 * 1024
 
 
+def _implementation_from_report(report: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the canonical implementation envelope from a target or aggregate."""
+    direct = report.get("implementation")
+    if isinstance(direct, dict):
+        return direct
+    detail = report.get("detail")
+    if isinstance(detail, dict) and isinstance(detail.get("implementation"), dict):
+        return detail["implementation"]
+    return None
+
+
+def _implementation_artifacts(implementation: dict[str, Any]) -> dict[str, Any]:
+    """Collect canonical target artifacts from a target or aggregate envelope."""
+    artifacts = implementation.get("artifacts")
+    if isinstance(artifacts, dict) and artifacts:
+        return artifacts
+    found: dict[str, Any] = {}
+    results = implementation.get("results")
+    if not isinstance(results, dict):
+        return found
+    for target, result in results.items():
+        nested = result.get("artifacts") if isinstance(result, dict) else None
+        if isinstance(nested, dict) and nested:
+            found[str(target)] = nested
+    return found
+
+
 def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
     """Pull the artifact pointers out of a run report, wherever an endpoint put them.
 
@@ -1443,6 +1471,9 @@ def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
     payload, where an exception would cost the agent the text card too.
     """
     found: dict[str, Any] = {}
+    implementation = _implementation_from_report(report)
+    if implementation is not None:
+        found.update(_implementation_artifacts(implementation))
     detail = report.get("detail")
     if isinstance(detail, dict):
         for key, value in detail.items():
@@ -1458,6 +1489,106 @@ def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
     return found
 
 
+def _compact_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep target verdict, QoR, comparison, cache, provenance, and recovery paths."""
+    compact = {
+        key: copy.deepcopy(value[key])
+        for key in (
+            "schema_version",
+            "identity",
+            "status",
+            "metrics",
+            "conditions",
+            "provenance",
+            "comparison",
+            "cache",
+            "artifacts",
+        )
+        if key in value
+    }
+    status = compact.get("status")
+    if isinstance(status, dict):
+        status.pop("diagnostic_excerpt", None)
+    comparison = compact.get("comparison")
+    if isinstance(comparison, dict):
+        baseline = comparison.get("baseline")
+        if isinstance(baseline, dict):
+            baseline.pop("recipe", None)
+    return compact
+
+
+def _compact_implementation(value: dict[str, Any]) -> dict[str, Any]:
+    """Build the deterministic high-value implementation fallback."""
+    results = value.get("results")
+    if not isinstance(results, dict):
+        return _compact_target_implementation(value)
+    compact = {
+        key: copy.deepcopy(value[key])
+        for key in ("schema_version", "targets", "grade", "passed", "baseline_ref")
+        if key in value
+    }
+    compact["results"] = {
+        str(target): _compact_target_implementation(result)
+        for target, result in results.items()
+        if isinstance(result, dict)
+    }
+    return compact
+
+
+def _payload_size(payload: dict[str, Any]) -> int:
+    return len(json.dumps(payload).encode("utf-8"))
+
+
+def _fit_implementation_payload(payload: dict[str, Any], implementation: dict[str, Any]) -> None:
+    """Attach canonical detail while respecting the structured-content cap."""
+    compact = _compact_implementation(implementation)
+    payload["implementation"] = compact
+    if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
+        return
+    results = compact.get("results")
+    if not isinstance(results, dict):
+        metrics = compact.get("metrics")
+        if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
+            compact.setdefault("omitted_fields", []).append("metrics.per_clock")
+        if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
+            return
+        payload.pop("implementation", None)
+        return
+    for result in results.values():
+        metrics = result.get("metrics") if isinstance(result, dict) else None
+        if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
+            result.setdefault("omitted_fields", []).append("metrics.per_clock")
+    omitted: list[str] = []
+    while results and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        target = next(reversed(results))
+        results.pop(target)
+        omitted.insert(0, target)
+        compact["omitted_targets"] = omitted
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        payload.pop("implementation", None)
+
+
+def _enforce_structured_budget(payload: dict[str, Any]) -> None:
+    """Apply a deterministic final guard after all fallback fields are attached."""
+    if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
+        return
+    artifacts = payload.get("artifacts")
+    omitted: list[str] = []
+    while (
+        isinstance(artifacts, dict)
+        and artifacts
+        and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES
+    ):
+        key = next(reversed(artifacts))
+        artifacts.pop(key)
+        omitted.insert(0, key)
+        payload["omitted_artifact_entries"] = omitted
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        payload.pop("artifacts", None)
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        payload.pop("implementation", None)
+
+
 def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
     """Bounded ``structuredContent`` payload for a run report, or None.
 
@@ -1469,6 +1600,8 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if not isinstance(report, dict) or not report:
             return None
         payload: dict[str, Any] = {"reports": [report]}
+        if isinstance(report.get("passed"), bool):
+            payload["passed"] = report["passed"]
         if len(json.dumps(payload).encode("utf-8")) > _MAX_STRUCTURED_REPORT_BYTES:
             # Oversized: keep the cheap scalar verdict, drop the heavy body.
             payload = {"reports": [], "truncated": True}
@@ -1483,10 +1616,14 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
             artifacts = _report_artifacts(report)
             if artifacts:
                 payload["artifacts"] = artifacts
+            implementation = _implementation_from_report(report)
+            if implementation is not None:
+                _fit_implementation_payload(payload, implementation)
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]
+        _enforce_structured_budget(payload)
         return payload
-    except Exception:  # best-effort enrichment; any failure means text-only
+    except Exception:  # noqa: BLE001 — best-effort enrichment degrades to text-only
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -3144,7 +3281,7 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # best-effort preload; a config hiccup must not block server startup
+    except Exception:  # noqa: BLE001 — config preload must not block server startup
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 
