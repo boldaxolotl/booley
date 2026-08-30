@@ -73,13 +73,13 @@ targets:
     flow: lint
     flow_options:
       tool: verilator
-      booley: {doctor: [lint, elab]}
+      booley: {doctor: [lint]}
 ```
 
 Doctor dry-runs and deep-smokes every compatible Target whose `doctor` list
 contains that Flow. Omit `booley.doctor` to keep a Target available only for
 explicit calls. The allowed Doctor names are `sim`, `lint`, `synth`, and
-`elab`; FPGA remains an explicit-only implementation Flow. The former
+FPGA remains an explicit-only implementation Flow. The former
 `target`, `default_target`, and `calibration_target` Flow keys are retired.
 
 ### Commercial EDA provisioning
@@ -480,32 +480,30 @@ violation prints `RESULT: WARN -- timing VIOLATED` and exits 0. Turn it on once
 the SDC is real, or an rc-only consumer (ticket gate, CI step) reads a -2.6 ns
 design as success.
 
-### Elaboration (`[flows.elab]`)
+### Elaboration Check (`[flows.sim]`)
 
-`elab` compiles and elaborates the design without running the testbench — a
-fast build-only check for simulation Targets that RTL/TB changes still compile.
-It runs inside the Session Runtime. Synthesis Targets belong to `synth`, whose
-RTL frontend reads and checks the design before technology mapping.
+`booley flow sim --target <sim-target> --elab-only` compiles, elaborates, and
+links the same ordinary untraced simulator image as a full Simulation run,
+without running Pre-Run Commands, simulator tests, Cocotb Python, or tracing.
+`--build-only` is an equivalent permanent alias. Only simulation Targets are
+eligible; synthesis Targets belong to `synth`.
 
 ```toml
-[flows.elab]
-# keep_build_dir = true          # keep the compiler build tree after a clean run
+[flows.sim]
 # standalone_frontend = "auto"   # auto | iverilog | verilator
 ```
 
-**`keep_build_dir`** (default `false`). A verilated build tree runs ~130 MB per
-Target, and elaboration is a compile-only check, so a Target that passes has its
-tree removed. `run.log` is kept either way, and a FAILing Target keeps
-everything for triage. Turn this on to get `make`'s incremental rebuild back
-across repeated runs.
+The untraced Simulation build cache is always retained, on pass and failure, so
+a later full Simulation can reuse it. Complete invocation-scoped build logs are
+archived outside that mutable cache.
 
 **`standalone_frontend`** picks which frontend proves the
 `elaborate_standalone` criterion. `auto` (default) uses Verilator when
-installed — the same frontend the Target's own elaborate drives, so the probe can
+installed — normally the same frontend the Target build drives, so the probe can
 never reject SystemVerilog the design demonstrably compiles — and falls back to
 `iverilog -g2012`. Pin `iverilog` or `verilator` to choose by hand.
 
-A probe that cannot parse a construct the per-Target elaborate accepted is
+A probe that cannot parse a construct the per-Target build accepted is
 reported as a frontend capability gap (exit 2, no verdict) rather than a design
 FAIL — but **only when the probe frontend differs** from the one that elaborated
 the Target. With the same EDA tool on both sides, a parse error means the standalone
@@ -525,7 +523,7 @@ never preempted) rather than being refused. The defaults:
 
 ```toml
 [jobs]
-max_heavy   = 1   # in-container EDA subprocesses (sim, synth, elab)
+max_heavy   = 1   # in-container EDA subprocesses (sim, synth)
 heavy_memory = "4g" # reserved memory per HEAVY job; calibrate with Doctor --deep
 max_light   = 3   # Specialists (model-API-bound: reviewer, mutation_tester)
 max_tickets = 2   # concurrent `booley run` Developer Agents
@@ -1172,14 +1170,14 @@ Name project-owned Targets `<axis>_<subject>` using the Booley Flow axis:
 
 | Axis | Driven by | Example |
 | --- | --- | --- |
-| `sim_` | `sim`, `elab` | `sim_smoke` |
+| `sim_` | `sim` | `sim_smoke` |
 | `lint_` | `lint` | `lint_style` |
 | `synth_` | `synth` | `synth_timing` |
 | `fpga_` | `fpga` | `fpga_board` |
 
 The axis is needed because CAPI2 has no synthesis flow: synth and FPGA Targets
 can both resolve as `generic`. A bare axis such as `lint` is fine when there is
-only one Target for it; `elab` reuses a sim Target. The old `asic_` prefix still
+only one Target for it; the Elaboration Check reuses a sim Target. The old `asic_` prefix still
 runs, but `booley doctor` recommends `synth_`.
 
 Use `default:` only when another core depends on this one; Booley does not show

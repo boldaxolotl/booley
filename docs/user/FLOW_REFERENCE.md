@@ -1,7 +1,7 @@
 # Booley Flow reference
 
 This reference describes the public behavior of Booley's built-in deterministic
-Flows: `sim`, `elab`, `lint`, `synth`, and `fpga`. It explains what to invoke,
+Flows: `sim`, `lint`, `synth`, and `fpga`. It explains what to invoke,
 what each result means, and which reports and artifacts to inspect. For exact
 project configuration, see [CONFIG.md](CONFIG.md); for compatible EDA programs
 and versions, see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
@@ -90,6 +90,10 @@ selects Verilator or Icarus and whether the testbench is HDL or cocotb.
 
 Useful controls:
 
+- `--elab-only` compiles, elaborates, and links the ordinary untraced simulator
+  image without running tests. `--build-only` is an equivalent alias.
+- `--standalone` adds the stronger reusable-module sweep and requires
+  `--elab-only`.
 - `--test <substring>` selects every registered test whose name contains the
   substring. For a Target with no registered test list, the value is passed
   through as the test name.
@@ -108,7 +112,20 @@ valid verdict is `inconclusive`, never a pass. A traced run is likewise
 inconclusive when it cannot confirm a fresh trace artifact.
 
 The Flow records per-test verdicts and can satisfy `sim_pass_<target>` and
-configured per-test Cycle Count Criteria.
+configured per-test Cycle Count Criteria. It also records
+`elab_pass_<target>` from an authenticated successful build before simulation
+starts, so a later runtime failure cannot erase successful elaboration evidence.
+Infrastructure failure before or during the build leaves that Criterion
+unchanged.
+
+Elaboration Check mode skips Pre-Run Commands, test selection, Cocotb Python,
+run guards, sentinels, and tracing. Run-only arguments such as `--test`,
+`--skip`, `--trace`, `--result-verbosity full`, and `--no-kill` are rejected in
+this mode. Only Simulation Targets are eligible. A compiler diagnostic that
+proves the RTL was rejected is exit `1`; setup, missing-tool, timeout, OOM,
+signal/crash, filesystem, and ambiguous nonzero failures are exit `2` and do
+not change Criteria. Multi-Target checks continue through every Target, with
+an infrastructure error taking precedence over a design failure.
 
 Structured output (`sim_<target>.json`):
 
@@ -120,33 +137,21 @@ Structured output (`sim_<target>.json`):
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
 | `artifacts` | The report, fresh per-test run logs, result files, and trace artifacts that exist for this run. |
 
-## `elab`
-
-`elab` compiles and elaborates a Target without running simulation. It is a fast
-structural diagnostic, not a substitute for a passing simulation.
-
-`--standalone` additionally checks whether RTL modules elaborate from their
-declaring files. This is useful for unusual reusable-module requirements; normal
-RTL completion still uses Simulation Criteria because simulation already
-includes elaboration.
-
-The Flow can satisfy `elab_pass_<target>` and, when requested,
-`elaborate_standalone`. Reports distinguish primary Target elaboration from
-standalone-module findings and point to retained run logs.
-
-Structured output (`elab_<target>.json`):
+Elaboration Check structured output uses the same `sim_<target>.json` name and
+sets `mode` to `elab_only`:
 
 | Field | Contents |
 |---|---|
-| `target`, `eda_tool` | Resolved elaboration identity. |
-| `passed`, `elapsed_s` | Target-level verdict and duration. |
-| `error_output` | Bounded tail of combined compiler output; it may be non-empty on a clean run. |
-| `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
-| `log`, `artifacts` | Optional legacy `log` pointer plus the shared report and fresh `run.log` artifact pointers. |
+| `target`, `target_identity`, `eda_tool`, `toplevel` | Resolved Simulation Target identity. |
+| `passed`, `verdict`, `failure_class`, `reason`, `elapsed_s` | Target-level graded outcome and duration. |
+| `compile_command`, `fileset` | Generated build command and resolved `rtl`/`tb` source lists when setup succeeded. |
+| `log` | Complete archived build log. |
 
 When `--standalone` is requested, the invocation report also carries
 `detail.standalone` with `modules_checked`, `shared_files`, `frontend`,
 `failures`, optional `unparsed` modules, and the standalone log pointer.
+The sweep can satisfy `elaborate_standalone`; an unavailable or untrustworthy
+probe is exit `2` and leaves its prior Criterion state unchanged.
 
 ## `lint`
 

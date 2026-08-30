@@ -27,7 +27,7 @@ tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3)
 - Only if `booley_status` is absent from that MCP tool list are you on the host, where the tools were never registered and nothing is broken. Point the user to "Reopen in Container" (or `booley session up && booley session enter`); do not substitute raw EDA commands.
 - At the start of an Interactive Mode tab, call `booley_status` and display its returned status block.
 - RISC-V reference docs (keep only for `[sandbox].image = "booley-sandbox-riscv"`) live at `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): offline ISA HTML/PDF, debug specification, and ELF psABI. Start with `$BOOLEY_RISCV_DOCS/INDEX.md`; search HTML directly or extract PDFs with `pdftotext <file.pdf> -`.
-- Use the Booley Flows enabled in this project's `booley.toml` for RTL feedback—typically `sim`, `lint`, `elab`, `synth`, or `fpga`. MCP tools are auto-discovered; `[flows.<name>].enabled = false` opts out. Run `booley_status` (or `booley targets`) for the exact wiring.
+- Use the Booley Flows enabled in this project's `booley.toml` for RTL feedback—typically `sim`, `lint`, `synth`, or `fpga`. Use `sim --elab-only` for an Elaboration Check. MCP tools are auto-discovered; `[flows.<name>].enabled = false` opts out. Run `booley_status` (or `booley targets`) for the exact wiring.
 - Use Booley Specialists for deeper RTL work: `reviewer` and `mutation_tester` when requested or useful.
 - Do not invent raw simulator, lint, synthesis, or analysis commands; use registered Booley MCP tools and Flows. If the user explicitly requests a one-off command with no matching Flow, run it only in the Session Runtime and identify it as outside Booley's run-report contract; never run it on the host.
 

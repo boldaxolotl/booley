@@ -7,7 +7,7 @@ def test_long_names_map_to_short_public_names():
     assert canonical("asic_synthesize") == "synth"
     assert canonical("fpga_impl") == "fpga"
     assert canonical("simulate") == "sim"
-    assert canonical("elaborate") == "elab"
+    assert canonical("elaborate") == "elaborate"
     assert canonical("lint") == "lint"
 
 

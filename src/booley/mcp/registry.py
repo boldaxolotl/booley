@@ -54,7 +54,7 @@ SKIP_MODULES = frozenset(
     }
 )
 
-BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "elab", "fpga")
+BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga")
 
 
 def discover_mcp_tools(

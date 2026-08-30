@@ -42,18 +42,17 @@ _PURPOSE_SUMMARY_MAX = 120
 
 # Present built-in Booley Flows in the order a reader encounters them in a normal
 # hardware flow. Project-defined Booley Flows follow these, sorted by name.
-_FLOW_DISPLAY_RANK = {
-    name: rank for rank, name in enumerate(("elab", "sim", "lint", "synth", "fpga"))
-}
+_FLOW_DISPLAY_RANK = {name: rank for rank, name in enumerate(("sim", "lint", "synth", "fpga"))}
 
 _BASELINE_CONTROL = "`--baseline <ref>` compares metrics against a git revision"
 
 
 _FLOW_KEY_CONTROLS: dict[str, str] = {
-    "elab": ("`--standalone` also proves every RTL module elaborates from its declaring file"),
     "fpga": f"{_BASELINE_CONTROL}; `--no-cache` forces a fresh implementation",
     "lint": "`--scope <file,...>` filters reported findings to selected files",
     "sim": (
+        "`--elab-only` (`--build-only`) compiles, elaborates, and links without "
+        "running tests; add `--standalone` for the stronger module sweep. "
         "`--test <name>` selects a test, `--skip <name,...>` excludes tests, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; pass `--result-verbosity full` to print "

@@ -210,7 +210,7 @@ known-first-party = ["booley"]
 #             early returns make each user-facing fallback explicit.
 #   PLR0911/PLR0912/PLR0915 (bwave) — _translate_to_subcommand maps legacy CLI
 #             modes to v0.2 subcommands; the branches are the documented modes.
-#   PLR0915 (elaborate) — _run is a linear per-config drive loop (resolve,
+#   PLR0915 (sim) — _run is a linear per-target drive loop (resolve,
 #             execute, classify, write report, accumulate display); splitting
 #             would scatter the per-config result/criterion bookkeeping.
 #   PLR0912/PLR0915 (fusesoc_trace_overlay) — write_trace_overlay is a per-simulator
@@ -235,7 +235,6 @@ known-first-party = ["booley"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
 "src/booley/dev_support/development_state.py" = ["PLR0912", "N818"]
 "src/booley/mcp/base.py" = ["B027"]
-"src/booley/flows/elab/flow.py" = ["PLR0915"]
 "src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/harness/developer.py" = ["PLR0915"]
 "src/booley/harness/console/links.py" = ["PLR0911"]

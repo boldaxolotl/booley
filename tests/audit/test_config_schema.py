@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -262,6 +264,29 @@ def test_flow_collection_reports_required_sections_and_retired_aliases() -> None
     assert any("[flows.simulate] is retired" in item.message for item in audit.findings)
     missing = [item for item in audit.findings if item.check_id == "config.flow-section-missing"]
     assert {item.subject for item in missing} == {"lint", "synth"}
+
+
+@pytest.mark.parametrize("retired", ["elab", "elaborate"])
+def test_flow_collection_reports_retired_elaboration_tables(retired: str) -> None:
+    audit = flow_schema.audit_flow_tables(
+        {"flows": {retired: {"standalone_frontend": "iverilog"}, "sim": {}}},
+        ("sim",),
+    )
+
+    assert not audit.is_valid
+    finding = next(item for item in audit.findings if f"[flows.{retired}]" in item.message)
+    assert "sim --elab-only" in finding.fix
+    assert "[flows.sim].standalone_frontend" in finding.fix
+
+
+def test_sim_accepts_standalone_frontend_and_rejects_removed_cache_knob() -> None:
+    valid = flow_schema.audit_flow_table("sim", {"standalone_frontend": "verilator"})
+    invalid_frontend = flow_schema.audit_flow_table("sim", {"standalone_frontend": "vcs"})
+    removed_cache_knob = flow_schema.audit_flow_table("sim", {"keep_build_dir": True})
+
+    assert valid.is_valid
+    assert not invalid_frontend.is_valid
+    assert not removed_cache_knob.is_valid
 
 
 def test_empty_eda_configuration_is_valid() -> None:

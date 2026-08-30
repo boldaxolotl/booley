@@ -105,7 +105,6 @@ _DEEP_TIMEOUTS_S = {
     "sim": 900,
     "lint": 300,
     "synth": 1800,
-    "elab": 900,
 }
 # The synthesis Flow's timeout is an inner, per-target boundary. Doctor owns
 # an outer subprocess that must leave time for configure work, process-tree
@@ -172,14 +171,7 @@ _SKILL_DIRS = (
     Path("." + "ag" + "ents") / "skills",
     Path("." + "cl" + "aude") / "skills",
 )
-# bwave is unconditionally required. elaborate used to be here too, but a Flow
-# that is *required on the surface yet never smoke-tested* let a broken elaborate
-# (a generic FuseSoC path that can't build a non-FuseSoC design) pass
-# setup (QA-6). elaborate is now "validate-or-opt-out": required + deep-checked
-# only when a project actually exposes it (see _elaborate_active /
-# _run_elaborate_deep_check), and a legitimate opt-out (lint/simulate cover
-# elaboration) is an accepted, recorded choice rather than a forced-but-unchecked
-# Flow.
+# B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
 # Specialist MCP tools worth a heads-up when expected-but-absent from
 # the MCP surface. An explicit ``[flows.<name>].enabled = false`` opts out.
@@ -1726,7 +1718,7 @@ def _check_host_agent_session(_pass: Check, _warn: Check) -> None:
         return
     _warn(
         f"{app} is running on the HOST: the Booley MCP server is registered only inside "
-        "the Session Runtime, so booley_status and the Booley Flows (sim, lint, elab, "
+        "the Session Runtime, so booley_status and the Booley Flows (sim, lint, "
         "synth) do not exist in this agent session",
         'reopen the project in the devcontainer ("Reopen in Container", or '
         "`booley session up && booley session enter`); for a one-off toolchain command "
@@ -3741,8 +3733,6 @@ def _required_mcp_tools(project: ProjectAudit) -> set[str]:
     for flow_name in _AUDITED_FLOWS:
         if _flow_enabled(project, flow_name):
             required.add(flow_name)
-    if _elaborate_active(project):
-        required.add("elab")
     return required
 
 
@@ -4076,8 +4066,6 @@ def _run_flow_audit(
                 _skip=_skip,
                 _fail=_fail,
             )
-
-    _check_elaborate_setup(project, _pass, _skip, _fail)
 
 
 def _check_flow_runtime_reality(
@@ -6022,15 +6010,6 @@ def _run_deep_checks(
                 _skip=_skip,
                 _fail=_fail,
             )
-    _run_elaborate_deep_check(
-        project,
-        flow_runtime,
-        verbose,
-        _pass,
-        _warn,
-        _skip,
-        _fail,
-    )
     _run_fpga_impl_deep_notice(project, _skip)
     _run_selftest_checks(project, flow_runtime, _pass, _warn, _skip, _fail)
 
@@ -6055,48 +6034,6 @@ def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
         "for --deep (binary presence is probed separately); smoke "
         "it manually end-to-end: booley flow fpga --target <fpga_target>"
     )
-
-
-def _run_elaborate_deep_check(
-    project: ProjectAudit,
-    flow_runtime: _DoctorFlowRuntime,
-    verbose: bool,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Deep-smoke ``elaborate`` when it is exposed (validate-or-opt-out, QA-6).
-
-    elaborate is intentionally NOT in :data:`_AUDITED_FLOWS`, so it is checked
-    here rather than in the generic loop. When a project exposes
-    elaborate it MUST function — a broken exposed elaborate (a generic
-    FuseSoC elaborate that can't build the design) is a hard FAIL, not
-    the old silent green. When a project opts out with
-    ``[flows.elab].enabled = false``, that is recorded as a
-    validated choice: lint/simulate cover elaboration.
-    """
-    if not _elaborate_active(project):
-        _skip("elab deep check skipped - not exposed (opt-out; lint/sim cover elaboration)")
-        return
-    targets = _doctor_targets(project, "elab")
-    if not targets:
-        _skip("elab deep check skipped - no Doctor Target selected")
-        return
-    for target in targets:
-        _run_flow_check(
-            project,
-            "elab",
-            target=target,
-            dry_run=False,
-            flow_runtime=flow_runtime,
-            timeout_s=_deep_timeout_s(project, "elab"),
-            verbose=verbose,
-            _pass=_pass,
-            _warn=_warn,
-            _skip=_skip,
-            _fail=_fail,
-        )
 
 
 @dataclass(frozen=True)
@@ -6369,11 +6306,6 @@ def _run_one_selftest(
 def _flow_enabled(project: ProjectAudit, flow_name: str) -> bool:
     """Return *flow_name*'s enablement from parsed booley.toml."""
     return execution.flow_enabled_from_config(flow_name, project.booley_toml)
-
-
-def _elaborate_active(project: ProjectAudit) -> bool:
-    """Whether elaborate is enabled and therefore must be validated (QA-6)."""
-    return _flow_enabled(project, "elab")
 
 
 def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
@@ -6828,29 +6760,6 @@ def _check_doctor_targets(project: ProjectAudit, flow_name: str, _fail: Fail) ->
             continue
         valid.append(target)
     return valid
-
-
-def _check_elaborate_setup(
-    project: ProjectAudit,
-    _pass: Check,
-    _skip: Check,
-    _fail: Fail,
-) -> None:
-    """Cheap-pass audit for ``elaborate`` (validate-or-opt-out, QA-6 / F-9).
-
-    elaborate is absent from :data:`_AUDITED_FLOWS` (no execution menu of its
-    own), so the generic loop in :func:`_run_flow_audit` never sees it. It is
-    still on the MCP surface by default, and its Target requirement is identical
-    to the Booley Flows' — so audit it here rather than leaving the gap for
-    ``--deep``. There is no dry-run smoke for elaborate; the deep check
-    (:func:`_run_elaborate_deep_check`) still owns "does it actually build".
-    """
-    if not _elaborate_active(project):
-        _skip("elab disabled in booley.toml (opt-out; lint/sim cover elaboration)")
-        return
-    targets = _check_doctor_targets(project, "elab", _fail)
-    if targets:
-        _pass(f"elab Doctor Targets: {', '.join(targets)}")
 
 
 def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:

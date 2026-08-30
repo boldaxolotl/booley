@@ -557,10 +557,10 @@ class TbCoderSpecialist(Specialist):
         parts.append("\n## Before You Submit: Elaborate\n")
         changed_scope = "testbench/verification changes"
         parts.append(
-            "Call the **elab** MCP tool on every config in scope to confirm "
+            "Call the **sim** MCP tool with `elab_only=true` on every Target in scope to confirm "
             f"your {changed_scope} compile and elaborate cleanly. If it reports "
-            "errors, read them, fix the offending file, and re-run elab. "
-            "Only submit once elab passes — sending non-elaborating code "
+            "errors, read them, fix the offending file, and re-run sim in elab-only mode. "
+            "Only submit once the Elaboration Check passes — sending non-elaborating code "
             "burns a full developer round.\n"
         )
         parts.append(f"\n{self.COMMIT_MSG_GUIDANCE}\n")

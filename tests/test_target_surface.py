@@ -55,7 +55,7 @@ _ALPHA_CORE = textwrap.dedent(
         flow_options:
           tool: verilator
           cocotb_module: tb_alpha_tests
-          booley: {doctor: [sim, elab]}
+          booley: {doctor: [sim]}
         filesets: [rtl, tb]
         toplevel: tb_alpha
       lint:
@@ -272,10 +272,9 @@ class TestFlowCanDrive:
             flow=flow,
         )
 
-    def test_sim_flow_drives_simulate_and_elaborate_only(self):
+    def test_sim_flow_drives_sim_targets(self):
         ref = self._ref("sim", "verilator")
         assert flow_can_drive("sim", ref)
-        assert flow_can_drive("elab", ref)
         assert not flow_can_drive("lint", ref)
         assert not flow_can_drive("synth", ref)
         assert not flow_can_drive("fpga", ref)
@@ -283,7 +282,6 @@ class TestFlowCanDrive:
     def test_sim_flow_drives_canonical_icarus_target(self):
         ref = self._ref("sim", "icarus")
         assert flow_can_drive("sim", ref)
-        assert flow_can_drive("elab", ref)
 
     def test_lint_flow_drives_lint_only(self):
         ref = self._ref("lint", "verible")
@@ -302,7 +300,6 @@ class TestFlowCanDrive:
         """A `tools:`-style Target (flow=None) must not vanish from --for."""
         legacy_sim = self._ref(None, "iverilog")
         assert flow_can_drive("sim", legacy_sim)
-        assert flow_can_drive("elab", legacy_sim)
         assert not flow_can_drive("lint", legacy_sim)
 
     @pytest.mark.parametrize("eda_tool", ["xcelium", "vcs"])
@@ -311,11 +308,14 @@ class TestFlowCanDrive:
         for declared_flow in ("sim", None):
             ref = self._ref(declared_flow, eda_tool)
             assert not flow_can_drive("sim", ref)
-            assert not flow_can_drive("elab", ref)
 
     def test_specialist_name_is_rejected(self):
         with pytest.raises(ValueError, match=r"mutation_tester.*not a target-aware"):
             flow_can_drive("mutation_tester", self._ref("sim", "verilator"))
+
+    def test_retired_elab_name_is_rejected(self):
+        with pytest.raises(ValueError, match=r"elab.*not a target-aware"):
+            flow_can_drive("elab", self._ref("sim", "verilator"))
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ class TestCollectSurface:
 
     def test_doctor_membership_comes_from_target_metadata(self, project: Path):
         surface = collect_surface(project)
-        assert _entry(surface, "sim").doctor_flows == ("sim", "elab")
+        assert _entry(surface, "sim").doctor_flows == ("sim",)
         assert _entry(surface, "alpha#lint").doctor_flows == ("lint",)
         assert _entry(surface, "beta#lint").doctor_flows == ()
 
@@ -429,10 +429,10 @@ class TestCollectSurface:
 
     def test_drivable_by(self, project: Path):
         surface = collect_surface(project)
-        assert _entry(surface, "sim").drivable_by == ("elab", "sim")
+        assert _entry(surface, "sim").drivable_by == ("sim",)
         assert _entry(surface, "synth").drivable_by == ("synth",)
         assert _entry(surface, "fpga").drivable_by == ("fpga",)
-        assert _entry(surface, "smoke").drivable_by == ("elab", "sim")
+        assert _entry(surface, "smoke").drivable_by == ("sim",)
 
 
 # ---------------------------------------------------------------------------
@@ -561,8 +561,8 @@ class TestSurfacePayload:
             "eda_tool": "verilator",
             "cocotb_module": "tb_alpha_tests",
             "toplevel": "tb_alpha",
-            "doctor_flows": ["sim", "elab"],
-            "drivable_by": ["elab", "sim"],
+            "doctor_flows": ["sim"],
+            "drivable_by": ["sim"],
         }
         assert payload["warnings"] == []
 
@@ -571,7 +571,7 @@ class TestRenderListing:
     def test_listing_groups_and_marks_doctor_membership(self, project: Path):
         text = render_listing(collect_surface(project), project)
         assert "acme:ip:alpha:1.0  (alpha/alpha.core)" in text
-        assert "Dr sim, elab" in text
+        assert "Dr sim" in text
         assert "cocotb=tb_alpha_tests" in text
         assert "booley targets <name>" in text  # legend/hint line
 
@@ -590,8 +590,8 @@ class TestDetail:
         payload = detail_payload(project, "sim", resolve=False)
         assert payload["selector"] == "sim"
         assert payload["vlnv"] == "acme:ip:alpha:1.0"
-        assert payload["doctor_flows"] == ["sim", "elab"]
-        assert payload["drivable_by"] == ["elab", "sim"]
+        assert payload["doctor_flows"] == ["sim"]
+        assert payload["drivable_by"] == ["sim"]
         assert "resolved" not in payload and "resolved_error" not in payload
 
     def test_unknown_and_ambiguous_tokens_raise(self, project: Path):

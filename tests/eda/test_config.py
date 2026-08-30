@@ -73,6 +73,8 @@ def test_rejects_invalid_authority_surface(raw: object, match: str) -> None:
             {"flows": {"sim": {"host_setup_commands": ["setup"]}}},
             "[flows.sim].host_setup_commands",
         ),
+        ({"flows": {"elab": {}}}, "[flows.elab] is retired"),
+        ({"flows": {"elaborate": {}}}, "[flows.elaborate] is retired"),
         ({"sandbox": {"passthrough_env": ["LM_LICENSE_FILE"]}}, "passthrough_env"),
     ],
 )
