@@ -57,8 +57,8 @@ Creation Guidance (§E). Two judgement calls §B can't make for you:
    the result in the complete Ticket without creating a separate review step.
 3. When the frontier is empty, synthesize the **detailed implementation plan** and complete
    ticket (skeleton and placement: `TICKET_TEMPLATE.md`), then continue directly to the
-   draft gate in 2f. The complete ticket is the one post-grill review artifact and the
-   payload the developer plans against.
+   draft gate in 2f. The complete ticket and any new Target definitions form the one
+   post-grill review artifact; the ticket is the payload the developer plans against.
 
 Detailed mode skips 2d and 2e because those decisions were folded into grilling.
 
@@ -93,12 +93,16 @@ If the user deselects every mandatory criterion, confirm explicitly before accep
 ### 2f: Approve the ticket
 
 **MANDATORY TICKET APPROVAL.** Show the complete proposed ticket (frontmatter +
-body, excluding seal fields). Ask: *"Create this ticket? (yes / edit / cancel)"*
+body, excluding seal fields), followed by a **New Targets** section containing every
+Target that ticket creation will author. For each new Target, show its name, destination
+file, and complete proposed definition. If creation adds no Targets, show
+`New Targets: none`. Ask: *"Create this ticket and these Targets? (yes / edit / cancel)"*
 
 For detailed mode, this is the first review artifact shown after grilling. If the user
-chooses `edit`, revise the complete ticket and show it again; keep the review at this gate
-rather than falling back to summaries or partial previews. Approval authorizes the complete
-creation transaction in Step 4; Target-contract mechanics require no further user confirmation.
+chooses `edit`, revise the complete ticket or Target definitions and show the entire review
+artifact again; keep the review at this gate rather than falling back to summaries or partial
+previews. Approval authorizes the complete creation transaction in Step 4; Target-contract
+mechanics require no further user confirmation.
 
 **Never write the ticket file until the user explicitly approves** — including agent-invoked creation from other skills.
 
@@ -119,10 +123,12 @@ creation transaction in Step 4; Target-contract mechanics require no further use
 
 Follow §C end to end after ticket approval: create the draft, open its contract
 worktrees, author every needed Target/control file there, validate, seal, and enqueue.
-Target authoring and sealing are internal implementation details: do not expose their
-SHAs or diffs, and do not pause for another confirmation. Target authoring is part of
-ticket creation, never deferred to the developer. If a mechanical failure cannot be
-repaired, report the actionable error without turning contract internals into user choices.
+Author the new Targets exactly as approved at the 2f gate. Sealing remains an internal
+implementation detail: do not expose its SHAs or pause for another confirmation. Target
+authoring is part of ticket creation, never deferred to the developer. If authoring or
+validation requires changing an approved Target definition, return to 2f. If a mechanical
+failure cannot be repaired, report the actionable error without turning contract internals
+into user choices.
 
 ## Step 5: Report
 
