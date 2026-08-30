@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from booley.runtime.timefmt import format_human_datetime
-
-_GIT_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -21,44 +17,6 @@ class BuildMetadata:
     source_updated_at: str
     image_built_at: str
     payload_fingerprint: str
-
-
-def _checkout_root() -> Path | None:
-    """Return the source checkout containing the imported package, if any."""
-    import booley
-
-    package_dir = Path(booley.__file__).resolve().parent
-    for candidate in (package_dir, *package_dir.parents):
-        if (candidate / ".git").exists():
-            return candidate
-    return None
-
-
-def _git_output(root: Path, *args: str) -> str:
-    """Return stripped git output, or an empty string when git cannot answer."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _checkout_metadata() -> tuple[str, str]:
-    """Return revision and last-commit time for an imported source checkout."""
-    root = _checkout_root()
-    if root is None:
-        return "", ""
-    revision = _git_output(root, "rev-parse", "--short", "HEAD")
-    if revision and _git_output(root, "status", "--porcelain"):
-        revision += "+dirty"
-    updated_at = _git_output(root, "log", "-1", "--format=%cI", "HEAD")
-    return revision, updated_at
 
 
 def _baked_revision() -> str:
@@ -76,27 +34,34 @@ def current_build_metadata() -> BuildMetadata:
     A bind-mounted development checkout takes precedence over image metadata;
     installed wheels fall back to values baked into the image build.
     """
-    from booley import __version__
+    import booley
 
-    checkout_revision, checkout_updated_at = _checkout_metadata()
+    attribution = booley.version_attribution
+    checkout_revision, checkout_updated_at = attribution.source_git_metadata()
     image_version = os.environ.get("BOOLEY_VERSION", "")
-    package_matches_image = not image_version or image_version == __version__
+    package_matches_image = not image_version or image_version == booley.__version__
     image_revision = os.environ.get("BOOLEY_SOURCE_REVISION", "")
     image_updated_at = os.environ.get("BOOLEY_SOURCE_UPDATED_AT", "")
+    is_distribution = attribution.distribution_name is not None
     return BuildMetadata(
-        version=__version__,
+        version=booley.__version__,
         revision=(
             checkout_revision
-            or _baked_revision()
-            or (image_revision if package_matches_image else "")
+            or (_baked_revision() if is_distribution else "")
+            or (image_revision if is_distribution and package_matches_image else "")
         ),
         source_updated_at=(
-            checkout_updated_at or (image_updated_at if package_matches_image else "")
+            checkout_updated_at
+            or (image_updated_at if is_distribution and package_matches_image else "")
         ),
         image_built_at=os.environ.get("BOOLEY_IMAGE_BUILT_AT", ""),
         payload_fingerprint=(
-            _embedded_payload_fingerprint()
-            or (os.environ.get("BOOLEY_PAYLOAD_FINGERPRINT", "") if package_matches_image else "")
+            (_embedded_payload_fingerprint() if is_distribution else "")
+            or (
+                os.environ.get("BOOLEY_PAYLOAD_FINGERPRINT", "")
+                if is_distribution and package_matches_image
+                else ""
+            )
         ),
     )
 

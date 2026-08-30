@@ -1,9 +1,12 @@
 """Focused regression tests for typed host-environment audits."""
 
 import ast
+import importlib.metadata
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
+import booley
 from booley.audit import host_environment
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -92,3 +95,28 @@ def test_doctor_does_not_reimplement_host_probe_mechanisms() -> None:
     assert "urllib.request.urlopen" not in source
     assert 'distribution("booley")' not in source
     assert '[docker_exe, "info"]' not in source
+
+
+@dataclass
+class _Distribution:
+    version: str
+
+    @property
+    def metadata(self) -> dict[str, str]:
+        return {"Version": self.version}
+
+
+def test_legacy_audit_describes_active_source_checkout_truthfully(monkeypatch) -> None:
+    def distribution(name: str):
+        if name == "booley":
+            return _Distribution("0.0.9")
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
+    monkeypatch.setattr(booley, "__dist_name__", None)
+
+    finding = host_environment.audit_legacy_distribution()
+
+    assert finding.severity is host_environment.EnvironmentSeverity.FAIL
+    assert "active import resolves to the source checkout" in finding.message
+    assert "is the one supplying `import booley`" not in finding.message

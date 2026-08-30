@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import pytest
+
+import booley
 from booley import __version__
 from booley.runtime import build_metadata
+from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+
+@pytest.fixture(autouse=True)
+def _installed_distribution(monkeypatch):
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version=__version__,
+            origin=VersionOrigin.DISTRIBUTION,
+            distribution_name="booley-rtl",
+        ),
+    )
 
 
 def test_status_line_uses_baked_image_metadata(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_checkout_metadata", lambda: ("", ""))
     monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "")
     monkeypatch.setenv("BOOLEY_VERSION", __version__)
     monkeypatch.setenv("BOOLEY_SOURCE_REVISION", "abc123")
@@ -21,7 +37,6 @@ def test_status_line_uses_baked_image_metadata(monkeypatch):
 
 
 def test_status_line_marks_metadata_from_old_images_unknown(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_checkout_metadata", lambda: ("", ""))
     monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "legacy123")
     monkeypatch.delenv("BOOLEY_VERSION", raising=False)
     monkeypatch.delenv("BOOLEY_SOURCE_REVISION", raising=False)
@@ -36,7 +51,6 @@ def test_status_line_marks_metadata_from_old_images_unknown(monkeypatch):
 
 
 def test_updated_package_does_not_claim_old_image_source_metadata(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_checkout_metadata", lambda: ("", ""))
     monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "")
     monkeypatch.setenv("BOOLEY_VERSION", "different-version")
     monkeypatch.setenv("BOOLEY_SOURCE_REVISION", "old123")
@@ -52,9 +66,31 @@ def test_updated_package_does_not_claim_old_image_source_metadata(monkeypatch):
 
 
 def test_payload_fingerprint_describes_imported_wheel_not_old_image(monkeypatch):
-    monkeypatch.setattr(build_metadata, "_checkout_metadata", lambda: ("", ""))
     monkeypatch.setattr(build_metadata, "_embedded_payload_fingerprint", lambda: "wheel-payload")
     monkeypatch.setenv("BOOLEY_VERSION", "different-version")
     monkeypatch.setenv("BOOLEY_PAYLOAD_FINGERPRINT", "old-image-payload")
 
     assert build_metadata.current_build_metadata().payload_fingerprint == "wheel-payload"
+
+
+def test_source_without_git_does_not_borrow_wheel_or_image_revision(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        booley,
+        "version_attribution",
+        VersionAttribution(
+            version="9.9.9",
+            origin=VersionOrigin.SOURCE,
+            source_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(booley, "__version__", "9.9.9")
+    monkeypatch.setattr(build_metadata, "_baked_revision", lambda: "wheel123")
+    monkeypatch.setenv("BOOLEY_VERSION", "9.9.9")
+    monkeypatch.setenv("BOOLEY_SOURCE_REVISION", "image123")
+    monkeypatch.setenv("BOOLEY_SOURCE_UPDATED_AT", "2026-01-01T00:00:00Z")
+
+    metadata = build_metadata.current_build_metadata()
+
+    assert metadata.version == "9.9.9"
+    assert metadata.revision == ""
+    assert metadata.source_updated_at == ""
