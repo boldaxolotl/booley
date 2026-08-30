@@ -2376,7 +2376,7 @@ class TestOneShotGuard:
         endpoint.read_state()
         result = endpoint._run()
         # A policy refusal is NOT an infra crash: exit 2 is reserved for
-        # "the MCP tool could not run" (docs/BOOLEY-FLOWS.md exit taxonomy).
+        # "the MCP tool could not run" (docs/user/FLOW_REFERENCE.md exit taxonomy).
         assert result.exit_code == 0
         assert mock_agent.call_count == 1
         assert "RESULT: REVIEWED — NO FINDINGS" in result.report_text

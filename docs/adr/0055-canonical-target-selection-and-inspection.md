@@ -1,3 +1,0 @@
-# Canonical Target selection and inspection
-
-Booley keeps a Target's durable VLNV-plus-name identity separate from the shortest selector accepted by Booley Flows. Cheap discovery may read declarations, deterministic pre-setup inspection uses pinned FuseSoC CAPI2 and dependency-solving semantics without running generators, and execution remains authoritative only after FuseSoC/Edalize setup produces EDAM; this avoids another CAPI2 interpreter while preserving contract authoring for selected Scope `[new]` inputs that do not exist yet. Target Contract schema 4 digests normalized selected declarations without source existence, source contents, or build paths, while schema 3 retains its historical codec and raw manifest digest.

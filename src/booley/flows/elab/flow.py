@@ -9,7 +9,7 @@ agent — the caller is itself an LLM agent that will read the errors and
 fix them, then call again. Keep it sharp and minimal.
 
 Exit codes: 0 = elaborated clean, 1 = the compiler rejected the design,
-2 = no verdict was reached (EDAM/configure failure). See docs/USAGE.md for
+2 = no verdict was reached (EDAM/configure failure). See docs/user/USAGE.md for
 the shared Booley Flow exit-code taxonomy.
 """
 

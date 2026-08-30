@@ -13,9 +13,10 @@ The documentation is split by responsibility, not by reader type:
 | Document | Owns |
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools |
-| [BOOLEY-FLOWS.md](BOOLEY-FLOWS.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `elab`, `lint`, `synth`, and `fpga` Booley Flows |
-| [CONFIG.md](CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
-| [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
+| [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | The public invocation, target-selection, result, and artifact contract for RTL developers running built-in Booley Flows |
+| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `elab`, `lint`, `synth`, and `fpga` Booley Flows |
+| [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
+| [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
 This document may show small configuration fragments when an extension contract
 needs context, but it does not define the configuration schema or document the
@@ -25,11 +26,12 @@ built-in flows. Follow the links above for those references.
 
 This is an implementation-level guide. It assumes the vocabulary and whole-system model from:
 
-- **[CONTEXT.md](CONTEXT.md)** — the controlled vocabulary. This guide leans on *Booley Flow*, *Target*, *Criterion*, *Developer Agent*, *Specialist*, *Session Runtime*, *Ticket Mode*, and *Workflow Region* as already-defined terms.
+- **[CONTEXT.md](../CONTEXT.md)** — the controlled vocabulary. This guide leans on *Booley Flow*, *Target*, *Criterion*, *Developer Agent*, *Specialist*, *Session Runtime*, *Ticket Mode*, and *Workflow Region* as already-defined terms.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the Developer Agent, Specialists, and the Booley Flow contract fit together at run time.
-- **[CONFIG.md](CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Run Commands.
-- **[BOOLEY-FLOWS.md](BOOLEY-FLOWS.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
-- **[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md)** — which EDA tools and provisioning sources are supported and what each requires.
+- **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Run Commands.
+- **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.
+- **[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
+- **[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)** — which EDA tools and provisioning sources are supported and what each requires.
 
 This guide owns the common MCP tool lifecycle and extension contract.
 
@@ -101,7 +103,7 @@ Write a Custom Flow or custom MCP tool when:
 - You need a project-specific check that doesn't belong in the framework (DRC, protocol compliance, custom linting)
 - You need an LLM-powered specialist with project-specific prompting
 
-First check the [supported EDA tool matrix](SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Run Commands](CONFIG.md#pre-run-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
+First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If Booley already supports the workflow, configure the built-in Flow. Otherwise, use `BooleyFlow` for deterministic in-container subprocess logic, `Specialist` for LLM-powered work, or `McpTool` for other in-container orchestration. For a per-test build step, use [Pre-Run Commands](../user/CONFIG.md#pre-run-commands-flowssimpre_run_commands). A missing commercial EDA policy cannot be replaced by a custom host wrapper.
 
 ---
 
@@ -134,7 +136,7 @@ The framework reads Flow settings from `[flows.<name>]` and non-Flow endpoint
 settings from `[mcp_tools.<name>]`. At this layer the shared effect is that
 `enabled = false` removes the capability from normal discovery.
 
-[CONFIG.md](CONFIG.md#booley-flow-execution-enabled) owns the exact TOML
+[CONFIG.md](../user/CONFIG.md#booley-flow-execution-enabled) owns the exact TOML
 schema, resolution order, defaults, and built-in per-Flow/endpoint settings. A
 custom Flow can read its section with `_load_flow_config(name, work_dir)` from
 `booley.flows.flow_config`. Discovery consumes `enabled` for direct endpoints
@@ -309,7 +311,7 @@ make every pointer trustworthy:
 - **Never present when wrong.** Omit a key when its file or directory does not
   exist or cannot be proven to belong to the current run. Flow-specific
   freshness requirements belong with that Flow's evidence contract in
-  [BOOLEY-FLOWS.md](BOOLEY-FLOWS.md).
+  [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 - **Always work-dir-relative.** Absolute container paths are not portable
   artifact references. Paths are relative to the MCP tool's work dir,
   including when Ticket Mode places reports outside the
@@ -573,7 +575,7 @@ Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>
 
 ## Chapter 3: Criteria and MCP Tool Routing
 
-Criteria are the success conditions of Ticket Mode: each Ticket declares mandatory and optional Criteria, and the Harness—not the agent—decides when they are met (see [USAGE.md](USAGE.md#acceptance-criteria)). An implementation's `satisfies` metadata builds the Criterion-to-MCP-tool map that tells the Developer Agent which capability can evaluate each condition.
+Criteria are the success conditions of Ticket Mode: each Ticket declares mandatory and optional Criteria, and the Harness—not the agent—decides when they are met (see [USAGE.md](../user/USAGE.md#acceptance-criteria)). An implementation's `satisfies` metadata builds the Criterion-to-MCP-tool map that tells the Developer Agent which capability can evaluate each condition.
 
 Built-in families such as `sim_pass_*`, `lint_clean_*`, and `synthesis_ok_*` use exactly this mechanism. Project Criteria join the same catalog and routing map.
 
@@ -615,7 +617,7 @@ category    = "rtl"
 | Field | Values | Meaning |
 |-------|--------|---------|
 | `description` | string | Human-readable purpose |
-| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | The Workflow Region the criterion belongs to; drives advisory ordering of Developer Agent activity (see *Workflow Region* in [CONTEXT.md](CONTEXT.md)) and never gates execution. Legacy key `phase` is still read |
+| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | The Workflow Region the criterion belongs to; drives advisory ordering of Developer Agent activity (see *Workflow Region* in [CONTEXT.md](../CONTEXT.md)) and never gates execution. Legacy key `phase` is still read |
 | `per_target` | `true`/`false` | If true, expands to one criterion per target (e.g., `drc_clean_variant_a`, `drc_clean_variant_b`) |
 | `category` | `rtl`, `tb`, `none` | Controls invalidation cascade |
 
@@ -687,7 +689,7 @@ Custom MCP tools cannot request or synthesize host authority. A new commercial
 EDA integration therefore requires a built-in installation policy, runtime
 wrapper contract, Doctor probes, adversarial mount and lifecycle tests, and
 full-Flow evidence before it can be added to
-[SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+[SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
 ### Licensing
 
@@ -699,7 +701,7 @@ health, resume validation, revocation, reaping, and cleanup are part of the
 runtime lifecycle rather than MCP tool behavior.
 
 The current supported mounted-tool and experimental licensing status is
-documented in [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+documented in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
 ---
 
@@ -725,7 +727,7 @@ The Criterion collision in check 6 stops execution. The other checks log diagnos
 
 Preflight runs automatically at the start of every `booley run`; there is no standalone preflight command. `booley doctor` performs related aggregate checks for custom MCP tools and Criteria, but it does not reproduce every per-file preflight warning or print the Criterion-to-MCP-tool map. Use `booley cheat --criteria` to inspect the live Criteria catalog.
 
-For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies or incompatible project Targets, then invoke the Flow directly when diagnosing its arguments or EDA integration. The per-Flow evidence and artifact contracts are documented in [BOOLEY-FLOWS.md](BOOLEY-FLOWS.md).
+For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies or incompatible project Targets, then invoke the Flow directly when diagnosing its arguments or EDA integration. The per-Flow evidence and artifact contracts are documented in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 
 ### Extending It: Validate a Custom Flow
 
@@ -743,11 +745,11 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | I want to... | Do this |
 |-------------|---------|
 | Add an in-container endpoint | Write a `BooleyFlow`, `Specialist`, or direct `McpTool` subclass in `.booley_project/mcp_tools/`; discovery is automatic |
-| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](CONFIG.md#pre-run-commands-flowssimpre_run_commands)) |
-| Use host-provisioned Vivado | Follow [CONFIG.md](CONFIG.md#commercial-eda-provisioning) for the Project request, [BOOLEY-FLOWS.md](BOOLEY-FLOWS.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
+| Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](../user/CONFIG.md#pre-run-commands-flowssimpre_run_commands)) |
+| Use host-provisioned Vivado | Follow [CONFIG.md](../user/CONFIG.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
-| Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](CONFIG.md#booleytoml) |
+| Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
 | Try a custom MCP tool | Restart the Session Runtime, then ask the Interactive Mode agent to invoke it |
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect preflight logs for per-file warnings |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |

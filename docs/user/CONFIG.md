@@ -11,10 +11,10 @@ config surface; an agent running the setup skill dereferences these anchors as i
 fills each file.
 
 **Read this first.** This is a reference, not a tutorial. It assumes you have
-skimmed the [README](../README.md) overview and know Booley's controlled
+skimmed the [README](../../README.md) overview and know Booley's controlled
 vocabulary: terms used here without definition — **Target**, **Booley Flow**,
 **EDA Provisioning**, **Session Runtime**, **Specialist**, **Developer Agent**, **VLNV** —
-are all defined in the glossary, [CONTEXT.md](CONTEXT.md); keep it open. Every
+are all defined in the glossary, [CONTEXT.md](../CONTEXT.md), if one is unfamiliar. Every
 project has exactly two mandatory pieces: `.booley_project/booley.toml` (first
 section below) and at least one FuseSoC `.core` file describing your design. If
 you have not described your design yet, start with the [Design description
@@ -1157,7 +1157,7 @@ targets:
 A few conventions worth calling out in that example:
 
 - **`tb/booley_vcd_dump.sv`** is the trace-convention module described under
-  [`trace_args`](#how-booley-asks-for-a-waveform-toolssimtrace_args).
+  [`trace_args`](#how-booley-asks-for-a-waveform-flowssimtrace_args).
   Without it, `booley flow sim --trace` has nothing to root and `booley doctor` warns at
   setup time.
 - **A `file_type: user` file with `copyto:`** stages a non-RTL data file (a
@@ -1524,7 +1524,7 @@ hatches that remain, and what each is for:
   staging vectors) is [Pre-run
   commands](#pre-run-commands-flowssimpre_run_commands);
 - a **new kind of analysis** with its own criteria is a [Custom
-  MCP tool](MCP-TOOLS.md) — it adds an MCP tool alongside the built-ins, never a
+  MCP tool](../internals/MCP-TOOLS.md) — it adds an MCP tool alongside the built-ins, never a
   side door into `sim_pass_*`.
 
 A simulator outside the built-in matrix is out of scope for Ticket Mode by
@@ -1695,7 +1695,7 @@ the toolchain while keeping `booley init` from clobbering the file.
 
 ### Custom MCP tools
 
-Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](MCP-TOOLS.md) for the architecture and extension guide.
+Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ### Post-Setup Hook
 

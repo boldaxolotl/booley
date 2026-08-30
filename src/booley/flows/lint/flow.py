@@ -6,7 +6,7 @@ warnings, and deduplicates warnings across configs.
 
 Exit codes: 0 = clean, 1 = the design failed (warnings remain, or the
 linter rejected the RTL), 2 = the linter could not run at all (missing
-binary, setup failure, timeout). See docs/USAGE.md for the shared
+binary, setup failure, timeout). See docs/user/USAGE.md for the shared
 Booley Flow exit-code taxonomy.
 """
 
