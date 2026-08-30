@@ -37,7 +37,7 @@ targets:
       tool: verilator        # verilator | icarus
       # Doctor runs this Target for each listed Flow. Omit `booley.doctor` to
       # keep a Target available for explicit runs without adding it to Doctor.
-      booley: {doctor: [sim, elab]}
+      booley: {doctor: [sim]}
       # REQUIRED for verilator: an event-driven TB (delays, @(...) waits — the
       # normal case) fails Verilator 5 elaboration with %Error-NEEDTIMINGOPT
       # without --timing; --main/--exe generate + build the C++ main wrapper.
@@ -57,7 +57,7 @@ targets:
   #   flow: sim
   #   flow_options:
   #     tool: icarus         # icarus | verilator
-  #     booley: {doctor: [sim, elab]}
+  #     booley: {doctor: [sim]}
   #     cocotb_module: test_dut   # the Python module — makes this a Cocotb Target
   #     iverilog_options: [-g2012]  # SV sources need -g2012; drop for verilator
   #     timescale: 1ns/1ps

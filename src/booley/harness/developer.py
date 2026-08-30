@@ -893,10 +893,8 @@ def _builtin_endpoints_required_by_criteria(
             required.add("reviewer")
         elif key.startswith("mutation_score"):
             required.add("mutation_tester")
-        if key.startswith("sim_"):
+        if key.startswith("sim_") or key.startswith("elab_") or key == "elaborate_standalone":
             required.add("sim")
-        elif key.startswith("elab_"):
-            required.add("elab")
         elif key.startswith("lint_"):
             required.add("lint")
         elif key.startswith("synthesis_"):

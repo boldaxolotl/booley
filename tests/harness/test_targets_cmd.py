@@ -30,7 +30,7 @@ _CORE = textwrap.dedent(
         filesets: [rtl]
       sim:
         flow: sim
-        flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}
+        flow_options: {tool: verilator, booley: {doctor: [sim]}}
         filesets: [rtl, tb]
         toplevel: tb_alpha
       synth:
@@ -66,7 +66,7 @@ class TestTargetsListing:
         out = capsys.readouterr().out
         assert "acme:ip:alpha:1.0  (alpha.core)" in out
         assert "sim" in out and "synth" in out
-        assert "Dr sim, elab" in out
+        assert "Dr sim" in out
 
     def test_no_cores_message(self, tmp_path: Path, capsys):
         assert _run(tmp_path) == 0
@@ -128,7 +128,7 @@ class TestTargetsDetail:
         assert _run(project, "sim") == 0
         out = capsys.readouterr().out
         assert "Target sim" in out
-        assert "Doctor        sim, elab" in out
+        assert "Doctor        sim" in out
         assert "Resolved view unavailable: could not invoke fusesoc" in out
 
     def test_detail_json(self, project: Path, capsys, monkeypatch):

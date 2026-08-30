@@ -42,7 +42,6 @@ from booley.sim.sim_result import (
 )
 from booley.sim.trace_recipe import TraceMode
 from booley.targets.flow_names import config_section
-from booley.targets.parameter_integrity import validate_top_parameter_intent
 from booley.targets.target import inspect_target, select_target, select_targets
 
 from .. import artifacts, output_budget
@@ -53,12 +52,24 @@ from ..baseline_worktree import (
     baseline_worktree,
     git_full_sha,
 )
+from ..eda_parsers import extract_error_gist
 from ..flow_config import (
     _load_flow_config,
     tb_top_for_target,
 )
 from ..human_display import cap_target_items
 from . import edam as sim_edam
+from .build import (
+    BuildOutcome,
+    PreparedSimulationBuild,
+    SimulationBuildPreparationError,
+    build_stage_script,
+    classify_build_outcome,
+    new_attempt_token,
+    prepare_simulation_build,
+    setup_failure_outcome,
+)
+from .standalone import StandaloneMixin, _StandaloneOutcome
 from .target_tests import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
@@ -134,6 +145,15 @@ class MissingExecutableError(RuntimeError):
         super().__init__(f"required executable not found: {binary}")
         self.binary = binary
         self.context = context
+
+
+class SimulationBuildInfrastructureError(RuntimeError):
+    """An authenticated build attempt ended without a design verdict."""
+
+    def __init__(self, target: str, outcome: BuildOutcome) -> None:
+        super().__init__(outcome.reason)
+        self.target = target
+        self.outcome = outcome
 
 
 def find_missing_executable(text: str) -> str | None:
@@ -276,6 +296,9 @@ class TestResult:
     # directory was requested.
     run_log_path: str = ""
     workload_snapshot: dict[str, Any] | None = None
+    # Authenticated result of the build half for this execution attempt.
+    # ``None`` means setup or Pre-Run Commands failed before make ran.
+    build_outcome: BuildOutcome | None = None
 
 
 @dataclass
@@ -294,6 +317,22 @@ class TargetResult:
     elab_failed: bool = False
 
 
+@dataclass
+class ElabOnlyTargetResult:
+    """One Target's compile/elaborate/link result in Simulation namespace."""
+
+    target: str
+    target_identity: str = ""
+    eda_tool: str = ""
+    toplevel: str = ""
+    compile_command: str = ""
+    fileset: dict[str, list[str]] = field(default_factory=dict)
+    outcome: BuildOutcome = field(
+        default_factory=lambda: BuildOutcome(False, None, "infrastructure")
+    )
+    log_path: str = ""
+
+
 def _admissible_cycle_evidence(
     test: TestResult | None,
     revision: str,
@@ -310,12 +349,34 @@ def _admissible_cycle_evidence(
 
 def _target_progress_detail(result: TargetResult) -> dict[str, Any]:
     """Compact durable checkpoint entry for one completed Target."""
-    return {
+    detail = {
         "passed": result.passed,
         "inconclusive": result.inconclusive,
         "elapsed_s": result.elapsed_s,
         "tests": len(result.tests),
         "tests_passed": sum(1 for test in result.tests if test.passed),
+    }
+    build_stage = [_build_outcome_entry(test.build_outcome) for test in result.tests]
+    if any(entry is not None for entry in build_stage):
+        detail["build_stage"] = [entry for entry in build_stage if entry is not None]
+    return detail
+
+
+def _build_outcome_entry(outcome: BuildOutcome | None) -> dict[str, Any] | None:
+    """JSON shape for one authenticated Simulation build attempt."""
+    if outcome is None:
+        return None
+    return {
+        "ran": outcome.ran,
+        "verdict": outcome.verdict,
+        "failure_class": outcome.failure_kind,
+        "returncode": outcome.returncode,
+        "elapsed_s": round(outcome.elapsed_s, 3),
+        "timed_out": outcome.timed_out,
+        "peak_rss_mb": outcome.peak_rss_mb,
+        "oom_kill_delta": outcome.oom_kill_delta,
+        "terminal_record": outcome.terminal_record,
+        "reason": outcome.reason,
     }
 
 
@@ -429,6 +490,8 @@ def _build_run_script(
     marker: str,
     run_line: str,
     sim_env: dict[str, str] | None = None,
+    *,
+    attempt_token: str | None = None,
 ) -> str:
     """Compose the one-subprocess build+run shell script for a sandbox sim.
 
@@ -449,15 +512,12 @@ def _build_run_script(
     (verilator/icarus/cocotb), so exporting here is the one place that reaches
     the simulator without a per-run-half flag. Values are ``shlex.quote``d.
     """
-    exports = "".join(
-        f"export {name}={shlex.quote(value)}\n" for name, value in (sim_env or {}).items()
-    )
-    return (
-        f"{exports}"
-        "_booley_build_start=$(date +%s)\n"
-        f'{shlex.join(build_cmd)} || {{ echo "ERROR: {marker} (rc=$?)"; exit 1; }}\n'
-        'echo "BOOLEY_BUILD_SECONDS: $(( $(date +%s) - _booley_build_start ))"\n'
-        f"{run_line}"
+    del marker  # retained in the private signature while callers/tests migrate
+    return build_stage_script(
+        build_cmd,
+        attempt_token or new_attempt_token(),
+        run_line=run_line,
+        environment=sim_env,
     )
 
 
@@ -1133,24 +1193,40 @@ def _append_batch_output_lines(
             )
 
 
-class SimulateFlow(BooleyFlow):
+class SimulateFlow(StandaloneMixin, BooleyFlow):
     """Run RTL simulation for one or more Targets."""
 
     name: str = "sim"
     description: str = (
-        "Run RTL simulation for one or more Targets. "
+        "Run RTL simulation for one or more Targets. Set elab_only=true to "
+        "compile, elaborate, and link the ordinary untraced simulator image "
+        "without running tests (CLI: --elab-only; --build-only is an alias). "
         "Do NOT use --trace for initial pass/fail checks — tracing adds "
         "overhead and is only useful after a failure, when you need waveforms "
         "for debugging via the B-Wave (`bwave`) MCP tool."
     )
     code_modifying: bool = False
 
+    def __init__(self) -> None:
+        self._prepared_builds: dict[str, PreparedSimulationBuild] = {}
+        self._build_attempt_tokens: dict[str, str] = {}
+        super().__init__()
+
     # Simulation is always admitted as a heavy Session Runtime job.
     def _resolve_job_class(self) -> str:
         """Simulation is a heavy Session Runtime workload."""
         return job_slots.CLASS_HEAVY
 
-    satisfies: ClassVar[list[str]] = ["sim_pass", "cycle_count"]
+    satisfies: ClassVar[list[str]] = [
+        "elab_pass",
+        "elaborate_standalone",
+        "sim_pass",
+        "cycle_count",
+    ]
+    satisfies_args: ClassVar[dict[str, str]] = {
+        "elab_pass": "--elab-only",
+        "elaborate_standalone": "--elab-only --standalone",
+    }
     # MCP server wraps the whole eda_tool subprocess.  Keep that outer budget
     # long enough for the child sim timeout plus one non-FIFO trace retry.
     default_timeout: ClassVar[int] = (_DEFAULT_TIMEOUT_MS // 1000) * 2 + _TRACE_CLEANUP_MARGIN_S
@@ -1159,6 +1235,7 @@ class SimulateFlow(BooleyFlow):
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
         # TB top, so it comes from the resolved Target (tb_top_for_target), not
         # a per-call arg.
+        self._add_elaboration_args(parser)
         parser.add_argument(
             "--test",
             default=None,
@@ -1171,6 +1248,30 @@ class SimulateFlow(BooleyFlow):
             "any [flows.sim] / tests.toml 'skip' list. Use to dodge "
             "known-hanging tests that burn the full wall-clock budget.",
         )
+        self._add_run_control_args(parser)
+
+    @staticmethod
+    def _add_elaboration_args(parser: Any) -> None:
+        """Add the compile-only Simulation mode and its optional sweep."""
+        parser.add_argument(
+            "--elab-only",
+            "--build-only",
+            dest="elab_only",
+            action="store_true",
+            help="Compile, elaborate, and link the ordinary untraced simulation "
+            "image without running tests, Cocotb Python, Pre-Run Commands, or "
+            "tracing. --build-only is a permanent alias.",
+        )
+        parser.add_argument(
+            "--standalone",
+            action="store_true",
+            help="With --elab-only, also check every RTL module from its "
+            "declaring file using [flows.sim].standalone_frontend.",
+        )
+
+    @staticmethod
+    def _add_run_control_args(parser: Any) -> None:
+        """Add run-stage tracing, reporting, cleanup, and timeout controls."""
         parser.add_argument(
             "--trace",
             action="store_true",
@@ -1605,21 +1706,6 @@ class SimulateFlow(BooleyFlow):
             ) from exc
         prepared.add(key)
 
-    def _stage_doctor_selftest_overlay(self, build_root: Path) -> None:
-        """Apply the internal Doctor bad-fixture overlay after Target staging."""
-        if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) != selftest_overlay.BAD_KIND:
-            return
-        from booley.runtime.project_dir import resolve_project_dir
-
-        project_dir = resolve_project_dir(self.args.work_dir)
-        copied = selftest_overlay.stage_bad_overlay(project_dir, self.name, build_root)
-        if copied == 0:
-            raise selftest_overlay.SelftestOverlayError(
-                "Doctor requested a bad simulation fixture, but "
-                f"{selftest_overlay.bad_overlay_dir(project_dir, self.name)} is empty"
-            )
-        logger.info("  staged Doctor bad-fixture overlay (%d file(s))", copied)
-
     def _build_variant(self) -> str:
         """Return the isolated build variant required by this invocation."""
         variants = ["trace"] if self.args.trace else []
@@ -1650,13 +1736,15 @@ class SimulateFlow(BooleyFlow):
         try:
             if cocotb:
                 fusesoc_registry.validate_cocotb_trace_mode(target, trace_mode)
-            resolved = fusesoc_registry.resolve_target(
+            prepared = prepare_simulation_build(
+                self.args.work_dir,
                 target,
-                project_root=self.args.work_dir,
-                build_root=build_root,
+                variant=self._build_variant(),
                 vlnv=overlay.vlnv if overlay is not None else None,
+                environment=self._target_sim_env(target),
             )
-            validate_top_parameter_intent(resolved, flow="sim")
+            resolved = prepared.resolved
+            self._prepared_builds[target] = prepared
             self._remember_resolved_target(target, resolved)
             return resolved, trace_mode
         finally:
@@ -1691,9 +1779,9 @@ class SimulateFlow(BooleyFlow):
         resolved, trace_mode = self._resolve_sim_target(target)
         self._record_run_log_dir(target, resolved.build_root)
         self._record_eda_tool(target, resolved.eda_tool)
-        self._stage_doctor_selftest_overlay(resolved.build_root)
+        prepared = self._prepared_builds[target]
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        build_cmd = edam_layer.make_command(rel)
+        build_cmd = list(prepared.make_argv)
         plusargs = self._sim_plusargs(
             target,
             test_name,
@@ -1701,11 +1789,14 @@ class SimulateFlow(BooleyFlow):
             resolved.parameters,
         )
         marker, run_line = self._native_run_line(resolved, rel, plusargs, trace_mode)
+        attempt_token = new_attempt_token()
+        self._record_build_attempt_token(target, attempt_token)
         script = _build_run_script(
             build_cmd,
             marker,
             run_line,
             self._target_sim_env(target),
+            attempt_token=attempt_token,
         )
         return ["sh", "-c", script]
 
@@ -1909,10 +2000,10 @@ class SimulateFlow(BooleyFlow):
         resolved, _trace_mode = self._resolve_sim_target(target, cocotb=True)
         self._record_run_log_dir(target, resolved.build_root)
         self._record_eda_tool(target, resolved.eda_tool)
-        self._stage_doctor_selftest_overlay(resolved.build_root)
+        prepared = self._prepared_builds[target]
         module, eda_tool = self._cocotb_target_details(target, resolved)
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
-        build_cmd = edam_layer.make_command(rel)
+        build_cmd = list(prepared.make_argv)
         marker = (
             "iverilog compilation failed"
             if eda_tool == "icarus"
@@ -1929,8 +2020,40 @@ class SimulateFlow(BooleyFlow):
                 trace_scope=resolved.toplevel,
             )
         )
-        script = _build_run_script(build_cmd, marker, run_line, self._target_sim_env(target))
+        attempt_token = new_attempt_token()
+        self._record_build_attempt_token(target, attempt_token)
+        script = _build_run_script(
+            build_cmd,
+            marker,
+            run_line,
+            self._target_sim_env(target),
+            attempt_token=attempt_token,
+        )
         return ["sh", "-c", script]
+
+    def _record_build_attempt_token(self, target: str, token: str) -> None:
+        """Remember the authenticated build record expected from one execution."""
+        self._build_attempt_tokens[target] = token
+
+    def _build_outcome(self, target: str, proc: SubprocessResult) -> BuildOutcome:
+        """Parse the current Target's authenticated terminal build record."""
+        token = self._build_attempt_tokens.pop(target, None)
+        if token is None:
+            return BuildOutcome(
+                ran=False,
+                verdict=None,
+                failure_kind=None,
+                reason="no authenticated build attempt was recorded",
+            )
+        return classify_build_outcome(proc, token)
+
+    @staticmethod
+    def _require_build_verdict(target: str, outcome: BuildOutcome | None) -> None:
+        """Raise when an authenticated build established no design verdict."""
+        if outcome is None or outcome.failure_kind != "infrastructure":
+            return
+        _raise_if_missing_executable(outcome.output)
+        raise SimulationBuildInfrastructureError(target, outcome)
 
     def _dry_run_command(
         self,
@@ -2094,7 +2217,7 @@ class SimulateFlow(BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # isolate per-test setup failure; recorded as a failed TestResult
+        except Exception as exc:
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -2109,6 +2232,7 @@ class SimulateFlow(BooleyFlow):
         if prerun_fail is not None:
             return prerun_fail
         proc = self._execute(cmd)
+        build_outcome = self._build_outcome(target, proc)
         # The raw ./V<top> run emits no [SIM_SUMMARY]; the thin post-processor
         # re-derives it so the shared interpretation below is unchanged.
         combined = sim_edam.reemit_sim_summary(
@@ -2117,13 +2241,14 @@ class SimulateFlow(BooleyFlow):
         )
         self._persist_full_run_log(target, proc)
         test_run_log = self._persist_test_run_log(target, test_name or target, proc)
-        _raise_if_build_eda_tool_missing(combined)
+        self._require_build_verdict(target, build_outcome)
 
         result = self._interpret_sim_result(
             combined,
             proc,
             target,
             test_name,
+            build_outcome,
         )
         result.run_log_path = test_run_log or ""
         return result
@@ -2184,6 +2309,7 @@ class SimulateFlow(BooleyFlow):
         proc: Any,
         target: str,
         test_name: str | None,
+        build_outcome: BuildOutcome | None = None,
     ) -> TestResult:
         """Interpret a finished sim run's output into a TestResult.
 
@@ -2191,7 +2317,11 @@ class SimulateFlow(BooleyFlow):
         blob and a completed subprocess ``proc``. This keeps the pass/fail,
         tail-selection and diagnostic logic in one place.
         """
-        elab_failed = bool(_ELAB_FAIL_RE.search(combined))
+        elab_failed = (
+            build_outcome.design_failed
+            if build_outcome is not None
+            else bool(_ELAB_FAIL_RE.search(combined))
+        )
         passed, inconclusive = _determine_pass_fail(combined, proc)
         # The only cause _determine_pass_fail knows: nothing in the output said
         # pass or fail. A different cause below overwrites this.
@@ -2259,6 +2389,7 @@ class SimulateFlow(BooleyFlow):
             trace_top_scope=trace_top_scope,
             trace_signal_count=trace_signal_count,
             trace_total_ticks=trace_total_ticks,
+            build_outcome=build_outcome,
         )
 
     def _build_error_tail(
@@ -2380,8 +2511,13 @@ class SimulateFlow(BooleyFlow):
 
         return None
 
-    def _run(self) -> McpToolResult:  # noqa: PLR0912, PLR0915 — linear multi-Target orchestration
+    def _run(self) -> McpToolResult:  # noqa: PLR0911, PLR0912, PLR0915 — linear multi-Target orchestration
         """Execute simulation across configs and tests."""
+        mode_error = self._validate_mode_args()
+        if mode_error is not None:
+            return mode_error
+        if self.args.elab_only:
+            return self._run_elab_only()
         resolved = self._resolve_run_targets()
         if isinstance(resolved, McpToolResult):
             return resolved
@@ -2423,6 +2559,8 @@ class SimulateFlow(BooleyFlow):
                 # design. Abandon the sweep and report a Flow error — every
                 # remaining Target would hit the same missing binary.
                 return self._missing_executable_result(exc, target)
+            except SimulationBuildInfrastructureError as exc:
+                return self._build_infrastructure_result(exc)
             self._attach_workload_snapshots(target_result)
             all_results.append(target_result)
             if not target_result.passed:
@@ -2448,6 +2586,14 @@ class SimulateFlow(BooleyFlow):
             "targets": len(all_results),
             "targets_passed": targets_passed,
             "elapsed_s": round(total_elapsed, 1),
+            "elaboration": {
+                result.target: [
+                    entry
+                    for test in result.tests
+                    if (entry := _build_outcome_entry(test.build_outcome)) is not None
+                ]
+                for result in all_results
+            },
             "cycle_counts": [
                 {
                     "target": result.target,
@@ -2492,6 +2638,370 @@ class SimulateFlow(BooleyFlow):
             detail=detail,
             report_text=report_text,
         )
+
+    def _validate_mode_args(self) -> McpToolResult | None:
+        """Reject run-stage arguments that have no meaning in elab-only mode."""
+        if self.args.standalone and not self.args.elab_only:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="sim: --standalone requires --elab-only; add --elab-only or remove --standalone.",
+            )
+        if not self.args.elab_only:
+            return None
+        conflicts = (
+            ("--test", self.args.test is not None),
+            ("--skip", self.args.skip is not None),
+            ("--trace", self.args.trace),
+            ("--result-verbosity full", self.args.result_verbosity == "full"),
+            ("--no-kill", self.args.no_kill),
+        )
+        for argument, active in conflicts:
+            if active:
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"sim: {argument} conflicts with --elab-only; remove "
+                        f"{argument} or omit --elab-only."
+                    ),
+                )
+        return None
+
+    def _run_elab_only(self) -> McpToolResult:
+        """Compile, elaborate, and link selected Simulation Targets without tests."""
+        preflight = self._elab_only_preflight()
+        if isinstance(preflight, McpToolResult):
+            return preflight
+        targets = preflight
+        results = self._run_elab_only_campaign(targets)
+        exit_code, standalone = self._run_optional_standalone(targets, results)
+        return self._elab_only_result(targets, results, exit_code, standalone)
+
+    def _elab_only_preflight(self) -> list[str] | McpToolResult:
+        """Validate compile-only mode and return its selected Targets."""
+        if not self._flow_enabled():
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="sim is disabled ([flows.sim].enabled = false).",
+                detail={"mode": "elab_only"},
+            )
+        targets_or_error = self._resolve_requested_targets()
+        if isinstance(targets_or_error, McpToolResult):
+            targets_or_error.detail["mode"] = "elab_only"
+            return targets_or_error
+        targets = targets_or_error
+        target_error = self._validate_interactive_args(targets)
+        if target_error is not None:
+            target_error.detail["mode"] = "elab_only"
+            return target_error
+        if self.args.dry_run:
+            return self._handle_elab_only_dry_run(targets)
+        return targets
+
+    def _run_elab_only_campaign(
+        self,
+        targets: list[str],
+    ) -> list[ElabOnlyTargetResult]:
+        """Run and checkpoint each requested build-only Target."""
+        self.reserve_invocation_dir()
+        results: list[ElabOnlyTargetResult] = []
+        self._write_elab_only_progress(targets, results, phase="starting")
+        for target in targets:
+            result = self._run_one_elab_only(target)
+            results.append(result)
+            self._record_elab_only_criterion(result)
+            self._write_elab_only_target_report(result)
+            if self.state._file_path is not None:
+                self.state.save()
+            self._write_elab_only_progress(targets, results, phase="running")
+        return results
+
+    def _run_optional_standalone(
+        self,
+        targets: list[str],
+        results: list[ElabOnlyTargetResult],
+    ) -> tuple[int, _StandaloneOutcome | None]:
+        """Merge the optional module sweep into the campaign exit status."""
+        exit_code = self._elab_only_exit_code(results)
+        if not self._standalone_requested():
+            return exit_code, None
+        standalone = self._run_standalone_check(
+            targets,
+            primary_ok=all(result.outcome.passed for result in results),
+        )
+        if standalone.eda_tool_failed:
+            exit_code = EXIT_ERROR
+        elif not standalone.passed and exit_code == EXIT_SUCCESS:
+            exit_code = EXIT_FAILURE
+        return exit_code, standalone
+
+    def _elab_only_result(
+        self,
+        targets: list[str],
+        results: list[ElabOnlyTargetResult],
+        exit_code: int,
+        standalone: _StandaloneOutcome | None,
+    ) -> McpToolResult:
+        """Compose the final compile-only report and MCP result."""
+        passed = sum(result.outcome.passed for result in results)
+        verdict = {EXIT_SUCCESS: "PASS", EXIT_FAILURE: "FAIL", EXIT_ERROR: "ERROR"}[exit_code]
+        lines = [self._elab_only_result_line(result) for result in results]
+        if standalone is not None:
+            lines.extend(standalone.lines)
+        lines += ["", f"RESULT: {verdict} ({passed}/{len(results)})"]
+        report_text = "\n".join(lines)
+        print(report_text)
+        eda_tools = [result.eda_tool for result in results if result.eda_tool]
+        if eda_tools:
+            self._eda_tool = ", ".join(dict.fromkeys(eda_tools))
+        detail: dict[str, Any] = {
+            "mode": "elab_only",
+            "targets": [self._elab_only_detail(result) for result in results],
+        }
+        artifacts = {
+            result.target: {"log": result.log_path} for result in results if result.log_path
+        }
+        if artifacts:
+            detail["artifacts"] = artifacts
+        display_lines = [
+            f"{result.target}: {self._elab_only_status(result)}" for result in results
+        ]
+        if standalone is not None:
+            detail["standalone"] = standalone.detail
+            display_lines.append(standalone.display)
+        self._write_elab_only_progress(targets, results, phase="complete", complete=True)
+        return McpToolResult(
+            exit_code=exit_code,
+            criterion_key=(f"elab_pass_{targets[0]}" if len(targets) == 1 else ""),
+            criterion_met=len(results) == 1 and results[0].outcome.passed,
+            display_lines=display_lines,
+            detail=detail,
+            report_text=report_text,
+        )
+
+    def _run_one_elab_only(self, target: str) -> ElabOnlyTargetResult:
+        """Run one canonical untraced Simulation build and archive its output."""
+        started = time.monotonic()
+        work_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        self._open_run_log(target, work_root)
+        prepared = self._prepare_elab_only_target(target, started)
+        if isinstance(prepared, ElabOnlyTargetResult):
+            return prepared
+        self._register_prepared_build(target, prepared)
+        return self._execute_elab_only_build(target, prepared)
+
+    def _prepare_elab_only_target(
+        self,
+        target: str,
+        started: float,
+    ) -> PreparedSimulationBuild | ElabOnlyTargetResult:
+        """Prepare one Target or return its expected setup-error result."""
+        try:
+            return prepare_simulation_build(
+                self.args.work_dir,
+                target,
+                environment=self._target_sim_env(target),
+            )
+        except SimulationBuildPreparationError as exc:
+            logger.debug("sim elab-only setup failed for %s", target, exc_info=True)
+            outcome = setup_failure_outcome(
+                f"setup failed: {exc}",
+                elapsed_s=time.monotonic() - started,
+            )
+            result = ElabOnlyTargetResult(target=target, outcome=outcome)
+            result.log_path = self._persist_elab_only_log(target, outcome.output)
+            return result
+
+    def _register_prepared_build(
+        self,
+        target: str,
+        prepared: PreparedSimulationBuild,
+    ) -> None:
+        """Register prepared Target state used by reports and optional sweeps."""
+        self._prepared_builds[target] = prepared
+        self._remember_resolved_target(target, prepared.resolved)
+        self._record_run_log_dir(target, prepared.build_root)
+        self._record_eda_tool(target, prepared.eda_tool)
+
+    def _execute_elab_only_build(
+        self,
+        target: str,
+        prepared: PreparedSimulationBuild,
+    ) -> ElabOnlyTargetResult:
+        """Execute and classify one already-prepared build-only Target."""
+        token = new_attempt_token()
+        command = [
+            "sh",
+            "-c",
+            build_stage_script(
+                prepared.make_argv,
+                token,
+                environment=prepared.environment,
+            ),
+        ]
+        proc = self._execute_boundary(
+            command,
+            timeout=max(1, self._effective_timeout_ms() // 1000),
+        )
+        outcome = classify_build_outcome(proc, token)
+        result = ElabOnlyTargetResult(
+            target=target,
+            target_identity=prepared.target_identity,
+            eda_tool=prepared.eda_tool,
+            toplevel=prepared.toplevel,
+            compile_command=shlex.join(command),
+            fileset={name: list(paths) for name, paths in prepared.fileset.items()},
+            outcome=outcome,
+        )
+        result.log_path = self._persist_elab_only_log(target, outcome.output)
+        return result
+
+    def _persist_elab_only_log(self, target: str, output: str) -> str:
+        """Archive complete build output outside the mutable shared cache."""
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is not None:
+            log_dir = invocation_dir / "artifacts" / _artifact_path_component(f"sim_{target}")
+        else:
+            token = new_attempt_token()[:12]
+            log_dir = edam_layer.work_root_for(self.args.work_dir, "sim", target) / (
+                f"elab-only-{token}"
+            )
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            path = write_run_log(log_dir, output, max_bytes=None)
+        except OSError:
+            logger.debug("could not persist elab-only log for %s", target, exc_info=True)
+            return ""
+        return posix_relpath(path, self.args.work_dir)
+
+    def _record_elab_only_criterion(self, result: ElabOnlyTargetResult) -> None:
+        """Write elaboration evidence only when a real design verdict exists."""
+        if self.args.state_file is None or result.outcome.verdict is None:
+            return
+        self.set_criterion(
+            f"elab_pass_{result.target}",
+            result.outcome.passed,
+            source_target=result.target,
+            detail={
+                "mode": "elab_only",
+                "target": result.target,
+                "elapsed_s": round(result.outcome.elapsed_s, 3),
+                "error_gist": (
+                    extract_error_gist(result.outcome.output)
+                    if result.outcome.design_failed
+                    else ""
+                ),
+            },
+        )
+
+    @staticmethod
+    def _elab_only_exit_code(results: list[ElabOnlyTargetResult]) -> int:
+        if any(result.outcome.failure_kind == "infrastructure" for result in results):
+            return EXIT_ERROR
+        if any(result.outcome.design_failed for result in results):
+            return EXIT_FAILURE
+        return EXIT_SUCCESS
+
+    @staticmethod
+    def _elab_only_status(result: ElabOnlyTargetResult) -> str:
+        if result.outcome.passed:
+            return "PASS"
+        return "FAIL" if result.outcome.design_failed else "ERROR"
+
+    def _elab_only_result_line(self, result: ElabOnlyTargetResult) -> str:
+        status = self._elab_only_status(result)
+        line = f"[sim:elab-only] {result.target} {status} {result.outcome.elapsed_s:.1f}s"
+        if not result.outcome.passed and result.outcome.reason:
+            line += f" — {result.outcome.reason}"
+        if result.log_path:
+            line += f" (log: {result.log_path})"
+        return line
+
+    def _elab_only_detail(self, result: ElabOnlyTargetResult) -> dict[str, Any]:
+        return {
+            "target": result.target,
+            "target_identity": result.target_identity,
+            "eda_tool": result.eda_tool,
+            "toplevel": result.toplevel,
+            "compile_command": result.compile_command,
+            "fileset": result.fileset,
+            "elapsed_s": round(result.outcome.elapsed_s, 3),
+            "passed": result.outcome.passed,
+            "verdict": result.outcome.verdict,
+            "failure_class": result.outcome.failure_kind,
+            "reason": result.outcome.reason,
+            "log": result.log_path,
+        }
+
+    def _write_elab_only_target_report(self, result: ElabOnlyTargetResult) -> None:
+        report_dir = self.args.report_dir
+        if report_dir is None:
+            return
+        report = {
+            "flow": "sim",
+            "mode": "elab_only",
+            "timestamp": utc_now_rfc3339(),
+            **self._elab_only_detail(result),
+        }
+        report_dir.mkdir(parents=True, exist_ok=True)
+        path = report_dir / f"sim_{result.target}.json"
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is not None:
+            _atomic_write_json(invocation_dir / "targets" / path.name, report)
+        _atomic_write_json(path, report)
+
+    def _write_elab_only_progress(
+        self,
+        targets: list[str],
+        results: list[ElabOnlyTargetResult],
+        *,
+        phase: str,
+        complete: bool = False,
+    ) -> None:
+        """Checkpoint an Elaboration Check campaign after every Target."""
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is None:
+            return
+        completed = [result.target for result in results]
+        payload = {
+            "flow": self.name,
+            "mode": "elab_only",
+            "run_id": os.environ.get("BOOLEY_RUN_ID", ""),
+            "timestamp": utc_now_rfc3339(),
+            "phase": phase,
+            "complete": complete,
+            "targets": list(targets),
+            "completed_targets": completed,
+            "pending_targets": [target for target in targets if target not in completed],
+            "detail": {result.target: self._elab_only_detail(result) for result in results},
+        }
+        _atomic_write_json(invocation_dir / "progress.json", payload)
+
+    def _handle_elab_only_dry_run(self, targets: list[str]) -> McpToolResult:
+        commands = {target: self._elab_only_dry_command(target) for target in targets}
+        print(json.dumps(commands, indent=2))
+        return McpToolResult(
+            exit_code=EXIT_SUCCESS,
+            report_text=f"Dry run: {len(commands)} elab-only build command(s)",
+            detail={"mode": "elab_only", "commands": commands},
+        )
+
+    def _elab_only_dry_command(self, target: str) -> list[str]:
+        build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
+        try:
+            setup = fusesoc_registry.setup_command(
+                target,
+                project_root=self.args.work_dir,
+                build_root=build_root,
+            )
+        except fusesoc_registry.TargetResolutionError as exc:
+            return [f"ERROR: sim elab-only dry-run: {exc}"]
+        rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
+        parts = [
+            *self._sim_env_preview_lines(target),
+            shlex.join(setup),
+            shlex.join(edam_layer.make_command(rel)),
+        ]
+        return ["sh", "-c", " && ".join(parts)]
 
     def _cycle_baseline_selection(
         self, targets: list[str]
@@ -2560,6 +3070,9 @@ class SimulateFlow(BooleyFlow):
         except MissingExecutableError as exc:
             self.args.work_dir = project_root
             return self._missing_executable_result(exc, baseline_targets[0])
+        except SimulationBuildInfrastructureError as exc:
+            self.args.work_dir = project_root
+            return self._build_infrastructure_result(exc)
         except BaselineWorktreeError as exc:
             self.args.work_dir = project_root
             return McpToolResult(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
@@ -2597,6 +3110,31 @@ class SimulateFlow(BooleyFlow):
                 "eda_tool_error": "missing_executable",
                 "missing_executable": exc.binary,
                 "target": target,
+            },
+            report_text=report_text,
+        )
+
+    @staticmethod
+    def _build_infrastructure_result(
+        exc: SimulationBuildInfrastructureError,
+    ) -> McpToolResult:
+        """Report a no-verdict build outcome without changing Criteria."""
+        outcome = exc.outcome
+        message = (
+            f"sim: build infrastructure failed for Target {exc.target!r}: "
+            f"{outcome.reason}. No simulation ran, so there is no pass/fail "
+            "verdict about the design. Inspect the build log and re-run."
+        )
+        tail = "\n".join(outcome.output.strip().splitlines()[-15:])
+        report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
+        print(report_text)
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            display_lines=[f"Flow error: {exc.target} build infrastructure failed"],
+            detail={
+                "eda_tool_error": "build_infrastructure",
+                "target": exc.target,
+                "build_stage": _build_outcome_entry(outcome),
             },
             report_text=report_text,
         )
@@ -2945,7 +3483,7 @@ class SimulateFlow(BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # report context is best-effort
+        except Exception:
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -2969,7 +3507,7 @@ class SimulateFlow(BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # report context is best-effort
+        except Exception:
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -3047,7 +3585,7 @@ class SimulateFlow(BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # isolate setup failure; recorded as a failed batch
+        except Exception as exc:
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(
@@ -3090,15 +3628,17 @@ class SimulateFlow(BooleyFlow):
             )
 
         proc = self._execute(cmd)
+        build_outcome = self._build_outcome(target, proc)
         combined = proc.stdout + "\n" + proc.stderr
         self._persist_full_run_log(target, proc)  # F-29e, as on the HDL loop
-        _raise_if_build_eda_tool_missing(combined)
+        self._require_build_verdict(target, build_outcome)
         test_results, trace_inconclusive = self._interpret_cocotb_result(
             combined,
             proc,
             target,
             selected,
             output_lines,
+            build_outcome,
         )
         _append_batch_output_lines(test_results, output_lines, self._run_log_is_fresh(target))
 
@@ -3142,6 +3682,7 @@ class SimulateFlow(BooleyFlow):
         target: str,
         selected: list[str],
         output_lines: list[str],
+        build_outcome: BuildOutcome | None = None,
     ) -> tuple[list[TestResult], bool]:
         """Fan a batched cocotb run's output into per-test TestResults (C2/C3).
 
@@ -3162,7 +3703,11 @@ class SimulateFlow(BooleyFlow):
         """
         from booley.sim import cocotb_results as cocotb_results_mod
 
-        elab_failed = bool(_ELAB_FAIL_RE.search(combined))
+        elab_failed = (
+            build_outcome.design_failed
+            if build_outcome is not None
+            else bool(_ELAB_FAIL_RE.search(combined))
+        )
         # SVA count comes from the run-half's [SIM_SUMMARY] (computed over the
         # RUN output only) — never recounted over `combined` here, which also
         # carries the BUILD half: iverilog's "System task ($error) cannot be
@@ -3190,6 +3735,7 @@ class SimulateFlow(BooleyFlow):
                     sva_errors,
                     timed_out,
                     output_lines,
+                    build_outcome,
                 )
             ], False
 
@@ -3267,6 +3813,7 @@ class SimulateFlow(BooleyFlow):
                     trace_top_scope=trace_top_scope if i == 0 else "",
                     trace_signal_count=trace_signal_count if i == 0 else 0,
                     trace_total_ticks=trace_total_ticks if i == 0 else 0,
+                    build_outcome=build_outcome if i == 0 else None,
                 )
             )
 
@@ -3313,6 +3860,7 @@ class SimulateFlow(BooleyFlow):
         sva_errors: int,
         timed_out: bool,
         output_lines: list[str],
+        build_outcome: BuildOutcome | None = None,
     ) -> TestResult:
         """The single result entry for a cocotb run whose BUILD half broke.
 
@@ -3344,6 +3892,7 @@ class SimulateFlow(BooleyFlow):
             timed_out=timed_out,
             inconclusive=False,
             elab_failed=True,
+            build_outcome=build_outcome,
         )
 
     def _cocotb_error_tail(
@@ -3610,25 +4159,25 @@ class SimulateFlow(BooleyFlow):
         )
 
     def _write_target_report(self, result: TargetResult) -> None:
-        """Write per-target structured JSON report.
-
-        Besides the verdicts, the report carries the generated build config
-        that is otherwise invisible (benchmark finding: agents shelled out
-        to recover the edalize compile line and the fileset): the composed
-        ``compile_command`` and the rtl/tb-split ``fileset``. Both are
-        best-effort — omitted, never fatal, when composition fails.
-
-        It also carries the ``artifacts`` block — where run.log, result.json
-        and the trace family landed. Those paths used to exist only in the
-        stdout headline, and only on failure, so the MCP layer's stdout
-        truncation cut them off exactly on the long runs that needed them.
-        """
+        """Write one Target's verdict, build context, and artifact pointers."""
         report_dir = self.args.report_dir
         if report_dir is None:
             return
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / f"sim_{result.target}.json"
-        report = {
+        report = self._target_report_payload(result, report_path)
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is not None:
+            _atomic_write_json(invocation_dir / "targets" / report_path.name, report)
+        _atomic_write_json(report_path, report)
+
+    def _target_report_payload(
+        self,
+        result: TargetResult,
+        report_path: Path,
+    ) -> dict[str, Any]:
+        """Compose best-effort build context around one Target verdict."""
+        report: dict[str, Any] = {
             "flow": self.name,
             "target": result.target,
             "tb_top": result.tb_top,
@@ -3638,6 +4187,9 @@ class SimulateFlow(BooleyFlow):
             "passed": result.passed,
             "tests": [_test_report_entry(t) for t in result.tests],
         }
+        build_stage = [_build_outcome_entry(test.build_outcome) for test in result.tests]
+        if any(entry is not None for entry in build_stage):
+            report["build_stage"] = [entry for entry in build_stage if entry is not None]
         run_id = os.environ.get("BOOLEY_RUN_ID", "")
         if run_id:
             report["run_id"] = run_id
@@ -3653,10 +4205,7 @@ class SimulateFlow(BooleyFlow):
         artifacts = self._artifacts_for(result.target, result)
         artifacts["report"] = posix_relpath(report_path, self.args.work_dir)
         report["artifacts"] = artifacts
-        invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is not None:
-            _atomic_write_json(invocation_dir / "targets" / report_path.name, report)
-        _atomic_write_json(report_path, report)
+        return report
 
     def _write_progress_report(
         self,
@@ -3687,10 +4236,34 @@ class SimulateFlow(BooleyFlow):
     def _persist_target_outcome(self, result: TargetResult) -> None:
         """Durably record one terminal Target before starting the next."""
         self._write_target_report(result)
+        self._record_elab_criterion(result)
         self._record_sim_criterion(result)
         self._record_cycle_count_criteria(result)
         if self.state._file_path is not None:
             self.state.save()
+
+    def _record_elab_criterion(self, result: TargetResult) -> None:
+        """Record authenticated full-Simulation build-stage evidence."""
+        if self.args.state_file is None:
+            return
+        outcomes = [test.build_outcome for test in result.tests if test.build_outcome is not None]
+        if not outcomes:
+            return
+        if any(outcome.design_failed for outcome in outcomes):
+            met = False
+        elif any(outcome.verdict is None for outcome in outcomes):
+            return
+        else:
+            met = all(outcome.passed for outcome in outcomes)
+        attempts = [
+            entry for outcome in outcomes if (entry := _build_outcome_entry(outcome)) is not None
+        ]
+        self.set_criterion(
+            f"elab_pass_{result.target}",
+            met,
+            source_target=result.target,
+            detail={"mode": "simulation", "target": result.target, "attempts": attempts},
+        )
 
 
 if __name__ == "__main__":

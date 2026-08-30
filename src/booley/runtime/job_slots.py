@@ -80,7 +80,7 @@ from booley.runtime.timefmt import rfc3339_from_epoch
 logger = logging.getLogger(__name__)
 
 # Job classes (ADR 0028 Decision 5), resolved by workload type.
-CLASS_HEAVY = "heavy"  # in-container EDA subprocesses (sim/synth/elaborate)
+CLASS_HEAVY = "heavy"  # in-container EDA subprocesses (sim/synth)
 CLASS_LIGHT = "light"  # Specialists — model-API-bound, ~no local footprint
 CLASS_TICKET = "ticket"  # Developer Agent processes, claimed by the Runner
 JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT, CLASS_TICKET)

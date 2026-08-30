@@ -21,7 +21,7 @@ docker run --rm -v "$PWD/tests/fixtures/cocotb_counter":/work -w /work \
 | G10 bogus name | `--target sim_bad` | `test_bogus_name` inconclusive with the "no matching @cocotb.test" message |
 | G11 crash shapes | `--target sim_crash` | never pass: `test_py_exception` fail (RuntimeError), `test_rtl_fatal` fail + SVA count > 0 |
 | G11 timeout | `--target sim_hang --timeout 15000` | never pass; timeout verdict |
-| G12 elaborate | `python3 -m booley.flows.elab --work-dir /work --target sim_verilator` | PASS (build half untouched) |
+| G12 Elaboration Check | `python3 -m booley.flows.sim --work-dir /work --target sim_verilator --elab-only` | PASS (build half untouched) |
 | G13 dry-run | `--target sim_icarus --dry-run` | one batched command: `fusesoc … --setup && make … && python3 -m booley.sim.cocotb_run … --test ×3` |
 | G14 trace | `--target sim_icarus --test count --trace` | TRACE_OK + queryable store; also on `sim_verilator` |
 | G15 mutation smoke | flip `count + 1'b1` → `count - 1'b1` in the DUT, rerun `sim_icarus` | FAIL (the mutant is killed through the cocotb Target) |

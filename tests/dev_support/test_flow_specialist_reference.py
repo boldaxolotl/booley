@@ -100,7 +100,7 @@ def test_flows_follow_hardware_flow_order() -> None:
         for line in render_flow_reference().splitlines()
         if line.startswith("| `")
     ]
-    assert rows == ["elab", "sim", "lint", "synth", "fpga"]
+    assert rows == ["sim", "lint", "synth", "fpga"]
 
 
 def test_every_builtin_flow_has_key_controls() -> None:

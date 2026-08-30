@@ -1520,9 +1520,7 @@ class TestAsyncJobToolMembership:
         assert "synth" in mcp_server._ASYNC_JOB_MCP_TOOLS
         assert "fpga" in mcp_server._ASYNC_JOB_MCP_TOOLS
         assert "sim" in mcp_server._ASYNC_JOB_MCP_TOOLS
-        # Added 2026-07-05: multi-minute Xcelium elaborates hit the same
-        # client-cap → file-lock cascade as the original three.
-        assert "elab" in mcp_server._ASYNC_JOB_MCP_TOOLS
+        assert "elab" not in mcp_server._ASYNC_JOB_MCP_TOOLS
         # Added 2026-07-06: the LLM specialists each drive a 20-30 min sub-agent
         # loop, so an interactive call came back as a bare client-side timeout
         # (no run_id, no poll) — recoverable only via booley_report.

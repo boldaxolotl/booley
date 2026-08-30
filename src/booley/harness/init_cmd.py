@@ -34,7 +34,6 @@ system-level).
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import shutil
@@ -81,6 +80,7 @@ from booley.harness.init_common import (
     StepResult,
     WriteOutcome,
     banner,
+    configure_progress_output,
     err,
     guarded_write,
     info,
@@ -119,13 +119,7 @@ from booley.harness.init_git_hooks import (
 )
 from booley.harness.init_plan import InitPlan, InitPreconditionError
 from booley.harness.init_scaffold import step_scaffold
-from booley.harness.init_skills import (
-    _deploy_skills,
-    _find_skill_targets,
-    _is_booley_skill_link,
-    _make_junction_or_symlink,
-    _prune_stale_skill_links,
-)
+from booley.harness.init_skills import _deploy_skills
 from booley.runtime import auth_token
 from booley.runtime import project_image as pi
 from booley.runtime.git import add_git_excludes
@@ -1934,11 +1928,8 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
 # ---------------------------------------------------------------------------
 
 
-#: Builtin flows with no ``[flows.<flow>]`` wiring of their own, so the advisory
-#: below must not nag about them: elaborate follows ``[flows.sim]``'s
-#: selection and has no menu of its own (see doctor's
-#: ``_EXECUTION_VALIDATING_TOOLS``).
-_FLOWS_WITHOUT_OWN_WIRING = frozenset({"elab"})
+#: Builtin flows with no ``[flows.<flow>]`` wiring of their own.
+_FLOWS_WITHOUT_OWN_WIRING: frozenset[str] = frozenset()
 
 #: Builtin flows booley-setup triages and wires, in display order.
 SETUP_WIRED_FLOWS = ("sim", "lint", "synth", "fpga")
@@ -2319,15 +2310,6 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     return _print_summary(ctx)
 
 
-def _configure_progress_output() -> None:
-    """Make redirected initialization progress visible without delay."""
-    # Line-buffer stdout so progress (esp. the multi-minute docker build) streams
-    # when piped/redirected. Python block-buffers a non-TTY stdout, which made
-    # init look hung for minutes with no output (SETUP-2).
-    with contextlib.suppress(AttributeError, ValueError):
-        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
-
-
 def _print_init_banner(ctx: InitContext) -> None:
     """Print the interactive initialization heading."""
     if ctx.check_only or not sys.stdout.isatty():
@@ -2431,7 +2413,7 @@ def _run_project_init_steps(
 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run the project initialization wizard."""
-    _configure_progress_output()
+    configure_progress_output()
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
 

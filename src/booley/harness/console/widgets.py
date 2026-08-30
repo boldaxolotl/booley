@@ -44,7 +44,6 @@ _ENDPOINT_STYLES: dict[str, str] = {
     "coverage_analyst": "color(183)",
     "mutation_tester": "color(183)",
     "sim": "color(75)",
-    "elab": "color(75)",
     "lint": "color(75)",
     "synth": "color(75)",
     "submit_run_report": "color(75)",

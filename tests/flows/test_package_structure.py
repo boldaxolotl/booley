@@ -12,7 +12,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FLOWS_ROOT = REPO_ROOT / "src" / "booley" / "flows"
-FLOW_PACKAGES = ("sim", "synth", "fpga", "lint", "elab")
+FLOW_PACKAGES = ("sim", "synth", "fpga", "lint")
 OLD_FLOW_MODULES = (
     "simulate.py",
     "sim_edam.py",
@@ -25,7 +25,6 @@ OLD_FLOW_MODULES = (
     "fpga_edam.py",
     "fpga_metrics.py",
     "lint.py",
-    "elaborate.py",
 )
 
 
