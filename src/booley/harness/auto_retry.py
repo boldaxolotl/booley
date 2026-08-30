@@ -161,7 +161,7 @@ def maybe_auto_retry(ctx: TicketContext, project_root: Path, run_index: int) -> 
     """
     try:
         return _maybe_auto_retry(ctx, project_root, run_index)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — auto-retry is best-effort by design
         logger.warning("Auto-retry check failed for %s: %s", ctx.slug, exc, exc_info=True)
         return False
 
