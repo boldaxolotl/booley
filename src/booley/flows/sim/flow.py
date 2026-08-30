@@ -2217,7 +2217,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate arbitrary adapter/configure failures
+        except Exception as exc:  # isolate arbitrary adapter/configure failures
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -3483,7 +3483,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:  # report context is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3507,7 +3507,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:  # report context is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -3585,7 +3585,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate arbitrary cocotb setup failures
+        except Exception as exc:  # isolate arbitrary cocotb setup failures
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(
