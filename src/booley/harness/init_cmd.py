@@ -740,7 +740,7 @@ def _step_auth(
 
 
 # ---------------------------------------------------------------------------
-# Init step: required host bootstrap tools (record key: eda_tools)
+# Init step: required host prerequisites (record key: host_prerequisites)
 # ---------------------------------------------------------------------------
 
 
@@ -805,7 +805,7 @@ def _report_vscode() -> bool:
     return False
 
 
-def _step_eda_tool_detection(ctx: InitContext) -> bool:
+def _step_host_prerequisites(ctx: InitContext) -> bool:
     """Check host tools and report whether Docker is ready for initialization."""
     ctx.step_banner("host bootstrap tool detection")
     git = _report_required_tool("git", "--version", "version control")
@@ -817,7 +817,7 @@ def _step_eda_tool_detection(ctx: InitContext) -> bool:
     vscode_ready = _report_vscode()
     any_missing = git is None or not docker_ready or not vscode_ready
     detail = "docker unavailable" if not docker_ready else ""
-    ctx.record("eda_tools", "err" if any_missing else "ok", detail)
+    ctx.record("host_prerequisites", "err" if any_missing else "ok", detail)
     return docker_ready
 
 
@@ -2430,7 +2430,7 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
 
     # Docker is the execution substrate for every supported EDA flow. Fail
     # before changing project files so a missing daemon cannot leave partial setup.
-    if not _step_eda_tool_detection(ctx):
+    if not _step_host_prerequisites(ctx):
         return _print_summary(ctx)
     guidance_plan, may_proceed = _plan_existing_guidance(ctx)
     if not may_proceed:

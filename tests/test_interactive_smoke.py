@@ -670,7 +670,7 @@ class TestInitInteractive:
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", lambda _ctx: True)
+        monkeypatch.setattr(init_cmd, "_step_host_prerequisites", lambda _ctx: True)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
 
         args = argparse.Namespace(

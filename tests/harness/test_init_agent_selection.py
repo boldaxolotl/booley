@@ -51,7 +51,7 @@ def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
 def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
     project_dir = tmp_path / init_cmd.PROJECT_DIR_NAME
     project_dir.mkdir()
-    monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", lambda _ctx: True)
+    monkeypatch.setattr(init_cmd, "_step_host_prerequisites", lambda _ctx: True)
 
     def seed(_ctx, selection):
         config = (project_dir / "booley.toml").read_text(encoding="utf-8")
