@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.eda_parsers import extract_error_gist
+from booley.fusesoc import fusesoc_registry
 from booley.targets.target import inspect_target
 
 from .. import edam as edam_layer
@@ -339,27 +340,44 @@ class StandaloneMixin:
         *,
         primary_ok: bool = True,
     ) -> _StandaloneOutcome:
-        """Run the standalone sweep, set the criterion, and report.
-
-        Deterministic and cheap (one parse+elaborate per module), so it runs on
-        every invocation — no one-shot machinery. The probes run as local
-        subprocesses in the Session Runtime via the EDA tool's standard
-        ``_execute`` path (both frontends are baked into the sandbox image):
-        they are not Boundary-Command-Contract commands (ADR 0037 §5 crossings
-        are relocatable ``make`` argvs only), so they never route to the host.
-
-        *primary_ok* says whether the per-Target elaborate legs of this same
-        invocation accepted the sources — one half of
-        :meth:`_parse_gap_is_credible`, which decides whether a probe error
-        that looks like a parse failure is graded as a capability gap (no
-        verdict about that module) or as the design failure it usually is.
-        A false FAIL is nearly as expensive as a false PASS (F-25); so is a
-        false "no verdict", which is why the gap escape hatch is narrow and
-        why modules it excuses never displace the ones that really failed.
-        """
+        """Run the optional per-module sweep and record its criterion."""
         t0 = time.monotonic()
-        # F-26: same claim-before-you-run contract as the per-Target loop,
-        # against the sweep's own variant work dir.
+        prepared = self._prepare_standalone_check(targets)
+        if isinstance(prepared, _StandaloneOutcome):
+            return prepared
+        frontend, modules, shared = prepared
+        failures, unparsed, log_chunks, eda_tool_error = self._run_standalone_probes(
+            modules,
+            shared,
+            frontend,
+            gap_is_credible=self._parse_gap_is_credible(frontend, primary_ok),
+        )
+        log_pointer = self._persist_standalone_log("".join(log_chunks))
+        error = self._standalone_probe_error(
+            frontend,
+            modules,
+            failures,
+            unparsed,
+            eda_tool_error,
+            log_pointer,
+        )
+        if error is not None:
+            return error
+        return self._standalone_verdict(
+            frontend,
+            modules,
+            shared,
+            failures,
+            unparsed,
+            log_pointer,
+            time.monotonic() - t0,
+        )
+
+    def _prepare_standalone_check(
+        self,
+        targets: list[str],
+    ) -> tuple[str, list[tuple[str, str]], list[str]] | _StandaloneOutcome:
+        """Resolve the frontend and non-vacuous RTL module scope."""
         self._open_run_log(
             "standalone",
             edam_layer.work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
@@ -370,7 +388,7 @@ class StandaloneMixin:
             return self._standalone_error(str(exc))
         try:
             scope = self._standalone_rtl_scope(targets)
-        except Exception as exc:  # noqa: BLE001 — resolution becomes a Flow ERROR
+        except (fusesoc_registry.FuseSocError, OSError) as exc:
             logger.debug("standalone: RTL scope resolution failed", exc_info=True)
             return self._standalone_error(
                 f"could not resolve RTL source scope: {exc}",
@@ -384,21 +402,21 @@ class StandaloneMixin:
                 f"({len(scope)} files) — the criterion would be vacuous. "
                 "Check the Targets' RTL filesets.",
             )
+        return frontend, modules, shared
 
-        failures, unparsed, log_chunks, eda_tool_error = self._run_standalone_probes(
-            modules,
-            shared,
-            frontend,
-            gap_is_credible=self._parse_gap_is_credible(frontend, primary_ok),
-        )
-
-        elapsed = time.monotonic() - t0
-        log_pointer = self._persist_standalone_log("".join(log_chunks))
+    def _standalone_probe_error(
+        self,
+        frontend: str,
+        modules: list[tuple[str, str]],
+        failures: list[dict[str, str]],
+        unparsed: list[dict[str, str]],
+        eda_tool_error: str,
+        log_pointer: str | None,
+    ) -> _StandaloneOutcome | None:
+        """Return the no-verdict outcome for probe infrastructure/gaps."""
         if eda_tool_error:
             return self._standalone_error(eda_tool_error, log_pointer=log_pointer)
         if unparsed and not failures:
-            # Nothing else in the sweep reached a verdict either, so the run as
-            # a whole reached none: report the capability gap and stop.
             return self._standalone_error(
                 self._parse_gap_message(frontend, unparsed, len(modules)),
                 log_pointer=log_pointer,
@@ -407,7 +425,19 @@ class StandaloneMixin:
                     "unparsed": _standalone_entries(unparsed),
                 },
             )
+        return None
 
+    def _standalone_verdict(
+        self,
+        frontend: str,
+        modules: list[tuple[str, str]],
+        shared: list[str],
+        failures: list[dict[str, str]],
+        unparsed: list[dict[str, str]],
+        log_pointer: str | None,
+        elapsed: float,
+    ) -> _StandaloneOutcome:
+        """Compose and record one completed standalone sweep verdict."""
         passed = not failures
         header = (
             f"[sim:elab-only] standalone ({len(modules)} modules, "
@@ -423,16 +453,9 @@ class StandaloneMixin:
         # defect nor the hole in coverage is silently dropped.
         if unparsed:
             lines.extend(self._standalone_ungraded_lines(frontend, unparsed, log_pointer))
-        detail: dict[str, Any] = {
-            "modules_checked": len(modules),
-            "shared_files": shared,
-            "frontend": frontend,
-            "failures": _standalone_entries(failures),
-        }
-        if unparsed:
-            detail["unparsed"] = _standalone_entries(unparsed)
-        if log_pointer:
-            detail["log"] = log_pointer
+        detail = self._standalone_detail(
+            frontend, modules, shared, failures, unparsed, log_pointer
+        )
         if self.args.state_file is not None:
             self.set_criterion(_STANDALONE_CRITERION, passed, detail=detail)
         # `passed` implies no unparsed modules (a gap-only sweep returned above).
@@ -449,6 +472,28 @@ class StandaloneMixin:
             detail=detail,
             display=display,
         )
+
+    @staticmethod
+    def _standalone_detail(
+        frontend: str,
+        modules: list[tuple[str, str]],
+        shared: list[str],
+        failures: list[dict[str, str]],
+        unparsed: list[dict[str, str]],
+        log_pointer: str | None,
+    ) -> dict[str, Any]:
+        """Build the durable detail payload for a completed sweep."""
+        detail: dict[str, Any] = {
+            "modules_checked": len(modules),
+            "shared_files": shared,
+            "frontend": frontend,
+            "failures": _standalone_entries(failures),
+        }
+        if unparsed:
+            detail["unparsed"] = _standalone_entries(unparsed)
+        if log_pointer:
+            detail["log"] = log_pointer
+        return detail
 
     def _persist_standalone_log(self, combined: str) -> str | None:
         """Persist the sweep's full per-module compiler output as run.log.

@@ -62,12 +62,14 @@ from . import edam as sim_edam
 from .build import (
     BuildOutcome,
     PreparedSimulationBuild,
+    SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
     new_attempt_token,
     prepare_simulation_build,
+    setup_failure_outcome,
 )
-from .standalone import StandaloneMixin
+from .standalone import StandaloneMixin, _StandaloneOutcome
 from .target_tests import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
@@ -143,6 +145,15 @@ class MissingExecutableError(RuntimeError):
         super().__init__(f"required executable not found: {binary}")
         self.binary = binary
         self.context = context
+
+
+class SimulationBuildInfrastructureError(RuntimeError):
+    """An authenticated build attempt ended without a design verdict."""
+
+    def __init__(self, target: str, outcome: BuildOutcome) -> None:
+        super().__init__(outcome.reason)
+        self.target = target
+        self.outcome = outcome
 
 
 def find_missing_executable(text: str) -> str | None:
@@ -1196,6 +1207,11 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     )
     code_modifying: bool = False
 
+    def __init__(self) -> None:
+        self._prepared_builds: dict[str, PreparedSimulationBuild] = {}
+        self._build_attempt_tokens: dict[str, str] = {}
+        super().__init__()
+
     # Simulation is always admitted as a heavy Session Runtime job.
     def _resolve_job_class(self) -> str:
         """Simulation is a heavy Session Runtime workload."""
@@ -1219,6 +1235,24 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
         # TB top, so it comes from the resolved Target (tb_top_for_target), not
         # a per-call arg.
+        self._add_elaboration_args(parser)
+        parser.add_argument(
+            "--test",
+            default=None,
+            help="Run specific test by name (substring match)",
+        )
+        parser.add_argument(
+            "--skip",
+            default=None,
+            help="Comma-separated test names to exclude (exact match). Adds to "
+            "any [flows.sim] / tests.toml 'skip' list. Use to dodge "
+            "known-hanging tests that burn the full wall-clock budget.",
+        )
+        self._add_run_control_args(parser)
+
+    @staticmethod
+    def _add_elaboration_args(parser: Any) -> None:
+        """Add the compile-only Simulation mode and its optional sweep."""
         parser.add_argument(
             "--elab-only",
             "--build-only",
@@ -1234,18 +1268,10 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             help="With --elab-only, also check every RTL module from its "
             "declaring file using [flows.sim].standalone_frontend.",
         )
-        parser.add_argument(
-            "--test",
-            default=None,
-            help="Run specific test by name (substring match)",
-        )
-        parser.add_argument(
-            "--skip",
-            default=None,
-            help="Comma-separated test names to exclude (exact match). Adds to "
-            "any [flows.sim] / tests.toml 'skip' list. Use to dodge "
-            "known-hanging tests that burn the full wall-clock budget.",
-        )
+
+    @staticmethod
+    def _add_run_control_args(parser: Any) -> None:
+        """Add run-stage tracing, reporting, cleanup, and timeout controls."""
         parser.add_argument(
             "--trace",
             action="store_true",
@@ -1718,8 +1744,6 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 environment=self._target_sim_env(target),
             )
             resolved = prepared.resolved
-            if not hasattr(self, "_prepared_builds"):
-                self._prepared_builds: dict[str, PreparedSimulationBuild] = {}
             self._prepared_builds[target] = prepared
             self._remember_resolved_target(target, resolved)
             return resolved, trace_mode
@@ -2009,14 +2033,27 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
     def _record_build_attempt_token(self, target: str, token: str) -> None:
         """Remember the authenticated build record expected from one execution."""
-        if not hasattr(self, "_build_attempt_tokens"):
-            self._build_attempt_tokens: dict[str, str] = {}
         self._build_attempt_tokens[target] = token
 
     def _build_outcome(self, target: str, proc: SubprocessResult) -> BuildOutcome:
         """Parse the current Target's authenticated terminal build record."""
-        token = getattr(self, "_build_attempt_tokens", {}).pop(target, "")
+        token = self._build_attempt_tokens.pop(target, None)
+        if token is None:
+            return BuildOutcome(
+                ran=False,
+                verdict=None,
+                failure_kind=None,
+                reason="no authenticated build attempt was recorded",
+            )
         return classify_build_outcome(proc, token)
+
+    @staticmethod
+    def _require_build_verdict(target: str, outcome: BuildOutcome | None) -> None:
+        """Raise when an authenticated build established no design verdict."""
+        if outcome is None or outcome.failure_kind != "infrastructure":
+            return
+        _raise_if_missing_executable(outcome.output)
+        raise SimulationBuildInfrastructureError(target, outcome)
 
     def _dry_run_command(
         self,
@@ -2180,7 +2217,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             )
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate per-test setup failure
+        except Exception as exc:
             logger.debug("simulate EDAM/configure failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             return TestResult(
@@ -2204,8 +2241,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
         self._persist_full_run_log(target, proc)
         test_run_log = self._persist_test_run_log(target, test_name or target, proc)
-        if build_outcome.failure_kind == "infrastructure" and build_outcome.terminal_record:
-            _raise_if_missing_executable(build_outcome.output)
+        self._require_build_verdict(target, build_outcome)
 
         result = self._interpret_sim_result(
             combined,
@@ -2523,6 +2559,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 # design. Abandon the sweep and report a Flow error — every
                 # remaining Target would hit the same missing binary.
                 return self._missing_executable_result(exc, target)
+            except SimulationBuildInfrastructureError as exc:
+                return self._build_infrastructure_result(exc)
             self._attach_workload_snapshots(target_result)
             all_results.append(target_result)
             if not target_result.passed:
@@ -2628,8 +2666,18 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 )
         return None
 
-    def _run_elab_only(self) -> McpToolResult:  # noqa: PLR0912, PLR0915
+    def _run_elab_only(self) -> McpToolResult:
         """Compile, elaborate, and link selected Simulation Targets without tests."""
+        preflight = self._elab_only_preflight()
+        if isinstance(preflight, McpToolResult):
+            return preflight
+        targets = preflight
+        results = self._run_elab_only_campaign(targets)
+        exit_code, standalone = self._run_optional_standalone(targets, results)
+        return self._elab_only_result(targets, results, exit_code, standalone)
+
+    def _elab_only_preflight(self) -> list[str] | McpToolResult:
+        """Validate compile-only mode and return its selected Targets."""
         if not self._flow_enabled():
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -2647,7 +2695,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return target_error
         if self.args.dry_run:
             return self._handle_elab_only_dry_run(targets)
+        return targets
 
+    def _run_elab_only_campaign(
+        self,
+        targets: list[str],
+    ) -> list[ElabOnlyTargetResult]:
+        """Run and checkpoint each requested build-only Target."""
         self.reserve_invocation_dir()
         results: list[ElabOnlyTargetResult] = []
         self._write_elab_only_progress(targets, results, phase="starting")
@@ -2659,18 +2713,35 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             if self.state._file_path is not None:
                 self.state.save()
             self._write_elab_only_progress(targets, results, phase="running")
+        return results
 
+    def _run_optional_standalone(
+        self,
+        targets: list[str],
+        results: list[ElabOnlyTargetResult],
+    ) -> tuple[int, _StandaloneOutcome | None]:
+        """Merge the optional module sweep into the campaign exit status."""
         exit_code = self._elab_only_exit_code(results)
-        standalone = None
-        if self._standalone_requested():
-            standalone = self._run_standalone_check(
-                targets,
-                primary_ok=all(result.outcome.passed for result in results),
-            )
-            if standalone.eda_tool_failed:
-                exit_code = EXIT_ERROR
-            elif not standalone.passed and exit_code == EXIT_SUCCESS:
-                exit_code = EXIT_FAILURE
+        if not self._standalone_requested():
+            return exit_code, None
+        standalone = self._run_standalone_check(
+            targets,
+            primary_ok=all(result.outcome.passed for result in results),
+        )
+        if standalone.eda_tool_failed:
+            exit_code = EXIT_ERROR
+        elif not standalone.passed and exit_code == EXIT_SUCCESS:
+            exit_code = EXIT_FAILURE
+        return exit_code, standalone
+
+    def _elab_only_result(
+        self,
+        targets: list[str],
+        results: list[ElabOnlyTargetResult],
+        exit_code: int,
+        standalone: _StandaloneOutcome | None,
+    ) -> McpToolResult:
+        """Compose the final compile-only report and MCP result."""
         passed = sum(result.outcome.passed for result in results)
         verdict = {EXIT_SUCCESS: "PASS", EXIT_FAILURE: "FAIL", EXIT_ERROR: "ERROR"}[exit_code]
         lines = [self._elab_only_result_line(result) for result in results]
@@ -2712,31 +2783,51 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         started = time.monotonic()
         work_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
         self._open_run_log(target, work_root)
+        prepared = self._prepare_elab_only_target(target, started)
+        if isinstance(prepared, ElabOnlyTargetResult):
+            return prepared
+        self._register_prepared_build(target, prepared)
+        return self._execute_elab_only_build(target, prepared)
+
+    def _prepare_elab_only_target(
+        self,
+        target: str,
+        started: float,
+    ) -> PreparedSimulationBuild | ElabOnlyTargetResult:
+        """Prepare one Target or return its expected setup-error result."""
         try:
-            prepared = prepare_simulation_build(
+            return prepare_simulation_build(
                 self.args.work_dir,
                 target,
                 environment=self._target_sim_env(target),
             )
-        except Exception as exc:  # noqa: BLE001 — isolate each Target in a campaign
+        except SimulationBuildPreparationError as exc:
             logger.debug("sim elab-only setup failed for %s", target, exc_info=True)
-            outcome = BuildOutcome(
-                ran=False,
-                verdict=None,
-                failure_kind="infrastructure",
+            outcome = setup_failure_outcome(
+                f"setup failed: {exc}",
                 elapsed_s=time.monotonic() - started,
-                output=f"sim elab-only setup failed: {exc}",
-                reason=f"setup failed: {exc}",
             )
             result = ElabOnlyTargetResult(target=target, outcome=outcome)
             result.log_path = self._persist_elab_only_log(target, outcome.output)
             return result
 
-        self._prepared_builds = getattr(self, "_prepared_builds", {})
+    def _register_prepared_build(
+        self,
+        target: str,
+        prepared: PreparedSimulationBuild,
+    ) -> None:
+        """Register prepared Target state used by reports and optional sweeps."""
         self._prepared_builds[target] = prepared
         self._remember_resolved_target(target, prepared.resolved)
         self._record_run_log_dir(target, prepared.build_root)
         self._record_eda_tool(target, prepared.eda_tool)
+
+    def _execute_elab_only_build(
+        self,
+        target: str,
+        prepared: PreparedSimulationBuild,
+    ) -> ElabOnlyTargetResult:
+        """Execute and classify one already-prepared build-only Target."""
         token = new_attempt_token()
         command = [
             "sh",
@@ -2979,6 +3070,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         except MissingExecutableError as exc:
             self.args.work_dir = project_root
             return self._missing_executable_result(exc, baseline_targets[0])
+        except SimulationBuildInfrastructureError as exc:
+            self.args.work_dir = project_root
+            return self._build_infrastructure_result(exc)
         except BaselineWorktreeError as exc:
             self.args.work_dir = project_root
             return McpToolResult(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
@@ -3016,6 +3110,31 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "eda_tool_error": "missing_executable",
                 "missing_executable": exc.binary,
                 "target": target,
+            },
+            report_text=report_text,
+        )
+
+    @staticmethod
+    def _build_infrastructure_result(
+        exc: SimulationBuildInfrastructureError,
+    ) -> McpToolResult:
+        """Report a no-verdict build outcome without changing Criteria."""
+        outcome = exc.outcome
+        message = (
+            f"sim: build infrastructure failed for Target {exc.target!r}: "
+            f"{outcome.reason}. No simulation ran, so there is no pass/fail "
+            "verdict about the design. Inspect the build log and re-run."
+        )
+        tail = "\n".join(outcome.output.strip().splitlines()[-15:])
+        report_text = f"{message}\n\n--- output tail ---\n{tail}" if tail else message
+        print(report_text)
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            display_lines=[f"Flow error: {exc.target} build infrastructure failed"],
+            detail={
+                "eda_tool_error": "build_infrastructure",
+                "target": exc.target,
+                "build_stage": _build_outcome_entry(outcome),
             },
             report_text=report_text,
         )
@@ -3364,7 +3483,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 cmd = self._dry_run_command(target, None, test_names_map)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -3388,7 +3507,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # noqa: BLE001 — report context is best-effort
+        except Exception:
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -3466,7 +3585,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             cmd = self._prepare_cocotb_sim_command(target, selected)
         except MissingExecutableError:
             raise  # F-32: an absent binary is a Flow error, not a test verdict
-        except Exception as exc:  # noqa: BLE001 — isolate setup as a failed batch
+        except Exception as exc:
             logger.debug("simulate cocotb setup failed for %s", target, exc_info=True)
             _raise_if_missing_executable(str(exc))
             tr = TestResult(
@@ -3512,8 +3631,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         build_outcome = self._build_outcome(target, proc)
         combined = proc.stdout + "\n" + proc.stderr
         self._persist_full_run_log(target, proc)  # F-29e, as on the HDL loop
-        if build_outcome.failure_kind == "infrastructure" and build_outcome.terminal_record:
-            _raise_if_missing_executable(build_outcome.output)
+        self._require_build_verdict(target, build_outcome)
         test_results, trace_inconclusive = self._interpret_cocotb_result(
             combined,
             proc,
@@ -4041,25 +4159,25 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _write_target_report(self, result: TargetResult) -> None:
-        """Write per-target structured JSON report.
-
-        Besides the verdicts, the report carries the generated build config
-        that is otherwise invisible (benchmark finding: agents shelled out
-        to recover the edalize compile line and the fileset): the composed
-        ``compile_command`` and the rtl/tb-split ``fileset``. Both are
-        best-effort — omitted, never fatal, when composition fails.
-
-        It also carries the ``artifacts`` block — where run.log, result.json
-        and the trace family landed. Those paths used to exist only in the
-        stdout headline, and only on failure, so the MCP layer's stdout
-        truncation cut them off exactly on the long runs that needed them.
-        """
+        """Write one Target's verdict, build context, and artifact pointers."""
         report_dir = self.args.report_dir
         if report_dir is None:
             return
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / f"sim_{result.target}.json"
-        report = {
+        report = self._target_report_payload(result, report_path)
+        invocation_dir = self.reserve_invocation_dir()
+        if invocation_dir is not None:
+            _atomic_write_json(invocation_dir / "targets" / report_path.name, report)
+        _atomic_write_json(report_path, report)
+
+    def _target_report_payload(
+        self,
+        result: TargetResult,
+        report_path: Path,
+    ) -> dict[str, Any]:
+        """Compose best-effort build context around one Target verdict."""
+        report: dict[str, Any] = {
             "flow": self.name,
             "target": result.target,
             "tb_top": result.tb_top,
@@ -4087,10 +4205,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         artifacts = self._artifacts_for(result.target, result)
         artifacts["report"] = posix_relpath(report_path, self.args.work_dir)
         report["artifacts"] = artifacts
-        invocation_dir = self.reserve_invocation_dir()
-        if invocation_dir is not None:
-            _atomic_write_json(invocation_dir / "targets" / report_path.name, report)
-        _atomic_write_json(report_path, report)
+        return report
 
     def _write_progress_report(
         self,

@@ -569,5 +569,5 @@ def _push_initial_criteria(state_path: Path, app: object) -> None:
             snapshot[key] = display_entry
         if snapshot:
             app.post_message(CriteriaChanged(snapshot))
-    except Exception:  # noqa: BLE001 — initial UI push is best-effort
+    except Exception:
         logger.debug("Failed to push initial criteria", exc_info=True)

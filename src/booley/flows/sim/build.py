@@ -18,7 +18,10 @@ from typing import Literal
 
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_project_dir
-from booley.targets.parameter_integrity import validate_top_parameter_intent
+from booley.targets.parameter_integrity import (
+    ParameterIntegrityError,
+    validate_top_parameter_intent,
+)
 from booley.targets.target import inspect_target, select_target
 
 from .. import edam as edam_layer
@@ -27,6 +30,11 @@ from . import edam as sim_edam
 
 BuildVerdict = Literal["pass", "fail"] | None
 BuildFailureKind = Literal["design", "infrastructure"] | None
+
+
+class SimulationBuildPreparationError(RuntimeError):
+    """An expected Target/configuration failure before the build can run."""
+
 
 _TERMINAL_RECORD_RE = re.compile(
     r"^BOOLEY_BUILD_STAGE token=(?P<token>[0-9a-f]+) rc=(?P<rc>-?\d+)$",
@@ -102,6 +110,32 @@ def prepare_simulation_build(
     environment: Mapping[str, str] | None = None,
 ) -> PreparedSimulationBuild:
     """Resolve and prepare the simulator image used by normal Simulation."""
+    try:
+        return _prepare_simulation_build(
+            project_root,
+            target,
+            variant=variant,
+            vlnv=vlnv,
+            environment=environment,
+        )
+    except (
+        fusesoc_registry.FuseSocError,
+        ParameterIntegrityError,
+        selftest_overlay.SelftestOverlayError,
+        FileNotFoundError,
+    ) as exc:
+        raise SimulationBuildPreparationError(str(exc)) from exc
+
+
+def _prepare_simulation_build(
+    project_root: Path | str,
+    target: str,
+    *,
+    variant: str,
+    vlnv: str | None,
+    environment: Mapping[str, str] | None,
+) -> PreparedSimulationBuild:
+    """Prepare one supported simulator Target after boundary normalization."""
     root = Path(project_root)
     handle = select_target(root, target, for_flow="sim")
     work_root = edam_layer.work_root_for(root, "sim", target, variant=variant)
@@ -114,7 +148,7 @@ def prepare_simulation_build(
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
     if eda_tool not in {"icarus", "verilator"}:
-        raise ValueError(
+        raise SimulationBuildPreparationError(
             f"simulator {eda_tool!r} is not supported by the public sim Flow; "
             "select a Verilator or Icarus Target"
         )
@@ -184,7 +218,9 @@ def build_stage_script(
 def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome:
     """Classify current-attempt build evidence, failing closed on ambiguity."""
     output = result.stdout + ("\n" + result.stderr if result.stderr else "")
-    records = [match for match in _TERMINAL_RECORD_RE.finditer(output) if match["token"] == token]
+    records = [
+        match for match in _TERMINAL_RECORD_RE.finditer(result.stdout) if match["token"] == token
+    ]
     if len(records) != 1:
         return _infrastructure_outcome(
             result,
@@ -195,20 +231,41 @@ def classify_build_outcome(result: SubprocessResult, token: str) -> BuildOutcome
         )
     record = records[0]
     build_rc = int(record["rc"])
-    build_output = output[: record.start()]
+    build_output = result.stdout[: record.start()]
+    if result.stderr:
+        build_output += "\n" + result.stderr
     if build_rc == 0:
-        return BuildOutcome(
-            ran=True,
-            verdict="pass",
-            failure_kind=None,
-            elapsed_s=result.duration_s,
-            output=output,
-            returncode=build_rc,
-            timed_out=result.timed_out,
-            peak_rss_mb=result.peak_rss_mb,
-            oom_kill_delta=result.oom_kill_delta,
-            terminal_record=True,
-        )
+        return _successful_build_outcome(result, output, build_rc)
+    return _failed_build_outcome(result, output, build_output, build_rc)
+
+
+def _successful_build_outcome(
+    result: SubprocessResult,
+    output: str,
+    build_rc: int,
+) -> BuildOutcome:
+    """Return authenticated success while retaining later run-stage evidence."""
+    return BuildOutcome(
+        ran=True,
+        verdict="pass",
+        failure_kind=None,
+        elapsed_s=result.duration_s,
+        output=output,
+        returncode=build_rc,
+        timed_out=result.timed_out,
+        peak_rss_mb=result.peak_rss_mb,
+        oom_kill_delta=result.oom_kill_delta,
+        terminal_record=True,
+    )
+
+
+def _failed_build_outcome(
+    result: SubprocessResult,
+    output: str,
+    build_output: str,
+    build_rc: int,
+) -> BuildOutcome:
+    """Classify one authenticated nonzero build result."""
     if result.timed_out or result.oom_kill_delta > 0 or build_rc < 0 or build_rc >= 128:
         return _infrastructure_outcome(
             result,

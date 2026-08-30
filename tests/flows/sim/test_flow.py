@@ -13,6 +13,7 @@ import pytest
 
 from booley.dev_support.development_state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.build import SimulationBuildPreparationError
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
     _INCONCLUSIVE_NO_WAVEFORM,
@@ -1925,44 +1926,8 @@ class TestEdalizeSimPath:
         # Sim PASSED, but verilator_run printed no TRACE_OK → trace silently no-op'd.
         no_trace = SubprocessResult(
             returncode=0,
-            stdout="[SIM_RESULT] PASSED\nERROR: trace requested but no queryable .fst store or .vcd was produced\n",
-            stderr="",
-            duration_s=1.0,
-        )
-        with (
-            patch.object(
-                fusesoc_registry,
-                "write_trace_overlay",
-                return_value=fusesoc_registry.TraceOverlay(
-                    core_file=tmp_path / "x.booleytrace.core",
-                    vlnv="::d-booleytrace:0",
-                ),
-            ),
-            patch.object(
-                fusesoc_registry,
-                "resolve_target",
-                side_effect=lambda *a, **k: self._fake_resolved(tmp_path),
-            ),
-            patch.object(
-                SimulateFlow,
-                "_execute",
-                return_value=no_trace,
-            ),
-        ):
-            result = flow._run_single_test("lite", None, {})
-        assert result.passed is False
-        assert "no waveform" in result.error_tail
-
-    def test_trace_missing_on_passing_sim_is_inconclusive_not_fail(self, tmp_path: Path):
-        """QA_REPORT B5.1: a trace-infra failure on a PASSING sim is a Flow
-        error (inconclusive), never a design FAIL, and the trace incident's
-        ``ERROR:`` banner must not be miscounted as an SVA assertion."""
-        from booley.fusesoc import fusesoc_registry
-
-        flow = _make_flow(tmp_path, extra_args=["--trace"])
-        no_trace = SubprocessResult(
-            returncode=0,
             stdout=(
+                "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
                 "[SIM_RESULT] PASSED\n"
                 "ERROR: trace requested but no queryable .fst store or .vcd was produced\n"
             ),
@@ -1988,6 +1953,49 @@ class TestEdalizeSimPath:
                 "_execute",
                 return_value=no_trace,
             ),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
+        ):
+            result = flow._run_single_test("lite", None, {})
+        assert result.passed is False
+        assert "no waveform" in result.error_tail
+
+    def test_trace_missing_on_passing_sim_is_inconclusive_not_fail(self, tmp_path: Path):
+        """QA_REPORT B5.1: a trace-infra failure on a PASSING sim is a Flow
+        error (inconclusive), never a design FAIL, and the trace incident's
+        ``ERROR:`` banner must not be miscounted as an SVA assertion."""
+        from booley.fusesoc import fusesoc_registry
+
+        flow = _make_flow(tmp_path, extra_args=["--trace"])
+        no_trace = SubprocessResult(
+            returncode=0,
+            stdout=(
+                "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+                "[SIM_RESULT] PASSED\n"
+                "ERROR: trace requested but no queryable .fst store or .vcd was produced\n"
+            ),
+            stderr="",
+            duration_s=1.0,
+        )
+        with (
+            patch.object(
+                fusesoc_registry,
+                "write_trace_overlay",
+                return_value=fusesoc_registry.TraceOverlay(
+                    core_file=tmp_path / "x.booleytrace.core",
+                    vlnv="::d-booleytrace:0",
+                ),
+            ),
+            patch.object(
+                fusesoc_registry,
+                "resolve_target",
+                side_effect=lambda *a, **k: self._fake_resolved(tmp_path),
+            ),
+            patch.object(
+                SimulateFlow,
+                "_execute",
+                return_value=no_trace,
+            ),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
         ):
             result = flow._run_single_test("lite", None, {})
         assert result.passed is False
@@ -2001,7 +2009,10 @@ class TestEdalizeSimPath:
         flow = _make_flow(tmp_path, extra_args=["--trace"])
         with_trace = SubprocessResult(
             returncode=0,
-            stdout="[SIM_RESULT] PASSED\nTRACE_OK: /work/trace.vcd\n",
+            stdout=(
+                "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+                "[SIM_RESULT] PASSED\nTRACE_OK: /work/trace.vcd\n"
+            ),
             stderr="",
             duration_s=1.0,
         )
@@ -2024,12 +2035,13 @@ class TestEdalizeSimPath:
                 "_execute",
                 return_value=with_trace,
             ),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
         ):
             result = flow._run_single_test("lite", None, {})
         assert result.passed is True
 
     def test_setup_failure_propagates(self, tmp_path: Path):
-        """A FuseSoC resolution failure surfaces (caller records it as FAIL)."""
+        """A FuseSoC resolution failure surfaces through the preparation boundary."""
         import pytest
 
         from booley.fusesoc import fusesoc_registry
@@ -2041,7 +2053,7 @@ class TestEdalizeSimPath:
                 "resolve_target",
                 side_effect=fusesoc_registry.TargetResolutionError("boom"),
             ),
-            pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
+            pytest.raises(SimulationBuildPreparationError, match="boom"),
         ):
             flow._prepare_sim_command("lite", None, {})
 
@@ -3128,6 +3140,32 @@ class TestMissingExecutableIsEdaToolError:
         assert result.exit_code == EXIT_ERROR
         assert result.detail["missing_executable"] == "verilator"
         assert "elaboration failed" not in result.report_text.split("--- output tail ---")[0]
+
+    @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
+    @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
+    @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
+    def test_authenticated_build_infrastructure_exits_2_without_criteria(
+        self, _prep, _sel, _tests, tmp_path: Path
+    ):
+        flow = _make_flow(tmp_path, config="lite")
+        flow.state.init_criteria({"sim_pass_lite": True, "elab_pass_lite": True})
+        flow.state.criteria["sim_pass_lite"].met = True
+        flow.state.criteria["elab_pass_lite"].met = True
+        flow._build_attempt_tokens = {"lite": "abc123"}
+        interrupted = SubprocessResult(
+            returncode=-1,
+            stdout="still compiling\n",
+            timed_out=True,
+            duration_s=3.0,
+        )
+
+        with patch.object(SimulateFlow, "_execute", return_value=interrupted):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.detail["eda_tool_error"] == "build_infrastructure"
+        assert flow.state.criteria["sim_pass_lite"].met is True
+        assert flow.state.criteria["elab_pass_lite"].met is True
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["t1"]})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)

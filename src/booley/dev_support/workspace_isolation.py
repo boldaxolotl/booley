@@ -183,7 +183,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
             from booley.runtime.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
 
             parsed = get_rtl_source_dirs(), get_tb_source_dirs()
-        except Exception:  # noqa: BLE001 — legacy CWD path unavailable
+        except Exception:
             logger.warning(
                 "Could not resolve category dirs from project config — "
                 "falling back to defaults; isolation may miss project-specific "

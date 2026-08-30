@@ -117,12 +117,20 @@ def _execute_returning(stdout: str, returncode: int = 0, timed_out: bool = False
     return _exec
 
 
-def _run_cocotb(tmp_path, flow, stdout, returncode=0, timed_out=False, resolved_eda_tool="icarus"):
+def _run_cocotb(
+    tmp_path,
+    flow,
+    stdout,
+    returncode=0,
+    timed_out=False,
+    resolved_eda_tool="icarus",
+    *,
+    authenticate_build=True,
+):
     token = "abc123"
-    if "BOOLEY_BUILD_STAGE" not in stdout:
+    if authenticate_build and "BOOLEY_BUILD_STAGE" not in stdout:
         build_failed = any(
-            marker in stdout
-            for marker in ("compilation failed", "elaboration failed", "not found")
+            marker in stdout for marker in ("compilation failed", "elaboration failed")
         )
         if build_failed:
             stdout = f"{stdout}BOOLEY_BUILD_STAGE token={token} rc=1\n"
@@ -166,6 +174,25 @@ class TestCocotbVerdictMatrix:
         assert result.exit_code == EXIT_SUCCESS
         assert result.criterion_key == "sim_pass_ccfg"
         assert result.criterion_met is True
+
+    def test_build_infrastructure_error_stops_before_result_interpretation(
+        self, tmp_path: Path
+    ) -> None:
+        flow = _make_cocotb_flow(tmp_path)
+
+        with patch("booley.config.project_config.TEST_NAMES", dict(_TESTS)):
+            result = _run_cocotb(
+                tmp_path,
+                flow,
+                "still compiling\n",
+                returncode=-1,
+                timed_out=True,
+                authenticate_build=False,
+            )
+
+        assert result.exit_code == EXIT_ERROR
+        assert result.detail["eda_tool_error"] == "build_infrastructure"
+        assert "no pass/fail verdict" in result.report_text
 
     def test_named_cycle_records_are_attributed_within_batch(self, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
@@ -418,12 +445,15 @@ class TestCocotbBatching:
             calls.append(cmd)
             return SubprocessResult(
                 returncode=0,
-                stdout=_cocotb_output(
-                    [
-                        ("test_reset", "pass", ""),
-                        ("test_count", "pass", ""),
-                        ("test_fail_assert", "pass", ""),
-                    ]
+                stdout=(
+                    "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+                    + _cocotb_output(
+                        [
+                            ("test_reset", "pass", ""),
+                            ("test_count", "pass", ""),
+                            ("test_fail_assert", "pass", ""),
+                        ]
+                    )
                 ),
                 stderr="",
                 duration_s=1.0,
@@ -435,6 +465,7 @@ class TestCocotbBatching:
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(SimulateFlow, "_execute", _capture),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
             patch(
                 "booley.config.project_config.TEST_NAMES",
                 dict(_TESTS),
@@ -475,7 +506,10 @@ class TestCocotbBatching:
             calls.append(cmd)
             return SubprocessResult(
                 returncode=0,
-                stdout=_cocotb_output([("test_count", "pass", "")]),
+                stdout=(
+                    "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+                    + _cocotb_output([("test_count", "pass", "")])
+                ),
                 stderr="",
                 duration_s=1.0,
             )
@@ -486,6 +520,7 @@ class TestCocotbBatching:
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(SimulateFlow, "_execute", _capture),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
             patch(
                 "booley.config.project_config.TEST_NAMES",
                 dict(_TESTS),
@@ -506,11 +541,14 @@ class TestCocotbBatching:
             calls.append(cmd)
             return SubprocessResult(
                 returncode=0,
-                stdout=_cocotb_output(
-                    [
-                        ("test_reset", "pass", ""),
-                        ("test_count", "pass", ""),
-                    ]
+                stdout=(
+                    "BOOLEY_BUILD_STAGE token=abc123 rc=0\n"
+                    + _cocotb_output(
+                        [
+                            ("test_reset", "pass", ""),
+                            ("test_count", "pass", ""),
+                        ]
+                    )
                 ),
                 stderr="",
                 duration_s=1.0,
@@ -522,6 +560,7 @@ class TestCocotbBatching:
                 return_value=_fake_resolved(tmp_path),
             ),
             patch.object(SimulateFlow, "_execute", _capture),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
             patch(
                 "booley.config.project_config.TEST_NAMES",
                 dict(_TESTS),

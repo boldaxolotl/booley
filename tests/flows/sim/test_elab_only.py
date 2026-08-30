@@ -14,6 +14,7 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import (
     BuildOutcome,
     PreparedSimulationBuild,
+    SimulationBuildPreparationError,
     build_stage_script,
     classify_build_outcome,
 )
@@ -160,6 +161,20 @@ def test_classifier_distinguishes_design_rejection_from_ambiguous_exit() -> None
     assert design.design_failed
     assert ambiguous.verdict is None
     assert ambiguous.failure_kind == "infrastructure"
+
+
+def test_classifier_reads_design_diagnostics_from_stderr() -> None:
+    outcome = classify_build_outcome(
+        _result(
+            "BOOLEY_BUILD_STAGE token=abc123 rc=1\n",
+            rc=1,
+            stderr="%Error: rtl/top.sv:4: syntax error\n",
+        ),
+        "abc123",
+    )
+
+    assert outcome.design_failed
+    assert outcome.failure_kind == "design"
 
 
 def test_timeout_before_terminal_record_has_no_verdict() -> None:
@@ -337,7 +352,7 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
     monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
 
     def fail_setup(*args: object, **kwargs: object) -> PreparedSimulationBuild:
-        raise OSError("current setup exploded")
+        raise SimulationBuildPreparationError("current setup exploded")
 
     monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fail_setup)
 

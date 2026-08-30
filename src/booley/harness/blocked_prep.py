@@ -351,7 +351,7 @@ async def prepare_blocked_dossier(project_root: Path, slug: str) -> BlockedPrepO
         }
         _write_json(_manifest_path(ctx), manifest)
         return BlockedPrepOutcome("ready", "blocked dossier prepared", path)
-    except Exception as exc:  # noqa: BLE001 — post-processing cannot alter disposition
+    except Exception as exc:
         logger.warning("Blocked dossier preparation failed for %s: %s", slug, exc, exc_info=True)
         if "ctx" in locals():
             try:

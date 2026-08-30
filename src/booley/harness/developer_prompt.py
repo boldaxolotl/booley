@@ -374,7 +374,7 @@ def _get_criterion_endpoint_map(
 
         return build_criterion_endpoint_map(expanded, mcp_tools)
 
-    except Exception:  # noqa: BLE001 — endpoint mapping is best-effort
+    except Exception:
         logger.warning("Failed to auto-build criterion-to-endpoint map", exc_info=True)
         return {}
 

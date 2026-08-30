@@ -762,7 +762,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
             )
     except ValueError:
         raise
-    except Exception:  # noqa: BLE001 — unreadable config falls back to empty
+    except Exception:
         logger.debug("Failed to load endpoint config from booley.toml", exc_info=True)
     return {}, {}
 
@@ -1483,7 +1483,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]
         return payload
-    except Exception:  # noqa: BLE001 — enrichment falls back to text-only
+    except Exception:
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -3141,7 +3141,7 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # noqa: BLE001 — config preload must not block startup
+    except Exception:
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 
