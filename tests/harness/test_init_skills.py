@@ -1,16 +1,13 @@
-"""Tests for system-level skill deployment performed by ``booley init``."""
+"""Tests for host skill reconciliation performed by ``booley init``."""
 
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
-
-import pytest
 
 from booley.harness import init_skills
 from booley.harness.init_common import InitContext
 from booley.runtime import paths as runtime_paths
+from booley.runtime.skill_links import SkillLinkEvent, SkillLinkReport
 from tests.conftest import require_symlinks
 
 
@@ -21,25 +18,44 @@ def _skill(root: Path, name: str) -> Path:
     return skill
 
 
-def test_deploy_replaces_current_name_dangling_link(tmp_path: Path, monkeypatch):
+def _deploy_from(
+    tmp_path: Path,
+    monkeypatch,
+    packaged: Path,
+    target: Path,
+    *,
+    check_only: bool = False,
+    force: bool = False,
+    verbose: bool = False,
+) -> InitContext:
+    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
+    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
+    ctx = InitContext(
+        project_root=tmp_path,
+        check_only=check_only,
+        force=force,
+        verbose=verbose,
+    )
+    init_skills._deploy_skills(ctx)
+    return ctx
+
+
+def test_deploy_preserves_unrecorded_legacy_dangling_link(tmp_path: Path, monkeypatch):
     require_symlinks(tmp_path)
     old_skill = _skill(tmp_path / "old" / "booley" / "data" / "skills", "booley-setup")
     packaged = tmp_path / "installed" / "skills"
-    new_skill = _skill(packaged, "booley-setup")
+    _skill(packaged, "booley-setup")
     target = tmp_path / "host" / "skills"
     target.mkdir(parents=True)
     link = target / "booley-setup"
     link.symlink_to(old_skill)
     old_skill.rename(tmp_path / "removed-skill")
+    original_target = link.readlink()
 
-    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
-    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    ctx = InitContext(project_root=tmp_path)
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
 
-    init_skills._deploy_skills(ctx)
-
-    assert link.resolve(strict=True) == new_skill.resolve()
-    assert ctx.results[-1].status == "ok"
+    assert link.readlink() == original_target
+    assert ctx.results[-1].status == "err"
 
 
 def test_deploy_preserves_unrelated_current_name_dangling_link(tmp_path: Path, monkeypatch):
@@ -53,31 +69,65 @@ def test_deploy_preserves_unrelated_current_name_dangling_link(tmp_path: Path, m
     link.symlink_to(user_skill)
     original_target = link.readlink()
 
-    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
-    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    ctx = InitContext(project_root=tmp_path)
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
 
-    init_skills._deploy_skills(ctx)
-
-    assert link.is_symlink()
     assert link.readlink() == original_target
     assert ctx.results[-1].status == "err"
 
 
-def test_deploy_records_link_creation_failure(tmp_path: Path, monkeypatch):
+def test_deploy_records_reconciliation_error(tmp_path: Path, monkeypatch):
     packaged = tmp_path / "installed" / "skills"
     _skill(packaged, "booley-setup")
     target = tmp_path / "host" / "skills"
+    event = SkillLinkEvent(
+        "booley-setup",
+        "error",
+        "packaged",
+        target / "booley-setup",
+        desired_target=str(packaged / "booley-setup"),
+        detail="junction failed",
+    )
+    monkeypatch.setattr(
+        init_skills,
+        "reconcile_skill_links",
+        lambda *_args, **_kwargs: SkillLinkReport(events=(event,)),
+    )
 
-    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
-    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    monkeypatch.setattr(init_skills, "_make_junction_or_symlink", lambda _link, _target: False)
-    ctx = InitContext(project_root=tmp_path)
-
-    init_skills._deploy_skills(ctx)
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
 
     assert ctx.results[-1].status == "err"
-    assert ctx.results[-1].detail == "1 link(s) failed"
+    assert ctx.results[-1].detail == "1 reconciliation issue(s)"
+
+
+def test_deploy_records_report_diagnostic(tmp_path: Path, monkeypatch):
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    target = tmp_path / "host" / "skills"
+    monkeypatch.setattr(
+        init_skills,
+        "reconcile_skill_links",
+        lambda *_args, **_kwargs: SkillLinkReport(diagnostics=("manifest write failed",)),
+    )
+
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
+
+    assert ctx.results[-1].status == "err"
+
+
+def test_deploy_renders_fatal_report(tmp_path: Path, monkeypatch, capsys):
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    target = tmp_path / "host" / "skills"
+    monkeypatch.setattr(
+        init_skills,
+        "reconcile_skill_links",
+        lambda *_args, **_kwargs: SkillLinkReport(fatal="manifest invalid"),
+    )
+
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
+
+    assert "skill reconciliation failed: manifest invalid" in capsys.readouterr().out
+    assert ctx.results[-1].status == "err"
 
 
 def test_deploy_preserves_real_current_name_directory(tmp_path: Path, monkeypatch):
@@ -86,18 +136,14 @@ def test_deploy_preserves_real_current_name_directory(tmp_path: Path, monkeypatc
     target = tmp_path / "host" / "skills"
     existing = _skill(target, "booley-setup")
 
-    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
-    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    ctx = InitContext(project_root=tmp_path)
-
-    init_skills._deploy_skills(ctx)
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
 
     assert not existing.is_symlink()
     assert (existing / "SKILL.md").read_text(encoding="utf-8") == "# Test skill\n"
     assert ctx.results[-1].status == "err"
 
 
-def test_deploy_preserves_healthy_link(tmp_path: Path, monkeypatch):
+def test_deploy_adopts_healthy_link(tmp_path: Path, monkeypatch):
     require_symlinks(tmp_path)
     packaged = tmp_path / "installed" / "skills"
     skill = _skill(packaged, "booley-setup")
@@ -106,36 +152,73 @@ def test_deploy_preserves_healthy_link(tmp_path: Path, monkeypatch):
     link = target / "booley-setup"
     link.symlink_to(skill)
 
-    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
-    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    ctx = InitContext(project_root=tmp_path)
-
-    init_skills._deploy_skills(ctx)
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
 
     assert link.resolve(strict=True) == skill.resolve()
     assert ctx.results[-1].status == "ok"
 
 
-@pytest.mark.skipif(os.name != "nt", reason="requires NTFS junctions")
-def test_prune_removes_current_name_dangling_windows_junction(tmp_path: Path):
-    old_skill = _skill(tmp_path / "old" / "booley" / "data" / "skills", "booley-setup")
+def test_verbose_deploy_renders_created_event(tmp_path: Path, monkeypatch, capsys):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    target = tmp_path / "host" / "skills"
+
+    _deploy_from(tmp_path, monkeypatch, packaged, target, verbose=True)
+
+    assert "created booley-setup" in capsys.readouterr().out
+
+
+def test_force_previews_targets_before_relinking_equivalent_skill(
+    tmp_path: Path, monkeypatch, capsys
+):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "skills"
+    desired = _skill(packaged, "booley-setup")
+    old_skill = _skill(tmp_path / "old-checkout" / "skills", "booley-setup")
     target = tmp_path / "host" / "skills"
     target.mkdir(parents=True)
     link = target / "booley-setup"
-    created = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link), str(old_skill)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert created.returncode == 0, created.stderr
-    (old_skill / "SKILL.md").unlink()
-    old_skill.rmdir()
+    link.symlink_to(old_skill)
 
-    init_skills._prune_stale_skill_links(
-        target,
-        tmp_path / "installed" / "skills",
-        {"booley-setup"},
-    )
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target, force=True)
+    output = capsys.readouterr().out
 
-    assert not init_skills._exists_nofollow(link)
+    preview = output.index("would retarget booley-setup")
+    applied = output.index("retargeted booley-setup", preview)
+    assert preview < applied
+    folded_output = output.casefold()
+    assert f"current: {old_skill}".casefold() in folded_output
+    assert f"requested: {desired}".casefold() in folded_output
+    assert link.resolve(strict=True) == desired.resolve()
+    assert ctx.results[-1].status == "ok"
+
+
+def test_normal_init_accepts_equivalent_skill_without_mutation(tmp_path: Path, monkeypatch):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    old_skill = _skill(tmp_path / "old-checkout" / "skills", "booley-setup")
+    target = tmp_path / "host" / "skills"
+    target.mkdir(parents=True)
+    link = target / "booley-setup"
+    link.symlink_to(old_skill)
+    original_target = link.readlink()
+
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
+
+    assert link.readlink() == original_target
+    assert ctx.results[-1].status == "ok"
+
+
+def test_check_only_does_not_create_default_agent_directory(tmp_path: Path, monkeypatch):
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
+    ctx = InitContext(project_root=tmp_path, check_only=True)
+
+    init_skills._deploy_skills(ctx)
+
+    assert not (tmp_path / ".agents").exists()
+    assert ctx.results[-1].status == "warn"
