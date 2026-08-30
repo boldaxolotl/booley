@@ -274,7 +274,7 @@ absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_
 `cell_count_reduce_at_least` (ASIC); `lut_count_max`, `ff_count_max`, `fmax_mhz_min`
 (FPGA). Don't hardcode a subset here — for the full per-metric matrix and which pairs are
 mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" table, also in
-`docs/USAGE.md`); it is generated from the validator, so it never drifts.
+`docs/user/USAGE.md`); it is generated from the validator, so it never drifts.
 
 For a relative threshold, use a plain Target name when baseline and candidate are the same.
 When the ticket intentionally needs different frozen Targets, put
