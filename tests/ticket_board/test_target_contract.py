@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from booley.ticket_board import target_contract as target_contract_module
 from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatter
 from booley.ticket_board.target_contract import (
     ContractParticipant,
@@ -508,6 +509,65 @@ def test_materialized_contract_validates_directed_targets_in_sealed_view(
     }
 
     assert validate_materialized_contract(fields, project) == []
+
+
+def test_materialized_contract_without_contract_is_noop(tmp_path: Path) -> None:
+    assert validate_materialized_contract({}, tmp_path) == []
+
+
+def test_materialized_contract_reports_invalid_contract(tmp_path: Path) -> None:
+    errors = validate_materialized_contract({"target_contract": {}}, tmp_path)
+
+    assert errors
+
+
+def _empty_materialized_contract_fields(project: Path) -> dict[str, Any]:
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=[],
+        bindings=[],
+        participants=[_participant()],
+    )
+    return {
+        "base_sha": contract.outer_sha,
+        "criteria": {},
+        "scope": [],
+        "on_success": {"remove_targets": []},
+        "target_contract": contract.as_dict(),
+    }
+
+
+def test_materialized_contract_returns_field_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project(tmp_path)
+    fields = _empty_materialized_contract_fields(project)
+    monkeypatch.setattr(
+        target_contract_module,
+        "validate_contract_fields",
+        lambda *_args: ["contract fields changed"],
+    )
+
+    assert validate_materialized_contract(fields, project) == ["contract fields changed"]
+
+
+def test_materialized_contract_reports_criterion_resolution_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project(tmp_path)
+    fields = _empty_materialized_contract_fields(project)
+
+    def fail_criterion_resolution(*_args: object) -> list[str]:
+        raise ValueError("criterion target changed")
+
+    monkeypatch.setattr(
+        target_contract_module,
+        "validate_criterion_targets",
+        fail_criterion_resolution,
+    )
+
+    assert validate_materialized_contract(fields, project) == ["criterion target changed"]
 
 
 @pytest.mark.parametrize(
