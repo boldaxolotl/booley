@@ -455,6 +455,32 @@ class TestMcpToolSetCriterion:
         endpoint.set_criterion("lint_clean_lite", True)
         assert endpoint.state.is_met("lint_clean_lite") is True
 
+    def test_diagnostic_set_criterion_skips_in_memory_evidence(self):
+        """Diagnostic runs never normalize, fingerprint, or record Criteria."""
+        endpoint = ConcreteMcpTool()
+        endpoint.parse_args(["--diagnostic"])
+        endpoint.read_state()
+
+        with (
+            mock.patch.object(
+                endpoint,
+                "_criterion_key_for_source",
+                side_effect=AssertionError("diagnostic run normalized a Criterion"),
+            ),
+            mock.patch.object(
+                endpoint,
+                "_stamp_source_fingerprint",
+                side_effect=AssertionError("diagnostic run fingerprinted evidence"),
+            ),
+        ):
+            endpoint.set_criterion(
+                "lint_clean_lite",
+                True,
+                source_target="lint_selftest_bad",
+            )
+
+        assert "lint_clean_lite" not in endpoint.state.criteria
+
     def test_verification_fingerprint_is_scoped_to_source_target(self, tmp_path: Path):
         (tmp_path / "rtl").mkdir()
         (tmp_path / "tb").mkdir()

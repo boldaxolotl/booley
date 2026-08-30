@@ -1845,6 +1845,11 @@ def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -
     )
 
 
+def parse_target_tokens(target_arg: str | None) -> list[str]:
+    """Split a comma-separated ``--target`` argument into nonempty tokens."""
+    return [token.strip() for token in (target_arg or "").split(",") if token.strip()]
+
+
 def resolve_target_selection(
     target_arg: str | None,
     project_root: Path | str,
@@ -1857,7 +1862,7 @@ def resolve_target_selection(
     Bare names must be unambiguous; ``vlnv#name`` qualifiers disambiguate.
     Doctor's private self-test Targets remain hidden from public selection.
     """
-    selected = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
+    selected = parse_target_tokens(target_arg)
     if not selected:
         return []
 
