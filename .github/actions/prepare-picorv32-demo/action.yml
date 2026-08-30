@@ -44,6 +44,18 @@ runs:
         fetch-depth: 0
         persist-credentials: false
 
+    # Keep the nested project-data checkout and the core projections produced
+    # by readiness checks outside the reviewed upstream checkout's status.
+    # This is repository-local so validation never depends on a runner's
+    # personal global ignore configuration.
+    - name: Apply documented local checkout excludes
+      shell: bash
+      run: |
+        printf '%s\n' \
+          '/.booley_project' \
+          '/.booley-projected-*.core' \
+          >> demo/.git/info/exclude
+
     - name: Require reviewed revisions on public refs
       shell: bash
       env:
