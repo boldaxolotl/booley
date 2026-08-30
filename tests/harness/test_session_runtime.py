@@ -1666,6 +1666,35 @@ class TestSessionRefresh:
         assert args.command == "session"
         assert args.session_command == "refresh"
 
+    def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
+        from booley.harness import auto_doctor, booley, init_cmd
+        from booley.harness.booley import _build_parser
+        from booley.harness.image_lifecycle import LifecycleResult, Status
+
+        args = _build_parser().parse_args(["session", "refresh"])
+        result = LifecycleResult("booley-sandbox", "sha256:fresh", Status.CHANGED)
+        events: list[str] = []
+        with (
+            patch.object(
+                booley,
+                "configure_progress_output",
+                side_effect=lambda: events.append("configure"),
+                create=True,
+            ),
+            patch.object(sr, "conflicting_vscode_session", return_value=None),
+            patch.object(
+                init_cmd,
+                "refresh_session_image",
+                side_effect=lambda *_args, **_kwargs: events.append("reconcile") or result,
+            ),
+            patch.object(booley, "_replace_refreshed_session"),
+            patch.object(booley, "_report_session_health"),
+            patch.object(auto_doctor, "due_reason", return_value=None),
+        ):
+            assert booley._session_refresh(args, tmp_path) == 0
+
+        assert events == ["configure", "reconcile"]
+
     def test_small_session_handlers_delegate_and_report(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
