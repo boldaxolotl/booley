@@ -998,6 +998,27 @@ def validate_contract_fields(  # noqa: PLR0911 - ordered version and identity ga
     return []
 
 
+def validate_materialized_contract(
+    fields: Mapping[str, Any], project_root: Path | str
+) -> list[str]:
+    """Validate a sealed contract in the checkout that execution will use."""
+    raw = fields.get("target_contract")
+    if raw is None:
+        return []
+    try:
+        contract = TargetContract.from_mapping(raw)
+        verify_surface(contract, project_root)
+    except (TargetContractError, fusesoc_registry.FuseSocError, OSError) as exc:
+        return [str(exc)]
+    errors = validate_contract_fields(fields, project_root)
+    if errors:
+        return errors
+    try:
+        return validate_criterion_targets(fields, project_root)
+    except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+        return [str(exc)]
+
+
 def canonical_contract_bindings(
     project_root: Path | str,
     bindings: Iterable[CriterionTarget],

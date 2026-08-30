@@ -1,12 +1,12 @@
 """Lifecycle tests for automatic blocked-ticket dossier preparation."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from booley.harness import developer
-from booley.harness.models import TicketContext
+from booley.harness.models import StepResult, TicketContext
 
 
 @pytest.mark.asyncio
@@ -29,3 +29,73 @@ async def test_setup_block_prepares_blocked_triage_dossier(tmp_path: Path, monke
     await developer._run_ticket_body(ctx, tmp_path, 0.0)
 
     prepare.assert_awaited_once_with(ctx, tmp_path)
+
+
+def test_missing_resumed_worktree_invalidates_completed_setup(tmp_path: Path) -> None:
+    ctx = TicketContext(
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+        ticket_type="feature",
+        branch="main",
+        summary="demo",
+        project_root=tmp_path,
+        completed_steps=["setup"],
+        current_step="implement",
+        feature_branch="demo",
+    )
+
+    developer._invalidate_missing_worktree(ctx, tmp_path)
+
+    assert "setup" not in ctx.completed_steps
+    assert ctx.current_step == ""
+    assert ctx.feature_branch == ""
+
+
+def test_resumed_contract_is_revalidated_in_existing_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    ctx = TicketContext(
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+        ticket_type="feature",
+        branch="main",
+        summary="demo",
+        project_root=tmp_path,
+        target_contract=MagicMock(),
+        worktree_path=worktree,
+    )
+    validate = MagicMock(return_value=StepResult(block_reason="contract changed"))
+    monkeypatch.setattr(
+        "booley.harness.setup.workspace._validate_materialized_target_contract",
+        validate,
+    )
+
+    assert developer._resumed_contract_failure(ctx) == "contract changed"
+    validate.assert_called_once_with(ctx, worktree)
+
+
+def test_deferred_criteria_initializes_against_materialized_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    ctx = TicketContext(
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+        ticket_type="feature",
+        branch="main",
+        summary="demo",
+        project_root=tmp_path,
+        worktree_path=worktree,
+        criteria_state_needs_init=True,
+    )
+    roots: list[Path] = []
+
+    def capture_root(context: TicketContext) -> None:
+        roots.append(context.work_dir)
+
+    monkeypatch.setattr("booley.harness.setup.intake._init_criteria_state", capture_root)
+
+    assert developer._deferred_criteria_failure(ctx) is None
+    assert roots == [worktree]
+    assert ctx.criteria_state_needs_init is False

@@ -156,6 +156,14 @@ def test_schema_three_contract_verifies_refs_and_fields(tmp_path: Path) -> None:
             "base_sha": "a" * 40,
             "target_contract": {"schema": 3},
             "criteria": {"mandatory": {}},
+            "scope": [],
+            "on_success": {
+                "destination": "review",
+                "merge": True,
+                "cleanup": True,
+                "triage_report": True,
+                "remove_targets": [],
+            },
         }
     )
 
@@ -178,6 +186,46 @@ class TestReturnValue:
         assert result is not None
         assert isinstance(result, TicketContext)
         assert result.slug == sample_ticket.stem
+
+
+@pytest.mark.asyncio
+@patch("booley.harness.setup.intake.ticket_cli")
+async def test_sealed_intake_defers_criteria_until_workspace_materialization(
+    mock_cli,
+    project_root: Path,
+    sample_ticket: Path,
+) -> None:
+    contract = TargetContract(
+        outer_sha="a" * 40,
+        project_sha="",
+        surface_digest="b" * 64,
+        targets=(),
+        participants=(
+            ContractParticipant(
+                role="outer",
+                sealed_sha="a" * 40,
+                ticket_ref=f"refs/heads/{sample_ticket.stem}",
+                destination_ref="refs/heads/master",
+                destination_sha="c" * 40,
+            ),
+        ),
+    )
+    fields = {
+        **_MINIMAL_FIELDS,
+        "base_sha": contract.outer_sha,
+        "target_contract": contract.as_dict(),
+    }
+    _mock_cli_defaults(mock_cli, fields=fields)
+    from booley.harness.setup.intake import run
+
+    with (
+        patch("booley.harness.setup.intake._verify_target_contract"),
+        patch("booley.harness.setup.intake._init_criteria_state") as init_state,
+    ):
+        ctx = await run(str(sample_ticket), project_root)
+
+    init_state.assert_not_called()
+    assert ctx.criteria_state_needs_init is True
 
 
 def test_fpga_relative_criterion_freezes_recipe_and_baseline(

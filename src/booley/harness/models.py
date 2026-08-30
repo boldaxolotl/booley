@@ -59,11 +59,32 @@ class TicketContext:
     execution_id: str = ""
     # Sealed Target/control-plane identity; appended for positional compatibility.
     target_contract: TargetContract | None = None
+    # Intake defers sealed criteria state until the contract checkout is ready.
+    criteria_state_needs_init: bool = False
 
     @property
     def work_dir(self) -> Path:
         """Working directory: worktree if available, else project root."""
         return self.worktree_path or self.project_root
+
+    def sealed_contract_fields(self) -> dict[str, Any]:
+        """Return the complete Ticket projection used for contract validation."""
+        contract = self.target_contract
+        if contract is None:
+            raise ValueError("Ticket has no sealed Target contract")
+        return {
+            "base_sha": self.base_sha,
+            "target_contract": contract.as_dict(),
+            "criteria": self.criteria,
+            "scope": self.scope_raw,
+            "on_success": {
+                "destination": self.on_success.destination,
+                "merge": self.on_success.merge,
+                "cleanup": self.on_success.cleanup,
+                "triage_report": self.on_success.triage_report,
+                "remove_targets": list(self.on_success.remove_targets),
+            },
+        }
 
     @staticmethod
     def _strip_new_tag(entry: str) -> str:

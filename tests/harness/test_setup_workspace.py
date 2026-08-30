@@ -72,44 +72,60 @@ class TestMaterializedTargetContract:
     def _context(self, tmp_path: Path) -> MagicMock:
         contract = MagicMock()
         contract.as_dict.return_value = {"schema": 3}
-        return MagicMock(
+        ctx = MagicMock(
             target_contract=contract,
             base_sha="a" * 40,
             criteria={"mandatory": {}},
         )
+        ctx.sealed_contract_fields.return_value = {
+            "base_sha": "a" * 40,
+            "target_contract": {"schema": 3},
+            "criteria": {"mandatory": {}},
+            "scope": [],
+            "on_success": {
+                "destination": "review",
+                "merge": True,
+                "cleanup": True,
+                "triage_report": True,
+                "remove_targets": [],
+            },
+        }
+        return ctx
 
     def test_accepts_unchanged_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_target_contract
 
         ctx = self._context(tmp_path)
-        with (
-            patch("booley.ticket_board.target_contract.verify_surface") as verify,
-            patch(
-                "booley.ticket_board.target_contract.validate_contract_fields",
-                return_value=[],
-            ) as validate,
-        ):
+        with patch(
+            "booley.ticket_board.target_contract.validate_materialized_contract",
+            return_value=[],
+        ) as validate:
             result = _validate_materialized_target_contract(ctx, tmp_path)
 
         assert result is None
-        verify.assert_called_once_with(ctx.target_contract, tmp_path)
         validate.assert_called_once_with(
             {
                 "base_sha": "a" * 40,
                 "target_contract": {"schema": 3},
                 "criteria": {"mandatory": {}},
+                "scope": [],
+                "on_success": {
+                    "destination": "review",
+                    "merge": True,
+                    "cleanup": True,
+                    "triage_report": True,
+                    "remove_targets": [],
+                },
             },
             tmp_path,
         )
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_target_contract
-        from booley.ticket_board.target_contract import TargetContractError
-
         ctx = self._context(tmp_path)
         with patch(
-            "booley.ticket_board.target_contract.verify_surface",
-            side_effect=TargetContractError("surface changed"),
+            "booley.ticket_board.target_contract.validate_materialized_contract",
+            return_value=["target-contract-change-required: surface changed"],
         ):
             result = _validate_materialized_target_contract(ctx, tmp_path)
 

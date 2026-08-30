@@ -20,6 +20,7 @@ from booley.ticket_board.target_contract import (
     surface_digest,
     validate_contract_fields,
     validate_criterion_targets,
+    validate_materialized_contract,
     validate_targets_for_seal,
 )
 
@@ -477,6 +478,69 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
     assert contract.bindings[0].candidate == "acme:lib:toy:1.0#synth_after"
     assert contract.bindings[0].baseline_selector == "synth_before"
     assert contract.bindings[0].candidate_selector == "synth_after"
+
+
+def test_materialized_contract_validates_directed_targets_in_sealed_view(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    criteria = {
+        "mandatory": {
+            "synthesis_ok": {
+                "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                "area_reduce_at_least": 10,
+            }
+        }
+    }
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["synth_before", "synth_after"],
+        bindings=criterion_targets(criteria),
+        participants=[_participant()],
+    )
+    fields = {
+        "base_sha": contract.outer_sha,
+        "criteria": criteria,
+        "scope": [],
+        "on_success": {"remove_targets": []},
+        "target_contract": contract.as_dict(),
+    }
+
+    assert validate_materialized_contract(fields, project) == []
+
+
+@pytest.mark.parametrize(
+    ("missing_target", "role"),
+    [("synth_after", "candidate"), ("synth_before", "baseline")],
+)
+def test_directed_target_validation_reports_missing_role(
+    tmp_path: Path,
+    missing_target: str,
+    role: str,
+) -> None:
+    project = _project(tmp_path)
+    criteria = {
+        "mandatory": {
+            "synthesis_ok": {
+                "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
+                "area_reduce_at_least": 10,
+            }
+        }
+    }
+    core = project / "toy.core"
+    lines = core.read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"  {missing_target}:")
+    del lines[start : start + 5]
+    core.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    fields = {
+        "criteria": criteria,
+        "scope": [],
+    }
+
+    errors = validate_criterion_targets(fields, project)
+
+    assert any(f"{role} target {missing_target!r}" in error for error in errors)
 
 
 def test_schema_three_binding_codec_round_trips_without_schema_four_fields() -> None:
