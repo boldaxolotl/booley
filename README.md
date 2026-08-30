@@ -9,13 +9,13 @@
 
 ![Booley in VS Code with RTL, an interactive agent session, ticket progress, and waveform inspection](docs/booley-screenshot.png)
 
-## IDE
+## Integrated Development Environment
 
 RTL development is fragmented across editors, tool-specific commands, build environments, logs, and waveform viewers. Booley brings that workflow together in one reproducible VS Code workspace.
 
-- **One typed Booley Flow surface:** simulation, lint, synthesis, and FPGA implementation use one structured interface. A simulation Target selects the underlying EDA tool—Verilator today or Xcelium<sup>*</sup> tomorrow, while the engineer and LLM agents use the same `sim` Flow either way (it is powered by [FuseSoC](https://github.com/olofk/fusesoc)). You don't have to maintain EDA glue scripts anymore.
+- **One Window:** RTL, the agent, terminals, EDA runs, results, and waveform viewing live in a single VS Code window. You can move from editing to simulation to waveform debugging to synthesis without switching between separate applications.
 - **Reproducible team environment:** configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to every team member. Nobody has to rebuild the toolchain independently or debug "works on my machine" differences ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/WHY.md#why-docker)).
-- **One IDE:** RTL, the agent, terminals, EDA runs, results, and waveform viewing live in a single VS Code window. You can move from editing to simulation to waveform debugging to synthesis without switching between separate applications.
+- **One typed Booley Flow surface:** simulation, lint, synthesis, and FPGA implementation use one structured interface. A simulation Target selects the underlying EDA tool—Verilator today or Xcelium<sup>*</sup> tomorrow, while the engineer and LLM agents use the same `sim` Flow either way (it is powered by [FuseSoC](https://github.com/olofk/fusesoc)). You don't have to maintain EDA glue scripts anymore.
 
 <sub>* Xcelium support is a work in progress.</sub>
 
@@ -48,7 +48,7 @@ supported. You need:
 Install and verify the CLI on the host:
 
 ```bash
-pipx install booley-rtl        # or: pip install booley-rtl
+pipx install booley-rtl # or: pip install booley-rtl
 booley --version
 ```
 

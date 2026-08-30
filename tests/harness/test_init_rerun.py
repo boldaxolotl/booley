@@ -81,10 +81,10 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
 
     def docker_preflight(ctx: InitContext) -> bool:
         ctx.step_banner("host bootstrap tool detection")
-        ctx.record("eda_tools", "ok")
+        ctx.record("host_prerequisites", "ok")
         return True
 
-    monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", docker_preflight)
+    monkeypatch.setattr(init_cmd, "_step_host_prerequisites", docker_preflight)
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
     pdk_root = tmp_path / "pdk"

@@ -18,7 +18,7 @@ from booley.harness import init_cmd, init_docker_image
 from booley.harness.init_common import InitContext
 
 
-def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch):
+def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch, capsys):
     def fake_run(args, **_kwargs):
         if args[-1] == "info":
             return subprocess.CompletedProcess(args, 1, "", "daemon unavailable")
@@ -29,18 +29,22 @@ def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch):
     monkeypatch.setattr(init_cmd, "_detect_vscode", lambda: ("cli", "code 1"))
     ctx = InitContext(project_root=tmp_path)
 
-    assert init_cmd._step_eda_tool_detection(ctx) is False
+    assert init_cmd._step_host_prerequisites(ctx) is False
     assert ctx.results[-1].status == "err"
     assert ctx.results[-1].detail == "docker unavailable"
+    assert init_cmd._print_summary(ctx) == 2
+    summary = capsys.readouterr().out
+    assert "host_prerequisites — docker unavailable" in summary
+    assert "eda_tools" not in summary
 
 
 def test_init_aborts_before_writing_when_docker_is_unavailable(tmp_path, monkeypatch):
     def unavailable(ctx):
         ctx.step_banner("host bootstrap tool detection")
-        ctx.record("eda_tools", "err", "docker unavailable")
+        ctx.record("host_prerequisites", "err", "docker unavailable")
         return False
 
-    monkeypatch.setattr(init_cmd, "_step_eda_tool_detection", unavailable)
+    monkeypatch.setattr(init_cmd, "_step_host_prerequisites", unavailable)
     args = argparse.Namespace(
         seed=False,
         check_only=False,
