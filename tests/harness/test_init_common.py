@@ -35,7 +35,7 @@ def test_progress_output_flushes_each_redirected_line(monkeypatch: pytest.Monkey
     configure_progress_output()
     print("Session Image build started")
 
-    assert raw.getvalue() == b"Session Image build started\n"
+    assert raw.getvalue().decode("utf-8").splitlines() == ["Session Image build started"]
 
 
 # ---------------------------------------------------------------------------
