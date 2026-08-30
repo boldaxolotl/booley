@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from types import SimpleNamespace
 
+import pytest
+
 from booley.harness import init_cmd
 from booley.harness.init_common import InitContext
 
@@ -237,6 +239,40 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
             "session_image_id": result.selected_id,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("status", "record", "result_status", "detail"),
+    [
+        (
+            init_cmd.ImageLifecycleStatus.EXTERNAL,
+            "project_image",
+            "skip",
+            "user-managed image",
+        ),
+        (
+            init_cmd.ImageLifecycleStatus.STALE,
+            "docker_image",
+            "warn",
+            "Session Image provenance is stale",
+        ),
+        (init_cmd.ImageLifecycleStatus.CURRENT, "docker_image", "skip", "current"),
+    ],
+)
+def test_image_lifecycle_step_returns_each_nonerror_result(
+    tmp_path,
+    monkeypatch,
+    status,
+    record,
+    result_status,
+    detail,
+):
+    result = init_cmd.LifecycleResult("booley-sandbox", "sha256:" + "f" * 64, status)
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert ctx.results[-1] == init_cmd.StepResult(record, result_status, detail)
 
 
 def test_flag_cannot_silently_replace_existing_provider(tmp_path):

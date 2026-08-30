@@ -694,7 +694,7 @@ class _DockerCli:
             ) from exc
         if values is None or values == []:
             return ()
-        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        if not is_str_list(values):
             raise ImageLifecycleError(f"Docker returned invalid RepoDigests for {image!r}")
         normalized = tuple(normalize_registry_digest(value) for value in values)
         if any(value is None for value in normalized):
