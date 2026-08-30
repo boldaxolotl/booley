@@ -11,7 +11,7 @@ use serde::Serialize;
 
 /// Pinned `$schema` URL. Bump alongside the git tag at release-cut time.
 pub const SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.8/crates/bwave/schema/bwave.json";
+    "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.9/crates/bwave/schema/bwave.json";
 
 /// Canonical envelope. Every `--format json` payload is wrapped in this shape.
 #[derive(Serialize)]
