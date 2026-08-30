@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -19,7 +20,31 @@ from booley.flows.lint.flow import (
     parse_verible_warnings,
     parse_warnings,
 )
+from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.targets.target import TargetHandle
+from booley.targets.target import select_targets as canonical_select_targets
+
+
+def _target_handle(
+    selector: str,
+    *,
+    vlnv: str | None = None,
+    flow: str | None = "lint",
+    eda_tool: str | None = "verilator",
+) -> TargetHandle:
+    """Build a selected Target value for layer-focused Lint tests."""
+    target_vlnv = vlnv or f"::{selector}:0"
+    return TargetHandle(
+        identity=f"{target_vlnv}#{selector}",
+        selector=selector,
+        name=selector,
+        vlnv=target_vlnv,
+        core_file=Path(f"{selector}.core"),
+        flow=flow,
+        eda_tool=eda_tool,
+        drivable_by=("lint",),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -35,12 +60,14 @@ def _adr0039_lenient_selection(monkeypatch):
     """
 
     def _lenient(project_root, target_arg):
-        del project_root
-        return tuple(
-            MagicMock(selector=token.strip())
-            for token in (target_arg or "").split(",")
-            if token.strip()
-        )
+        try:
+            return canonical_select_targets(project_root, target_arg)
+        except fusesoc_registry.FuseSocError:
+            return tuple(
+                _target_handle(token.strip())
+                for token in (target_arg or "").split(",")
+                if token.strip()
+            )
 
     monkeypatch.setattr("booley.flows.lint.flow.select_targets", _lenient)
 
@@ -181,6 +208,7 @@ class TestLintResolution:
                 target=target,
                 project_root=project_root,
                 build_root=build_root,
+                vlnv=kw["vlnv"],
             )
             return fake
 
@@ -189,13 +217,16 @@ class TestLintResolution:
             "resolve_target",
             side_effect=fake_resolve,
         ):
-            cmd, resolved = flow._prepare_lint_command("lite")
+            cmd, resolved = flow._prepare_lint_command(
+                _target_handle("lite", vlnv="::lint_demo:0")
+            )
 
         # The ResolvedTarget rides along for EDA-tool/coverage reporting.
         assert resolved is fake
         # Target name and project root are forwarded; build_root is the
         # per-(EDA tool, config) Edalize dir.
         assert captured["target"] == "lite"
+        assert captured["vlnv"] == "::lint_demo:0"
         assert Path(captured["project_root"]) == Path(flow.args.work_dir)
         assert captured["build_root"] == (
             tmp_path / ".booley_project" / ".runtime" / "edalize" / "lint" / "lite"
@@ -220,7 +251,7 @@ class TestLintResolution:
             ),
             pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
         ):
-            flow._prepare_lint_command("lite")
+            flow._prepare_lint_command(_target_handle("lite", vlnv="::lint_demo:0"))
 
     def test_real_fusesoc_lint_setup(self, tmp_path: Path, state_file: Path):
         """End-to-end: a real `fusesoc run --setup` leaves a makeable lint dir.
@@ -264,7 +295,9 @@ class TestLintResolution:
                 **{**k, "fusesoc_cmd": fusesoc_cmd},
             ),
         ):
-            cmd, _resolved = flow._prepare_lint_command("lite")
+            cmd, _resolved = flow._prepare_lint_command(
+                _target_handle("lite", vlnv="::lint_demo:0")
+            )
 
         assert cmd[0] == "make" and cmd[1] == "-C"
         make_dir = (work_dir / cmd[2]).resolve()
@@ -274,6 +307,179 @@ class TestLintResolution:
         assert "-Wall" in vc
         # Relocatable: no absolute project/build paths baked into the .vc.
         assert str(work_dir) not in vc
+
+
+class TestDoctorTargetAuthority:
+    @staticmethod
+    def _author_target(
+        root: Path,
+        filename: str,
+        vlnv: str,
+        *,
+        doctor_selftest: bool,
+        target_name: str = "lint",
+    ) -> None:
+        root.joinpath(filename).write_text(
+            "CAPI=2:\n"
+            f"name: {vlnv}\n"
+            "targets:\n"
+            f"  {target_name}:\n"
+            "    flow: lint\n"
+            "    flow_options:\n"
+            "      tool: verible\n"
+            f"      booley: {{doctor_selftest: {str(doctor_selftest).lower()}}}\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _doctor_selector(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> Callable[[Path, str], tuple[TargetHandle, ...]]:
+        import booley.targets.target as target_selection
+
+        def select_for_doctor(
+            project_root: Path,
+            target_arg: str,
+        ) -> tuple[TargetHandle, ...]:
+            monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+            selected = canonical_select_targets(project_root, target_arg)
+            monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
+            rejected = MagicMock(side_effect=AssertionError("Target authority was re-requested"))
+            monkeypatch.setattr(target_selection, "select_target", rejected)
+            monkeypatch.setattr(target_selection, "select_targets", rejected)
+            return selected
+
+        return select_for_doctor
+
+    def _authorized_lint_flow(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> LintFlow:
+        self._author_target(
+            tmp_path,
+            "doctor.core",
+            "acme:ip:doctor:1.0",
+            doctor_selftest=True,
+            target_name="lint_selftest_bad",
+        )
+        monkeypatch.setattr(
+            "booley.flows.lint.flow.select_targets",
+            self._doctor_selector(monkeypatch),
+        )
+        monkeypatch.setattr(
+            LintFlow,
+            "_prepare_lint_command",
+            lambda _self, _target: (["verible-verilog-lint"], _stub_resolved("verible")),
+        )
+        monkeypatch.setattr(
+            LintFlow,
+            "_execute",
+            lambda _self, _cmd: MagicMock(
+                returncode=0,
+                stdout="rtl/bad.sv:1:1: forbidden construct [module-filename]\n",
+                stderr="",
+                timed_out=False,
+                duration_s=0.1,
+            ),
+        )
+        flow = LintFlow()
+        flow.parse_args(
+            ["--work-dir", str(tmp_path), "--target", "lint_selftest_bad", "--diagnostic"]
+        )
+        flow.read_state()
+        return flow
+
+    def test_public_lint_rejects_doctor_only_target_before_resolution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An ordinary Flow invocation cannot cross Doctor's private seam."""
+        self._author_target(
+            tmp_path,
+            "doctor.core",
+            "acme:ip:doctor:1.0",
+            doctor_selftest=True,
+        )
+        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
+        monkeypatch.setattr(
+            "booley.flows.lint.flow.select_targets",
+            canonical_select_targets,
+        )
+        monkeypatch.setattr(LintFlow, "_pre_state_gate", lambda _self: None)
+
+        with patch.object(fusesoc_registry, "resolve_target") as resolve:
+            exit_code = LintFlow().main(
+                [
+                    "--work-dir",
+                    str(tmp_path),
+                    "--target",
+                    "lint",
+                    "--diagnostic",
+                ]
+            )
+
+        assert exit_code == EXIT_ERROR
+        resolve.assert_not_called()
+
+    def test_selected_vlnv_pins_qualified_doctor_target_execution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Lint forwards the selected core identity through both command paths."""
+        self._author_target(
+            tmp_path,
+            "public.core",
+            "acme:ip:public:1.0",
+            doctor_selftest=False,
+        )
+        self._author_target(
+            tmp_path,
+            "doctor.core",
+            "acme:ip:doctor:1.0",
+            doctor_selftest=True,
+        )
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        (target,) = canonical_select_targets(tmp_path, "doctor#lint")
+        monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
+
+        resolved = _stub_resolved("verible")
+        flow = LintFlow()
+        flow.parse_args(["--work-dir", str(tmp_path), "--target", target.selector])
+        with patch.object(fusesoc_registry, "resolve_target", return_value=resolved) as resolve:
+            flow._prepare_lint_command(target)
+
+        resolve.assert_called_once_with(
+            "doctor#lint",
+            project_root=tmp_path,
+            build_root=(
+                tmp_path / ".booley_project" / ".runtime" / "edalize" / "lint" / "doctor_lint"
+            ),
+            vlnv="acme:ip:doctor:1.0",
+        )
+        setup = fusesoc_registry.setup_command(
+            target.selector,
+            project_root=tmp_path,
+            build_root=tmp_path / "build",
+            vlnv=target.vlnv,
+        )
+        target_index = setup.index("--target")
+        assert setup[target_index + 1] == "lint"
+        assert setup[-1] == "acme:ip:doctor:1.0"
+
+    def test_selected_doctor_target_keeps_its_lint_parser(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Lint uses the authorized handle after Doctor context is gone."""
+        flow = self._authorized_lint_flow(tmp_path, monkeypatch)
+        result = flow._run()
+
+        assert result.exit_code == EXIT_FAILURE
+        assert result.detail["total_warnings"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +685,12 @@ class TestDryRun:
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "lite", "--dry-run"])
         flow.read_state()
-        result = flow._run()
+        with patch.object(
+            fusesoc_registry,
+            "setup_command",
+            side_effect=fusesoc_registry.TargetResolutionError("Unknown target 'lite'"),
+        ):
+            result = flow._run()
         assert result.exit_code == 0
         data = json.loads(capsys.readouterr().out)
         assert data["lite"][0].startswith("ERROR: lint dry-run:")
@@ -778,7 +989,7 @@ class TestErrorVsFailTaxonomy:
             flow = LintFlow()
             flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             flow.read_state()
-            cr = flow._run_lint_target("lite")
+            cr = flow._run_lint_target(_target_handle("lite"))
 
         pointer = ".booley_project/.runtime/edalize/lint/lite/run.log"
         assert cr.error.startswith("%Error: rtl/x.v:1:1")
@@ -812,7 +1023,7 @@ class TestErrorVsFailTaxonomy:
             mock_exec.return_value = MagicMock(
                 returncode=0, stdout="", stderr="", timed_out=False, duration_s=0.1
             )
-            flow._run_lint_target("lite")
+            flow._run_lint_target(_target_handle("lite"))
 
         assert "stale finding" not in seen["mid_run"]
         assert seen["mid_run"].startswith("[BOOLEY RUN_LOG] ")
@@ -842,7 +1053,7 @@ class TestErrorVsFailTaxonomy:
                 timed_out=False,
                 duration_s=0.5,
             )
-            cr = flow._run_lint_target("lite")
+            cr = flow._run_lint_target(_target_handle("lite"))
 
         assert "full log:" not in cr.error
 
@@ -1115,7 +1326,11 @@ class TestConfigDiscovery:
                 "lite,full,combo",
             ]
         )
-        assert flow._get_targets() == ["lite", "full", "combo"]
+        assert tuple(target.selector for target in flow._get_targets()) == (
+            "lite",
+            "full",
+            "combo",
+        )
 
     def test_single_config(self, state_file: Path):
         flow = LintFlow()
@@ -1125,7 +1340,7 @@ class TestConfigDiscovery:
                 "lite",
             ]
         )
-        assert flow._get_targets() == ["lite"]
+        assert tuple(target.selector for target in flow._get_targets()) == ("lite",)
 
     def test_empty_target_returns_nothing(self, state_file: Path):
         """An explicit empty target never sweeps every declared Target."""
@@ -1136,7 +1351,7 @@ class TestConfigDiscovery:
                 "",
             ]
         )
-        assert flow._get_targets() == []
+        assert flow._get_targets() == ()
 
     def test_target_is_required_by_parser(self, state_file: Path):
         flow = LintFlow()
