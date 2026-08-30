@@ -1,8 +1,8 @@
 # Features
 
-Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and every coding agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](WHY.md).
+Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and every coding agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
 
-New to Booley's vocabulary (Developer Agent, Specialist, Session Runtime, Booley Flow, Target, Ticket Board)? The glossary in [CONTEXT.md](CONTEXT.md) defines every term and the synonyms to avoid.
+New to Booley's vocabulary (Developer Agent, Specialist, Session Runtime, Booley Flow, Target, Ticket Board)? The glossary in [CONTEXT.md](../CONTEXT.md) defines every term and the synonyms to avoid.
 
 - [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)
 - [The Agentic RTL IDE](#the-agentic-rtl-ide)
@@ -45,7 +45,7 @@ Booley is not only infrastructure for an agent. It is workflow infrastructure fo
 
 Work interactively through conversation—edit code, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug))—or let autonomous tickets run in container terminals alongside. In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
 
-Today that means stock VS Code chrome plus the agent chat and the Booley Flows it drives; native UI surfaces (ticket panel, criterion status, Flow dashboards) are on the [roadmap](ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
+Today that means stock VS Code chrome plus the agent chat and the Booley Flows it drives; native UI surfaces (ticket panel, criterion status, Flow dashboards) are on the [roadmap](../internals/ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
 
 ## Open Source and Local-First
 
@@ -108,13 +108,13 @@ The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project
 
 ## Fresh Context per Specialist
 
-Long single-context agent sessions degrade: the model loses the thread, gets distracted by stale logs, and quality falls off over a multi-hour task. Booley's answer is context isolation: each Specialist (code review, mutation testing) runs in a fresh LLM context, so none of them drags along stale logs or drafts from earlier iterations. A fresh context also means a fresh perspective: a Specialist that didn't write the code has no attachment to it and no memory of the reasoning that produced it, so it judges what's actually there rather than what was intended. This matters most for the reviewer: an agent reviewing its own work tends to confirm it, while an unbiased one finds the real issues. Continuity lives in structured state carried by the Developer Agent (tickets, criteria, reports), not in an ever-growing conversation. See [ARCHITECTURE.md](ARCHITECTURE.md#the-sandbox).
+Long single-context agent sessions degrade: the model loses the thread, gets distracted by stale logs, and quality falls off over a multi-hour task. Booley's answer is context isolation: each Specialist (code review, mutation testing) runs in a fresh LLM context, so none of them drags along stale logs or drafts from earlier iterations. A fresh context also means a fresh perspective: a Specialist that didn't write the code has no attachment to it and no memory of the reasoning that produced it, so it judges what's actually there rather than what was intended. This matters most for the reviewer: an agent reviewing its own work tends to confirm it, while an unbiased one finds the real issues. Continuity lives in structured state carried by the Developer Agent (tickets, criteria, reports), not in an ever-growing conversation. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#the-sandbox).
 
 ## Waveform-Based Debug
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. The reasoning is in [WHY.md: Why FST is the trace contract](WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
 
 ## Ticket Mode with Checkpoint & Resume
 
@@ -155,7 +155,7 @@ Making a project Booley-ready is a guided, mostly hands-off process. Booley ship
 
 ## Extensible Toolkit
 
-Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](MCP-TOOLS.md) for the architecture and extension guide.
+Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ## Parallel Instances
 

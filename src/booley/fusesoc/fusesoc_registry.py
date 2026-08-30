@@ -1841,7 +1841,7 @@ def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -
     raise IncompatibleTargetError(
         f"Target {token!r} cannot be driven by the {flow!r} Flow "
         f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-        f"Choose a compatible Target with `booley targets --for {flow}`."
+        f"Choose a compatible Target with `booley targets --for-flow {flow}`."
     )
 
 

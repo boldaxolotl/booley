@@ -44,7 +44,7 @@ installation contract, read-only runtime provisioning, licensing relay,
 Doctor checks, security tests, and full-Flow proof; a wrapper script alone is
 not support.
 
-The blocker is licenses, not design: the maintainer can't validate a Flow for an EDA tool they can't run, which makes this the best place for an outside contribution. [CONTRIBUTING.md](CONTRIBUTING.md#the-1-priority-port-commercial-eda-tools) lists the specific EDA tools worth porting per vendor, which of them Edalize already invokes, and what a port actually takes. For what ships today, see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+The blocker is licenses, not design: the maintainer can't validate a Flow for an EDA tool they can't run, which makes this the best place for an outside contribution. [CONTRIBUTING.md](CONTRIBUTING.md#the-1-priority-port-commercial-eda-tools) lists the specific EDA tools worth porting per vendor, which of them Edalize already invokes, and what a port actually takes. For what ships today, see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
 ## Coverage Measurement
 
@@ -86,7 +86,7 @@ or synthesis setup at all. Slow Targets can be kept off every push and run
 nightly instead.
 
 The same engine should also support [stealth
-mode](CONFIG.md#stealth-mode-stealth) without committing a Booley-shaped hosted
+mode](../user/CONFIG.md#stealth-mode-stealth) without committing a Booley-shaped hosted
 workflow. In that deployment the runner and scheduler are local, and structured
 run results and history live in `.booley_project/`'s own repository rather than
 appearing as hosted checks or files in the RTL repository. The Target selection,
@@ -95,7 +95,7 @@ only the execution and reporting plane changes.
 
 ## Cocotb Support
 
-**Partial.** [cocotb](https://www.cocotb.org/) testbenches run on the sandbox simulators today (see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md)). What's left:
+**Partial.** [cocotb](https://www.cocotb.org/) testbenches run on the sandbox simulators today (see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md)). What's left:
 
 - Cocotb on future commercial policies. The hard part is proving the complete
   image/runtime and licensing contract, not a host Python environment.
@@ -106,7 +106,7 @@ only the execution and reporting plane changes.
 
 ## HDL Dependency Graph (intra-Target file pruning)
 
-**Planned.** This item assumes the FuseSoC Target/fileset model: a **Target** is a named `.core` build target, and its *fileset* is the ordered list of source files that Target resolves to (see [CONTEXT.md](CONTEXT.md) for the vocabulary and [BOOLEY-FLOWS.md](BOOLEY-FLOWS.md) for how the Flow uses it).
+**Planned.** This item assumes the FuseSoC Target/fileset model: a **Target** is a named `.core` build target, and its *fileset* is the ordered list of source files that Target resolves to (see [CONTEXT.md](../CONTEXT.md) for the vocabulary and [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) for how the Flow uses it).
 
 Prune a resolved Target's fileset down to the module a Booley Flow actually
 needs. **The chosen front-end is slang; Booley will not implement its own
@@ -131,7 +131,7 @@ Targets.
 
 ## Additional Booley Flows
 
-**Planned.** The current Booley Flows cover simulation, synthesis (ASIC and FPGA), and lint. (Note: `synth` is a **fast PPA estimate to guide RTL optimization**, not tape-out sign-off; see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows).) Production RTL workflows need more:
+**Planned.** The current Booley Flows cover simulation, synthesis (ASIC and FPGA), and lint. (Note: `synth` is a **fast PPA estimate to guide RTL optimization**, not tape-out sign-off; see [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows).) Production RTL workflows need more:
 
 - Logic equivalence checking (LEC)
 - Formal verification
@@ -140,7 +140,7 @@ Targets.
 - Static timing analysis (STA)
 - Power analysis / UPF
 - Coverage-driven verification: functional coverage collection and hole analysis to guide stimulus generation
-- FPGA synthesis and PnR beyond AMD Vivado (Intel); Vivado already ships as the EDA tool driven by the built-in [`fpga`](BOOLEY-FLOWS.md#fpga) Flow
+- FPGA synthesis and PnR beyond AMD Vivado (Intel); Vivado already ships as the EDA tool driven by the built-in [`fpga`](FLOW_IMPLEMENTATION.md#fpga) Flow
 
 ## Native IDE Surface in VS Code
 

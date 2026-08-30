@@ -637,7 +637,7 @@ class TestResolveConfigSelection:
         )
         _write_core(tmp_path / "ip", core)
 
-        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for elab"):
+        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for-flow elab"):
             resolve_target_selection("synth", tmp_path, for_flow="elab")
 
     def test_no_core_rejects_any_token(self, tmp_path: Path):
