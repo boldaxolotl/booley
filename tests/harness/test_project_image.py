@@ -148,6 +148,7 @@ class TestBuild:
         build = next(command for command in calls if command[:2] == ["docker", "build"])
         assert build[:3] == ["docker", "build", "-t"]
         assert str(docker_dir) in build  # context is the small docker dir
+        assert "io.booley.build.parent-artifact-kind=local-image-id" in build
         assert "io.booley.build.parent-artifact=sha256:base" in build
 
     def test_build_missing_dockerfile(self, tmp_path):
@@ -242,6 +243,7 @@ class TestDockerfile:
         )
         build = next(command for command in calls if command[:2] == ["docker", "build"])
         assert inspect[3] == "booley-sandbox-riscv:old"
+        assert "io.booley.build.parent-artifact-kind=local-image-id" in build
         assert "io.booley.build.parent-artifact=sha256:old" in build
 
     def test_multistage_parent_requires_explicit_directive(self, tmp_path):
