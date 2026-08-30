@@ -311,38 +311,12 @@ def _source_commit() -> str | None:
     never borrows a wheel stamp, and a wheel never borrows an enclosing repo.
     """
     import booley
-    from booley.runtime.version_attribution import VersionOrigin
 
-    attribution = booley._version_attribution
-    if attribution.origin is VersionOrigin.DISTRIBUTION:
+    attribution = booley.version_attribution
+    if attribution.distribution_name is not None:
         return _baked_commit()
-    root = attribution.source_root
-    if attribution.origin is not VersionOrigin.SOURCE or root is None:
-        return None
-    if not (root / ".git").exists():
-        return None
-    try:
-        rev = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if rev.returncode != 0 or not rev.stdout.strip():
-        return None
-    commit = rev.stdout.strip()
-    dirty = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
-    suffix = "+dirty" if dirty.returncode == 0 and dirty.stdout.strip() else ""
-    return f"{commit}{suffix}"
+    revision, _updated_at = attribution.source_git_metadata()
+    return revision or None
 
 
 def _version_string() -> str:

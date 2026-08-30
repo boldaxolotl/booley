@@ -430,7 +430,7 @@ class TestLegacyDistribution:
         monkeypatch.setattr(booley, "__dist_name__", "booley")
         monkeypatch.setattr(
             booley,
-            "_version_attribution",
+            "version_attribution",
             VersionAttribution(
                 version="0.0.9",
                 origin=VersionOrigin.DISTRIBUTION,
@@ -448,7 +448,7 @@ class TestLegacyDistribution:
         monkeypatch.setattr(booley, "__dist_name__", "booley-rtl")
         monkeypatch.setattr(
             booley,
-            "_version_attribution",
+            "version_attribution",
             VersionAttribution(
                 version="1.0.0",
                 origin=VersionOrigin.DISTRIBUTION,

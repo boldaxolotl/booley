@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import booley.runtime.version_attribution as attribution_module
 from booley.runtime.version_attribution import (
     VersionAttribution,
     VersionOrigin,
@@ -141,6 +142,55 @@ def test_harness_reexports_authoritative_top_level_version() -> None:
     import booley.harness
 
     assert booley.harness.__version__ == booley.__version__
+    assert booley.version_attribution.version == booley.__version__
+
+
+def test_source_git_metadata_uses_only_attributed_root(tmp_path, monkeypatch) -> None:
+    source_root = tmp_path / "checkout"
+    (source_root / ".git").mkdir(parents=True)
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if "rev-parse" in command:
+            stdout = "abc123\n"
+        elif "status" in command:
+            stdout = " M src/booley/__init__.py\n"
+        else:
+            stdout = "2026-08-30T10:39:40Z\n"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(attribution_module.subprocess, "run", run)
+    attribution = VersionAttribution(
+        version="4.5.6",
+        origin=VersionOrigin.SOURCE,
+        source_root=source_root,
+    )
+
+    assert attribution.source_git_metadata() == (
+        "abc123+dirty",
+        "2026-08-30T10:39:40Z",
+    )
+    assert all(command[2] == str(source_root) for command in commands)
+
+
+def test_source_git_metadata_does_not_search_enclosing_repository(tmp_path, monkeypatch) -> None:
+    outer = tmp_path / "outer"
+    (outer / ".git").mkdir(parents=True)
+    source_root = outer / "unpacked-booley"
+    source_root.mkdir()
+    monkeypatch.setattr(
+        attribution_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("must not inspect an enclosing repository"),
+    )
+    attribution = VersionAttribution(
+        version="4.5.6",
+        origin=VersionOrigin.SOURCE,
+        source_root=source_root,
+    )
+
+    assert attribution.source_git_metadata() == ("", "")
 
 
 def test_real_wheel_metadata_owns_the_imported_package(tmp_path, monkeypatch) -> None:

@@ -67,7 +67,6 @@ def audit_legacy_distribution() -> EnvironmentFinding:
     from importlib.metadata import PackageNotFoundError, distribution
 
     import booley
-    from booley.runtime.version_attribution import VersionOrigin
 
     try:
         legacy = distribution("booley")
@@ -86,7 +85,7 @@ def audit_legacy_distribution() -> EnvironmentFinding:
         current_installed = False
     if booley.__dist_name__ == "booley" and not current_installed:
         return _legacy_only_finding(legacy_version, resolved)
-    if booley._version_attribution.origin is VersionOrigin.SOURCE:
+    if booley.version_attribution.source_root is not None:
         return EnvironmentFinding(
             EnvironmentSeverity.FAIL,
             f"legacy `booley` distribution ({legacy_version}) is installed, but the "

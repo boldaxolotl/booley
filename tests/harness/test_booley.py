@@ -218,13 +218,22 @@ class TestBakedBuildCommit:
         assert not hasattr(booley, "_build_commit")
         assert tlr._baked_commit() is None
 
-    def test_source_git_failure_does_not_borrow_baked_commit(self, monkeypatch):
+    def test_source_git_failure_does_not_borrow_baked_commit(self, tmp_path, monkeypatch):
         """A checkout must not combine its version with another build's stamp."""
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 
-        def _no_git(*_args, **_kwargs):
-            raise OSError("git not found")
-
-        monkeypatch.setattr(tlr.subprocess, "run", _no_git)
+        source_root = tmp_path / "checkout"
+        source_root.mkdir()
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="4.5.6",
+                origin=VersionOrigin.SOURCE,
+                source_root=source_root,
+            ),
+        )
         monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
         assert tlr._source_commit() is None
         assert "(cafe123)" not in tlr._version_string()
@@ -235,7 +244,7 @@ class TestBakedBuildCommit:
 
         monkeypatch.setattr(
             booley,
-            "_version_attribution",
+            "version_attribution",
             VersionAttribution(
                 version="4.5.6",
                 origin=VersionOrigin.DISTRIBUTION,
@@ -243,9 +252,9 @@ class TestBakedBuildCommit:
             ),
         )
         monkeypatch.setattr(
-            tlr.subprocess,
-            "run",
-            lambda *_args, **_kwargs: pytest.fail("wheel attribution must not inspect Git"),
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
         )
         monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
 
@@ -253,13 +262,13 @@ class TestBakedBuildCommit:
 
     def test_live_checkout_wins_over_the_baked_commit(self, monkeypatch):
         """A checkout's live state is the truthful one — it can be +dirty."""
+        from booley.runtime.version_attribution import VersionAttribution
 
-        def _fake_run(cmd, **_kwargs):
-            if "rev-parse" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="live999\n", stderr="")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        monkeypatch.setattr(tlr.subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: ("live999", "2026-08-30T10:39:40Z"),
+        )
         monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
         assert tlr._source_commit() == "live999"
 
@@ -273,17 +282,12 @@ class TestBakedBuildCommit:
         source_root.mkdir()
         monkeypatch.setattr(
             booley,
-            "_version_attribution",
+            "version_attribution",
             VersionAttribution(
                 version="4.5.6",
                 origin=VersionOrigin.SOURCE,
                 source_root=source_root,
             ),
-        )
-        monkeypatch.setattr(
-            tlr.subprocess,
-            "run",
-            lambda *_args, **_kwargs: pytest.fail("source without .git must not inspect parents"),
         )
         monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
 

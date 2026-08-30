@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from booley.runtime.timefmt import format_human_datetime
-from booley.runtime.version_attribution import VersionOrigin
-
-_GIT_TIMEOUT_SECONDS = 5
 
 
 @dataclass(frozen=True)
@@ -22,38 +17,6 @@ class BuildMetadata:
     source_updated_at: str
     image_built_at: str
     payload_fingerprint: str
-
-
-def _git_output(root: Path, *args: str) -> str:
-    """Return stripped git output, or an empty string when git cannot answer."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def _checkout_metadata() -> tuple[str, str]:
-    """Return revision and last-commit time for an imported source checkout."""
-    import booley
-
-    attribution = booley._version_attribution
-    root = attribution.source_root
-    if attribution.origin is not VersionOrigin.SOURCE or root is None:
-        return "", ""
-    if not (root / ".git").exists():
-        return "", ""
-    revision = _git_output(root, "rev-parse", "--short", "HEAD")
-    if revision and _git_output(root, "status", "--porcelain"):
-        revision += "+dirty"
-    updated_at = _git_output(root, "log", "-1", "--format=%cI", "HEAD")
-    return revision, updated_at
 
 
 def _baked_revision() -> str:
@@ -73,12 +36,13 @@ def current_build_metadata() -> BuildMetadata:
     """
     import booley
 
-    checkout_revision, checkout_updated_at = _checkout_metadata()
+    attribution = booley.version_attribution
+    checkout_revision, checkout_updated_at = attribution.source_git_metadata()
     image_version = os.environ.get("BOOLEY_VERSION", "")
     package_matches_image = not image_version or image_version == booley.__version__
     image_revision = os.environ.get("BOOLEY_SOURCE_REVISION", "")
     image_updated_at = os.environ.get("BOOLEY_SOURCE_UPDATED_AT", "")
-    is_distribution = booley._version_attribution.origin is VersionOrigin.DISTRIBUTION
+    is_distribution = attribution.distribution_name is not None
     return BuildMetadata(
         version=booley.__version__,
         revision=(

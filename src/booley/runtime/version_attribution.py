@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib.metadata
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+
+_GIT_TIMEOUT_SECONDS = 5
 
 
 class VersionOrigin(StrEnum):
@@ -37,6 +40,32 @@ class VersionAttribution:
         actual = (self.source_root is not None, self.distribution_name is not None)
         if actual != expected:
             raise ValueError(f"invalid {self.origin} version attribution")
+
+    def source_git_metadata(self) -> tuple[str, str]:
+        """Return revision and last-commit time for the attributed source checkout."""
+        root = self.source_root
+        if root is None or not (root / ".git").exists():
+            return "", ""
+        revision = _git_output(root, "rev-parse", "--short", "HEAD")
+        if revision and _git_output(root, "status", "--porcelain"):
+            revision += "+dirty"
+        updated_at = _git_output(root, "log", "-1", "--format=%cI", "HEAD")
+        return revision, updated_at
+
+
+def _git_output(root: Path, *args: str) -> str:
+    """Return stripped Git output, or an empty string when Git cannot answer."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _source_root(package_file: Path) -> Path | None:
