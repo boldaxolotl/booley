@@ -452,7 +452,7 @@ class McpTool(ABC):
         source_target: str | None = None,
     ) -> None:
         """Set a criterion and persist state. No-op when state has no file."""
-        if getattr(self.args, "diagnostic", False) and self.state.strict_criteria:
+        if getattr(self.args, "diagnostic", False):
             logger.info("Diagnostic run: not recording criterion %s", key)
             return
         key = self._criterion_key_for_source(key, source_target)
