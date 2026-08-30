@@ -372,6 +372,31 @@ class TestCollectSurface:
         assert handle.name == "lint_selftest_bad"
         assert handle.selector == "lint_selftest_bad"
 
+    def test_doctor_authority_is_preserved_by_multi_target_selection(
+        self,
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with pytest.raises(fusesoc_registry.UnknownTargetError, match="Unknown target"):
+            select_targets(project, "lint_selftest_bad")
+
+        resolve_selected_ref = fusesoc_registry.resolve_selected_ref
+
+        def resolve_once(root: Path | str, token: str) -> TargetRef:
+            ref = resolve_selected_ref(root, token)
+            monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
+            return ref
+
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        monkeypatch.setattr(fusesoc_registry, "resolve_selected_ref", resolve_once)
+
+        selected = select_targets(project, " lint_selftest_bad ", for_flow="lint")
+
+        assert tuple(handle.identity for handle in selected) == (
+            "acme:ip:beta:1.0#lint_selftest_bad",
+        )
+        assert tuple(handle.selector for handle in selected) == ("lint_selftest_bad",)
+
     def test_ambiguous_name_shows_qualified_selector(self, project: Path):
         surface = collect_surface(project)
         selectors = {e.selector for e in surface.entries()}

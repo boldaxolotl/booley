@@ -113,22 +113,21 @@ def _selection_bucket(project_root: Path, ref: TargetRef) -> list[TargetRef]:
     return [candidate for candidate in bucket if not candidate.doctor_selftest]
 
 
-def select_target(
-    project_root: Path | str,
+def _handle_from_ref(
+    project_root: Path,
     token: str,
+    ref: TargetRef,
     *,
-    for_flow: str | None = None,
+    for_flow: str | None,
 ) -> TargetHandle:
-    """Select one user-visible or Doctor-private Target as a durable handle."""
-    root = Path(project_root)
-    ref = fusesoc_registry.resolve_selected_ref(root, token)
+    """Construct the durable handle for one already-authorized Target."""
     if for_flow is not None and not flow_can_drive(for_flow, ref):
         raise fusesoc_registry.IncompatibleTargetError(
             f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
             f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
             f"Choose a compatible Target with `booley targets --for {for_flow}`."
         )
-    bucket = _selection_bucket(root, ref)
+    bucket = _selection_bucket(project_root, ref)
     return TargetHandle(
         identity=f"{ref.vlnv}#{ref.name}",
         selector=fusesoc_registry.minimal_selector(ref, bucket),
@@ -141,6 +140,18 @@ def select_target(
     )
 
 
+def select_target(
+    project_root: Path | str,
+    token: str,
+    *,
+    for_flow: str | None = None,
+) -> TargetHandle:
+    """Select one user-visible or Doctor-private Target as a durable handle."""
+    root = Path(project_root)
+    ref = fusesoc_registry.resolve_selected_ref(root, token)
+    return _handle_from_ref(root, token, ref, for_flow=for_flow)
+
+
 def select_targets(
     project_root: Path | str,
     target_arg: str | None,
@@ -148,14 +159,7 @@ def select_targets(
     for_flow: str | None = None,
 ) -> tuple[TargetHandle, ...]:
     """Select an endpoint's comma-separated Targets as canonical handles."""
-    if for_flow is None:
-        tokens = fusesoc_registry.resolve_target_selection(target_arg, project_root)
-    else:
-        tokens = fusesoc_registry.resolve_target_selection(
-            target_arg,
-            project_root,
-            for_flow=for_flow,
-        )
+    tokens = tuple(token.strip() for token in (target_arg or "").split(",") if token.strip())
     return tuple(select_target(project_root, token, for_flow=for_flow) for token in tokens)
 
 
