@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from pathlib import Path
+from queue import Queue
+
+import pytest
 
 from booley.runtime import docker_build
 from booley.runtime.docker_build import run_docker_build
@@ -47,6 +51,29 @@ class _BrokenOutput:
 
     def flush(self) -> None:
         raise AssertionError("flush should not follow a failed write")
+
+
+class _FailedCapture:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        raise OSError("capture pipe failed")
+
+    def close(self) -> None:
+        pass
+
+
+class _ExitedProcess:
+    def __init__(self, stdout=None) -> None:
+        self.stdout = stdout
+        self.returncode = 0
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def wait(self, timeout=None) -> int:
+        return self.returncode
 
 
 def test_redirected_progress_is_visible_before_build_completes(tmp_path: Path) -> None:
@@ -115,6 +142,77 @@ def test_redirected_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeyp
 
     assert not worker.is_alive()
     assert results[0].returncode == 0
+
+
+def test_tty_silent_build_emits_bounded_heartbeat(tmp_path: Path, monkeypatch) -> None:
+    release = tmp_path / "release"
+    child = (
+        "import pathlib, sys, time; "
+        "gate = pathlib.Path(sys.argv[1]); "
+        "\nwhile not gate.exists(): time.sleep(0.01)"
+    )
+    output = _RecordingOutput(tty=True)
+    results = []
+    monkeypatch.setattr(docker_build, "HEARTBEAT_INTERVAL_S", 0.05)
+    worker = threading.Thread(
+        target=lambda: results.append(
+            run_docker_build(
+                [sys.executable, "-c", child, str(release)],
+                image="booley-sandbox",
+                verbose=False,
+                timeout=10,
+                output=output,
+            )
+        )
+    )
+
+    worker.start()
+    try:
+        assert output.wait_for("[booley-sandbox build] elapsed:")
+        assert worker.is_alive()
+    finally:
+        release.touch()
+        worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert results[0].returncode == 0
+
+
+def test_pump_deadline_bounds_an_exited_process_without_eof() -> None:
+    records: Queue[object] = Queue()
+    output = _RecordingOutput()
+    now = time.monotonic()
+    state = docker_build._ProgressState(
+        "booley-sandbox", False, output, now - 1, now - 0.5, now - 1
+    )
+    results = []
+    worker = threading.Thread(
+        target=lambda: results.append(docker_build._pump(_ExitedProcess(), records, state))
+    )
+
+    worker.start()
+    worker.join(timeout=0.1)
+    try:
+        assert not worker.is_alive()
+    finally:
+        records.put(docker_build._EOF)
+        worker.join(timeout=1)
+
+    assert results == [False]
+
+
+def test_output_capture_failure_is_reported_with_build_context(monkeypatch) -> None:
+    process = _ExitedProcess(_FailedCapture())
+    monkeypatch.setattr(docker_build.subprocess, "Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(OSError, match="booley-sandbox Docker build output capture failed"):
+        run_docker_build(
+            ["docker", "build", "."],
+            image="booley-sandbox",
+            verbose=False,
+            timeout=10,
+            output=_RecordingOutput(),
+        )
 
 
 def test_failure_retains_early_error_despite_noisy_cleanup() -> None:

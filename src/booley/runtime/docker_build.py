@@ -19,6 +19,11 @@ _SALIENT_WORDS = ("error", "failed", "fatal")
 
 
 @dataclass(frozen=True)
+class _CaptureFailure:
+    error: OSError | ValueError
+
+
+@dataclass(frozen=True)
 class DockerBuildResult:
     """Observable outcome of one Docker build command."""
 
@@ -51,8 +56,8 @@ def _read_output(stream: TextIO, records: Queue[object], stop: threading.Event) 
             _put_record(records, line, stop)
             if stop.is_set():
                 return
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        _put_record(records, _CaptureFailure(exc), stop)
     finally:
         _put_record(records, _EOF, stop)
 
@@ -112,7 +117,7 @@ class _ProgressState:
             self.last_visible = time.monotonic()
 
     def heartbeat(self, now: float) -> None:
-        if self.output.isatty() or now - self.last_visible < HEARTBEAT_INTERVAL_S:
+        if now - self.last_visible < HEARTBEAT_INTERVAL_S:
             return
         _emit(self.output, f"  * [{self.image} build] elapsed: {now - self.started:.1f}s")
         self.last_visible = now
@@ -121,14 +126,18 @@ class _ProgressState:
 def _pump(process: subprocess.Popen[str], records: Queue[object], state: _ProgressState) -> bool:
     while True:
         now = time.monotonic()
-        if now >= state.deadline and process.poll() is None:
-            return True
+        if now >= state.deadline:
+            return process.poll() is None
         try:
             record = records.get(timeout=min(0.1, max(state.deadline - now, 0.001)))
         except Empty:
             record = None
         if record is _EOF:
             return False
+        if isinstance(record, _CaptureFailure):
+            raise OSError(
+                f"{state.image} Docker build output capture failed: {record.error}"
+            ) from record.error
         if isinstance(record, str):
             state.accept(record)
         state.heartbeat(time.monotonic())
