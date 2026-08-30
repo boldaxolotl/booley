@@ -75,6 +75,30 @@ def test_resumed_contract_is_revalidated_in_existing_worktree(
     validate.assert_called_once_with(ctx, worktree)
 
 
+def test_valid_resumed_contract_allows_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    ctx = TicketContext(
+        slug="demo",
+        ticket_path=tmp_path / "demo.md",
+        ticket_type="feature",
+        branch="main",
+        summary="demo",
+        project_root=tmp_path,
+        target_contract=MagicMock(),
+        worktree_path=worktree,
+    )
+    validate = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        "booley.harness.setup.workspace._validate_materialized_target_contract",
+        validate,
+    )
+
+    assert developer._resumed_contract_failure(ctx) is None
+    validate.assert_called_once_with(ctx, worktree)
+
+
 def test_deferred_criteria_initializes_against_materialized_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -311,7 +311,7 @@ def _resumed_contract_failure(ctx: TicketContext) -> str | None:
     from .setup.workspace import _validate_materialized_target_contract
 
     result = _validate_materialized_target_contract(ctx, ctx.worktree_path)
-    return result.block_reason
+    return result.block_reason if result is not None else None
 
 
 def _deferred_criteria_failure(ctx: TicketContext) -> str | None:
