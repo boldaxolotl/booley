@@ -25,7 +25,7 @@ SELECTIVE_FLOW_KNOBS = {
     "timeout_ms": frozenset({"sim", "synth", "fpga"}),
     "pre_run_commands": frozenset({"sim"}),
     "sim_time_grace_s": frozenset({"sim"}),
-    "keep_build_dir": frozenset({"elab"}),
+    "standalone_frontend": frozenset({"sim"}),
     "fail_on_timing_violation": frozenset({"synth"}),
     "warnings_as_errors": frozenset({"lint"}),
     "run_cwd": frozenset({"sim"}),
@@ -89,6 +89,15 @@ def _retired_flow_findings(flows: Mapping[str, Any]) -> list[ConfigFinding]:
                 fail_finding(
                     f"booley.toml [flows].{retired} is retired",
                     "delete the allowlist and use [flows.<name>].enabled = false for opt-outs",
+                )
+            )
+    for retired in ("elab", "elaborate"):
+        if retired in flows:
+            findings.append(
+                fail_finding(
+                    f"booley.toml [flows.{retired}] is retired",
+                    "use `booley flow sim --elab-only` and move "
+                    "standalone_frontend to [flows.sim].standalone_frontend",
                 )
             )
     for old, new in LEGACY_TO_CANONICAL.items():
@@ -178,6 +187,13 @@ def _retired_flow_key_findings(
                 "delete sandbox; all Flows run in the Session Runtime",
             )
         )
+    if "keep_build_dir" in section:
+        findings.append(
+            fail_finding(
+                f"booley.toml [flows.{flow_name}].keep_build_dir is retired",
+                "delete it; the shared untraced Simulation build cache is always retained",
+            )
+        )
     for retired in (RETIRED_TARGET_KEY, DEFAULT_TARGET_KEY, "calibration_target"):
         if retired not in section:
             continue
@@ -232,6 +248,19 @@ def _flow_shape_findings(
                 f"booley.toml [flows.{flow_name}].pre_run_commands must be a "
                 "list of strings (shell lines run before each sim run)",
                 f"fix [flows.{flow_name}].pre_run_commands",
+            )
+        )
+    standalone_frontend = section.get("standalone_frontend")
+    if standalone_frontend is not None and standalone_frontend not in {
+        "auto",
+        "iverilog",
+        "verilator",
+    }:
+        findings.append(
+            fail_finding(
+                f"booley.toml [flows.{flow_name}].standalone_frontend must be "
+                "one of auto, iverilog, verilator",
+                f"fix [flows.{flow_name}].standalone_frontend",
             )
         )
     return findings

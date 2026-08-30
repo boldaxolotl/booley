@@ -14,7 +14,7 @@ The documentation is split by responsibility, not by reader type:
 |---|---|
 | **This document** | The MCP tool framework: discovery, lifecycle, base classes, `McpToolResult`, Criteria routing, and Custom Flows and MCP tools |
 | [FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md) | The public invocation, target-selection, result, and artifact contract for RTL developers running built-in Booley Flows |
-| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `elab`, `lint`, `synth`, and `fpga` Booley Flows |
+| [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md) | The implementation and evidence contracts of the built-in deterministic `sim`, `lint`, `synth`, and `fpga` Booley Flows |
 | [CONFIG.md](../user/CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
 
@@ -43,7 +43,7 @@ Booley has three agent-facing implementation families:
 
 | Family | Built-in examples | Responsibility |
 |--------|-------------------|----------------|
-| `BooleyFlow` | `sim`, `elab`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
+| `BooleyFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
 | `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
 | Direct `McpTool` subclass | `submit_run_report` | Implement orchestration that is neither a deterministic Flow nor a Specialist |
 
@@ -179,7 +179,7 @@ Criteria themselves are defined and expanded.
 
 | Class | Contract | Built-in examples |
 |-------|----------|-------------------|
-| `BooleyFlow` | Run deterministic work and interpret its completed result | `sim`, `elab`, `lint`, `synth`, `fpga` |
+| `BooleyFlow` | Run deterministic work and interpret its completed result | `sim`, `lint`, `synth`, `fpga` |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
 | `McpTool` | Implement orchestration directly when neither higher-level contract fits | `submit_run_report` |
 

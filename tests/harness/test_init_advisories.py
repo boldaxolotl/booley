@@ -57,7 +57,7 @@ def _write(project: Path, toml: str, *, agents: bool = True) -> None:
         "targets:\n"
         "  sim_core:\n"
         "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
         "  lint_core:\n"
         "    flow: lint\n"
         "    flow_options: {tool: verilator, booley: {doctor: [lint]}}\n"
@@ -106,7 +106,7 @@ class TestOutstandingSteps:
         assert [k for k in keys if k not in ("project", "agents")] == list(
             init_cmd.SETUP_WIRED_FLOWS
         )
-        # elaborate follows [flows.sim] and has no wiring of its own.
+        # The Elaboration Check follows [flows.sim] and has no wiring of its own.
         assert "elab" not in keys
 
     def test_unwired_fpga_impl_is_outstanding(self, project):

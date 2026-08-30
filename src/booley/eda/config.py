@@ -108,6 +108,13 @@ def retired_config_error(raw: dict[str, Any]) -> str | None:
     """Return the first hard-migration error for a removed authority surface."""
     flows = raw.get("flows", {})
     if isinstance(flows, dict):
+        for retired in ("elab", "elaborate"):
+            if retired in flows:
+                return (
+                    f"booley.toml [flows.{retired}] is retired; use "
+                    "`booley flow sim --elab-only` and move "
+                    "standalone_frontend to [flows.sim].standalone_frontend"
+                )
         for key in ("venue", "backend", "host_setup_commands"):
             if key in flows:
                 return _retired_flow_key_error("flows", key, flows[key])

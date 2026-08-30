@@ -9,7 +9,6 @@ LEGACY_TO_CANONICAL: dict[str, str] = {
     "asic_synthesize": "synth",
     "fpga_impl": "fpga",
     "simulate": "sim",
-    "elaborate": "elab",
 }
 CANONICAL_TO_LEGACY = {new: old for old, new in LEGACY_TO_CANONICAL.items()}
 DEFAULT_TARGET_KEY = "default_target"

@@ -416,7 +416,6 @@ You have Booley Flows and any exposed Specialists at your disposal; use them app
         item.write_text("---\nsummary: x\n---\n", encoding="utf-8")
         mcp_tools = [
             McpToolInfo(name="sim", path="flows/sim/flow.py", description="Run simulation"),
-            McpToolInfo(name="elab", path="flows/elab/flow.py", description="Run elaboration"),
             McpToolInfo(name="lint", path="flows/lint/flow.py", description="Run lint"),
             McpToolInfo(
                 name="submit_run_report",

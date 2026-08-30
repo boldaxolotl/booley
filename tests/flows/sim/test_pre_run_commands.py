@@ -202,7 +202,9 @@ class TestCocotbBatchFiring:
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
     def test_fires_once_per_batch(self, _mock_pre, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path)
-        out = _cocotb_output([("test_reset", "pass", ""), ("test_count", "pass", "")])
+        out = "BOOLEY_BUILD_STAGE token=abc123 rc=0\n" + _cocotb_output(
+            [("test_reset", "pass", ""), ("test_count", "pass", "")]
+        )
         run_mock = MagicMock(return_value=_completed())
         with (
             patch(
@@ -220,6 +222,7 @@ class TestCocotbBatchFiring:
                 ),
             ),
             patch("booley.flows.sim.flow.subprocess.run", run_mock),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS
@@ -231,7 +234,9 @@ class TestCocotbBatchFiring:
     @patch("booley.flows.sim.flow._resolve_pre_run_commands", return_value=list(_PRE_RUN))
     def test_single_test_batch_sets_test_name(self, _mock_pre, tmp_path: Path):
         flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_reset"])
-        out = _cocotb_output([("test_reset", "pass", "")])
+        out = "BOOLEY_BUILD_STAGE token=abc123 rc=0\n" + _cocotb_output(
+            [("test_reset", "pass", "")]
+        )
         run_mock = MagicMock(return_value=_completed())
         with (
             patch(
@@ -249,6 +254,7 @@ class TestCocotbBatchFiring:
                 ),
             ),
             patch("booley.flows.sim.flow.subprocess.run", run_mock),
+            patch("booley.flows.sim.flow.new_attempt_token", return_value="abc123"),
         ):
             result = flow._run()
         assert result.exit_code == EXIT_SUCCESS

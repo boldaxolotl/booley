@@ -33,10 +33,8 @@ from __future__ import annotations
 import re
 
 # The axis vocabulary: leading token -> the target-aware Booley Flows it covers.
-# ``elaborate`` shares sim's axis deliberately — it builds a sim Target's
-# executable without running it, so the two never want separate Targets.
 TARGET_AXES: dict[str, tuple[str, ...]] = {
-    "sim": ("sim", "elab"),
+    "sim": ("sim",),
     "lint": ("lint",),
     "synth": ("synth",),
     "fpga": ("fpga",),

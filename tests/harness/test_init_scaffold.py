@@ -134,9 +134,9 @@ def test_default_combo_files_and_shapes() -> None:
     # Target selection lives beside each Target in the .core file.
     assert cfg["flows"]["sim"] == {}
     assert cfg["flows"]["lint"] == {}
-    assert cfg["flows"]["elab"] == {}
+    assert "elab" not in cfg["flows"]
     assert cfg["flows"]["synth"] == {}
-    assert sim["flow_options"]["booley"]["doctor"] == ["sim", "elab"]
+    assert sim["flow_options"]["booley"]["doctor"] == ["sim"]
     assert "fpga" not in cfg["flows"]
 
     tests_cfg = tomllib.loads(files[".booley_project/tests.toml"])
@@ -333,7 +333,7 @@ def test_cocotb_verilator_options() -> None:
     assert opts["verilator_options"] == ["--timing", "-Wno-fatal"]
 
 
-def test_verible_lint_falls_back_to_sim_for_elaborate() -> None:
+def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
     files = scaffold_files(_choices(lint_eda_tool="verible"))
     core = _core(files)
     assert core["targets"]["lint"]["flow_options"] == {
@@ -342,15 +342,14 @@ def test_verible_lint_falls_back_to_sim_for_elaborate() -> None:
     }
 
     cfg = tomllib.loads(files[".booley_project/booley.toml"])
-    # verible can't elaborate; the sim Target explicitly opts into elab.
-    assert cfg["flows"]["elab"] == {}
-    assert core["targets"]["sim"]["flow_options"]["booley"]["doctor"] == ["sim", "elab"]
+    assert "elab" not in cfg["flows"]
+    assert core["targets"]["sim"]["flow_options"]["booley"]["doctor"] == ["sim"]
 
 
-def test_verible_lint_reuses_sim_for_elaborate() -> None:
+def test_verible_lint_has_no_separate_elaboration_flow() -> None:
     files = scaffold_files(_choices(lint_eda_tool="verible"))
     cfg = tomllib.loads(files[".booley_project/booley.toml"])
-    assert cfg["flows"]["elab"] == {}
+    assert "elab" not in cfg["flows"]
 
 
 def test_no_asic_omits_synth_target_and_sdc() -> None:

@@ -32,6 +32,8 @@ enabled = false              # flip to true (or delete the line) when wired up
 # Declare it here — shell lines run inside the Session Runtime before each sim run,
 # under the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_RUN_CWD, ...):
 # pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
+# standalone_frontend = "auto"  # auto | iverilog | verilator; used only by
+#                                # sim --elab-only --standalone
 
 # The only commercial provisioning policy currently available is an
 # administrator-registered Vivado 2025.2 installation on Linux x86-64:
@@ -47,12 +49,6 @@ enabled = false
 # Target's fileset in the .core (`file_type: vlt`) and Verilator picks it up.
 # Verible tuning likewise travels in the Target: a `file_type: veribleLintRules`
 # file becomes --rules_config; `veribleLintWaiver` files become --waiver_files.
-
-# Every installed Booley Flow is discovered automatically. Point elab at an
-# elaboration-capable Target (the lint Target usually works), or keep
-# enabled = false to opt out, in which case lint/sim cover elaboration.
-[flows.elab]
-enabled = false
 
 [flows.synth]
 enabled = false              # synthesis recipe belongs in Target flow_options

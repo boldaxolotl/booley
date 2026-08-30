@@ -10,11 +10,12 @@ from typing import Any, TypeVar
 import pytest
 
 from booley.flows.base import BooleyFlow
-from booley.flows.elab.flow import ElaborateFlow
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.fpga.metrics import FpgaMetrics
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
+from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.flow import (
+    ElabOnlyTargetResult,
     SimulateFlow,
     TargetResult,
     _test_report_entry,
@@ -28,7 +29,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
 FLOW_TYPES = (
     SimulateFlow,
-    ElaborateFlow,
     LintFlow,
     AsicSynthesizeFlow,
     FpgaImplFlow,
@@ -150,12 +150,21 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     _assert_documented("sim", _read_json(report_dir / "sim_sim_demo.json"))
 
 
-def test_elab_report_fields_stay_documented(tmp_path: Path) -> None:
-    elab, report_dir = _configured_flow(ElaborateFlow, tmp_path, "elab_demo")
-    elab._compile_command_str = lambda _target: "make elab"  # type: ignore[method-assign]
-    elab._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
-    elab._write_target_report("elab_demo", True, 0.1, "clean", "run.log")
-    _assert_documented("elab", _read_json(report_dir / "elab_elab_demo.json"))
+def test_sim_elab_only_report_fields_stay_documented(tmp_path: Path) -> None:
+    sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
+    sim._write_elab_only_target_report(
+        ElabOnlyTargetResult(
+            target="sim_demo",
+            target_identity="vendor:library:demo:1.0#sim_demo",
+            eda_tool="verilator",
+            toplevel="demo",
+            compile_command="make",
+            fileset={"rtl": ["demo.sv"], "tb": ["tb_demo.sv"]},
+            outcome=BuildOutcome(True, "pass", None, elapsed_s=0.1),
+            log_path="run.log",
+        )
+    )
+    _assert_documented("sim", _read_json(report_dir / "sim_sim_demo.json"))
 
 
 def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
