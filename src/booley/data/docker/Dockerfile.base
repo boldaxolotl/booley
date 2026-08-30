@@ -133,8 +133,8 @@ RUN echo ">>> Installing sv2v ${SV2V_VERSION}..." \
 
 # Verible (pinned prebuilt static binary — the sv2v pattern). Bundled
 # lint EDA tool for .core lint Targets with flow_options.tool: verible (ADR 0033).
-ARG VERIBLE_VERSION=v0.0-4148-g1ea007ec
-ARG VERIBLE_SHA256=5198d7980e5c8e039ad371fd963dfec375aacac1ea80cfa530804b945132ab10
+ARG VERIBLE_VERSION=v0.0-4157-gfdbac312
+ARG VERIBLE_SHA256=9e7ead54bc5efcc31476eb87dd970fe51314e8ca6bd00e0646e1ea6cde137448
 RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/chipsalliance/verible/releases/download/${VERIBLE_VERSION}/verible-${VERIBLE_VERSION}-linux-static-x86_64.tar.gz" \
     -o /tmp/verible.tar.gz \
@@ -163,8 +163,8 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.250" \
-    && test "$(codex --version | awk '{print $2}')" = "0.150.1" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.251" \
+    && test "$(codex --version | awk '{print $2}')" = "0.151.0" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
 
