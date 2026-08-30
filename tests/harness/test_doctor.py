@@ -7005,7 +7005,15 @@ class TestLineEndingsCheck:
         assert warnings[0].subject == "project-data"
         assert str(project_dir) in warnings[0].message
 
-    def test_unset_local_autocrlf_warning_names_project_checkout(self, tmp_path: Path):
+    def test_unset_local_autocrlf_warning_names_project_checkout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        global_config = tmp_path / "global.gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = false\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
         self._repo(tmp_path, autocrlf="false")
         subprocess.run(
             ["git", "-C", str(tmp_path), "config", "--unset", "core.autocrlf"],
