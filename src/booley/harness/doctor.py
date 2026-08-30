@@ -6500,7 +6500,7 @@ def _synth_deep_report_error(flow_name: str, target: str, dry_run: bool, report_
     """Return why a successful deep synth lacks terminal PPA/timing evidence."""
     if flow_name != "synth" or dry_run:
         return ""
-    from booley.flows.implementation_report import target_report_path
+    from booley.flows.implementation_publication import target_report_path
 
     path = target_report_path("synth", target, report_dir)
     try:
@@ -6541,7 +6541,7 @@ def _prepare_flow_report_dir(
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
-    from booley.flows.implementation_report import target_report_path
+    from booley.flows.implementation_publication import target_report_path
 
     with contextlib.suppress(OSError):
         target_report_path("synth", target, report_dir).unlink(missing_ok=True)
@@ -6650,7 +6650,7 @@ def _record_synth_memory_calibration(
     _warn: Check,
 ) -> None:
     """Record boundary-process peak RSS from a completed Doctor synthesis."""
-    from booley.flows.implementation_report import target_report_path
+    from booley.flows.implementation_publication import target_report_path
 
     path = target_report_path("synth", target, report_dir)
     try:

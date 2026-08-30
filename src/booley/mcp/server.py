@@ -1496,6 +1496,7 @@ def _compact_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
             "status",
             "metrics",
             "conditions",
+            "recipe",
             "provenance",
             "comparison",
             "cache",
@@ -1506,6 +1507,9 @@ def _compact_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
     status = compact.get("status")
     if isinstance(status, dict):
         status.pop("diagnostic_excerpt", None)
+    recipe = compact.get("recipe")
+    if isinstance(recipe, dict):
+        recipe.pop("snapshot", None)
     comparison = compact.get("comparison")
     if isinstance(comparison, dict):
         baseline = comparison.get("baseline")
@@ -1536,6 +1540,106 @@ def _payload_size(payload: dict[str, Any]) -> int:
     return len(json.dumps(payload).encode("utf-8"))
 
 
+def _record_omitted_field(value: dict[str, Any], path: str) -> None:
+    fields = value.setdefault("omitted_fields", [])
+    if isinstance(fields, list) and path not in fields:
+        fields.append(path)
+
+
+def _drop_per_clock(value: dict[str, Any]) -> None:
+    metrics = value.get("metrics")
+    if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
+        _record_omitted_field(value, "metrics.per_clock")
+    comparison = value.get("comparison")
+    baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
+    baseline_metrics = baseline.get("metrics") if isinstance(baseline, dict) else None
+    if isinstance(baseline_metrics, dict) and baseline_metrics.pop("per_clock", None) is not None:
+        _record_omitted_field(value, "comparison.baseline.metrics.per_clock")
+
+
+def _bounded_scalar_map(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    scalars: dict[str, Any] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index >= 64:
+            break
+        bounded_key = str(key)[:200]
+        if item is None or isinstance(item, (bool, int, float)):
+            scalars[bounded_key] = item
+        elif isinstance(item, str):
+            scalars[bounded_key] = item[:1_000]
+    return scalars
+
+
+def _bounded_nested_map(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    bounded: dict[str, Any] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index >= 64:
+            break
+        bounded_key = str(key)[:200]
+        if isinstance(item, dict):
+            bounded[bounded_key] = _bounded_scalar_map(item)
+        elif item is None or isinstance(item, (bool, int, float)):
+            bounded[bounded_key] = item
+        elif isinstance(item, str):
+            bounded[bounded_key] = item[:1_000]
+    return bounded
+
+
+def _minimum_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
+    """Retain bounded verdict, scalar QoR, comparison, and recovery paths."""
+    minimum: dict[str, Any] = {}
+    if "schema_version" in value:
+        minimum["schema_version"] = value["schema_version"]
+    for key in ("identity", "status", "recipe", "cache"):
+        if key in value:
+            minimum[key] = _bounded_scalar_map(value[key])
+    minimum["metrics"] = _bounded_scalar_map(value.get("metrics"))
+    if "artifacts" in value:
+        minimum["artifacts"] = _bounded_nested_map(value["artifacts"])
+    comparison = value.get("comparison")
+    if isinstance(comparison, dict):
+        minimum["comparison"] = _minimum_comparison(comparison)
+    if value.get("omitted_fields"):
+        minimum["omitted_fields"] = copy.deepcopy(value["omitted_fields"])
+    return minimum
+
+
+def _minimum_comparison(value: dict[str, Any]) -> dict[str, Any]:
+    keep = (
+        "requested_ref",
+        "resolved_ref",
+        "baseline_target",
+        "candidate_target",
+        "basis_valid",
+    )
+    minimum = {key: copy.deepcopy(value[key]) for key in keep if key in value}
+    errors = value.get("basis_errors")
+    if isinstance(errors, list):
+        minimum["basis_errors"] = [str(error)[:1_000] for error in errors[:10]]
+    if "deltas" in value:
+        minimum["deltas"] = _bounded_nested_map(value["deltas"])
+    baseline = value.get("baseline")
+    if isinstance(baseline, dict):
+        minimum["baseline"] = {}
+        for key in ("status", "cache"):
+            if key in baseline:
+                minimum["baseline"][key] = _bounded_scalar_map(baseline[key])
+        if "artifacts" in baseline:
+            minimum["baseline"]["artifacts"] = _bounded_nested_map(baseline["artifacts"])
+        minimum["baseline"]["metrics"] = _bounded_scalar_map(baseline.get("metrics"))
+    return minimum
+
+
+def _drop_result_expansions(results: dict[str, Any]) -> None:
+    for result in results.values():
+        if isinstance(result, dict):
+            _drop_per_clock(result)
+
+
 def _fit_implementation_payload(payload: dict[str, Any], implementation: dict[str, Any]) -> None:
     """Attach canonical detail while respecting the structured-content cap."""
     compact = _compact_implementation(implementation)
@@ -1544,23 +1648,24 @@ def _fit_implementation_payload(payload: dict[str, Any], implementation: dict[st
         return
     results = compact.get("results")
     if not isinstance(results, dict):
-        metrics = compact.get("metrics")
-        if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
-            compact.setdefault("omitted_fields", []).append("metrics.per_clock")
+        _drop_per_clock(compact)
+        payload["implementation"] = _minimum_target_implementation(compact)
         if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
             return
         payload.pop("implementation", None)
         return
-    for result in results.values():
-        metrics = result.get("metrics") if isinstance(result, dict) else None
-        if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
-            result.setdefault("omitted_fields", []).append("metrics.per_clock")
+    _drop_result_expansions(results)
     omitted: list[str] = []
-    while results and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+    while len(results) > 1 and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
         target = next(reversed(results))
         results.pop(target)
         omitted.insert(0, target)
         compact["omitted_targets"] = omitted
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES and results:
+        target = next(iter(results))
+        result = results[target]
+        if isinstance(result, dict):
+            results[target] = _minimum_target_implementation(result)
     if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
         payload.pop("implementation", None)
 
@@ -1570,7 +1675,8 @@ def _enforce_structured_budget(payload: dict[str, Any]) -> None:
     if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
         return
     artifacts = payload.get("artifacts")
-    omitted: list[str] = []
+    omitted_count = 0
+    omitted_sample: list[str] = []
     while (
         isinstance(artifacts, dict)
         and artifacts
@@ -1578,12 +1684,27 @@ def _enforce_structured_budget(payload: dict[str, Any]) -> None:
     ):
         key = next(reversed(artifacts))
         artifacts.pop(key)
-        omitted.insert(0, key)
-        payload["omitted_artifact_entries"] = omitted
+        omitted_count += 1
+        if len(omitted_sample) < 10:
+            omitted_sample.insert(0, key)
+        payload["omitted_artifact_entries"] = {
+            "count": omitted_count,
+            "sample": omitted_sample,
+        }
     if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
         payload.pop("artifacts", None)
     if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
         payload.pop("implementation", None)
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        omission = payload.get("omitted_artifact_entries")
+        if isinstance(omission, dict):
+            omission["sample"] = []
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        passed = payload.get("passed")
+        payload.clear()
+        payload.update({"reports": [], "truncated": True})
+        if isinstance(passed, bool):
+            payload["passed"] = passed
 
 
 def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -8,19 +8,19 @@ import pytest
 from booley.dev_support.criteria import TargetPair
 from booley.flows.fpga.implementation_report import build_fpga_implementation_report
 from booley.flows.fpga.metrics import FpgaMetrics
+from booley.flows.implementation_publication import (
+    ImplementationProgress,
+    ImplementationPublisher,
+    target_report_path,
+    target_report_slug,
+)
 from booley.flows.implementation_report import (
     ENVELOPE_KEY,
     ImplementationContext,
-    ImplementationProgress,
     ImplementationRun,
     MetricPolicy,
-    PublicationLocations,
     build_implementation_aggregate,
     build_implementation_report,
-    publish_implementation_progress,
-    publish_implementation_report,
-    target_report_path,
-    target_report_slug,
 )
 from booley.flows.synth.flow import SynthMetrics
 from booley.flows.synth.implementation_report import build_synth_implementation_report
@@ -213,9 +213,9 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
         _run(artifacts={"log": "build/baseline.log"}),
         MetricPolicy(("area",)),
     )
-    locations = PublicationLocations(tmp_path, report_dir, invocation)
+    publisher = ImplementationPublisher(tmp_path, report_dir, invocation)
 
-    published = publish_implementation_report(report, locations, {"passed": True})
+    published = publisher.publish_report(report, {"passed": True})
 
     stable = target_report_path("synth", "vendor:core#asic", report_dir)
     numbered = invocation / "targets" / f"{target_report_slug('vendor:core#asic')}.json"
@@ -255,10 +255,8 @@ def test_failed_stable_refresh_preserves_previous_alias(
     monkeypatch.setattr(Path, "replace", fail_stable_refresh)
 
     with pytest.raises(OSError, match="stable refresh failure"):
-        publish_implementation_report(
-            report,
-            PublicationLocations(tmp_path, report_dir, invocation),
-            {"passed": True},
+        ImplementationPublisher(tmp_path, report_dir, invocation).publish_report(
+            report, {"passed": True}
         )
 
     assert stable.read_text(encoding="utf-8") == "previous stable report\n"
@@ -275,7 +273,7 @@ def test_progress_uses_shared_shape(tmp_path: Path) -> None:
         None,
         MetricPolicy(("lut_count",)),
     )
-    path = publish_implementation_progress(
+    path = ImplementationPublisher(tmp_path, tmp_path / "reports", invocation).publish_progress(
         ImplementationProgress(
             flow="fpga",
             run_id="run-1",
@@ -283,8 +281,7 @@ def test_progress_uses_shared_shape(tmp_path: Path) -> None:
             completed_targets=("board",),
             phase="current",
             reports={"board": report},
-        ),
-        PublicationLocations(tmp_path, tmp_path / "reports", invocation),
+        )
     )
 
     payload = json.loads(path.read_text(encoding="utf-8"))

@@ -58,14 +58,15 @@ from ..implementation_comparison import (
     target_pair_for_candidate,
     target_pairs_for_candidates,
 )
-from ..implementation_report import (
+from ..implementation_publication import (
     ImplementationProgress,
-    ImplementationReport,
-    PublicationLocations,
-    build_implementation_aggregate,
-    publish_implementation_progress,
-    publish_implementation_report,
+    ImplementationPublisher,
     target_report_path,
+)
+from ..implementation_report import (
+    ImplementationAggregate,
+    ImplementationReport,
+    build_implementation_aggregate,
 )
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,
@@ -85,7 +86,6 @@ from . import cache as fpga_cache
 from . import edam as fpga_edam
 from .implementation_report import (
     build_fpga_implementation_report,
-    criterion_envelope,
 )
 from .metrics import (
     FpgaMetrics,
@@ -276,6 +276,24 @@ class FpgaImplFlow(BooleyFlow):
         baseline_results, short_sha = self._run_baseline_configs(self._target_pairs)
         if isinstance(baseline_results, McpToolResult):
             return baseline_results
+        current_results = self._run_current_targets(targets, baseline_results, short_sha)
+        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
+        self._write_progress_report(
+            targets,
+            current_results,
+            baseline_results,
+            phase="complete",
+            baseline_ref=short_sha,
+            complete=True,
+        )
+        return result
+
+    def _run_current_targets(
+        self,
+        targets: list[str],
+        baseline_results: dict[str, FpgaMetrics],
+        short_sha: str | None,
+    ) -> dict[str, FpgaMetrics]:
         current_results: dict[str, FpgaMetrics] = {}
         for tgt in targets:
             metrics = self._run_single_target(tgt)
@@ -297,16 +315,7 @@ class FpgaImplFlow(BooleyFlow):
                 self.emit_completion(
                     self._format_config_line(tgt, metrics, baseline_results.get(tgt))
                 )
-        result = self._aggregate_results(targets, current_results, baseline_results, short_sha)
-        self._write_progress_report(
-            targets,
-            current_results,
-            baseline_results,
-            phase="complete",
-            baseline_ref=short_sha,
-            complete=True,
-        )
-        return result
+        return current_results
 
     def _prepare_target_pairs(self, targets: list[str]) -> McpToolResult | None:
         baseline_error = self._apply_ticket_baseline(targets)
@@ -519,7 +528,7 @@ class FpgaImplFlow(BooleyFlow):
         try:
             prepared = self._prepare_fpga_command(target)
             run_cmd, work_root = prepared
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — isolate arbitrary adapter/configure failures
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")
 
@@ -857,23 +866,11 @@ class FpgaImplFlow(BooleyFlow):
         full_sha = git_full_sha(str(baseline_ref), project_root)
         if full_sha is not None:
             self._baseline_full_sha = full_sha
-        baseline_results: dict[str, FpgaMetrics] = {}
-        executed: dict[str, FpgaMetrics] = {}
         try:
             with baseline_worktree(project_root, baseline_ref) as wt:
                 self.args.work_dir = wt
                 try:
-                    for pair in pairs:
-                        if pair.baseline not in executed:
-                            executed[pair.baseline] = self._run_single_target(pair.baseline)
-                        baseline_results[pair.candidate] = copy.deepcopy(executed[pair.baseline])
-                        self._write_progress_report(
-                            [candidate.candidate for candidate in pairs],
-                            {},
-                            baseline_results,
-                            phase="baseline",
-                            baseline_ref=short_sha,
-                        )
+                    baseline_results = self._execute_baseline_pairs(pairs, short_sha)
                 finally:
                     self.args.work_dir = project_root
         except BaselineWorktreeError as exc:
@@ -883,6 +880,23 @@ class FpgaImplFlow(BooleyFlow):
             ), None
 
         return baseline_results, short_sha
+
+    def _execute_baseline_pairs(
+        self,
+        pairs: tuple[TargetPair, ...],
+        short_sha: str,
+    ) -> dict[str, FpgaMetrics]:
+        results: dict[str, FpgaMetrics] = {}
+        executed: dict[str, FpgaMetrics] = {}
+        targets = [pair.candidate for pair in pairs]
+        for pair in pairs:
+            if pair.baseline not in executed:
+                executed[pair.baseline] = self._run_single_target(pair.baseline)
+            results[pair.candidate] = copy.deepcopy(executed[pair.baseline])
+            self._write_progress_report(
+                targets, {}, results, phase="baseline", baseline_ref=short_sha
+            )
+        return results
 
     def _implementation_report(
         self,
@@ -907,8 +921,8 @@ class FpgaImplFlow(BooleyFlow):
             eda_tool=self._eda_tool,
         )
 
-    def _publication_locations(self) -> PublicationLocations:
-        return PublicationLocations(
+    def _publisher(self) -> ImplementationPublisher:
+        return ImplementationPublisher(
             work_dir=Path(self.args.work_dir),
             report_dir=self.args.report_dir,
             invocation_dir=self.reserve_invocation_dir(),
@@ -935,7 +949,7 @@ class FpgaImplFlow(BooleyFlow):
             baseline_ref=baseline_ref,
             reports=getattr(self, "_implementation_reports", {}),
         )
-        publish_implementation_progress(progress, self._publication_locations())
+        self._publisher().publish_progress(progress)
 
     def _persist_target_outcome(
         self,
@@ -989,9 +1003,6 @@ class FpgaImplFlow(BooleyFlow):
         baseline_results: dict[str, FpgaMetrics],
         short_sha: str | None,
     ) -> McpToolResult:
-        lines: list[str] = []
-        failures: list[str] = []
-        overall_pass = True
         implementation_reports = {
             target: getattr(self, "_implementation_reports", {}).get(target)
             or self._implementation_report(
@@ -1006,14 +1017,38 @@ class FpgaImplFlow(BooleyFlow):
             implementation_reports,
             baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
         )
+        lines, failures = self._aggregate_head(short_sha, baseline_results, implementation_reports)
+        self._append_target_results(lines, failures, configs, current_results, baseline_results)
+        lines.append("")
+        lines.append("RESULT: PASS" if not failures else f"RESULT: FAIL ({'; '.join(failures)})")
+        return McpToolResult(
+            exit_code=implementation_aggregate.exit_code,
+            report_text="\n".join(lines),
+            display_lines=_first_valid_display(configs, current_results),
+            detail=self._aggregate_detail(configs, current_results, implementation_aggregate),
+        )
+
+    def _aggregate_head(
+        self,
+        short_sha: str | None,
+        baseline_results: dict[str, FpgaMetrics],
+        reports: dict[str, ImplementationReport],
+    ) -> tuple[list[str], list[str]]:
+        lines: list[str] = []
         if self.args.baseline and short_sha:
             lines.append(f"[fpga] baseline: {short_sha}")
-        baseline_lines, baseline_failures = self._baseline_error_lines(
-            baseline_results, implementation_reports
-        )
+        baseline_lines, baseline_failures = self._baseline_error_lines(baseline_results, reports)
         lines.extend(baseline_lines)
-        failures.extend(baseline_failures)
-        overall_pass = not baseline_failures
+        return lines, baseline_failures
+
+    def _append_target_results(
+        self,
+        lines: list[str],
+        failures: list[str],
+        configs: list[str],
+        current_results: dict[str, FpgaMetrics],
+        baseline_results: dict[str, FpgaMetrics],
+    ) -> None:
         for cfg in configs:
             cur = current_results[cfg]
             base = baseline_results.get(cfg)
@@ -1026,16 +1061,13 @@ class FpgaImplFlow(BooleyFlow):
                 lines.append(f"[fpga] {cfg}: log: {cur.log_path}")
             if not cur.passed:
                 failures.append(self._format_failure_summary(cfg, cur))
-                overall_pass = False
-        lines.append("")
-        lines.append("RESULT: PASS" if overall_pass else f"RESULT: FAIL ({'; '.join(failures)})")
-        report_text = "\n".join(lines)
-        display = _first_valid_display(configs, current_results)
-        exit_code = implementation_aggregate.exit_code
-        # This Flow returned NO detail at all, so its pointers reached only the
-        # per-target JSON and state.json — never the MCP structuredContent an
-        # agent reads, and never the oversized-report rescue. Keyed by target,
-        # matching simulate/asic/elaborate.
+
+    @staticmethod
+    def _aggregate_detail(
+        configs: list[str],
+        current_results: dict[str, FpgaMetrics],
+        aggregate: ImplementationAggregate,
+    ) -> dict[str, Any]:
         detail: dict[str, Any] = {}
         for cfg in configs:
             cur = current_results[cfg]
@@ -1049,13 +1081,8 @@ class FpgaImplFlow(BooleyFlow):
                 "cached": cur.cached,
                 "fingerprint": cur.cache_fingerprint or None,
             }
-        detail["implementation"] = implementation_aggregate.detail
-        return McpToolResult(
-            exit_code=exit_code,
-            report_text=report_text,
-            display_lines=display,
-            detail=detail,
-        )
+        detail["implementation"] = aggregate.detail
+        return detail
 
     @staticmethod
     def _format_config_line(cfg: str, cur: FpgaMetrics, base: FpgaMetrics | None) -> str:
@@ -1148,11 +1175,7 @@ class FpgaImplFlow(BooleyFlow):
         report_path = target_report_path(self.name, cfg, report_dir)
         report = self._target_report_payload(cfg, cur, base, baseline_ref, report_path)
         report["passed"] = implementation.passed
-        published = publish_implementation_report(
-            implementation,
-            self._publication_locations(),
-            report,
-        )
+        published = self._publisher().publish_report(implementation, report)
         return ImplementationReport(published.payload["implementation"])
 
     def _target_report_payload(
@@ -1238,7 +1261,7 @@ class FpgaImplFlow(BooleyFlow):
         self.set_criterion(
             f"fpga_impl_ok_{cfg}",
             implementation.passed,
-            detail=criterion_envelope(detail, implementation),
+            detail=implementation.envelope(detail),
             source_target=cfg,
         )
 

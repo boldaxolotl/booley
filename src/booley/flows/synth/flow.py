@@ -62,15 +62,15 @@ from ..implementation_comparison import (
     target_pair_for_candidate,
     target_pairs_for_candidates,
 )
+from ..implementation_publication import (
+    ImplementationProgress,
+    ImplementationPublisher,
+    target_report_slug,
+)
 from ..implementation_report import (
     ImplementationAggregate,
-    ImplementationProgress,
     ImplementationReport,
-    PublicationLocations,
     build_implementation_aggregate,
-    publish_implementation_progress,
-    publish_implementation_report,
-    target_report_slug,
 )
 from ..recipe_evidence import BASELINE_TARGET_DETAIL, CANDIDATE_TARGET_DETAIL
 from ..run_evidence import (
@@ -83,7 +83,6 @@ from ..target_parameters import vlogdefine_args as _vlogdefine_args
 from ..target_parameters import vlogparam_args as _vlogparam_args
 from .implementation_report import (
     build_synth_implementation_report,
-    criterion_envelope,
 )
 from .ppa_config import add_ppa_arguments
 from .recipe import (
@@ -1540,8 +1539,8 @@ class AsicSynthesizeFlow(BooleyFlow):
             fatal_timing=getattr(self, "_timing_violation_is_fatal", False),
         )
 
-    def _publication_locations(self) -> PublicationLocations:
-        return PublicationLocations(
+    def _publisher(self) -> ImplementationPublisher:
+        return ImplementationPublisher(
             work_dir=Path(self.args.work_dir),
             report_dir=self.args.report_dir,
             invocation_dir=self.reserve_invocation_dir(),
@@ -1553,9 +1552,12 @@ class AsicSynthesizeFlow(BooleyFlow):
         metrics: SynthMetrics,
         baseline_metrics: SynthMetrics | None,
         baseline_ref: str | None,
-        implementation: ImplementationReport,
+        implementation: ImplementationReport | None = None,
     ) -> ImplementationReport:
         """Write per-target JSON report to report_dir."""
+        implementation = implementation or self._implementation_report(
+            target, metrics, baseline_metrics, baseline_ref
+        )
         report_dir = self.args.report_dir
         if report_dir is None:
             return implementation
@@ -1592,11 +1594,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             "report": posix_relpath(report_path, self.args.work_dir),
             **preserved,
         }
-        published = publish_implementation_report(
-            implementation,
-            self._publication_locations(),
-            report,
-        )
+        published = self._publisher().publish_report(implementation, report)
         return ImplementationReport(published.payload["implementation"])
 
     def _snapshot_report_artifacts(
@@ -1648,7 +1646,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             baseline_ref=baseline_ref,
             reports=reports,
         )
-        publish_implementation_progress(progress, self._publication_locations())
+        self._publisher().publish_progress(progress)
 
     def _persist_target_outcome(
         self,
@@ -1908,8 +1906,6 @@ class AsicSynthesizeFlow(BooleyFlow):
                 exit_code=EXIT_ERROR,
                 report_text=f"synth: {exc}",
             ), None
-        if isinstance(result, McpToolResult):
-            return result, None
         return result, short_sha
 
     @staticmethod
@@ -1924,7 +1920,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         targets: list[str],
         project_root: Path,
         short_sha: str,
-    ) -> dict[str, SynthMetrics] | McpToolResult:
+    ) -> dict[str, SynthMetrics]:
         baseline_results: dict[str, SynthMetrics] = {}
         executed: dict[str, SynthMetrics] = {}
         for pair in pairs:
@@ -1937,16 +1933,6 @@ class AsicSynthesizeFlow(BooleyFlow):
             self._write_progress_report(
                 targets, {}, baseline_results, phase="baseline", baseline_ref=short_sha
             )
-            if metrics.infra_error:
-                pair_label = pair.baseline
-                if pair.baseline != pair.candidate:
-                    pair_label = f"{pair.baseline} for candidate {pair.candidate}"
-                return McpToolResult(
-                    exit_code=EXIT_ERROR,
-                    report_text=(
-                        f"synth baseline {pair_label}: infrastructure error: {metrics.infra_error}"
-                    ),
-                )
         return baseline_results
 
     def _target_report_lines(
@@ -2047,19 +2033,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         baseline_results: dict[str, SynthMetrics],
         short_sha: str | None,
     ) -> McpToolResult:
-        """Format output, set criteria, and return the final McpToolResult.
-
-        Report ordering is already truncation-safe (the MCP layer keeps the
-        TAIL of stdout): per-target blocks are compact (1-line config summary
-        + QoR/CRITICAL lines + a failure excerpt bounded to ``_error_excerpt``'s
-        12 lines), and the final RESULT line repeats every failed target's
-        one-line summary — so no separate end-of-report headline block is
-        needed here (unlike simulate's unbounded per-test detail).
-        """
-        stdout_lines: list[str] = []
-        failed_targets: list[str] = []
-        violated: list[str] = []  # targets whose worst STA slack is negative
-        overall_pass = True
+        """Build the final synthesis report from policy-resolved target evidence."""
         implementation_reports = {
             target: getattr(self, "_implementation_reports", {}).get(target)
             or self._implementation_report(
@@ -2074,76 +2048,16 @@ class AsicSynthesizeFlow(BooleyFlow):
             implementation_reports,
             baseline_ref=getattr(self, "_baseline_full_sha", None) or short_sha,
         )
-
-        if self.args.baseline and short_sha:
-            stdout_lines.append(f"[synth] baseline: {short_sha}")
-
-        baseline_infra = {
-            tgt: metrics.infra_error
-            for tgt, metrics in baseline_results.items()
-            if metrics.infra_error
-        }
-        for tgt, message in baseline_infra.items():
-            stdout_lines.append(f"[synth] baseline {tgt}: ERROR -- {message}")
-            failed_targets.append(f"baseline {tgt}: infrastructure error")
-            overall_pass = False
-        comparison_lines, comparison_failures = self._comparison_error_lines(
-            implementation_reports
+        stdout_lines, failed_targets, selfcompare_msg = self._aggregate_prefix(
+            short_sha, baseline_results, implementation_reports
         )
-        stdout_lines.extend(comparison_lines)
-        failed_targets.extend(comparison_failures)
-        overall_pass = overall_pass and not comparison_failures
-
-        # A stealth-cores self-compare makes every per-target delta a meaningless
-        # +0.0%; surface it loudly (whole-run signal, not per-target) so the run
-        # can't read as a clean regression pass.
-        selfcompare_msg = getattr(self, "_baseline_selfcompare_msg", None)
-        if selfcompare_msg:
-            stdout_lines.append(f"[synth] WARNING -- {selfcompare_msg}")
-
-        for tgt in targets:
-            cur = current_results[tgt]
-            base = baseline_results.get(tgt)
-            lines, violated_msg, failure_summary = self._emit_target_block(
-                tgt,
-                cur,
-                base,
-            )
-            stdout_lines.extend(lines)
-            if violated_msg is not None:
-                violated.append(violated_msg)
-            if failure_summary is not None:
-                failed_targets.append(failure_summary)
-                overall_pass = False
-
-        # F-37: negative slack is advisory by default (see
-        # _fail_on_timing_violation). A project that opted in promotes it to a
-        # design failure here, so the exit code — not just the report text —
-        # tells an rc-only consumer the design does not meet timing.
-        if violated and getattr(self, "_timing_violation_is_fatal", False):
-            failed_targets.append(
-                f"timing VIOLATED ({'; '.join(violated)}) "
-                "-- [flows.synth] fail_on_timing_violation = true"
-            )
-            overall_pass = False
-
-        # Final RESULT line
-        stdout_lines.append("")
-        stdout_lines.append(
-            _result_line(
-                failed_targets if not overall_pass else [],
-                selfcompare_msg,
-                violated,
-            )
+        violated = self._append_target_blocks(
+            stdout_lines, failed_targets, targets, current_results, baseline_results
         )
-
+        self._append_fatal_timing_failure(failed_targets, violated)
+        stdout_lines.extend(["", _result_line(failed_targets, selfcompare_msg, violated)])
         report_text = "\n".join(stdout_lines)
-        # Surface the summary + QoR on stdout so a passing run is not silent:
-        # base.py only echoes report_text on failure (parity with elaborate/lint).
         print(report_text)
-
-        display = _first_valid_display(targets, current_results)
-        exit_code = implementation_aggregate.exit_code
         detail = self._implementation_aggregate_detail(
             targets,
             current_results,
@@ -2153,11 +2067,65 @@ class AsicSynthesizeFlow(BooleyFlow):
             implementation_aggregate,
         )
         return McpToolResult(
-            exit_code=exit_code,
+            exit_code=implementation_aggregate.exit_code,
             report_text=report_text,
-            display_lines=display,
+            display_lines=_first_valid_display(targets, current_results),
             detail=detail,
         )
+
+    def _aggregate_prefix(
+        self,
+        short_sha: str | None,
+        baseline_results: dict[str, SynthMetrics],
+        reports: dict[str, ImplementationReport],
+    ) -> tuple[list[str], list[str], str | None]:
+        lines: list[str] = []
+        failures: list[str] = []
+        if self.args.baseline and short_sha:
+            lines.append(f"[synth] baseline: {short_sha}")
+        for target, metrics in baseline_results.items():
+            if metrics.infra_error:
+                lines.append(f"[synth] baseline {target}: ERROR -- {metrics.infra_error}")
+                failures.append(f"baseline {target}: infrastructure error")
+        comparison_lines, comparison_failures = self._comparison_error_lines(reports)
+        lines.extend(comparison_lines)
+        failures.extend(comparison_failures)
+        selfcompare_msg = getattr(self, "_baseline_selfcompare_msg", None)
+        if selfcompare_msg:
+            lines.append(f"[synth] WARNING -- {selfcompare_msg}")
+        return lines, failures, selfcompare_msg
+
+    def _append_target_blocks(
+        self,
+        lines: list[str],
+        failures: list[str],
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+        baseline_results: dict[str, SynthMetrics],
+    ) -> list[str]:
+        violated: list[str] = []
+        for target in targets:
+            current = current_results[target]
+            target_lines, violation, failure = self._emit_target_block(
+                target, current, baseline_results.get(target)
+            )
+            lines.extend(target_lines)
+            if violation is not None:
+                violated.append(violation)
+            if failure is not None:
+                failures.append(failure)
+        return violated
+
+    def _append_fatal_timing_failure(
+        self,
+        failures: list[str],
+        violated: list[str],
+    ) -> None:
+        if violated and getattr(self, "_timing_violation_is_fatal", False):
+            failures.append(
+                f"timing VIOLATED ({'; '.join(violated)}) "
+                "-- [flows.synth] fail_on_timing_violation = true"
+            )
 
     def _format_config_line(
         self,
@@ -2333,7 +2301,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         self.set_criterion(
             f"synthesis_ok_{tgt}",
             implementation.passed,
-            detail=criterion_envelope(detail, implementation),
+            detail=implementation.envelope(detail),
             source_target=tgt,
         )
 

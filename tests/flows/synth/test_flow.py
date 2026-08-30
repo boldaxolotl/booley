@@ -1885,7 +1885,7 @@ class TestBaselineFlow:
         assert "synth:" in result.report_text
         assert "worktree add" in result.report_text
 
-    def test_baseline_resolution_failure_stops_before_current_synthesis(
+    def test_baseline_resolution_failure_is_published_with_canonical_error(
         self,
         state_file: Path,
         tmp_path: Path,
@@ -1899,6 +1899,8 @@ class TestBaselineFlow:
                 str(tmp_path),
                 "--baseline",
                 "v1.0",
+                "--report-dir",
+                str(tmp_path / "reports"),
             ]
         )
         flow.read_state()
@@ -1917,9 +1919,13 @@ class TestBaselineFlow:
         )
         calls: list[str] = []
 
+        current_metrics = SynthMetrics(area_kge=12.0, cells=100, wns_ns=0.2)
+
         def run_one(target: str):
             calls.append(target)
-            return infra_metrics, "resolution failed"
+            if target == "synth_before":
+                return infra_metrics, "resolution failed"
+            return current_metrics, "current complete"
 
         with (
             patch("booley.flows.synth.flow.baseline_worktree", _fake_baseline_worktree),
@@ -1929,12 +1935,15 @@ class TestBaselineFlow:
             result = flow._run()
 
         assert result.exit_code == EXIT_ERROR
-        assert (
-            "synth baseline synth_before for candidate lite: infrastructure error"
-            in result.report_text
-        )
+        assert "[synth] baseline lite: ERROR" in result.report_text
         assert "FuseSoC could not resolve submodule source" in result.report_text
-        assert calls == ["synth_before"]
+        assert calls == ["synth_before", "lite"]
+        report = json.loads((flow.args.report_dir / "synth_lite.json").read_text(encoding="utf-8"))
+        assert report["implementation"]["status"]["grade"] == "error"
+        progress = json.loads(
+            (flow.reserve_invocation_dir() / "progress.json").read_text(encoding="utf-8")
+        )
+        assert progress["complete"] is True
 
     def test_aggregate_cannot_report_pass_with_baseline_infra_error(self, flow_and_state):
         flow, _ = flow_and_state

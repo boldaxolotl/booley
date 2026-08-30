@@ -494,6 +494,53 @@ class TestStructuredContent:
         assert payload["implementation"]["omitted_targets"][-1] == "target_099"
         assert kept["target_000"]["metrics"] == {"area_kge": 0.0}
 
+    def test_single_oversized_target_retains_scalar_qor(self):
+        per_clock = {
+            f"clock_{index}": {"wns_ns": -0.1, "detail": "x" * 2_000} for index in range(100)
+        }
+        big = {
+            "detail": {
+                "implementation": {
+                    "schema_version": 1,
+                    "targets": ["asic"],
+                    "grade": "pass",
+                    "passed": True,
+                    "results": {
+                        "asic": {
+                            "identity": {"flow": "synth", "target": "asic"},
+                            "status": {"grade": "pass", "passed": True},
+                            "metrics": {"area_kge": 12.5, "wns_ns": 0.2},
+                            "comparison": {
+                                "baseline": {"metrics": {"area_kge": 10.0, "per_clock": per_clock}}
+                            },
+                            "artifacts": {"report": "reports/synth/1/targets/asic.json"},
+                        }
+                    },
+                }
+            }
+        }
+
+        payload = mcp_server._structured_from_report(big)
+
+        assert len(json.dumps(payload).encode("utf-8")) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        result = payload["implementation"]["results"]["asic"]
+        assert result["metrics"] == {"area_kge": 12.5, "wns_ns": 0.2}
+        assert result["comparison"]["baseline"]["metrics"] == {"area_kge": 10.0}
+        assert payload["artifacts"]["asic"]["report"].endswith("asic.json")
+
+    def test_artifact_omission_metadata_is_itself_bounded(self):
+        artifacts = {
+            f"artifact-{index:04d}-{'x' * 100}": {"log": "run.log"} for index in range(2_000)
+        }
+        big = {"artifacts": artifacts, "report_text": "x" * (70 * 1_024)}
+
+        payload = mcp_server._structured_from_report(big)
+
+        assert len(json.dumps(payload).encode("utf-8")) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        omitted = payload["omitted_artifact_entries"]
+        assert omitted["count"] > 0
+        assert len(omitted["sample"]) <= 10
+
     def test_report_artifacts_ignores_nested_entries_without_a_block(self):
         """``detail`` holds plenty of non-artifact dicts (per_clock, evidence,
         complexity); none of them may leak into the rescue payload."""

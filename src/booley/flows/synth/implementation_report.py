@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from booley.flows.implementation_report import (
     ImplementationContext,
@@ -116,10 +116,3 @@ def build_synth_implementation_report(
         _run(baseline, fatal_timing=fatal_timing) if baseline is not None else None,
         policy,
     )
-
-
-def criterion_envelope(
-    legacy_detail: dict[str, Any], report: ImplementationReport
-) -> dict[str, Any]:
-    """Preserve private threshold keys while adding canonical evidence."""
-    return report.envelope(legacy_detail)

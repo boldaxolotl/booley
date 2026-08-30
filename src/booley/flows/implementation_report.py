@@ -1,26 +1,18 @@
-"""Canonical reporting for implementation-oriented FPGA and ASIC Flows.
+"""Canonical grading and schema for implementation-oriented Flows.
 
 Flow adapters normalize their native metrics into :class:`ImplementationRun`.
-This module then owns the policy-resolved verdict, comparison, durable envelope,
-aggregate MCP projection, target paths, and live progress shape.  Legacy report
-fields remain outside the versioned ``implementation`` envelope while readers
-migrate to the shared schema.
+This module owns the policy-resolved verdict, comparison, durable envelope, and
+aggregate MCP projection. Filesystem publication lives at the publication seam
+in :mod:`booley.flows.implementation_publication`.
 """
 
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
-import os
-import re
-import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Literal
 
-from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 
 Grade = Literal["pass", "warn", "fail", "error"]
@@ -145,9 +137,7 @@ class ImplementationReport:
         entry = self.canonical
         entry["recipe"].pop("snapshot", None)
         entry["status"].pop("diagnostic_excerpt", None)
-        comparison = entry.get("comparison")
-        if isinstance(comparison, dict):
-            comparison.get("baseline", {}).get("recipe", {}).pop("snapshot", None)
+        _remove_baseline_recipe_snapshot(entry)
         return entry
 
 
@@ -159,37 +149,16 @@ class ImplementationAggregate:
     exit_code: int
 
 
-@dataclass(frozen=True)
-class PublicationLocations:
-    """Filesystem locations used to publish a target or progress checkpoint."""
-
-    work_dir: Path
-    report_dir: Path | None
-    invocation_dir: Path | None
-
-
-@dataclass(frozen=True)
-class PublishedReport:
-    """Paths and payload produced by durable target publication."""
-
-    stable_path: Path | None
-    invocation_path: Path | None
-    payload: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class ImplementationProgress:
-    """Common live checkpoint for long implementation matrices."""
-
-    flow: str
-    run_id: str
-    targets: tuple[str, ...]
-    completed_targets: tuple[str, ...] = ()
-    baseline_completed_targets: tuple[str, ...] = ()
-    phase: str = "running"
-    complete: bool = False
-    baseline_ref: str | None = None
-    reports: Mapping[str, ImplementationReport] = field(default_factory=dict)
+def _remove_baseline_recipe_snapshot(entry: dict[str, Any]) -> None:
+    comparison = entry.get("comparison")
+    if not isinstance(comparison, dict):
+        return
+    baseline = comparison.get("baseline")
+    if not isinstance(baseline, dict):
+        return
+    recipe = baseline.get("recipe")
+    if isinstance(recipe, dict):
+        recipe.pop("snapshot", None)
 
 
 def _run_grade(run: ImplementationRun) -> Grade:
@@ -356,143 +325,3 @@ def build_implementation_aggregate(
         "results": ordered,
     }
     return ImplementationAggregate(detail=detail, exit_code=exit_code)
-
-
-def target_report_slug(target: str) -> str:
-    """Return a filesystem-safe, collision-resistant Target selector."""
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", target).strip(".") or "target"
-    if safe == target:
-        return safe
-    digest = hashlib.sha256(target.encode("utf-8")).hexdigest()[:8]
-    return f"{safe}-{digest}"
-
-
-def target_report_path(flow: str, target: str, report_dir: Path) -> Path:
-    """Return the stable compatibility path for one implementation target."""
-    if flow not in {"synth", "fpga"}:
-        raise ValueError(f"unsupported implementation flow: {flow}")
-    return report_dir / f"{flow}_{target_report_slug(target)}.json"
-
-
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _published_canonical(
-    report: ImplementationReport,
-    locations: PublicationLocations,
-    invocation_path: Path | None,
-    stable_path: Path,
-) -> dict[str, Any]:
-    canonical = report.canonical
-    source_artifacts = canonical.get("artifacts", {})
-    published: dict[str, Any] = {
-        "report": posix_relpath(invocation_path or stable_path, locations.work_dir)
-    }
-    if isinstance(source_artifacts, dict):
-        dirs = source_artifacts.get("dirs")
-        if isinstance(dirs, dict) and dirs:
-            published["live_dirs"] = _json_copy(dirs)
-        log = source_artifacts.get("log")
-        if isinstance(log, str) and log:
-            published["log"] = log
-    canonical["artifacts"] = published
-    return canonical
-
-
-def _copy_log_snapshot(
-    artifacts: dict[str, Any],
-    locations: PublicationLocations,
-    destination: Path,
-) -> None:
-    log = artifacts.get("log")
-    if not isinstance(log, str) or not log:
-        return
-    source = locations.work_dir / log
-    if not source.is_file():
-        artifacts.pop("log", None)
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    artifacts["log"] = posix_relpath(destination, locations.work_dir)
-
-
-def _snapshot_logs(
-    payload: dict[str, Any],
-    locations: PublicationLocations,
-    invocation_path: Path | None,
-) -> None:
-    if invocation_path is None:
-        return
-    implementation = payload[ENVELOPE_KEY]
-    artifacts = implementation.get("artifacts", {})
-    if isinstance(artifacts, dict):
-        _copy_log_snapshot(artifacts, locations, invocation_path.with_suffix("") / "run.log")
-    comparison = implementation.get("comparison")
-    baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
-    baseline_artifacts = baseline.get("artifacts") if isinstance(baseline, dict) else None
-    if isinstance(baseline_artifacts, dict):
-        destination = invocation_path.with_suffix("") / "baseline" / "run.log"
-        _copy_log_snapshot(baseline_artifacts, locations, destination)
-
-
-def publish_implementation_report(
-    report: ImplementationReport,
-    locations: PublicationLocations,
-    legacy_payload: Mapping[str, Any],
-) -> PublishedReport:
-    """Atomically publish immutable numbered evidence, then its stable alias."""
-    if locations.report_dir is None:
-        return PublishedReport(None, None, report.envelope(legacy_payload))
-    stable = target_report_path(
-        report.canonical["identity"]["flow"], report.target, locations.report_dir
-    )
-    invocation = None
-    if locations.invocation_dir is not None:
-        invocation = (
-            locations.invocation_dir / "targets" / f"{target_report_slug(report.target)}.json"
-        )
-    canonical = _published_canonical(report, locations, invocation, stable)
-    payload = _json_copy(dict(legacy_payload))
-    payload[ENVELOPE_KEY] = canonical
-    _snapshot_logs(payload, locations, invocation)
-    if invocation is not None:
-        _atomic_write_json(invocation, payload)
-    _atomic_write_json(stable, payload)
-    return PublishedReport(stable, invocation, payload)
-
-
-def publish_implementation_progress(
-    progress: ImplementationProgress,
-    locations: PublicationLocations,
-) -> Path | None:
-    """Atomically checkpoint the common live implementation-matrix shape."""
-    if locations.invocation_dir is None:
-        return None
-    completed = set(progress.completed_targets)
-    payload: dict[str, Any] = {
-        "flow": progress.flow,
-        "run_id": progress.run_id,
-        "timestamp": utc_now_rfc3339(),
-        "phase": progress.phase,
-        "complete": progress.complete,
-        "targets": list(progress.targets),
-        "completed_targets": list(progress.completed_targets),
-        "pending_targets": [target for target in progress.targets if target not in completed],
-        "baseline_completed_targets": list(progress.baseline_completed_targets),
-        ENVELOPE_KEY: {
-            "schema_version": SCHEMA_VERSION,
-            "results": {target: report.mcp_entry() for target, report in progress.reports.items()},
-        },
-    }
-    if progress.baseline_ref:
-        payload["baseline_ref"] = progress.baseline_ref
-    path = locations.invocation_dir / "progress.json"
-    _atomic_write_json(path, payload)
-    return path
