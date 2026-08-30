@@ -256,7 +256,7 @@ Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400, clk_2x.cr
 | Command | What it does |
 |---------|-------------|
 | `booley targets` | List every `.core` Target: flow, EDA tool, toplevel, and `Dr` Doctor selection |
-| `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
+| `booley targets --for-flow sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
 | `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
 

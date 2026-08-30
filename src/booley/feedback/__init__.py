@@ -12,7 +12,7 @@ Three concerns, three modules:
   outbound view, and consent-gated route to a GitHub issue or email hand-off.
 
 The user-facing report is always produced; the Booley-facing view is rendered
-on demand and persisted only by explicit export. See ``docs/CONFIG.md``
+on demand and persisted only by explicit export. See ``docs/user/CONFIG.md``
 (``[feedback]``) for the knobs.
 """
 
