@@ -306,19 +306,6 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
     return bool(expected_version and _image_label(image, LABEL_VERSION) != expected_version)
 
 
-def _warn_on_distribution_version_drift(booley_root: Path) -> None:
-    """Surface stale editable-install metadata before image selection/build."""
-    source_version = _source_version(booley_root)
-    installed_version = _read_version()
-    if source_version and source_version != installed_version:
-        warn(
-            "installed Booley distribution metadata reports "
-            f"{installed_version}, but this checkout's VERSION is {source_version}; "
-            "using the checkout version for image provenance. Reinstall the "
-            "editable package to make `booley --version` agree."
-        )
-
-
 def _stamp_image_fingerprint(image: str, value: str) -> None:
     """Best-effort: set *image*'s build-fingerprint label to *value*.
 
@@ -538,7 +525,6 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
     booley_root = docker_dir.parent.parent.parent.parent
     fingerprint = _image_build_fingerprint(booley_root)
     expected_version = _expected_version(booley_root)
-    _warn_on_distribution_version_drift(booley_root)
 
     if _prepare_existing_base_image(
         ctx,

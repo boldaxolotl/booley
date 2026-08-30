@@ -26,6 +26,7 @@ import booley
 from booley.config import settings as harness_config
 from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
+from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 
 
 class _Rec:
@@ -414,14 +415,28 @@ class _FakeDist:
 
 
 class TestLegacyDistribution:
-    def _patch_dist_present(self, monkeypatch) -> None:
+    def _patch_dist_present(self, monkeypatch, *, current: bool) -> None:
         # The probe does `from importlib.metadata import distribution` at call
         # time, so patching the module attribute intercepts it.
-        monkeypatch.setattr(importlib.metadata, "distribution", lambda name: _FakeDist())
+        def distribution(name):
+            if name == "booley" or current:
+                return _FakeDist()
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "distribution", distribution)
 
     def test_legacy_only_install_fails(self, monkeypatch):
-        self._patch_dist_present(monkeypatch)
+        self._patch_dist_present(monkeypatch, current=False)
         monkeypatch.setattr(booley, "__dist_name__", "booley")
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="0.0.9",
+                origin=VersionOrigin.DISTRIBUTION,
+                distribution_name="booley",
+            ),
+        )
         rec = _Rec()
         doctor._check_legacy_distribution(rec.p, rec.f)
         assert rec.kinds() == {"fail"}
@@ -429,8 +444,17 @@ class TestLegacyDistribution:
         assert "0.0.9" in rec.fails()[0]
 
     def test_both_installed_fails_on_shadowing(self, monkeypatch):
-        self._patch_dist_present(monkeypatch)
+        self._patch_dist_present(monkeypatch, current=True)
         monkeypatch.setattr(booley, "__dist_name__", "booley-rtl")
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="1.0.0",
+                origin=VersionOrigin.DISTRIBUTION,
+                distribution_name="booley-rtl",
+            ),
+        )
         rec = _Rec()
         doctor._check_legacy_distribution(rec.p, rec.f)
         assert rec.kinds() == {"fail"}
