@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -16,12 +17,18 @@ from booley.runtime import project_image
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
+    LABEL_PARENT_ARTIFACT_KIND,
     LABEL_PAYLOAD_FINGERPRINT,
     LABEL_RECIPE_FINGERPRINT,
     LABEL_SCHEMA,
     LABEL_VERSION,
     LEGACY_FINGERPRINT_LABEL,
+    LEGACY_PROVENANCE_SCHEMA,
+    PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+    PARENT_ARTIFACT_REGISTRY_DIGEST,
     PROVENANCE_SCHEMA,
+    is_local_image_id,
+    normalize_registry_digest,
     resolve_build_context_fingerprint,
     resolve_recipe_fingerprint,
 )
@@ -122,6 +129,8 @@ class _DockerPort(Protocol):
     def image_id(self, image: str) -> str | None: ...
 
     def label(self, image: str, name: str) -> str | None: ...
+
+    def repo_digests(self, image: str) -> tuple[str, ...]: ...
 
     def tag(self, source: str, target: str) -> None: ...
 
@@ -352,31 +361,50 @@ def _with_parent_artifacts(
 def _node_current(node: _ImageNode, docker: _DockerPort) -> bool:
     if docker.image_id(node.reference) is None:
         return False
-    if docker.label(node.reference, LABEL_SCHEMA) != PROVENANCE_SCHEMA:
+    schema = docker.label(node.reference, LABEL_SCHEMA)
+    if schema == LEGACY_PROVENANCE_SCHEMA:
+        return _schema_one_node_current(node, docker)
+    if schema is None:
         return _legacy_node_current(node, docker)
-    if not _build_origin_and_base_parent_current(node, docker):
-        return False
-    for name, expected in node.expected_labels:
-        expected_value = expected
-        if name == LABEL_PARENT_ARTIFACT and node.parent is not None:
-            expected_value = docker.image_id(node.parent) or ""
-        if docker.label(node.reference, name) != expected_value:
-            return False
-    return True
+    return (
+        schema == PROVENANCE_SCHEMA
+        and _schema_two_parent_current(node, docker)
+        and all(
+            name == LABEL_PARENT_ARTIFACT or docker.label(node.reference, name) == expected
+            for name, expected in node.expected_labels
+        )
+    )
 
 
-def _build_origin_and_base_parent_current(node: _ImageNode, docker: _DockerPort) -> bool:
-    """Validate acquisition-independent build origin and base ancestry."""
+def _schema_two_parent_current(node: _ImageNode, docker: _DockerPort) -> bool:
+    """Validate typed schema-two parent provenance."""
     origin = docker.label(node.reference, LABEL_BUILD_ORIGIN)
-    if origin not in {"local", "registry"}:
-        return False
-    if node.reference != BASE_IMAGE:
-        return True
+    kind = docker.label(node.reference, LABEL_PARENT_ARTIFACT_KIND)
     recorded_parent = docker.label(node.reference, LABEL_PARENT_ARTIFACT)
-    if not recorded_parent:
+    expected_kind = {
+        "local": PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+        "registry": PARENT_ARTIFACT_REGISTRY_DIGEST,
+    }.get(origin or "")
+    if expected_kind is None or kind != expected_kind or not recorded_parent:
         return False
+    if node.reference == BASE_IMAGE:
+        return _base_parent_current(origin or "", recorded_parent, docker)
+    if node.parent is None:
+        return False
+    if kind == PARENT_ARTIFACT_LOCAL_IMAGE_ID:
+        return (
+            is_local_image_id(recorded_parent) and docker.image_id(node.parent) == recorded_parent
+        )
+    normalized = normalize_registry_digest(recorded_parent)
+    return normalized is not None and normalized in docker.repo_digests(node.parent)
+
+
+def _base_parent_current(origin: str, recorded_parent: str, docker: _DockerPort) -> bool:
+    """Validate the build-only parent of the base Session Image."""
     if origin == "registry":
-        return True
+        return normalize_registry_digest(recorded_parent) is not None
+    if not is_local_image_id(recorded_parent):
+        return False
     from booley.harness.docker_base_contract import contract as runtime_base_contract
 
     try:
@@ -387,6 +415,31 @@ def _build_origin_and_base_parent_current(node: _ImageNode, docker: _DockerPort)
     return (
         stable_contract == expected_contract
         and docker.image_id(STABLE_RUNTIME_BASE_IMAGE) == recorded_parent
+    )
+
+
+def _schema_one_node_current(node: _ImageNode, docker: _DockerPort) -> bool:
+    """Migrate schema one without weakening its exact local ancestry checks."""
+    origin = docker.label(node.reference, LABEL_BUILD_ORIGIN)
+    if origin not in {"local", "registry"}:
+        return False
+    labels_current = all(
+        name in {LABEL_SCHEMA, LABEL_PARENT_ARTIFACT}
+        or docker.label(node.reference, name) == expected
+        for name, expected in node.expected_labels
+    )
+    if not labels_current:
+        return False
+    recorded_parent = docker.label(node.reference, LABEL_PARENT_ARTIFACT)
+    if node.reference == BASE_IMAGE:
+        return bool(recorded_parent) and (
+            origin == "registry" or _base_parent_current(origin, recorded_parent or "", docker)
+        )
+    return (
+        origin == "local"
+        and node.parent is not None
+        and bool(recorded_parent)
+        and docker.image_id(node.parent) == recorded_parent
     )
 
 
@@ -403,7 +456,7 @@ def _legacy_node_current(node: _ImageNode, docker: _DockerPort) -> bool:
 def _uses_accepted_legacy_provenance(node: _ImageNode, docker: _DockerPort) -> bool:
     return (
         docker.image_id(node.reference) is not None
-        and docker.label(node.reference, LABEL_SCHEMA) != PROVENANCE_SCHEMA
+        and docker.label(node.reference, LABEL_SCHEMA) is None
         and _legacy_node_current(node, docker)
     )
 
@@ -559,7 +612,11 @@ def reconcile(
     builder = _build_adapter(root, docker, verbose=verbose)
     changed = _mutate(root, nodes, intent, docker, builder)
     selected_id = docker.image_id(selected)
-    if selected_id is None or not _node_current(nodes[-1], docker):
+    if (
+        selected_id is None
+        or not _node_current(nodes[-1], docker)
+        or docker.image_id(selected) != selected_id
+    ):
         raise ImageLifecycleError(f"selected Session Image {selected!r} did not verify")
     return LifecycleResult(
         selected,
@@ -608,6 +665,41 @@ class _DockerCli:
             f"could not inspect Docker label {name!r} on {image!r}: "
             f"{detail or f'Docker exited {result.returncode}'}"
         )
+
+    def repo_digests(self, image: str) -> tuple[str, ...]:
+        """Return normalized registry identities attached to a local image."""
+        try:
+            result = subprocess.run(
+                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(f"could not inspect Docker RepoDigests: {exc}") from exc
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            if "no such image" in detail.lower():
+                return ()
+            raise ImageLifecycleError(
+                f"could not inspect Docker RepoDigests on {image!r}: "
+                f"{detail or f'Docker exited {result.returncode}'}"
+            )
+        try:
+            values = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise ImageLifecycleError(
+                f"Docker returned invalid RepoDigests JSON for {image!r}"
+            ) from exc
+        if values is None or values == []:
+            return ()
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ImageLifecycleError(f"Docker returned invalid RepoDigests for {image!r}")
+        normalized = tuple(normalize_registry_digest(value) for value in values)
+        if any(value is None for value in normalized):
+            raise ImageLifecycleError(f"Docker returned malformed RepoDigests for {image!r}")
+        return tuple(value for value in normalized if value is not None)
 
     def tag(self, source: str, target: str) -> None:
         try:

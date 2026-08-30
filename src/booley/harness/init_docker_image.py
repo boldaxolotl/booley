@@ -807,15 +807,32 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
             f"{LABEL_BUILD_ORIGIN}=local",
         ]
     if spec.parent_artifact:
-        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
+        from booley.runtime.image_provenance import (
+            LABEL_PARENT_ARTIFACT,
+            LABEL_PARENT_ARTIFACT_KIND,
+            PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+        )
 
-        build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={spec.parent_artifact}"]
+        build_cmd += [
+            "--label",
+            f"{LABEL_PARENT_ARTIFACT_KIND}={PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+            "--label",
+            f"{LABEL_PARENT_ARTIFACT}={spec.parent_artifact}",
+        ]
     if spec.image in FLAVOR_IMAGES:
-        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
+        from booley.runtime.image_provenance import (
+            LABEL_PARENT_ARTIFACT,
+            LABEL_PARENT_ARTIFACT_KIND,
+            PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+        )
 
         base_image_id = _docker_image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
+            build_cmd += [
+                "--label",
+                f"{LABEL_PARENT_ARTIFACT_KIND}={PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+            ]
             build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={base_image_id}"]
     if spec.image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(spec.context)

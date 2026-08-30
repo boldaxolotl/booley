@@ -186,6 +186,59 @@ def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path
     assert calls[0]["agent_app"] == "codex"
 
 
+def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path, monkeypatch):
+    result = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv",
+        "sha256:" + "f" * 64,
+        init_cmd.ImageLifecycleStatus.CURRENT,
+    )
+    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
+    for name in (
+        "_step_project_dir",
+        "_step_core_projections",
+        "_step_tickets",
+        "_step_auth",
+        "_deploy_skills",
+        "_step_git_hooks",
+        "_step_project_git_hooks",
+        "_step_worktree_prune_guard",
+        "_step_line_endings",
+        "_step_guidance_links",
+        "_step_advisories",
+    ):
+        monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: "pdk")
+    monkeypatch.setattr(init_cmd, "_step_image_lifecycle", lambda _ctx: result)
+    monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
+    calls = []
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_interactive",
+        lambda _ctx, **kwargs: calls.append(kwargs),
+    )
+    ctx = InitContext(project_root=tmp_path)
+    selection = init_cmd.AgentSelection("codex", "subscription")
+
+    assert (
+        init_cmd._run_project_init_steps(
+            ctx,
+            _args(),
+            selection,
+            tmp_path / ".booley_project" / "booley.toml",
+            None,
+        )
+        == 0
+    )
+
+    assert calls == [
+        {
+            "nangate_pdk_root": "pdk",
+            "agent_app": "codex",
+            "session_image_id": result.selected_id,
+        }
+    ]
+
+
 def test_flag_cannot_silently_replace_existing_provider(tmp_path):
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
