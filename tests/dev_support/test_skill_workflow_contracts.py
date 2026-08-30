@@ -157,6 +157,13 @@ def test_ticket_create_defaults_every_review_to_corrective_mode():
     assert "Every `_clean` waiver includes a justification" in contract
 
 
+def test_ticket_create_hands_human_off_to_booley_run():
+    skill = _skill_text("booley-ticket-create")
+
+    assert "suggest `booley run`" in skill
+    assert "/booley-run-and-fix" not in skill
+
+
 def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
     skill = _skill_text("booley-ticket-create")
     grilling = _skill_text("booley-ticket-create", "grilling.md")

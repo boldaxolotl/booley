@@ -126,7 +126,7 @@ repaired, report the actionable error without turning contract internals into us
 
 ## Step 5: Report
 
-- **Human**: print the enqueued path (`board/queue/`, or `board/waiting/` when it declares unmet dependencies — Step 4's `enqueue` already moved it there), then suggest `/booley-run-and-fix`
+- **Human**: print the enqueued path (`board/queue/`, or `board/waiting/` when it declares unmet dependencies — Step 4's `enqueue` already moved it there), then suggest `booley run`
 - **Agent**: return path
 
 ---
