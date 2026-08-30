@@ -96,7 +96,7 @@ class CodexLiveUsage:
         try:
             assert self._on_event is not None
             self._on_event(event)
-        except Exception:  # display failure must not abort a paid agent turn  # noqa: BLE001
+        except Exception:  # display failure must not abort a paid agent turn
             logger.debug("Codex live usage callback failed", exc_info=True)
 
     async def _watch_rollout(self, thread_id: str) -> None:

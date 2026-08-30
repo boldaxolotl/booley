@@ -472,7 +472,7 @@ class ElaborateFlow(BooleyFlow):
             cmd = self._dry_run_command(target)
             if cmd[:2] == ["sh", "-c"]:
                 command = cmd[2]
-        except Exception:  # report context is best-effort  # noqa: BLE001
+        except Exception:  # report context is best-effort
             logger.debug("could not compose compile command for %s", target, exc_info=True)
         cache[target] = command
         return command
@@ -496,7 +496,7 @@ class ElaborateFlow(BooleyFlow):
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
             }
-        except Exception:  # report context is best-effort  # noqa: BLE001
+        except Exception:  # report context is best-effort
             logger.debug("could not read fileset for %s", target, exc_info=True)
         cache[target] = fileset
         return fileset
@@ -825,9 +825,7 @@ class ElaborateFlow(BooleyFlow):
             return self._standalone_error(str(exc))
         try:
             scope = self._standalone_rtl_scope(targets)
-        except (
-            Exception  # noqa: BLE001
-        ) as exc:  # resolution failure graded as a Flow ERROR, never a crash
+        except Exception as exc:  # resolution failure graded as a Flow ERROR, never a crash
             logger.debug("standalone: RTL scope resolution failed", exc_info=True)
             return self._standalone_error(
                 f"could not resolve RTL source scope: {exc}",
@@ -1144,7 +1142,7 @@ class ElaborateFlow(BooleyFlow):
             try:
                 cmd = self._prepare_elab_command(target)
             except (
-                Exception  # noqa: BLE001
+                Exception
             ) as exc:  # isolate per-target setup failure; recorded as a FAIL and loop continues
                 elapsed = time.monotonic() - t0
                 combined = f"elab setup failed: {exc}"

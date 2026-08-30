@@ -381,9 +381,7 @@ class MainPane(VerticalScroll):
         if result.hint:
             try:
                 self.app.query_one(StatusBar).show_hint(result.hint)
-            except (
-                Exception  # noqa: BLE001
-            ):  # hint display is cosmetic; failure must not break link handling
+            except Exception:  # hint display is cosmetic; failure must not break link handling
                 logger.debug("StatusBar hint dispatch failed", exc_info=True)
         event.stop()
 
