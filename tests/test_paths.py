@@ -43,12 +43,7 @@ class TestTroubleshootingPath:
         assert result.is_file()
 
     def test_packaged_guide_matches_public_document(self):
-        public = (
-            Path(__file__).resolve().parent.parent
-            / "docs"
-            / "user"
-            / "TROUBLESHOOTING.md"
-        )
+        public = Path(__file__).resolve().parent.parent / "docs" / "user" / "TROUBLESHOOTING.md"
         assert paths.troubleshooting_path().read_bytes() == public.read_bytes()
 
     def test_faq_path_remains_a_compatibility_alias(self):

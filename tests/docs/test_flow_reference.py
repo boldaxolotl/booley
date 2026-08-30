@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 
+from booley.flows.base import BooleyFlow
 from booley.flows.elab.flow import ElaborateFlow
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.fpga.metrics import FpgaMetrics
@@ -32,6 +33,7 @@ FLOW_TYPES = (
     AsicSynthesizeFlow,
     FpgaImplFlow,
 )
+FlowT = TypeVar("FlowT", bound=BooleyFlow)
 
 
 def _reference_text() -> str:
@@ -64,6 +66,23 @@ def _documented_fields(flow_name: str) -> set[str]:
 def _assert_documented(flow_name: str, payload: dict[str, Any]) -> None:
     missing = set(payload) - _documented_fields(flow_name)
     assert not missing, f"{flow_name} structured fields missing from reference: {sorted(missing)}"
+
+
+def _configured_flow(
+    flow_type: type[FlowT],
+    tmp_path: Path,
+    target: str,
+) -> tuple[FlowT, Path]:
+    report_dir = tmp_path / "reports"
+    flow = flow_type()
+    flow.parse_args(
+        ["--target", target, "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
+    )
+    return flow, report_dir
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("flow_type", FLOW_TYPES, ids=lambda flow_type: flow_type.name)
@@ -115,11 +134,7 @@ def test_sim_test_fields_stay_documented() -> None:
 
 
 def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
-    report_dir = tmp_path / "reports"
-    sim = SimulateFlow()
-    sim.parse_args(
-        ["--target", "sim_demo", "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
-    )
+    sim, report_dir = _configured_flow(SimulateFlow, tmp_path, "sim_demo")
     sim._compile_command_str = lambda _target: "make sim"  # type: ignore[method-assign]
     sim._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
     sim._artifacts_for = lambda _target, _result: {}  # type: ignore[method-assign]
@@ -132,27 +147,19 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
             tests=[SimTestResult(name="reset", passed=True)],
         )
     )
-    _assert_documented("sim", json.loads((report_dir / "sim_sim_demo.json").read_text()))
+    _assert_documented("sim", _read_json(report_dir / "sim_sim_demo.json"))
 
 
 def test_elab_report_fields_stay_documented(tmp_path: Path) -> None:
-    report_dir = tmp_path / "reports"
-    elab = ElaborateFlow()
-    elab.parse_args(
-        ["--target", "elab_demo", "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
-    )
+    elab, report_dir = _configured_flow(ElaborateFlow, tmp_path, "elab_demo")
     elab._compile_command_str = lambda _target: "make elab"  # type: ignore[method-assign]
     elab._fileset_for_report = lambda _target: {"rtl": [], "tb": []}  # type: ignore[method-assign]
     elab._write_target_report("elab_demo", True, 0.1, "clean", "run.log")
-    _assert_documented("elab", json.loads((report_dir / "elab_elab_demo.json").read_text()))
+    _assert_documented("elab", _read_json(report_dir / "elab_elab_demo.json"))
 
 
 def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
-    report_dir = tmp_path / "reports"
-    lint = LintFlow()
-    lint.parse_args(
-        ["--target", "lint_demo", "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
-    )
+    lint, _report_dir = _configured_flow(LintFlow, tmp_path, "lint_demo")
     warning = LintWarning("RULE", "rtl.sv", 1, 2, "message", "lint_demo")
     lint_result = LintConfigResult(
         target="lint_demo",
@@ -171,7 +178,7 @@ def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
         target_results=[lint_result, lint_error],
     )
     assert lint_path is not None
-    lint_report = json.loads(lint_path.read_text())
+    lint_report = _read_json(lint_path)
     _assert_documented("lint", lint_report)
     _assert_documented("lint", lint_report["warnings"][0])
     _assert_documented("lint", lint_report["errors"][0])
@@ -179,11 +186,7 @@ def test_lint_report_fields_stay_documented(tmp_path: Path) -> None:
 
 
 def test_synth_report_fields_stay_documented(tmp_path: Path) -> None:
-    report_dir = tmp_path / "reports"
-    synth = AsicSynthesizeFlow()
-    synth.parse_args(
-        ["--target", "synth_demo", "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
-    )
+    synth, report_dir = _configured_flow(AsicSynthesizeFlow, tmp_path, "synth_demo")
     current_synth = SynthMetrics(
         area_um2=10.0,
         area_source="openroad",
@@ -206,18 +209,14 @@ def test_synth_report_fields_stay_documented(tmp_path: Path) -> None:
     )
     synth._write_target_report("synth_demo", current_synth, baseline_synth, "main")
     synth_path = next(report_dir.glob("synth_*.json"))
-    synth_report = json.loads(synth_path.read_text())
+    synth_report = _read_json(synth_path)
     _assert_documented("synth", synth_report)
     _assert_documented("synth", synth_report["baseline"])
     _assert_documented("synth", synth_report["conditions"])
 
 
 def test_fpga_report_fields_stay_documented(tmp_path: Path) -> None:
-    report_dir = tmp_path / "reports"
-    fpga = FpgaImplFlow()
-    fpga.parse_args(
-        ["--target", "fpga_demo", "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
-    )
+    fpga, report_dir = _configured_flow(FpgaImplFlow, tmp_path, "fpga_demo")
     current_fpga = FpgaMetrics(
         lut_count=10,
         ff_count=20,

@@ -45,6 +45,16 @@ def _destinations(document: Path) -> list[str]:
     return destinations
 
 
+def _code_spans(document: Path) -> list[str]:
+    tokens = MarkdownIt().parse(document.read_text(encoding="utf-8"))
+    return [
+        child.content
+        for token in tokens
+        for child in token.children or []
+        if child.type == "code_inline"
+    ]
+
+
 def _repository_target(target: Path, destination: str) -> Path:
     """Resolve one target and reject links that escape the repository."""
     resolved = target.resolve()
@@ -161,3 +171,14 @@ def test_repository_local_markdown_links_resolve() -> None:
             if target is not None and (reason := _destination_failure(target, destination)):
                 failures.append(f"{source}: {destination} -> {reason}")
     assert not failures, "broken repository-local links:\n" + "\n".join(failures)
+
+
+def test_agent_instruction_document_paths_resolve() -> None:
+    agents = REPO_ROOT / "AGENTS.md"
+    doc_paths = [
+        REPO_ROOT / span
+        for span in _code_spans(agents)
+        if span.startswith("docs/") and span.endswith(".md")
+    ]
+    missing = [path.relative_to(REPO_ROOT) for path in doc_paths if not path.is_file()]
+    assert not missing, f"missing documents referenced by AGENTS.md: {missing}"
