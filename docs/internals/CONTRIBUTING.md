@@ -5,9 +5,9 @@
 Thanks for wanting to help. Booley is early and the surface is wide, so almost
 any contribution is useful, but some help is worth far more than others.
 
-This guide assumes you've read the [README](../README.md). The domain terms it
+This guide assumes you've read the [README](../../README.md). The domain terms it
 leans on—Booley Flow, Target, Session Runtime, and the rest—are defined in
-[CONTEXT.md](CONTEXT.md), Booley's controlled vocabulary; keep it open if a term
+[CONTEXT.md](../CONTEXT.md), Booley's controlled vocabulary; keep it open if a term
 is unfamiliar. For how the pieces fit together, read [ARCHITECTURE.md](ARCHITECTURE.md).
 
 There are three main contribution paths:
@@ -33,7 +33,25 @@ pytest                      # full suite; scope to a path/-k for a fast subset
 ```
 
 Booley needs **Python 3.11+**. For venv, PATH, and Windows problems, see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+[TROUBLESHOOTING.md](../user/TROUBLESHOOTING.md).
+
+### Development environment troubleshooting
+
+Debian and Ubuntu split `venv` out of the Python package. If `python3 -m venv
+.venv` fails with `ensurepip is not available`, install the package matching the
+interpreter's minor version, then recreate the incomplete environment:
+
+```bash
+python3 --version                       # e.g. Python 3.12.3
+sudo apt install python3.12-venv        # match the version above
+rm -r .venv                             # only the failed local environment
+python3 -m venv .venv
+```
+
+An editable install places `booley` in `.venv/bin`; activate that environment
+before contributor commands. If another installation wins, use `command -v -a
+booley` to find the earlier entry and remove it rather than symlinking a
+checkout-specific virtual environment into a global bin directory.
 
 ## The #1 priority: port commercial EDA tools
 
@@ -103,7 +121,7 @@ question for any EDA tool is: does Edalize already have a backend for it?**
   EDA, an Edalize backend is necessary but not sufficient—the contribution also
   needs a built-in installation, licensing, security, Doctor, and end-to-end
   validation policy comparable to Vivado's. See
-  [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md).
+  [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 - **No** → contribute the backend upstream to Edalize, then integrate that
   flow node with the same Session Runtime and commercial-policy requirements.
   Booley has no Project-defined host-command escape hatch.
@@ -117,7 +135,7 @@ logs. That parsing lives in Booley and has to be written per EDA tool:
 
 - **Simulators** parse raw output into the structured sim result (shared
   helpers in `sim_result.py`). See the existing parsers in
-  [src/booley/sim/](../src/booley/sim/): `xcelium_run.py`, `vcs_run.py`,
+  [src/booley/sim/](../../src/booley/sim/): `xcelium_run.py`, `vcs_run.py`,
   `verilator_run.py`, `iverilog_run.py`. Xcelium and VCS parsing code is
   internal incubation material only: those EDA tools are not selectable or
   supported Booley simulators. A new simulator parser can start as a sibling
@@ -167,7 +185,7 @@ Porting EDA tools is #1, but not the only way to help:
   `/booley-feedback` skill from your own project while the evidence is still on
   screen. It captures the failure, writes your local report, and shows the exact
   redacted text before anything goes anywhere
-  ([USAGE.md](USAGE.md#when-booley-itself-misbehaves)).
+  ([USAGE.md](../user/USAGE.md#when-booley-itself-misbehaves)).
 - **Telling us what you think.** Tell the same `/booley-feedback` skill what
   you'd want built, what you liked, what you gave up on, or whether Booley
   earned its setup cost on a real project. Bug reports say what is broken and

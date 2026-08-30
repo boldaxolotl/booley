@@ -27,7 +27,7 @@ from pathlib import Path
 from booley.audit.project_schema import KNOWN_BOOLEY_TOML_TABLES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_MD = REPO_ROOT / "docs" / "CONFIG.md"
+CONFIG_MD = REPO_ROOT / "docs" / "user" / "CONFIG.md"
 SRC_ROOT = REPO_ROOT / "src" / "booley"
 
 # Documented knobs with no code reader, each with a reviewed justification.
@@ -72,7 +72,7 @@ def _documented_knobs() -> dict[tuple[str, str], str]:
             continue
         knob = _KNOB_RE.match(line)
         if knob:
-            knobs.setdefault((section_root, knob.group(1)), f"docs/CONFIG.md:{lineno}")
+            knobs.setdefault((section_root, knob.group(1)), f"docs/user/CONFIG.md:{lineno}")
     return knobs
 
 
