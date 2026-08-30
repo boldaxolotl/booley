@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -279,7 +280,7 @@ def test_recognized_source_requires_readable_nonempty_version(
         lambda **_kwargs: pytest.fail("invalid source must not fall through to metadata"),
     )
 
-    with pytest.raises(RuntimeError, match=str(version_file)):
+    with pytest.raises(RuntimeError, match=re.escape(str(version_file))):
         resolve_version_attribution(package_file)
 
 
@@ -289,7 +290,7 @@ def test_recognized_source_reports_unreadable_version(tmp_path) -> None:
     version_file.unlink()
     version_file.mkdir()
 
-    with pytest.raises(RuntimeError, match=str(version_file)):
+    with pytest.raises(RuntimeError, match=re.escape(str(version_file))):
         resolve_version_attribution(package_file)
 
 
