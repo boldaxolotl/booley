@@ -550,7 +550,7 @@ class LintFlow(BooleyFlow):
 
         try:
             cmd, resolved = self._prepare_lint_command(target)
-        except Exception as exc:
+        except Exception as exc:  # isolate per-Target setup failure
             result.error = f"lint setup failed: {exc}"
             result.error_is_eda_tool_failure = True
             logger.debug("lint EDAM/configure failed for %s", selector, exc_info=True)
