@@ -25,10 +25,11 @@ def _deploy_from(
     target: Path,
     *,
     check_only: bool = False,
+    force: bool = False,
 ) -> InitContext:
     monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
     monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    ctx = InitContext(project_root=tmp_path, check_only=check_only)
+    ctx = InitContext(project_root=tmp_path, check_only=check_only, force=force)
     init_skills._deploy_skills(ctx)
     return ctx
 
@@ -132,6 +133,47 @@ def test_deploy_adopts_healthy_link(tmp_path: Path, monkeypatch):
     ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
 
     assert link.resolve(strict=True) == skill.resolve()
+    assert ctx.results[-1].status == "ok"
+
+
+def test_force_previews_targets_before_relinking_equivalent_skill(
+    tmp_path: Path, monkeypatch, capsys
+):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "skills"
+    desired = _skill(packaged, "booley-setup")
+    old_skill = _skill(tmp_path / "old-checkout" / "skills", "booley-setup")
+    target = tmp_path / "host" / "skills"
+    target.mkdir(parents=True)
+    link = target / "booley-setup"
+    link.symlink_to(old_skill)
+
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target, force=True)
+    output = capsys.readouterr().out
+
+    preview = output.index("would retarget booley-setup")
+    applied = output.index("retargeted booley-setup", preview)
+    assert preview < applied
+    assert f"current: {old_skill}" in output
+    assert f"requested: {desired}" in output
+    assert link.resolve(strict=True) == desired.resolve()
+    assert ctx.results[-1].status == "ok"
+
+
+def test_normal_init_accepts_equivalent_skill_without_mutation(tmp_path: Path, monkeypatch):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    old_skill = _skill(tmp_path / "old-checkout" / "skills", "booley-setup")
+    target = tmp_path / "host" / "skills"
+    target.mkdir(parents=True)
+    link = target / "booley-setup"
+    link.symlink_to(old_skill)
+    original_target = link.readlink()
+
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
+
+    assert link.readlink() == original_target
     assert ctx.results[-1].status == "ok"
 
 

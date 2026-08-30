@@ -51,17 +51,21 @@ it never came up.
 
 ## A Booley skill name is occupied or points to an older installation
 
-`booley init` and Session Runtime startup preserve skill entries they cannot
-prove they own. If reconciliation reports a conflict, inspect the named entry
-under `~/.agents/skills` or `~/.claude/skills`. Keep it under another name when
-it is yours; remove it when it is a stale link into an older Booley
-installation, then rerun `booley init --seed` on the host or
-`python -m booley.runtime.incontainer_register` inside the Session Runtime.
+`booley init` preserves skill entries it cannot prove are safe to manage. A
+live link whose complete skill tree matches the active package is accepted
+without mutation. To move that equivalent link—or a link already recorded as
+Booley-managed—to the active package, run `booley init --force`. The command
+shows the current and requested targets before replacing the link. A link with
+different content remains a conflict even under `--force`.
+
+For other conflicts, inspect the named entry under `~/.agents/skills` or
+`~/.claude/skills`. Keep it under another name when it is yours; remove it when
+it is a dangling stale link, then rerun `booley init --seed`.
 
 Booley-managed links carry ownership metadata for later upgrades. A corrupt
 `.booley-skill-links.json` fails closed instead of deleting links. Preserve the
-file for diagnosis, repair or remove only the malformed metadata, and rerun the
-same reconciliation command.
+file for diagnosis, repair or remove only the malformed metadata, and rerun
+`booley init`.
 
 ## An MCP tool is missing from `/mcp`
 

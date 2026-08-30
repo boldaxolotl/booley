@@ -29,23 +29,26 @@ def _find_skill_targets() -> list[Path]:
 
 
 def _render_event(event: SkillLinkEvent, *, verbose: bool, dry_run: bool) -> None:
-    prefix = "would " if dry_run else ""
-    message = f"  {prefix}{event.outcome} {event.name}"
+    label = event.preview_label if dry_run else event.outcome
+    message = f"  {label} {event.name}"
     if event.detail:
         message += f": {event.detail}"
-    if event.outcome in {"conflict", "error"}:
+    if (
+        event.previous_target is not None
+        and event.desired_target is not None
+        and event.previous_target != event.desired_target
+    ):
+        message += f"\n    current: {event.previous_target}\n    requested: {event.desired_target}"
+    if event.failed:
         err(message)
-    elif event.outcome == "unchanged":
-        if verbose:
-            skip(message)
-    elif event.outcome in {"removed", "retargeted", "adopted"}:
+    elif event.always_visible:
         info(message)
     elif verbose:
-        ok(message)
+        (ok if event.changed else skip)(message)
 
 
 def _failure_count(report: SkillLinkReport) -> int:
-    event_failures = sum(event.outcome in {"conflict", "error"} for event in report.events)
+    event_failures = sum(event.failed for event in report.events)
     return event_failures + len(report.diagnostics) + int(report.fatal is not None)
 
 
@@ -63,9 +66,7 @@ def _render_report(
     for diagnostic in report.diagnostics:
         err(f"  skill reconciliation: {diagnostic}")
     failures = _failure_count(report)
-    changed = sum(
-        event.outcome in {"created", "adopted", "retargeted", "removed"} for event in report.events
-    )
+    changed = sum(event.changed for event in report.events)
     summary = f"{bold_chrome(str(skills_target))}: {changed} changed, {failures} failed"
     (err if failures else ok)(summary)
     return failures
@@ -77,9 +78,25 @@ def _deploy_skills_to_target(
     *,
     verbose: bool,
     dry_run: bool,
+    allow_retarget: bool,
 ) -> int:
     """Reconcile packaged skills in one host agent directory."""
-    report = reconcile_skill_links(skills_target, src, dry_run=dry_run)
+    if allow_retarget and not dry_run:
+        preview = reconcile_skill_links(
+            skills_target,
+            src,
+            dry_run=True,
+            allow_retarget=True,
+        )
+        for event in preview.events:
+            if event.replaces_target:
+                _render_event(event, verbose=True, dry_run=True)
+    report = reconcile_skill_links(
+        skills_target,
+        src,
+        dry_run=dry_run,
+        allow_retarget=allow_retarget,
+    )
     return _render_report(
         skills_target,
         report,
@@ -107,6 +124,7 @@ def _deploy_skills(ctx: InitContext) -> None:
             src,
             verbose=ctx.verbose,
             dry_run=ctx.check_only,
+            allow_retarget=ctx.force,
         )
         for target in targets
     )

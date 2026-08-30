@@ -7,11 +7,11 @@ only choose roots and render the returned report.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
 import subprocess
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -25,10 +25,11 @@ _MANIFEST_VERSION = 1
 _TEMP_PREFIX = ".booley-skill-link-tmp-"
 _BACKUP_PREFIX = ".booley-skill-link-backup-"
 
-SourceKind = Literal["packaged", "host"]
+SourceKind = Literal["packaged"]
 Outcome = Literal[
     "created",
     "adopted",
+    "equivalent",
     "retargeted",
     "removed",
     "unchanged",
@@ -49,6 +50,41 @@ class SkillLinkEvent:
     desired_target: str | None = None
     detail: str = ""
 
+    @property
+    def failed(self) -> bool:
+        """Whether this event needs user attention."""
+        return self.outcome in {"conflict", "error"}
+
+    @property
+    def changed(self) -> bool:
+        """Whether this event changed a link or its ownership record."""
+        return self.outcome in {"created", "adopted", "retargeted", "removed"}
+
+    @property
+    def always_visible(self) -> bool:
+        """Whether adapters should render this event outside verbose mode."""
+        return self.failed or self.outcome not in {"created", "unchanged"}
+
+    @property
+    def replaces_target(self) -> bool:
+        """Whether applying this event replaces one link target with another."""
+        return self.outcome == "retargeted"
+
+    @property
+    def preview_label(self) -> str:
+        """Human-readable action label for a dry-run event."""
+        verbs = {
+            "created": "create",
+            "adopted": "adopt",
+            "equivalent": "accept as equivalent",
+            "retargeted": "retarget",
+            "removed": "remove",
+            "unchanged": "leave unchanged",
+            "conflict": "report conflict for",
+            "error": "report error for",
+        }
+        return f"would {verbs[self.outcome]}"
+
 
 @dataclass(frozen=True)
 class SkillLinkReport:
@@ -65,11 +101,7 @@ class SkillLinkReport:
     @property
     def failed(self) -> bool:
         """Whether reconciliation needs user or operator attention."""
-        return bool(
-            self.fatal
-            or self.diagnostics
-            or any(event.outcome in {"conflict", "error"} for event in self.events)
-        )
+        return bool(self.fatal or self.diagnostics or any(event.failed for event in self.events))
 
 
 @dataclass(frozen=True)
@@ -119,6 +151,36 @@ def _normalize_target(value: str | Path, *, parent: Path | None = None) -> str:
     return os.path.normcase(os.path.abspath(os.path.normpath(raw)))  # noqa: PTH100
 
 
+def _skill_tree_identity(root: Path) -> bytes | None:
+    """Return a content identity for a regular, self-contained skill tree."""
+    try:
+        if not _regular_directory(root):
+            return None
+        identity = hashlib.sha256()
+        children = sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
+        for child in children:
+            relative = child.relative_to(root).as_posix().encode()
+            metadata = child.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                identity.update(b"D\0" + relative + b"\0")
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                return None
+            content = hashlib.sha256()
+            with child.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    content.update(chunk)
+            identity.update(b"F\0" + relative + b"\0" + content.digest())
+        return identity.digest()
+    except (OSError, ValueError):
+        return None
+
+
+def _equivalent_skill(existing_target: str, desired: Path) -> bool:
+    existing_identity = _skill_tree_identity(Path(existing_target))
+    return existing_identity is not None and existing_identity == _skill_tree_identity(desired)
+
+
 def _is_junction(path: Path) -> bool:
     if not IS_WINDOWS or path.is_symlink():
         return False
@@ -163,42 +225,33 @@ def _regular_file(path: Path) -> bool:
         return False
 
 
-def _discover_source(
-    root: Path,
-    source_kind: SourceKind,
-    *,
-    missing_ok: bool,
-) -> tuple[dict[str, _Desired], str | None]:
+def _discover_source(root: Path) -> tuple[dict[str, _Desired], str | None]:
     try:
         metadata = root.lstat()
         if not stat.S_ISDIR(metadata.st_mode):
-            return {}, f"{source_kind} skills path is not a directory: {root}"
+            return {}, f"packaged skills path is not a directory: {root}"
         children = sorted(root.iterdir(), key=lambda path: _name_key(path.name))
-        return _discover_children(children, source_kind)
+        return _discover_children(children)
     except FileNotFoundError:
-        if missing_ok:
-            return {}, None
-        return {}, f"{source_kind} skills directory is missing: {root}"
+        return {}, f"packaged skills directory is missing: {root}"
     except OSError as exc:
-        return {}, f"cannot inspect {source_kind} skills directory {root}: {exc}"
+        return {}, f"cannot inspect packaged skills directory {root}: {exc}"
 
 
-def _discover_children(
-    children: list[Path], source_kind: SourceKind
-) -> tuple[dict[str, _Desired], str | None]:
+def _discover_children(children: list[Path]) -> tuple[dict[str, _Desired], str | None]:
     desired: dict[str, _Desired] = {}
     reserved = _name_key(MANIFEST_FILENAME)
     for child in children:
         if not _regular_directory(child) or not _regular_file(child / "SKILL.md"):
             continue
         if _name_key(child.name) == reserved:
-            return {}, f"reserved skill name {child.name!r} in {source_kind} source"
+            return {}, f"reserved skill name {child.name!r} in packaged source"
         key = _name_key(child.name)
         if key in desired:
-            return {}, f"duplicate skill name {child.name!r} in {source_kind} source"
+            return {}, f"duplicate skill name {child.name!r} in packaged source"
         desired[key] = _Desired(
             child.name,
-            source_kind,
+            "packaged",
             child,
             _normalize_target(child),
         )
@@ -226,18 +279,34 @@ def _parse_manifest(raw: object) -> dict[str, _Record]:
     links = require_dict(document.get("links"), field="skill-link manifest links")
     records: dict[str, _Record] = {}
     for name, value in links.items():
-        if not isinstance(name, str) or not name:
-            raise BoundaryError("skill-link manifest names must be non-empty strings")
+        _validate_manifest_name(name)
         record = require_dict(value, field=f"skill-link manifest entry {name!r}")
         source_kind = require_str(record, "source_kind")
-        if source_kind not in {"packaged", "host"}:
+        if source_kind != "packaged":
             raise BoundaryError(f"invalid source_kind for skill-link manifest entry {name!r}")
         target = require_str(record, "target")
+        _validate_manifest_target(name, target)
         key = _name_key(name)
         if key in records:
             raise BoundaryError(f"duplicate skill-link manifest name {name!r}")
         records[key] = _Record(name, source_kind, _normalize_target(target))
     return records
+
+
+def _validate_manifest_name(name: object) -> None:
+    if not isinstance(name, str) or not name:
+        raise BoundaryError("skill-link manifest names must be non-empty strings")
+    if name in {".", ".."} or "/" in name or "\\" in name:
+        raise BoundaryError(f"invalid skill-link manifest name {name!r}")
+    if _name_key(name) == _name_key(MANIFEST_FILENAME):
+        raise BoundaryError(f"reserved skill-link manifest name {name!r}")
+
+
+def _validate_manifest_target(name: str, target: str) -> None:
+    if not target or not Path(target).is_absolute():
+        raise BoundaryError(f"target for skill-link manifest entry {name!r} must be absolute")
+    if target != _normalize_target(target):
+        raise BoundaryError(f"target for skill-link manifest entry {name!r} must be normalized")
 
 
 def _target_entries(target_dir: Path) -> tuple[dict[str, tuple[str, _Entry]], str | None]:
@@ -282,52 +351,16 @@ def _record_for(desired: _Desired | None) -> _Record | None:
     return _Record(desired.name, desired.source_kind, desired.target)
 
 
-def _source_in_scope(record: _Record, host_sidecar: Path | None) -> bool:
-    return record.source_kind == "packaged" or host_sidecar is not None
-
-
 def _plan_recorded(
     target_dir: Path,
     record: _Record,
     desired: _Desired | None,
     entry: _Entry,
     *,
-    host_sidecar: Path | None,
-) -> _Action | None:
-    if not _source_in_scope(record, host_sidecar):
-        if desired is None:
-            return None
-        event = _event(
-            record.name,
-            "conflict",
-            target_dir,
-            desired,
-            entry,
-            "owned source is out of scope",
-        )
-        return _Action(event, "none", entry, record, record)
-    return _plan_scoped_record(target_dir, record, desired, entry)
-
-
-def _plan_scoped_record(
-    target_dir: Path,
-    record: _Record,
-    desired: _Desired | None,
-    entry: _Entry,
+    allow_retarget: bool,
 ) -> _Action | None:
     if entry.kind == "missing":
-        if desired is None:
-            event = _event(
-                record.name,
-                "removed",
-                target_dir,
-                None,
-                entry,
-                "recorded link was already absent",
-            )
-            return _Action(event, "none", entry, None, None)
-        event = _event(desired.name, "created", target_dir, desired, entry)
-        return _Action(event, "create", entry, _record_for(desired), None)
+        return _plan_missing_recorded(target_dir, record, desired, entry)
     if entry.kind != "link" or entry.target != record.target:
         event = _event(
             record.name, "conflict", target_dir, desired, entry, "recorded link was replaced"
@@ -339,27 +372,69 @@ def _plan_scoped_record(
     if entry.target == desired.target:
         event = _event(desired.name, "unchanged", target_dir, desired, entry)
         return _Action(event, "none", entry, _record_for(desired), record)
+    if not allow_retarget:
+        event = _event(
+            desired.name,
+            "conflict",
+            target_dir,
+            desired,
+            entry,
+            "managed link retarget requires explicit authority; rerun booley init --force",
+        )
+        return _Action(event, "none", entry, record, record)
     event = _event(desired.name, "retargeted", target_dir, desired, entry)
     return _Action(event, "replace", entry, _record_for(desired), record)
+
+
+def _plan_missing_recorded(
+    target_dir: Path,
+    record: _Record,
+    desired: _Desired | None,
+    entry: _Entry,
+) -> _Action:
+    if desired is None:
+        event = _event(
+            record.name,
+            "removed",
+            target_dir,
+            None,
+            entry,
+            "recorded link was already absent",
+        )
+        return _Action(event, "none", entry, None, None)
+    event = _event(desired.name, "created", target_dir, desired, entry)
+    return _Action(event, "create", entry, _record_for(desired), None)
 
 
 def _plan_unrecorded(
     target_dir: Path,
     desired: _Desired | None,
-    active_targets: set[str],
     entry_name: str,
     entry: _Entry,
+    *,
+    allow_retarget: bool,
 ) -> _Action | None:
     if desired is None:
         return None
     if entry.kind == "missing":
         event = _event(desired.name, "created", target_dir, desired, entry)
         return _Action(event, "create", entry, _record_for(desired), None)
-    if entry.kind == "link" and entry.target in active_targets:
-        outcome: Outcome = "adopted" if entry.target == desired.target else "retargeted"
-        operation = "none" if outcome == "adopted" else "replace"
-        event = _event(desired.name, outcome, target_dir, desired, entry)
-        return _Action(event, operation, entry, _record_for(desired), None)
+    if entry.kind == "link" and entry.target == desired.target:
+        event = _event(desired.name, "adopted", target_dir, desired, entry)
+        return _Action(event, "none", entry, _record_for(desired), None)
+    if entry.kind == "link" and entry.target and _equivalent_skill(entry.target, desired.path):
+        if allow_retarget:
+            event = _event(desired.name, "retargeted", target_dir, desired, entry)
+            return _Action(event, "replace", entry, _record_for(desired), None)
+        event = _event(
+            desired.name,
+            "equivalent",
+            target_dir,
+            desired,
+            entry,
+            "equivalent packaged skill accepted without mutation; use --force to relink",
+        )
+        return _Action(event, "none", entry, None, None)
     event = _event(
         entry_name, "conflict", target_dir, desired, entry, "desired skill name is occupied"
     )
@@ -369,11 +444,10 @@ def _plan_unrecorded(
 def _plan_actions(
     target_dir: Path,
     desired: dict[str, _Desired],
-    active_targets: dict[str, set[str]],
     records: dict[str, _Record],
     entries: dict[str, tuple[str, _Entry]],
     *,
-    host_sidecar: Path | None,
+    allow_retarget: bool,
 ) -> list[_Action]:
     actions: list[_Action] = []
     for key in sorted(desired.keys() | records.keys() | entries.keys()):
@@ -384,10 +458,20 @@ def _plan_actions(
             ((record or wanted).name if record or wanted else key, _Entry("missing")),
         )
         action = (
-            _plan_recorded(target_dir, record, wanted, entry, host_sidecar=host_sidecar)
+            _plan_recorded(
+                target_dir,
+                record,
+                wanted,
+                entry,
+                allow_retarget=allow_retarget,
+            )
             if record
             else _plan_unrecorded(
-                target_dir, wanted, active_targets.get(key, set()), entry_name, entry
+                target_dir,
+                wanted,
+                entry_name,
+                entry,
+                allow_retarget=allow_retarget,
             )
         )
         if action is not None:
@@ -541,82 +625,65 @@ def _manifest_payload(records: dict[str, _Record]) -> str:
     return json.dumps({"version": _MANIFEST_VERSION, "links": links}, indent=2) + "\n"
 
 
-def _write_manifest(target_dir: Path, records: dict[str, _Record]) -> str | None:
+def _write_manifest(target_dir: Path, records: dict[str, _Record]) -> tuple[str, ...]:
     manifest = target_dir / MANIFEST_FILENAME
     temporary = _unique_path(target_dir, f".{MANIFEST_FILENAME}.tmp-")
+    diagnostics: list[str] = []
     try:
         temporary.write_text(_manifest_payload(records), encoding="utf-8")
         temporary.replace(manifest)
     except OSError as exc:
-        return f"could not write skill-link manifest {manifest}: {exc}"
+        diagnostics.append(f"could not write skill-link manifest {manifest}: {exc}")
     finally:
         if _occupied(temporary):
-            with suppress(OSError):
+            try:
                 temporary.unlink()
-    return None
+            except OSError as exc:
+                diagnostics.append(f"temporary manifest remains at {temporary}: {exc}")
+    return tuple(diagnostics)
 
 
 def _preflight(
     target_dir: Path,
     packaged_dir: Path,
-    host_sidecar: Path | None,
 ) -> tuple[
     dict[str, _Desired],
-    dict[str, set[str]],
     dict[str, _Record],
     dict[str, tuple[str, _Entry]],
     str | None,
 ]:
-    packaged, error = _discover_source(packaged_dir, "packaged", missing_ok=False)
+    packaged, error = _discover_source(packaged_dir)
     if error:
-        return {}, {}, {}, {}, error
-    host: dict[str, _Desired] = {}
-    if host_sidecar is not None:
-        host, error = _discover_source(host_sidecar, "host", missing_ok=True)
-        if error:
-            return {}, {}, {}, {}, error
-    desired = dict(host)
-    desired.update(packaged)
-    active = _active_targets(packaged, host)
+        return {}, {}, {}, error
     records, error = _load_manifest(target_dir)
     if error:
-        return {}, {}, {}, {}, error
+        return {}, {}, {}, error
     entries, error = _target_entries(target_dir)
-    return desired, active, records, entries, error
-
-
-def _active_targets(
-    packaged: dict[str, _Desired], host: dict[str, _Desired]
-) -> dict[str, set[str]]:
-    active: dict[str, set[str]] = {}
-    for key, source in packaged.items() | host.items():
-        active.setdefault(key, set()).add(source.target)
-    return active
+    return packaged, records, entries, error
 
 
 def reconcile_skill_links(
     target_dir: Path,
     packaged_dir: Path,
     *,
-    host_sidecar: Path | None = None,
     dry_run: bool = False,
+    allow_retarget: bool = False,
 ) -> SkillLinkReport:
     """Converge one agent skills directory while preserving foreign entries.
 
-    ``host_sidecar=None`` leaves recorded host links outside this invocation's
-    scope. Passing a path keeps host links in scope even when that path is absent.
-    A fatal report guarantees that no filesystem mutation occurred.
+    ``allow_retarget`` is explicit authority to replace a manifest-owned link or
+    a content-equivalent packaged skill link. A fatal report guarantees that no
+    filesystem mutation occurred.
     """
-    desired, active, records, entries, fatal = _preflight(target_dir, packaged_dir, host_sidecar)
+    desired, records, entries, fatal = _preflight(target_dir, packaged_dir)
     if fatal:
         return SkillLinkReport(fatal=fatal)
     actions = _plan_actions(
         target_dir,
         desired,
-        active,
         records,
         entries,
-        host_sidecar=host_sidecar,
+        allow_retarget=allow_retarget,
     )
     if dry_run:
         return SkillLinkReport(events=tuple(action.event for action in actions))
@@ -646,7 +713,5 @@ def _apply_actions(
         else:
             updated[key] = record_after
     if updated != records:
-        diagnostic = _write_manifest(target_dir, updated)
-        if diagnostic:
-            diagnostics.append(diagnostic)
+        diagnostics.extend(_write_manifest(target_dir, updated))
     return SkillLinkReport(tuple(events), tuple(diagnostics))
