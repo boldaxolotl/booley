@@ -648,6 +648,25 @@ class TestDockerBuildCommand:
 
         assert capsys.readouterr().out.count("ERROR: checksum mismatch") == 1
 
+    def test_timeout_records_build_failure(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(
+            init_docker_image,
+            "run_docker_build",
+            lambda *_args, **_kwargs: DockerBuildResult(
+                None, timed_out=True, diagnostics=("last build output",)
+            ),
+        )
+        ctx = InitContext(project_root=tmp_path)
+        build = init_docker_image._DockerBuildSpec(
+            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
+        )
+
+        assert init_docker_image._docker_build_image(ctx, build) is None
+
+        assert ctx.results[-1].status == "err"
+        assert ctx.results[-1].detail == "build timed out"
+        assert "last build output" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # build.sh Python-selection guard (source invariant)

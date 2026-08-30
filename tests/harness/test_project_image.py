@@ -182,6 +182,38 @@ class TestBuild:
 
         assert "ERROR: dependency install failed" in caplog.text
 
+    def test_build_timeout_reports_retained_diagnostics(self, tmp_path, monkeypatch, caplog):
+        docker_dir = tmp_path / "docker"
+        docker_dir.mkdir()
+        (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        monkeypatch.setattr(pi, "docker_image_id", lambda _image: None)
+        monkeypatch.setattr(
+            pi,
+            "run_docker_build",
+            lambda *_args, **_kwargs: DockerBuildResult(
+                None, timed_out=True, diagnostics=("last build output",)
+            ),
+        )
+
+        assert pi.build_project_image("img", docker_dir) is False
+
+        assert "project image build timed out: last build output" in caplog.text
+
+    def test_build_capture_failure_is_reported(self, tmp_path, monkeypatch, caplog):
+        docker_dir = tmp_path / "docker"
+        docker_dir.mkdir()
+        (docker_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        monkeypatch.setattr(pi, "docker_image_id", lambda _image: None)
+        monkeypatch.setattr(
+            pi,
+            "run_docker_build",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("capture failed")),
+        )
+
+        assert pi.build_project_image("img", docker_dir) is False
+
+        assert "project image build failed: capture failed" in caplog.text
+
 
 class TestManagedFileGuard:
     def test_absent_is_managed(self, tmp_path):
