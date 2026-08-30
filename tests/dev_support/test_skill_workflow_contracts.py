@@ -169,13 +169,19 @@ def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
         "defer it to a later round",
         "After each response, record the settled decisions and recompute the frontier",
         "continue directly to the draft gate",
-        "The complete ticket is the one post-grill review artifact",
+        "The complete ticket and any new Target definitions form the one post-grill review artifact",
         "Detailed mode skips 2d and 2e",
         "single post-grill review artifact",
         "MANDATORY TICKET APPROVAL",
-        "Create this ticket? (yes / edit / cancel)",
+        "New Targets",
+        "every Target that ticket creation will author",
+        "name, destination file, and complete proposed definition",
+        "New Targets: none",
+        "Create this ticket and these Targets? (yes / edit / cancel)",
+        "Author the new Targets exactly as approved",
+        "requires changing an approved Target definition, return to 2f",
         "require no further user confirmation",
-        "internal implementation details",
+        "Sealing remains an internal implementation detail",
     ):
         assert required in contract
     for retired in (
