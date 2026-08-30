@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from booley.audit import (
     agent_schema,
@@ -98,6 +98,9 @@ from booley.targets import target_naming
 from booley.targets.flow_names import config_section
 from booley.targets.target import inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
+
+if TYPE_CHECKING:
+    from booley.harness.init_git_hooks import LineEndingRepository
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -599,7 +602,17 @@ def _run_project_phase(
     """Run host, config, Git, and Ticket Board checks."""
     banner("Host checks")
     docker_exe = _run_host_checks(reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_)
-    project = _check_project_setup(project_root, reporter.pass_, reporter.warn_, reporter.fail_)
+    try:
+        project_dir = resolve_checkout_project_dir(project_root)
+    except FileNotFoundError:
+        project_dir = None
+    project = _check_project_setup(
+        project_root,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.fail_,
+        project_dir=project_dir,
+    )
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -612,7 +625,12 @@ def _run_project_phase(
         )
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_line_endings(
-        project_root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_
+        project_root,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        project_dir=project_dir,
     )
     if project is not None:
         _check_worktree_core_shadow_guard(project.project_dir, reporter.pass_, reporter.warn_)
@@ -900,13 +918,16 @@ def _check_project_setup(
     _pass: Check,
     _warn: Check,
     _fail: Fail,
+    *,
+    project_dir: Path | None = None,
 ) -> ProjectAudit | None:
     """Strictly parse and validate Booley project setup files."""
-    try:
-        project_dir = resolve_checkout_project_dir(project_root)
-    except FileNotFoundError:
-        _fail("project directory not found", "booley init")
-        return None
+    if project_dir is None:
+        try:
+            project_dir = resolve_checkout_project_dir(project_root)
+        except FileNotFoundError:
+            _fail("project directory not found", "booley init")
+            return None
 
     _pass(f"project directory found: {project_dir}")
 
@@ -1227,8 +1248,35 @@ def _check_line_endings(
     _warn: Check,
     _skip: Check,
     _fail: Fail,
+    *,
+    project_dir: Path | None = None,
 ) -> None:
-    """Catch a CRLF working tree the container would read as fully modified.
+    """Catch unsafe line endings in every Git worktree that supplies Project files."""
+    from booley.harness.init_git_hooks import discover_line_ending_repositories
+
+    discovery = discover_line_ending_repositories(project_root, project_dir)
+    if not discovery.repositories and not discovery.failures:
+        _skip("line endings: project root is not a git repo")
+        return
+    for repository in discovery.repositories:
+        _check_repository_line_endings(repository, _pass, _warn, _fail)
+    for failure in discovery.failures:
+        label = "project checkout" if failure.role == "project-checkout" else "project data"
+        emit = _warning_sink(
+            _warn,
+            "git.line-endings-unreadable",
+            subject=failure.role,
+        )
+        emit(f"line endings: could not inspect {label} ({failure.candidate}): {failure.detail}")
+
+
+def _check_repository_line_endings(
+    repository: LineEndingRepository,
+    _pass: Check,
+    _warn: Check,
+    _fail: Fail,
+) -> None:
+    """Apply Doctor's line-ending verdicts to one resolved Git worktree.
 
     ``booley init`` sets ``core.autocrlf=false`` and commits the tree to LF, but
     that can drift back: a git config reset, or a fresh clone on a Windows box
@@ -1244,76 +1292,76 @@ def _check_line_endings(
     picorv32 among them) will never carry one — flagging it would be the
     unfollowable advice :func:`_owned_core_files` exists to avoid.
     """
-    _warn = _warning_sink(_warn, "git.autocrlf-risk")
-
     from booley.harness.init_git_hooks import (
         _count_crlf_worktree_files,
         read_autocrlf_enabled,
     )
 
-    try:
-        probe = subprocess.run(
-            ["git", "-C", str(project_root), "rev-parse", "--git-dir"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        if probe.returncode != 0:
-            _skip("line endings: project root is not a git repo")
-            return
-    except (FileNotFoundError, subprocess.SubprocessError):
-        _skip("line endings: git unavailable")
-        return
-
-    autocrlf = read_autocrlf_enabled(project_root)
+    label = "project checkout" if repository.role == "project-checkout" else "project data"
+    identity = f"{label} ({repository.root})"
+    unreadable = _warning_sink(
+        _warn,
+        "git.line-endings-unreadable",
+        subject=repository.role,
+    )
+    autocrlf_warning = _warning_sink(
+        _warn,
+        "git.autocrlf-risk",
+        subject=repository.role,
+    )
+    autocrlf = read_autocrlf_enabled(repository.root)
     if autocrlf is None:
-        _skip("line endings: could not read core.autocrlf as a Git Boolean")
+        unreadable(f"line endings: {identity}: could not read core.autocrlf as a Git Boolean")
         return
-    crlf_count = _count_crlf_worktree_files(project_root)
+    crlf_count = _count_crlf_worktree_files(repository.root)
     if crlf_count is None:
-        _skip("line endings: could not read `git ls-files --eol`")
+        unreadable(f"line endings: {identity}: could not read `git ls-files --eol`")
         return
 
     if crlf_count:
         _fail(
-            f"{crlf_count} tracked file(s) are checked out with CRLF — the Session "
+            f"{identity}: {crlf_count} tracked file(s) are checked out with CRLF — the Session "
             "Runtime container sees every one as modified, which breaks the "
             "dirty-tree check, scope enforcement, and ticket worktrees",
             "booley init   (automatically repairs a clean tree; commit or stash first)",
         )
         return
     if autocrlf:
-        _warn(
-            "core.autocrlf=true — the tree is LF today, but the next clone or "
+        autocrlf_warning(
+            f"{identity}: core.autocrlf=true — the tree is LF today, but the next clone or "
             "checkout will re-create it with CRLF and break Ticket Mode",
-            f"git -C {project_root} config core.autocrlf false   (or re-run `booley init`)",
+            f"git -C {repository.root} config --local core.autocrlf false"
+            "   (or re-run `booley init`)",
         )
         return
-    _report_line_ending_index_metadata(project_root, _pass, _skip, _fail)
+    _report_line_ending_index_metadata(repository, identity, _pass, unreadable, _fail)
 
 
 def _report_line_ending_index_metadata(
-    project_root: Path,
+    repository: LineEndingRepository,
+    identity: str,
     _pass: Check,
-    _skip: Check,
+    _warn: Check,
     _fail: Fail,
 ) -> None:
     """Report status-only dirtiness left by an earlier in-place LF repair."""
     from booley.harness.init_git_hooks import _tracked_status_is_phantom
 
-    phantom_status, comparison_error = _tracked_status_is_phantom(project_root)
+    phantom_status, comparison_error = _tracked_status_is_phantom(repository.root)
     if phantom_status is None:
-        _skip(f"line endings: could not compare tracked status with Git diffs: {comparison_error}")
+        _warn(
+            f"line endings: {identity}: could not compare tracked status with Git diffs: "
+            f"{comparison_error}"
+        )
         return
     if phantom_status:
         _fail(
-            "tracked files have stale Git index metadata after line-ending repair — "
+            f"{identity}: tracked files have stale Git index metadata after line-ending repair — "
             "status reports modifications although staged and unstaged diffs are empty",
             "booley init   (refreshes the affected tracked index entries)",
         )
         return
-    _pass("working tree is container-safe (no CRLF checkouts, autocrlf off)")
+    _pass(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
 
 
 def _check_worktree_core_shadow_guard(

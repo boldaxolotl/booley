@@ -244,6 +244,16 @@ def _patch_environment(
 
     def fake_run(cmd, **kwargs):  # noqa: PLR0911,PLR0912 — external-command boundary fixture
         calls.append([str(part) for part in cmd])
+        if cmd[:2] == ["git", "-C"] and "--show-toplevel" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
+        if cmd[:2] == ["git", "-C"] and "config" in cmd and "core.autocrlf" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="false\n", stderr="")
+        if cmd[:2] == ["git", "-C"] and "ls-files" in cmd and "--eol" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "-C"] and "status" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "-C"] and "diff" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
         if cmd[:3] == ["git", "status", "--porcelain"]:
@@ -6940,6 +6950,60 @@ class TestLineEndingsCheck:
         doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
 
         assert c.skipped and not c.failed
+
+    def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="false")
+        self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
+        project_dir = tmp_path / ".booley_project"
+        hooks = project_dir / "hooks"
+        hooks.mkdir(parents=True)
+        self._repo(project_dir, autocrlf="true")
+        self._commit(project_dir, "hooks/post-setup.sh", b"#!/bin/sh\nset -euo pipefail\n")
+        hook = hooks / "post-setup.sh"
+        hook.unlink()
+        subprocess.run(
+            ["git", "-C", str(project_dir), "checkout", "--", "hooks/post-setup.sh"],
+            capture_output=True,
+            check=True,
+        )
+        c = _Collector()
+
+        doctor._check_line_endings(
+            tmp_path,
+            c._pass,
+            c._warn,
+            c._skip,
+            c._fail,
+            project_dir=project_dir,
+        )
+
+        assert len(c.failed) == 1
+        assert "project data" in c.failed[0][0]
+        assert str(project_dir) in c.failed[0][0]
+        assert any("project checkout" in message for message in c.passed)
+
+    def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="false")
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        self._repo(project_dir, autocrlf="true")
+        reporter = doctor._Reporter.create()
+
+        doctor._check_line_endings(
+            tmp_path,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+            project_dir=project_dir,
+        )
+
+        assert reporter.findings is not None
+        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        assert len(warnings) == 1
+        assert warnings[0].check_id == "git.autocrlf-risk"
+        assert warnings[0].subject == "project-data"
+        assert str(project_dir) in warnings[0].message
 
 
 # ===========================================================================

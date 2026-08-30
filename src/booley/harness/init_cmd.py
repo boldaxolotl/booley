@@ -2350,6 +2350,14 @@ def _init_context(args: argparse.Namespace, project_root: Path) -> InitContext:
     )
 
 
+def _line_ending_project_dir(project_root: Path) -> Path | None:
+    """Resolve project data only when init has materialized or found it."""
+    try:
+        return resolve_project_dir(project_root)
+    except FileNotFoundError:
+        return None
+
+
 def _plan_existing_guidance(ctx: InitContext) -> tuple[InitPlan | None, bool]:
     """Inspect existing guidance links and report whether init may proceed."""
     canon = ctx.project_root / ".booley_project" / "AGENTS.md"
@@ -2409,7 +2417,7 @@ def _run_project_init_steps(
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
-    _step_line_endings(ctx)
+    _step_line_endings(ctx, _line_ending_project_dir(ctx.project_root))
     _step_guidance_links(ctx, guidance_plan)
     _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
     _step_advisories(ctx)
