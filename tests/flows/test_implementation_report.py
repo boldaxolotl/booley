@@ -106,6 +106,22 @@ def test_adapter_inputs_are_defensively_copied() -> None:
     assert report.canonical["recipe"]["snapshot"]["mode"] == "physical"
 
 
+def test_context_rejects_missing_identity_and_diagnostics_are_bounded() -> None:
+    with pytest.raises(ValueError, match="flow and target must be non-empty"):
+        ImplementationContext(flow="", target="asic")
+
+    report = build_implementation_report(
+        _context(),
+        _run(diagnostic_excerpt="x" * 5_000),
+        None,
+        MetricPolicy(("area",)),
+    )
+
+    diagnostic = report.canonical["status"]["diagnostic_excerpt"]
+    assert diagnostic.startswith("[... 1000 character(s) omitted ...]")
+    assert diagnostic.endswith("x" * 4_000)
+
+
 def test_synth_and_fpga_adapters_share_structure_but_keep_unique_metrics() -> None:
     pair = TargetPair("old", "new")
     synth = build_synth_implementation_report(
@@ -233,6 +249,61 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
     baseline_artifacts = payload[ENVELOPE_KEY]["comparison"]["baseline"]["artifacts"]
     baseline_snapshot = tmp_path / baseline_artifacts["log"]
     assert baseline_snapshot.read_text(encoding="utf-8") == "baseline log\n"
+
+
+def test_publication_without_invocation_keeps_live_log_pointer(tmp_path: Path) -> None:
+    report = build_implementation_report(
+        _context(),
+        _run(artifacts={"log": "build/missing.log"}),
+        None,
+        MetricPolicy(("area",)),
+    )
+    publisher = ImplementationPublisher(tmp_path, tmp_path / "reports", None)
+
+    published = publisher.publish_report(report, {"passed": True})
+
+    assert published.invocation_path is None
+    assert published.stable_path == tmp_path / "reports" / "synth_asic.json"
+    assert published.payload[ENVELOPE_KEY]["artifacts"] == {
+        "report": "reports/synth_asic.json",
+        "log": "build/missing.log",
+    }
+
+
+def test_publication_drops_missing_log_from_invocation_snapshot(tmp_path: Path) -> None:
+    report_dir = tmp_path / "reports"
+    invocation = report_dir / "synth" / "1"
+    report = build_implementation_report(
+        _context(),
+        _run(artifacts={"log": "build/missing.log"}),
+        None,
+        MetricPolicy(("area",)),
+    )
+
+    published = ImplementationPublisher(tmp_path, report_dir, invocation).publish_report(
+        report, {"passed": True}
+    )
+
+    assert published.payload[ENVELOPE_KEY]["artifacts"] == {
+        "report": "reports/synth/1/targets/asic.json"
+    }
+
+
+def test_publication_can_be_disabled_without_losing_the_envelope(tmp_path: Path) -> None:
+    report = build_implementation_report(
+        _context(),
+        _run(),
+        None,
+        MetricPolicy(("area",)),
+    )
+
+    published = ImplementationPublisher(tmp_path, None, None).publish_report(
+        report, {"passed": True}
+    )
+
+    assert published.stable_path is None
+    assert published.invocation_path is None
+    assert published.payload[ENVELOPE_KEY]["identity"]["target"] == "asic"
 
 
 def test_failed_stable_refresh_preserves_previous_alias(

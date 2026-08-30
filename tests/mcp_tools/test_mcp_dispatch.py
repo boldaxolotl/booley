@@ -552,6 +552,127 @@ class TestStructuredContent:
         }
         assert mcp_server._report_artifacts(report) == {"lite": {"log": "a/run.log"}}
 
+    def test_direct_implementation_artifacts_are_recovered(self):
+        report = {
+            "implementation": {
+                "artifacts": {"report": "reports/synth.json"},
+                "results": "malformed aggregate",
+            }
+        }
+
+        assert mcp_server._report_artifacts(report) == {"report": "reports/synth.json"}
+
+    def test_compaction_removes_unbounded_target_diagnostics(self):
+        implementation = {
+            "schema_version": 1,
+            "identity": {"flow": "synth", "target": "asic"},
+            "status": {
+                "grade": "pass",
+                "passed": True,
+                "diagnostic_excerpt": "large log",
+            },
+            "metrics": {"area_kge": 12.5},
+            "recipe": {"fingerprint": "abc", "snapshot": {"large": "value"}},
+            "comparison": {
+                "baseline": {
+                    "metrics": {"area_kge": 10.0},
+                    "recipe": {"snapshot": {"large": "baseline"}},
+                }
+            },
+        }
+
+        compact = mcp_server._compact_implementation(implementation)
+
+        assert "diagnostic_excerpt" not in compact["status"]
+        assert "snapshot" not in compact["recipe"]
+        assert "recipe" not in compact["comparison"]["baseline"]
+        assert compact["metrics"] == {"area_kge": 12.5}
+
+    def test_minimum_target_projection_bounds_every_nested_shape(self):
+        long_key = "k" * 250
+        long_value = "v" * 2_000
+        value = {
+            "schema_version": 1,
+            "identity": {
+                long_key: long_value,
+                "none": None,
+                "flag": True,
+                "count": 3,
+                "ratio": 1.5,
+                "nested": {"not": "a scalar"},
+            },
+            "status": "malformed",
+            "recipe": {},
+            "cache": {},
+            "metrics": {**{f"metric-{index}": index for index in range(70)}, "ignored": []},
+            "artifacts": {
+                "report": {"path": long_value, "size": 10},
+                "scalar": "artifact.json",
+            },
+            "comparison": {
+                "requested_ref": "main",
+                "basis_valid": False,
+                "basis_errors": [long_value] * 12,
+                "deltas": {"area": {"current": 12.5, "baseline": 10.0}},
+                "baseline": {
+                    "status": {"grade": "pass"},
+                    "cache": {"cached": True},
+                    "artifacts": {"log": {"path": "baseline.log"}},
+                    "metrics": {"area_kge": 10.0},
+                },
+            },
+            "omitted_fields": ["metrics.per_clock"],
+        }
+
+        minimum = mcp_server._minimum_target_implementation(value)
+
+        bounded_key = "k" * 200
+        assert minimum["identity"][bounded_key] == "v" * 1_000
+        assert len(minimum["metrics"]) == 64
+        assert minimum["status"] == {}
+        assert minimum["artifacts"]["scalar"] == "artifact.json"
+        assert len(minimum["comparison"]["basis_errors"]) == 10
+        assert minimum["comparison"]["baseline"]["metrics"] == {"area_kge": 10.0}
+        assert minimum["omitted_fields"] == ["metrics.per_clock"]
+
+    def test_direct_target_budget_drops_per_clock_before_minimizing(self):
+        per_clock = {f"clock-{index}": {"detail": "x" * 2_000} for index in range(100)}
+        implementation = {
+            "schema_version": 1,
+            "identity": {"flow": "synth", "target": "asic"},
+            "status": {"grade": "pass", "passed": True},
+            "metrics": {"area_kge": 12.5, "per_clock": per_clock},
+            "conditions": {"diagnostic": "x" * (70 * 1_024)},
+            "comparison": {"baseline": {"metrics": {"per_clock": per_clock}}},
+        }
+        payload = {"reports": [], "truncated": True}
+
+        mcp_server._fit_implementation_payload(payload, implementation)
+
+        compact = payload["implementation"]
+        assert compact["metrics"] == {"area_kge": 12.5}
+        assert compact["omitted_fields"] == [
+            "metrics.per_clock",
+            "comparison.baseline.metrics.per_clock",
+        ]
+        assert len(json.dumps(payload).encode("utf-8")) <= (
+            mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        )
+
+    def test_final_budget_guard_has_a_constant_size_last_resort(self):
+        payload = {
+            "reports": [],
+            "truncated": True,
+            "passed": False,
+            "artifacts": {"huge": {"path": "a" * (70 * 1_024)}},
+            "implementation": {"diagnostic": "b" * (70 * 1_024)},
+            "unexpected": "c" * (70 * 1_024),
+        }
+
+        mcp_server._enforce_structured_budget(payload)
+
+        assert payload == {"reports": [], "truncated": True, "passed": False}
+
     def test_oversized_report_without_artifacts_omits_the_key(self):
         big = {"flow": "sim", "exit_code": 1, "report_text": "x" * (70 * 1024)}
         payload = mcp_server._structured_from_report(big)
