@@ -11,7 +11,7 @@ Booley results cross-checked against the repo's native build system.
 The only parts that live outside it are the mechanical host prefix:
 prerequisites and `pip install booley-rtl` in Booley's
 [README](https://github.com/boldaxolotl/Booley#installation), then the first
-`booley init` in `docs/SETUP.md` (which is what deploys this skill).
+`booley init` in `docs/user/SETUP.md` (which is what deploys this skill).
 None of those steps involves a project decision.
 
 The model is **plan-first**: Step 0 gathers feasibility evidence and every

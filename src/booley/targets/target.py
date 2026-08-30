@@ -125,7 +125,7 @@ def _handle_from_ref(
         raise fusesoc_registry.IncompatibleTargetError(
             f"Target {token!r} cannot be driven by the {for_flow!r} Flow "
             f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-            f"Choose a compatible Target with `booley targets --for {for_flow}`."
+            f"Choose a compatible Target with `booley targets --for-flow {for_flow}`."
         )
     bucket = _selection_bucket(project_root, ref)
     return TargetHandle(

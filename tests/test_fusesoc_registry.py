@@ -636,7 +636,7 @@ class TestResolveConfigSelection:
         )
         _write_core(tmp_path / "ip", core)
 
-        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for sim"):
+        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for-flow sim"):
             resolve_target_selection("synth", tmp_path, for_flow="sim")
 
     def test_no_core_rejects_any_token(self, tmp_path: Path):

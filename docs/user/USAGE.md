@@ -7,7 +7,7 @@ assumed.
 
 This guide starts after installation and project setup. It assumes `booley
 init` and the `booley-setup` skill have finished successfully; if they have not,
-install Booley from the [README](../README.md#installation), then follow
+install Booley from the [README](../../README.md#installation), then follow
 [SETUP.md](SETUP.md).
 
 Booley gives an LLM coding agent access to your project's configured EDA flows.
@@ -33,7 +33,7 @@ not in a shell.
 
 Booley's domain terms, including **Target**, **Booley Flow**, **Specialist**, and
 **Session Runtime**, have precise definitions in the canonical controlled
-vocabulary, [CONTEXT.md](CONTEXT.md). Refer to it whenever a term is unfamiliar;
+vocabulary, [CONTEXT.md](../CONTEXT.md). Refer to it whenever a term is unfamiliar;
 this guide does not repeat those definitions.
 
 ## First, verify your setup
@@ -65,7 +65,7 @@ probe as skipped; every non-agent project, runtime, Ticket Mode, and EDA check
 still runs. This flag is for smoke tests, not the normal setup gate before an
 agent session.
 
-If `booley` is not found, return to the [installation instructions](../README.md#installation).
+If `booley` is not found, return to the [installation instructions](../../README.md#installation).
 Do not continue into the
 container until plain `booley doctor` has no unresolved failures or warnings.
 
@@ -211,7 +211,7 @@ to your **host** Claude Code or Codex settings.
 Transcripts land in `.booley_project/.interactive_logs/<session-id>/`
 (gitignored). How registration works and the session
 lifecycle mechanics are in
-[ARCHITECTURE.md](ARCHITECTURE.md#interactive-mode). If `booley` doesn't show
+[ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode). If `booley` doesn't show
 up in `/mcp`, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex). `/mcp` is
 the client screen that lists MCP (Model Context Protocol) connections—the
@@ -248,7 +248,7 @@ supported programs are tracked in [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.m
 The catalogs are generated from the MCP tool registry. `booley cheat --flows` and
 `booley cheat --specialists` print them live as separate sections; the combined
 reference below is also embedded in
-[ARCHITECTURE.md](ARCHITECTURE.md#the-sandbox).
+[ARCHITECTURE.md](../internals/ARCHITECTURE.md#the-sandbox).
 
 <!-- BEGIN GENERATED: flows -->
 **Booley Flows**
@@ -319,67 +319,22 @@ isolation, and restores the pristine source. A completed run publishes one
 atomic campaign manifest with a durable baseline log, every mutant log, each
 source variant, and the first public test that killed each detected mutant.
 
-The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `coverage_analyst` and `tb_coder` also exist but are hidden until they mature (see [ROADMAP.md](ROADMAP.md)); the Developer Agent authors testbenches itself.
+The `Sets` column names the [acceptance criteria](#acceptance-criteria) each Booley Flow or Specialist can satisfy (per-target families expand per project Target, e.g. `sim_pass_{target}`). `coverage_analyst` and `tb_coder` also exist but are hidden until they mature (see [ROADMAP.md](../internals/ROADMAP.md)); the Developer Agent authors testbenches itself.
 
 ### Running a Booley Flow directly
 
-The escape hatch, not the front door: **`booley flow`** runs one by hand. Reach for it when there is no agent in the loop: validating a flow during setup, or reproducing a failure yourself.
+Direct invocation is the diagnostic escape hatch for setup and reproduction.
+Inside the Session Runtime:
 
 ```bash
-booley flow lint --target lint_soc
 booley flow sim --target sim_soc --test reset
-booley flow synth --target synth_soc
-booley flow                       # list the available Booley Flows
-booley flow lint --help           # the Flow's own help
 ```
 
-Everything after the Flow name is passed to the Booley Flow verbatim, and its exit code comes back verbatim too. Booley Flows use exit codes meaningfully, and the same three grades mean the same thing across every Flow:
-
-| Exit | Meaning | Example |
-| --- | --- | --- |
-| **0** | The Booley Flow ran and the design is clean | no lint warnings; elaboration succeeded |
-| **1** | The Booley Flow ran and **the design failed** | lint warnings remain; the compiler rejected the RTL |
-| **2** | **The Booley Flow could not reach a verdict** | linter binary missing, the generated build description (EDAM) or configure blew up, timeout |
-
-The distinction that matters is exit 1 vs 2: exit 1 is a *result about your RTL*, not a crash, and exit 2 means nothing was learned about the RTL at all. An undeclared identifier is exit 1 from both `lint` and `sim --elab-only`: a design defect, reported the same way by whichever check catches it first.
-
-**Over MCP, the verdict is the `EXIT_CODE:` line — never `isError`.** An agent calling these Booley Flows through MCP gets `isError: false` on essentially every call, including a design that failed hard. That is not a bug: MCP's `isError` reports whether the *MCP tool ran*, and a lint run that found 40 violations ran perfectly. The verdict travels in the result body, whose first line is `EXIT_CODE: <n>` with exactly the three grades above (and the same number in `structuredContent`, as `reports[0].exit_code`, alongside a `passed` boolean). An agent — or a custom wrapper — that keys off `isError` will read every failing design as a pass. Key off `EXIT_CODE`.
-
-Custom MCP tools in `.booley_project/mcp_tools/` are discovered alongside the built-ins. Every valid implementation is agent-enabled by default; `[flows.<name>].enabled = false` is the explicit opt-out for a Flow, while `[mcp_tools.<name>].enabled = false` opts out a Specialist or other non-Flow endpoint. The old `[tools].builtin` and `[tools].custom` lists are migration errors.
-
-`booley flow` deliberately discovers without the project `enabled` filter. It is the human/porter escape hatch that must find implementations while `booley.toml` is incomplete, although an individual Booley Flow may still report that its configured flow is disabled when invoked. Direct discovery also does not reproduce MCP mode filters: Interactive Mode hides autonomous-only `submit_run_report`, while a direct diagnostic run is not an interactive MCP surface. If an agent cannot see an MCP tool that `booley flow` lists, check its `enabled` setting, custom MCP tool syntax and literal metadata, the current mode, and whether the Session Runtime needs restarting (see [MCP-TOOLS.md](MCP-TOOLS.md#default-discovery-and-explicit-opt-out)).
-
-To see what `--target` values exist in the first place, use **`booley targets`**:
-
-```bash
-booley targets                    # every .core Target, grouped by core
-booley targets --for sim          # only Targets that the Booley Flow could drive
-booley targets 'sim_*'            # glob filter (bare name or vendor:lib:name#target)
-booley targets sim_soc          # resolved detail view: parameters, files, SDC/XDC
-booley targets --json             # machine-readable (composes with all of the above)
-```
-
-The listing is a cheap `.core`-YAML read (works host-side too) and marks each
-Target's `flow_options.booley.doctor` selection with `Dr`; only the single-Target
-detail view runs `fusesoc run --setup`, so run that one inside the Session Runtime.
-Agents get the same listing as the `booley_targets` MCP tool.
-
-**Qualifying an ambiguous name.** When two cores declare the same Target name (normal in a multi-core repo), pass `vlnv#target` — the core's FuseSoC coordinate, a `#`, then the Target: `--target 'lowrisc:ibex:ibex_top#lint'`. The VLNV part can be shortened to any unambiguous suffix (`ibex_top#lint` works), and `booley targets` prints the shortest form that resolves. Quote it: `#` starts a comment in most shells.
-
-That selector is **Booley's**, not FuseSoC's. Running `fusesoc` by hand — reproducing a build outside Booley, say — the same Target is two separate arguments, and passing the joined form fails with `Illegal character in core name`:
-
-```bash
-booley flow lint --target 'lowrisc:ibex:ibex_top#lint'     # Booley
-fusesoc run --target lint lowrisc:ibex:ibex_top            # raw fusesoc
-```
-
-Booley does that split for you: it strips the qualifier and hands FuseSoC `--target <name> <vlnv>`.
-
-To create or rename a Target, see
-[Target authoring](CONFIG.md#target-authoring). Those configuration rules are
-not needed to select and run an existing Target.
-
-> **`synth` is a PPA estimate, not tape-out synthesis.** Power/performance/area numbers fast enough to iterate the RTL against; real tape-out sign-off is **out of scope for Booley**. See [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows).
+Use `booley flow` to list discovered Flows, `booley targets --for-flow <flow>` to
+list compatible Targets, and `booley flow <name> --help` for the live argument
+schema. [FLOW_REFERENCE.md](FLOW_REFERENCE.md) is the canonical reference for
+Target selectors, controls, exit codes, verdicts, Criteria, reports, and
+artifacts.
 
 ### Viewing waveforms
 
@@ -553,7 +508,7 @@ inspect state, and `booley cheat --board` for the compact transition reference.
 
 ### Acceptance Criteria
 
-A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
+A ticket doesn't describe *steps*: it declares **acceptance criteria** (split into `mandatory` and `optional`), and the harness, not the agent, decides when they're met. A criterion is satisfied only by a valid verdict from the Booley Flow or Specialist that owns it (e.g. a simulation criterion needs `sim` to return `pass`; a `review_*` criterion needs a `reviewer` run), never by the Developer Agent asserting success, and it is re-checked whenever the underlying code changes. **A ticket cannot reach review with an unmet mandatory criterion.** Optional criteria do not block review, but the Developer Agent must justify every optional criterion it could not complete; `submit_run_report` rejects the report until that explanation is supplied, and final acceptance rejects a stale report that does not cover the currently unmet set. This applies even when routine run reports are disabled. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode) for the criteria mechanics.
 
 Ticket Mode seals that criterion set at intake. A Flow/Target call that cannot
 bind one of the sealed criteria is rejected before job admission and shows the
@@ -981,7 +936,7 @@ The CLI is headless: no interactive agent runtime (the Claude Code or Codex app)
 
 ### Concurrent tickets
 
-Two terms this section leans on (both in the [glossary](CONTEXT.md#execution)): a
+Two terms this section leans on (both in the [glossary](../CONTEXT.md#execution)): a
 **Job** is a single background run a ticket dispatches — one sim, one synth, one
 Specialist; each kind is a **Job Class** with its own concurrency cap.
 

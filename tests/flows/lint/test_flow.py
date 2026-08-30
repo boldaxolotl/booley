@@ -921,6 +921,21 @@ class TestErrorVsFailTaxonomy:
         assert exit_code == EXIT_ERROR
         assert "RESULT: ERROR" in summary
 
+    def test_setup_exception_is_an_eda_tool_error(self, tmp_path: Path, state_file: Path):
+        flow = LintFlow()
+        flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
+        flow.read_state()
+
+        with patch.object(
+            LintFlow,
+            "_prepare_lint_command",
+            side_effect=RuntimeError("broken setup"),
+        ):
+            result = flow._run_lint_target(_target_handle("lite"))
+
+        assert result.error == "lint setup failed: broken setup"
+        assert result.error_is_eda_tool_failure is True
+
     def test_rejected_design_is_a_failure(self):
         from booley.flows.lint.flow import _errored_verdict
 

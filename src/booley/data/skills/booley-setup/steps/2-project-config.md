@@ -154,7 +154,7 @@ filelists, and EDA wrappers over guesses:
 - Inspect `.booley_project/hooks/post-setup.*` if present — evidence of
   project-specific sandbox setup.
 - Inspect the sandbox build recipe (the bundled `data/docker/Dockerfile`
-  above) and `docs/CONFIG.md` when considering image provisioning or the
+  above) and `docs/user/CONFIG.md` when considering image provisioning or the
   Linux x86-64 host-provisioned Vivado policy. Treat floating FlexNet behavior
   as experimental until the required paid-site evidence exists.
 - Read representative RTL/testbench headers only as needed to identify source

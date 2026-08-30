@@ -172,7 +172,7 @@ BOOLEY_TOML_SKELETON = """\
 # the selected test's firmware)? Declare it as Pre-Run Commands (ADR 0039) —
 # shell lines run inside the Session Runtime immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
-# BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/CONFIG.md):
+# BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
 #
 # [flows.sim]
 # pre_run_commands = ["make -C tests build_case CASE=$BOOLEY_TEST_NAME"]
