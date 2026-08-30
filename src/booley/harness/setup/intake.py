@@ -344,8 +344,12 @@ async def run(ticket_path_or_slug: str, project_root: Path) -> TicketContext:
 
     _verify_target_contract(ctx, action)
 
-    if action == "fresh" or _criteria_state_needs_reinit(ctx):
-        _init_criteria_state(ctx)
+    criteria_state_needs_init = action == "fresh" or _criteria_state_needs_reinit(ctx)
+    if ctx.target_contract is None:
+        if criteria_state_needs_init:
+            _init_criteria_state(ctx)
+    else:
+        ctx.criteria_state_needs_init = criteria_state_needs_init
 
     return ctx
 
@@ -375,13 +379,7 @@ def _verify_target_contract(ctx: TicketContext, action: str) -> None:
 
 
 def _contract_fields(ctx: TicketContext) -> dict[str, Any]:
-    contract = ctx.target_contract
-    assert contract is not None
-    return {
-        "base_sha": ctx.base_sha,
-        "target_contract": contract.as_dict(),
-        "criteria": ctx.criteria,
-    }
+    return ctx.sealed_contract_fields()
 
 
 def _resolve_ticket_path(project_root: Path, path_or_slug: str) -> Path:
@@ -458,7 +456,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
             slug=ctx.slug,
         )
 
-    _seed_project_criteria(ctx.project_root, expanded, category_overrides, targets)
+    _seed_project_criteria(ctx.work_dir, expanded, category_overrides, targets)
     # Internal mandatory criterion (hidden from users via `_` prefix) -- the
     # developer must call submit_run_report as its final action so a human
     # reviewer gets a structured summary of what was done and why. Projects

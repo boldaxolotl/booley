@@ -184,6 +184,42 @@ def test_enqueue_validates_targets_from_sealed_contract_worktree(tmp_path: Path)
     assert tio.enqueue_ticket("add-target") is True
 
 
+def test_enqueue_accepts_contract_only_sim_target_after_authoring_worktree_removed(
+    tmp_path: Path,
+) -> None:
+    root, tio, _ticket = _native_project(tmp_path)
+    ticket = tio.create_ticket_file(
+        "add-sim-target",
+        TicketFileSpec(
+            summary="Add a simulation Target",
+            ticket_type="refactor",
+            branch="main",
+            scope=["toy.core"],
+            criteria={"mandatory": {"sim_pass": ["tb/toy_tb.sv @ sim_future @ pass -> pass"]}},
+            body="## Description\n\nAdd and use the `sim_future` Target.\n",
+        ),
+    )
+    assert ticket is not None
+    opened = tio.contract_open("add-sim-target")
+    outer = Path(opened["outer_worktree"])
+    core = outer / "toy.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  sim_future:\n"
+        + "    default_tool: icarus\n"
+        + "    filesets: [rtl, tb]\n"
+        + "    toplevel: toy_tb\n"
+        + "    tools:\n"
+        + "      icarus: {iverilog_options: [-g2012]}\n",
+        encoding="utf-8",
+    )
+    tio.contract_seal("add-sim-target")
+    _git(root, "worktree", "remove", "--force", str(outer))
+
+    assert "sim_future" not in (root / "toy.core").read_text(encoding="utf-8")
+    assert tio.enqueue_ticket("add-sim-target") is True
+
+
 def test_contract_seal_preserves_structured_campaign_criteria(tmp_path: Path) -> None:
     _root, tio, ticket = _native_project(tmp_path)
     campaign = {
