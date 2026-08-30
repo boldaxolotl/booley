@@ -1933,11 +1933,8 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
 # ---------------------------------------------------------------------------
 
 
-#: Builtin flows with no ``[flows.<flow>]`` wiring of their own, so the advisory
-#: below must not nag about them: elaborate follows ``[flows.sim]``'s
-#: selection and has no menu of its own (see doctor's
-#: ``_EXECUTION_VALIDATING_TOOLS``).
-_FLOWS_WITHOUT_OWN_WIRING = frozenset({"elab"})
+#: Builtin flows with no ``[flows.<flow>]`` wiring of their own.
+_FLOWS_WITHOUT_OWN_WIRING: frozenset[str] = frozenset()
 
 #: Builtin flows booley-setup triages and wires, in display order.
 SETUP_WIRED_FLOWS = ("sim", "lint", "synth", "fpga")

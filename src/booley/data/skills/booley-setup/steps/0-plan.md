@@ -518,8 +518,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Lint each planned Target name against the axis convention before
    approval.** Every Booley-authored Target name must be `<axis>_<subject>`,
    lowercase snake_case, where `<axis>` is one of the four fixed tokens
-   `sim` / `lint` / `synth` / `fpga` (the Booley Flow family — `sim` also covers
-   `elab`). The axis is not derivable from
+   `sim` / `lint` / `synth` / `fpga` (the Booley Flow family). The axis is not derivable from
    `.core` metadata, so the name must carry it. Reject plausible-but-wrong
    names now rather than at the Step-4 doctor NOTE: `asic_core` is wrong
    (`asic` is a legacy word, not an axis — use `synth_core`);
@@ -595,8 +594,9 @@ separate columns (see "How a row resolves"). The standard checklist:
     `file_type: veribleLintRules` fileset entry — you are matching the project,
     not imposing. Unattended: signal ⇒ `yes` (`inferred`/high, not starred);
     no signal ⇒ `no`, and say so in one line.
-12. **`elab`** — expose it (needs a resolvable Target) or opt out with
-    `enabled = false`.
+12. **Elaboration Check** — record whether the project needs the stronger
+    `sim --elab-only --standalone` module sweep; ordinary Simulation already
+    records its authenticated build-stage outcome.
 13. **Timeouts, synthesis calibration & memory** —
     `[flows.<flow>].timeout_ms` where evidence (CI runtimes, log stamps)
     suggests the defaults will not fit. Mark every supported synthesis

@@ -1,5 +1,4 @@
 # Booley Flows: Build and Evidence Contracts
-
 This document is the implementation reference for Booley's built-in
 deterministic EDA flows. It follows a FuseSoC Target through command generation,
 execution, verdict interpretation, and durable evidence.
@@ -10,7 +9,7 @@ The documentation is split by responsibility, not by reader type:
 
 | Document | Owns |
 |---|---|
-| **This document** | The implementation and evidence contracts of the built-in `sim`, `elab`, `lint`, `synth`, and `fpga` Booley Flows |
+| **This document** | The implementation and evidence contracts of the built-in `sim`, `lint`, `synth`, and `fpga` Booley Flows |
 | [MCP-TOOLS.md](MCP-TOOLS.md) | The generic MCP tool framework: discovery, lifecycle, base classes, result routing, and Custom Flows |
 | [CONFIG.md](CONFIG.md) | The project configuration surface: exact keys, defaults, examples, `.core` design description, and `tests.toml` |
 | [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) | The source-of-truth matrix of supported EDA engines, provisioning, trace support, and installation requirements |
@@ -34,14 +33,14 @@ A deterministic **Booley Flow** has to do two things: turn the caller's request 
 Read [From `--target` to a command](#from---target-to-a-command-fusesoc-and-edalize)
 and [Booley Flow evidence contracts](#booley-flow-evidence-contracts) in order: they
 explain how a Target becomes a command and what evidence each built-in Booley Flow
-must return. The remaining sections are per-Flow references for `sim`, `elab`,
+must return. The remaining sections are per-Flow references for `sim`,
 `lint`, `synth`, and `fpga`.
 
 ## From `--target` to a command: FuseSoC and Edalize
 
 Rather than hand-build commands per EDA tool, Booley builds command generation on two upstream libraries: **FuseSoC** resolves the design description and **Edalize** emits the backend command. These are internal building blocks, not external services. The deliberate line Booley draws is in *what it delegates to them*: it uses them to generate the command, but interpreting the result back into facts stays in Booley's own code.
 
-The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool to use (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). The `--target` argument to `sim`, `lint`, `elab`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
+The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool to use (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). The `--target` argument to `sim`, `lint`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
 
 Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
 side-effect-free parse of the `.core` YAML (to validate `--target` names and
@@ -101,8 +100,8 @@ Every Booley Flow contract provides the same kind of shared reality:
 - **Flow boundary.** Projects may use Verilator, Icarus, Vivado, per-test firmware builds (Pre-Run Commands, below), or DPI (C code linked into the simulation). Past the Booley Flow boundary, Booley sees the same contract regardless of the EDA tool or how its installation was provisioned.
 - **Actionability.** The structured result tells the caller what to do next: debug a behavioral failure, fix elaboration, investigate a hang, repair an inconclusive testbench verdict, or mark a Criterion satisfied.
 
-This applies to every built-in. `elab` converts compile-only and standalone-module
-checks into `elab_pass_*` / `elaborate_standalone` evidence. Synthesis converts
+This applies to every built-in. Simulation converts authenticated build-stage and
+standalone-module checks into `elab_pass_*` / `elaborate_standalone` evidence. Synthesis converts
 backend-specific timing, area, and failure modes into comparable reports and
 `synthesis_ok` Criteria. FPGA implementation converts Vivado utilization,
 timing, and DRC evidence into stable resource metrics and `fpga_impl_ok`
@@ -149,7 +148,7 @@ a valid seal.
 
 ### Shared run logs and artifacts
 
-Every built-in Flow that keeps a `run.log` (`sim`, `elab`, `lint`, `synth`,
+Every built-in Flow that keeps a `run.log` (`sim`, `lint`, `synth`,
 `fpga`) truncates it at the *start* of a run and stamps a one-line header —
 `[BOOLEY RUN_LOG] run=… flow=… target=… started=…` — above the output. The body
 only lands when the run finishes, so a log still showing `(run in progress …)`
@@ -280,56 +279,40 @@ verdict build, and produces a queryable `trace.fst` waveform store next to the
 logs. A trace that fails to materialize downgrades a passing run to
 `inconclusive`: a missing waveform is a tooling failure, never a silent pass.
 
-## `elab`
+## Simulation Elaboration Check
 
-`elab` compiles and elaborates one or more Targets without running their
-testbenches. For simulation Targets it uses the same FuseSoC/Edalize build path
-as `sim`; for ASIC Targets it uses the same `sv2v` or `slang` frontend that
-`synth` will use. It records `elab_pass_{target}` for each Target and can also
-evaluate the project-wide `elaborate_standalone` Criterion.
+`sim --elab-only` (alias `--build-only`) compiles, elaborates, and links the
+ordinary untraced simulator image without running tests. It skips Pre-Run
+Commands, Cocotb Python import/execution, test selection, run guards, sentinels,
+and tracing. Because it uses the normal Simulation work root and build policy,
+a later full simulation can reuse the retained image.
 
-### Configuration boundary
+Only Simulation Targets are eligible. `--standalone` is an optional stronger
+module sweep and must be paired with `--elab-only`. The mode rejects run-only
+arguments such as `--test`, `--skip`, `--trace`, `--result-verbosity full`, and
+`--no-kill`.
 
-The selected Target owns sources, toplevel, parameters, and frontend choice.
-`[flows.elab]` owns `enabled`, the default Target, build-tree retention, and the
-standalone probe frontend. Edalize-backed builds and ASIC frontend checks both
-run inside the Session Runtime.
-[CONFIG.md](CONFIG.md#elaboration-flowselab) owns the exact keys and defaults.
+A compiler diagnostic that proves the design was rejected is a design FAIL
+(exit 1). Setup, missing-tool, timeout, OOM, signal/crash, filesystem, and
+ambiguous nonzero exits are infrastructure ERRORs (exit 2). Multi-Target runs
+continue through every Target, with ERROR taking precedence over FAIL.
 
-The public selectors are `--target`, `--dry-run`, `--timeout`, and
-`--standalone`. A Ticket that declares `elaborate_standalone` requests the
-standalone sweep automatically, so `--standalone` is mainly the Interactive and
-direct-CLI opt-in.
+Full Simulation records `elab_pass_{target}` from an authenticated build-stage
+record before the run half begins. A later runtime failure, timeout, OOM, or
+signal cannot erase a successful elaboration result. Setup or Pre-Run Command
+failure before the build leaves the elaboration Criterion unchanged.
 
-### Primary and standalone checks
+Elab-only reports stay in the Simulation namespace with `mode: "elab_only"`.
+Complete build logs are archived beneath the invocation report directory (or a
+unique log directory under the Simulation work root for a bare CLI run), while
+the shared build cache remains mutable and reusable.
 
-The primary check builds each Target to the compile/link boundary and never
-starts the simulator. A compiler that ran and rejected the source is a design
-FAIL; Target resolution, setup, and missing-tool failures are Flow ERRORs. Each
-Target is isolated, so one setup failure does not prevent the remaining Targets
-from producing evidence.
-
-The standalone sweep covers the union of the selected Targets' RTL filesets. It
-lexically discovers every module and probes each from its declaring file, with
-package/interface files included as shared prerequisites.
-`standalone_frontend = "auto"` uses Verilator when available and otherwise
-`iverilog -g2012`; the probes always run inside the Session Runtime. A genuine standalone compile failure
-leaves `elaborate_standalone` unmet. If a different probe frontend cannot parse a construct
-that the primary build accepted, the affected module is ungraded; a sweep that
-reaches no verdict is a Flow ERROR rather than a design failure.
-
-### Reports and artifacts
-
-Each Target writes `<runtime>/flow-reports/elab_{target}.json` with its resolved
-identity, EDA tool, compile command, RTL/TB fileset, elapsed time, verdict,
-error tail, and artifact pointers when available. Its complete compiler output
-is retained in a per-Target `run.log` on both pass and fail.
-
-Passing compiler build trees are removed by default because they are large and
-the durable evidence is already normalized. A failing tree is retained; set
-`[flows.elab].keep_build_dir = true` to retain passing trees for incremental
-rebuilds. The standalone sweep uses its own work directory and `run.log`, so it
-cannot overwrite a Target's evidence.
+The standalone sweep covers the selected Targets' RTL filesets, excludes TB-only
+sources, and includes package/interface files as shared prerequisites. Configure
+its probe with `[flows.sim].standalone_frontend` (`auto`, `iverilog`, or
+`verilator`). A genuine module rejection is exit 1; an unavailable or
+untrustworthy probe is exit 2 and leaves prior standalone Criterion state
+unchanged.
 
 ## `lint`
 
@@ -382,7 +365,7 @@ the verdict flows through the warning tally and the knob instead.
 
 **FAIL versus ERROR splits on *who* failed.** A linter that ran and rejected
 the design is the linter working, so that is a design FAIL, the same grade
-`elab` gives the identical source. A linter that could not run at all is
+Simulation's build stage gives the identical source. A linter that could not run at all is
 an ERROR that names the installation fix (normally rebuilding the runtime image).
 Verible's EDA tool node is invoked
 `--parse_fatal --lint_fatal=false` precisely to preserve that split: a parse

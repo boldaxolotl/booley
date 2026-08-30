@@ -257,7 +257,6 @@ Deterministic end-to-end orchestration; no LLM:
 
 | Booley Flow | Purpose | Sets |
 |--------|---------|------|
-| `elab` | Compile + elaborate RTL/TB for one or more Targets (no simulation) | `elab*` |
 | `sim` | Run RTL simulation for one or more Targets | — |
 | `lint` | Run lint for one or more Targets | `lint_clean` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
@@ -267,8 +266,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints com
 
 Key Flow-specific controls:
 
-- `elab`: `--standalone` also proves every RTL module elaborates from its declaring file
-- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--elab-only` (`--build-only`) compiles, elaborates, and links without running tests; add `--standalone` for the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
@@ -343,7 +341,7 @@ Everything after the Flow name is passed to the Booley Flow verbatim, and its ex
 | **1** | The Booley Flow ran and **the design failed** | lint warnings remain; the compiler rejected the RTL |
 | **2** | **The Booley Flow could not reach a verdict** | linter binary missing, the generated build description (EDAM) or configure blew up, timeout |
 
-The distinction that matters is exit 1 vs 2: exit 1 is a *result about your RTL*, not a crash, and exit 2 means nothing was learned about the RTL at all. An undeclared identifier is exit 1 from both `lint` and `elab`: a design defect, reported the same way by whichever Booley Flow happens to catch it first.
+The distinction that matters is exit 1 vs 2: exit 1 is a *result about your RTL*, not a crash, and exit 2 means nothing was learned about the RTL at all. An undeclared identifier is exit 1 from both `lint` and `sim --elab-only`: a design defect, reported the same way by whichever check catches it first.
 
 **Over MCP, the verdict is the `EXIT_CODE:` line — never `isError`.** An agent calling these Booley Flows through MCP gets `isError: false` on essentially every call, including a design that failed hard. That is not a bug: MCP's `isError` reports whether the *MCP tool ran*, and a lint run that found 40 violations ran perfectly. The verdict travels in the result body, whose first line is `EXIT_CODE: <n>` with exactly the three grades above (and the same number in `structuredContent`, as `reports[0].exit_code`, alongside a `passed` boolean). An agent — or a custom wrapper — that keys off `isError` will read every failing design as a pass. Key off `EXIT_CODE`.
 
@@ -577,8 +575,8 @@ The supported criteria families are defined once in `criteria.toml` and listed b
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `elab` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `elab --standalone` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --elab-only` | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --elab-only --standalone` | pre-sim |
 | `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review

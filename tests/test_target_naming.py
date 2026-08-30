@@ -18,9 +18,8 @@ class TestAxisVocabulary:
         """A Booley Flow with no axis would make its Targets unnameable under the rule."""
         assert set(target_naming.AXIS_FOR_FLOW) == set(TARGET_AWARE_FLOWS)
 
-    def test_elaborate_shares_sims_axis(self):
-        """elaborate builds a sim Target without running it, never its own Target."""
-        assert target_naming.AXIS_FOR_FLOW["elab"] == "sim"
+    def test_elaboration_check_has_no_separate_axis(self):
+        assert "elab" not in target_naming.AXIS_FOR_FLOW
         assert target_naming.AXIS_FOR_FLOW["sim"] == "sim"
 
     def test_synth_and_fpga_are_distinct_axes(self):

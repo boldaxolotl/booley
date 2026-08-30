@@ -217,7 +217,8 @@ class TargetRef:
     """
 
 
-_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth", "elab"})
+_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth"})
+_RETIRED_DOCTOR_FLOW_NAMES = frozenset({"elab", "elaborate"})
 
 
 def core_target_eda_tool(core_doc: Mapping[str, Any], name: str) -> str | None:
@@ -542,10 +543,18 @@ def _check_booley_target_metadata(
         if not isinstance(doctor, list):
             errors.append(f"{label}.doctor must be an array")
         else:
+            retired = [flow for flow in doctor if flow in _RETIRED_DOCTOR_FLOW_NAMES]
+            if retired:
+                errors.append(
+                    f"{label}.doctor contains retired Flow value(s) {retired!r}; "
+                    "Elaboration Check is now Simulation mode, so replace "
+                    "doctor: [sim, elab] with doctor: [sim]"
+                )
             invalid = [
                 flow
                 for flow in doctor
-                if not isinstance(flow, str) or flow not in _DOCTOR_FLOW_NAMES
+                if not isinstance(flow, str)
+                or (flow not in _DOCTOR_FLOW_NAMES and flow not in _RETIRED_DOCTOR_FLOW_NAMES)
             ]
             if invalid:
                 allowed = ", ".join(sorted(_DOCTOR_FLOW_NAMES))

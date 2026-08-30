@@ -118,6 +118,16 @@ def _execute_returning(stdout: str, returncode: int = 0, timed_out: bool = False
 
 
 def _run_cocotb(tmp_path, flow, stdout, returncode=0, timed_out=False, resolved_eda_tool="icarus"):
+    token = "abc123"
+    if "BOOLEY_BUILD_STAGE" not in stdout:
+        build_failed = any(
+            marker in stdout
+            for marker in ("compilation failed", "elaboration failed", "not found")
+        )
+        if build_failed:
+            stdout = f"{stdout}BOOLEY_BUILD_STAGE token={token} rc=1\n"
+        else:
+            stdout = f"BOOLEY_BUILD_STAGE token={token} rc=0\n{stdout}"
     with (
         patch(
             "booley.fusesoc.fusesoc_registry.resolve_target",
@@ -128,6 +138,7 @@ def _run_cocotb(tmp_path, flow, stdout, returncode=0, timed_out=False, resolved_
             "_execute",
             _execute_returning(stdout, returncode, timed_out),
         ),
+        patch("booley.flows.sim.flow.new_attempt_token", return_value=token),
     ):
         return flow._run()
 
@@ -593,7 +604,7 @@ class TestCocotbSimulatorEligibility:
                 resolved_eda_tool="xcelium",
             )
         assert result.exit_code == EXIT_FAILURE
-        assert "icarus/verilator run-halves only in v1" in result.report_text
+        assert "select a Verilator or Icarus Target" in result.report_text
 
 
 # ---------------------------------------------------------------------------

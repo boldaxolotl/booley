@@ -914,7 +914,7 @@ def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     try:
         cur = compute_source_fingerprint(project_root)["rtl"]["digest"]
         base = compute_source_fingerprint(wt)["rtl"]["digest"]
-    except Exception:  # a guard must never be the thing that fails the run
+    except Exception:  # noqa: BLE001 — the guard must never fail the run
         logger.debug("baseline self-compare fingerprint check failed", exc_info=True)
         return None
     if cur != base:

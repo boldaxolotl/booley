@@ -183,9 +183,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
             from booley.runtime.shared_infra import get_rtl_source_dirs, get_tb_source_dirs
 
             parsed = get_rtl_source_dirs(), get_tb_source_dirs()
-        except (
-            Exception
-        ):  # legacy CWD path unavailable; warn and fall back to default category dirs
+        except Exception:  # noqa: BLE001 — legacy CWD path unavailable
             logger.warning(
                 "Could not resolve category dirs from project config — "
                 "falling back to defaults; isolation may miss project-specific "
@@ -377,7 +375,7 @@ def filter_state_file_for_category(
     missing, category neither rtl nor tb, or projection produced no change).
 
     Safety: the agent (LLM) is the only consumer of this file during the
-    block; nested MCP tools the agent may invoke (``elaborate`` for the
+    block; nested MCP tools the agent may invoke (``sim`` in elab-only mode for the
     coder, none for the reviewer per ``nested_mcp_capabilities``) do not
     write to state, so the unconditional restore-on-exit cannot clobber
     concurrent writes. If that invariant ever breaks, switch to a merging

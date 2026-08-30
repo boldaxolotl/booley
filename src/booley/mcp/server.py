@@ -111,7 +111,7 @@ _REPORT_MCP_TOOL_DESCRIPTION = (
 )
 _POLL_MCP_TOOL_NAME = "booley_poll"
 _POLL_MCP_TOOL_DESCRIPTION = (
-    "Check on a long-running endpoint (sim / fpga / synth / elab / reviewer / "
+    "Check on a long-running endpoint (sim / fpga / synth / reviewer / "
     "mutation_tester / coverage_analyst) that was "
     "started in the background. When such an endpoint takes longer than "
     "the inline wait, its call returns a 'run_id' instead of the result; pass "
@@ -142,7 +142,7 @@ _TARGETS_MCP_TOOL_DESCRIPTION = (
     "(vlnv#name when the bare name is ambiguous), flow (sim/lint/generic), "
     "declared EDA tool, cocotb module, declared toplevel, which Doctor Flows the "
     "Target selects via flow_options.booley.doctor, and which Booley Flows could drive it. "
-    "Optional filters: 'for_flow' (one of synth, fpga, sim, lint, elab) "
+    "Optional filters: 'for_flow' (one of synth, fpga, sim, lint) "
     "keeps only Targets that Flow could drive; "
     "'glob' matches the bare name or vendor:library:name#target (e.g. "
     "'soc*', '*#lint'). Returns JSON."
@@ -158,8 +158,6 @@ _SLEEP_MCP_TOOL_DESCRIPTION = (
 # ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
 # detached background jobs (submit → poll) instead of holding the call open.
 # Everything else stays synchronous — it finishes inside the inline wait.
-# Elaborate is detached because compilation may outlive the MCP client's call
-# cap and otherwise block simulation through the file lock without a poll handle.
 # The LLM specialists (reviewer / mutation_tester / coverage_analyst) joined
 # 2026-07-06 for the same reason: each drives a full sub-agent loop with a
 # 20-30 min default_timeout, so an interactive call reliably outran the ~60s
@@ -172,7 +170,6 @@ _ASYNC_JOB_MCP_TOOLS = frozenset(
         "sim",
         "fpga",
         "synth",
-        "elab",
         "reviewer",
         "mutation_tester",
         "coverage_analyst",
@@ -765,7 +762,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
             )
     except ValueError:
         raise
-    except Exception:  # unreadable config falls back to empty config
+    except Exception:  # noqa: BLE001 — unreadable config falls back to empty
         logger.debug("Failed to load endpoint config from booley.toml", exc_info=True)
     return {}, {}
 
@@ -1486,7 +1483,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]
         return payload
-    except Exception:  # best-effort enrichment; any failure means text-only
+    except Exception:  # noqa: BLE001 — enrichment falls back to text-only
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -3144,7 +3141,7 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # best-effort preload; a config hiccup must not block server startup
+    except Exception:  # noqa: BLE001 — config preload must not block startup
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 

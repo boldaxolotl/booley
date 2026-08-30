@@ -339,11 +339,12 @@ class TestBuildTimeAttribution:
         )
         lines = script.splitlines()
         assert lines[0] == "_booley_build_start=$(date +%s)"
-        assert lines[1].startswith("make -C bld || ")
-        assert 'echo "BOOLEY_BUILD_SECONDS:' in lines[2]
-        assert lines[3] == "python3 -m run"
-        # A broken build exits before the echo: no marker, no misattribution.
-        assert " || " in lines[1] and "exit 1" in lines[1]
+        assert lines[1] == "make -C bld"
+        assert lines[2] == "_booley_build_rc=$?"
+        assert "BOOLEY_BUILD_STAGE token=" in lines[3]
+        assert 'if [ "$_booley_build_rc" -ne 0 ]' in lines[4]
+        assert 'echo "BOOLEY_BUILD_SECONDS:' in lines[5]
+        assert lines[6] == "python3 -m run"
 
     def test_status_line_annotates_a_real_build(self):
         tr = SimTestResult(name="reset", passed=True, elapsed_s=5.0, build_s=5.0)
@@ -1682,7 +1683,7 @@ class TestEdalizeSimPath:
                 "resolve_target",
                 side_effect=fake_resolve,
             ),
-            patch("booley.flows.sim.flow.validate_top_parameter_intent") as guard,
+            patch("booley.flows.sim.build.validate_top_parameter_intent") as guard,
         ):
             cmd = flow._prepare_sim_command(
                 "lite",
@@ -1698,10 +1699,10 @@ class TestEdalizeSimPath:
         )
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
-        # Build failure must surface the canonical elab marker; the run binary
-        # (named from the resolved toplevel, decision 12) only fires on a clean
-        # build, over the FuseSoC build dir.
-        assert "Verilator elaboration failed" in script
+        # The authenticated terminal record separates build from run; the run
+        # binary only fires after a clean build.
+        assert "BOOLEY_BUILD_STAGE token=" in script
+        assert "Verilator elaboration failed" not in script
         assert "make" in script
         assert ".booley_project/.runtime/edalize/sim/lite/sim_demo_0/sim" in script
         # Verilator run half ships through booley.sim.verilator_run, which builds
@@ -1791,9 +1792,9 @@ class TestEdalizeSimPath:
         assert f"--run-cwd {run_cwd}" in cmd[2]
 
     def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
+        from booley.flows.sim.build import _stage_doctor_overlay
         from booley.fusesoc import selftest_overlay
 
-        flow = _make_flow(tmp_path)
         project_dir = tmp_path / ".booley_project"
         overlay_file = (
             selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
@@ -1806,7 +1807,7 @@ class TestEdalizeSimPath:
         staged.write_text("good\n", encoding="utf-8")
         monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV, raising=False)
 
-        flow._stage_doctor_selftest_overlay(build_root)
+        _stage_doctor_overlay(tmp_path, build_root)
 
         assert staged.read_text(encoding="utf-8") == "good\n"
 
@@ -2289,7 +2290,7 @@ class TestElabFailedDetection:
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_verilator)
-    def test_verilator_elab_fail_sets_flag(
+    def test_static_verilator_marker_is_not_build_evidence(
         self,
         _mock_prep,
         _mock_backend,
@@ -2299,13 +2300,14 @@ class TestElabFailedDetection:
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
-        assert result.detail.get("elab_failed") is True
+        assert "elab_failed" not in result.detail
+        assert result.detail["elaboration"]["lite"][0]["verdict"] is None
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_iverilog)
-    def test_iverilog_elab_fail_sets_flag(
+    def test_static_iverilog_marker_is_not_build_evidence(
         self,
         _mock_prep,
         _mock_backend,
@@ -2315,7 +2317,8 @@ class TestElabFailedDetection:
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
-        assert result.detail.get("elab_failed") is True
+        assert "elab_failed" not in result.detail
+        assert result.detail["elaboration"]["lite"][0]["verdict"] is None
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
@@ -2959,7 +2962,7 @@ class TestPerTargetSimEnv:
                 "resolve_target",
                 return_value=_fake_sim_resolved(tmp_path, eda_tool="icarus", cocotb="test_noc"),
             ),
-            patch("booley.flows.sim.flow.validate_top_parameter_intent") as guard,
+            patch("booley.flows.sim.build.validate_top_parameter_intent") as guard,
         ):
             cmd = flow._prepare_cocotb_sim_command("lite", ["run_test_001"])
         guard.assert_called_once()
@@ -3117,7 +3120,9 @@ class TestMissingExecutableIsEdaToolError:
             "/bin/sh: 1: verilator: not found\n"
             "make: *** [Makefile:9: Vtop] Error 127\n"
             "ERROR: Verilator elaboration failed (rc=2)\n"
+            "BOOLEY_BUILD_STAGE token=abc123 rc=2\n"
         )
+        flow._build_attempt_tokens = {"lite": "abc123"}
         with patch.object(SimulateFlow, "_execute", _missing_binary_execute(stdout)):
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -3155,12 +3160,13 @@ class TestMissingExecutableIsEdaToolError:
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)
     @patch.object(SimulateFlow, "_prepare_sim_command", return_value=["sh", "-c", ":"])
     @patch.object(SimulateFlow, "_execute", _mock_execute_elab_fail_verilator)
-    def test_real_elaboration_failure_is_still_exit_1(self, _prep, _sel, _tests, tmp_path: Path):
-        """A compiler that ran and rejected the design keeps its design verdict."""
+    def test_unauthenticated_elaboration_marker_is_not_a_stage_verdict(
+        self, _prep, _sel, _tests, tmp_path: Path
+    ):
         flow = _make_flow(tmp_path, config="lite")
         result = flow._run()
         assert result.exit_code == EXIT_FAILURE
-        assert result.detail.get("elab_failed") is True
+        assert "elab_failed" not in result.detail
 
     @patch("booley.flows.sim.flow._get_test_names", return_value={})
     @patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED)

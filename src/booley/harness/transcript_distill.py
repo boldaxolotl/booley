@@ -290,7 +290,7 @@ def distill_transcript(transcript_path: Path, *, max_bytes: int = _DEFAULT_MAX_B
     """
     try:
         summary = _distill(transcript_path, max_bytes)
-    except Exception:  # distillation is advisory; never break recovery
+    except Exception:  # noqa: BLE001 — distillation is advisory
         logger.warning("Transcript distillation failed for %s", transcript_path, exc_info=True)
         return f"(transcript summary unavailable: could not parse {transcript_path.name})"
     if not summary.strip():
@@ -315,6 +315,6 @@ def write_distilled_summary(transcript_path: Path) -> Path | None:
         summary_path = transcript_path.with_name(f"{transcript_path.stem}.summary.md")
         summary_path.write_text(summary, encoding="utf-8")
         return summary_path
-    except Exception:  # summary is advisory; never break recovery
+    except Exception:  # noqa: BLE001 — summary persistence is advisory
         logger.warning("Could not write distilled summary for %s", transcript_path, exc_info=True)
         return None

@@ -45,3 +45,15 @@ def test_loaded_project_backend_is_not_silently_ignored(tmp_path):
 
     with pytest.raises(FlowConfigError, match=r"delete the key"):
         flow_enabled("sim", root)
+
+
+@pytest.mark.parametrize("retired", ["elab", "elaborate"])
+@pytest.mark.parametrize("requested", ["sim", "lint"])
+def test_every_flow_rejects_retired_elaboration_tables(retired, requested):
+    config = {"flows": {retired: {"standalone_frontend": "iverilog"}}}
+
+    with pytest.raises(
+        FlowConfigError,
+        match=rf"flows\.{retired}.*sim --elab-only.*flows\.sim",
+    ):
+        flow_enabled_from_config(requested, config)

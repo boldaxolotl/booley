@@ -802,7 +802,7 @@ def _add_targets_subparser(sub) -> None:
         dest="for_flow",
         metavar="FLOW",
         default=None,
-        help="Only Targets this Booley Flow could drive (synth, fpga, sim, lint, elab)",
+        help="Only Targets this Booley Flow could drive (synth, fpga, sim, lint)",
     )
     targets_p.add_argument(
         "--json",

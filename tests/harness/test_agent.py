@@ -425,7 +425,7 @@ class TestCodexMarkdownTranscript:
                 "item": {
                     "type": "mcp_tool_call",
                     "server": "booley",
-                    "tool": "elab",
+                    "tool": "sim",
                     "arguments": {"config": "default"},
                     "status": "completed",
                     "result": {
@@ -445,7 +445,7 @@ class TestCodexMarkdownTranscript:
 
         assert "# Actual Prompt Sent" in rendered
         assert "# User Prompt" not in rendered
-        assert "**MCP Tool:** `booley.elab`" in rendered
+        assert "**MCP Tool:** `booley.sim`" in rendered
         assert '"config": "default"' in rendered
         assert "RESULT: PASS (1/1)" in rendered
 

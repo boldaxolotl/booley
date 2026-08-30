@@ -41,7 +41,7 @@
 | 9 | Vendored-core quarantine | | | | | |
 | 10 | Constraints (SDC/XDC) | | | | | |
 | 11 | Style lint opt-in | | | | | |
-| 12 | `elab` expose/opt-out | | | | | |
+| 12 | Elaboration Check / standalone need | | | | | |
 | 13 | Timeouts, heaviest synth calibration Target, & memory reservation | | | | | |
 | 14 | Commercial EDA provisioning and grant | | | | | |
 | 15 | AGENTS.md (wanted? merge fate; gotchas) | | | | | |

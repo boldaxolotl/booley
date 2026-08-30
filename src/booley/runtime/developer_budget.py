@@ -211,7 +211,7 @@ class DeveloperBudget:
         if self._on_event is not None:
             try:
                 self._on_event({"type": "developer_budget", **asdict(snap)})
-            except Exception:  # display callbacks are best-effort
+            except Exception:  # noqa: BLE001 — display callbacks are best-effort
                 logger.debug("Developer budget display callback failed", exc_info=True)
         self._persist(snap, force=force_persist)
         return snap
