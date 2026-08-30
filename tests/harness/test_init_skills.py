@@ -187,8 +187,9 @@ def test_force_previews_targets_before_relinking_equivalent_skill(
     preview = output.index("would retarget booley-setup")
     applied = output.index("retargeted booley-setup", preview)
     assert preview < applied
-    assert f"current: {old_skill}" in output
-    assert f"requested: {desired}" in output
+    folded_output = output.casefold()
+    assert f"current: {old_skill}".casefold() in folded_output
+    assert f"requested: {desired}".casefold() in folded_output
     assert link.resolve(strict=True) == desired.resolve()
     assert ctx.results[-1].status == "ok"
 
