@@ -26,6 +26,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from booley.runtime.docker_build import run_docker_build
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
@@ -442,19 +443,24 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
         ]
     cmd = ["docker", "build", "-t", image, *labels, "-f", str(dockerfile), str(docker_dir)]
     try:
-        result = subprocess.run(
+        result = run_docker_build(
             cmd,
-            capture_output=not verbose,
-            text=True,
+            image=image,
+            verbose=verbose,
             timeout=1800,
-            check=False,
         )
-    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+    except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         logger.error("project image build failed: %s", exc)
         return False
+    if result.timed_out:
+        logger.error("project image build timed out: %s", "\n".join(result.diagnostics))
+        return False
     if result.returncode != 0:
-        detail = (getattr(result, "stderr", "") or "").strip()
-        logger.error("project image build failed (rc=%s): %s", result.returncode, detail[-500:])
+        logger.error(
+            "project image build failed (rc=%s): %s",
+            result.returncode,
+            "\n".join(result.diagnostics),
+        )
         return False
     return True
 
