@@ -232,13 +232,13 @@ def _criterion(state: DevelopmentState, prefix: str) -> Any:
 
 
 async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> None:
-    for endpoint, target in (
-        ("lint", "lint_smoke"),
-        ("elab", "sim_smoke"),
-        ("sim", "sim_smoke"),
-        ("synth", "synth_smoke"),
+    for endpoint, arguments in (
+        ("lint", {"target": "lint_smoke"}),
+        ("sim", {"target": "sim_smoke", "elab_only": True}),
+        ("sim", {"target": "sim_smoke"}),
+        ("synth", {"target": "synth_smoke"}),
     ):
-        code, text = await driver.call(endpoint, {"target": target})
+        code, text = await driver.call(endpoint, arguments)
         assert code == 0, f"{endpoint} failed:\n{text}"
     code, text = await driver.call("submit_run_report", _report_args())
     assert code == 2 and "optional criteria remain unmet" in text
@@ -251,9 +251,12 @@ async def _success_script(driver: McpDriver, observations: dict[str, Any]) -> No
     assert code == 2 and "Newly stale" in text
     state = _load_state()
     observations["freshness"] = {key: value.met for key, value in state.criteria.items()}
-    for endpoint in ("elab", "sim"):
-        code, text = await driver.call(endpoint, {"target": "sim_smoke"})
-        assert code == 0, f"{endpoint} rerun failed:\n{text}"
+    for arguments in (
+        {"target": "sim_smoke", "elab_only": True},
+        {"target": "sim_smoke"},
+    ):
+        code, text = await driver.call("sim", arguments)
+        assert code == 0, f"sim rerun failed:\n{text}"
     code, text = await driver.call("submit_run_report", _report_args(_OPTIONAL_REASON))
     assert code == 0, text
 
@@ -438,8 +441,7 @@ def test_ticket_mode_success_staleness_optional_and_openroad(
     assert not stale["elab_pass_sim_smoke"]
     assert not next(value for key, value in stale.items() if key.startswith("sim_pass_"))
     assert observations["calls"].count("synth") == 1
-    assert observations["calls"].count("elab") == 2
-    assert observations["calls"].count("sim") == 2
+    assert observations["calls"].count("sim") == 4
     assert observations["labels"] == ["developer"]
     report = (_logs_dir(project, slug) / "REPORT.md").read_text(encoding="utf-8")
     assert _OPTIONAL_KEY in report and _OPTIONAL_REASON in report

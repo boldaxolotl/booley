@@ -528,7 +528,7 @@ class TestDoctorTargetMetadata:
             "CAPI=2:\nname: ::doctor:0\ntargets:\n"
             "  sim_fast:\n"
             "    flow: sim\n"
-            "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+            "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
             "  sim_manual: {flow: sim, flow_options: {tool: verilator}}\n"
             "  synth_full:\n"
             "    flow: generic\n"
@@ -537,10 +537,9 @@ class TestDoctorTargetMetadata:
         )
 
         doc = read_core(core)
-        assert core_target_doctor_flows(doc, "sim_fast") == ("sim", "elab")
+        assert core_target_doctor_flows(doc, "sim_fast") == ("sim",)
         assert core_target_doctor_flows(doc, "sim_manual") == ()
         assert doctor_target_selectors(tmp_path, "sim") == ["sim_fast"]
-        assert doctor_target_selectors(tmp_path, "elab") == ["sim_fast"]
         assert doctor_target_seed(tmp_path) == ["sim_fast", "synth_full"]
 
     def test_doctor_selftest_metadata_is_independent_of_smoke_selection(self, tmp_path: Path):
@@ -622,7 +621,7 @@ class TestResolveConfigSelection:
 
     def test_flow_compatible_target_is_selectable_for_execution(self, tmp_path: Path):
         _write_core(tmp_path / "ip")
-        assert resolve_target_selection("sim", tmp_path, for_flow="elab") == ["sim"]
+        assert resolve_target_selection("sim", tmp_path, for_flow="sim") == ["sim"]
 
     def test_flow_incompatible_target_is_rejected_before_execution(self, tmp_path: Path):
         core = _CORE_TEXT.replace(
@@ -637,8 +636,8 @@ class TestResolveConfigSelection:
         )
         _write_core(tmp_path / "ip", core)
 
-        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for-flow elab"):
-            resolve_target_selection("synth", tmp_path, for_flow="elab")
+        with pytest.raises(IncompatibleTargetError, match=r"booley targets --for-flow sim"):
+            resolve_target_selection("synth", tmp_path, for_flow="sim")
 
     def test_no_core_rejects_any_token(self, tmp_path: Path):
         """ADR 0039: a resolvable .core Target is a precondition — the old

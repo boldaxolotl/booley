@@ -739,7 +739,7 @@ class TestMcpExposureFiltering:
 
         assert self._mcp_tool_visible("tb_coder")
         assert self._mcp_tool_visible("reviewer")
-        assert self._mcp_tool_visible("elab")
+        assert self._mcp_tool_visible("sim")
         assert self._mcp_tool_visible("submit_run_report")
 
     @pytest.mark.parametrize(
@@ -780,12 +780,12 @@ class TestMcpExposureFiltering:
     def test_explicit_allowlist_overrides_interactive_defaults(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer,bwave,elab")
+        monkeypatch.setenv("BOOLEY_MCP_TOOLS", "reviewer,bwave,sim")
 
         assert self._mcp_tool_visible("reviewer")
-        assert self._mcp_tool_visible("elab")
+        assert self._mcp_tool_visible("sim")
         assert self._status_mcp_tool_visible()
-        assert not self._mcp_tool_visible("sim")
+        assert not self._mcp_tool_visible("lint")
         assert {t["name"] for t in self._bwave_mcp_tools_for_mode()} == {
             "bwave",
         }
@@ -834,7 +834,6 @@ class TestBooleyStatus:
             [
                 "sim",
                 "lint",
-                "elab",
             ]
         )
 
@@ -842,7 +841,7 @@ class TestBooleyStatus:
             "```text\n"
             "Booley ready. Sandbox container 4f3c2a1b is running.\n"
             "Booley: 0.1.0 (abc123); last updated yesterday; sandbox image built today.\n"
-            "Available MCP tools: sim, lint, elab.\n"
+            "Available MCP tools: sim, lint.\n"
             "Health: clean\n"
             "```"
         )

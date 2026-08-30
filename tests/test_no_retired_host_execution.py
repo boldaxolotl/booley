@@ -110,5 +110,6 @@ def test_unsupported_commercial_simulators_have_no_public_eligibility() -> None:
             flow="sim",
         )
         assert not flow_can_drive("sim", ref)
-        assert not flow_can_drive("elab", ref)
+        with pytest.raises(ValueError, match="not a target-aware Booley Flow"):
+            flow_can_drive("elab", ref)
         assert eligible_eda_tool_criterion_families(tool) == frozenset()

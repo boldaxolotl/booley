@@ -75,8 +75,6 @@ name = "unit"
 
 [flows.lint]
 
-[flows.elab]
-
 [flows.synth]
 
 [sources.rtl]
@@ -127,7 +125,7 @@ tests = ["full"]
         "targets:\n"
         "  sim_fast:\n"
         "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
         "    filesets: [rtl, tb]\n"
         "    toplevel: tb\n"
         "  lint_fast:\n"
@@ -289,7 +287,6 @@ def _patch_environment(
                     "synth",
                     "bwave",
                     "coverage_analyst",
-                    "elab",
                     "lint",
                     "mutation_tester",
                     "reviewer",
@@ -450,7 +447,7 @@ def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
         monkeypatch,
         tmp_path,
         project_dir,
-        mcp_tools=["bwave", "elab", "lint", "sim"],
+        mcp_tools=["bwave", "lint", "sim"],
     )
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
@@ -547,7 +544,7 @@ def test_doctor_fails_when_mcp_probe_misses_required_tool(
         monkeypatch,
         tmp_path,
         project_dir,
-        mcp_tools=["bwave", "elab", "lint", "sim"],
+        mcp_tools=["bwave", "lint", "sim"],
     )
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
@@ -572,7 +569,6 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
                 "synth",
                 "bwave",
                 "coverage_analyst",
-                "elab",
                 "lint",
                 "mutation_tester",
                 "reviewer",
@@ -619,7 +615,6 @@ def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsy
                             "synth",
                             "bwave",
                             "coverage_analyst",
-                            "elab",
                             "lint",
                             "mutation_tester",
                             "reviewer",
@@ -1271,7 +1266,7 @@ def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path):
         "targets:\n"
         "  sim_fast:\n"
         "    flow: sim\n"
-        "    flow_options: {tool: verilator, booley: {doctor: [sim, elab]}}\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n"
         "  sim_full:\n"
         "    flow: sim\n"
         "    flow_options: {tool: icarus, booley: {doctor: [sim]}}\n"
@@ -1289,7 +1284,6 @@ def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path):
     )
 
     assert doctor._doctor_targets(project, "sim") == ["sim_fast", "sim_full"]
-    assert doctor._doctor_targets(project, "elab") == ["sim_fast"]
     assert doctor._doctor_targets(project, "lint") == []
     assert doctor._doctor_target_seed(project) == ["sim_fast", "sim_full"]
 
@@ -1399,6 +1393,25 @@ def test_validate_flow_tables_rejects_retired_allowlists(key):
     assert any("retired" in message and "enabled = false" in message for message in fails)
 
 
+@pytest.mark.parametrize("retired", ["elab", "elaborate"])
+def test_doctor_rejects_retired_elaboration_tables_with_migration(retired):
+    fails: list[str] = []
+
+    ok = doctor._validate_flow_tables(
+        {"flows": {retired: {"standalone_frontend": "iverilog"}, "sim": {}}},
+        lambda _msg: None,
+        lambda msg, fix="": fails.append(f"{msg} {fix}"),
+    )
+
+    assert ok is False
+    assert any(
+        f"[flows.{retired}] is retired" in message
+        and "sim --elab-only" in message
+        and "[flows.sim].standalone_frontend" in message
+        for message in fails
+    )
+
+
 def test_validate_one_flow_table_warns_on_set_but_ignored_knob():
     """A knob honored elsewhere but not by this Flow is flagged, not failed (F4)."""
     fails: list[str] = []
@@ -1429,11 +1442,10 @@ def test_validate_one_flow_table_warns_on_set_but_ignored_knob():
     ("knob", "reader", "non_reader", "value"),
     [
         ("sim_time_grace_s", "sim", "lint", 180),
-        ("keep_build_dir", "elab", "sim", True),
         ("fail_on_timing_violation", "synth", "lint", True),
         ("warnings_as_errors", "lint", "sim", False),
         # trace_files declares the TB's own dump path; only simulate reads it.
-        ("trace_files", "sim", "elab", ["fpu.vcd"]),
+        ("trace_files", "sim", "lint", ["fpu.vcd"]),
     ],
 )
 def test_selective_knob_is_registered_with_its_reader(knob, reader, non_reader, value):
@@ -5565,69 +5577,11 @@ class TestCheckDocker:
         assert rec.kinds() == {"pass"}
 
 
-class TestElaborateValidateOrOptOut:
-    """QA-6: elaborate must be validated when exposed, or explicitly opted out.
-
-    The old bug: elaborate was hard-required on the MCP surface but never
-    smoke-tested, so a broken exposed elaborate (no adapter → generic FuseSoC
-    path that can't build a non-FuseSoC design) passed setup.
-    """
-
-    def _audit_with(self, tmp_path, booley_toml):
-        pd = tmp_path / ".booley_project"
-        pd.mkdir(exist_ok=True)
-        return doctor.ProjectAudit(
-            project_root=tmp_path,
-            project_dir=pd,
-            booley_toml=booley_toml,
-            configs_toml={"x": {}},
-            first_target="x",
-        )
-
-    def test_elaborate_not_in_base_required(self):
-        assert "elab" not in doctor._BASE_REQUIRED_MCP_TOOLS
-        assert "bwave" in doctor._BASE_REQUIRED_MCP_TOOLS
-
-    def test_active_by_default(self, tmp_path):
-        # No [flows] config at all → default surface exposes elaborate.
-        assert doctor._elaborate_active(self._audit_with(tmp_path, {})) is True
-
-    def test_opt_out_by_enabled_false(self, tmp_path):
-        p = self._audit_with(
-            tmp_path,
-            {"flows": {"elab": {"enabled": False}}},
-        )
-        assert doctor._elaborate_active(p) is False
-
-    def test_required_mcp_tracks_activeness(self, tmp_path):
-        active = self._audit_with(tmp_path, {"flows": {"elab": {}}})
-        assert "elab" in doctor._required_mcp_tools(active)
-        opted_out = self._audit_with(tmp_path, {"flows": {"elab": {"enabled": False}}})
-        assert "elab" not in doctor._required_mcp_tools(opted_out)
-
-    def test_deep_check_skips_when_opted_out(self, tmp_path):
-        p = self._audit_with(tmp_path, {"flows": {"elab": {"enabled": False}}})
-        rec = _Rec()
-        doctor._run_elaborate_deep_check(
-            p,
-            doctor._DoctorFlowRuntime(tmp_path, None),
-            False,
-            rec.p,
-            rec.w,
-            rec.s,
-            rec.f,
-        )
-        assert rec.kinds() == {"skip"}
-        assert "opt-out" in rec.events[0][1]
-        assert not rec.fails()
-
-
 class TestAdvisoryMcpTools:
     """Specialists are expected unless their own ``enabled`` flag is false."""
 
     _SKILL_DEFAULT_BUILTIN = (
         "sim",
-        "elab",
         "lint",
         "synth",
         "submit_run_report",
@@ -5639,7 +5593,7 @@ class TestAdvisoryMcpTools:
         flows = {
             name: config
             for name, config in endpoint_config.items()
-            if name in {"sim", "elab", "lint", "synth", "fpga"}
+            if name in {"sim", "lint", "synth", "fpga"}
         }
         mcp_tools = {name: config for name, config in endpoint_config.items() if name not in flows}
         return doctor.ProjectAudit(
@@ -5661,7 +5615,7 @@ class TestAdvisoryMcpTools:
     def _skill_default_endpoint_config(self, *, reviewer=False):
         """Every flow and optional specialist explicitly disabled."""
         endpoint_config = {}
-        for name in ("sim", "elab", "lint", "synth"):
+        for name in ("sim", "lint", "synth"):
             endpoint_config[name] = {"enabled": False}
         endpoint_config["reviewer"] = {"enabled": reviewer}
         endpoint_config["mutation_tester"] = {"enabled": False}
@@ -6150,61 +6104,19 @@ class TestCheckDoctorTargets:
         project = doctor.ProjectAudit(
             project_root=tmp_path,
             project_dir=tmp_path / ".booley_project",
-            booley_toml={"flows": {"elab": {}}},
+            booley_toml={"flows": {"sim": {}}},
             configs_toml={},
             first_target="",
         )
         fails: list[tuple[str, str]] = []
         assert (
             doctor._check_doctor_targets(
-                project, "elab", lambda msg, fix="": fails.append((msg, fix))
+                project, "sim", lambda msg, fix="": fails.append((msg, fix))
             )
             == []
         )
         assert "no Doctor Target" in fails[0][0]
         assert "flow_options.booley.doctor" in fails[0][1]
-
-
-class TestCheckElaborateSetup:
-    def _run(self, project) -> tuple[list, list, list]:
-        passes, skips, fails = [], [], []
-        doctor._check_elaborate_setup(
-            project,
-            passes.append,
-            skips.append,
-            lambda m, f="": fails.append(m),
-        )
-        return passes, skips, fails
-
-    def test_exposed_without_target_fails_in_the_cheap_pass(self, tmp_path):
-        (tmp_path / "x.core").write_text(
-            "CAPI=2:\nname: ::x:0\ntargets:\n  lint: {flow: lint}\n",
-            encoding="utf-8",
-        )
-        project = doctor.ProjectAudit(
-            project_root=tmp_path,
-            project_dir=tmp_path / ".booley_project",
-            booley_toml={"flows": {"elab": {}}},
-            configs_toml={},
-            first_target="",
-        )
-        _passes, _skips, fails = self._run(project)
-        assert fails and "elab" in fails[0]
-
-    def test_enabled_false_is_a_recorded_opt_out(self, tmp_path):
-        project = _audit_with_flows(
-            tmp_path,
-            {"elab": {"enabled": False}},
-        )
-        _passes, skips, fails = self._run(project)
-        assert not fails
-        assert skips and "opt-out" in skips[0]
-
-    def test_marked_target_passes(self, tmp_path):
-        project = _audit_with_flows(tmp_path, {"elab": {}})
-        passes, _skips, fails = self._run(project)
-        assert not fails
-        assert passes and "sim_fast" in passes[0]
 
 
 # ===========================================================================

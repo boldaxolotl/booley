@@ -129,12 +129,12 @@ _Avoid_: pre-test hook, prebuild adapter, test fixture script
 
 | Term | Meaning | Examples |
 |---|---|---|
-| **Booley Flow** | Deterministic end-to-end orchestration | Simulation, Elaboration, Lint, ASIC Synthesis, FPGA Implementation |
+| **Booley Flow** | Deterministic end-to-end orchestration | Simulation, Lint, ASIC Synthesis, FPGA Implementation |
 | **EDA tool** | Concrete external program driven by a Flow | Verilator, Icarus, Verible, Yosys, Vivado |
 | **MCP tool** | Protocol-level mechanism used to invoke a Flow or Specialist | Implementation detail rather than product taxonomy |
 
 **Booley Flow**:
-Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `elab` (Elaboration), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked by the outer runtime through an MCP tool with no Criteria side effects. The EDA tool a Booley Flow drives is chosen by the resolved **Target**'s EDA-selection field. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Session Runtime**, and interprets the result into evidence.
+Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked by the outer runtime through an MCP tool with no Criteria side effects. The EDA tool a Booley Flow drives is chosen by the resolved **Target**'s EDA-selection field. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Session Runtime**, and interprets the result into evidence.
 _Avoid_: B-Tool, mechanical tool, utility, command
 
 **EDA tool**:
@@ -142,8 +142,8 @@ Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, 
 _Avoid_: bare tool, Booley Flow, backend
 
 **Elaboration Check**:
-A fast Booley Flow run that verifies RTL/testbench structural readiness without running full simulation. It is useful as Developer Agent diagnostic feedback; `elab_*` Criteria are supported for unusual tickets, but normal RTL/testbench completion is expressed with Simulation Criteria because simulation already includes elaboration.
-_Avoid_: simulation substitute, default criterion
+A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It verifies structural readiness but does not satisfy a Simulation Criterion.
+_Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Verification Check**:
 A passing criterion-family-specific Booley Flow run required after an RTL or testbench edit. Simulation Criteria are checked by simulation, synthesis-related Criteria by synthesis, and lint Criteria by lint; RTL work requires a testbench for simulation, whether pre-existing or created during ticket execution.

@@ -377,7 +377,7 @@ def filter_state_file_for_category(
     missing, category neither rtl nor tb, or projection produced no change).
 
     Safety: the agent (LLM) is the only consumer of this file during the
-    block; nested MCP tools the agent may invoke (``elaborate`` for the
+    block; nested MCP tools the agent may invoke (``sim`` in elab-only mode for the
     coder, none for the reviewer per ``nested_mcp_capabilities``) do not
     write to state, so the unconditional restore-on-exit cannot clobber
     concurrent writes. If that invariant ever breaks, switch to a merging

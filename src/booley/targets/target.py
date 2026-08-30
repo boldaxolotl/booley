@@ -20,7 +20,7 @@ from fusesoc.vlnv import Vlnv
 from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
 
-TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "elab", "fpga", "lint", "sim")
+TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
 
 _SIM_EDA_TOOLS = frozenset({"verilator", "icarus", "iverilog"})
 _LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
@@ -36,7 +36,7 @@ def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
             f"{flow!r} is not a target-aware Booley Flow; "
             f"choose one of: {', '.join(TARGET_AWARE_FLOWS)}"
         )
-    if flow in ("sim", "elab"):
+    if flow == "sim":
         return ref.eda_tool in _SIM_EDA_TOOLS and (ref.flow == "sim" or ref.flow is None)
     if flow == "lint":
         return ref.flow == "lint" or (ref.flow is None and ref.eda_tool in _LINT_EDA_TOOLS)

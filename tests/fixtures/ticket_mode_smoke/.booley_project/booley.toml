@@ -19,8 +19,6 @@ queue_max = 4
 
 [flows.lint]
 
-[flows.elab]
-
 [flows.sim]
 timeout_ms = 120000
 

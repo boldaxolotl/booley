@@ -36,8 +36,8 @@ NESTED_MCP_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "sim",
         "bwave",
     ),
-    # Code-modifying specialist runs a pre-submit elaborate check.
-    "tb_coder": ("elab",),
+    # Code-modifying specialist runs Simulation's pre-submit build-only mode.
+    "tb_coder": ("sim",),
     # No MCP needed for these — they reason over text, not the design.
     "reviewer": (),
     "mutation_tester": (),

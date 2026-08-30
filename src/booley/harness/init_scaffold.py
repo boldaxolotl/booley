@@ -355,7 +355,7 @@ def _counter_header(c: ScaffoldChoices, *, doctor_bad: bool) -> str:
 // {c.name} — starter IP scaffolded by `booley init --scaffold`.
 //
 // A parameterized synchronous counter: small enough to read in a minute, real
-// enough to exercise every configured flow (simulate / lint / elaborate /
+// enough to exercise every configured flow (simulate / lint / synth /
 // synth). Replace it with your design and keep the surrounding wiring — the
 // `.core` Targets, tests.toml entries, and testbench layout are the pattern.
 //
@@ -615,7 +615,7 @@ def _tb_fileset(c: ScaffoldChoices) -> str:
 def _sim_flow_options(c: ScaffoldChoices) -> tuple[str, str]:
     """Return rendered simulation options and the matching toplevel."""
     sim_opts = [f"      tool: {c.sim_eda_tool}"]
-    sim_opts.extend(["      booley:", "        doctor: [sim, elab]"])
+    sim_opts.extend(["      booley:", "        doctor: [sim]"])
     if c.tb_style == "cocotb":
         sim_opts.append(f"      cocotb_module: test_{c.name}")
         sim_opts.append("      timescale: 1ns/1ps")
@@ -780,8 +780,6 @@ def _booley_toml(c: ScaffoldChoices) -> str:
         '#   pre_run_commands = ["make -C tests build CASE=$BOOLEY_TEST_NAME"]',
         "",
         "[flows.lint]",
-        "",
-        "[flows.elab]",
     ]
 
     lines += ["", "[flows.synth]"]
