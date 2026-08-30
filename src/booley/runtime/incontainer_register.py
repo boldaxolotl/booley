@@ -31,6 +31,7 @@ below target the common formats and are intentionally easy to adjust.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import stat
@@ -42,9 +43,11 @@ from pathlib import Path
 
 from booley.runtime import auth_token
 from booley.runtime.mcp_config import HTTP_ENDPOINT_PATH, http_port
+from booley.runtime.skill_links import SkillLinkReport, reconcile_skill_links
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
+logger = logging.getLogger(__name__)
 
 # How this module launches the shared per-container HTTP server.
 _SERVER_CMD = [sys.executable, "-m", "booley.mcp.server", "--transport", "http"]
@@ -191,95 +194,40 @@ def skills_target_dir(app: str, home: Path | None = None) -> Path | None:
     return None if rel is None else (home or _agent_home()) / rel
 
 
-def deploy_skills(app: str, home: Path | None = None) -> int:
-    """Symlink packaged Booley skills into the dir *app* discovers them from.
-
-    Returns the number of skills newly linked. Existing links are left as-is
-    (idempotent); individual failures are skipped so one bad skill can't block
-    the rest.
-    """
+def _reconcile_skills(app: str, home: Path | None = None) -> SkillLinkReport:
+    """Reconcile packaged and mounted-host skills in one pass."""
     from booley.runtime.paths import skills_dir
 
     target = skills_target_dir(app, home)
     if target is None:
-        return 0
-    src = skills_dir()
-    if not src.is_dir():
-        return 0
-
-    target.mkdir(parents=True, exist_ok=True)
-
-    # The skills dir now persists across rebuilds (named volume), so a skill
-    # renamed or removed in a newer image leaves a dangling link. Prune dead
-    # links first so the agent isn't offered a skill it can no longer read.
-    for child in target.iterdir():
-        if child.is_symlink() and not child.exists():
-            try:
-                child.unlink()
-            except OSError:
-                continue
-
-    linked = 0
-    for skill_dir in sorted(src.iterdir()):
-        if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
-            continue
-        link = target / skill_dir.name
-        # ``exists()`` follows symlinks; also guard ``is_symlink`` so a dangling
-        # link (stale image rebuild) isn't re-created on top of itself.
-        if link.exists() or link.is_symlink():
-            continue
-        try:
-            link.symlink_to(skill_dir)
-            linked += 1
-        except OSError:
-            continue
-    return linked
+        return SkillLinkReport()
+    agent_home = home or _agent_home()
+    return reconcile_skill_links(
+        target,
+        skills_dir(),
+        host_sidecar=agent_home / _HOST_SKILLS_SIDECAR,
+    )
 
 
-def deploy_host_skills(app: str, home: Path | None = None) -> int:
-    """Symlink the user's mounted HOST skills into the dir *app* discovers.
-
-    The devcontainer spec binds each host skill read-only under
-    ``~/.booley-host-skills/<name>`` (see ``[sandbox] mount_host_skills``); this
-    links them into the same skills dir as the built-ins. Runs AFTER
-    :func:`deploy_skills`, so a built-in of the same name is already present and
-    an ``exists()`` skip lets it win the name clash. Idempotent, prunes dangling
-    links from a removed/renamed host skill, and skips individual failures.
-    Returns the number of host skills newly linked.
-    """
-    target = skills_target_dir(app, home)
-    if target is None:
-        return 0
-    sidecar = (home or _agent_home()) / _HOST_SKILLS_SIDECAR
-    if not sidecar.is_dir():
-        return 0
-
-    target.mkdir(parents=True, exist_ok=True)
-
-    # Drop links to a host skill that is no longer mounted (renamed/removed on
-    # the host, or mount_host_skills turned off) before re-linking the rest.
-    for child in target.iterdir():
-        if child.is_symlink() and not child.exists():
-            try:
-                child.unlink()
-            except OSError:
-                continue
-
-    linked = 0
-    for skill_dir in sorted(sidecar.iterdir()):
-        if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
-            continue
-        link = target / skill_dir.name
-        # A built-in (deployed first) or a prior host link of this name wins;
-        # guard is_symlink too so a dangling link isn't recreated on itself.
-        if link.exists() or link.is_symlink():
-            continue
-        try:
-            link.symlink_to(skill_dir)
-            linked += 1
-        except OSError:
-            continue
-    return linked
+def _skill_status(report: SkillLinkReport) -> str:
+    """Render compact counts and log actionable reconciliation details."""
+    for event in report.events:
+        if event.outcome in {"conflict", "error"}:
+            logger.error("skill %s %s: %s", event.name, event.outcome, event.detail)
+    for diagnostic in report.diagnostics:
+        logger.error("skill reconciliation: %s", diagnostic)
+    if report.fatal:
+        logger.error("skill reconciliation failed: %s", report.fatal)
+    labels = {
+        "created": "+",
+        "adopted": "=",
+        "retargeted": "~",
+        "removed": "-",
+        "conflict": "!",
+        "error": "e",
+    }
+    counts = ",".join(f"{marker}{report.count(outcome)}" for outcome, marker in labels.items())
+    return f"skills:{counts},d{len(report.diagnostics)},f{int(report.fatal is not None)}"
 
 
 # ---------------------------------------------------------------------------
@@ -645,22 +593,20 @@ def register(app: str, *, home: Path | None = None) -> str:
     """Write the client registration for *app*. Returns a short status string."""
     if app == "claude":
         changed = upsert_claude(claude_config_path(home))
-        linked = deploy_skills(app, home)
-        host_linked = deploy_host_skills(app, home)
+        skills = _skill_status(_reconcile_skills(app, home))
         cred = apply_stored_credential(app, home)
         # After the credential: both writers rewrite settings.json wholesale,
         # so the last one to read it must see the other's result.
         perm = _apply_claude_permission_mode(home)
         mcp = "written" if changed else "current"
-        return f"claude:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
+        return f"claude:{mcp} {skills} cred:{cred} perm:{perm}"
     if app == "codex":
         changed = upsert_codex(codex_config_path(home))
-        linked = deploy_skills(app, home)
-        host_linked = deploy_host_skills(app, home)
+        skills = _skill_status(_reconcile_skills(app, home))
         cred = apply_stored_credential(app, home)
         perm = _apply_codex_permission_mode(home)
         mcp = "written" if changed else "current"
-        return f"codex:{mcp} skills:+{linked} host-skills:+{host_linked} cred:{cred} perm:{perm}"
+        return f"codex:{mcp} {skills} cred:{cred} perm:{perm}"
     return "none"
 
 

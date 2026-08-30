@@ -280,6 +280,7 @@ class TestSkills:
     def _fake_skills(root, names):
         """Create a packaged-skills layout under *root* and return the dir."""
         src = root / "data" / "skills"
+        src.mkdir(parents=True, exist_ok=True)
         for name in names:
             (src / name).mkdir(parents=True)
             (src / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
@@ -291,6 +292,14 @@ class TestSkills:
 
         monkeypatch.setattr(paths, "skills_dir", lambda: src)
 
+    @staticmethod
+    def _fake_sidecar(home, names):
+        sidecar = home / reg._HOST_SKILLS_SIDECAR
+        for name in names:
+            (sidecar / name).mkdir(parents=True)
+            (sidecar / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+        return sidecar
+
     def test_claude_dir(self, tmp_path):
         assert reg.skills_target_dir("claude", tmp_path) == tmp_path / ".claude" / "skills"
 
@@ -301,22 +310,28 @@ class TestSkills:
     def test_unknown_app_dir_is_none(self, tmp_path):
         assert reg.skills_target_dir("none", tmp_path) is None
 
-    def test_links_all_skills(self, tmp_path, monkeypatch):
+    def test_reconciles_packaged_and_host_skills_together(self, tmp_path, monkeypatch):
         require_symlinks(tmp_path)
         src = self._fake_skills(tmp_path, ["booley-a", "booley-b"])
+        self._fake_sidecar(tmp_path, ["personal"])
         self._patch_src(monkeypatch, src)
 
-        assert reg.deploy_skills("claude", tmp_path) == 2
+        report = reg._reconcile_skills("claude", tmp_path)
+
+        assert report.count("created") == 3
         target = reg.skills_target_dir("claude", tmp_path)
         assert (target / "booley-a" / "SKILL.md").is_file()
         assert (target / "booley-b" / "SKILL.md").is_file()
+        assert (target / "personal" / "SKILL.md").is_file()
 
     def test_codex_links_to_agents_dir(self, tmp_path, monkeypatch):
         require_symlinks(tmp_path)
         src = self._fake_skills(tmp_path, ["booley-a"])
         self._patch_src(monkeypatch, src)
 
-        assert reg.deploy_skills("codex", tmp_path) == 1
+        report = reg._reconcile_skills("codex", tmp_path)
+
+        assert report.count("created") == 1
         assert (tmp_path / ".agents" / "skills" / "booley-a" / "SKILL.md").is_file()
 
     def test_idempotent(self, tmp_path, monkeypatch):
@@ -324,8 +339,11 @@ class TestSkills:
         src = self._fake_skills(tmp_path, ["booley-a"])
         self._patch_src(monkeypatch, src)
 
-        assert reg.deploy_skills("claude", tmp_path) == 1
-        assert reg.deploy_skills("claude", tmp_path) == 0  # already linked
+        assert reg._reconcile_skills("claude", tmp_path).count("created") == 1
+        second = reg._reconcile_skills("claude", tmp_path)
+
+        assert second.count("created") == 0
+        assert second.count("unchanged") == 1
 
     def test_skips_non_skill_dirs(self, tmp_path, monkeypatch):
         require_symlinks(tmp_path)
@@ -333,21 +351,22 @@ class TestSkills:
         (src / "not-a-skill").mkdir()  # no SKILL.md
         self._patch_src(monkeypatch, src)
 
-        assert reg.deploy_skills("claude", tmp_path) == 1
+        assert reg._reconcile_skills("claude", tmp_path).count("created") == 1
         assert not (reg.skills_target_dir("claude", tmp_path) / "not-a-skill").exists()
 
     def test_unknown_app_is_noop(self, tmp_path, monkeypatch):
         src = self._fake_skills(tmp_path, ["booley-a"])
         self._patch_src(monkeypatch, src)
-        assert reg.deploy_skills("none", tmp_path) == 0
+        assert reg._reconcile_skills("none", tmp_path).events == ()
+        assert not (tmp_path / ".agents").exists()
 
     def test_missing_source_is_noop(self, tmp_path, monkeypatch):
         self._patch_src(monkeypatch, tmp_path / "nope")
-        assert reg.deploy_skills("claude", tmp_path) == 0
+        report = reg._reconcile_skills("claude", tmp_path)
 
-    def test_prunes_dangling_links(self, tmp_path, monkeypatch):
-        # Skills dir persists across rebuilds; a removed skill leaves a dead
-        # link that must be pruned so the agent isn't offered a broken skill.
+        assert report.fatal is not None
+
+    def test_preserves_unrelated_dangling_link(self, tmp_path, monkeypatch):
         require_symlinks(tmp_path)
         src = self._fake_skills(tmp_path, ["booley-a"])
         self._patch_src(monkeypatch, src)
@@ -355,86 +374,37 @@ class TestSkills:
         target.mkdir(parents=True)
         (target / "booley-gone").symlink_to(tmp_path / "removed-skill")  # dangling
 
-        reg.deploy_skills("claude", tmp_path)
-        assert not (target / "booley-gone").is_symlink()
+        reg._reconcile_skills("claude", tmp_path)
+
+        assert (target / "booley-gone").is_symlink()
         assert (target / "booley-a" / "SKILL.md").is_file()
 
-
-class TestHostSkills:
-    """deploy_host_skills — link the user's mounted host skills into the app dir."""
-
-    @staticmethod
-    def _fake_sidecar(home, names):
-        """Create the mounted host-skills sidecar layout under *home*."""
-        sidecar = home / reg._HOST_SKILLS_SIDECAR
-        for name in names:
-            (sidecar / name).mkdir(parents=True)
-            (sidecar / name / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
-        return sidecar
-
-    def test_links_host_skills(self, tmp_path):
+    def test_packaged_skill_wins_host_name_clash(self, tmp_path, monkeypatch):
         require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop", "grill-me"])
-
-        assert reg.deploy_host_skills("claude", tmp_path) == 2
-        target = reg.skills_target_dir("claude", tmp_path)
-        assert (target / "deslop" / "SKILL.md").is_file()
-        assert (target / "grill-me" / "SKILL.md").is_file()
-
-    def test_codex_links_to_agents_dir(self, tmp_path):
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop"])
-
-        assert reg.deploy_host_skills("codex", tmp_path) == 1
-        assert (tmp_path / ".agents" / "skills" / "deslop" / "SKILL.md").is_file()
-
-    def test_builtin_wins_name_clash(self, tmp_path):
-        # A built-in of the same name is deployed first; deploy_host_skills must
-        # leave it alone so the in-image copy wins (exists() skip).
-        require_symlinks(tmp_path)
+        src = self._fake_skills(tmp_path, ["shared"])
+        self._patch_src(monkeypatch, src)
         self._fake_sidecar(tmp_path, ["shared"])
+
+        reg._reconcile_skills("claude", tmp_path)
+
         target = reg.skills_target_dir("claude", tmp_path)
-        target.mkdir(parents=True)
-        builtin = tmp_path / "builtin" / "shared"
-        builtin.mkdir(parents=True)
-        (builtin / "SKILL.md").write_text("builtin", encoding="utf-8")
-        (target / "shared").symlink_to(builtin)  # built-in already linked
+        assert (target / "shared").resolve() == (src / "shared").resolve()
 
-        assert reg.deploy_host_skills("claude", tmp_path) == 0
-        assert (target / "shared").resolve() == builtin.resolve()
-
-    def test_idempotent(self, tmp_path):
+    def test_missing_sidecar_retires_recorded_host_link(self, tmp_path, monkeypatch):
         require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop"])
-        assert reg.deploy_host_skills("claude", tmp_path) == 1
-        assert reg.deploy_host_skills("claude", tmp_path) == 0
-
-    def test_skips_non_skill_dirs(self, tmp_path):
-        require_symlinks(tmp_path)
-        sidecar = self._fake_sidecar(tmp_path, ["deslop"])
-        (sidecar / "not-a-skill").mkdir()  # no SKILL.md
-        assert reg.deploy_host_skills("claude", tmp_path) == 1
-        assert not (reg.skills_target_dir("claude", tmp_path) / "not-a-skill").exists()
-
-    def test_no_sidecar_is_noop(self, tmp_path):
-        assert reg.deploy_host_skills("claude", tmp_path) == 0
-
-    def test_unknown_app_is_noop(self, tmp_path):
-        self._fake_sidecar(tmp_path, ["deslop"])
-        assert reg.deploy_host_skills("none", tmp_path) == 0
-
-    def test_prunes_link_of_unmounted_host_skill(self, tmp_path):
-        # mount_host_skills turned off / skill removed -> its bind is gone, so the
-        # dangling link must be pruned (the sidecar child no longer exists).
-        require_symlinks(tmp_path)
-        self._fake_sidecar(tmp_path, ["deslop"])
+        src = self._fake_skills(tmp_path, [])
+        self._patch_src(monkeypatch, src)
+        sidecar = self._fake_sidecar(tmp_path, ["gone"])
+        reg._reconcile_skills("claude", tmp_path)
         target = reg.skills_target_dir("claude", tmp_path)
-        target.mkdir(parents=True)
-        (target / "gone").symlink_to(tmp_path / reg._HOST_SKILLS_SIDECAR / "gone")  # dangling
+        (sidecar / "gone" / "SKILL.md").unlink()
+        (sidecar / "gone").rmdir()
+        sidecar.rmdir()
 
-        reg.deploy_host_skills("claude", tmp_path)
+        report = reg._reconcile_skills("claude", tmp_path)
+
+        assert report.count("removed") == 1
         assert not (target / "gone").is_symlink()
-        assert (target / "deslop" / "SKILL.md").is_file()
 
 
 # ===========================================================================
@@ -727,6 +697,46 @@ class TestRegister:
     def test_none_is_noop(self, tmp_path):
         assert reg.register("none", home=tmp_path) == "none"
         assert not list(tmp_path.iterdir())
+
+    def test_reconciles_removed_host_link_without_touching_foreign_dangling_link(
+        self, tmp_path, monkeypatch
+    ):
+        require_symlinks(tmp_path)
+        from booley.runtime import paths
+
+        packaged = tmp_path / "package-skills"
+        packaged.mkdir()
+        monkeypatch.setattr(paths, "skills_dir", lambda: packaged)
+        sidecar = tmp_path / reg._HOST_SKILLS_SIDECAR
+        host_skill = sidecar / "personal"
+        host_skill.mkdir(parents=True)
+        (host_skill / "SKILL.md").write_text("# Personal\n", encoding="utf-8")
+        reg.register("claude", home=tmp_path)
+        target = reg.skills_target_dir("claude", tmp_path)
+        foreign = target / "foreign"
+        foreign.symlink_to(tmp_path / "temporarily-missing")
+        (host_skill / "SKILL.md").unlink()
+        host_skill.rmdir()
+        sidecar.rmdir()
+
+        status = reg.register("claude", home=tmp_path)
+
+        assert "skills:+0,=0,~0,-1,!0,e0,d0,f0" in status
+        assert not (target / "personal").is_symlink()
+        assert foreign.is_symlink()
+
+    def test_skill_fatal_is_logged_without_blocking_registration(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        from booley.runtime import paths
+
+        monkeypatch.setattr(paths, "skills_dir", lambda: tmp_path / "missing-skills")
+
+        status = reg.register("codex", home=tmp_path)
+
+        assert "f1" in status
+        assert "perm:written" in status
+        assert "skill reconciliation failed" in caplog.text
 
     def test_main_uses_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))

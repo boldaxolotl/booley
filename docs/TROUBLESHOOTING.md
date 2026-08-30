@@ -49,6 +49,20 @@ redirect is transparent to it). The log is at `/tmp/booley_mcp_http.log`.
 Re-running `python -m booley.runtime.incontainer_register` by hand starts the server if
 it never came up.
 
+## A Booley skill name is occupied or points to an older installation
+
+`booley init` and Session Runtime startup preserve skill entries they cannot
+prove they own. If reconciliation reports a conflict, inspect the named entry
+under `~/.agents/skills` or `~/.claude/skills`. Keep it under another name when
+it is yours; remove it when it is a stale link into an older Booley
+installation, then rerun `booley init --seed` on the host or
+`python -m booley.runtime.incontainer_register` inside the Session Runtime.
+
+Booley-managed links carry ownership metadata for later upgrades. A corrupt
+`.booley-skill-links.json` fails closed instead of deleting links. Preserve the
+file for diagnosis, repair or remove only the malformed metadata, and rerun the
+same reconciliation command.
+
 ## An MCP tool is missing from `/mcp`
 
 Every valid built-in and custom MCP tool is discovered by default. The old

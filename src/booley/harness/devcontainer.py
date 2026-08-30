@@ -216,10 +216,10 @@ _APP_TOKEN_SEED_TARGET = {
 
 # Sidecar root for the user's HOST agent skills ([sandbox] mount_host_skills).
 # Each host skill dir rides in as its own read-only bind at
-# ``<sidecar>/<name>``; ``incontainer_register.deploy_host_skills`` then
-# symlinks each into the app's real skills dir (``~/.claude/skills`` /
-# ``~/.agents/skills``) on every container start, AFTER the built-ins so a
-# built-in of the same name always wins. Kept OUTSIDE the app state dir (same
+# ``<sidecar>/<name>``; ``incontainer_register`` then reconciles each into the
+# app's real skills dir (``~/.claude/skills`` / ``~/.agents/skills``) on every
+# container start, with built-ins taking explicit name precedence. Kept OUTSIDE
+# the app state dir (same
 # state-volume-nesting rationale as the credential sidecars above), and the
 # read-only bind makes the whole tree unwritable, so a mounted host skill can
 # never be mutated from inside the sandbox.

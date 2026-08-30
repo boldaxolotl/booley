@@ -632,6 +632,14 @@ skill is de-duplicated by name. The agent discovers them alongside the built-ins
 on every container start. Nothing on the host is ever written. Rerun
 `init --seed` after adding or removing host skills.
 
+Container startup reconciles both sources as one desired set: packaged skills
+win a packaged/host name collision, removed mounted-host skills disappear, and
+unrelated files, directories, or links in the agent's skills directory remain
+untouched. Booley records only the links it creates or adopts from an exact
+current source. An occupied desired name or an unrecorded link into an older
+Booley installation is reported as a conflict for you to remove or relocate;
+Booley does not guess ownership from a `booley-*` name or path suffix.
+
 #### Python dependencies (`[sandbox].pip_requirements`)
 
 The sandbox has no network while a Flow runs, so a project's Python deps must be
