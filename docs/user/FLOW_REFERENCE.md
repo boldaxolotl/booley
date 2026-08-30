@@ -83,6 +83,12 @@ prints a warning. The per-Flow fields below describe the Flow-specific durable
 reports written when a report directory is available. Each includes `flow` and
 `timestamp` in addition to the fields listed below.
 
+The `synth` and `fpga` per-Target reports and Criteria detail additionally carry
+the shared versioned `implementation` envelope. It contains the policy-resolved
+grade, identity, QoR metrics, recipe and provenance evidence, baseline
+comparison, cache state, and immutable artifact pointers described in the
+implementation reference.
+
 ## `sim`
 
 `sim` builds and runs the tests registered for a simulation Target. The Target

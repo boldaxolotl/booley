@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import copy
 import json
 import logging
 import os
@@ -1419,6 +1420,33 @@ McpToolContent = list[TextContent] | tuple[list[TextContent], dict[str, Any]]
 _MAX_STRUCTURED_REPORT_BYTES = 64 * 1024
 
 
+def _implementation_from_report(report: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the canonical implementation envelope from a target or aggregate."""
+    direct = report.get("implementation")
+    if isinstance(direct, dict):
+        return direct
+    detail = report.get("detail")
+    if isinstance(detail, dict) and isinstance(detail.get("implementation"), dict):
+        return detail["implementation"]
+    return None
+
+
+def _implementation_artifacts(implementation: dict[str, Any]) -> dict[str, Any]:
+    """Collect canonical target artifacts from a target or aggregate envelope."""
+    artifacts = implementation.get("artifacts")
+    if isinstance(artifacts, dict) and artifacts:
+        return artifacts
+    found: dict[str, Any] = {}
+    results = implementation.get("results")
+    if not isinstance(results, dict):
+        return found
+    for target, result in results.items():
+        nested = result.get("artifacts") if isinstance(result, dict) else None
+        if isinstance(nested, dict) and nested:
+            found[str(target)] = nested
+    return found
+
+
 def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
     """Pull the artifact pointers out of a run report, wherever an endpoint put them.
 
@@ -1440,6 +1468,9 @@ def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
     payload, where an exception would cost the agent the text card too.
     """
     found: dict[str, Any] = {}
+    implementation = _implementation_from_report(report)
+    if implementation is not None:
+        found.update(_implementation_artifacts(implementation))
     detail = report.get("detail")
     if isinstance(detail, dict):
         for key, value in detail.items():
@@ -1455,6 +1486,227 @@ def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
     return found
 
 
+def _compact_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep target verdict, QoR, comparison, cache, provenance, and recovery paths."""
+    compact = {
+        key: copy.deepcopy(value[key])
+        for key in (
+            "schema_version",
+            "identity",
+            "status",
+            "metrics",
+            "conditions",
+            "recipe",
+            "provenance",
+            "comparison",
+            "cache",
+            "artifacts",
+        )
+        if key in value
+    }
+    status = compact.get("status")
+    if isinstance(status, dict):
+        status.pop("diagnostic_excerpt", None)
+    recipe = compact.get("recipe")
+    if isinstance(recipe, dict):
+        recipe.pop("snapshot", None)
+    comparison = compact.get("comparison")
+    if isinstance(comparison, dict):
+        baseline = comparison.get("baseline")
+        if isinstance(baseline, dict):
+            baseline.pop("recipe", None)
+    return compact
+
+
+def _compact_implementation(value: dict[str, Any]) -> dict[str, Any]:
+    """Build the deterministic high-value implementation fallback."""
+    results = value.get("results")
+    if not isinstance(results, dict):
+        return _compact_target_implementation(value)
+    compact = {
+        key: copy.deepcopy(value[key])
+        for key in ("schema_version", "targets", "grade", "passed", "baseline_ref")
+        if key in value
+    }
+    compact["results"] = {
+        str(target): _compact_target_implementation(result)
+        for target, result in results.items()
+        if isinstance(result, dict)
+    }
+    return compact
+
+
+def _payload_size(payload: dict[str, Any]) -> int:
+    return len(json.dumps(payload).encode("utf-8"))
+
+
+def _record_omitted_field(value: dict[str, Any], path: str) -> None:
+    fields = value.setdefault("omitted_fields", [])
+    if isinstance(fields, list) and path not in fields:
+        fields.append(path)
+
+
+def _drop_per_clock(value: dict[str, Any]) -> None:
+    metrics = value.get("metrics")
+    if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
+        _record_omitted_field(value, "metrics.per_clock")
+    comparison = value.get("comparison")
+    baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
+    baseline_metrics = baseline.get("metrics") if isinstance(baseline, dict) else None
+    if isinstance(baseline_metrics, dict) and baseline_metrics.pop("per_clock", None) is not None:
+        _record_omitted_field(value, "comparison.baseline.metrics.per_clock")
+
+
+def _bounded_scalar_map(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    scalars: dict[str, Any] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index >= 64:
+            break
+        bounded_key = str(key)[:200]
+        if item is None or isinstance(item, (bool, int, float)):
+            scalars[bounded_key] = item
+        elif isinstance(item, str):
+            scalars[bounded_key] = item[:1_000]
+    return scalars
+
+
+def _bounded_nested_map(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    bounded: dict[str, Any] = {}
+    for index, (key, item) in enumerate(value.items()):
+        if index >= 64:
+            break
+        bounded_key = str(key)[:200]
+        if isinstance(item, dict):
+            bounded[bounded_key] = _bounded_scalar_map(item)
+        elif item is None or isinstance(item, (bool, int, float)):
+            bounded[bounded_key] = item
+        elif isinstance(item, str):
+            bounded[bounded_key] = item[:1_000]
+    return bounded
+
+
+def _minimum_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
+    """Retain bounded verdict, scalar QoR, comparison, and recovery paths."""
+    minimum: dict[str, Any] = {}
+    if "schema_version" in value:
+        minimum["schema_version"] = value["schema_version"]
+    for key in ("identity", "status", "recipe", "cache"):
+        if key in value:
+            minimum[key] = _bounded_scalar_map(value[key])
+    minimum["metrics"] = _bounded_scalar_map(value.get("metrics"))
+    if "artifacts" in value:
+        minimum["artifacts"] = _bounded_nested_map(value["artifacts"])
+    comparison = value.get("comparison")
+    if isinstance(comparison, dict):
+        minimum["comparison"] = _minimum_comparison(comparison)
+    if value.get("omitted_fields"):
+        minimum["omitted_fields"] = copy.deepcopy(value["omitted_fields"])
+    return minimum
+
+
+def _minimum_comparison(value: dict[str, Any]) -> dict[str, Any]:
+    keep = (
+        "requested_ref",
+        "resolved_ref",
+        "baseline_target",
+        "candidate_target",
+        "basis_valid",
+    )
+    minimum = {key: copy.deepcopy(value[key]) for key in keep if key in value}
+    errors = value.get("basis_errors")
+    if isinstance(errors, list):
+        minimum["basis_errors"] = [str(error)[:1_000] for error in errors[:10]]
+    if "deltas" in value:
+        minimum["deltas"] = _bounded_nested_map(value["deltas"])
+    baseline = value.get("baseline")
+    if isinstance(baseline, dict):
+        minimum["baseline"] = {}
+        for key in ("status", "cache"):
+            if key in baseline:
+                minimum["baseline"][key] = _bounded_scalar_map(baseline[key])
+        if "artifacts" in baseline:
+            minimum["baseline"]["artifacts"] = _bounded_nested_map(baseline["artifacts"])
+        minimum["baseline"]["metrics"] = _bounded_scalar_map(baseline.get("metrics"))
+    return minimum
+
+
+def _drop_result_expansions(results: dict[str, Any]) -> None:
+    for result in results.values():
+        if isinstance(result, dict):
+            _drop_per_clock(result)
+
+
+def _fit_implementation_payload(payload: dict[str, Any], implementation: dict[str, Any]) -> None:
+    """Attach canonical detail while respecting the structured-content cap."""
+    compact = _compact_implementation(implementation)
+    payload["implementation"] = compact
+    if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
+        return
+    results = compact.get("results")
+    if not isinstance(results, dict):
+        _drop_per_clock(compact)
+        payload["implementation"] = _minimum_target_implementation(compact)
+        if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
+            return
+        payload.pop("implementation", None)
+        return
+    _drop_result_expansions(results)
+    omitted: list[str] = []
+    while len(results) > 1 and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        target = next(reversed(results))
+        results.pop(target)
+        omitted.insert(0, target)
+        compact["omitted_targets"] = omitted
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES and results:
+        target = next(iter(results))
+        result = results[target]
+        if isinstance(result, dict):
+            results[target] = _minimum_target_implementation(result)
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        payload.pop("implementation", None)
+
+
+def _enforce_structured_budget(payload: dict[str, Any]) -> None:
+    """Apply a deterministic final guard after all fallback fields are attached."""
+    if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
+        return
+    artifacts = payload.get("artifacts")
+    omitted_count = 0
+    omitted_sample: list[str] = []
+    while (
+        isinstance(artifacts, dict)
+        and artifacts
+        and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES
+    ):
+        key = next(reversed(artifacts))
+        artifacts.pop(key)
+        omitted_count += 1
+        if len(omitted_sample) < 10:
+            omitted_sample.insert(0, key)
+        payload["omitted_artifact_entries"] = {
+            "count": omitted_count,
+            "sample": omitted_sample,
+        }
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        payload.pop("artifacts", None)
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        payload.pop("implementation", None)
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        omission = payload.get("omitted_artifact_entries")
+        if isinstance(omission, dict):
+            omission["sample"] = []
+    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
+        passed = payload.get("passed")
+        payload.clear()
+        payload.update({"reports": [], "truncated": True})
+        if isinstance(passed, bool):
+            payload["passed"] = passed
+
+
 def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
     """Bounded ``structuredContent`` payload for a run report, or None.
 
@@ -1466,6 +1718,8 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
         if not isinstance(report, dict) or not report:
             return None
         payload: dict[str, Any] = {"reports": [report]}
+        if isinstance(report.get("passed"), bool):
+            payload["passed"] = report["passed"]
         if len(json.dumps(payload).encode("utf-8")) > _MAX_STRUCTURED_REPORT_BYTES:
             # Oversized: keep the cheap scalar verdict, drop the heavy body.
             payload = {"reports": [], "truncated": True}
@@ -1480,10 +1734,14 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
             artifacts = _report_artifacts(report)
             if artifacts:
                 payload["artifacts"] = artifacts
+            implementation = _implementation_from_report(report)
+            if implementation is not None:
+                _fit_implementation_payload(payload, implementation)
         if isinstance(report.get("passed"), bool):
             payload["passed"] = report["passed"]
+        _enforce_structured_budget(payload)
         return payload
-    except Exception:  # best-effort enrichment; any failure means text-only
+    except Exception:  # best-effort enrichment degrades to text-only
         logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
         return None
 
@@ -3141,7 +3399,7 @@ def _load_backend_config_from_toml() -> None:
         project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
         project_root = Path(project_dir).parent if project_dir else Path.cwd()
         load_models_config(project_root)
-    except Exception:  # best-effort preload; a config hiccup must not block server startup
+    except Exception:  # config preload must not block server startup
         logger.debug("Failed to load backend config from booley.toml", exc_info=True)
 
 

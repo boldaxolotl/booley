@@ -428,6 +428,119 @@ class TestStructuredContent:
             "heavy": {"log": "b/run.log"},
         }
 
+    def test_oversized_implementation_report_keeps_qor_and_nested_artifacts(self):
+        big = {
+            "flow": "fpga",
+            "exit_code": 1,
+            "detail": {
+                "implementation": {
+                    "schema_version": 1,
+                    "targets": ["board"],
+                    "grade": "fail",
+                    "passed": False,
+                    "results": {
+                        "board": {
+                            "schema_version": 1,
+                            "identity": {"flow": "fpga", "target": "board"},
+                            "status": {"grade": "fail", "passed": False},
+                            "metrics": {"lut_count": 123, "wns_ns": -0.2},
+                            "artifacts": {"log": "reports/fpga/1/targets/board/run.log"},
+                        }
+                    },
+                }
+            },
+            "report_text": "x" * (70 * 1024),
+        }
+
+        payload = mcp_server._structured_from_report(big)
+
+        assert payload["implementation"]["results"]["board"]["metrics"] == {
+            "lut_count": 123,
+            "wns_ns": -0.2,
+        }
+        assert payload["artifacts"] == {"board": {"log": "reports/fpga/1/targets/board/run.log"}}
+
+    def test_implementation_budget_truncates_targets_deterministically(self):
+        results = {
+            f"target_{index:03d}": {
+                "identity": {"flow": "synth", "target": f"target_{index:03d}"},
+                "status": {"grade": "pass", "passed": True},
+                "metrics": {"area_kge": float(index)},
+                "conditions": {"diagnostic": "y" * 2_000},
+                "artifacts": {"report": f"reports/synth/1/targets/{index}.json"},
+            }
+            for index in range(100)
+        }
+        big = {
+            "flow": "synth",
+            "exit_code": 0,
+            "detail": {
+                "implementation": {
+                    "schema_version": 1,
+                    "targets": list(results),
+                    "grade": "pass",
+                    "passed": True,
+                    "results": results,
+                }
+            },
+        }
+
+        payload = mcp_server._structured_from_report(big)
+
+        encoded = json.dumps(payload).encode("utf-8")
+        kept = payload["implementation"]["results"]
+        assert len(encoded) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        assert "target_000" in kept
+        assert payload["implementation"]["omitted_targets"][-1] == "target_099"
+        assert kept["target_000"]["metrics"] == {"area_kge": 0.0}
+
+    def test_single_oversized_target_retains_scalar_qor(self):
+        per_clock = {
+            f"clock_{index}": {"wns_ns": -0.1, "detail": "x" * 2_000} for index in range(100)
+        }
+        big = {
+            "detail": {
+                "implementation": {
+                    "schema_version": 1,
+                    "targets": ["asic"],
+                    "grade": "pass",
+                    "passed": True,
+                    "results": {
+                        "asic": {
+                            "identity": {"flow": "synth", "target": "asic"},
+                            "status": {"grade": "pass", "passed": True},
+                            "metrics": {"area_kge": 12.5, "wns_ns": 0.2},
+                            "comparison": {
+                                "baseline": {"metrics": {"area_kge": 10.0, "per_clock": per_clock}}
+                            },
+                            "artifacts": {"report": "reports/synth/1/targets/asic.json"},
+                        }
+                    },
+                }
+            }
+        }
+
+        payload = mcp_server._structured_from_report(big)
+
+        assert len(json.dumps(payload).encode("utf-8")) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        result = payload["implementation"]["results"]["asic"]
+        assert result["metrics"] == {"area_kge": 12.5, "wns_ns": 0.2}
+        assert result["comparison"]["baseline"]["metrics"] == {"area_kge": 10.0}
+        assert payload["artifacts"]["asic"]["report"].endswith("asic.json")
+
+    def test_artifact_omission_metadata_is_itself_bounded(self):
+        artifacts = {
+            f"artifact-{index:04d}-{'x' * 100}": {"log": "run.log"} for index in range(2_000)
+        }
+        big = {"artifacts": artifacts, "report_text": "x" * (70 * 1_024)}
+
+        payload = mcp_server._structured_from_report(big)
+
+        assert len(json.dumps(payload).encode("utf-8")) <= mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        omitted = payload["omitted_artifact_entries"]
+        assert omitted["count"] > 0
+        assert len(omitted["sample"]) <= 10
+
     def test_report_artifacts_ignores_nested_entries_without_a_block(self):
         """``detail`` holds plenty of non-artifact dicts (per_clock, evidence,
         complexity); none of them may leak into the rescue payload."""
@@ -438,6 +551,127 @@ class TestStructuredContent:
             }
         }
         assert mcp_server._report_artifacts(report) == {"lite": {"log": "a/run.log"}}
+
+    def test_direct_implementation_artifacts_are_recovered(self):
+        report = {
+            "implementation": {
+                "artifacts": {"report": "reports/synth.json"},
+                "results": "malformed aggregate",
+            }
+        }
+
+        assert mcp_server._report_artifacts(report) == {"report": "reports/synth.json"}
+
+    def test_compaction_removes_unbounded_target_diagnostics(self):
+        implementation = {
+            "schema_version": 1,
+            "identity": {"flow": "synth", "target": "asic"},
+            "status": {
+                "grade": "pass",
+                "passed": True,
+                "diagnostic_excerpt": "large log",
+            },
+            "metrics": {"area_kge": 12.5},
+            "recipe": {"fingerprint": "abc", "snapshot": {"large": "value"}},
+            "comparison": {
+                "baseline": {
+                    "metrics": {"area_kge": 10.0},
+                    "recipe": {"snapshot": {"large": "baseline"}},
+                }
+            },
+        }
+
+        compact = mcp_server._compact_implementation(implementation)
+
+        assert "diagnostic_excerpt" not in compact["status"]
+        assert "snapshot" not in compact["recipe"]
+        assert "recipe" not in compact["comparison"]["baseline"]
+        assert compact["metrics"] == {"area_kge": 12.5}
+
+    def test_minimum_target_projection_bounds_every_nested_shape(self):
+        long_key = "k" * 250
+        long_value = "v" * 2_000
+        value = {
+            "schema_version": 1,
+            "identity": {
+                long_key: long_value,
+                "none": None,
+                "flag": True,
+                "count": 3,
+                "ratio": 1.5,
+                "nested": {"not": "a scalar"},
+            },
+            "status": "malformed",
+            "recipe": {},
+            "cache": {},
+            "metrics": {**{f"metric-{index}": index for index in range(70)}, "ignored": []},
+            "artifacts": {
+                "report": {"path": long_value, "size": 10},
+                "scalar": "artifact.json",
+            },
+            "comparison": {
+                "requested_ref": "main",
+                "basis_valid": False,
+                "basis_errors": [long_value] * 12,
+                "deltas": {"area": {"current": 12.5, "baseline": 10.0}},
+                "baseline": {
+                    "status": {"grade": "pass"},
+                    "cache": {"cached": True},
+                    "artifacts": {"log": {"path": "baseline.log"}},
+                    "metrics": {"area_kge": 10.0},
+                },
+            },
+            "omitted_fields": ["metrics.per_clock"],
+        }
+
+        minimum = mcp_server._minimum_target_implementation(value)
+
+        bounded_key = "k" * 200
+        assert minimum["identity"][bounded_key] == "v" * 1_000
+        assert len(minimum["metrics"]) == 64
+        assert minimum["status"] == {}
+        assert minimum["artifacts"]["scalar"] == "artifact.json"
+        assert len(minimum["comparison"]["basis_errors"]) == 10
+        assert minimum["comparison"]["baseline"]["metrics"] == {"area_kge": 10.0}
+        assert minimum["omitted_fields"] == ["metrics.per_clock"]
+
+    def test_direct_target_budget_drops_per_clock_before_minimizing(self):
+        per_clock = {f"clock-{index}": {"detail": "x" * 2_000} for index in range(100)}
+        implementation = {
+            "schema_version": 1,
+            "identity": {"flow": "synth", "target": "asic"},
+            "status": {"grade": "pass", "passed": True},
+            "metrics": {"area_kge": 12.5, "per_clock": per_clock},
+            "conditions": {"diagnostic": "x" * (70 * 1_024)},
+            "comparison": {"baseline": {"metrics": {"per_clock": per_clock}}},
+        }
+        payload = {"reports": [], "truncated": True}
+
+        mcp_server._fit_implementation_payload(payload, implementation)
+
+        compact = payload["implementation"]
+        assert compact["metrics"] == {"area_kge": 12.5}
+        assert compact["omitted_fields"] == [
+            "metrics.per_clock",
+            "comparison.baseline.metrics.per_clock",
+        ]
+        assert len(json.dumps(payload).encode("utf-8")) <= (
+            mcp_server._MAX_STRUCTURED_REPORT_BYTES
+        )
+
+    def test_final_budget_guard_has_a_constant_size_last_resort(self):
+        payload = {
+            "reports": [],
+            "truncated": True,
+            "passed": False,
+            "artifacts": {"huge": {"path": "a" * (70 * 1_024)}},
+            "implementation": {"diagnostic": "b" * (70 * 1_024)},
+            "unexpected": "c" * (70 * 1_024),
+        }
+
+        mcp_server._enforce_structured_budget(payload)
+
+        assert payload == {"reports": [], "truncated": True, "passed": False}
 
     def test_oversized_report_without_artifacts_omits_the_key(self):
         big = {"flow": "sim", "exit_code": 1, "report_text": "x" * (70 * 1024)}

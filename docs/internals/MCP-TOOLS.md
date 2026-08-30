@@ -294,6 +294,14 @@ MCP tool's `detail`, which is the copy that reaches an agent as MCP
 `structuredContent`. It therefore survives tail-truncated stdout and the 64 KB
 structured-output reduction applied to oversized results.
 
+For `synth` and `fpga`, the versioned `detail.implementation.results[target]`
+projection also carries the target's grade, QoR metrics, baseline deltas, cache
+summary, and artifact pointers. Oversized reports discard embedded recipe
+snapshots and diagnostic excerpts first, then per-clock expansion, then excess
+targets in deterministic order. The compact result records omitted fields and
+targets; it does not reduce an implementation result to artifact links while
+discarding all QoR.
+
 The contract uses directory roles rather than enumerating backend filenames.
 EDA tools change or add filenames more often than the semantic directory roles
 change, and a consumer can list the cited directory when it needs the complete
