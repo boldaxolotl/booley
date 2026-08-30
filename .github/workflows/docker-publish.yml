@@ -248,6 +248,32 @@ jobs:
           ln -s "$(command -v git)" "${RUNNER_TEMP}/booley-ci-bin/code"
           echo "${RUNNER_TEMP}/booley-ci-bin" >> "${GITHUB_PATH}"
 
+      # The contract requires both reviewed checkouts to stay pristine. Run it
+      # before `booley init`, which deliberately creates local setup files.
+      - name: Prepare reviewed demo checkout ownership
+        run: sudo chown -R 1000:1000 demo
+
+      - name: Verify exact reviewed demo contract
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
+        run: |
+          docker run --init --rm --network none \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
+            -w /work \
+            -e BOOLEY_PROJECT_DIR=/booley-project \
+            -e BOOLEY_IN_SANDBOX=1 \
+            -e TICKET_SLUG \
+            "${IMAGE}" bash -euo pipefail -c '
+              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
+            '
+
+      - name: Restore demo checkout ownership for initialization
+        run: sudo chown -R "$(id -u):$(id -g)" demo
+
       # Exercise the public quick start and reject warnings as well as errors.
       # Credentials are deliberately absent: this validation never contacts an
       # agent provider, but still records the demo's configured agent policy.
@@ -291,7 +317,6 @@ jobs:
               BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register
               ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
               before="$(sha256sum "${ticket}")"
-              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
 
               doctor_log="$(mktemp)"
               booley doctor --deep --skip-agent-checks | tee "${doctor_log}"

@@ -263,7 +263,13 @@ def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
 def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
+    contract_check = "      - name: Verify exact reviewed demo contract\n"
+    initialize = "      - name: Initialize demo cleanly as documented\n"
+    surface_smoke = "      - name: Run demo Doctor and ticket-authoring surface smoke\n"
     assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
+    assert contract_check in workflow
+    assert workflow.index(contract_check) < workflow.index(initialize)
+    assert workflow.index(initialize) < workflow.index(surface_smoke)
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
@@ -275,7 +281,9 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     assert "booley-ticket-create" in workflow
     assert "python -m booley.ticket_board validate-ticket" in workflow
     assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
-    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in workflow
+    assert workflow.count("bash /booley-source/.github/scripts/verify_picorv32_demo.sh") == 1
+    contract_section = workflow[workflow.index(contract_check) : workflow.index(initialize)]
+    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in contract_section
     assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
     assert "add-rv32-zbb-pcpi-co-processor" not in workflow
     assert "python -m booley.ticket_board parse-ticket" not in workflow
