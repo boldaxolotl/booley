@@ -738,7 +738,7 @@ period is unknown.
 Timing thresholds (`fpga_impl_ok`) gate on these per-clock values. A **flat**
 `critical_path_ps_max` / `fmax_mhz_min` gates the timing-worst clock, so every
 clock must pass, while a **clock-scoped** `clk_i.fmax_mhz_min` gates just
-clock `clk_i` (see [USAGE.md](../user/USAGE.md#synthesis--fpga-threshold-flavours)).
+clock `clk_i` (see [USAGE.md](../user/USAGE.md#threshold-parameters)).
 
 ### Verdict semantics
 

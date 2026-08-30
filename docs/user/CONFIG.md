@@ -1157,7 +1157,7 @@ targets:
 A few conventions worth calling out in that example:
 
 - **`tb/booley_vcd_dump.sv`** is the trace-convention module described under
-  [`trace_args`](#how-booley-asks-for-a-waveform-toolssimtrace_args).
+  [`trace_args`](#how-booley-asks-for-a-waveform-flowssimtrace_args).
   Without it, `booley flow sim --trace` has nothing to root and `booley doctor` warns at
   setup time.
 - **A `file_type: user` file with `copyto:`** stages a non-RTL data file (a
