@@ -169,11 +169,12 @@ first-run traps:
 - **The container sees a fully modified tree / phantom diffs.** Git for
   Windows' `core.autocrlf=true` default checks files out with CRLF, which the
   Linux container reads as every file modified. `booley init` handles it: it
-  sets `core.autocrlf=false` on the repo and adds `* text=auto eol=lf` as the
-  first line of your `.gitattributes`. `text=auto` preserves Git's binary-file
-  detection, while the first-line position lets any more-specific rule below
-  it still win. **Commit the `.gitattributes`**: the rule only reaches your
-  team through git.
+  inspects both the Project checkout and the resolved project-data directory
+  when they are separate Git repositories. In each repository it sets
+  `core.autocrlf=false` locally and adds `* text=auto eol=lf` as the first line
+  of `.gitattributes`. `text=auto` preserves Git's binary-file detection, while
+  the first-line position lets any more-specific rule below it still win.
+  **Commit each `.gitattributes`**: the rule only reaches your team through git.
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
   tree, init stages Git-filtered LF replacements, verifies that the affected
@@ -187,9 +188,10 @@ first-run traps:
   booley init
   ```
 
-  `booley doctor` re-asks every run, so a config reset, a fresh clone that
-  drifts back to CRLF, or stale index metadata left by an earlier repair gets
-  caught rather than surfacing as phantom diffs in the container. The old
+  `booley doctor` re-asks both repositories every run and identifies which one
+  is unsafe, so a config reset, a fresh clone that drifts back to CRLF, or stale
+  index metadata left by an earlier repair gets caught rather than surfacing as
+  phantom diffs in the container. The old
   `--fix-line-endings` option remains accepted for CLI compatibility but is no
   longer required for a clean tree.
 
