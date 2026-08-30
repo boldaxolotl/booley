@@ -26,10 +26,16 @@ def _deploy_from(
     *,
     check_only: bool = False,
     force: bool = False,
+    verbose: bool = False,
 ) -> InitContext:
     monkeypatch.setattr(runtime_paths, "skills_dir", lambda: packaged)
     monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
-    ctx = InitContext(project_root=tmp_path, check_only=check_only, force=force)
+    ctx = InitContext(
+        project_root=tmp_path,
+        check_only=check_only,
+        force=force,
+        verbose=verbose,
+    )
     init_skills._deploy_skills(ctx)
     return ctx
 
@@ -108,6 +114,22 @@ def test_deploy_records_report_diagnostic(tmp_path: Path, monkeypatch):
     assert ctx.results[-1].status == "err"
 
 
+def test_deploy_renders_fatal_report(tmp_path: Path, monkeypatch, capsys):
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    target = tmp_path / "host" / "skills"
+    monkeypatch.setattr(
+        init_skills,
+        "reconcile_skill_links",
+        lambda *_args, **_kwargs: SkillLinkReport(fatal="manifest invalid"),
+    )
+
+    ctx = _deploy_from(tmp_path, monkeypatch, packaged, target)
+
+    assert "skill reconciliation failed: manifest invalid" in capsys.readouterr().out
+    assert ctx.results[-1].status == "err"
+
+
 def test_deploy_preserves_real_current_name_directory(tmp_path: Path, monkeypatch):
     packaged = tmp_path / "installed" / "skills"
     _skill(packaged, "booley-setup")
@@ -134,6 +156,17 @@ def test_deploy_adopts_healthy_link(tmp_path: Path, monkeypatch):
 
     assert link.resolve(strict=True) == skill.resolve()
     assert ctx.results[-1].status == "ok"
+
+
+def test_verbose_deploy_renders_created_event(tmp_path: Path, monkeypatch, capsys):
+    require_symlinks(tmp_path)
+    packaged = tmp_path / "installed" / "skills"
+    _skill(packaged, "booley-setup")
+    target = tmp_path / "host" / "skills"
+
+    _deploy_from(tmp_path, monkeypatch, packaged, target, verbose=True)
+
+    assert "created booley-setup" in capsys.readouterr().out
 
 
 def test_force_previews_targets_before_relinking_equivalent_skill(

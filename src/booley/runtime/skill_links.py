@@ -195,7 +195,7 @@ def _is_junction(path: Path) -> bool:
 def _occupied(path: Path) -> bool:
     try:
         path.lstat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
     return True
 
