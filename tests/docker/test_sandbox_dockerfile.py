@@ -49,7 +49,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.250"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.251"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -143,8 +143,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.250"' in lock
-    assert '"@openai/codex": "0.150.1"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.251"' in lock
+    assert '"@openai/codex": "0.151.0"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
