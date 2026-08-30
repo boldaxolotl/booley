@@ -51,6 +51,24 @@ Session Runtime restarts, run `booley init --seed` on the host and rebuild or
 reopen the container. A server that remains absent after that supported
 lifecycle is a Booley bug; report it with the Doctor output and MCP log.
 
+## A Booley skill name is occupied or points to an older installation
+
+`booley init` preserves skill entries it cannot prove are safe to manage. A
+live link whose complete skill tree matches the active package is accepted
+without mutation. To move that equivalent link—or a link already recorded as
+Booley-managed—to the active package, run `booley init --force`. The command
+shows the current and requested targets before replacing the link. A link with
+different content remains a conflict even under `--force`.
+
+For other conflicts, inspect the named entry under `~/.agents/skills` or
+`~/.claude/skills`. Keep it under another name when it is yours; remove it when
+it is a dangling stale link, then rerun `booley init --seed`.
+
+Booley-managed links carry ownership metadata for later upgrades. A corrupt
+`.booley-skill-links.json` fails closed instead of deleting links. Preserve the
+file for diagnosis, repair or remove only the malformed metadata, and rerun
+`booley init`.
+
 ## An MCP tool is missing from `/mcp`
 
 Every valid built-in and custom MCP tool is discovered by default. The old

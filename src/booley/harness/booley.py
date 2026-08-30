@@ -651,7 +651,9 @@ def _add_init_subparser(sub) -> None:
         help="Skip agent credential inspection; provider and auth policy are still recorded",
     )
     init_p.add_argument(
-        "--force", action="store_true", help="Overwrite existing configuration files"
+        "--force",
+        action="store_true",
+        help="Overwrite managed configuration and explicitly relink proven Booley skill links",
     )
     init_p.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging output"
