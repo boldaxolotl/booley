@@ -3,22 +3,43 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import stat
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-PROVENANCE_SCHEMA = "1"
+PROVENANCE_SCHEMA = "2"
+LEGACY_PROVENANCE_SCHEMA = "1"
 LABEL_SCHEMA = "io.booley.provenance.schema"
 LABEL_PAYLOAD_FINGERPRINT = "io.booley.payload.fingerprint"
 LABEL_RECIPE_FINGERPRINT = "io.booley.build.recipe-fingerprint"
 LABEL_PARENT_ARTIFACT = "io.booley.build.parent-artifact"
+LABEL_PARENT_ARTIFACT_KIND = "io.booley.build.parent-artifact-kind"
 LABEL_BUILD_ORIGIN = "io.booley.build.origin"
 LABEL_VERSION = "org.opencontainers.image.version"
 LEGACY_FINGERPRINT_LABEL = "booley.build-fingerprint"
+PARENT_ARTIFACT_LOCAL_IMAGE_ID = "local-image-id"
+PARENT_ARTIFACT_REGISTRY_DIGEST = "registry-digest"
+
+_LOCAL_IMAGE_ID_RE = re.compile(r"sha256:[0-9a-f]{64}")
+_REGISTRY_DIGEST_RE = re.compile(r"(?P<repository>[^\s@]+)@(?P<digest>sha256:[0-9a-fA-F]{64})")
 
 
 class ImageProvenanceError(RuntimeError):
     """A required provenance input could not be read exactly."""
+
+
+def is_local_image_id(value: str) -> bool:
+    """Whether *value* is one full Docker image ID."""
+    return _LOCAL_IMAGE_ID_RE.fullmatch(value) is not None
+
+
+def normalize_registry_digest(value: str) -> str | None:
+    """Return one canonical digest-qualified image reference, if valid."""
+    match = _REGISTRY_DIGEST_RE.fullmatch(value)
+    if match is None:
+        return None
+    return f"{match.group('repository')}@{match.group('digest').lower()}"
 
 
 def _read_input(path: Path) -> bytes:

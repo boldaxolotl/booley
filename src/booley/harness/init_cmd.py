@@ -1131,7 +1131,7 @@ def _step_sandbox_images(ctx: InitContext) -> None:
         _warn_on_live_session_on_old_image(ctx, selected)
 
 
-def _step_image_lifecycle(ctx: InitContext) -> None:
+def _step_image_lifecycle(ctx: InitContext) -> LifecycleResult | None:
     """Reconcile the authoritative Session Image chain for initialization."""
     ctx.step_banner("Session Image lifecycle")
     intent = (
@@ -1146,22 +1146,23 @@ def _step_image_lifecycle(ctx: InitContext) -> None:
     except ImageLifecycleError as exc:
         err(str(exc))
         ctx.record("docker_image", "err", str(exc))
-        return
+        return None
     if result.status is ImageLifecycleStatus.EXTERNAL:
         skip(f"[sandbox].image={result.selected_reference!r} is externally managed")
         ctx.record("project_image", "skip", "user-managed image")
-        return
+        return result
     if result.status is ImageLifecycleStatus.STALE:
         for diagnostic in result.diagnostics:
             warn(diagnostic.message)
         ctx.record("docker_image", "warn", "Session Image provenance is stale")
-        return
+        return result
     if result.changed_images:
         ok("reconciled Session Images: " + ", ".join(result.changed_images))
         ctx.record("docker_image", "ok", f"selected {result.selected_reference}")
-        return
-    skip(f"Session Image {result.selected_reference} is current")
-    ctx.record("docker_image", "skip", "current")
+    else:
+        skip(f"Session Image {result.selected_reference} is current")
+        ctx.record("docker_image", "skip", "current")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2405,13 +2406,24 @@ def _run_project_init_steps(
     )
     _deploy_skills(ctx)
     pdk_root = _step_nangate_pdk(ctx)
-    _step_image_lifecycle(ctx)
+    image_result = _step_image_lifecycle(ctx)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
     _step_line_endings(ctx)
     _step_guidance_links(ctx, guidance_plan)
-    _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
+    session_image_id = (
+        image_result.selected_id
+        if image_result is not None
+        and image_result.status in {ImageLifecycleStatus.CURRENT, ImageLifecycleStatus.CHANGED}
+        else None
+    )
+    _step_interactive(
+        ctx,
+        nangate_pdk_root=pdk_root,
+        agent_app=selection.provider,
+        session_image_id=session_image_id,
+    )
     _step_advisories(ctx)
 
     return _print_summary(ctx)

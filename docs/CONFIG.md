@@ -1612,6 +1612,12 @@ The directive is lifecycle metadata. Booley verifies the resulting image label
 against that parent's current immutable Docker image ID; it never treats a tag
 or matching Booley version as proof of ancestry.
 
+Published Booley flavors use the registry equivalent of that rule: their label
+records the base's digest-qualified GHCR reference, and init verifies it against
+the pulled base's repository digests. It does not compare Docker image IDs from
+the publisher and consumer, because those local identities are not registry
+provenance.
+
 Use the [post-setup hook](#post-setup-hook) (below) for per-worktree
 preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
