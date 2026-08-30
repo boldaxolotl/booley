@@ -953,10 +953,11 @@ class AsicSynthesizeFlow(BooleyFlow):
         "pass --default-clock <ps> to run against an explicitly-named canned "
         "clock instead. "
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
-        "synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
-        "recipe knobs belong in the "
-        "selected .core Target's flow_options; per-call flags can override "
-        "them. [flows.synth] in booley.toml is only for enablement and verdict "
+        "frontend, synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
+        "recipe knobs belong in the selected .core Target's flow_options. "
+        "Per-call flags can override ppa_profile, flatten, frontend, and expert "
+        "backend settings; synth_mode remains Target-owned. [flows.synth] in "
+        "booley.toml is only for enablement and verdict "
         "policy such as target, timeout_ms, and expected_latches."
     )
     code_modifying: bool = False

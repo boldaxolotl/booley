@@ -2,7 +2,7 @@
 
 Concise engineering discipline rules for all Python code in Booley
 (Booley's own Python codebase, not the user's RTL; see the
-[README](../README.md) for what Booley is). These are language-agnostic
+[README](../../README.md) for what Booley is). These are language-agnostic
 principles applied to Python: they govern design and correctness, not
 formatting (Ruff, the Python linter/formatter, handles that).
 
