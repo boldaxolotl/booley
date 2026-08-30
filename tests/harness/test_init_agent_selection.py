@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from types import SimpleNamespace
 
+import pytest
+
 from booley.harness import init_cmd
 from booley.harness.init_common import InitContext
 
@@ -184,6 +186,93 @@ def test_seed_uses_resolved_provider_even_when_check_only_did_not_write(tmp_path
 
     assert len(calls) == 1
     assert calls[0]["agent_app"] == "codex"
+
+
+def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path, monkeypatch):
+    result = init_cmd.LifecycleResult(
+        "booley-sandbox-riscv",
+        "sha256:" + "f" * 64,
+        init_cmd.ImageLifecycleStatus.CURRENT,
+    )
+    monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
+    for name in (
+        "_step_project_dir",
+        "_step_core_projections",
+        "_step_tickets",
+        "_step_auth",
+        "_deploy_skills",
+        "_step_git_hooks",
+        "_step_project_git_hooks",
+        "_step_worktree_prune_guard",
+        "_step_line_endings",
+        "_step_guidance_links",
+        "_step_advisories",
+    ):
+        monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: "pdk")
+    monkeypatch.setattr(init_cmd, "_step_image_lifecycle", lambda _ctx: result)
+    monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
+    calls = []
+    monkeypatch.setattr(
+        init_cmd,
+        "_step_interactive",
+        lambda _ctx, **kwargs: calls.append(kwargs),
+    )
+    ctx = InitContext(project_root=tmp_path)
+    selection = init_cmd.AgentSelection("codex", "subscription")
+
+    assert (
+        init_cmd._run_project_init_steps(
+            ctx,
+            _args(),
+            selection,
+            tmp_path / ".booley_project" / "booley.toml",
+            None,
+        )
+        == 0
+    )
+
+    assert calls == [
+        {
+            "nangate_pdk_root": "pdk",
+            "agent_app": "codex",
+            "session_image_id": result.selected_id,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "record", "result_status", "detail"),
+    [
+        (
+            init_cmd.ImageLifecycleStatus.EXTERNAL,
+            "project_image",
+            "skip",
+            "user-managed image",
+        ),
+        (
+            init_cmd.ImageLifecycleStatus.STALE,
+            "docker_image",
+            "warn",
+            "Session Image provenance is stale",
+        ),
+        (init_cmd.ImageLifecycleStatus.CURRENT, "docker_image", "skip", "current"),
+    ],
+)
+def test_image_lifecycle_step_returns_each_nonerror_result(
+    tmp_path,
+    monkeypatch,
+    status,
+    record,
+    result_status,
+    detail,
+):
+    result = init_cmd.LifecycleResult("booley-sandbox", "sha256:" + "f" * 64, status)
+    monkeypatch.setattr(init_cmd, "reconcile_images", lambda *_args, **_kwargs: result)
+    ctx = InitContext(project_root=tmp_path)
+
+    assert init_cmd._step_image_lifecycle(ctx) is result
+    assert ctx.results[-1] == init_cmd.StepResult(record, result_status, detail)
 
 
 def test_flag_cannot_silently_replace_existing_provider(tmp_path):

@@ -16,6 +16,7 @@ class FakeDocker:
 
     def __init__(self, images: dict[str, tuple[str, dict[str, str]]]) -> None:
         self.images = images
+        self.registry_identities: dict[str, tuple[str, ...]] = {}
         self.mutations: list[tuple[str, ...]] = []
 
     def image_id(self, image: str) -> str | None:
@@ -25,6 +26,9 @@ class FakeDocker:
     def label(self, image: str, name: str) -> str | None:
         record = self.images.get(image)
         return record[1].get(name) if record else None
+
+    def repo_digests(self, image: str) -> tuple[str, ...]:
+        return self.registry_identities.get(image, ())
 
     def tag(self, source: str, target: str) -> None:
         self.mutations.append(("tag", source, target))
@@ -48,6 +52,7 @@ class FakeBuilder:
         self.built.append(node.reference)
         labels = dict(node.expected_labels)
         labels[lifecycle.LABEL_BUILD_ORIGIN] = "local"
+        labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
         if node.reference == lifecycle.BASE_IMAGE:
             labels[lifecycle.LABEL_PARENT_ARTIFACT] = (
                 self.docker.image_id(lifecycle.STABLE_RUNTIME_BASE_IMAGE) or ""
@@ -100,6 +105,10 @@ def _wire(monkeypatch: pytest.MonkeyPatch, docker: FakeDocker) -> FakeBuilder:
                 lifecycle.LABEL_PARENT_ARTIFACT,
                 stable_id,
             )
+            docker.images[lifecycle.BASE_IMAGE][1].setdefault(
+                lifecycle.LABEL_PARENT_ARTIFACT_KIND,
+                lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+            )
     monkeypatch.setattr(lifecycle, "_expected_payload_fingerprint", lambda: "payload-new")
     monkeypatch.setattr(lifecycle, "_expected_version", lambda: "0.2.6")
     monkeypatch.setattr(docker_base_contract, "contract", lambda _root: "stable-contract")
@@ -119,6 +128,7 @@ def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str
     }
     if parent is not None:
         values[lifecycle.LABEL_PARENT_ARTIFACT] = parent
+        values[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = lifecycle.PARENT_ARTIFACT_LOCAL_IMAGE_ID
     return values
 
 
@@ -221,6 +231,159 @@ def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(tmp_path: Path, m
     assert result.selected_id == docker.image_id("booley-sandbox-riscv")
     assert result.requires_spec_reseed is True
     assert result.requires_runtime_recreation is True
+
+
+def test_published_flavor_uses_registry_parent_when_local_ids_differ(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
+    publisher_parent_id = "sha256:" + "1" * 64
+    consumer_base_id = "sha256:" + "2" * 64
+    consumer_flavor_id = "sha256:" + "3" * 64
+    base_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64
+    runtime_digest = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+    base_labels = _labels(
+        payload="payload-new",
+        recipe=lifecycle._base_node(payload).build.recipe_fingerprint,
+        parent=runtime_digest,
+    )
+    base_labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
+        }
+    )
+    flavor = lifecycle._flavor_node("booley-sandbox-riscv", lifecycle._base_node(payload), payload)
+    legacy_flavor_labels = _labels(
+        payload="payload-new",
+        recipe=flavor.build.recipe_fingerprint,
+        parent=publisher_parent_id,
+    )
+    legacy_flavor_labels[lifecycle.LABEL_SCHEMA] = lifecycle.LEGACY_PROVENANCE_SCHEMA
+    legacy_flavor_labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
+    legacy_flavor_labels.pop(lifecycle.LABEL_PARENT_ARTIFACT_KIND)
+    flavor_labels = _labels(
+        payload="payload-new",
+        recipe=flavor.build.recipe_fingerprint,
+        parent=base_digest,
+    )
+    flavor_labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
+        }
+    )
+    docker = FakeDocker(
+        {
+            lifecycle.BASE_IMAGE: (consumer_base_id, base_labels),
+            "booley-sandbox-riscv": (consumer_flavor_id, legacy_flavor_labels),
+        }
+    )
+    docker.registry_identities[lifecycle.BASE_IMAGE] = (base_digest,)
+    builder = _wire(monkeypatch, docker)
+
+    legacy_result = lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+
+    assert publisher_parent_id != consumer_base_id
+    assert legacy_result.status is lifecycle.Status.STALE
+
+    docker.images["booley-sandbox-riscv"] = (consumer_flavor_id, flavor_labels)
+    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+
+    assert result.status is lifecycle.Status.CURRENT
+    assert result.selected_id == consumer_flavor_id
+    assert docker.image_id("booley-sandbox-riscv") == result.selected_id
+    assert not builder.built
+
+
+def test_missing_published_pair_is_acquired_and_keeps_flavor_short_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class RegistryPullBuilder:
+        def __init__(self, docker: FakeDocker) -> None:
+            self.docker = docker
+            self.built: list[str] = []
+
+        def build(self, node, *, force: bool) -> None:
+            del force
+            self.built.append(node.reference)
+            labels = dict(node.expected_labels)
+            labels[lifecycle.LABEL_BUILD_ORIGIN] = "registry"
+            labels[lifecycle.LABEL_PARENT_ARTIFACT_KIND] = (
+                lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST
+            )
+            if node.reference == lifecycle.BASE_IMAGE:
+                labels[lifecycle.LABEL_PARENT_ARTIFACT] = runtime_digest
+                image_id = consumer_base_id
+                self.docker.registry_identities[node.reference] = (base_digest,)
+            else:
+                labels[lifecycle.LABEL_PARENT_ARTIFACT] = base_digest
+                image_id = consumer_flavor_id
+            self.docker.images[node.reference] = (image_id, labels)
+
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    consumer_base_id = "sha256:" + "2" * 64
+    consumer_flavor_id = "sha256:" + "3" * 64
+    base_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64
+    runtime_digest = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    builder = RegistryPullBuilder(docker)
+    monkeypatch.setattr(lifecycle, "_build_adapter", lambda *_args, **_kwargs: builder)
+
+    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+
+    assert builder.built == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
+    assert result.status is lifecycle.Status.CHANGED
+    assert result.selected_id == consumer_flavor_id
+    assert docker.image_id(lifecycle.BASE_IMAGE) == consumer_base_id
+    assert docker.image_id("booley-sandbox-riscv") == consumer_flavor_id
+
+
+def test_published_flavor_rejects_different_registry_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    payload = lifecycle.PayloadProvenance(lifecycle.PROVENANCE_SCHEMA, "0.2.6", "payload-new")
+    recorded_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "d" * 64
+    current_digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "c" * 64
+    runtime_digest = "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "e" * 64
+    base_labels = _labels(
+        payload="payload-new",
+        recipe=lifecycle._base_node(payload).build.recipe_fingerprint,
+        parent=runtime_digest,
+    )
+    base_labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
+        }
+    )
+    flavor = lifecycle._flavor_node("booley-sandbox-riscv", lifecycle._base_node(payload), payload)
+    flavor_labels = _labels(
+        payload="payload-new",
+        recipe=flavor.build.recipe_fingerprint,
+        parent=recorded_digest,
+    )
+    flavor_labels.update(
+        {
+            lifecycle.LABEL_BUILD_ORIGIN: "registry",
+            lifecycle.LABEL_PARENT_ARTIFACT_KIND: (lifecycle.PARENT_ARTIFACT_REGISTRY_DIGEST),
+        }
+    )
+    docker = FakeDocker(
+        {
+            lifecycle.BASE_IMAGE: ("sha256:" + "a" * 64, base_labels),
+            "booley-sandbox-riscv": ("sha256:" + "b" * 64, flavor_labels),
+        }
+    )
+    docker.registry_identities[lifecycle.BASE_IMAGE] = (current_digest,)
+    builder = _wire(monkeypatch, docker)
+
+    lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+
+    assert builder.built == ["booley-sandbox-riscv"]
 
 
 def test_keep_recipe_is_not_rewritten_when_parent_forces_rebuild(tmp_path: Path, monkeypatch):
@@ -603,6 +766,98 @@ def test_docker_label_daemon_failure_is_not_an_absent_label(
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon"):
         lifecycle._DockerCli().label("booley-sandbox", lifecycle.LABEL_SCHEMA)
+
+
+def test_docker_repo_digests_are_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    digest = "ghcr.io/boldaxolotl/booley-sandbox@sha256:" + "A" * 64
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=f'["{digest}"]\n', stderr=""
+        ),
+    )
+
+    assert lifecycle._DockerCli().repo_digests("booley-sandbox") == (digest.lower(),)
+
+
+def test_docker_repo_digests_reject_malformed_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout='["not-a-digest"]\n', stderr=""
+        ),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="malformed RepoDigests"):
+        lifecycle._DockerCli().repo_digests("booley-sandbox")
+
+
+def test_docker_repo_digest_inspection_failures_are_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = lifecycle._DockerCli()
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("docker unavailable")),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="inspect Docker RepoDigests"):
+        cli.repo_digests("booley-sandbox")
+
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="No such image: booley-sandbox"
+        ),
+    )
+    assert cli.repo_digests("booley-sandbox") == ()
+
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout="", stderr="Cannot connect to the Docker daemon"
+        ),
+    )
+    with pytest.raises(lifecycle.ImageLifecycleError, match="Docker daemon"):
+        cli.repo_digests("booley-sandbox")
+
+
+@pytest.mark.parametrize("empty_inventory", ["null\n", "[]\n"])
+def test_docker_repo_digests_accept_empty_inventory(
+    monkeypatch: pytest.MonkeyPatch, empty_inventory: str
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=empty_inventory, stderr=""
+        ),
+    )
+
+    assert lifecycle._DockerCli().repo_digests("booley-sandbox") == ()
+
+
+@pytest.mark.parametrize("invalid_inventory", ["not-json\n", "{}\n", '["valid", 42]\n'])
+def test_docker_repo_digests_reject_invalid_json_shape(
+    monkeypatch: pytest.MonkeyPatch, invalid_inventory: str
+) -> None:
+    monkeypatch.setattr(
+        lifecycle.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout=invalid_inventory, stderr=""
+        ),
+    )
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="invalid RepoDigests"):
+        lifecycle._DockerCli().repo_digests("booley-sandbox")
 
 
 def test_docker_tag_removal_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:

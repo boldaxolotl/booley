@@ -147,6 +147,40 @@ def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypa
     assert any(value.startswith("BOOLEY_IMAGE_BUILT_AT=") for value in values)
 
 
+def test_docker_build_command_reuses_local_parent_labels(tmp_path, monkeypatch):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    parent_id = "sha256:" + "a" * 64
+    direct_spec = init_docker_image._DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=tmp_path,
+        exists=False,
+        image="project-image",
+        parent_artifact=parent_id,
+    )
+
+    direct_command = init_docker_image._docker_build_command(direct_spec)
+
+    assert (
+        f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}="
+        f"{init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}"
+    ) in direct_command
+    assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in direct_command
+
+    monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda _image: parent_id)
+    flavor_spec = init_docker_image._DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=tmp_path,
+        exists=False,
+        image="booley-sandbox-riscv",
+    )
+
+    flavor_command = init_docker_image._docker_build_command(flavor_spec)
+
+    assert f"{init_docker_image.LABEL_BASE_IMAGE_ID}={parent_id}" in flavor_command
+    assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in flavor_command
+
+
 def test_local_build_constructs_base_before_candidate_with_named_context(
     tmp_path, monkeypatch
 ) -> None:

@@ -30,7 +30,9 @@ from booley.runtime.docker_build import run_docker_build
 from booley.runtime.image_provenance import (
     LABEL_BUILD_ORIGIN,
     LABEL_PARENT_ARTIFACT,
+    LABEL_PARENT_ARTIFACT_KIND,
     LABEL_RECIPE_FINGERPRINT,
+    PARENT_ARTIFACT_LOCAL_IMAGE_ID,
     resolve_build_context_fingerprint,
 )
 
@@ -433,7 +435,12 @@ def build_project_image(image: str, docker_dir: Path, *, verbose: bool = False) 
         logger.error("project image parent inspection failed: %s", exc)
         return False
     if parent_id:
-        labels += ["--label", f"{LABEL_PARENT_ARTIFACT}={parent_id}"]
+        labels += [
+            "--label",
+            f"{LABEL_PARENT_ARTIFACT_KIND}={PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+            "--label",
+            f"{LABEL_PARENT_ARTIFACT}={parent_id}",
+        ]
     cmd = ["docker", "build", "-t", image, *labels, "-f", str(dockerfile), str(docker_dir)]
     try:
         result = run_docker_build(

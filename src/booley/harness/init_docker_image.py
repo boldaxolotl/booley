@@ -33,7 +33,17 @@ from booley.harness.build_stamp import (
 from booley.harness.docker_base_contract import contract as runtime_base_contract
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
-from booley.runtime.image_provenance import resolve_recipe_fingerprint
+from booley.runtime.image_provenance import (
+    LABEL_BUILD_ORIGIN,
+    LABEL_PARENT_ARTIFACT,
+    LABEL_PARENT_ARTIFACT_KIND,
+    LABEL_PAYLOAD_FINGERPRINT,
+    LABEL_RECIPE_FINGERPRINT,
+    LABEL_SCHEMA,
+    PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+    PROVENANCE_SCHEMA,
+    resolve_recipe_fingerprint,
+)
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -778,6 +788,16 @@ def _report_wheel_failure(ctx: InitContext, exc: Exception) -> bool:
     return False
 
 
+def _local_parent_label_args(parent_artifact: str) -> list[str]:
+    """Return Docker label arguments for exact local-image ancestry."""
+    return [
+        "--label",
+        f"{LABEL_PARENT_ARTIFACT_KIND}={PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+        "--label",
+        f"{LABEL_PARENT_ARTIFACT}={parent_artifact}",
+    ]
+
+
 def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     """Translate a build specification into the Docker CLI command."""
     build_cmd = ["docker", "build"]
@@ -789,14 +809,6 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     # 20-60 minute build.
     if spec.fingerprint:
         build_cmd += ["--label", f"{LABEL_FINGERPRINT}={spec.fingerprint}"]
-        from booley.runtime.image_provenance import (
-            LABEL_BUILD_ORIGIN,
-            LABEL_PAYLOAD_FINGERPRINT,
-            LABEL_RECIPE_FINGERPRINT,
-            LABEL_SCHEMA,
-            PROVENANCE_SCHEMA,
-        )
-
         build_cmd += [
             "--label",
             f"{LABEL_SCHEMA}={PROVENANCE_SCHEMA}",
@@ -808,16 +820,12 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
             f"{LABEL_BUILD_ORIGIN}=local",
         ]
     if spec.parent_artifact:
-        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
-
-        build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={spec.parent_artifact}"]
+        build_cmd += _local_parent_label_args(spec.parent_artifact)
     if spec.image in FLAVOR_IMAGES:
-        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
-
         base_image_id = _docker_image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
-            build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={base_image_id}"]
+            build_cmd += _local_parent_label_args(base_image_id)
     if spec.image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(spec.context)
     build_cmd += spec.build_args
