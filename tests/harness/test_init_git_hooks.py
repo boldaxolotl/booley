@@ -567,6 +567,56 @@ class TestLineEndingsStep:
         assert _local_autocrlf(tmp_path) == "false"
         assert _local_autocrlf(project_dir) == "false"
 
+    @pytest.mark.parametrize(
+        ("effective", "local", "detail"),
+        [
+            (None, None, "autocrlf unreadable"),
+            (False, None, "local autocrlf unreadable"),
+        ],
+    )
+    def test_unreadable_autocrlf_policy_fails_safe(
+        self,
+        tmp_path: Path,
+        effective: bool | None,
+        local: bool | None,
+        detail: str,
+    ):
+        from booley.harness import init_git_hooks
+        from booley.harness.init_git_hooks import (
+            AutocrlfSetting,
+            LineEndingRepository,
+        )
+
+        def read_setting(_root: Path, *, local: bool = False):
+            value = local_value if local else effective_value
+            return None if value is None else AutocrlfSetting(value, is_set=True)
+
+        effective_value = effective
+        local_value = local
+        repository = LineEndingRepository("project-checkout", tmp_path)
+        with patch.object(init_git_hooks, "read_autocrlf_setting", side_effect=read_setting):
+            outcome = init_git_hooks._repair_repository_line_endings(
+                repository,
+                check_only=False,
+            )
+
+        assert outcome.status == "warn"
+        assert outcome.detail == detail
+
+    def test_invalid_autocrlf_boolean_is_unreadable(self, tmp_path: Path):
+        from booley.harness import init_git_hooks
+
+        probe = subprocess.CompletedProcess(
+            args=["git", "config"],
+            returncode=0,
+            stdout="not-a-boolean\n",
+            stderr="",
+        )
+        with patch.object(init_git_hooks.subprocess, "run", return_value=probe):
+            setting = init_git_hooks.read_autocrlf_setting(tmp_path)
+
+        assert setting is None
+
 
 class TestLineEndingRepositoryDiscovery:
     def test_project_data_inside_outer_repository_is_deduplicated(self, tmp_path: Path):

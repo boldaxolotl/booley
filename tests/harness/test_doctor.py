@@ -7029,6 +7029,92 @@ class TestLineEndingsCheck:
         assert warnings[0].subject == "project-checkout"
         assert "not set locally" in warnings[0].message
 
+    @pytest.mark.parametrize(
+        ("effective", "local", "crlf_count", "expected"),
+        [
+            (None, None, None, "could not read core.autocrlf as a Git Boolean"),
+            (False, None, None, "could not read repo-local core.autocrlf"),
+            (False, False, None, "could not read `git ls-files --eol`"),
+        ],
+    )
+    def test_unreadable_repository_state_warns_with_the_failed_probe(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        effective: bool | None,
+        local: bool | None,
+        crlf_count: int | None,
+        expected: str,
+    ):
+        from booley.harness import init_git_hooks
+        from booley.harness.init_git_hooks import (
+            AutocrlfSetting,
+            LineEndingRepository,
+        )
+
+        def read_setting(_root: Path, *, local: bool = False):
+            value = local_value if local else effective_value
+            return None if value is None else AutocrlfSetting(value, is_set=True)
+
+        effective_value = effective
+        local_value = local
+        monkeypatch.setattr(init_git_hooks, "read_autocrlf_setting", read_setting)
+        monkeypatch.setattr(
+            init_git_hooks,
+            "_count_crlf_worktree_files",
+            lambda _root: crlf_count,
+        )
+        warnings: list[str] = []
+        repository = LineEndingRepository("project-checkout", tmp_path)
+
+        state = doctor._read_repository_line_ending_state(repository, warnings.append)
+
+        assert state is None
+        assert len(warnings) == 1
+        assert expected in warnings[0]
+
+    def test_unreadable_index_comparison_warns(self, tmp_path: Path, monkeypatch):
+        from booley.harness import init_git_hooks
+        from booley.harness.init_git_hooks import LineEndingRepository
+
+        monkeypatch.setattr(
+            init_git_hooks,
+            "_tracked_status_is_phantom",
+            lambda _root: (None, "git diff timed out"),
+        )
+        collector = _Collector()
+        repository = LineEndingRepository("project-checkout", tmp_path)
+
+        doctor._report_line_ending_index_metadata(
+            repository,
+            "project checkout",
+            collector._pass,
+            collector._warn,
+            collector._fail,
+        )
+
+        assert collector.warned == [
+            "line endings: project checkout: could not compare tracked status with Git diffs: "
+            "git diff timed out"
+        ]
+
+
+def test_project_audit_reports_a_missing_project_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def missing_project_dir(_root: Path) -> Path:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(doctor, "resolve_checkout_project_dir", missing_project_dir)
+    reporter = doctor._Reporter.create()
+
+    project_dir, audit = doctor._audit_project_setup(tmp_path, reporter)
+
+    assert project_dir is None
+    assert audit is None
+    assert reporter.findings is not None
+    assert any("project directory not found" in finding.message for finding in reporter.findings)
+
 
 # ===========================================================================
 # _check_subscription_creds_health — expired-creds gap (2026-07-23 incident)
