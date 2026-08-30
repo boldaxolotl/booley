@@ -50,6 +50,7 @@ from booley.harness.colors import (
 )
 from booley.harness.doctor import run_doctor
 from booley.harness.init_cmd import run_init
+from booley.harness.init_common import configure_progress_output
 from booley.harness.orphan_handler import handle_post_run_orphans, handle_startup_orphans
 from booley.harness.render_md import render
 from booley.harness.subscription_limit import detect_subscription_limit
@@ -1225,6 +1226,7 @@ def _replace_refreshed_session(
 
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Session Image and replace its Session Runtime."""
+    configure_progress_output()
     from booley.harness import auto_doctor
     from booley.harness import session_runtime as sr
     from booley.harness.init_cmd import refresh_session_image

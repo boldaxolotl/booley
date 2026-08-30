@@ -34,7 +34,6 @@ system-level).
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import shutil
@@ -81,6 +80,7 @@ from booley.harness.init_common import (
     StepResult,
     WriteOutcome,
     banner,
+    configure_progress_output,
     err,
     guarded_write,
     info,
@@ -2316,15 +2316,6 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     return _print_summary(ctx)
 
 
-def _configure_progress_output() -> None:
-    """Make redirected initialization progress visible without delay."""
-    # Line-buffer stdout so progress (esp. the multi-minute docker build) streams
-    # when piped/redirected. Python block-buffers a non-TTY stdout, which made
-    # init look hung for minutes with no output (SETUP-2).
-    with contextlib.suppress(AttributeError, ValueError):
-        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
-
-
 def _print_init_banner(ctx: InitContext) -> None:
     """Print the interactive initialization heading."""
     if ctx.check_only or not sys.stdout.isatty():
@@ -2428,7 +2419,7 @@ def _run_project_init_steps(
 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run the project initialization wizard."""
-    _configure_progress_output()
+    configure_progress_output()
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
 
