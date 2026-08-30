@@ -10,15 +10,32 @@ from __future__ import annotations
 import os
 import re
 import sys
+from io import BytesIO, TextIOWrapper
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.harness.init_common import InitContext, WriteOutcome, guarded_write
+from booley.harness.init_common import (
+    InitContext,
+    WriteOutcome,
+    configure_progress_output,
+    guarded_write,
+)
 
 MARKER = "# managed by test"
+
+
+def test_progress_output_flushes_each_redirected_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = BytesIO()
+    redirected = TextIOWrapper(raw, encoding="utf-8")
+    monkeypatch.setattr(sys, "stdout", redirected)
+
+    configure_progress_output()
+    print("Session Image build started")
+
+    assert raw.getvalue() == b"Session Image build started\n"
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from pathlib import Path
 import booley
 from booley.harness import init_cmd, init_docker_image
 from booley.harness.init_common import InitContext
+from booley.runtime.docker_build import DockerBuildResult
 
 
 def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch, capsys):
@@ -628,6 +629,24 @@ class TestDockerBuildCommand:
 
         assert captured["cmd"][:2] == ["docker", "build"]
         assert "--no-cache" not in captured["cmd"]
+
+    def test_failure_renders_retained_diagnostics_once(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(
+            init_docker_image,
+            "run_docker_build",
+            lambda *_args, **_kwargs: DockerBuildResult(
+                1, diagnostics=("ERROR: checksum mismatch",)
+            ),
+            raising=False,
+        )
+        ctx = InitContext(project_root=tmp_path)
+        build = init_docker_image._DockerBuildSpec(
+            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
+        )
+
+        assert init_docker_image._docker_build_image(ctx, build) == 1
+
+        assert capsys.readouterr().out.count("ERROR: checksum mismatch") == 1
 
 
 # ---------------------------------------------------------------------------

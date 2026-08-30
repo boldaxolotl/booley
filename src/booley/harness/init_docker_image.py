@@ -32,6 +32,7 @@ from booley.harness.build_stamp import (
 )
 from booley.harness.docker_base_contract import contract as runtime_base_contract
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
+from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.image_provenance import resolve_recipe_fingerprint
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -826,34 +827,12 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     return build_cmd
 
 
-def _run_docker_build(ctx: InitContext, build_cmd: list[str], timeout: int) -> int:
-    """Run a Docker build, streaming only its useful progress when non-verbose."""
-    if ctx.verbose:
-        return subprocess.run(build_cmd, text=True, timeout=timeout, check=False).returncode
-    # BuildKit emits UTF-8 regardless of the Windows console codec. Replacement
-    # keeps an undecodable log byte from aborting an otherwise healthy build.
-    proc = subprocess.Popen(
-        build_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    stdout = proc.stdout
-    if stdout is None:
-        raise OSError("docker build output pipe was not created")
-    last_msg = ""
-    with stdout:
-        for line in stdout:
-            if ">>>" not in line:
-                continue
-            msg = line[line.index(">>>") :].strip().split('"', 1)[0].rstrip(" \\")
-            if msg and msg != last_msg:
-                info(msg)
-                last_msg = msg
-    proc.wait(timeout=timeout)
-    return proc.returncode
+def _render_build_diagnostics(result: DockerBuildResult) -> None:
+    if not result.diagnostics:
+        return
+    info("recent Docker output:")
+    for line in result.diagnostics:
+        info(f"  {line}")
 
 
 def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
@@ -862,7 +841,21 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
     info(f"{action} {spec.image} image — {spec.build_note}.")
     build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
     try:
-        return _run_docker_build(ctx, _docker_build_command(spec), build_timeout)
+        result = run_docker_build(
+            _docker_build_command(spec),
+            image=spec.image,
+            verbose=ctx.verbose,
+            timeout=build_timeout,
+        )
+        _render_build_diagnostics(result)
+        if result.timed_out:
+            err(
+                f"docker build timed out after {build_timeout // 60} minutes "
+                "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
+            )
+            ctx.record(spec.record_key, "err", "build timed out")
+            return None
+        return result.returncode
     except subprocess.TimeoutExpired:
         err(
             f"docker build timed out after {build_timeout // 60} minutes "
