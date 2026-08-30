@@ -242,6 +242,16 @@ def _patch_environment(
 
     def fake_run(cmd, **kwargs):  # noqa: PLR0911,PLR0912 — external-command boundary fixture
         calls.append([str(part) for part in cmd])
+        if cmd[:2] == ["git", "-C"] and "--show-toplevel" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{root}\n", stderr="")
+        if cmd[:2] == ["git", "-C"] and "config" in cmd and "core.autocrlf" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="false\n", stderr="")
+        if cmd[:2] == ["git", "-C"] and "ls-files" in cmd and "--eol" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "-C"] and "status" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:2] == ["git", "-C"] and "diff" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
         if cmd[:3] == ["git", "status", "--porcelain"]:
@@ -6852,6 +6862,178 @@ class TestLineEndingsCheck:
         doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail)
 
         assert c.skipped and not c.failed
+
+    def test_nested_crlf_failure_names_project_data_repository(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="false")
+        self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
+        project_dir = tmp_path / ".booley_project"
+        hooks = project_dir / "hooks"
+        hooks.mkdir(parents=True)
+        self._repo(project_dir, autocrlf="true")
+        self._commit(project_dir, "hooks/post-setup.sh", b"#!/bin/sh\nset -euo pipefail\n")
+        hook = hooks / "post-setup.sh"
+        hook.unlink()
+        subprocess.run(
+            ["git", "-C", str(project_dir), "checkout", "--", "hooks/post-setup.sh"],
+            capture_output=True,
+            check=True,
+        )
+        c = _Collector()
+
+        doctor._check_line_endings(
+            tmp_path,
+            c._pass,
+            c._warn,
+            c._skip,
+            c._fail,
+            project_dir=project_dir,
+        )
+
+        assert len(c.failed) == 1
+        assert "project data" in c.failed[0][0]
+        assert str(project_dir) in c.failed[0][0]
+        assert any("project checkout" in message for message in c.passed)
+
+    def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
+        self._repo(tmp_path, autocrlf="false")
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        self._repo(project_dir, autocrlf="true")
+        reporter = doctor._Reporter.create()
+
+        doctor._check_line_endings(
+            tmp_path,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+            project_dir=project_dir,
+        )
+
+        assert reporter.findings is not None
+        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        assert len(warnings) == 1
+        assert warnings[0].check_id == "git.autocrlf-risk"
+        assert warnings[0].subject == "project-data"
+        assert str(project_dir) in warnings[0].message
+
+    def test_unset_local_autocrlf_warning_names_project_checkout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        global_config = tmp_path / "global.gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = false\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        self._repo(tmp_path, autocrlf="false")
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "--unset", "core.autocrlf"],
+            capture_output=True,
+            check=True,
+        )
+        reporter = doctor._Reporter.create()
+
+        doctor._check_line_endings(
+            tmp_path,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+        )
+
+        assert reporter.findings is not None
+        warnings = [finding for finding in reporter.findings if finding.severity == "warn"]
+        assert len(warnings) == 1
+        assert warnings[0].check_id == "git.autocrlf-risk"
+        assert warnings[0].subject == "project-checkout"
+        assert "not set locally" in warnings[0].message
+
+    @pytest.mark.parametrize(
+        ("effective", "local", "crlf_count", "expected"),
+        [
+            (None, None, None, "could not read core.autocrlf as a Git Boolean"),
+            (False, None, None, "could not read repo-local core.autocrlf"),
+            (False, False, None, "could not read `git ls-files --eol`"),
+        ],
+    )
+    def test_unreadable_repository_state_warns_with_the_failed_probe(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        effective: bool | None,
+        local: bool | None,
+        crlf_count: int | None,
+        expected: str,
+    ):
+        from booley.harness import init_git_hooks
+        from booley.harness.init_git_hooks import (
+            AutocrlfSetting,
+            LineEndingRepository,
+        )
+
+        def read_setting(_root: Path, *, local: bool = False):
+            value = local_value if local else effective_value
+            return None if value is None else AutocrlfSetting(value, is_set=True)
+
+        effective_value = effective
+        local_value = local
+        monkeypatch.setattr(init_git_hooks, "read_autocrlf_setting", read_setting)
+        monkeypatch.setattr(
+            init_git_hooks,
+            "_count_crlf_worktree_files",
+            lambda _root: crlf_count,
+        )
+        warnings: list[str] = []
+        repository = LineEndingRepository("project-checkout", tmp_path)
+
+        state = doctor._read_repository_line_ending_state(repository, warnings.append)
+
+        assert state is None
+        assert len(warnings) == 1
+        assert expected in warnings[0]
+
+    def test_unreadable_index_comparison_warns(self, tmp_path: Path, monkeypatch):
+        from booley.harness import init_git_hooks
+        from booley.harness.init_git_hooks import LineEndingRepository
+
+        monkeypatch.setattr(
+            init_git_hooks,
+            "_tracked_status_is_phantom",
+            lambda _root: (None, "git diff timed out"),
+        )
+        collector = _Collector()
+        repository = LineEndingRepository("project-checkout", tmp_path)
+
+        doctor._report_line_ending_index_metadata(
+            repository,
+            "project checkout",
+            collector._pass,
+            collector._warn,
+            collector._fail,
+        )
+
+        assert collector.warned == [
+            "line endings: project checkout: could not compare tracked status with Git diffs: "
+            "git diff timed out"
+        ]
+
+
+def test_project_audit_reports_a_missing_project_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def missing_project_dir(_root: Path) -> Path:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(doctor, "resolve_checkout_project_dir", missing_project_dir)
+    reporter = doctor._Reporter.create()
+
+    project_dir, audit = doctor._audit_project_setup(tmp_path, reporter)
+
+    assert project_dir is None
+    assert audit is None
+    assert reporter.findings is not None
+    assert any("project directory not found" in finding.message for finding in reporter.findings)
 
 
 # ===========================================================================
