@@ -1,7 +1,7 @@
 """Canonical Booley Flow and Specialist references, rendered from the registry.
 
 Single source of truth: :func:`booley.mcp.registry.discover_mcp_tools`. The
-``booley cheat`` CLI renders this block live, while ``docs/USAGE.md`` embeds a
+``booley cheat`` CLI renders this block live, while ``docs/user/USAGE.md`` embeds a
 committed copy between the ``<!-- BEGIN GENERATED: flows -->`` /
 ``<!-- END GENERATED: flows -->`` markers that a pytest keeps byte-identical to
 this renderer. The cheatsheet gives Specialists their own flag-addressable
@@ -11,7 +11,7 @@ from this one place.
 Regenerate the committed doc blocks with::
 
     python -m booley.dev_support.flow_specialist_reference \\
-        docs/USAGE.md src/booley/data/cheatsheet.md
+        docs/user/USAGE.md src/booley/data/cheatsheet.md
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ simulation, synthesis, linting, and ticket-based workflows.
   the existing checkout has dirty files.
 - `main` is protected; submit every change through a pull request from its
   worktree branch.
-- Read `docs/CODING_PRINCIPLES.md` before writing Python code.
+- Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
 - Run `ruff check src/ tests/` before committing Python changes.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
   framework code must not hardcode project paths or names.
@@ -18,8 +18,8 @@ simulation, synthesis, linting, and ticket-based workflows.
 ## Agent skills
 
 - **Issue tracker:** GitHub Issues stores issues and specs. See
-  `docs/agents/issue-tracker.md`.
+  `docs/internals/agents/issue-tracker.md`.
 - **Triage labels:** Use the standard Matt Pocock labels. See
-  `docs/agents/triage-labels.md`.
-- **Domain docs:** Single-context: `docs/CONTEXT.md` and `docs/adr/`. See
-  `docs/agents/domain.md`.
+  `docs/internals/agents/triage-labels.md`.
+- **Domain docs:** Single-context: `docs/CONTEXT.md`; optional local ADR history
+  may exist under `docs/adr/`. See `docs/internals/agents/domain.md`.

@@ -73,7 +73,9 @@ dist/
 # sandbox image build into the installed package). Never committed.
 src/booley/data/bin/
 
-# Internal planning docs — not for distribution by default.
+# Internal evidence and planning docs — local-only, never distributed.
 docs/adr/
+docs/benchmarks/
 docs/plans/
+docs/research/
 docs/notes/
