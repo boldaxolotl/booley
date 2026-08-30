@@ -54,7 +54,7 @@ def _populate(project_dir):
         Finding(
             title="CONFIG.md documents a removed table",
             bucket="docs",
-            component="docs/CONFIG.md",
+            component="docs/user/CONFIG.md",
             observed="describes [sources.rtl]",
         ),
         project_dir,

@@ -95,7 +95,7 @@ class Finding:
     exposed_by: str = ""
     #: Setup step or port phase, for grouping.
     step: str = ""
-    #: Booley-side subsystem or doc path ("doctor", "sim", "docs/CONFIG.md").
+    #: Booley-side subsystem or doc path ("doctor", "sim", "docs/user/CONFIG.md").
     component: str = ""
     #: Shell command that reproduces it, verbatim.
     repro: str = ""

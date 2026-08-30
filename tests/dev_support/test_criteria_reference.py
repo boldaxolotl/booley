@@ -27,13 +27,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # project criteria). cheatsheet.md is also spliced live by `booley cheat`, but its
 # committed copy must still match so the raw file is correct.
 _EMBEDDED_DOCS = [
-    REPO_ROOT / "docs" / "USAGE.md",
+    REPO_ROOT / "docs" / "user" / "USAGE.md",
     cheatsheet_path(),
 ]
 
 REGEN_HINT = (
     "Regenerate with: python -m booley.dev_support.criteria_reference "
-    "docs/USAGE.md src/booley/data/cheatsheet.md"
+    "docs/user/USAGE.md src/booley/data/cheatsheet.md"
 )
 
 
