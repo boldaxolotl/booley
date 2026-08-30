@@ -5,6 +5,9 @@ simulation, synthesis, linting, and ticket-based workflows.
 
 ## Repository Rules
 
+- In every new chat, before modifying Booley code, create a new worktree with a
+  new branch based on `main`. Always isolate the work this way, especially when
+  the existing checkout has dirty files.
 - Read `docs/CODING_PRINCIPLES.md` before writing Python code.
 - Run `ruff check src/ tests/` before committing Python changes.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
