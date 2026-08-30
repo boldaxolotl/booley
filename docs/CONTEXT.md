@@ -234,6 +234,16 @@ _Avoid_: allowlist
 A signal that a decision exceeds the current authority level, flowing Specialist to Developer Agent to Human. When the Developer Agent escalates, the ticket moves to blocked on the Ticket Board.
 _Avoid_: spec gap, blocker, impediment
 
+### Coverage
+
+**Coverage Campaign**:
+The complete, indivisible Target-bound record of one coverage-enabled Simulation invocation, including test selection, collector facts and artifacts, normalized observations, dispositions, rollups, collection truth, and any Coverage Criterion evaluation. It may exist without a Coverage Criterion and never combines evidence across Targets.
+_Avoid_: coverage report, coverage run, cross-Target coverage
+
+**Coverage Criterion**:
+A composite Target-bound Criterion that evaluates one Coverage Campaign against an exact test selection and per-metric minimums using the Project's approved waivers. Its coverage truth is independent of the simulation verdicts recorded by the Campaign.
+_Avoid_: per-metric coverage criterion, waveform coverage criterion, coverage gate
+
 ### Waveform analysis
 
 **B-Wave**:
