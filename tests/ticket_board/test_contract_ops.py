@@ -195,11 +195,7 @@ def test_enqueue_accepts_contract_only_sim_target_after_authoring_worktree_remov
             ticket_type="refactor",
             branch="main",
             scope=["toy.core"],
-            criteria={
-                "mandatory": {
-                    "sim_pass": ["tb/toy_tb.sv @ sim_future @ pass -> pass"]
-                }
-            },
+            criteria={"mandatory": {"sim_pass": ["tb/toy_tb.sv @ sim_future @ pass -> pass"]}},
             body="## Description\n\nAdd and use the `sim_future` Target.\n",
         ),
     )

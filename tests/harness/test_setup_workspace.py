@@ -122,6 +122,7 @@ class TestMaterializedTargetContract:
 
     def test_blocks_changed_materialized_surface(self, tmp_path: Path):
         from booley.harness.setup.workspace import _validate_materialized_target_contract
+
         ctx = self._context(tmp_path)
         with patch(
             "booley.ticket_board.target_contract.validate_materialized_contract",
