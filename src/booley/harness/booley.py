@@ -305,31 +305,37 @@ def _baked_commit() -> str | None:
 
 
 def _source_commit() -> str | None:
-    """Short git commit (``+dirty``) of the installed Booley source, if known.
+    """Short commit (``+dirty``) attributed to the imported Booley code.
 
-    Prefers the live git state of a checkout — that is the one that can be
-    ``+dirty`` — and falls back to the commit baked into the wheel at build
-    time. Lets ``--version`` disambiguate builds that all report the static
-    packaged version (SETUP-1), in a container as well as on the host (F-5).
+    Live source and installed distributions are disjoint: a source failure
+    never borrows a wheel stamp, and a wheel never borrows an enclosing repo.
     """
     import booley
+    from booley.runtime.version_attribution import VersionOrigin
 
-    pkg = Path(booley.__file__).resolve().parent
+    attribution = booley._version_attribution
+    if attribution.origin is VersionOrigin.DISTRIBUTION:
+        return _baked_commit()
+    root = attribution.source_root
+    if attribution.origin is not VersionOrigin.SOURCE or root is None:
+        return None
+    if not (root / ".git").exists():
+        return None
     try:
         rev = subprocess.run(
-            ["git", "-C", str(pkg), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return _baked_commit()
+        return None
     if rev.returncode != 0 or not rev.stdout.strip():
-        return _baked_commit()
+        return None
     commit = rev.stdout.strip()
     dirty = subprocess.run(
-        ["git", "-C", str(pkg), "status", "--porcelain"],
+        ["git", "-C", str(root), "status", "--porcelain"],
         capture_output=True,
         text=True,
         timeout=5,
