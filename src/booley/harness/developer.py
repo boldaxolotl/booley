@@ -253,7 +253,14 @@ async def _run_log_mode(
 
 def _invalidate_missing_worktree(ctx: TicketContext, project_root: Path) -> None:
     """If setup claims complete but the worktree is unusable, reset for re-run."""
-    if "setup" not in ctx.completed_steps or not ctx.worktree_path:
+    if "setup" not in ctx.completed_steps:
+        return
+
+    if ctx.worktree_path is None:
+        logger.warning("Ticket setup has no recoverable worktree -- re-running setup")
+        ctx.completed_steps.remove("setup")
+        ctx.feature_branch = ""
+        ctx.current_step = ""
         return
 
     health = check_worktree_health(project_root, ctx.worktree_path)
@@ -293,6 +300,32 @@ async def _run_setup_step(ctx: TicketContext, project_root: Path) -> bool:
     step_end_header("setup")
     step_footer()
     return False
+
+
+def _resumed_contract_failure(ctx: TicketContext) -> str | None:
+    """Return a setup-blocking error when a reused contract view is invalid."""
+    if ctx.target_contract is None:
+        return None
+    if ctx.worktree_path is None:
+        return "target-contract-change-required: Ticket worktree is unavailable"
+    from .setup.workspace import _validate_materialized_target_contract
+
+    result = _validate_materialized_target_contract(ctx, ctx.worktree_path)
+    return result.block_reason if result is not None else None
+
+
+def _deferred_criteria_failure(ctx: TicketContext) -> str | None:
+    """Initialize sealed criteria after setup, returning a blocking error."""
+    if not ctx.criteria_state_needs_init:
+        return None
+    from .setup.intake import _init_criteria_state
+
+    try:
+        _init_criteria_state(ctx)
+    except FatalError as exc:
+        return exc.error
+    ctx.criteria_state_needs_init = False
+    return None
 
 
 def _log_final_cost(ctx: TicketContext, exec_start: float) -> None:
@@ -335,6 +368,13 @@ async def _run_ticket_body(
             await _prepare_blocked_triage(ctx, project_root)
             return None
 
+    if resume_uses_existing_setup:
+        contract_failure = _resumed_contract_failure(ctx)
+        if contract_failure is not None:
+            block_ticket(ctx, contract_failure, "setup")
+            await _prepare_blocked_triage(ctx, project_root)
+            return None
+
     # A blocked ticket may have received an expanded scope during triage while
     # retaining its worktree and completed setup marker. Refresh the persisted
     # guard before the developer runs so newly authorized paths are not rejected
@@ -351,6 +391,12 @@ async def _run_ticket_body(
         except OSError as exc:
             fail_ticket(ctx, f"scope guard refresh failed: {exc}", "setup")
             return None
+
+    criteria_failure = _deferred_criteria_failure(ctx)
+    if criteria_failure is not None:
+        block_ticket(ctx, criteria_failure, "setup")
+        await _prepare_blocked_triage(ctx, project_root)
+        return None
 
     # Setup created the worktree -- refresh the click-link resolver so
     # post-setup file clicks resolve against the worktree copy with a

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from booley.harness.models import (
     AgentResult,
     CommandEntry,
@@ -45,6 +47,19 @@ class TestTicketContext:
             project_root=tmp_path,
         )
         assert ctx.logs_dir == tmp_path / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
+
+    def test_sealed_contract_fields_requires_contract(self, tmp_path: Path) -> None:
+        ctx = TicketContext(
+            slug="my-ticket",
+            ticket_path=Path("/t.md"),
+            ticket_type="mod",
+            branch="main",
+            summary="s",
+            project_root=tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="no sealed Target contract"):
+            ctx.sealed_contract_fields()
 
 
 class TestOnSuccess:
