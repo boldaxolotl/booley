@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 from booley.harness import upgrade_cli, upgrade_review
 from booley.harness.booley import _build_parser
 
@@ -106,6 +108,34 @@ def test_human_status_rendering_covers_actionable_conditions() -> None:
     assert "version changed from 1.0.0 to 2.0.0" in upgrade_cli.render_status(pending)
     assert "/booley-heal" in upgrade_cli.render_status(stale)
     assert "corrupt: bad JSON" in upgrade_cli.render_status(corrupt)
+
+
+@pytest.mark.parametrize(
+    ("condition", "check_id"),
+    [
+        (upgrade_review.ReviewCondition.PENDING, "upgrade.review-pending"),
+        (upgrade_review.ReviewCondition.STALE_RUNTIME, "upgrade.runtime-stale"),
+        (upgrade_review.ReviewCondition.CORRUPT, "upgrade.review-state-corrupt"),
+        (upgrade_review.ReviewCondition.UNSUPPORTED, "upgrade.version-unsupported"),
+        (upgrade_review.ReviewCondition.UNAVAILABLE, "upgrade.review-state-unavailable"),
+    ],
+)
+def test_status_presentation_centralizes_doctor_check_ids(
+    condition: upgrade_review.ReviewCondition, check_id: str
+) -> None:
+    status = upgrade_review.ReviewStatus(
+        condition,
+        "2.0.0",
+        "/project/runtime/upgrade_review.json",
+        reviewed_through="1.0.0",
+        pending_target="2.0.0",
+        diagnostic="unavailable",
+    )
+
+    presentation = upgrade_cli.status_presentation(status)
+
+    assert presentation.doctor_check_id == check_id
+    assert presentation.action is not None
 
 
 def test_human_status_command_uses_renderer(tmp_path: Path, monkeypatch, capsys) -> None:

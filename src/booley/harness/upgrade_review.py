@@ -18,6 +18,14 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any
 
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    as_str,
+    require_dict,
+    require_opt_str,
+    require_str,
+)
 from booley.runtime.changelog import ChangelogError, StableVersion, parse_releases
 from booley.runtime.file_lock import LockContentionError, acquire_file_lock, release_file_lock
 from booley.runtime.paths import changelog_path
@@ -114,24 +122,30 @@ def _running_version(value: str | None) -> str:
 
 
 def _parse_version(value: object, field: str) -> StableVersion:
-    if not isinstance(value, str):
+    parsed = as_str(value)
+    if parsed is None:
         raise CorruptReviewStateError(f"{field} must be a stable version string")
     try:
         from booley.runtime.changelog import parse_stable_version
 
-        return parse_stable_version(value)
+        return parse_stable_version(parsed)
     except ChangelogError as exc:
         raise CorruptReviewStateError(f"invalid {field}: {exc}") from exc
 
 
 def _validate_state(data: object) -> ReviewState:
-    if not isinstance(data, dict):
-        raise CorruptReviewStateError("upgrade review state must be a JSON object")
-    if data.get("schema") != STATE_SCHEMA:
-        raise CorruptReviewStateError(f"unsupported upgrade review schema {data.get('schema')!r}")
-    reviewed = _parse_version(data.get("reviewed_through"), "reviewed_through")
-    pending_value = data.get("pending_target")
-    first_seen = data.get("first_seen_at")
+    try:
+        mapping = require_dict(data, field="upgrade review state")
+        reviewed_value = require_str(mapping, "reviewed_through")
+        pending_value = require_opt_str(mapping, "pending_target")
+        first_seen = require_opt_str(mapping, "first_seen_at")
+    except BoundaryError as exc:
+        raise CorruptReviewStateError(str(exc)) from exc
+    if mapping.get("schema") != STATE_SCHEMA:
+        raise CorruptReviewStateError(
+            f"unsupported upgrade review schema {mapping.get('schema')!r}"
+        )
+    reviewed = _parse_version(reviewed_value, "reviewed_through")
     if pending_value is None:
         if first_seen is not None:
             raise CorruptReviewStateError("first_seen_at requires pending_target")
@@ -139,7 +153,7 @@ def _validate_state(data: object) -> ReviewState:
     pending = _parse_version(pending_value, "pending_target")
     if pending <= reviewed:
         raise CorruptReviewStateError("pending_target must be newer than reviewed_through")
-    if not isinstance(first_seen, str):
+    if first_seen is None:
         raise CorruptReviewStateError("pending review requires first_seen_at")
     try:
         parse_timestamp(first_seen)
@@ -166,10 +180,10 @@ def _read_state(path: Path) -> ReviewState | None:
 def _doctor_bootstrap_version(project_dir: Path) -> StableVersion | None:
     path = project_dir / "runtime" / "doctor_stamp.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = as_dict(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
         return None
-    if not isinstance(data, dict):
+    if data is None:
         return None
     try:
         return _parse_version(data.get("booley_version"), "doctor stamp booley_version")

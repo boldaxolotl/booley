@@ -59,6 +59,7 @@ from booley.harness import (
     image_lifecycle,
     nangate_pdk,
     session_runtime,
+    upgrade_cli,
     upgrade_review,
 )
 from booley.harness import interactive_docker as idk
@@ -598,8 +599,7 @@ def _run_project_phase(
     banner("Host checks")
     docker_exe = _run_host_checks(reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_)
     project_dir, project = _audit_project_setup(project_root, reporter)
-    if project_dir is not None:
-        _check_upgrade_review(project_dir, reporter)
+    _check_upgrade_review(project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -641,34 +641,19 @@ def _run_project_phase(
     return docker_exe, project
 
 
-def _check_upgrade_review(project_dir: Path, reporter: _Reporter) -> None:
+def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None:
     """Observe the running version and render its durable review status."""
+    if project_dir is None:
+        return
     status = upgrade_review.observe(project_dir)
-    condition = status.condition
-    if condition is upgrade_review.ReviewCondition.CURRENT:
-        reporter.pass_(f"Booley release review current through {status.reviewed_through}")
+    presentation = upgrade_cli.status_presentation(status)
+    if presentation.doctor_check_id is None:
+        reporter.pass_(presentation.summary)
         return
-    if condition is upgrade_review.ReviewCondition.PENDING:
-        _warning_sink(reporter.warn_, "upgrade.review-pending")(
-            f"Booley version changed from {status.reviewed_through} to {status.pending_target}",
-            "invoke /booley-heal",
-        )
-        return
-    if condition is upgrade_review.ReviewCondition.STALE_RUNTIME:
-        target = status.pending_target or status.reviewed_through
-        _warning_sink(reporter.warn_, "upgrade.runtime-stale")(
-            f"running Booley {status.running_version} is older than review target {target}",
-            "invoke /booley-heal",
-        )
-        return
-    check_id = {
-        upgrade_review.ReviewCondition.CORRUPT: "upgrade.review-state-corrupt",
-        upgrade_review.ReviewCondition.UNSUPPORTED: "upgrade.version-unsupported",
-        upgrade_review.ReviewCondition.UNAVAILABLE: "upgrade.review-state-unavailable",
-    }[condition]
-    _warning_sink(reporter.warn_, check_id)(
-        f"Booley release review state cannot be evaluated: {status.diagnostic}",
-        f"preserve and inspect {status.state_path}; repair the state before invoking /booley-heal",
+    assert presentation.action is not None
+    _warning_sink(reporter.warn_, presentation.doctor_check_id)(
+        presentation.summary,
+        presentation.action,
     )
 
 

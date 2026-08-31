@@ -134,6 +134,33 @@ def test_non_utf8_state_is_preserved_for_diagnosis(tmp_path: Path) -> None:
     assert path.read_bytes() == b"\xff\xfe"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"schema": 1, "reviewed_through": 123},
+        {"schema": 1, "reviewed_through": "1.0.0", "pending_target": 200},
+        {
+            "schema": 1,
+            "reviewed_through": "1.0.0",
+            "pending_target": "2.0.0",
+            "first_seen_at": 123,
+        },
+    ],
+)
+def test_invalid_boundary_types_are_preserved_for_diagnosis(
+    tmp_path: Path, payload: object
+) -> None:
+    project_dir = _project(tmp_path)
+    path = upgrade_review.state_path(project_dir)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    status = upgrade_review.observe(project_dir, current_version="2.0.0", now=_NOW)
+
+    assert status.condition is upgrade_review.ReviewCondition.CORRUPT
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+
+
 def test_unsupported_version_does_not_guess_or_write_state(tmp_path: Path) -> None:
     project_dir = _project(tmp_path)
 
