@@ -48,9 +48,8 @@ booley targets         # every .core Target Booley can see, grouped by core
 booley cheat --list    # the cheatsheet's sections, each printable on its own
 ```
 
-Repeat `booley doctor` after every Booley version update, then invoke
-`/booley-heal` in your agent chat. The skill repairs actionable version-related
-drift and verifies both plain and deep Doctor checks.
+If Booley reports that its version changed, invoke `/booley-heal` in your agent
+chat.
 
 For the fastest orientation, start with `booley cheat`. It gives a compact
 overview of every public CLI command, the editable `.booley_project` files,

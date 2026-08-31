@@ -54,7 +54,14 @@ from booley.fusesoc import (
 )
 from booley.harness import bootstrap as host_bootstrap
 from booley.harness import devcontainer as dc
-from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk, session_runtime
+from booley.harness import (
+    doctor_stamp,
+    image_lifecycle,
+    nangate_pdk,
+    session_runtime,
+    upgrade_cli,
+    upgrade_review,
+)
 from booley.harness import interactive_docker as idk
 from booley.harness.colors import green, red, yellow
 from booley.harness.devcontainer import (
@@ -592,6 +599,7 @@ def _run_project_phase(
     banner("Host checks")
     docker_exe = _run_host_checks(reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_)
     project_dir, project = _audit_project_setup(project_root, reporter)
+    _check_upgrade_review(project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -631,6 +639,22 @@ def _run_project_phase(
         repair=not read_only,
     )
     return docker_exe, project
+
+
+def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None:
+    """Observe the running version and render its durable review status."""
+    if project_dir is None:
+        return
+    status = upgrade_review.observe(project_dir)
+    presentation = upgrade_cli.status_presentation(status)
+    if presentation.doctor_check_id is None:
+        reporter.pass_(presentation.summary)
+        return
+    assert presentation.action is not None
+    _warning_sink(reporter.warn_, presentation.doctor_check_id)(
+        presentation.summary,
+        presentation.action,
+    )
 
 
 def _audit_project_setup(

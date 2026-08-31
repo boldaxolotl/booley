@@ -170,6 +170,26 @@ def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch,
     assert "Automatic Doctor is running" in capsys.readouterr().err
 
 
+def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch):
+    from booley.harness import auto_doctor, session_runtime
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        tlr, "_report_upgrade_before_session", lambda _root: events.append("observe")
+    )
+    monkeypatch.setattr(session_runtime, "conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        session_runtime,
+        "up",
+        lambda *_args, **_kwargs: events.append("up") or "session",
+    )
+    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+    monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
+
+    assert tlr._session_up(tlr._build_parser().parse_args(["session", "up"]), tmp_path) == 0
+    assert events == ["observe", "up"]
+
+
 def test_due_session_start_does_not_report_persisted_doctor_findings(
     tmp_path, monkeypatch, capsys
 ):

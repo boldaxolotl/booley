@@ -126,7 +126,7 @@ def _version_drift_message(stamp: dict) -> str | None:
     previous = str(stamped_version) if stamped_version else "unknown"
     return (
         f"Booley version changed from {previous} to {booley.__version__} "
-        "since the last clean `booley doctor` run -- re-run `booley doctor`"
+        "since the last clean `booley doctor` run -- invoke /booley-heal"
     )
 
 

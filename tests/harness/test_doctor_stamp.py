@@ -87,6 +87,7 @@ class TestCheckStamp:
 
         assert msg is not None
         assert "Booley version changed from 1.0.0 to 2.0.0" in msg
+        assert "invoke /booley-heal" in msg
 
     def test_stale_stamp_nags_with_age(self, tmp_path):
         project_dir = _write_project(tmp_path)

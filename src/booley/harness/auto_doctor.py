@@ -41,6 +41,7 @@ _ANNOUNCE_LOCK_NAME = "announcements.lock"
 _TIME_FORMAT = MACHINE_TIMESTAMP_FORMAT  # Compatibility for report fixtures.
 _HEALTHY_MAX_AGE = timedelta(days=doctor_stamp.MAX_AGE_DAYS)
 _UNHEALTHY_RETRY_AGE = timedelta(days=1)
+_UPGRADE_ONLY_CHECKS = frozenset({"upgrade.review-pending", "upgrade.runtime-stale"})
 
 Progress = Callable[[str], None]
 
@@ -117,6 +118,9 @@ def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, Any]
         fingerprint[f"root_{name}_identity"] = _path_identity(project_root / name)
     fingerprint["core_files_sha256"] = _core_digest(project_root, project_dir)
     fingerprint["booley_version"] = booley.__version__
+    fingerprint["upgrade_review_sha256"] = _sha256_or_none(
+        project_dir / "runtime" / "upgrade_review.json"
+    )
     return fingerprint
 
 
@@ -167,10 +171,26 @@ def _existing_report_due_reason(
     if checked_at is None:
         return "automatic Doctor timestamp unreadable"
     clean = bool(report.get("clean"))
-    max_age = _HEALTHY_MAX_AGE if clean else _UNHEALTHY_RETRY_AGE
+    max_age = (
+        _HEALTHY_MAX_AGE
+        if clean or _has_only_upgrade_review_findings(report)
+        else _UNHEALTHY_RETRY_AGE
+    )
     if now - checked_at >= max_age:
         return "automatic Doctor result expired"
     return None
+
+
+def _has_only_upgrade_review_findings(report: dict[str, Any]) -> bool:
+    """True when rerunning Doctor daily cannot change the active findings."""
+    active = [
+        finding
+        for finding in report.get("findings", [])
+        if isinstance(finding, dict) and finding.get("severity") in {"fail", "warn"}
+    ]
+    return bool(active) and all(
+        finding.get("check_id") in _UPGRADE_ONLY_CHECKS for finding in active
+    )
 
 
 @contextlib.contextmanager
