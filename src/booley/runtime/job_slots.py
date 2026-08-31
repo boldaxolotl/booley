@@ -687,14 +687,22 @@ class SlotStore:
 
     def _rewrite_token(self, token: SlotToken) -> bool:
         tmp = token.path.with_name(f".{token.path.name}.{os.getpid()}.rewrite.tmp")
-        try:
-            tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
-            tmp.replace(token.path)
-        except OSError:
+        for attempt in range(_ENTRY_IO_ATTEMPTS):
+            try:
+                tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
+                tmp.replace(token.path)
+            except PermissionError:
+                if attempt + 1 < _ENTRY_IO_ATTEMPTS:
+                    self._sleep(_ENTRY_IO_RETRY_SECONDS)
+                    continue
+            except OSError:
+                pass
+            else:
+                return True
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
             return False
-        return True
+        return False
 
     def _stamp_promoted(self, token: SlotToken) -> bool:
         """Stamp complete holder metadata before the waiter→holder rename.
