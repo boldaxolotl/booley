@@ -46,7 +46,7 @@ documentation-only or unsupported.
 | Program | Installed pin | Current stable production release | Source | Outcome |
 | --- | --- | --- | --- | --- |
 | xPack RISC-V GCC | `15.2.0-1` | `15.2.0-1` | [xPack release](https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/tag/v15.2.0-1) | **current** |
-| Spike / riscv-isa-sim | tested master snapshot `55b4658d...` | formal release `v1.1.0`; upstream master `c09c0cce...` is newer | [Spike releases](https://github.com/riscv-software-src/riscv-isa-sim/releases/tag/v1.1.0) | **held**: `v1.1.0` does not build with Ubuntu 24.04's compiler, while moving an arbitrary snapshot requires a channel decision and full RISC-V validation. Follow-up: [#157](https://github.com/boldaxolotl/booley/issues/157). |
+| Spike / riscv-isa-sim | tested master snapshot `55b4658d...` | formal release `v1.1.0`; upstream master `c09c0cce...` is newer | [Spike releases](https://github.com/riscv-software-src/riscv-isa-sim/releases/tag/v1.1.0) | **validated update** to `c09c0cce...`: use exact, tested snapshots of official upstream `master` because the unmaintained release channel does not build on Ubuntu 24.04. The image build, upstream checks, PicoRV32 demo, and differential flow passed. See the [channel decision and evidence](spike-release-channel.md) and [#157](https://github.com/boldaxolotl/booley/issues/157). |
 | `srec_cat`, `dtc`, `pdftotext` | Ubuntu 24.04 archive packages | Ubuntu 24.04 archive versions at build time | [Ubuntu packages](https://packages.ubuntu.com/) | **unversioned**: apt resolves these within the selected image archive; the repository has no package-version pin. |
 
 The RISC-V ISA, debug, and psABI PDFs and HTML archives are reference data,

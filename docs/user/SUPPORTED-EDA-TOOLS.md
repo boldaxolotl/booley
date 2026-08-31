@@ -171,8 +171,11 @@ booley session enter -- verilator --version       # or any other EDA tool
 booley session enter -- python -m pip list        # the Python side
 ```
 
-The RISC-V variant (`booley-sandbox-riscv`) adds a cross toolchain and Spike on
-top of these; see
+The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
+and a tested official-master Spike snapshot at
+`c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
+Spike's snapshot policy and validation record are documented in
+[Spike release-channel research](../research/spike-release-channel.md). See also
 [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,

@@ -164,6 +164,20 @@ def test_source_builds_fetch_immutable_commits() -> None:
         assert f'test "$(git rev-parse HEAD)" = "${{{name}}}"' in dockerfile
 
 
+def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
+
+    assert spike_ref is not None
+    assert spike_ref.group(1) == "c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb"
+    assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
+    assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
+
+    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
+    assert "make check" in spike_build
+    assert "test -x /opt/riscv/bin/spike" in spike_build
+
+
 def test_riscv_release_consumes_base_job_digest() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
