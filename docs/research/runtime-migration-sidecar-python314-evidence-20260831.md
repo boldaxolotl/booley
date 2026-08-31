@@ -3,7 +3,7 @@
 This report covers Phase 3 of the runtime migration plan in
 [#199](https://github.com/boldaxolotl/booley/pull/199) for
 [#156](https://github.com/boldaxolotl/booley/issues/156). The isolated branch
-starts from `main` at `902d5bbb6469921755bde2d9841412683db61118` and changes
+starts from `main` at `ac1e3eabbc9fa544ae8b91fb1b5cff74601f5efc` and changes
 only the Python base of the egress proxy, FlexNet relay, and idle reaper.
 
 ## Decision
@@ -67,9 +67,12 @@ cache, and no populated APT list cache.
 
 | Sidecar | Control bytes | Candidate bytes | Delta | Delta % |
 | --- | ---: | ---: | ---: | ---: |
-| Egress proxy | 44,373,437 | 44,818,672 | +445,235 | +1.0034% |
-| FlexNet relay | 16,906,031 | 17,773,901 | +867,870 | +5.1335% |
-| Reaper | 36,449,990 | 37,317,873 | +867,883 | +2.3810% |
+| Egress proxy | 120,971,075 | 122,339,007 | +1,367,932 | +1.1308% |
+| FlexNet relay | 45,580,504 | 47,785,215 | +2,204,711 | +4.8370% |
+| Reaper | 88,260,188 | 90,464,899 | +2,204,711 | +2.4980% |
+
+These are the uncompressed image-byte totals reported by Docker image inspect
+in the retained hosted artifact.
 
 Full `docker history --no-trunc` comparisons attribute the changed bytes to
 the official Python runtime layer. The Bookworm runtime layer grew while its
@@ -91,5 +94,12 @@ sizes, untruncated image histories and inspect output, and the sidecar behavior
 test log. Source-image inspect output and `source-repodigests.tsv` demonstrate
 that every locally pulled input has a RepoDigest matching its immutable pin.
 
-The immutable implementation commit and fresh workflow run that produced this
-evidence are recorded below after the required checks complete.
+The `bwave-smoke` job in
+[CI run 33416773509](https://github.com/boldaxolotl/booley/actions/runs/33416773509)
+built and tested immutable implementation commit
+`3275afd64d2f2c123f907675dca7b6e541f5085d`. The
+[Docker evidence artifact](https://github.com/boldaxolotl/booley/actions/runs/33416773509/artifacts/9767601872)
+is `docker-build-evidence` (ID `9767601872`) with archive digest
+`sha256:9b10447247d5bfc0c8794946df9f623772f401e2e6a4678f56fd67c19dce48c7`.
+The successor commit updates only this report and its static workflow contract;
+it does not change the implementation or evidence-producing workflow.
