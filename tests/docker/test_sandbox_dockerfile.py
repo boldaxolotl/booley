@@ -110,9 +110,7 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
 
 def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
-    evidence_script = Path(
-        ".github/scripts/sidecar-build-evidence.sh"
-    ).read_text(encoding="utf-8")
+    evidence_script = Path(".github/scripts/sidecar-build-evidence.sh").read_text(encoding="utf-8")
 
     assert "bash .github/scripts/sidecar-build-evidence.sh" in workflow
     assert "docker build --pull --no-cache" in evidence_script
