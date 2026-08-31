@@ -540,7 +540,7 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in verible isolation fifo native-fst simulator ticket-mode; do
+          for validation in verible isolation fifo native-fst simulator cocotb ticket-mode; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
@@ -610,6 +610,22 @@ jobs:
               booley-test bash -c "pip install --break-system-packages pytest pytest-asyncio &&
               python -m pytest /work/crates/bwave/tests/simulator_ground_truth_test.py
               -q --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+
+          - name: Run cocotb Icarus/Verilator production-image flows
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/cocotb
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-cocotb
+              docker run --rm --init
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-cocotb
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              booley-test bash -c "cp -a /work/tests/fixtures/cocotb_counter /validation-tmp/project &&
+              cd /validation-tmp/project &&
+              test \"\$(cocotb-config --version)\" = 2.1.0 &&
+              python3 -m booley.flows.sim --work-dir /validation-tmp/project --target sim_icarus &&
+              python3 -m booley.flows.sim --work-dir /validation-tmp/project --target sim_verilator"
 
           - name: Run Ticket Mode production-image smoke
             env:

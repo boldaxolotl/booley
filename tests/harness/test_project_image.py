@@ -360,7 +360,7 @@ class TestDockerfile:
 # ===========================================================================
 
 
-BASE_VERSIONS = {"cocotb": "2.0.1", "cocotbext-axi": "0.1.28", "pytest": "8.0.0"}
+BASE_VERSIONS = {"cocotb": "2.1.0", "cocotbext-axi": "0.1.28", "pytest": "8.0.0"}
 
 
 class TestBaseImagePackages:
@@ -373,9 +373,9 @@ class TestBaseImagePackages:
         monkeypatch.setattr(pi.subprocess, "run", _fake)
 
     def test_parses_pip_freeze_and_normalizes_names(self, monkeypatch):
-        self._run(monkeypatch, stdout="cocotb==2.0.1\ncocotb_ext.AXI==0.1.28\nnoversion\n")
+        self._run(monkeypatch, stdout="cocotb==2.1.0\ncocotb_ext.AXI==0.1.28\nnoversion\n")
 
-        assert pi.base_image_packages() == {"cocotb": "2.0.1", "cocotb-ext-axi": "0.1.28"}
+        assert pi.base_image_packages() == {"cocotb": "2.1.0", "cocotb-ext-axi": "0.1.28"}
 
     def test_unqueryable_image_is_not_an_error(self, monkeypatch):
         """Advisory by contract: no base image means nothing to advise about."""
@@ -393,13 +393,13 @@ class TestCuratedOverrides:
         overrides = pi.curated_overrides(["cocotb==1.5.1", "cocotbext-axi==0.1.10"], BASE_VERSIONS)
 
         assert overrides == [
-            ("cocotb==1.5.1", "cocotb", "2.0.1"),
+            ("cocotb==1.5.1", "cocotb", "2.1.0"),
             ("cocotbext-axi==0.1.10", "cocotbext-axi", "0.1.28"),
         ]
 
     def test_matching_pin_and_bare_name_are_silent(self):
         """Neither can move the installed version, so neither is news."""
-        assert pi.curated_overrides(["cocotb==2.0.1", "pytest"], BASE_VERSIONS) == []
+        assert pi.curated_overrides(["cocotb==2.1.0", "pytest"], BASE_VERSIONS) == []
 
     def test_package_absent_from_the_base_is_silent(self):
         assert pi.curated_overrides(["cocotb-bus==0.2.1"], BASE_VERSIONS) == []

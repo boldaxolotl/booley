@@ -15,7 +15,7 @@ re-emits it as a single ``[COCOTB_RESULTS]`` JSON line beside the usual
 verdicts into its existing report shapes (``_test_report_entry``). Both halves
 share this module so the shapes cannot drift.
 
-Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1):
+Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1 and 2.1.0):
 
 * pass — ``<testcase>`` with no child element;
 * fail — ``<failure …/>`` child (cocotb assertion, Python exception, or

@@ -870,7 +870,7 @@ def _report_curated_overrides(kept: list[str]) -> None:
     """Name the project pins that re-version a package the base image curates.
 
     Projects own their sim stack, so these pins are honored — that is the
-    design. They were also completely silent: a ``cocotb 2.0.1 -> 1.5.1``
+    design. They were also completely silent: a ``cocotb 2.1.0 -> 1.5.1``
     downgrade got baked with no output, and the base Dockerfile's cocotb/VPI
     validation layer does not re-run on the project layer, so the first sign is
     a simulator behaving unlike the documented one (F-13). One info line per

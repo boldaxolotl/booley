@@ -159,7 +159,7 @@ may override the Python rows (see
 | OpenROAD | 2.0-17598-ga008522d8 (Precision-Innovations release 2024-12-14) |
 | Verible | v0.0-4157-gfdbac312 |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
-| cocotb | 2.0.1, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
+| cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley init`, mounted read-only at `/opt/pdk/cell/lib` |
 
 Check what your image actually has rather than trusting the table after an
