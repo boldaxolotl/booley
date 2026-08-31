@@ -10,7 +10,7 @@ def test_integrated_development_environment_features_lead_with_one_window():
     features = (
         "**One Window:**",
         "**Reproducible team environment:**",
-        "**One typed Booley Flow surface:**",
+        "**A typed interface for each Booley Flow:**",
     )
 
     assert [section.index(feature) for feature in features] == sorted(
