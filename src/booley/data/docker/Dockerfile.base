@@ -163,11 +163,11 @@ RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && rm -rf /tmp/verible.tar.gz /tmp/verible-${VERIBLE_VERSION} \
     && verible-verilog-lint --version
 
-# Node.js 22 LTS + agent CLIs. Download exact publisher artifacts and verify
+# Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
-ARG NODE_VERSION=22.23.2
-ARG NODE_SHA256=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307
+ARG NODE_VERSION=24.20.0
+ARG NODE_SHA256=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2
 COPY src/booley/data/docker/agent-clis-package.json /opt/agent-clis/package.json
 COPY src/booley/data/docker/agent-clis-package-lock.json /opt/agent-clis/package-lock.json
 RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \

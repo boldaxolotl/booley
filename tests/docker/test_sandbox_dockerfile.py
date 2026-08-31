@@ -228,6 +228,26 @@ def test_cocotb_layer_overrides_openroad_parent_system_numpy() -> None:
     assert "--ignore-installed" in dockerfile[layer_start:layer_end]
 
 
+def test_agent_runtime_uses_validated_node24_and_executable_policy_probe() -> None:
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    probe = Path("tests/docker/agent_policy_probe.py").read_text(encoding="utf-8")
+
+    assert "ARG NODE_VERSION=24.20.0" in dockerfile
+    assert (
+        "ARG NODE_SHA256=2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2"
+        in dockerfile
+    )
+    assert "--expected-node 24.20.0" in workflow
+    assert "--expected-npm 11.19.0" in workflow
+    assert "--network none" in workflow
+    assert "agent_policy_probe.py" in workflow
+    assert "--evidence /validation-tmp/agent-policy.json" in workflow
+    assert "agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert 'default="24.20.0"' in probe
+    assert 'default="11.19.0"' in probe
+
+
 def test_source_builds_fetch_immutable_commits() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     refs = dict(re.findall(r"^ARG ([A-Z0-9_]+_REF)=([0-9a-f]{40})$", dockerfile, re.MULTILINE))

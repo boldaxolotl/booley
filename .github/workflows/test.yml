@@ -564,13 +564,29 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in verible isolation fifo native-fst simulator cocotb ticket-mode; do
+          for validation in agent-policy verible isolation fifo native-fst simulator cocotb ticket-mode; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
       - parallel:
+          - name: Run installed agent CLI policy probe
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/agent-policy
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-agent-policy
+              docker run --rm --init --network none --user agent
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-agent-policy
+              --tmpfs /home/agent:uid=1000,gid=1000,mode=700
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test python /work/tests/docker/agent_policy_probe.py
+              --expected-node 24.20.0 --expected-npm 11.19.0
+              --evidence /validation-tmp/agent-policy.json
+
           - name: Run Verible production-image end-to-end test
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/verible
@@ -676,6 +692,15 @@ jobs:
           if (( ${#containers[@]} )); then
             docker rm -f "${containers[@]}"
           fi
+
+      - name: Upload installed agent CLI policy evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json
+          if-no-files-found: warn
+          retention-days: 14
 
   ci-required:
     name: ci-required
