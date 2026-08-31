@@ -671,7 +671,10 @@ def test_project_cleanup_reports_live_vscode_and_network_residue(tmp_path: Path)
 def test_dockerfile_pins_minimal_base_and_runs_as_numeric_user() -> None:
     path = Path("src/booley/data/docker/Dockerfile.flexnet-relay")
     dockerfile = path.read_text(encoding="utf-8")
-    assert "FROM python:3.13.15-alpine3.24@sha256:" in dockerfile
+    assert (
+        "FROM python:3.14.7-alpine3.24@sha256:"
+        "05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc" in dockerfile
+    )
     assert "USER 65532:65532" in dockerfile
     assert "HEALTHCHECK" in dockerfile
     assert "--healthcheck" in dockerfile
