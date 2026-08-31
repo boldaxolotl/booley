@@ -132,6 +132,37 @@ def _labels(*, payload: str, recipe: str, parent: str | None = None) -> dict[str
     return values
 
 
+def test_host_scope_never_reads_project_configuration(monkeypatch):
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    monkeypatch.setattr(
+        lifecycle,
+        "_selected_reference",
+        lambda _root: (_ for _ in ()).throw(AssertionError("Project config read")),
+    )
+
+    result = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.CHECK)
+
+    assert result.selected_reference == lifecycle.BASE_IMAGE
+    assert result.status is lifecycle.Status.STALE
+
+
+def test_composed_force_refreshes_host_base_exactly_once(tmp_path: Path, monkeypatch):
+    root = _project(tmp_path, "booley-sandbox-riscv")
+    docker = FakeDocker({})
+    builder = _wire(monkeypatch, docker)
+
+    base = lifecycle.reconcile(lifecycle.HostImageScope(), lifecycle.Intent.REFRESH)
+    result = lifecycle.reconcile(
+        lifecycle.ProjectImageScope(root, base),
+        lifecycle.Intent.REFRESH,
+    )
+
+    assert builder.built.count(lifecycle.BASE_IMAGE) == 1
+    assert builder.built == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
+    assert result.status is lifecycle.Status.CHANGED
+
+
 def test_check_rejects_same_version_with_different_payload(tmp_path: Path, monkeypatch):
     root = _project(tmp_path)
     docker = FakeDocker(
@@ -144,7 +175,7 @@ def test_check_rejects_same_version_with_different_payload(tmp_path: Path, monke
     )
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
     assert result.status is lifecycle.Status.STALE
     assert result.selected_id == "sha256:" + "a" * 64
@@ -174,7 +205,7 @@ def test_check_rejects_local_base_when_stable_contract_changed(tmp_path: Path, m
         "old-contract"
     )
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
     assert result.status is lifecycle.Status.STALE
 
@@ -204,7 +235,7 @@ def test_packaged_install_accepts_exact_local_parent_when_contract_is_unavailabl
         lambda _root: (_ for _ in ()).throw(ValueError("manifest absent")),
     )
 
-    assert lifecycle.reconcile(root, lifecycle.Intent.CHECK).status is lifecycle.Status.CURRENT
+    assert lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK).status is lifecycle.Status.CURRENT
 
 
 def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(tmp_path: Path, monkeypatch):
@@ -224,7 +255,7 @@ def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(tmp_path: Path, m
     )
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert builder.built == ["booley-sandbox", "booley-sandbox-riscv"]
     assert result.status is lifecycle.Status.CHANGED
@@ -283,13 +314,13 @@ def test_published_flavor_uses_registry_parent_when_local_ids_differ(
     docker.registry_identities[lifecycle.BASE_IMAGE] = (base_digest,)
     builder = _wire(monkeypatch, docker)
 
-    legacy_result = lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+    legacy_result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
     assert publisher_parent_id != consumer_base_id
     assert legacy_result.status is lifecycle.Status.STALE
 
     docker.images["booley-sandbox-riscv"] = (consumer_flavor_id, flavor_labels)
-    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert result.status is lifecycle.Status.CURRENT
     assert result.selected_id == consumer_flavor_id
@@ -332,7 +363,7 @@ def test_missing_published_pair_is_acquired_and_keeps_flavor_short_tag(
     builder = RegistryPullBuilder(docker)
     monkeypatch.setattr(lifecycle, "_build_adapter", lambda *_args, **_kwargs: builder)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert builder.built == [lifecycle.BASE_IMAGE, "booley-sandbox-riscv"]
     assert result.status is lifecycle.Status.CHANGED
@@ -381,7 +412,7 @@ def test_published_flavor_rejects_different_registry_parent(
     docker.registry_identities[lifecycle.BASE_IMAGE] = (current_digest,)
     builder = _wire(monkeypatch, docker)
 
-    lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert builder.built == ["booley-sandbox-riscv"]
 
@@ -411,7 +442,7 @@ def test_keep_recipe_is_not_rewritten_when_parent_forces_rebuild(tmp_path: Path,
     )
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert builder.built == ["booley-sandbox", "booley-sandbox-riscv", generated]
     assert result.selected_reference == generated
@@ -423,7 +454,7 @@ def test_explicit_external_image_receives_zero_mutations(tmp_path: Path, monkeyp
     docker = FakeDocker({})
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.REFRESH)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
 
     assert result.status is lifecycle.Status.EXTERNAL
     assert not builder.built
@@ -442,7 +473,7 @@ def test_ensure_generates_project_recipe_for_configured_requirements(tmp_path: P
     docker = FakeDocker({})
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     generated = "project-booley-sandbox"
     assert result.selected_reference == generated
@@ -472,7 +503,7 @@ def test_invalid_sandbox_configuration_fails_loudly(
     _wire(monkeypatch, FakeDocker({}))
 
     with pytest.raises(lifecycle.ImageLifecycleError, match=message):
-        lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
 
 def test_missing_configured_requirement_fails_loudly(
@@ -486,7 +517,7 @@ def test_missing_configured_requirement_fails_loudly(
     _wire(monkeypatch, FakeDocker({}))
 
     with pytest.raises(lifecycle.ImageLifecycleError, match=r"missing\.txt"):
-        lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
 
 def test_check_uses_desired_requirements_without_rewriting_recipe(tmp_path: Path, monkeypatch):
@@ -499,12 +530,12 @@ def test_check_uses_desired_requirements_without_rewriting_recipe(tmp_path: Path
     )
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
-    lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
     generated_recipe = root / ".booley_project" / "docker" / "requirements.txt"
     before = generated_recipe.read_bytes()
 
     requirement.write_text("cocotb==2.0.2\n", encoding="utf-8")
-    result = lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
     assert result.status is lifecycle.Status.STALE
     assert generated_recipe.read_bytes() == before
@@ -521,7 +552,7 @@ def test_checkout_project_dir_override_wins_over_literal_directory(tmp_path: Pat
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
 
-    lifecycle.reconcile(root, lifecycle.Intent.CHECK)
+    lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
     assert lifecycle._direct_project_dir(root) == custom
 
@@ -538,7 +569,7 @@ def test_ambiguous_project_dockerfile_fails_without_building(tmp_path: Path, mon
     builder = _wire(monkeypatch, docker)
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="ambiguous ancestry"):
-        lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert not builder.built
 
@@ -562,7 +593,7 @@ def test_failed_refresh_restores_selected_tag(tmp_path: Path, monkeypatch):
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="build failed"):
-        lifecycle.reconcile(root, lifecycle.Intent.REFRESH)
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
 
     assert docker.image_id("booley-sandbox") == old_id
 
@@ -591,7 +622,7 @@ def test_failed_derived_refresh_restores_every_managed_tag(tmp_path: Path, monke
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="derived build failed"):
-        lifecycle.reconcile(root, lifecycle.Intent.REFRESH)
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
 
     assert docker.image_id("booley-sandbox") == old_base
     assert docker.image_id("booley-sandbox-riscv") == old_flavor
@@ -608,7 +639,7 @@ def test_failed_derived_build_removes_new_parent_tag(tmp_path: Path, monkeypatch
     )
 
     with pytest.raises(lifecycle.ImageLifecycleError, match="derived build failed"):
-        lifecycle.reconcile(root, lifecycle.Intent.REFRESH)
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.REFRESH)
 
     assert docker.image_id("booley-sandbox") is None
     assert docker.image_id("booley-sandbox-riscv") is None
@@ -629,7 +660,7 @@ def test_legacy_base_payload_is_accepted_until_next_rebuild(tmp_path: Path, monk
     )
     builder = _wire(monkeypatch, docker)
 
-    result = lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    result = lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert result.status is lifecycle.Status.CURRENT
     assert result.diagnostics[0].code == "legacy-provenance"
@@ -658,7 +689,7 @@ def test_legacy_derived_image_is_rebuilt_for_exact_ancestry(tmp_path: Path, monk
     )
     builder = _wire(monkeypatch, docker)
 
-    lifecycle.reconcile(root, lifecycle.Intent.ENSURE)
+    lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.ENSURE)
 
     assert builder.built == ["booley-sandbox-riscv"]
 
