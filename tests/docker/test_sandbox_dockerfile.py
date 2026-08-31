@@ -173,9 +173,7 @@ def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
     assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
     assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
 
-    spike_build = riscv[
-        riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")
-    ]
+    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
     assert "make check" in spike_build
     assert "test -x /opt/riscv/bin/spike" in spike_build
 
