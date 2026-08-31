@@ -43,9 +43,10 @@ that archive drift, cache state, and measurement method are identical.
 | --- | --- | --- | --- | --- | --- |
 | `B` | 24.04 | 3.13 | 22.23.2 | 3.13.15 | Fresh control |
 | `N` | 24.04 | 3.13 | 24.20.0 | 3.13.15 | Isolate Node and both agent CLIs |
+| `S` | 24.04 | 3.14 | 22.23.2 | 3.13.15 | Isolate Session Python and Booley dependencies |
 | `P` | 24.04 | 3.13 | 22.23.2 | 3.14.7 | Isolate all three sidecars |
-| `U` | 26.04 | distro Python 3.14 | 22.23.2 | 3.13.15 | Isolate the Session Runtime OS and compiler stack |
-| `F` | 26.04 | distro Python 3.14 | 24.20.0 | 3.14.7 | Detect interactions after `N`, `P`, and `U` pass |
+| `U` | 26.04 | distro Python 3.14 | 22.23.2 | 3.13.15 | Isolate the OS/compiler stack by comparison with `S` |
+| `F` | 26.04 | distro Python 3.14 | 24.20.0 | 3.14.7 | Detect interactions after `N`, `S`, `P`, and `U` pass |
 
 Use disposable candidate Dockerfiles or build arguments during investigation.
 Do not edit all production pins first and then try to infer which change caused
@@ -58,8 +59,8 @@ For every row, retain:
 - `docker image inspect`, `docker history --no-trunc`, installed package lists,
   version output, and test logs;
 - the exact Node tarball SHA-256 and every external `FROM` digest;
-- uncompressed image bytes from `.Size` for the stable base, final sandbox,
-  RISC-V flavor, egress proxy, FlexNet relay, and reaper.
+- uncompressed image bytes from `.Size` for every image surface applicable to
+  that row.
 
 The implementation PR should add a dated evidence report beside this plan. A
 tag alone is not immutable evidence: resolve each OCI tag to a `sha256:` digest,
@@ -135,15 +136,57 @@ Run these cases separately:
 - `bypassPermissions` is active, matching Booley's container policy;
 - the prompt requires a fresh web search and a fetch of a known public URL.
 
-Each case passes only if the transcript shows both tools denied or unavailable
-and contains no fetched result. Also prove that an ordinary non-web tool remains
-usable, so a broken CLI is not mistaken for successful enforcement.
+Do not use the model's choice to attempt a denied tool as the primary oracle.
+For every case, capture a supported machine-readable startup/debug tool
+inventory and assert that `WebFetch` and `WebSearch` are absent. If the pinned
+CLI exposes no such inventory, run it against a loopback test provider that
+captures the outbound tool definitions before returning any model response;
+assert that the two web tools are absent while a permitted canary such as
+`Read` is present. Invoke the canary successfully. A prompted model turn that
+requests web access is useful supplemental evidence, but cannot make the test
+pass by itself.
+
+### Credential and evidence handling
+
+Authenticated probes use dedicated, short-lived, least-privilege test
+credentials. Never put a secret in a command-line argument, Docker build arg,
+image layer, `docker run -e NAME=value` metadata, or traced shell. Mount it as a
+read-only runtime secret and have an untraced in-container wrapper export it
+only to the CLI child process.
+
+Run with `--rm`, a tmpfs or disposable home, an empty synthetic repository, and
+a cleanup trap that removes containers, volumes, networks, homes, and raw
+transcripts on success or failure. Revoke the credential after the matrix. The
+retained artifact is an allowlisted summary of effective tools and outcomes,
+not the raw CLI home or transcript. Run the repository confidential-content
+guard plus a test-credential fingerprint scan before uploading any evidence;
+any match blocks the upload and the phase.
 
 Run the same matrix on `B` and `N`. Node 24 passes only when the outcomes are
-identical. No real project source or user home may be mounted into these
-credentialed negative tests.
+identical. No real project source or user home is mounted into these tests.
 
-## Phase 2: Python 3.14 sidecars
+## Phase 2: Session Python 3.14 on Ubuntu 24.04
+
+Build `S` before changing Ubuntu. Keep the Ubuntu digest, Node, agent CLIs,
+sidecars, EDA pins, and Rust builder identical to `B`; change only the Session
+Python packages, `python`/`python3` symlinks, and literal user-site paths. Use
+the same deadsnakes channel as `B`, and record the exact resolved package
+versions. Select the same upstream `major.minor.patch` that `U` will use and
+require `platform.python_version()` to match between `S` and `U`. If the
+existing channel cannot supply that candidate, hold this phase rather than
+changing both the Python source and Ubuntu at once.
+
+In both `B` and `S`, perform the full dependency install and retain resolver
+output, then run `python -m pip check`, direct imports of every curated runtime
+package, the full Python test suite, agent-SDK discovery, and the cocotb/Icarus
+library lookup from `Dockerfile.base`. Run representative plain and cocotb
+simulations so compiled Python extensions and the simulator bridge execute,
+not merely import. The phase passes only when `S` matches `B` behavior with no
+new skipped compatibility test. Ubuntu evaluation must use `S` as its control
+so a later failure is attributable to the OS/compiler change rather than the
+Python major version.
+
+## Phase 3: Python 3.14 sidecars
 
 Keep the existing OS variants while changing only CPython:
 
@@ -165,19 +208,28 @@ Required evidence:
 3. Run the FlexNet healthcheck, fixed-destination forwarding E2E, read-only
    root filesystem, numeric unprivileged user, dropped-capability, and cleanup
    cases.
-4. Run the reaper unit suite and Docker-socket E2E, including licensed-session
-   topology cleanup and an unreachable daemon.
+4. Add an image-owned reaper E2E and run it against the candidate image:
+
+   ```text
+   docker build --pull --no-cache \
+     --file src/booley/data/docker/Dockerfile.reaper \
+     --tag booley-reaper:py314 src/booley/docker
+   BOOLEY_REAPER_IMAGE=booley-reaper:py314 \
+     pytest tests/docker/test_reaper_image_e2e.py -q
+   ```
+
+   The test must launch that image, not import `booley.docker.reaper` on the
+   host. Give it a disposable labeled session container and network through a
+   mounted Docker socket, assert the candidate ENTRYPOINT removes the owned
+   topology, then point the same image at an unreachable daemon. During a
+   bounded observation window, assert it logs the failed pass, remains alive,
+   and waits for its configured interval instead of busy-looping; stop it at
+   the end of the test. Clean all topology in `finally`.
 5. Compare image bytes and history for all three sidecars. Every added layer or
    size increase must be attributed; duplicated interpreters or package caches
    fail the phase.
 
-The main Booley dependency set already runs in the host CI's Python 3.14 leg.
-That does not cover the image environment. In `U` and `F`, additionally run the
-full dependency install, `python -m pip check`, direct imports of every curated
-runtime package, the full Python test suite, and the cocotb/Icarus library
-lookup performed by `Dockerfile.base`.
-
-## Phase 3: Ubuntu 26.04
+## Phase 4: Ubuntu 26.04
 
 Start `U` from the production Dockerfile with only these unavoidable base
 adaptations:
@@ -187,8 +239,9 @@ adaptations:
 - update literal Python 3.13 paths such as the agent user-site directory.
 
 Record the resolved versions of glibc, GCC/G++, binutils, CMake, Python, and
-every apt-installed library in `B` and `U`. Do not pin a moving Ubuntu tag or
-leave individual downloaded archives unchecked.
+every apt-installed library in `S` and `U`. Compare `U` with `S`, not `B`, so
+both candidates use Session Python 3.14. Do not pin a moving Ubuntu tag or leave
+individual downloaded archives unchecked.
 
 ### OpenROAD gate
 
@@ -234,29 +287,52 @@ and a regression test.
 Capture `getconf GNU_LIBC_VERSION`, `ldd --version`, and `readelf --version-info`
 for native executables and Python extensions. At minimum inspect Node, both
 agent CLIs, B-Wave, Yosys/ABC, OpenROAD, Icarus/vvp, Verilator, sv2v, and
-Verible.
+Verible. Resolve wrappers and symlinks with `readlink -f` and `file`; for each
+agent CLI, also locate and inspect the native platform payload that its npm
+launcher executes. A wrapper script is not glibc evidence.
 
-The B-Wave builder deliberately remains on digest-pinned Debian Bookworm. Its
-binary must still require no symbol newer than `GLIBC_2.34`, have no missing
-shared libraries in `U` and `F`, and pass its native contract tests. All other
-native binaries and `.so` files must have complete `ldd` resolution and execute
-their real smoke; comparing version strings alone does not pass this gate.
+The evidence report must contain this contract table, filled with the measured
+maximum required symbol and loader result:
 
-### Image-size gate
+| Artifact class | Compatibility floor / maximum allowed requirement |
+| --- | --- |
+| B-Wave copied from the Bookworm builder | No newer than `GLIBC_2.34` |
+| Node, Claude/Codex native payloads, and pinned prebuilt EDA archives used across candidates | No newer than the glibc shipped by `B` (record its exact version; expected 2.39) |
+| Python extensions and EDA binaries built inside `B`, `N`, `S`, or `P` | No newer than that candidate's recorded runtime glibc |
+| Python extensions and EDA binaries built inside `U` or `F` | No newer than `U`'s recorded runtime glibc; these artifacts must never be copied into an older candidate |
 
-Compare `B` with `U`, and `N`/`P` with `F`, using both image `.Size` and
-`docker history`. Report absolute and percentage deltas for the stable base,
-final sandbox, and RISC-V flavor. Any increase must be traced to named layers.
-The phase is blocked by an unexplained increase, a duplicate Python/Node/Rust
-toolchain, a retained package cache, or build-only files in the final image.
-An explained intentional increase still requires an explicit reviewer decision
-in the evidence report rather than an automatic pass.
+Every ELF object must have complete `ldd` resolution and execute its real
+smoke. A required symbol above the applicable row's ceiling, a missing loader
+or library, failure to identify the native payload behind a CLI wrapper, or a
+new-image artifact copied into an older runtime fails the gate. This table
+defines “disallowed glibc symbols” for the final acceptance decision.
+
+### Image-size assessment
+
+Size is decision evidence, not a compatibility pass/fail budget: the repository
+has no established byte threshold, so this plan does not invent one. Make only
+single-variable comparisons with both image `.Size` and
+`docker history --no-trunc`:
+
+- `N - B`: stable base, final sandbox, and RISC-V flavor (Node only);
+- `S - B`: stable base, final sandbox, and RISC-V flavor (Session Python only);
+- `P - B`: egress proxy, FlexNet relay, and reaper only (sidecar Python only);
+- `U - S`: stable base, final sandbox, and RISC-V flavor (Ubuntu/compiler only);
+- `F - U`: stable base, final sandbox, and RISC-V flavor, compared with the
+  `N - B` Node delta; `F` sidecars are compared directly with `P`.
+
+Report absolute and percentage deltas and trace every changed byte range to
+named layers. The magnitude alone is informational and must be called out for
+review, not labeled green or red. Missing measurements, mixed-variable
+comparisons, duplicate Python/Node/Rust toolchains, retained package caches, or
+build-only files in a final image are test failures.
 
 ## Final combined and release gates
 
-Build `F` only after the three isolated phases have passed. Repeat every Node
-policy probe, sidecar E2E, image smoke, EDA/physical flow, RISC-V flow, glibc
-inspection, and size comparison. Then run the ordinary required checks:
+Build `F` only after the four isolated phases have passed. Repeat every Node
+policy probe, Session-Python dependency and simulation check, sidecar E2E,
+image smoke, EDA/physical flow, RISC-V flow, glibc inspection, and size
+comparison. Then run the ordinary required checks:
 
 ```text
 ruff check src/ tests/
@@ -272,12 +348,16 @@ The production migration is accepted only when:
 - all exact version assertions, supported-tool documentation, and Docker
   contracts change together;
 - each negative agent-policy case passes on Node 24;
+- Session Python 3.14 passes independently on Ubuntu 24.04 before the Ubuntu
+  rebase;
 - all sidecars retain their security and behavioral contracts on Python 3.14;
 - the stable base and RISC-V image build from empty cache on Ubuntu 26.04;
 - OpenROAD and representative simulation, synthesis, lint, timing, physical,
   and RISC-V flows pass;
-- native artifacts have no unresolved libraries or disallowed glibc symbols;
-- every image-size delta is explained and accepted;
+- native artifacts have no unresolved libraries or symbols above their defined
+  glibc ceiling;
+- every single-variable image-size delta is measured and attributed, with no
+  retained build-only payload or duplicate toolchain;
 - the final combined image repeats the isolated successes.
 
 Any failed gate produces a **hold**, with the candidate pin left out of
@@ -291,13 +371,15 @@ Deliver implementation as separate pull requests, each based on the then-current
 `main`:
 
 1. Node 24 plus the executable policy probes and Node checksum.
-2. Python 3.14 sidecar digests plus sidecar E2E evidence.
-3. Ubuntu 26.04, native Session Python 3.14, compiler/EDA/OpenROAD/glibc/size
+2. Session Python 3.14 on Ubuntu 24.04 plus dependency, simulator, and agent-SDK
+   evidence.
+3. Python 3.14 sidecar digests plus sidecar E2E evidence.
+4. Ubuntu 26.04 plus compiler/EDA/OpenROAD/glibc/size
    evidence; this PR may remain blocked on #154.
-4. A final combined validation or release PR only if interactions require
-   changes beyond the first three.
+5. A final combined validation or release PR only if interactions require
+   changes beyond the first four.
 
 Each PR should say `Refs #156`; no planning or partial migration PR should close
 the issue. Close #156 only after the final evidence report records a promote or
-hold decision for all three runtime lanes and links every resulting PR or
+hold decision for every candidate surface and links every resulting PR or
 follow-up issue.
