@@ -31,7 +31,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     pyproject_copy = base.index("COPY pyproject.toml")
     dependency_exporter = base.index("COPY src/booley/data/docker/export_project_dependencies.py")
     project_install = base.index("--requirement /tmp/booley-build/project-dependencies.txt")
-    image_dependencies = base.index('"cocotb==2.0.1"')
+    image_dependencies = base.index('"cocotb==2.1.0"')
 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
@@ -51,6 +51,15 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert 'test -x "$(command -v claude)"' in candidate
     assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.251"' in candidate
     assert "python -m pip check" in candidate
+
+
+def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert 'test "$(cocotb-config --version)" = "2.1.0"' in base
+    assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
+    assert 'cocotb-config --lib-name vpi icarus' not in base
+    assert 'cocotb-config --lib-name-path vpi icarus).vpl' not in base
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:

@@ -230,16 +230,15 @@ RUN python -m pip install --break-system-packages --no-cache-dir \
 # cocotbext-spi is ABSENT deliberately: no release imports against cocotb 2.x
 # (0.5.0 still uses the removed cocotb.clock.BaseClock).
 RUN python -m pip install --break-system-packages --no-cache-dir \
-    "cocotb==2.0.1" "numpy==2.5.2" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
+    "cocotb==2.1.0" "numpy==2.5.2" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
 
 # Build-time sanity (D2): the image fails to build rather than failing at
 # first sim — cocotb-config resolves, the curated set imports, and the
-# Icarus VPI library the run-half loads (`vvp -m cocotbvpi_icarus`) exists.
-# (vvp resolves `-m libcocotbvpi_icarus` by appending the platform suffix,
-# so the shipped file is the extensionless lib-name-path + ".vpl".)
-RUN cocotb-config --version \
+# Icarus VPI library the run-half loads by absolute path exists. Cocotb 2.1
+# returns the complete platform-suffixed path (`.so` on this Linux image).
+RUN test "$(cocotb-config --version)" = "2.1.0" \
     && python3 -c "import cocotb, cocotbext.axi, cocotbext.uart, numpy" \
-    && test -e "$(cocotb-config --lib-name-path vpi icarus).vpl"
+    && test -e "$(cocotb-config --lib-name-path vpi icarus)"
 USER agent
 
 # Pre-create pip user-install dirs so named volumes inherit agent ownership

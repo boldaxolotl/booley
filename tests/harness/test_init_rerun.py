@@ -502,16 +502,16 @@ class TestHandAuthoredImageBuild:
 
 class TestCuratedOverrideAdvisory:
     """F-13: a project pin that re-versions a package the base image curated
-    (cocotb 2.0.1 -> 1.5.1) was baked with zero output, and the base image's
+    (cocotb 2.1.0 -> 1.5.1) was baked with zero output, and the base image's
     cocotb/VPI validation layer never re-runs on the project layer."""
 
     def test_names_each_overridden_package(self, monkeypatch, capsys):
-        monkeypatch.setattr(pi, "base_image_packages", lambda *a, **k: {"cocotb": "2.0.1"})
+        monkeypatch.setattr(pi, "base_image_packages", lambda *a, **k: {"cocotb": "2.1.0"})
 
         init_cmd._report_curated_overrides(["cocotb==1.5.1", "numpy==2.0"])
 
         out = capsys.readouterr().out
-        assert "cocotb==1.5.1" in out and "cocotb==2.0.1" in out
+        assert "cocotb==1.5.1" in out and "cocotb==2.1.0" in out
         assert "numpy" not in out
 
     def test_silent_when_the_base_image_cannot_be_queried(self, monkeypatch, capsys):
