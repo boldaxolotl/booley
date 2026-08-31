@@ -259,7 +259,7 @@ def curated_overrides(
 
     A project owns its sim stack, so these pins are honored — but they replace a
     version the base sandbox image curated (and validated, in cocotb's case)
-    with no trace in the build output, which is how a ``cocotb 2.0.1 -> 1.5.1``
+    with no trace in the build output, which is how a ``cocotb 2.1.0 -> 1.5.1``
     downgrade rides in unannounced (F-13).
 
     Only lines that can actually move the installed version qualify: a bare name

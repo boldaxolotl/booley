@@ -31,7 +31,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     pyproject_copy = base.index("COPY pyproject.toml")
     dependency_exporter = base.index("COPY src/booley/data/docker/export_project_dependencies.py")
     project_install = base.index("--requirement /tmp/booley-build/project-dependencies.txt")
-    image_dependencies = base.index('"cocotb==2.0.1"')
+    image_dependencies = base.index('"cocotb==2.1.0"')
 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
@@ -55,6 +55,15 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert 'test -x "$(command -v claude)"' in candidate
     assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.251"' in candidate
     assert "python -m pip check" in candidate
+
+
+def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
+    base = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert 'test "$(cocotb-config --version)" = "2.1.0"' in base
+    assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
+    assert "cocotb-config --lib-name vpi icarus" not in base
+    assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
@@ -191,6 +200,20 @@ def test_source_builds_fetch_immutable_commits() -> None:
     for name in refs.keys() - {"OPENROAD_SOURCE_REF"}:
         assert f'git -c protocol.version=0 fetch --depth 1 origin "${{{name}}}"' in dockerfile
         assert f'test "$(git rev-parse HEAD)" = "${{{name}}}"' in dockerfile
+
+
+def test_spike_uses_the_validated_snapshot_and_runs_upstream_checks() -> None:
+    riscv = (_DOCKER_DIR / "Dockerfile.riscv").read_text(encoding="utf-8")
+    spike_ref = re.search(r"^ARG SPIKE_REF=([0-9a-f]{40})$", riscv, re.MULTILINE)
+
+    assert spike_ref is not None
+    assert spike_ref.group(1) == "c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb"
+    assert 'git fetch --depth 1 origin "${SPIKE_REF}"' in riscv
+    assert 'test "$(git rev-parse HEAD)" = "${SPIKE_REF}"' in riscv
+
+    spike_build = riscv[riscv.index("ARG SPIKE_REF=") : riscv.index("# RISC-V International")]
+    assert "make check" in spike_build
+    assert "test -x /opt/riscv/bin/spike" in spike_build
 
 
 def test_riscv_release_consumes_base_job_digest() -> None:

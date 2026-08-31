@@ -7,6 +7,8 @@ host policy, project-specific intent, and third-party lifecycle behavior.
 With an agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;
 it uses this troubleshooting guide before improvising a fix and verifies both plain and deep
 Doctor before calling the project healthy.
+Run both `booley doctor` and `/booley-heal` after every Booley version update so
+version-related drift is found, repaired, and fully verified.
 
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
 [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md), for day-to-day driving see [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md), and for

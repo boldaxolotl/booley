@@ -661,10 +661,10 @@ the files it bakes:
 
 **Everything else you pin wins.** That list of managed packages is short on
 purpose: your project owns its verification stack. Pinning `cocotb==1.5.1`
-replaces the base image's curated `cocotb==2.0.1`, and `init` says so:
+replaces the base image's curated `cocotb==2.1.0`, and `init` says so:
 
 ```
-pin 'cocotb==1.5.1' overrides the base image's cocotb==2.0.1 (project wins)
+pin 'cocotb==1.5.1' overrides the base image's cocotb==2.1.0 (project wins)
 ```
 
 That line is a note, not a warning — nothing is blocked. But understand what

@@ -88,11 +88,11 @@ class TestBuildCocotbTestFilter:
 # ---------------------------------------------------------------------------
 
 _CONFIG_ANSWERS = {
-    ("--version",): "2.0.1",
+    ("--version",): "2.1.0",
     ("--libpython",): "/usr/lib/libpython3.13.so",
     ("--python-bin",): "/usr/bin/python3",
-    ("--lib-dir",): "/site/cocotb/libs",
-    ("--lib-name", "vpi", "icarus"): "cocotbvpi_icarus",
+    ("--lib-name-path", "vpi", "icarus"): "/site/cocotb/libs/libcocotbvpi_icarus.so",
+    ("--pygpi-entry-point",): "/site/cocotb/simulator.so,initialize",
 }
 
 
@@ -104,6 +104,20 @@ def _stub_cocotb_config_v1(arg_sets):
     """A cocotb-1.9.2 sandbox (project image pinning a legacy stack)."""
     return [
         "1.9.2" if tuple(args) == ("--version",) else _CONFIG_ANSWERS[tuple(args)]
+        for args in arg_sets
+    ]
+
+
+def _stub_cocotb_config_v2_0(arg_sets):
+    """Cocotb 2.0 uses an extensionless path that vvp resolves to ``.vpl``."""
+    return [
+        (
+            "2.0.1"
+            if tuple(args) == ("--version",)
+            else "/site/cocotb/libs/libcocotbvpi_icarus"
+            if tuple(args) == ("--lib-name-path", "vpi", "icarus")
+            else _CONFIG_ANSWERS[tuple(args)]
+        )
         for args in arg_sets
     ]
 
@@ -122,6 +136,9 @@ class TestBuildCocotbEnv:
         assert env["COCOTB_TEST_FILTER"] == r"^test_counter\.(a|b)$"
         assert env["LIBPYTHON_LOC"] == "/usr/lib/libpython3.13.so"
         assert env["PYGPI_PYTHON_BIN"] == "/usr/bin/python3"
+        assert env["GPI_USERS"] == (
+            "/usr/lib/libpython3.13.so;/site/cocotb/simulator.so,initialize"
+        )
         # C1: the results path is explicit — never guessed.
         assert env["COCOTB_RESULTS_FILE"] == str(tmp_path / "results.xml")
         # Spike S1: the build dir is pinned on PYTHONPATH so a project
@@ -152,6 +169,19 @@ class TestBuildCocotbEnv:
         assert env["TESTCASE"] == "run_test_001,run_test_002"
         assert "COCOTB_TEST_FILTER" not in env
         assert env["MODULE"] == "test_counter"  # 1.x module selector
+        assert "GPI_USERS" not in env
+
+    def test_cocotb2_0_retains_libpython_loc_contract(self, tmp_path: Path):
+        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_v2_0):
+            env = crun._build_cocotb_env(
+                tmp_path,
+                "test_counter",
+                ["a"],
+                tmp_path / "results.xml",
+            )
+
+        assert env["LIBPYTHON_LOC"] == "/usr/lib/libpython3.13.so"
+        assert "GPI_USERS" not in env
 
     def test_version_probe_failure_defaults_to_2x(self, tmp_path: Path):
         # An old cocotb-config without --version (or any probe hiccup) must
@@ -192,6 +222,17 @@ class TestBuildCocotbEnv:
             env = crun._build_cocotb_env(tmp_path, "m", [], tmp_path / "r.xml")
         assert env["PYTHONPATH"] == f"{tmp_path}{os.pathsep}/existing"
 
+    def test_cocotb2_1_preserves_additional_gpi_users(self, tmp_path: Path):
+        with (
+            patch.dict(os.environ, {"GPI_USERS": "/project/custom.so"}),
+            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
+        ):
+            env = crun._build_cocotb_env(tmp_path, "m", [], tmp_path / "r.xml")
+
+        assert env["GPI_USERS"] == (
+            "/usr/lib/libpython3.13.so;/site/cocotb/simulator.so,initialize;/project/custom.so"
+        )
+
 
 class TestBuildRunCmd:
     def test_icarus_golden_argv(self, tmp_path: Path):
@@ -210,10 +251,8 @@ class TestBuildRunCmd:
             "/usr/bin/vvp",
             "-n",
             f"-M{tmp_path}",
-            "-M",
-            "/site/cocotb/libs",
             "-m",
-            "cocotbvpi_icarus",
+            "/site/cocotb/libs/libcocotbvpi_icarus.so",
             str(tmp_path / "sim_image"),
             "+verbose",
             "+already",
@@ -232,6 +271,22 @@ class TestBuildRunCmd:
                 vcd=True,
             )
         assert cmd[-1] == "+trace"
+
+    def test_icarus_cocotb_2_0_extensionless_library_path(self, tmp_path: Path):
+        (tmp_path / "sim_image.scr").write_text("")
+        with (
+            patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_v2_0),
+            patch("shutil.which", return_value="vvp"),
+        ):
+            cmd = crun._build_run_cmd(
+                eda_tool="icarus",
+                build_dir=tmp_path,
+                plusargs=[],
+                vcd=False,
+            )
+
+        assert cmd is not None
+        assert cmd[cmd.index("-m") + 1] == "/site/cocotb/libs/libcocotbvpi_icarus"
 
     def test_icarus_missing_image_returns_none(self, tmp_path: Path):
         with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config):

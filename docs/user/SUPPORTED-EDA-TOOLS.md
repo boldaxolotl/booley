@@ -159,7 +159,7 @@ may override the Python rows (see
 | OpenROAD | 26Q3 source commit `a9147cf3aebe65e058bb3fa89c1f9e524488dbb8` (the exact upstream OCI binary reports `26Q2-2580-ga9147cf3ae`) |
 | Verible | v0.0-4157-gfdbac312 |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
-| cocotb | 2.0.1, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
+| cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley init`, mounted read-only at `/opt/pdk/cell/lib` |
 
 Check what your image actually has rather than trusting the table after an
@@ -171,8 +171,11 @@ booley session enter -- verilator --version       # or any other EDA tool
 booley session enter -- python -m pip list        # the Python side
 ```
 
-The RISC-V variant (`booley-sandbox-riscv`) adds a cross toolchain and Spike on
-top of these; see
+The RISC-V variant (`booley-sandbox-riscv`) adds xPack RISC-V GCC `15.2.0-1`
+and a tested official-master Spike snapshot at
+`c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb` (`1.1.1-dev`) on top of these.
+Spike's snapshot policy and validation record are documented in
+[Spike release-channel research](../research/spike-release-channel.md). See also
 [CONFIG.md](CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
 Future commercial EDA integrations require their own built-in provisioning,

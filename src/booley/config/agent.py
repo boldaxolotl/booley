@@ -462,21 +462,24 @@ def _resolve_booley_toml(project_data: Path) -> Path:
     return path
 
 
-def load_models_config(project_root: Path) -> None:
+def load_models_config(project_root: Path, *, project_dir: Path | None = None) -> None:
     """Load [agent] + [sandbox] from booley.toml and configure the backend + MODEL_MAP.
 
     The single provider is selected via ``[agent] provider`` (default:
     ``_DEFAULT_PROVIDER``). The developer and every specialist run on it.
     Auth mode, explicit model tiers, and sandbox config are also read from the
-    TOML. An explicitly *invalid* provider raises ``BackendConfigError`` —
-    we never silently run a backend the project didn't ask for.
+    TOML. ``project_dir`` lets callers that already resolved the canonical
+    Project directory avoid repeating path discovery. An explicitly *invalid*
+    provider raises ``BackendConfigError`` — we never silently run a backend
+    the project didn't ask for.
     """
     global _backend_config
 
     from .settings import MODEL_MAP, STEP_TIERS
 
     (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg) = _load_toml_agent_config(
-        project_root
+        project_root,
+        project_dir=project_dir,
     )
     if provider is None:
         provider = _DEFAULT_PROVIDER
@@ -500,6 +503,8 @@ def load_models_config(project_root: Path) -> None:
 
 def _load_toml_agent_config(
     project_root: Path,
+    *,
+    project_dir: Path | None = None,
 ) -> tuple[str, dict[str, str] | None, str | None, dict[str, str], SandboxConfig, SlotCaps]:
     """Parse booley.toml [agent]/[sandbox]/[models]/[jobs].
 
@@ -508,8 +513,11 @@ def _load_toml_agent_config(
     no provider — the caller applies ``_DEFAULT_PROVIDER``. An *invalid*
     provider, auth, or role raises (fail loud).
     """
-    bp = project_root / ".booley_project"
-    project_data = bp if bp.is_dir() else project_root / ".booley" / "project"
+    if project_dir is None:
+        bp = project_root / ".booley_project"
+        project_data = bp if bp.is_dir() else project_root / ".booley" / "project"
+    else:
+        project_data = project_dir
     toml_path = _resolve_booley_toml(project_data)
 
     auth = _DEFAULT_AUTH
