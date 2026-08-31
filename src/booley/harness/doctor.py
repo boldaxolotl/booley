@@ -650,16 +650,14 @@ def _check_upgrade_review(project_dir: Path, reporter: _Reporter) -> None:
         return
     if condition is upgrade_review.ReviewCondition.PENDING:
         _warning_sink(reporter.warn_, "upgrade.review-pending")(
-            f"Booley release review pending: {status.reviewed_through} -> {status.pending_target}",
-            "Run `booley doctor`, then invoke /booley-heal to review and repair "
-            "version-related drift.",
+            f"Booley version changed from {status.reviewed_through} to {status.pending_target}",
+            "invoke /booley-heal",
         )
         return
     if condition is upgrade_review.ReviewCondition.STALE_RUNTIME:
         target = status.pending_target or status.reviewed_through
         _warning_sink(reporter.warn_, "upgrade.runtime-stale")(
             f"running Booley {status.running_version} is older than review target {target}",
-            "refresh or rebuild the Session Runtime, then run `booley doctor` and "
             "invoke /booley-heal",
         )
         return

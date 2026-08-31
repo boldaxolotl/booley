@@ -18,10 +18,6 @@ There are three main contribution paths:
 
 Code contributors should complete [Getting set up](#getting-set-up) before starting. The sections that follow explain the commercial-EDA-tool port first, then the other contribution paths and the development rules shared by all code changes.
 
-Maintainers preparing a versioned release must follow
-[RELEASING.md](RELEASING.md). The changelog entry is part of the release PR and
-the packaged mirror must stay byte-identical to the root document.
-
 ## Getting set up
 
 Do this once before attempting any contribution below, including the #1 port

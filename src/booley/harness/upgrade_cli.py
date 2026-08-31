@@ -37,15 +37,14 @@ def render_status(status: upgrade_review.ReviewStatus) -> str:
         return f"Booley upgrade review is current through {status.reviewed_through}."
     if status.condition is upgrade_review.ReviewCondition.PENDING:
         return (
-            f"Booley upgrade review pending: {status.reviewed_through} -> "
-            f"{status.pending_target}. Run `booley doctor`, then invoke "
-            "/booley-heal to review and repair version-related drift."
+            f"Booley version changed from {status.reviewed_through} to "
+            f"{status.pending_target}. Invoke /booley-heal."
         )
     if status.condition is upgrade_review.ReviewCondition.STALE_RUNTIME:
         target = status.pending_target or status.reviewed_through
         return (
             f"This runtime has Booley {status.running_version}, behind review target "
-            f"{target}. Refresh or rebuild the Session Runtime before invoking /booley-heal."
+            f"{target}. Invoke /booley-heal."
         )
     return f"Booley upgrade review {status.condition.value}: {status.diagnostic}"
 

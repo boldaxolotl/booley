@@ -103,8 +103,8 @@ def test_human_status_rendering_covers_actionable_conditions() -> None:
     )
 
     assert "current through 2.0.0" in upgrade_cli.render_status(current)
-    assert "1.0.0 -> 2.0.0" in upgrade_cli.render_status(pending)
-    assert "Refresh or rebuild" in upgrade_cli.render_status(stale)
+    assert "version changed from 1.0.0 to 2.0.0" in upgrade_cli.render_status(pending)
+    assert "/booley-heal" in upgrade_cli.render_status(stale)
     assert "corrupt: bad JSON" in upgrade_cli.render_status(corrupt)
 
 

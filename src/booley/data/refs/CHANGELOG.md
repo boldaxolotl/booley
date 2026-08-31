@@ -22,6 +22,4 @@ Unreleased section with a dated stable-version entry. For older changes, see
 
 ### Upgrade notes
 
-- After updating Booley, run `booley upgrade status --json`, `booley doctor`,
-  and `/booley-heal`. Existing Session Runtimes with an older Booley package
-  must be refreshed or rebuilt before they can acknowledge the update.
+- When Booley reports that its version changed, invoke `/booley-heal`.
