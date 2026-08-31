@@ -29,7 +29,9 @@ jobs:
 
       - name: Verify tag matches package version
         shell: bash
-        run: test "$GITHUB_REF" = "refs/tags/v$(cat VERSION)"
+        run: |
+          test "$GITHUB_REF" = "refs/tags/v$(cat VERSION)"
+          python .github/scripts/release_changelog.py validate --target "$(cat VERSION)"
 
       - name: Build sdist and wheel
         run: |
@@ -185,9 +187,15 @@ jobs:
           cd release-assets
           sha256sum bwave-* > SHA256SUMS
 
+      - name: Extract exact tagged changelog entry
+        shell: bash
+        run: >-
+          python .github/scripts/release_changelog.py extract
+          --target "$(cat VERSION)" --output "${RUNNER_TEMP}/release-notes.md"
+
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             dist/*
             release-assets/*

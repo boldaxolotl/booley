@@ -54,7 +54,13 @@ from booley.fusesoc import (
 )
 from booley.harness import bootstrap as host_bootstrap
 from booley.harness import devcontainer as dc
-from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk, session_runtime
+from booley.harness import (
+    doctor_stamp,
+    image_lifecycle,
+    nangate_pdk,
+    session_runtime,
+    upgrade_review,
+)
 from booley.harness import interactive_docker as idk
 from booley.harness.colors import green, red, yellow
 from booley.harness.devcontainer import (
@@ -592,6 +598,8 @@ def _run_project_phase(
     banner("Host checks")
     docker_exe = _run_host_checks(reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_)
     project_dir, project = _audit_project_setup(project_root, reporter)
+    if project_dir is not None:
+        _check_upgrade_review(project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -631,6 +639,39 @@ def _run_project_phase(
         repair=not read_only,
     )
     return docker_exe, project
+
+
+def _check_upgrade_review(project_dir: Path, reporter: _Reporter) -> None:
+    """Observe the running version and render its durable review status."""
+    status = upgrade_review.observe(project_dir)
+    condition = status.condition
+    if condition is upgrade_review.ReviewCondition.CURRENT:
+        reporter.pass_(f"Booley release review current through {status.reviewed_through}")
+        return
+    if condition is upgrade_review.ReviewCondition.PENDING:
+        _warning_sink(reporter.warn_, "upgrade.review-pending")(
+            f"Booley release review pending: {status.reviewed_through} -> {status.pending_target}",
+            "Run `booley doctor`, then invoke /booley-heal to review and repair "
+            "version-related drift.",
+        )
+        return
+    if condition is upgrade_review.ReviewCondition.STALE_RUNTIME:
+        target = status.pending_target or status.reviewed_through
+        _warning_sink(reporter.warn_, "upgrade.runtime-stale")(
+            f"running Booley {status.running_version} is older than review target {target}",
+            "refresh or rebuild the Session Runtime, then run `booley doctor` and "
+            "invoke /booley-heal",
+        )
+        return
+    check_id = {
+        upgrade_review.ReviewCondition.CORRUPT: "upgrade.review-state-corrupt",
+        upgrade_review.ReviewCondition.UNSUPPORTED: "upgrade.version-unsupported",
+        upgrade_review.ReviewCondition.UNAVAILABLE: "upgrade.review-state-unavailable",
+    }[condition]
+    _warning_sink(reporter.warn_, check_id)(
+        f"Booley release review state cannot be evaluated: {status.diagnostic}",
+        f"preserve and inspect {status.state_path}; repair the state before invoking /booley-heal",
+    )
 
 
 def _audit_project_setup(

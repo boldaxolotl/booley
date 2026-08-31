@@ -1,6 +1,6 @@
 ---
 name: booley-heal
-description: Repair a Booley project's environment, configuration, and build-system health by running Doctor, resolving every actionable FAIL and WARN, consulting Booley's packaged troubleshooting guide, and verifying the result with plain and deep checks. Use when `booley doctor` is red or warning, an automatic Doctor notice reports problems, setup has drifted, a Booley Flow, Specialist, EDA tool, or Target stopped working, or the user asks to heal, repair, or make Doctor green. Hand host-only or otherwise external actions to the user with exact instructions, and route verified Booley or documentation defects through `booley-feedback`.
+description: Repair a Booley project's environment, configuration, and build-system health by running Doctor, resolving every actionable FAIL and WARN, reviewing packaged release changes after a version update, and verifying the result with plain and deep checks. Use when `booley doctor` is red or warning, an automatic Doctor notice reports problems, Booley reports a pending upgrade review, setup has drifted, a Booley Flow, Specialist, EDA tool, or Target stopped working, or the user asks to heal, repair, or make Doctor green. Hand host-only or otherwise external actions to the user with exact instructions, and route verified Booley or documentation defects through `booley-feedback`.
 ---
 
 # Heal a Booley project
@@ -59,8 +59,10 @@ Never describe one of those partial outcomes as healed.
 
 ## 1. Establish the baseline
 
-1. Record the current runtime location and repository state. Doctor is context-aware, so
-   do not assume a host result proves the Session Runtime or vice versa.
+1. Before Doctor can refresh any health evidence, record the runtime location,
+   `git status --short`, and `booley upgrade status --json`. Doctor is
+   context-aware, so do not assume a host result proves the Session Runtime or
+   vice versa.
 2. Run plain `booley doctor` and retain its complete output. Manual Doctor is
    the repair entry point for limited housekeeping such as guidance links or
    board orphans; include those changes in the evidence and rerun before
@@ -74,7 +76,36 @@ Never describe one of those partial outcomes as healed.
 Do not begin with `--deep`. Make plain Doctor clean first so expensive Flow
 smokes are not diagnosing an already-invalid configuration.
 
-## 2. Diagnose one causal group
+## 2. Review a pending release range
+
+When upgrade status is `current`, continue to diagnosis. For any other status,
+preserve its JSON as evidence.
+
+Proceed with a pending review only when the state is readable, the running
+version equals `pending_target`, and the packaged changelog contains that exact
+release. A `stale-runtime` status requires a Session Runtime refresh or rebuild;
+hand that action to the user and stop before acknowledgment. Corrupt or
+unavailable state and a missing target entry also block acknowledgment.
+
+Resolve the changelog with:
+
+```console
+python3 -c "from booley.runtime.paths import changelog_path; print(changelog_path())"
+```
+
+Use `booley.runtime.changelog.releases_between` to read every available entry
+in `(reviewed_through, pending_target]`, oldest first. Report the packaged
+history boundary when the range begins before the oldest available entry.
+Build a concrete checklist from all applicable CLI, configuration, generated
+file, Session Runtime, image, compatibility, and manual migration notes. Keep
+each item open until source inspection, a repair, or verification demonstrates
+its disposition.
+
+During the repair loop, `upgrade.review-pending` is the expected gate rather
+than a defect to waive. Every other active warning and every failure remains
+actionable.
+
+## 3. Diagnose one causal group
 
 Use evidence in this order:
 
@@ -107,7 +138,7 @@ Read the code that emits the finding before blaming Booley. Distinguish:
 - code emits an impossible, incorrect, or unrepairable result → Booley defect;
 - deep smoke exposes incorrect DUT/TB behavior → project/design issue.
 
-## 3. Repair and rerun
+## 4. Repair and rerun
 
 Apply one minimal repair for the causal group, then rerun plain Doctor. Compare
 the new active findings with the recorded set:
@@ -127,7 +158,7 @@ continue. This bound prevents a fix/revert cycle from running forever.
 Continue repairing independent local findings even when one finding needs a
 user hand-off. Do not let one host-only action hide other useful progress.
 
-## 4. Handle exceptional findings
+## 5. Handle exceptional findings
 
 ### External or host-only action
 
@@ -169,9 +200,10 @@ user to see and approve the exact outgoing text. If a safe workaround exists,
 apply it after capture and continue the Doctor loop without calling the
 workaround a Booley success.
 
-## 5. Deep verification
+## 6. Deep verification and acknowledgment
 
-When plain Doctor has no active findings, run `booley doctor --deep`. Deep
+When plain Doctor has no active findings other than the expected
+`upgrade.review-pending` warning, run `booley doctor --deep`. Deep
 checks can take minutes or tens of minutes. Run a long invocation in a managed
 background session or detached with output redirected to a file, then poll it;
 do not abandon it while waiting. Read the final output unabridged.
@@ -192,9 +224,28 @@ Runtime require all of this evidence:
 - host: final plain `booley doctor`.
 
 Run the invocations available in the current context. Hand unavailable external actions
-to the user using the external-action template; do not infer its result.
+to the user using the external-action template and wait for its result; do not
+infer it. Before acknowledgment, tolerate exactly one active warning:
+`upgrade.review-pending` for the recorded target. Any other warning or failure
+blocks completion and leaves the pending state unchanged.
 
-## 6. Report the result
+When the initial status was `pending`, acknowledge after every required plain,
+deep, and host verification succeeds, using the unchanged target from that
+initial status:
+
+```console
+booley upgrade acknowledge --expected-target <pending_target>
+```
+
+For an initially `current` status, skip acknowledgment. The command is a
+compare-and-swap: a newer observation, stale runtime, missing
+packaged entry, changed target, or unreadable state must fail without changing
+the pending review. On success, run final plain `booley doctor` and confirm the
+pending warning disappears. If that final Doctor finds a new race or unrelated
+problem, report that the version review completed but the project is not
+healed; do not reopen the already-acknowledged changelog review.
+
+## 7. Report the result
 
 State the outcome first. Include:
 
@@ -204,7 +255,9 @@ State the outcome first. Include:
 - every remaining waiver with check ID, subject, reason, and expiry/permanence;
 - every external action still required, using the copyable guide; and
 - any feedback finding captured, workaround status, and whether anything was
-  submitted.
+  submitted; and
+- the initial and final upgrade status, reviewed changelog range, history gap,
+  migration checklist dispositions, and acknowledgment result.
 
 If no file needed changing, say so. Never commit as part of healing unless the
 user separately asks for a commit.

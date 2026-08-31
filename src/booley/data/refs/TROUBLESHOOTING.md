@@ -10,6 +10,26 @@ Doctor before calling the project healthy.
 Run both `booley doctor` and `/booley-heal` after every Booley version update so
 version-related drift is found, repaired, and fully verified.
 
+## Doctor reports a pending Booley release review
+
+Capture `booley upgrade status --json` before another Doctor run. A pending
+status retains the earliest reviewed version and highest observed target even
+when host and container startup overlap. Invoke `/booley-heal`; it reads every
+available packaged changelog entry in that range, repairs relevant drift, and
+acknowledges the exact target only after plain, deep, and host verification.
+
+A `stale-runtime` status means this container's Booley package is older than
+the pending target. On the host, run `booley session refresh`, or use **Dev
+Containers: Rebuild Container** for a VS Code-owned runtime, then invoke Heal in
+the rebuilt runtime. An already-existing old container cannot gain the new
+observer, Heal skill, or changelog merely by restarting.
+
+For `corrupt` or `unavailable`, preserve
+`.booley_project/runtime/upgrade_review.json` and its diagnostic. Do not replace
+it with a new baseline. A missing target entry in the packaged changelog also
+blocks acknowledgment; refresh to the release's matching package.
+
+
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
 [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md), for day-to-day driving see [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md), and for
 the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md). For the Booley-specific

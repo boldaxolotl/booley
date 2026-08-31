@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from booley.feedback import cli as feedback_cli
-from booley.harness import cheatsheet, doctor_stamp
+from booley.harness import cheatsheet, doctor_stamp, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.blocking import EXIT_USER_QUIT
 from booley.harness.booley_status_display import (  # noqa: F401  # re-exported for backward compatibility
@@ -351,7 +351,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         metavar=(
-            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,targets,flow,feedback}"
+            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,upgrade,targets,flow,feedback}"
         ),
     )
 
@@ -787,6 +787,7 @@ def _add_utility_subparsers(sub) -> None:
 
     # Feedback spans runtime contexts: logging is in-container, submission host-only.
     feedback_cli.add_subparser(sub)
+    upgrade_cli.add_subparser(sub)
     _add_session_subparser(sub)
     _add_shell_subparser(sub)
 
@@ -1188,6 +1189,7 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     from booley.harness import auto_doctor
     from booley.harness import session_runtime as sr
 
+    _report_upgrade_before_session(project_root)
     vscode = sr.conflicting_vscode_session(project_root)
     startup_due_reason = auto_doctor.due_reason(project_root)
     name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
@@ -1205,6 +1207,19 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     print(f"Session Runtime ready: {name}")
     print("  enter it with: booley session enter")
     return 0
+
+
+def _report_upgrade_before_session(project_root: Path) -> None:
+    """Observe host version state and advise before starting a Session Runtime."""
+    try:
+        from booley.runtime.project_dir import resolve_checkout_project_dir
+
+        status = upgrade_review.observe(resolve_checkout_project_dir(project_root))
+    except Exception:  # noqa: BLE001 — advisory state must never block Session startup
+        return
+    if status.condition is upgrade_review.ReviewCondition.CURRENT:
+        return
+    print(f"warning: {upgrade_cli.render_status(status)}", file=sys.stderr)
 
 
 def _replace_refreshed_session(
@@ -1592,6 +1607,7 @@ _EARLY_COMMANDS: dict[str, Callable] = {
     "targets": _cmd_targets,
     "flow": _cmd_flow,
     "feedback": feedback_cli.run,
+    "upgrade": upgrade_cli.run,
 }
 
 from booley.eda import cli as _eda_cli

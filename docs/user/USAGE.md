@@ -48,9 +48,12 @@ booley targets         # every .core Target Booley can see, grouped by core
 booley cheat --list    # the cheatsheet's sections, each printable on its own
 ```
 
-Repeat `booley doctor` after every Booley version update, then invoke
-`/booley-heal` in your agent chat. The skill repairs actionable version-related
-drift and verifies both plain and deep Doctor checks.
+After every Booley version update, inspect `booley upgrade status --json`, run
+`booley doctor`, then invoke `/booley-heal` in your agent chat. The skill reads
+the packaged changelog range, repairs actionable version-related drift, runs
+plain, deep, and host verification, and acknowledges only the exact version it
+reviewed. Refresh or rebuild a Session Runtime whose package is older than the
+pending target.
 
 For the fastest orientation, start with `booley cheat`. It gives a compact
 overview of every public CLI command, the editable `.booley_project` files,
@@ -901,6 +904,9 @@ booley cheat --commands --project
 # Run diagnostics
 booley doctor
 
+# Inspect durable version-review state
+booley upgrade status --json
+
 # Run real smoke checks against the first applicable sim/lint/synthesis Targets
 booley doctor --deep
 
@@ -917,6 +923,15 @@ configuration inputs changed. The start of `booley run` performs the same check
 synchronously as a fallback before unattended work begins. Automatic runs never
 repair guidance links or move orphaned tickets, and they never block work;
 manual `booley doctor` retains those repairs.
+
+Release review is separate from Doctor freshness. Its durable state lives at
+`.booley_project/runtime/upgrade_review.json`; callers use `booley upgrade`
+rather than editing that file. Observation is monotonic across host and
+container startup, so an older runtime cannot lower or acknowledge a newer
+target. A corrupt state file is preserved for diagnosis. A review-only warning
+uses the weekly automatic-check cadence because rerunning Doctor cannot complete
+the human/agent review; changed findings still use the existing per-channel
+announcement and notification path.
 
 The latest structured result and human-readable transcript live under
 `.booley_project/runtime/doctor/last.json` and `last.log`. Changed findings are

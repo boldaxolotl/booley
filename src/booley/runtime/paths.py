@@ -46,6 +46,11 @@ def troubleshooting_path() -> Path:
     return refs_dir() / "TROUBLESHOOTING.md"
 
 
+def changelog_path() -> Path:
+    """Return the packaged public changelog mirror."""
+    return refs_dir() / "CHANGELOG.md"
+
+
 def faq_path() -> Path:
     """Return the packaged troubleshooting guide (compatibility alias)."""
     return troubleshooting_path()
