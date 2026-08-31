@@ -9,7 +9,7 @@ from datetime import date
 _RELEASE_HEADING = re.compile(
     r"^## (?P<version>(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))"
     r" - (?P<day>\d{2}) (?P<month>JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)"
-    r" (?P<year>\d{4})$",
+    r" (?P<year>\d{4})\r?$",
     re.MULTILINE,
 )
 _VERSIONISH_HEADING = re.compile(r"^## (?=[v\d])(?P<heading>.+)$", re.MULTILINE)
@@ -80,7 +80,7 @@ def parse_releases(text: str) -> tuple[ReleaseEntry, ...]:
         body_start = match.end() + (1 if text[match.end() :].startswith("\n") else 0)
         body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         body = text[body_start:body_end]
-        entries.append(ReleaseEntry(version, match.group(0), body))
+        entries.append(ReleaseEntry(version, match.group(0).removesuffix("\r"), body))
 
     versions = [entry.version for entry in entries]
     if versions != sorted(versions, reverse=True):

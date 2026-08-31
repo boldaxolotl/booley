@@ -46,6 +46,15 @@ def test_release_entries_are_exact_and_newest_first() -> None:
     assert "Old fix" not in entries[0].body
 
 
+def test_crlf_headings_are_accepted_without_normalizing_body() -> None:
+    text = _history().replace("\n", "\r\n")
+
+    entry = changelog.release_entry(text, "1.2.0")
+
+    assert entry.heading == "## 1.2.0 - 31 AUG 2026"
+    assert entry.body.startswith("\r\n### New features")
+
+
 def test_duplicate_and_misordered_entries_are_rejected() -> None:
     duplicate = _history() + "\n## 1.2.0 - 29 AUG 2026\n"
     with pytest.raises(changelog.ChangelogError, match="duplicate"):

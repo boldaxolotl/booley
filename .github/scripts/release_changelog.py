@@ -74,11 +74,11 @@ def main() -> int:
             )
         else:
             validate(args.root, args.packaged, target=args.target)
-            body = release_entry(args.root.read_text(encoding="utf-8"), args.target).body
+            body = release_entry(args.root.read_bytes().decode("utf-8"), args.target).body
             if args.output is None:
                 sys.stdout.write(body)
             else:
-                args.output.write_text(body, encoding="utf-8")
+                args.output.write_bytes(body.encode("utf-8"))
     except (ChangelogError, OSError, UnicodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

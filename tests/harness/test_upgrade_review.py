@@ -226,3 +226,55 @@ def test_doctor_emits_stable_pending_finding(monkeypatch, tmp_path: Path) -> Non
     assert reporter.findings is not None
     assert reporter.findings[0].check_id == "upgrade.review-pending"
     assert reporter.findings[0].severity == "warn"
+
+
+def test_doctor_reports_current_review_as_pass(monkeypatch, tmp_path: Path) -> None:
+    project_dir = _project(tmp_path)
+    status = upgrade_review.ReviewStatus(
+        upgrade_review.ReviewCondition.CURRENT,
+        "2.0.0",
+        str(upgrade_review.state_path(project_dir)),
+        reviewed_through="2.0.0",
+    )
+    monkeypatch.setattr(upgrade_review, "observe", lambda _project_dir: status)
+    reporter = doctor._Reporter.create()
+
+    doctor._check_upgrade_review(project_dir, reporter)
+
+    assert reporter.findings is not None
+    assert reporter.findings[0].severity == "pass"
+
+
+def test_doctor_emits_stable_stale_runtime_finding(monkeypatch, tmp_path: Path) -> None:
+    project_dir = _project(tmp_path)
+    status = upgrade_review.ReviewStatus(
+        upgrade_review.ReviewCondition.STALE_RUNTIME,
+        "1.0.0",
+        str(upgrade_review.state_path(project_dir)),
+        reviewed_through="1.0.0",
+        pending_target="2.0.0",
+    )
+    monkeypatch.setattr(upgrade_review, "observe", lambda _project_dir: status)
+    reporter = doctor._Reporter.create()
+
+    doctor._check_upgrade_review(project_dir, reporter)
+
+    assert reporter.findings is not None
+    assert reporter.findings[0].check_id == "upgrade.runtime-stale"
+
+
+def test_doctor_emits_stable_diagnostic_finding(monkeypatch, tmp_path: Path) -> None:
+    project_dir = _project(tmp_path)
+    status = upgrade_review.ReviewStatus(
+        upgrade_review.ReviewCondition.CORRUPT,
+        "2.0.0",
+        str(upgrade_review.state_path(project_dir)),
+        diagnostic="bad JSON",
+    )
+    monkeypatch.setattr(upgrade_review, "observe", lambda _project_dir: status)
+    reporter = doctor._Reporter.create()
+
+    doctor._check_upgrade_review(project_dir, reporter)
+
+    assert reporter.findings is not None
+    assert reporter.findings[0].check_id == "upgrade.review-state-corrupt"

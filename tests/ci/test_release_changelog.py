@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -51,3 +52,32 @@ def test_target_and_supplied_notes_must_match_exactly(tmp_path: Path) -> None:
 
     notes.write_text(checker.release_entry(_text(), "1.2.0").body, encoding="utf-8")
     checker.validate(root, packaged, target="1.2.0", notes_file=notes)
+
+
+def test_extract_preserves_crlf_body_bytes(tmp_path: Path, monkeypatch) -> None:
+    checker = _load()
+    root = tmp_path / "CHANGELOG.md"
+    packaged = tmp_path / "packaged.md"
+    output = tmp_path / "notes.md"
+    raw = _text().replace("\n", "\r\n").encode()
+    root.write_bytes(raw)
+    packaged.write_bytes(raw)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--root",
+            str(root),
+            "--packaged",
+            str(packaged),
+            "extract",
+            "--target",
+            "1.2.0",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert checker.main() == 0
+    assert output.read_bytes() == checker.release_entry(raw.decode(), "1.2.0").body.encode()
