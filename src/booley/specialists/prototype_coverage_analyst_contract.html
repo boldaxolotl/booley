@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Report-driven Coverage Analyst contract</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17211f;
+      --muted: #68736f;
+      --paper: #f3f5f2;
+      --card: #fffefb;
+      --line: #d5dbd7;
+      --accent: #176b62;
+      --accent-soft: #ddf1ec;
+      --warn: #98651e;
+      --warn-soft: #fff0cd;
+      --bad: #a13d36;
+      --bad-soft: #f9e0dd;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 Inter, system-ui, sans-serif; }
+    main { width: min(1220px, calc(100% - 32px)); margin: 36px auto 72px; }
+    h1, h2, h3 { line-height: 1.16; margin: 0; }
+    h1 { font-size: clamp(30px, 5vw, 49px); letter-spacing: -.04em; }
+    h2 { font-size: 20px; margin-bottom: 14px; }
+    h3 { font-size: 15px; margin-bottom: 8px; }
+    p { margin: 10px 0 0; }
+    code, pre { font-family: var(--mono); }
+    code { font-size: .88em; }
+    .eyebrow { color: var(--accent); font-weight: 800; letter-spacing: .11em; text-transform: uppercase; }
+    .intro { max-width: 980px; font-size: 17px; }
+    .notice { margin-top: 18px; padding: 13px 16px; border-left: 4px solid var(--warn); background: var(--warn-soft); }
+    .grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; margin-top: 22px; }
+    .card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 20px; box-shadow: 0 8px 30px rgba(26, 37, 32, .05); min-width: 0; }
+    .span { grid-column: 1 / -1; }
+    .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .fact { margin: 0; padding: 12px; background: #f5f7f4; border-radius: 8px; min-width: 0; }
+    .fact.wide { grid-column: 1 / -1; }
+    dt { color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+    dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+    .good { color: var(--accent); font-weight: 800; }
+    .warn { color: var(--warn); font-weight: 800; }
+    .bad { color: var(--bad); font-weight: 800; }
+    .muted { color: var(--muted); }
+    button { border: 1px solid var(--line); border-radius: 8px; background: white; color: var(--ink); padding: 9px 12px; cursor: pointer; font: inherit; text-align: left; }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    button.danger { color: var(--bad); }
+    button:disabled { cursor: default; opacity: .5; }
+    .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .finding { border-left: 4px solid var(--line); padding: 10px 12px; margin-top: 8px; background: #f5f7f4; }
+    .finding.error { border-color: var(--bad); background: var(--bad-soft); }
+    .finding.ok { border-color: var(--accent); background: var(--accent-soft); }
+    .tabs { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 16px; }
+    .tabs button[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: white; }
+    .scenario-copy { min-height: 68px; }
+    .steps { margin-top: 16px; display: grid; gap: 8px; }
+    .step { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; padding: 9px; }
+    .step.current { border-color: var(--accent); background: var(--accent-soft); }
+    .step.done { opacity: .62; }
+    .step-number { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--ink); color: white; font-weight: 800; }
+    .interface { padding: 14px; background: #eaf1ee; border-radius: 8px; font-family: var(--mono); font-size: 13px; white-space: pre-wrap; }
+    .rules { display: grid; gap: 8px; }
+    .rule { border-left: 3px solid var(--accent); padding-left: 10px; }
+    pre { max-height: 680px; overflow: auto; border-radius: 8px; background: #16201d; color: #ebf2ef; padding: 16px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    ul { margin: 7px 0 0; padding-left: 20px; }
+    @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } .span { grid-column: auto; } }
+    @media (max-width: 560px) { .facts, .actions { grid-template-columns: 1fr; } .fact.wide { grid-column: auto; } .step { grid-template-columns: 28px 1fr; } .step button { grid-column: 1 / -1; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Throwaway decision prototype</div>
+  <h1>Report-driven Coverage Analyst</h1>
+  <p class="intro">Question: does a separately invoked, Criterion-free Specialist remain useful when it receives one persisted per-Target Coverage Campaign, may read only a fingerprint-matched source snapshot, separates measured evidence from causal hypotheses, and can recommend—but never perform—coverage closure or waiver approval?</p>
+  <div class="notice"><strong>Nothing here is production code.</strong> The Analyst never launches simulation, reads waveforms or native coverage databases, changes Coverage Points, applies or approves waivers, mutates Criteria, or decides whether a Ticket closes.</div>
+
+  <section class="grid">
+    <article class="card span">
+      <h2>Guided walkthroughs</h2>
+      <div id="tabs" class="tabs" role="tablist"></div>
+      <div class="scenario-copy">
+        <p id="scenario-intro"></p>
+        <p id="scenario-verdict" class="muted"></p>
+      </div>
+      <div id="steps" class="steps"></div>
+    </article>
+
+    <article class="card">
+      <h2>Current contract state</h2>
+      <div id="facts" class="facts"></div>
+    </article>
+
+    <article class="card">
+      <h2>Free play</h2>
+      <div id="actions" class="actions"></div>
+    </article>
+
+    <article class="card">
+      <h2>Last action</h2>
+      <div id="findings"></div>
+    </article>
+
+    <article class="card">
+      <h2>Proposed external interface</h2>
+      <div class="interface">coverage_analyst(
+    campaign: Path,       # one canonical Target coverage.json
+    instruction: str = "",
+) -&gt; CoverageAnalysisReport</div>
+      <p>The wrapper decodes the Campaign, verifies source fingerprints, and invokes one deep analysis module. There is no <code>--target</code>, <code>--test</code>, <code>--scope</code>, <code>--criteria</code>, or waiver-reset surface.</p>
+      <div class="interface" style="margin-top: 12px">analyze_coverage_campaign(
+    campaign: CoverageCampaign,
+    sources: AnalystSourceSnapshot | None,
+    instruction: str,
+) -&gt; CoverageAnalysisReport</div>
+      <p>A successful analysis exits successfully even when coverage is not ready. Only an invalid input or Specialist/infrastructure failure makes the invocation fail.</p>
+    </article>
+
+    <article class="card">
+      <h2>Source-access policy</h2>
+      <div class="rules">
+        <div class="rule"><strong>Allowed:</strong> read-only RTL and testbench sources belonging to the Campaign Target, from a disposable snapshot whose aggregate fingerprints equal the Campaign.</div>
+        <div class="rule"><strong>Fallback:</strong> if sources are missing or stale, continue report-only and suppress source-derived hypotheses.</div>
+        <div class="rule"><strong>Never exposed:</strong> waveforms, raw or merged native databases, Criteria/configuration files, the approved-waiver directory, unrelated project files, shell execution, or write capabilities.</div>
+      </div>
+    </article>
+
+    <article class="card span">
+      <h2>Deterministic waiver-candidate policy</h2>
+      <div class="rules">
+        <div class="rule"><strong>Ready for human review:</strong> one exact, uncovered, <code>eligible</code>, V1-scored Coverage Point from a complete compatible Campaign; fingerprint-matched source supports a Target-specific <code>excluded</code> rationale, or an <code>unreachable</code> rationale carries authenticated formal-proof evidence identifying the point mapping, tool/version, proof result, environment, assumptions, and immutable artifact.</div>
+        <div class="rule"><strong>Investigation only:</strong> the idea is plausible but source is unavailable/stale, collection is incomplete, the causal account is uncertain, or an unreachability claim still needs formal proof. Confidence cannot promote it past a missing objective requirement.</div>
+        <div class="rule"><strong>Forbidden:</strong> covered, already-waived, unscored/reported-only, unknown, ambiguous, or inexact points; wildcard, line-, file-, metric-, or multi-Target exclusions; and attempts to hide collection failures, unavailable capabilities, difficult stimulus, deadlines, or a missed threshold.</div>
+      </div>
+      <p>The wrapper validates every model-produced candidate against these rules. The three results are <code>ready_for_human_review</code>, <code>investigate</code>, and <code>forbidden</code>; model confidence is recorded but never acts as approval authority.</p>
+      <p class="muted">Primary-source comparison: other systems commonly expose manual exclusion and formal-unreachability pathways, but none surveyed publishes Booley's exact closed pair. See <a href="../../../docs/research/coverage-waiver-classifications.md">coverage waiver and exclusion classifications in other systems</a>.</p>
+    </article>
+
+    <article class="card span">
+      <h2>Versioned analysis output</h2>
+      <p class="muted">Evidence claims cite exact Campaign fields or Coverage Point ids. Source reading may support a hypothesis, but never upgrades it into measured evidence. A waiver candidate stays inside this report and leaves the point eligible.</p>
+      <pre id="output"></pre>
+    </article>
+  </section>
+</main>
+
+<script>
+// Portable prototype logic. No DOM references occur inside this module.
+const CoverageAnalystModel = (() => {
+  const TARGET = "acme:demo:counter:1.0#sim_default";
+  const BRANCH = "cp1:branch|rtl/counter.sv:24:3-27:6|tb.dut|else|vlt:branch:18";
+  const TOGGLE = "cp1:toggle|rtl/counter.sv:31:3-31:10|tb.dut.count[7]|0_to_1|vlt:toggle:44";
+  const COVER = "cp1:cover_property|rtl/counter.sv:42:3-42:29|tb.dut|overflow_seen|vlt:user:7";
+
+  function clone(value) { return JSON.parse(JSON.stringify(value)); }
+  function baseCampaign() {
+    return {
+      schema: "booley.coverage-campaign/v1",
+      schema_valid: true,
+      terminal: true,
+      campaign_id: "cov-sim-default-7c81",
+      target: TARGET,
+      report_pointer: "sim/42/targets/sim_default/coverage.json",
+      report_sha256: "sha256:6f37…e911",
+      collection: "complete",
+      normalization: "complete",
+      evaluation: {status: "fail", criterion_fingerprint: "sha256:47ad…b602"},
+      simulation: {status: "pass", passed: 3, selected: 3},
+      unknown_records: 0,
+      points: [
+        {id: BRANCH, metric: "branch", source: "rtl/counter.sv", disposition: "eligible", hits: 0, incidence: {}},
+        {id: TOGGLE, metric: "toggle", source: "rtl/counter.sv", disposition: "eligible", hits: 0, incidence: {}},
+        {id: COVER, metric: "cover_property", source: "rtl/counter.sv", disposition: "eligible", hits: 9, incidence: {"run-0002-smoke": 9}}
+      ]
+    };
+  }
+  function initialState() {
+    return {
+      campaign: baseCampaign(),
+      sources: {status: "matching", rtl_fingerprint: "matching", testbench_fingerprint: "matching"},
+      instruction: "Prioritize the smallest credible stimulus changes.",
+      analysis: null,
+      lastAction: {kind: "info", code: "READY", message: "Choose a walkthrough or analyze the current Campaign."}
+    };
+  }
+  function uncovered(campaign) {
+    return campaign.points.filter(point => point.disposition === "eligible" && point.hits === 0);
+  }
+  function eligibility(state) {
+    const c = state.campaign;
+    if (!c.schema_valid || c.schema !== "booley.coverage-campaign/v1") return {status: "rejected", diagnostics: ["COV_ANALYST_CAMPAIGN_INVALID"]};
+    if (!c.terminal) return {status: "rejected", diagnostics: ["COV_ANALYST_CAMPAIGN_NONTERMINAL"]};
+    if (c.normalization === "incompatible" || c.points.length === 0) return {status: "rejected", diagnostics: ["COV_ANALYST_NO_NORMALIZED_POINTS"]};
+    if (c.collection !== "complete") return {status: "eligible_with_limits", diagnostics: ["COV_ANALYST_COLLECTION_INCOMPLETE"]};
+    return {status: "eligible", diagnostics: []};
+  }
+  function sourcePolicy(state) {
+    if (state.sources.status === "matching") return {mode: "fingerprint_matched", diagnostics: []};
+    if (state.sources.status === "stale") return {mode: "report_only", diagnostics: ["COV_ANALYST_SOURCE_MISMATCH"]};
+    return {mode: "report_only", diagnostics: ["COV_ANALYST_SOURCE_UNAVAILABLE"]};
+  }
+  function screenCandidate(state, point, proposedReason, proof) {
+    if (!point || point.disposition !== "eligible" || point.hits > 0) {
+      return {status: "forbidden", diagnostics: ["COV_ANALYST_CANDIDATE_POINT_FORBIDDEN"]};
+    }
+    if (!["line", "branch", "expression", "toggle", "cover_property"].includes(point.metric)) {
+      return {status: "forbidden", diagnostics: ["COV_ANALYST_CANDIDATE_UNSCORED"]};
+    }
+    if (!["excluded", "unreachable"].includes(proposedReason)) {
+      return {status: "forbidden", diagnostics: ["COV_ANALYST_CANDIDATE_REASON_INVALID"]};
+    }
+    if (state.campaign.collection !== "complete" || !["complete", "complete_with_unknown_records"].includes(state.campaign.normalization)) {
+      return {status: "investigate", diagnostics: ["COV_ANALYST_CANDIDATE_EVIDENCE_INCOMPLETE"]};
+    }
+    if (state.sources.status !== "matching") {
+      return {status: "investigate", diagnostics: ["COV_ANALYST_CANDIDATE_SOURCE_UNVERIFIED"]};
+    }
+    if (proposedReason === "unreachable" && !proof) {
+      return {status: "investigate", diagnostics: ["COV_ANALYST_CANDIDATE_FORMAL_PROOF_REQUIRED"]};
+    }
+    return {status: "ready_for_human_review", diagnostics: []};
+  }
+  function closure(campaign, eligibilityResult) {
+    const basis = {campaign_id: campaign.campaign_id, evaluation: campaign.evaluation.status, criterion_fingerprint: campaign.evaluation.criterion_fingerprint || null};
+    if (eligibilityResult.status === "eligible_with_limits" || campaign.evaluation.status === "blocked") {
+      return {status: "coverage_evidence_blocked", basis, next_owner: "Simulation Flow", meaning: "Repair or recollect evidence before judging coverage readiness."};
+    }
+    if (campaign.evaluation.status === "pass") return {status: "coverage_ready", basis, next_owner: "Developer Agent or human", meaning: "Coverage policy is satisfied; this says nothing about other Ticket Criteria."};
+    if (campaign.evaluation.status === "fail") return {status: "coverage_not_ready", basis, next_owner: "Developer Agent or human", meaning: "Valid measured thresholds were missed."};
+    return {status: "ungated_no_recommendation", basis, next_owner: "Human", meaning: "No Coverage Criterion supplied a closure policy."};
+  }
+  function analyze(input) {
+    const state = clone(input);
+    const eligible = eligibility(state);
+    const sourceAccess = sourcePolicy(state);
+    if (eligible.status === "rejected") {
+      state.analysis = {
+        schema: "booley.coverage-analysis/v1",
+        status: "not_analyzable",
+        input: {campaign_id: state.campaign.campaign_id, report_pointer: state.campaign.report_pointer},
+        eligibility: eligible,
+        evidence: [], hypotheses: [], recommendations: [], waiver_candidates: [],
+        closure_recommendation: {status: "unavailable", meaning: "No normalized Campaign evidence can support analysis."},
+        prohibited_effects: ["simulation", "waveform_or_native_database_access", "point_mutation", "waiver_approval_or_application", "criterion_mutation", "ticket_closure"]
+      };
+      state.lastAction = {kind: "error", code: eligible.diagnostics[0], message: "The Specialist rejected the Campaign before invoking the model."};
+      return state;
+    }
+    const gaps = uncovered(state.campaign);
+    const sourceMatched = sourceAccess.mode === "fingerprint_matched";
+    const evidence = [
+      {id: "ev-evaluation", claim: `Campaign evaluation is ${state.campaign.evaluation.status}.`, refs: ["/evaluation/status"]},
+      {id: "ev-simulation", claim: `Independent simulation status is ${state.campaign.simulation.status}.`, refs: ["/tests/runs", "/evaluation/status"]},
+      ...gaps.map((point, index) => ({id: `ev-gap-${index + 1}`, claim: `${point.metric} point has zero aggregate hits and no per-run incidence.`, refs: [point.id]}))
+    ];
+    if (state.campaign.collection !== "complete") evidence.push({id: "ev-incomplete", claim: "Collection is incomplete; point absence cannot be treated as zero coverage.", refs: ["/collection/completeness"]});
+    const hypotheses = gaps.map((point, index) => ({
+      id: `hyp-${index + 1}`,
+      claim: point.metric === "branch"
+        ? (sourceMatched ? "The selected tests may never drive enable low while reset is released." : "Selected stimulus may not exercise the uncovered branch outcome.")
+        : (sourceMatched ? "Bit 7 appears configuration-reserved, but that is not an approved exclusion or proof of unreachability." : "The uncovered toggle may be stimulus-sensitive or intentionally inactive."),
+      confidence: sourceMatched ? "medium" : "low",
+      supported_by: [`ev-gap-${index + 1}`],
+      source_context: sourceMatched ? [point.source] : [],
+      not_proved: point.metric === "toggle" ? "Eligibility, exclusion, and unreachability remain undecided." : "The cause of the missed point is not measured.",
+      validation: point.metric === "branch" ? "Add or select a focused test, then invoke SimulateFlow --coverage again." : "Have a human determine verification value; require formal proof before approving unreachable."
+    }));
+    const recommendations = gaps.map((point, index) => ({
+      priority: index + 1,
+      kind: point.metric === "branch" ? "stimulus" : "investigate",
+      point_ids: [point.id],
+      action: point.metric === "branch" ? "Exercise the missing branch outcome in a focused Target-declared test." : "Confirm configuration intent before adding stimulus or proposing a waiver candidate.",
+      expected_evidence: "A fresh canonical coverage.json produced by SimulateFlow --coverage."
+    }));
+    state.analysis = {
+      schema: "booley.coverage-analysis/v1",
+      status: "complete",
+      input: {
+        campaign_id: state.campaign.campaign_id,
+        target: state.campaign.target,
+        report_pointer: state.campaign.report_pointer,
+        report_sha256: state.campaign.report_sha256,
+        source_access: sourceAccess,
+        instruction: state.instruction
+      },
+      eligibility: eligible,
+      evidence,
+      hypotheses,
+      recommendations,
+      closure_recommendation: closure(state.campaign, eligible),
+      waiver_candidates: [],
+      prohibited_effects: ["simulation", "waveform_or_native_database_access", "point_mutation", "waiver_approval_or_application", "criterion_mutation", "ticket_closure"]
+    };
+    state.lastAction = {kind: "ok", code: "COV_ANALYSIS_COMPLETE", message: `Analysis completed with ${evidence.length} evidence claim(s) and ${hypotheses.length} explicitly labeled hypothesis/hypotheses.`};
+    return state;
+  }
+  function proposeCandidate(input) {
+    let state = clone(input);
+    if (!state.analysis || state.analysis.status !== "complete") state = analyze(state);
+    if (state.analysis.status !== "complete") return state;
+    const point = state.campaign.points.find(item => item.id === TOGGLE && item.disposition === "eligible" && item.hits === 0);
+    if (!point) {
+      state.lastAction = {kind: "error", code: "COV_ANALYST_NO_CANDIDATE", message: "No exact uncovered eligible point supports this candidate."};
+      return state;
+    }
+    const screening = screenCandidate(state, point, "excluded", null);
+    if (state.analysis.waiver_candidates.length === 0) {
+      state.analysis.waiver_candidates.push({
+        schema: "booley.coverage-waiver-candidate/v1",
+        candidate_id: "candidate-reserved-bit7",
+        status: "candidate_only",
+        confidence: "high",
+        deterministic_screening: screening,
+        target: state.campaign.target,
+        point_id: point.id,
+        proposed_reason: "excluded",
+        rationale_hypothesis: "Bit 7 may be reserved in this Target configuration.",
+        supporting_evidence: ["ev-gap-2"],
+        approval_requirements: ["human verification-owner review", "current source fingerprint", "approved provenance record"],
+        forbidden_destination: "configured approved-waiver directory"
+      });
+    }
+    state.lastAction = {kind: "info", code: "COV_ANALYST_CANDIDATE_RECORDED", message: `A report-only candidate was screened as ${screening.status}. The Coverage Point remains eligible and the Candidate cannot be loaded as approval policy.`};
+    return state;
+  }
+  function deny(input, code, message) {
+    const state = clone(input);
+    state.lastAction = {kind: "error", code, message};
+    return state;
+  }
+  function preset(name) {
+    const state = initialState();
+    if (name === "pass") {
+      state.campaign.evaluation.status = "pass";
+      state.campaign.points.forEach(point => { point.hits = 7; point.incidence = {"run-0002-smoke": 7}; });
+    } else if (name === "ungated") {
+      state.campaign.evaluation = {status: "not_requested", criterion_fingerprint: null};
+    } else if (name === "incomplete") {
+      state.campaign.collection = "incomplete";
+      state.campaign.evaluation.status = "blocked";
+    } else if (name === "incompatible") {
+      state.campaign.collection = "incompatible";
+      state.campaign.normalization = "incompatible";
+      state.campaign.evaluation.status = "blocked";
+      state.campaign.points = [];
+    } else if (name === "stale") {
+      state.sources = {status: "stale", rtl_fingerprint: "mismatch", testbench_fingerprint: "matching"};
+    } else if (name === "simulation-fail") {
+      state.campaign.simulation = {status: "fail", passed: 2, selected: 3};
+    }
+    state.lastAction = {kind: "info", code: "PRESET_LOADED", message: `${name} Campaign scenario loaded.`};
+    return state;
+  }
+  return {
+    initialState, analyze, proposeCandidate, preset,
+    attemptApplyCandidate: state => deny(state, "COV_ANALYST_EFFECT_FORBIDDEN", "Denied: the Analyst cannot approve, write, or apply a waiver; point disposition is unchanged."),
+    attemptLaunchSimulation: state => deny(state, "COV_ANALYST_EFFECT_FORBIDDEN", "Denied: only the Simulation Flow collects or recollects evidence."),
+    attemptReadWaveform: state => deny(state, "COV_ANALYST_ACCESS_FORBIDDEN", "Denied: the Specialist receives no waveform, B-Wave, shell, or native-database capability."),
+    attemptMutateCriterion: state => deny(state, "COV_ANALYST_EFFECT_FORBIDDEN", "Denied: the Analyst has no Criterion binding and returns no Criterion verdict or mutation."),
+    eligibility, sourcePolicy, screenCandidate
+  };
+})();
+
+const actions = {
+  failed: {label: "Load threshold-fail Campaign", run: () => CoverageAnalystModel.preset("failed")},
+  pass: {label: "Load policy-pass Campaign", run: () => CoverageAnalystModel.preset("pass")},
+  ungated: {label: "Load ungated Campaign", run: () => CoverageAnalystModel.preset("ungated")},
+  incomplete: {label: "Load incomplete Campaign", run: () => CoverageAnalystModel.preset("incomplete")},
+  incompatible: {label: "Load incompatible Campaign", run: () => CoverageAnalystModel.preset("incompatible")},
+  stale: {label: "Load stale-source Campaign", run: () => CoverageAnalystModel.preset("stale")},
+  simulationFail: {label: "Load simulation-fail Campaign", run: () => CoverageAnalystModel.preset("simulation-fail")},
+  analyze: {label: "Analyze persisted Campaign", primary: true, run: state => CoverageAnalystModel.analyze(state)},
+  candidate: {label: "Propose waiver candidate", run: state => CoverageAnalystModel.proposeCandidate(state)},
+  apply: {label: "Try to apply candidate", danger: true, run: state => CoverageAnalystModel.attemptApplyCandidate(state)},
+  simulate: {label: "Try to launch simulation", danger: true, run: state => CoverageAnalystModel.attemptLaunchSimulation(state)},
+  waveform: {label: "Try to read waveform/native DB", danger: true, run: state => CoverageAnalystModel.attemptReadWaveform(state)},
+  criterion: {label: "Try to satisfy a Criterion", danger: true, run: state => CoverageAnalystModel.attemptMutateCriterion(state)}
+};
+
+const scenarios = [
+  {name: "Failed policy", intro: "A complete Campaign validly misses thresholds. Watch measured gaps remain separate from suggested causes, and watch tool success remain separate from coverage readiness.", verdict: "Expected: analysis succeeds; closure recommendation is coverage_not_ready.", steps: ["failed", "analyze"]},
+  {name: "Passing policy", intro: "A policy-passing Campaign has no uncovered scored points. The Analyst may recommend coverage readiness, but cannot decide overall Ticket closure.", verdict: "Expected: coverage_ready, explicitly scoped to coverage only.", steps: ["pass", "analyze", "criterion"]},
+  {name: "Ungated", intro: "Collection without a Coverage Criterion is valid. The Analyst can explain gaps, but there is no policy basis for a closure verdict.", verdict: "Expected: ungated_no_recommendation, not an invented pass/fail threshold.", steps: ["ungated", "analyze"]},
+  {name: "Bad evidence", intro: "Incomplete normalized evidence remains diagnostically useful; incompatible evidence with no normalized points does not.", verdict: "Expected: incomplete is eligible_with_limits; incompatible is rejected before model invocation.", steps: ["incomplete", "analyze", "incompatible", "analyze"]},
+  {name: "Stale sources", intro: "The persisted Campaign is current but the checked-out source snapshot no longer matches its fingerprints.", verdict: "Expected: report-only analysis continues, with lower-confidence hypotheses and no stale source reading.", steps: ["stale", "analyze"]},
+  {name: "Independent truth", intro: "One selected test failed simulation but still produced valid coverage observations. Coverage and simulation truth must not overwrite one another.", verdict: "Expected: the Analyst cites simulation failure but bases the coverage recommendation on Campaign evaluation.", steps: ["simulationFail", "analyze"]},
+  {name: "Waiver candidate", intro: "The Analyst suspects a reserved toggle point may not belong in the denominator. Push the candidate through the forbidden approval edge.", verdict: "Expected: candidate is report-only; applying it is denied and the point remains eligible.", steps: ["failed", "analyze", "candidate", "apply"]}
+];
+
+let state = CoverageAnalystModel.initialState();
+let scenarioIndex = 0;
+let stepIndex = 0;
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+}
+function statusClass(value) {
+  if (["eligible", "complete", "pass", "coverage_ready", "fingerprint_matched"].includes(value)) return "good";
+  if (["rejected", "incompatible", "fail", "coverage_not_ready"].includes(value)) return "bad";
+  return "warn";
+}
+function renderFacts() {
+  const eligible = CoverageAnalystModel.eligibility(state);
+  const source = CoverageAnalystModel.sourcePolicy(state);
+  const closure = state.analysis?.closure_recommendation?.status || "not analyzed";
+  const point = state.campaign.points.find(item => item.metric === "toggle");
+  const facts = [
+    ["Campaign", state.campaign.campaign_id],
+    ["Invocation eligibility", eligible.status],
+    ["Collection / normalization", `${state.campaign.collection} / ${state.campaign.normalization}`],
+    ["Source access", source.mode],
+    ["Coverage evaluation", state.campaign.evaluation.status],
+    ["Independent simulation", state.campaign.simulation.status],
+    ["Coverage closure recommendation", closure],
+    ["Toggle point disposition", point?.disposition || "no normalized point"],
+    ["Waiver candidates", String(state.analysis?.waiver_candidates?.length || 0)],
+    ["Criterion mutation", "never", true]
+  ];
+  document.getElementById("facts").innerHTML = facts.map(([label, value, wide]) => `<dl class="fact${wide ? " wide" : ""}"><dt>${escapeHtml(label)}</dt><dd class="${statusClass(value)}">${escapeHtml(value)}</dd></dl>`).join("");
+}
+function renderActionButtons() {
+  document.getElementById("actions").innerHTML = Object.entries(actions).map(([key, action]) => `<button data-action="${key}" class="${action.primary ? "primary" : action.danger ? "danger" : ""}">${escapeHtml(action.label)}</button>`).join("");
+  document.querySelectorAll("[data-action]").forEach(button => button.addEventListener("click", () => runAction(button.dataset.action, false)));
+}
+function renderFinding() {
+  const item = state.lastAction;
+  const cls = item.kind === "error" ? "error" : item.kind === "ok" ? "ok" : "";
+  document.getElementById("findings").innerHTML = `<div class="finding ${cls}"><strong>${escapeHtml(item.code)}</strong><p>${escapeHtml(item.message)}</p></div>`;
+}
+function renderOutput() {
+  document.getElementById("output").textContent = JSON.stringify(state.analysis || {status: "not_run", message: "Analyze a Campaign to produce the proposed output contract."}, null, 2);
+}
+function renderTabs() {
+  document.getElementById("tabs").innerHTML = scenarios.map((scenario, index) => `<button role="tab" aria-selected="${index === scenarioIndex}" data-tab="${index}">${escapeHtml(scenario.name)}</button>`).join("");
+  document.querySelectorAll("[data-tab]").forEach(button => button.addEventListener("click", () => selectScenario(Number(button.dataset.tab))));
+}
+function renderScenario() {
+  const scenario = scenarios[scenarioIndex];
+  document.getElementById("scenario-intro").textContent = scenario.intro;
+  document.getElementById("scenario-verdict").textContent = scenario.verdict;
+  document.getElementById("steps").innerHTML = scenario.steps.map((key, index) => {
+    const cls = index < stepIndex ? "done" : index === stepIndex ? "current" : "";
+    return `<div class="step ${cls}"><span class="step-number">${index + 1}</span><span>${escapeHtml(actions[key].label)}</span><button data-step="${index}" ${index !== stepIndex ? "disabled" : ""}>${index < stepIndex ? "Done" : "Run"}</button></div>`;
+  }).join("");
+  document.querySelectorAll("[data-step]").forEach(button => button.addEventListener("click", () => runAction(scenario.steps[Number(button.dataset.step)], true)));
+}
+function selectScenario(index) {
+  scenarioIndex = index;
+  stepIndex = 0;
+  state = CoverageAnalystModel.initialState();
+  render();
+}
+function runAction(key, fromScenario) {
+  const action = actions[key];
+  state = action.run.length === 0 ? action.run() : action.run(state);
+  if (fromScenario) stepIndex += 1;
+  render();
+}
+function render() {
+  renderTabs();
+  renderScenario();
+  renderFacts();
+  renderActionButtons();
+  renderFinding();
+  renderOutput();
+}
+render();
+</script>
+</body>
+</html>

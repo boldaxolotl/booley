@@ -153,6 +153,30 @@ _Avoid_: review gate, planner approval
 An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer and Mutation Tester (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); Coverage Analyst and TB Coder also exist but are hidden until they mature; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
+**Coverage Campaign**:
+The versioned, normalized, per-Target record of one explicit coverage-collection request, retaining independent simulation, collection, and coverage-evaluation truth plus its durable evidence.
+_Avoid_: coverage run, coverage database, project-wide coverage
+
+**Coverage Analyst**:
+A separately invoked, report-driven Specialist that interprets one persisted Coverage Campaign and may read only its fingerprint-matched RTL and testbench source snapshot. It is advisory and Criterion-free: it never collects evidence, reads waveforms or native coverage databases, changes point dispositions, or approves or applies waivers.
+_Avoid_: coverage collector, coverage evaluator, waiver approver
+
+**Coverage Analysis Report**:
+The versioned advisory output that separates Campaign-backed evidence from causal hypotheses and carries prioritized recommendations, a coverage-only closure recommendation, and any report-only Waiver Candidates.
+_Avoid_: coverage verdict, Coverage Campaign, waiver file
+
+**Coverage Closure Recommendation**:
+The Coverage Analyst's advisory statement that coverage is ready, not ready, evidence-blocked, or ungated; it never decides whether a Ticket closes or overrides independent simulation truth.
+_Avoid_: Criterion verdict, Ticket verdict, signoff
+
+**Coverage Waiver**:
+A human-approved removal of one exact, Target-bound Coverage Point from its scored denominator, for exactly one reason: intentionally `excluded`, or formally proved `unreachable`. Both reasons produce the single `waived` point disposition.
+_Avoid_: suppression directive, coverage filter, ignored point
+
+**Waiver Candidate**:
+A report-only proposal concerning one exact uncovered, eligible, V1-scored Coverage Point, deterministically screened as ready for human review, requiring investigation, or forbidden. It never changes a point disposition or enters the approved waiver set by itself.
+_Avoid_: automatic waiver, draft approval, implied exclusion
+
 **Specialist Source Isolation**:
 When a **Specialist** reviews or mutates one side of the design, the other side's source is hidden from it. This is a non-negotiable Specialist context boundary that preserves independent readings of the functional spec: a Specialist judging one side of the RTL/testbench divide runs with the opposite side's sources hidden. Reviewers see only their own category's sources; the **Mutation Tester** designs RTL mutations without reading the testbench, so surviving mutants (injected bugs the testbench fails to catch) measure real testbench quality rather than mutations tailored to dodge it. Diagnostic and integration Specialists may read both when their task requires cross-checking RTL/TB agreement.
 _Avoid_: optional blindness, reviewer independence
