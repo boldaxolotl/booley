@@ -117,7 +117,7 @@ Support for additional commercial EDA tools is coming soon; see the
 - **Source languages are SystemVerilog and Verilog only.** VHDL is not supported.
 - **Testbenches are simple and direct.** Direct SystemVerilog and cocotb testbenches are supported; UVM is not.
 - **Only tested at the IP level.** Complex IPs, like a RISC-V core or crypto accelerators, but never chip- or SoC-level integration. See [Ports](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md#ports) for what has actually been through it.
-- **Setup can take effort.** We've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every ticket and every session builds on it, and development speeds up significantly.
+- **Setup can take effort.** I've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every ticket and every session builds on it, and development speeds up significantly.
 - **The code quality is "hardware engineer writing software."** The architecture is sound, but the Python could use polish. Contributions from actual software developers are very welcome.
 - **Work in progress.** Expect occasional bugs and rough edges in the UI. I'm actively on it, and things keep getting better.
 
