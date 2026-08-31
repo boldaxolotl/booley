@@ -1744,7 +1744,13 @@ class TestSessionRefresh:
 
     def test_refresh_rebuilds_base_then_selected_flavor(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd
-        from booley.harness.image_lifecycle import Intent, LifecycleResult, Status
+        from booley.harness.image_lifecycle import (
+            HostImageScope,
+            Intent,
+            LifecycleResult,
+            ProjectImageScope,
+            Status,
+        )
 
         expected = LifecycleResult(
             "booley-sandbox-riscv",
@@ -1762,7 +1768,11 @@ class TestSessionRefresh:
         )
 
         assert init_cmd.refresh_session_image(tmp_path, verbose=True) is expected
-        assert calls == [(tmp_path, Intent.REFRESH, True)]
+        assert calls == [
+            (ProjectImageScope(tmp_path), Intent.CHECK, True),
+            (HostImageScope(), Intent.REFRESH, True),
+            (ProjectImageScope(tmp_path, expected), Intent.REFRESH, True),
+        ]
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd

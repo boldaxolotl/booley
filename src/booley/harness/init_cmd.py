@@ -47,7 +47,7 @@ from pathlib import Path
 
 from booley import __version__
 from booley.config.guidance_links import ensure_guidance_links, plan_guidance_links
-from booley.config.settings import InteractiveConfig, load_interactive_config
+from booley.config.host_config import InteractiveHostPolicy, retired_project_policy_message
 from booley.core.boundary import require_dict
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
@@ -67,10 +67,12 @@ from booley.harness import devcontainer as dc
 # for this file (see pyproject) because a facade re-exports names it may not use.
 from booley.harness import doctor_stamp, nangate_pdk
 from booley.harness import interactive_docker as idk
+from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
     ImageLifecycleError,
     LifecycleResult,
+    ProjectImageScope,
 )
 from booley.harness.image_lifecycle import Intent as ImageLifecycleIntent
 from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
@@ -1125,7 +1127,9 @@ def _step_sandbox_images(ctx: InitContext) -> None:
         _warn_on_live_session_on_old_image(ctx, selected)
 
 
-def _step_image_lifecycle(ctx: InitContext) -> LifecycleResult | None:
+def _step_image_lifecycle(
+    ctx: InitContext, *, base_result: LifecycleResult | None = None
+) -> LifecycleResult | None:
     """Reconcile the authoritative Session Image chain for initialization."""
     ctx.step_banner("Session Image lifecycle")
     intent = (
@@ -1136,7 +1140,11 @@ def _step_image_lifecycle(ctx: InitContext) -> LifecycleResult | None:
         else ImageLifecycleIntent.ENSURE
     )
     try:
-        result = reconcile_images(ctx.project_root, intent, verbose=ctx.verbose)
+        result = reconcile_images(
+            ProjectImageScope(ctx.project_root, base_result),
+            intent,
+            verbose=ctx.verbose,
+        )
     except ImageLifecycleError as exc:
         err(str(exc))
         ctx.record("docker_image", "err", str(exc))
@@ -1201,20 +1209,28 @@ def refresh_session_image(project_root: Path, *, verbose: bool = False) -> Lifec
     project image are reproducible here; an arbitrary explicit image remains
     user-managed and is rejected with an actionable error.
     """
-    result = reconcile_images(project_root, ImageLifecycleIntent.REFRESH, verbose=verbose)
-    if result.status is ImageLifecycleStatus.EXTERNAL:
+    project_scope = ProjectImageScope(project_root)
+    inspection = reconcile_images(project_scope, ImageLifecycleIntent.CHECK, verbose=verbose)
+    if inspection.status is ImageLifecycleStatus.EXTERNAL:
         raise RuntimeError(
-            f"[sandbox].image={result.selected_reference!r} is user-managed, so Booley has no "
+            f"[sandbox].image={inspection.selected_reference!r} is user-managed, so Booley has no "
             "build recipe to refresh. Rebuild that image yourself, then run "
             "`booley session up --rebuild`."
         )
-    return result
+    from booley.harness.image_lifecycle import HostImageScope
+
+    base = reconcile_images(HostImageScope(), ImageLifecycleIntent.REFRESH, verbose=verbose)
+    return reconcile_images(
+        ProjectImageScope(project_root, base),
+        ImageLifecycleIntent.REFRESH,
+        verbose=verbose,
+    )
 
 
 def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = False) -> None:
     """Regenerate, pin, and stamp the Session spec after an image refresh."""
     ctx = InitContext(project_root=project_root, force=False, verbose=verbose)
-    pdk_root = _step_nangate_pdk(ctx)
+    pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
     _step_interactive(ctx, nangate_pdk_root=pdk_root, session_image_id=image_id)
     failures = [result.detail for result in ctx.results if result.status == "err"]
     if failures:
@@ -1605,7 +1621,7 @@ def _report_sidecar_unavailable(image: str, impact: str) -> None:
 
 
 def _ensure_egress_sidecar(
-    ctx: InitContext, booley_root: Path | None, cfg: InteractiveConfig, notes: list[str]
+    ctx: InitContext, booley_root: Path | None, cfg: InteractiveHostPolicy, notes: list[str]
 ) -> None:
     ready = _ensure_sidecar_image(
         booley_root,
@@ -1625,7 +1641,7 @@ def _ensure_egress_sidecar(
 
 
 def _ensure_reaper_sidecar(
-    ctx: InitContext, booley_root: Path | None, cfg: InteractiveConfig, notes: list[str]
+    ctx: InitContext, booley_root: Path | None, cfg: InteractiveHostPolicy, notes: list[str]
 ) -> None:
     ready = _ensure_sidecar_image(
         booley_root,
@@ -1648,7 +1664,9 @@ def _ensure_interactive_docker(ctx: InitContext, *, license_required: bool = Fal
     """Create the long-lived egress + reaper Docker objects. Returns status notes."""
     notes: list[str] = []
     booley_root = _booley_repo_root()
-    cfg = load_interactive_config(ctx.project_root)
+    from booley.config.host_config import load_host_policy
+
+    cfg = load_host_policy()
 
     if license_required:
         from booley.eda.flexnet_docker import ensure_relay_image
@@ -1855,7 +1873,6 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
             "would write .devcontainer/devcontainer.json + exclude Booley files "
             "and run outputs (build/, util/)"
         )
-        warn(f"would create {idk.EGRESS_NETWORK} network, booley-proxy, booley-reaper")
         if license_profile is not None:
             warn("would build the pinned booley-flexnet-relay image if absent")
         if host_skills:
@@ -1902,25 +1919,10 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
     ok("excluded .devcontainer/, .booley_project/, .claude/ from git (info/exclude)")
 
     notes = [f"app={app}"]
-    if not shutil.which("docker"):
-        warn("docker not on PATH — Reopen in Container will not work until installed")
-        ctx.record("interactive", "warn", ", ".join(notes) + ", docker missing")
-        return
-    try:
-        notes += _ensure_interactive_docker(
-            ctx,
-            license_required=False,
-        )
-        if license_profile is not None:
-            state = "built" if relay_image_built else "present"
-            notes.append(f"license-relay-image:{state}")
-    except RuntimeError as exc:
-        err(f"failed to create Docker objects: {exc}")
-        ctx.record("interactive", "err", ", ".join(notes) + f", {exc}")
-        return
-
-    status = "warn" if any(":skipped" in n for n in notes) else "ok"
-    ctx.record("interactive", status, ", ".join(notes))
+    if license_profile is not None:
+        state = "built" if relay_image_built else "present"
+        notes.append(f"license-relay-image:{state}")
+    ctx.record("interactive", "ok", ", ".join(notes))
 
 
 # ---------------------------------------------------------------------------
@@ -2185,10 +2187,15 @@ def _print_summary(ctx: InitContext) -> int:
         print(f"  {_STATUS_FN[r.status](glyph)} {r.name}{suffix}")
         if r.status == "err":
             exit_code = 2
+        elif r.status == "warn" and ctx.check_only and exit_code == 0:
+            exit_code = 1
 
     print()
-    if exit_code != 0:
+    if exit_code == 2:
         print(red("Setup incomplete — fix the errors above and re-run."))
+        return exit_code
+    if exit_code == 1:
+        print(yellow("Initialization has pending work; run `booley init`."))
         return exit_code
 
     # The send-off has to match what the advisories step just printed. Telling a fully
@@ -2305,7 +2312,7 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     ):
         _step_interactive(ctx, agent_app=selection.provider)
         return _print_summary(ctx)
-    pdk_root = _step_nangate_pdk(ctx)
+    pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
     _step_interactive(ctx, nangate_pdk_root=pdk_root, agent_app=selection.provider)
     return _print_summary(ctx)
 
@@ -2363,12 +2370,60 @@ def _plan_existing_guidance(ctx: InitContext) -> tuple[InitPlan | None, bool]:
     return guidance_plan, False
 
 
+def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
+    """Render typed bootstrap findings into init's existing summary model."""
+    ctx.step_banner("Host Bootstrap")
+    for finding in result.findings:
+        name = f"bootstrap.{finding.resource}"
+        if finding.state is BootstrapState.ERROR:
+            err(f"{finding.resource}: {finding.detail}")
+            ctx.record(name, "err", finding.detail)
+        elif finding.state is BootstrapState.PENDING:
+            warn(f"{finding.resource}: {finding.detail}")
+            ctx.record(name, "warn", finding.detail)
+        elif finding.state is BootstrapState.CHANGED:
+            ok(f"{finding.resource}: {finding.detail}")
+            ctx.record(name, "ok", finding.detail)
+        elif ctx.verbose:
+            skip(f"{finding.resource}: {finding.detail}")
+            ctx.record(name, "skip", finding.detail)
+
+
+def _project_config_migration_preflight(ctx: InitContext) -> bool:
+    """Reject retired Project policy before any Project filesystem mutation."""
+    path = _agent_config_path(ctx.project_root)
+    if not path.is_file():
+        return True
+    try:
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+    except (OSError, tomllib.TOMLDecodeError):
+        return True  # The normal strict config read reports this with its richer context.
+    message = retired_project_policy_message(document)
+    if message is None:
+        return True
+    err(message)
+    ctx.record("project_config_migration", "err", str(path))
+    return False
+
+
+def _usable_bootstrap_base(result: BootstrapResult) -> LifecycleResult | None:
+    base = result.base_image
+    if base is None or base.status not in {
+        ImageLifecycleStatus.CURRENT,
+        ImageLifecycleStatus.CHANGED,
+    }:
+        return None
+    return base
+
+
 def _run_project_init_steps(
     ctx: InitContext,
     args: argparse.Namespace,
     selection: AgentSelection,
     agent_config_path: Path,
     guidance_plan: InitPlan | None,
+    bootstrap_result: BootstrapResult | None = None,
 ) -> int:
     """Run seed-only or full project mutations after preflight succeeds."""
 
@@ -2394,9 +2449,13 @@ def _run_project_init_steps(
         selection,
         skip_credentials=getattr(args, "skip_credentials", False),
     )
-    _deploy_skills(ctx)
-    pdk_root = _step_nangate_pdk(ctx)
-    image_result = _step_image_lifecycle(ctx)
+    pdk_root = nangate_pdk.cache_root()
+    base_result = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
+    image_result = (
+        _step_image_lifecycle(ctx, base_result=base_result)
+        if base_result is not None
+        else _step_image_lifecycle(ctx)
+    )
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
@@ -2425,16 +2484,42 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
 
+    bootstrap_intent = (
+        ImageLifecycleIntent.CHECK
+        if ctx.check_only or getattr(args, "seed", False)
+        else ImageLifecycleIntent.REFRESH
+        if ctx.force
+        else ImageLifecycleIntent.ENSURE
+    )
+    bootstrap_result = reconcile_bootstrap(bootstrap_intent, verbose=ctx.verbose)
+    _record_bootstrap(ctx, bootstrap_result)
+    if getattr(args, "seed", False) and not bootstrap_result.ready:
+        err("Host Bootstrap is not current; run `booley bootstrap` on the host, then retry seed.")
+        if not ctx.check_only and not any(result.status == "err" for result in ctx.results):
+            ctx.record("bootstrap", "err", "run booley bootstrap")
+        return _print_summary(ctx)
+    if not ctx.check_only and not bootstrap_result.ready:
+        if not any(result.status == "err" for result in ctx.results):
+            ctx.record("bootstrap", "err", "Host Bootstrap did not converge")
+        return _print_summary(ctx)
+
+    migration_ready = _project_config_migration_preflight(ctx)
+    if not migration_ready and not ctx.check_only:
+        return _print_summary(ctx)
+
     resolved_selection = _resolve_agent_selection(ctx, args)
     if resolved_selection is None:
         return _print_summary(ctx)
     selection, agent_config_path = resolved_selection
 
-    # Docker is the execution substrate for every supported EDA flow. Fail
-    # before changing project files so a missing daemon cannot leave partial setup.
-    if not _step_host_prerequisites(ctx):
-        return _print_summary(ctx)
     guidance_plan, may_proceed = _plan_existing_guidance(ctx)
     if not may_proceed:
         return _print_summary(ctx)
-    return _run_project_init_steps(ctx, args, selection, agent_config_path, guidance_plan)
+    return _run_project_init_steps(
+        ctx,
+        args,
+        selection,
+        agent_config_path,
+        guidance_plan,
+        bootstrap_result,
+    )

@@ -612,10 +612,6 @@ def reconcile(
     verbose: bool = False,
 ) -> LifecycleResult:
     """Reconcile the image graph owned by an explicit host-or-Project scope."""
-    # Temporary compatibility for the delivery sequence: orchestration callers
-    # migrate to the explicit closed scope before the public command is exposed.
-    if isinstance(scope, Path):
-        scope = ProjectImageScope(scope)
     if isinstance(scope, HostImageScope):
         return _reconcile_host(intent, verbose=verbose)
     if not isinstance(scope, ProjectImageScope):

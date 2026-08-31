@@ -476,13 +476,14 @@ class TestInitInteractive:
             "type=bind,readonly" in spec["mounts"]
         )
 
-    def test_session_spec_reissue_preserves_setup_pdk(self, tmp_path, monkeypatch):
+    def test_session_spec_reissue_reuses_bootstrap_pdk(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
 
         pdk = tmp_path / "host-cache" / "pdk"
         pdk.mkdir(parents=True)
         seen: list[Path | object | None] = []
-        monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: pdk)
+        monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
+        monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
         monkeypatch.setattr(
             init_cmd,
             "_step_interactive",

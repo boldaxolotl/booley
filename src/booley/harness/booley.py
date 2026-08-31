@@ -7,7 +7,8 @@ Subcommands:
     board     Print the ticket board
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
-    init      Set up a new project (not yet implemented)
+    bootstrap Prepare Project-independent host resources
+    init      Initialize a Project
     auth      Mint + store the agent's long-lived auth token
     flow      Run a deterministic Booley Flow directly
 """
@@ -40,6 +41,7 @@ from booley.harness.booley_status_display import (  # noqa: F401  # re-exported 
     _read_checkpoint_status,
     _run_with_heartbeat,
 )
+from booley.harness.bootstrap import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
 from booley.harness.colors import (
     bold_accent,
@@ -348,7 +350,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # usage line; subparsers added without `help=` stay out of the listing.
     sub = parser.add_subparsers(
         dest="command",
-        metavar="{run,chat,board,cheat,doctor,init,eda,auth,session,targets,flow,feedback}",
+        metavar=(
+            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,targets,flow,feedback}"
+        ),
     )
 
     run_p = sub.add_parser("run", help="Run the ticket execution loop")
@@ -636,7 +640,7 @@ def _add_init_subparser(sub) -> None:
     init_p.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite managed configuration and explicitly relink proven Booley skill links",
+        help="Refresh Booley-managed host and Project resources; preserve user-owned files and caches",
     )
     init_p.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging output"
@@ -664,6 +668,25 @@ def _add_init_subparser(sub) -> None:
         help="Agent authentication policy to record (default: auto)",
     )
     _add_init_scaffold_arguments(init_p)
+
+
+def _add_bootstrap_subparser(sub) -> None:
+    """Add Project-independent Host Bootstrap."""
+    parser = sub.add_parser("bootstrap", help="Prepare reusable Booley host resources")
+    intent = parser.add_mutually_exclusive_group()
+    intent.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Inspect Host Bootstrap readiness without modifying anything",
+    )
+    intent.add_argument(
+        "--force",
+        action="store_true",
+        help="Refresh Booley-managed host resources even when they are current",
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true", help="Show detailed reconciliation output"
+    )
 
 
 def _add_flow_subparser(sub) -> None:
@@ -757,6 +780,7 @@ def _add_utility_subparsers(sub) -> None:
     eda_cli.add_subparser(sub)
     _add_auth_subparser(sub)
     _add_doctor_subparser(sub)
+    _add_bootstrap_subparser(sub)
     _add_init_subparser(sub)
     _add_flow_subparser(sub)
     _add_targets_subparser(sub)
@@ -2121,7 +2145,7 @@ def _show_dry_run(venv_py: str) -> None:
 _CONTAINER_ONLY_COMMANDS = frozenset({"run", "chat", "board"})
 # `session` drives the Session Runtime from outside it: like `init` it needs host
 # Docker, and the sandbox has none (ADR 0016).
-_HOST_ONLY_COMMANDS = frozenset({"init", "session", "auth", "eda"})
+_HOST_ONLY_COMMANDS = frozenset({"bootstrap", "init", "session", "auth", "eda"})
 
 
 def _effective_command(args: argparse.Namespace) -> str | None:
@@ -2159,6 +2183,14 @@ def _enforce_runtime_location(command: str | None) -> None:
 def main() -> int:
     """Entry point: parse CLI, handle early exits, set up runtime, run ticket loop."""
     args = _parse_cli()
+    command = _effective_command(args)
+
+    # Bootstrap has no Project and must not even discover one. Its host-only
+    # venue guard still runs before configuration or reconciliation.
+    _enforce_runtime_location(command)
+    if command == "bootstrap":
+        return run_bootstrap(args)
+
     project_root = (
         Path(args.project_root).resolve()
         if hasattr(args, "project_root") and args.project_root
@@ -2167,8 +2199,6 @@ def main() -> int:
 
     # Runtime-location guard: one chokepoint after argparse, before anything
     # touches the filesystem or clears the screen.
-    _enforce_runtime_location(_effective_command(args))
-
     # docker-exec entry drops the spec's remoteEnv — self-heal the proxy env
     # here so agents spawned below inherit a working egress path.
     if runtime_context.ensure_proxy_env():
