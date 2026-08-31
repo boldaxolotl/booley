@@ -622,6 +622,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
               booley-test bash -c "cp -a /work/tests/fixtures/cocotb_counter /validation-tmp/project &&
+              cd /validation-tmp/project &&
               test \"\$(cocotb-config --version)\" = 2.1.0 &&
               python3 -m booley.flows.sim --work-dir /validation-tmp/project --target sim_icarus &&
               python3 -m booley.flows.sim --work-dir /validation-tmp/project --target sim_verilator"
