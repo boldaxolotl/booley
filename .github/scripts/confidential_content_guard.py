@@ -9,6 +9,10 @@ terms by a one-way digest and never echo the confidential text.
 
 This file is stdlib-only because CI executes the trusted default-branch copy
 against an untrusted pull-request checkout without importing candidate code.
+
+Local pre-push wrappers should pass Git's remote name and location arguments
+after the ``pre-push`` command. Without them, new refs conservatively scan full
+ancestry because the guard cannot prove what the destination already contains.
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ _MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024
 _MAX_FINDINGS = 100
 _BINARY_RUN_RE = re.compile(rb"[\t\x20-\x7e]{6,}")
 _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
+_OID_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
 
 class GuardError(RuntimeError):
@@ -68,6 +73,35 @@ class Finding:
     kind: str
     location: str
     term_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _TreeEntry:
+    object_id: str | None
+    path: str
+
+
+@dataclass(frozen=True)
+class RefUpdate:
+    local_ref: str
+    local_sha: str
+    remote_ref: str
+    remote_sha: str
+
+    @classmethod
+    def parse(cls, line: str) -> RefUpdate:
+        parts = line.split()
+        if len(parts) != 4:
+            raise GuardError("the pre-push input record is malformed")
+        local_ref, local_sha, remote_ref, remote_sha = parts
+        if (
+            _OID_RE.fullmatch(local_sha) is None
+            or _OID_RE.fullmatch(remote_sha) is None
+            or len(local_sha) != len(remote_sha)
+            or (_is_zero_sha(local_sha) and _is_zero_sha(remote_sha))
+        ):
+            raise GuardError("the pre-push input record is malformed")
+        return cls(local_ref, local_sha, remote_ref, remote_sha)
 
 
 def _run_git(repo: Path, args: list[str], *, input_bytes: bytes | None = None) -> bytes:
@@ -390,20 +424,53 @@ def _commit_facts(repo: Path, sha: str) -> tuple[str, str, str, str, str]:
     return fields[0], fields[1], fields[2], fields[3], fields[4]
 
 
-def _tree_blobs(repo: Path, sha: str) -> list[tuple[str, str]]:
-    raw = _run_git(repo, ["ls-tree", "-r", "-z", "--full-tree", sha])
-    blobs: list[tuple[str, str]] = []
-    for record in raw.split(b"\x00"):
-        if not record:
-            continue
-        try:
-            metadata, raw_path = record.split(b"\t", 1)
-            _mode, kind, raw_oid = metadata.split(b" ", 2)
-        except ValueError as exc:
-            raise GuardError("a commit tree record could not be parsed") from exc
-        if kind == b"blob":
-            blobs.append((raw_oid.decode("ascii"), raw_path.decode(errors="surrogateescape")))
-    return blobs
+def _parse_changed_tree_entry(metadata_raw: bytes, path_raw: bytes) -> _TreeEntry | None:
+    metadata = metadata_raw.decode("ascii", errors="replace").split()
+    if len(metadata) != 5 or not metadata[0].startswith(":"):
+        raise GuardError("a changed tree record could not be parsed")
+    old_mode = metadata[0][1:]
+    new_mode, old_oid, new_oid, status = metadata[1:]
+    if (
+        re.fullmatch(r"[0-7]{6}", old_mode) is None
+        or re.fullmatch(r"[0-7]{6}", new_mode) is None
+        or _OID_RE.fullmatch(old_oid) is None
+        or _OID_RE.fullmatch(new_oid) is None
+        or re.fullmatch(r"[ACDMRTUXB]+", status) is None
+    ):
+        raise GuardError("a changed tree record could not be parsed")
+    if new_mode == "000000":
+        return None
+    path = path_raw.decode("utf-8", errors="surrogateescape")
+    if new_mode in {"100644", "100755", "120000"}:
+        return _TreeEntry(new_oid, path)
+    if new_mode == "160000":
+        return _TreeEntry(None, path)
+    raise GuardError("a changed tree record has an unsupported mode")
+
+
+def _changed_tree_entries(repo: Path, sha: str) -> list[_TreeEntry]:
+    args = [
+        "diff-tree",
+        "--root",
+        "-m",
+        "-r",
+        "--no-commit-id",
+        "--no-abbrev",
+        "--no-renames",
+        "--raw",
+        "-z",
+        sha,
+    ]
+    fields = _run_git(repo, args).split(b"\x00")
+    if fields and fields[-1] == b"":
+        fields.pop()
+    if len(fields) % 2:
+        raise GuardError("a changed tree record could not be parsed")
+    entries = [
+        _parse_changed_tree_entry(fields[offset], fields[offset + 1])
+        for offset in range(0, len(fields), 2)
+    ]
+    return [entry for entry in entries if entry is not None]
 
 
 def _feed_batch(stream: BinaryIO, object_ids: list[str], errors: list[Exception]) -> None:
@@ -469,7 +536,7 @@ def _add_limited(target: list[Finding], additions: Iterable[Finding]) -> None:
 
 
 def inspect_commits(repo: Path, commits: Iterable[str], config: GuardConfig) -> list[Finding]:
-    """Inspect every commit fact and every complete tree, de-duplicating blobs."""
+    """Inspect every commit fact and changed tree entry, de-duplicating blobs."""
     findings: list[Finding] = []
     blob_context: dict[str, tuple[str, str]] = {}
     for sha in dict.fromkeys(commits):
@@ -484,13 +551,15 @@ def inspect_commits(repo: Path, commits: Iterable[str], config: GuardConfig) -> 
             _add_limited(
                 findings, _identity_findings(name, email, role, f"commit {sha[:12]}", config)
             )
-        for object_id, path in _tree_blobs(repo, sha):
+        for entry in _changed_tree_entries(repo, sha):
+            path = entry.path
             if not _path_ignored(path, config):
                 _add_limited(
                     findings,
                     _scan_text(path, f"commit {sha[:12]} {path} path", config),
                 )
-                blob_context.setdefault(object_id, (sha, path))
+                if entry.object_id is not None:
+                    blob_context.setdefault(entry.object_id, (sha, path))
     for object_id, data in _iter_blob_data(repo, list(blob_context)):
         sha, path = blob_context[object_id]
         _add_limited(findings, _scan_blob(data, path, f"commit {sha[:12]} {path}", config))
@@ -503,14 +572,77 @@ def _rev_list(repo: Path, args: list[str]) -> list[str]:
     except UnicodeDecodeError as exc:
         raise GuardError("git rev-list returned non-ASCII output") from exc
     commits = [line for line in raw.splitlines() if line]
-    if any(not re.fullmatch(r"[0-9a-fA-F]{40,64}", sha) for sha in commits):
+    if any(_OID_RE.fullmatch(sha) is None for sha in commits):
         raise GuardError("git rev-list returned an invalid object name")
     return commits
 
 
-def outgoing_commits(repo: Path, local_sha: str, remote_sha: str) -> list[str]:
-    """Return all commits exposed by one update, including full new-ref history."""
+def _advertised_destination_oids(repo: Path, remote_location: str) -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-remote", "--refs", "--", remote_location],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        lines = result.stdout.decode("ascii").splitlines()
+    except UnicodeDecodeError:
+        return None
+    advertised: list[str] = []
+    for line in lines:
+        fields = line.split("\t", 1)
+        if len(fields) != 2:
+            return None
+        object_id = fields[0]
+        if _OID_RE.fullmatch(object_id) is None:
+            return None
+        advertised.append(object_id)
+    return list(dict.fromkeys(advertised))
+
+
+def _available_commit_oids(repo: Path, object_ids: list[str]) -> list[str]:
+    if not object_ids:
+        return []
+    expressions = [f"{object_id}^{{commit}}" for object_id in object_ids]
+    try:
+        raw = _run_git(
+            repo,
+            ["cat-file", "--batch-check"],
+            input_bytes=("\n".join(expressions) + "\n").encode("ascii"),
+        )
+    except GuardError:
+        return []
+    tips: list[str] = []
+    for line in raw.decode("ascii", errors="replace").splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and _OID_RE.fullmatch(fields[0]) and fields[1] == "commit":
+            tips.append(fields[0])
+    return list(dict.fromkeys(tips))
+
+
+def _local_destination_tips(repo: Path, remote_location: str) -> list[str]:
+    """Return advertised destination tips that are available in the local object store."""
+    advertised = _advertised_destination_oids(repo, remote_location)
+    return _available_commit_oids(repo, advertised or [])
+
+
+def outgoing_commits(
+    repo: Path,
+    local_sha: str,
+    remote_sha: str,
+    *,
+    destination_tips: Iterable[str] = (),
+) -> list[str]:
+    """Return commits newly exposed by one ref update."""
     if _is_zero_sha(remote_sha):
+        tips = list(dict.fromkeys(destination_tips))
+        if tips:
+            return _rev_list(repo, [local_sha, "--not", *tips])
         return _rev_list(repo, [local_sha])
     return _rev_list(repo, [local_sha, "--not", remote_sha])
 
@@ -553,19 +685,39 @@ def commit_message_hook_main(message_path: Path, repo: Path | str | None = None)
     return 0
 
 
-def pre_push_hook_main(repo: Path | str | None = None, stdin: TextIO = sys.stdin) -> int:
+def pre_push_hook_main(
+    repo: Path | str | None = None,
+    stdin: TextIO = sys.stdin,
+    remote_name: str | None = None,
+    remote_location: str | None = None,
+) -> int:
     root = Path(repo or Path.cwd()).resolve()
     try:
+        if (remote_name is None) != (remote_location is None):
+            raise GuardError("the pre-push destination is incomplete")
         config = load_config(root)
+        updates = [RefUpdate.parse(line) for line in stdin]
+        has_new_ref = any(
+            not _is_zero_sha(update.local_sha) and _is_zero_sha(update.remote_sha)
+            for update in updates
+        )
+        destination_tips = (
+            _local_destination_tips(root, remote_location)
+            if remote_location and has_new_ref
+            else []
+        )
         commits: list[str] = []
-        for line in stdin:
-            parts = line.split()
-            if len(parts) != 4:
-                raise GuardError("the pre-push input record is malformed")
-            _local_ref, local_sha, _remote_ref, remote_sha = parts
-            if _is_zero_sha(local_sha):
+        for update in updates:
+            if _is_zero_sha(update.local_sha):
                 continue
-            commits.extend(outgoing_commits(root, local_sha, remote_sha))
+            commits.extend(
+                outgoing_commits(
+                    root,
+                    update.local_sha,
+                    update.remote_sha,
+                    destination_tips=destination_tips,
+                )
+            )
         findings = inspect_commits(root, commits, config)
     except GuardError as exc:
         return _guard_failure(exc, sys.stderr)
@@ -617,7 +769,13 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     commit_parser = subparsers.add_parser("commit-msg", help="inspect a pending commit")
     commit_parser.add_argument("message_file", type=Path)
-    subparsers.add_parser("pre-push", help="consume Git pre-push records on stdin")
+    pre_push_parser = subparsers.add_parser(
+        "pre-push", help="consume Git pre-push records on stdin"
+    )
+    pre_push_parser.add_argument("remote_name", nargs="?", help="Git's destination name")
+    pre_push_parser.add_argument(
+        "remote_location", nargs="?", help="Git's destination URL or path"
+    )
     pull_request_parser = subparsers.add_parser(
         "pull-request", help="inspect GitHub pull-request metadata"
     )
@@ -635,7 +793,11 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.command == "commit-msg":
         return commit_message_hook_main(parsed.message_file, parsed.repo)
     if parsed.command == "pre-push":
-        return pre_push_hook_main(parsed.repo)
+        return pre_push_hook_main(
+            parsed.repo,
+            remote_name=parsed.remote_name,
+            remote_location=parsed.remote_location,
+        )
     if parsed.command == "pull-request":
         return pull_request_main(parsed.repo, parsed.event)
     revisions = parsed.rev or ["HEAD"]
