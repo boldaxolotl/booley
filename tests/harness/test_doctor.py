@@ -183,6 +183,31 @@ def _write_skills_home(root: Path) -> Path:
     return home
 
 
+def _patch_bootstrap_current(monkeypatch) -> None:
+    findings = tuple(
+        doctor.host_bootstrap.BootstrapFinding(
+            resource,
+            doctor.host_bootstrap.BootstrapState.CURRENT,
+            "ok",
+        )
+        for resource in ("host-config", "git", "docker", "vscode", "skills", "nangate45")
+    )
+    monkeypatch.setattr(
+        doctor.host_bootstrap,
+        "reconcile_bootstrap",
+        lambda intent: doctor.host_bootstrap.BootstrapResult(intent, findings),
+    )
+
+
+def _patch_host_environment(monkeypatch, root: Path) -> None:
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(Path, "home", lambda: _write_skills_home(root))
+    runtime = "doc" + "ker"
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: runtime if name == runtime else None)
+    _patch_bootstrap_current(monkeypatch)
+
+
 def _patch_environment(
     monkeypatch,
     root: Path,
@@ -196,11 +221,7 @@ def _patch_environment(
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(Path, "home", lambda: _write_skills_home(root))
-    runtime = "doc" + "ker"
-    monkeypatch.setattr(doctor.shutil, "which", lambda name: runtime if name == runtime else None)
+    _patch_host_environment(monkeypatch, root)
     monkeypatch.setattr(doctor, "_docker_image_exists", lambda: True)
     monkeypatch.setattr(doctor.idk, "image_id", lambda image: image)
 

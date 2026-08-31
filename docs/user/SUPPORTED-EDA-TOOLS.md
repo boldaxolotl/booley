@@ -51,7 +51,7 @@ of making container paths part of Project configuration.
 | `sim` (including `--elab-only`) | Icarus Verilog | image | waveform | ships in the standard image; cocotb testbenches supported |
 | `lint` | Verilator | image | none | ships in the standard image |
 | `lint` | Verible (`verible-verilog-lint`, style/naming rules) | image | none | ships in the standard image |
-| `synth` | Yosys (+ OpenROAD in physical mode) | image + setup cache | none | tools ship in the standard image; `booley init` fetches the pinned Nangate45 liberty/PDK into a host cache mounted read-only at `/opt/pdk` |
+| `synth` | Yosys (+ OpenROAD in physical mode) | image + setup cache | none | tools ship in the standard image; `booley bootstrap` fetches the pinned Nangate45 liberty/PDK into a host cache mounted read-only at `/opt/pdk` |
 | `fpga` | AMD Vivado 2025.2 | host | none | supported on Linux x86-64 under an exact registration and Project Grant; floating FlexNet relay is experimental |
 
 ### Vivado host-provisioning policy
@@ -160,7 +160,7 @@ may override the Python rows (see
 | Verible | v0.0-4157-gfdbac312 |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
-| Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley init`, mounted read-only at `/opt/pdk/cell/lib` |
+| Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley bootstrap`, mounted read-only at `/opt/pdk/cell/lib` |
 
 Check what your image actually has rather than trusting the table after an
 upgrade:

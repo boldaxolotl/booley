@@ -120,15 +120,36 @@ class TestSingleProcess:
         store = SlotStore(root)
         token = store.acquire(CLASS_HEAVY, pid=os.getpid(), poll_interval=0.01)
         try:
-            holder = store.snapshot(CLASS_HEAVY)[0][0]
             deadline = time.monotonic() + 1.0
-            while holder.lease_generation < 2 and time.monotonic() < deadline:
+            while token.lease_generation < 2 and time.monotonic() < deadline:
                 time.sleep(0.01)
-                holder = store.snapshot(CLASS_HEAVY)[0][0]
+            holder = store.snapshot(CLASS_HEAVY)[0][0]
             assert holder.lease_generation >= 2
             assert holder.lease_state == job_slots.LEASE_ACTIVE
         finally:
             store.release(token)
+
+    def test_renew_retries_transient_permission_error(self, root, world, monkeypatch):
+        spawn(world, 100)
+        store = make_store(root, world)
+        token = store.submit(CLASS_HEAVY, pid=100)
+        assert store.refresh(token).state == HOLDING
+        original_replace = Path.replace
+        attempts = 0
+
+        def flaky_replace(path, target):
+            nonlocal attempts
+            if target == token.path and attempts < 2:
+                attempts += 1
+                raise PermissionError("file is temporarily in use")
+            attempts += 1
+            return original_replace(path, target)
+
+        monkeypatch.setattr(Path, "replace", flaky_replace)
+
+        assert store.renew(token) is True
+        assert attempts == 3
+        assert store.snapshot(CLASS_HEAVY)[0][0].lease_generation == 1
 
     def test_release_frees_the_slot(self, root, world):
         spawn(world, 100)

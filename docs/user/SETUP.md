@@ -4,10 +4,10 @@ This guide connects an installed Booley CLI to a specific RTL project. It
 assumes you have completed the [README installation](../../README.md#installation)
 and that `booley --version` works.
 
-Project setup has two parts: `booley init` bootstraps the repository, then the
-**`booley-setup` skill** handles the decisions and validation: feasibility
-triage, project configuration, and the final audit. The bootstrap deploys that
-skill, and this guide hands off to it (see
+The lifecycle has three parts: **Host Bootstrap** prepares reusable machine
+resources, **Project Initialization** makes this codebase a Booley Project, and
+the **`booley-setup` skill** performs design-aware Project Setup. Host Bootstrap
+deploys that skill, and this guide hands off to it (see
 [The `booley-setup` skill](#the-booley-setup-skill) below).
 
 Two paths, sharing everything up to that handoff:
@@ -42,9 +42,27 @@ Booley has been driven end to end on [picorv32](https://github.com/YosysHQ/picor
 
 Their build systems have nothing in common (FuseSoC, bare Makefiles, a vendor test runner, cocotb under pytest), which is the useful part: the real requirement is just RTL that some EDA tool can already build. If your project clears that bar, the [`booley-setup`](#the-booley-setup-skill) skill can adapt it.
 
-## Bootstrap the project · host
+## Host Bootstrap · host
 
-Run the bootstrap on the host before the skill takes over. The host versus
+Run this once after installation and again after Booley upgrades:
+
+```bash
+booley bootstrap
+```
+
+It validates Git, Docker, and VS Code; deploys packaged skills; verifies the
+shared Nangate45 cache; reconciles the base Session Image; and converges the
+single global egress network, proxy, and reaper. It neither discovers a Project
+nor selects an agent provider. `booley bootstrap --check-only` performs no
+writes and returns 1 when work is pending; `--force` refreshes Booley-managed
+host resources while preserving caches and user-owned files.
+
+Skipping the explicit command is supported: ordinary `booley init` performs
+the same reconciliation before it changes a Project.
+
+## Initialize the Project · host
+
+Run Project Initialization on the host before the skill takes over. The host versus
 Session Runtime split is described in [ARCHITECTURE.md](../internals/ARCHITECTURE.md#overview).
 
 > **`booley init` is the host command; the workflow CLI is container-only.**
@@ -55,7 +73,7 @@ Session Runtime split is described in [ARCHITECTURE.md](../internals/ARCHITECTUR
 
 > **For an existing project, start from a fresh clone when practical and run
 > `booley init` before making local edits.** A clean tracked tree gives the
-> bootstrap an unambiguous baseline for line-ending repair and other Git
+> initialization an unambiguous baseline for line-ending repair and other Git
 > checks, minimizing avoidable setup conflicts. If you must use an existing
 > checkout, commit or stash tracked changes first.
 
@@ -98,29 +116,20 @@ booley init --scaffold my_ip
 `booley init` is idempotent (safe to re-run): it never overwrites a
 `.booley_project/docker/{Dockerfile,requirements.txt}` you've hand-edited (it
 detects the loss of its `# AUTO-GENERATED` header, or a `# booley:keep`
-directive you add, and leaves your files and image untouched). Either form walks
-through:
+directive you add, and leaves your files and image untouched). Host Bootstrap
+owns external dependency validation, system skill links, the Nangate45 cache,
+the base Session Image, and global sidecars. Project Initialization walks through:
 
 1. Creating `.booley_project/` with placeholder configs
 2. Recording the selected agent provider and authentication policy
 3. The tickets directory tree and selected-provider credential checks
-4. External dependency detection (Docker)
-5. **Deploying interactive skills to your agent runtime (Claude Code, Codex
-   CLI)**: this is what makes the `booley-setup` skill available at all
-6. Downloading the pinned Nangate45 synthesis library into Booley's per-user
-   cache, verifying every file by SHA-256, and recording its restrictive
-   non-commercial/benchmarking terms beside the files. Booley does not include
-   this library in its repository, package, or sandbox image; setup mounts the
-   cache read-only at `/opt/pdk`.
-7. Reconciling the selected Session Image and every Booley-managed parent in
-   dependency order. Published images come from GitHub Container Registry;
-   unavailable or stale artifacts are built locally. Payload, recipe, and
-   direct-parent provenance are checked independently before the image is used.
-8. Installing git hooks (repo-level and project commit-msg)
-9. Writing the Interactive Mode devcontainer config
-10. Post-setup advisories
+4. Reconciling the Project-selected or Project-derived Session Image while
+   verifying its immutable base ancestry
+5. Installing Git hooks (repo-level and Project commit-msg)
+6. Writing and issuing the Interactive Mode devcontainer specification
+7. Post-setup advisories
 
-The commit-msg hook installed in step 8 has one behavior worth knowing about
+The commit-msg hook installed in step 5 has one behavior worth knowing about
 later; it doesn't affect the happy-path install, so it's spelled out under
 [Notes](#notes) at the end.
 

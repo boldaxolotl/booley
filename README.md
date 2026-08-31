@@ -50,6 +50,7 @@ Install and verify the CLI on the host:
 ```bash
 pipx install booley-rtl # or: pip install booley-rtl
 booley --version
+booley bootstrap
 ```
 
 `pipx` is recommended because it avoids system-Python conflicts. Windows users
@@ -57,6 +58,10 @@ should run the CLI natively, not inside WSL. See
 [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md)
 for first-run, PATH, and Python-environment problems, then continue to
 [Setup](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md).
+`booley bootstrap` prepares reusable host resources: skills, the shared PDK
+cache, the base Session Image, and global Interactive Mode services. It is
+recommended after installation and upgrades, but optional before Project work:
+ordinary `booley init` performs the same reconciliation first.
 
 ## Quick Start
 

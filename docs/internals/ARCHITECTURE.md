@@ -15,6 +15,19 @@ Everything executes in a containerized **Session Runtime**, one per opened proje
 
 The host owns only bootstrap, runtime lifecycle, trusted EDA registrations and Grants, the egress proxy, and idle reaping. It never executes an agent-controlled command.
 
+The preparation sequence is deliberately one-way:
+
+1. **Host Bootstrap** validates host policy and applications, then reconciles
+   shared skills, the PDK cache, the base Session Image, and global sidecars.
+2. **Project Initialization** reconciles Project state, the selected or derived
+   Session Image, Git integration, and an issued Session Runtime specification.
+3. The issued **Session Runtime** hosts Interactive Mode and Ticket Mode.
+
+Both host and Project image scopes cross the same authoritative image-lifecycle
+module. A composed forced init refreshes the host-owned base once; Project
+reconciliation verifies that immutable identity and refreshes only its owned
+descendants.
+
 ![Booley Architecture](assets/booley-arch.png)
 
 ## The Sandbox
@@ -29,7 +42,7 @@ The runtime is network-restricted by default. Deterministic compile and simulati
 
 ## Interactive Mode
 
-Interactive Mode is both the hands-on workflow and the front door to the Session Runtime. `booley init` prepares the devcontainer and its supporting lifecycle services; reopening the project in the container connects the editor to the full sandbox. The interactive agent reaches Flows, read-only Specialists, B-Wave, and runtime status through an in-container MCP server. Ticket-only controls remain hidden. The service restarts with the container, so reopened sessions reconnect automatically. See [SETUP.md](../user/SETUP.md) for bootstrap and [USAGE.md](../user/USAGE.md#interactive-mode) for the working interface.
+Interactive Mode is both the hands-on workflow and the front door to the Session Runtime. `booley bootstrap` prepares global lifecycle services, while `booley init` issues this Project's devcontainer specification; reopening the project in the container connects the editor to the full sandbox. The interactive agent reaches Flows, read-only Specialists, B-Wave, and runtime status through an in-container MCP server. Ticket-only controls remain hidden. The service restarts with the container, so reopened sessions reconnect automatically. See [SETUP.md](../user/SETUP.md) for the lifecycle and [USAGE.md](../user/USAGE.md#interactive-mode) for the working interface.
 
 ## Ticket Mode
 

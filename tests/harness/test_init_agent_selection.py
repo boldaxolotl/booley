@@ -53,7 +53,11 @@ def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
 def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
     project_dir = tmp_path / init_cmd.PROJECT_DIR_NAME
     project_dir.mkdir()
-    monkeypatch.setattr(init_cmd, "_step_host_prerequisites", lambda _ctx: True)
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
+    )
 
     def seed(_ctx, selection):
         config = (project_dir / "booley.toml").read_text(encoding="utf-8")
@@ -209,7 +213,7 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
         "_step_advisories",
     ):
         monkeypatch.setattr(init_cmd, name, lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: "pdk")
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: "pdk")
     monkeypatch.setattr(init_cmd, "_step_image_lifecycle", lambda _ctx: result)
     monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
     calls = []
