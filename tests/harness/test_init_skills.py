@@ -222,3 +222,23 @@ def test_check_only_does_not_create_default_agent_directory(tmp_path: Path, monk
 
     assert not (tmp_path / ".agents").exists()
     assert ctx.results[-1].status == "warn"
+
+
+def test_public_host_reconciliation_seam_returns_typed_target_reports(tmp_path: Path, monkeypatch):
+    source = tmp_path / "packaged"
+    target = tmp_path / "host" / "skills"
+    report = SkillLinkReport()
+    monkeypatch.setattr(init_skills, "_find_skill_targets", lambda: [target])
+    monkeypatch.setattr(
+        init_skills,
+        "reconcile_skill_links",
+        lambda *args, **kwargs: report,
+    )
+
+    results = init_skills.reconcile_host_skills(
+        source,
+        dry_run=True,
+        allow_retarget=True,
+    )
+
+    assert results == (init_skills.HostSkillReconciliation(target, report),)

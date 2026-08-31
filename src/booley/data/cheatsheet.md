@@ -7,6 +7,7 @@ and nested actions.
 
 | Command | Purpose |
 |---------|---------|
+| `booley bootstrap` | Check or reconcile reusable host resources |
 | `booley init` | Initialize, scaffold, or reseed project integration |
 | `booley doctor` | Check project, runtime, and toolchain health |
 | `booley auth` | Configure or inspect agent credentials |
@@ -19,6 +20,11 @@ and nested actions.
 | `booley run` | Execute queued or named tickets |
 | `booley board` | Create, inspect, move, reset, or archive tickets |
 | `booley cheat` | Show this reference, whole or by section |
+
+For Host Bootstrap, `--check-only` reports pending work without writing and
+`--force` refreshes Booley-managed resources while preserving caches and
+user-owned files. Force does not overwrite configuration or disable Docker's
+layer cache.
 
 ### Ticket Board
 

@@ -9,7 +9,7 @@ import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 from booley.core.boundary import BoundaryError, is_str_list, require_dict, require_opt_str
 from booley.harness.build_stamp import embedded_payload_fingerprint
@@ -59,6 +59,22 @@ class Status(StrEnum):
 
 class ImageLifecycleError(RuntimeError):
     """A managed Session Image could not be reconciled or verified."""
+
+
+@dataclass(frozen=True, slots=True)
+class HostImageScope:
+    """Project-independent ownership of the base Session Image."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectImageScope:
+    """One Project's selected image plus an optional reconciled host base."""
+
+    project_root: Path
+    base: LifecycleResult | None = None
+
+
+ImageScope: TypeAlias = HostImageScope | ProjectImageScope
 
 
 @dataclass(frozen=True)
@@ -461,13 +477,13 @@ def _uses_accepted_legacy_provenance(node: _ImageNode, docker: _DockerPort) -> b
     )
 
 
-def _backup_tag(project_root: Path, reference: str) -> str:
-    identity = hashlib.sha256(f"{project_root.resolve()}\0{reference}".encode()).hexdigest()[:16]
+def _backup_tag(scope_identity: str, reference: str) -> str:
+    identity = hashlib.sha256(f"{scope_identity}\0{reference}".encode()).hexdigest()[:16]
     return f"booley-lifecycle-backup-{identity}:prior"
 
 
 def _retain_prior_tags(
-    project_root: Path, nodes: tuple[_ImageNode, ...], docker: _DockerPort
+    scope_identity: str, nodes: tuple[_ImageNode, ...], docker: _DockerPort
 ) -> list[tuple[str, str | None]]:
     backups = []
     try:
@@ -476,7 +492,7 @@ def _retain_prior_tags(
             if prior_id is None:
                 backups.append((node.reference, None))
                 continue
-            backup = _backup_tag(project_root, node.reference)
+            backup = _backup_tag(scope_identity, node.reference)
             docker.tag(prior_id, backup)
             backups.append((node.reference, backup))
     except BaseException:
@@ -502,23 +518,28 @@ def _restore_prior_tags(backups: list[tuple[str, str | None]], docker: _DockerPo
 
 
 def _mutate(
-    project_root: Path,
+    scope_identity: str,
     nodes: tuple[_ImageNode, ...],
     intent: Intent,
     docker: _DockerPort,
     builder: _BuildPort,
+    *,
+    refreshable: frozenset[str] | None = None,
 ) -> tuple[str, ...]:
     changed = []
     backups: list[tuple[str, str | None]] = []
     cleanup_backups = False
     try:
-        backups = _retain_prior_tags(project_root, nodes, docker)
+        backups = _retain_prior_tags(scope_identity, nodes, docker)
         for node in nodes:
             current = _node_current(node, docker)
-            if current and intent is not Intent.REFRESH:
+            refresh = intent is Intent.REFRESH and (
+                refreshable is None or node.reference in refreshable
+            )
+            if current and not refresh:
                 continue
             existed = docker.image_id(node.reference) is not None
-            builder.build(node, force=intent is Intent.REFRESH or existed)
+            builder.build(node, force=refresh or existed)
             if not _node_current(node, docker):
                 if node.payload.fingerprint and not existed and intent is Intent.ENSURE:
                     builder.build(node, force=True)
@@ -585,13 +606,43 @@ def _check_result(
 
 
 def reconcile(
-    project_root: Path,
+    scope: ImageScope,
     intent: Intent,
     *,
     verbose: bool = False,
 ) -> LifecycleResult:
-    """Resolve, reconcile, and verify one Project's selected Session Image."""
-    root = project_root.resolve()
+    """Reconcile the image graph owned by an explicit host-or-Project scope."""
+    if isinstance(scope, HostImageScope):
+        return _reconcile_host(intent, verbose=verbose)
+    if not isinstance(scope, ProjectImageScope):
+        raise TypeError("image lifecycle scope must be HostImageScope or ProjectImageScope")
+    return _reconcile_project(scope, intent, verbose=verbose)
+
+
+def _reconcile_host(intent: Intent, *, verbose: bool) -> LifecycleResult:
+    docker = _docker_adapter()
+    payload = PayloadProvenance(
+        PROVENANCE_SCHEMA,
+        _expected_version(),
+        _expected_payload_fingerprint(),
+    )
+    nodes = _with_parent_artifacts((_base_node(payload),), docker)
+    stale, legacy_diagnostics = _inspect_nodes(nodes, docker)
+    if intent is Intent.CHECK:
+        return _check_result(BASE_IMAGE, nodes, docker, stale, legacy_diagnostics)
+    build_root = docker_data_dir().parents[3]
+    builder = _build_adapter(build_root, docker, verbose=verbose)
+    changed = _mutate("host", nodes, intent, docker, builder)
+    return _verified_result(BASE_IMAGE, nodes[-1], changed, legacy_diagnostics, docker)
+
+
+def _reconcile_project(
+    scope: ProjectImageScope,
+    intent: Intent,
+    *,
+    verbose: bool,
+) -> LifecycleResult:
+    root = scope.project_root.resolve()
     docker = _docker_adapter()
     selected = _selected_reference(root)
     generated = project_image.project_image_name(root)
@@ -605,18 +656,54 @@ def reconcile(
     if intent is not Intent.CHECK and selected == generated:
         _prepare_project_recipe(root, _project_requirements_body(root))
         selected = _selected_reference(root)
+    if selected == BASE_IMAGE and scope.base is not None:
+        _verify_host_base(scope.base, docker)
+        return LifecycleResult(
+            BASE_IMAGE,
+            scope.base.selected_id,
+            Status.CURRENT,
+            payload_fingerprint=scope.base.payload_fingerprint,
+        )
     nodes = _nodes(root, selected, docker)
+    if scope.base is not None:
+        _verify_host_base(scope.base, docker)
     stale, legacy_diagnostics = _inspect_nodes(nodes, docker)
     if intent is Intent.CHECK:
         return _check_result(selected, nodes, docker, stale, legacy_diagnostics)
     builder = _build_adapter(root, docker, verbose=verbose)
-    changed = _mutate(root, nodes, intent, docker, builder)
+    refreshable = frozenset({node.reference for node in nodes if node.reference != BASE_IMAGE})
+    changed = _mutate(
+        str(root),
+        nodes,
+        intent,
+        docker,
+        builder,
+        refreshable=refreshable if intent is Intent.REFRESH else None,
+    )
+    return _verified_result(selected, nodes[-1], changed, legacy_diagnostics, docker)
+
+
+def _verify_host_base(result: LifecycleResult, docker: _DockerPort) -> None:
+    if result.selected_reference != BASE_IMAGE or result.status not in {
+        Status.CURRENT,
+        Status.CHANGED,
+    }:
+        raise ImageLifecycleError(
+            "Project image reconciliation requires a current host base image"
+        )
+    if result.selected_id is None or docker.image_id(BASE_IMAGE) != result.selected_id:
+        raise ImageLifecycleError("host base image identity changed before Project reconciliation")
+
+
+def _verified_result(
+    selected: str,
+    selected_node: _ImageNode,
+    changed: tuple[str, ...],
+    legacy_diagnostics: tuple[Diagnostic, ...],
+    docker: _DockerPort,
+) -> LifecycleResult:
     selected_id = docker.image_id(selected)
-    if (
-        selected_id is None
-        or not _node_current(nodes[-1], docker)
-        or docker.image_id(selected) != selected_id
-    ):
+    if selected_id is None or not _node_current(selected_node, docker):
         raise ImageLifecycleError(f"selected Session Image {selected!r} did not verify")
     return LifecycleResult(
         selected,
@@ -624,7 +711,7 @@ def reconcile(
         Status.CHANGED if changed else Status.CURRENT,
         changed_images=changed,
         diagnostics=() if changed else legacy_diagnostics,
-        payload_fingerprint=nodes[-1].payload.fingerprint,
+        payload_fingerprint=selected_node.payload.fingerprint,
         requires_spec_reseed=bool(changed),
         requires_runtime_recreation=bool(changed),
     )

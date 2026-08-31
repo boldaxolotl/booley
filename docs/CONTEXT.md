@@ -16,6 +16,24 @@ each entry's _Avoid_ terms as rejected synonyms rather than loose alternatives.
 
 ## Using Booley
 
+### Lifecycle
+
+How a host and codebase become ready for Booley work. **Host Bootstrap** prepares
+reusable host capabilities, **Project Initialization** creates one **Project**,
+and **Project Setup** adapts that Project to its design.
+
+**Host Bootstrap**:
+Idempotent, Project-independent preparation of the host environment and the current user's Booley integrations for the installed Booley version.
+_Avoid_: Project bootstrap, machine setup, installation
+
+**Project Initialization**:
+Idempotent mechanical creation and reconciliation of Booley state and runtime infrastructure for one codebase, making it a **Project** without interpreting its design.
+_Avoid_: Project bootstrap, Project enrollment, Project Setup
+
+**Project Setup**:
+Design-aware adaptation and validation of an initialized **Project**, including its design description, verification intent, and agent guidance.
+_Avoid_: Project Initialization, onboarding, porting
+
 ### Execution
 
 How and where Booley work runs. The **Session Runtime** is the execution environment; **Ticket Mode** and **Interactive Mode** are the two ways to drive it; the remaining entries are the machinery inside.

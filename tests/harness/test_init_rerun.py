@@ -79,17 +79,16 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
         lambda name: trusted_booley if name == "booley" else None,
     )
 
-    def docker_preflight(ctx: InitContext) -> bool:
-        ctx.step_banner("host bootstrap tool detection")
-        ctx.record("host_prerequisites", "ok")
-        return True
-
-    monkeypatch.setattr(init_cmd, "_step_host_prerequisites", docker_preflight)
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, ()),
+    )
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
     pdk_root = tmp_path / "pdk"
     pdk_root.mkdir()
-    monkeypatch.setattr(init_cmd, "_step_nangate_pdk", lambda _ctx: pdk_root)
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk_root)
     return root
 
 

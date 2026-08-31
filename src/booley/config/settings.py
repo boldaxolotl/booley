@@ -9,7 +9,7 @@ Submodules own their concerns; this facade re-exports for backward compat:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError, as_positive_int, is_str_list, require_dict
@@ -138,76 +138,22 @@ def load_submodule_config(project_root: Path) -> SubmoduleConfig:
     return SubmoduleConfig(paths=tuple(raw_paths))
 
 
-# --- [interactive] config (ADR 0018) ---
+# --- Host-owned [interactive] config compatibility exports ---
 
-# Defaults mirror the in-container MCP idle watchdog (mcp_server._McpLifetime).
-DEFAULT_INTERACTIVE_IDLE_TIMEOUT_S = 7200  # 2h
-DEFAULT_INTERACTIVE_MAX_SESSIONS = 4
-
-
-@dataclass(frozen=True)
-class InteractiveConfig:
-    """Interactive Mode runtime policy from ``[interactive]`` in booley.toml.
-
-    Consumed by the idle reaper / concurrency cap (WS2) and the egress sidecar
-    (WS1). All fields have safe defaults so an absent section is fine.
-    """
-
-    idle_timeout_seconds: int = DEFAULT_INTERACTIVE_IDLE_TIMEOUT_S
-    max_sessions: int = DEFAULT_INTERACTIVE_MAX_SESSIONS
-    # Extra domains appended to the egress proxy's built-in DEFAULT_ALLOWLIST.
-    egress_allowlist: tuple[str, ...] = field(default_factory=tuple)
+from .host_config import (
+    DEFAULT_IDLE_TIMEOUT_SECONDS as DEFAULT_INTERACTIVE_IDLE_TIMEOUT_S,  # noqa: F401 - compatibility re-export
+)
+from .host_config import (  # noqa: F401 - compatibility re-export
+    DEFAULT_MAX_SESSIONS as DEFAULT_INTERACTIVE_MAX_SESSIONS,
+)
+from .host_config import InteractiveHostPolicy as InteractiveConfig
+from .host_config import load_host_policy
 
 
-def _coerce_positive_int(raw: object, default: int, *, field_name: str) -> int:
-    """Return *raw* as a positive int, or *default* with a warning.
-
-    The accept/reject decision is the shared ``core.boundary`` guard; this
-    wrapper adds the ``[interactive]``-scoped warning the config loader wants.
-    ``as_positive_int`` returns the *same* object it was given on success, so an
-    identity check (not ``==``, which the bool/int trap would spoil) tells us it
-    was rejected — then we recover the reason for a precise message.
-    """
-    coerced = as_positive_int(raw, default)
-    if coerced is not raw:  # rejected by the boundary guard
-        if isinstance(raw, int) and not isinstance(raw, bool):  # int, but <= 0
-            logger.warning(
-                "[interactive] %s=%d must be positive; using %d", field_name, raw, default
-            )
-        elif raw is not None:
-            logger.warning(
-                "[interactive] %s=%r is not an integer; using %d", field_name, raw, default
-            )
-    return coerced
-
-
-def load_interactive_config(project_root: Path) -> InteractiveConfig:
-    """Load and validate the ``[interactive]`` section, falling back to defaults."""
-    section = _load_booley_toml(project_root).get("interactive", {})
-    if not isinstance(section, dict):
-        logger.warning("[interactive] is not a table; using defaults")
-        section = {}
-
-    allowlist_raw = section.get("egress_allowlist", [])
-    if isinstance(allowlist_raw, list):
-        allowlist = tuple(str(d) for d in allowlist_raw if str(d).strip())
-    else:
-        logger.warning("[interactive] egress_allowlist is not a list; ignoring")
-        allowlist = ()
-
-    return InteractiveConfig(
-        idle_timeout_seconds=_coerce_positive_int(
-            section.get("idle_timeout_seconds"),
-            DEFAULT_INTERACTIVE_IDLE_TIMEOUT_S,
-            field_name="idle_timeout_seconds",
-        ),
-        max_sessions=_coerce_positive_int(
-            section.get("max_sessions"),
-            DEFAULT_INTERACTIVE_MAX_SESSIONS,
-            field_name="max_sessions",
-        ),
-        egress_allowlist=allowlist,
-    )
+def load_interactive_config(project_root: Path | None = None) -> InteractiveConfig:
+    """Load global policy; *project_root* is ignored for compatibility."""
+    del project_root
+    return load_host_policy()
 
 
 # --- [developer.limits] config ---
