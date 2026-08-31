@@ -46,13 +46,6 @@ jobs:
       - name: Pull RISC-V Session Runtime
         run: docker pull "${IMAGE}"
 
-      - name: Apply documented local checkout excludes
-        run: |
-          printf '%s\n' \
-            '/.booley_project' \
-            '/.booley-projected-*.core' \
-            >> demo/.git/info/exclude
-
       - name: Prepare bind-mount ownership
         run: sudo chown -R 1000:1000 demo
 

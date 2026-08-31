@@ -16,6 +16,7 @@ from pathlib import Path
 import booley
 from booley.harness import init_cmd, init_docker_image
 from booley.harness.init_common import InitContext
+from booley.runtime.docker_build import DockerBuildResult
 
 
 def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch, capsys):
@@ -144,6 +145,40 @@ def test_image_build_metadata_args_include_runtime_provenance(tmp_path, monkeypa
     assert "BOOLEY_SOURCE_REVISION=abc123" in values
     assert "BOOLEY_SOURCE_UPDATED_AT=2026-08-10T10:00:00Z" in values
     assert any(value.startswith("BOOLEY_IMAGE_BUILT_AT=") for value in values)
+
+
+def test_docker_build_command_reuses_local_parent_labels(tmp_path, monkeypatch):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    parent_id = "sha256:" + "a" * 64
+    direct_spec = init_docker_image._DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=tmp_path,
+        exists=False,
+        image="project-image",
+        parent_artifact=parent_id,
+    )
+
+    direct_command = init_docker_image._docker_build_command(direct_spec)
+
+    assert (
+        f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}="
+        f"{init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}"
+    ) in direct_command
+    assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in direct_command
+
+    monkeypatch.setattr(init_docker_image, "_docker_image_id", lambda _image: parent_id)
+    flavor_spec = init_docker_image._DockerBuildSpec(
+        dockerfile=dockerfile,
+        context=tmp_path,
+        exists=False,
+        image="booley-sandbox-riscv",
+    )
+
+    flavor_command = init_docker_image._docker_build_command(flavor_spec)
+
+    assert f"{init_docker_image.LABEL_BASE_IMAGE_ID}={parent_id}" in flavor_command
+    assert f"{init_docker_image.LABEL_PARENT_ARTIFACT}={parent_id}" in flavor_command
 
 
 def test_local_build_constructs_base_before_candidate_with_named_context(
@@ -629,6 +664,43 @@ class TestDockerBuildCommand:
         assert captured["cmd"][:2] == ["docker", "build"]
         assert "--no-cache" not in captured["cmd"]
 
+    def test_failure_renders_retained_diagnostics_once(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(
+            init_docker_image,
+            "run_docker_build",
+            lambda *_args, **_kwargs: DockerBuildResult(
+                1, diagnostics=("ERROR: checksum mismatch",)
+            ),
+            raising=False,
+        )
+        ctx = InitContext(project_root=tmp_path)
+        build = init_docker_image._DockerBuildSpec(
+            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
+        )
+
+        assert init_docker_image._docker_build_image(ctx, build) == 1
+
+        assert capsys.readouterr().out.count("ERROR: checksum mismatch") == 1
+
+    def test_timeout_records_build_failure(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(
+            init_docker_image,
+            "run_docker_build",
+            lambda *_args, **_kwargs: DockerBuildResult(
+                None, timed_out=True, diagnostics=("last build output",)
+            ),
+        )
+        ctx = InitContext(project_root=tmp_path)
+        build = init_docker_image._DockerBuildSpec(
+            dockerfile=tmp_path / "Dockerfile", context=tmp_path, exists=False
+        )
+
+        assert init_docker_image._docker_build_image(ctx, build) is None
+
+        assert ctx.results[-1].status == "err"
+        assert ctx.results[-1].detail == "build timed out"
+        assert "last build output" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # build.sh Python-selection guard (source invariant)
@@ -703,7 +775,7 @@ class TestWheelFailureReport:
         assert "stderr side of the story" in capsys.readouterr().out
 
     def test_ensurepip_failure_names_its_fix(self, capsys):
-        """The exact trap docs/TROUBLESHOOTING.md documents, and the one that killed the
+        """The exact trap docs/user/TROUBLESHOOTING.md documents, and the one that killed the
         fpu port's first init: Debian splits venv out of the interpreter."""
         ctx = InitContext(project_root=Path("/tmp/x"))
         _wheel_failure(

@@ -11,6 +11,7 @@ circular import.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -22,6 +23,12 @@ from booley.harness.colors import accent, bold_chrome, chrome, green, red, yello
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
+
+
+def configure_progress_output() -> None:
+    """Make newline-delimited host progress visible through redirected stdout."""
+    with contextlib.suppress(AttributeError, ValueError):
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
 
 def info(msg: str) -> None:

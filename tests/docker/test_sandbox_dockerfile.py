@@ -49,7 +49,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.250"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.251"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -143,8 +143,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.250"' in lock
-    assert '"@openai/codex": "0.150.1"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.251"' in lock
+    assert '"@openai/codex": "0.151.0"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -171,18 +171,19 @@ def test_riscv_release_consumes_base_job_digest() -> None:
     assert "image-digest: ${{ steps.build.outputs.digest }}" in workflow
     assert "booley-sandbox=docker-image://" in workflow
     assert "@${{ needs.build-and-push.outputs.image-digest }}" in workflow
+    assert "io.booley.build.parent-artifact-kind=registry-digest" in workflow
     assert (
-        "io.booley.build.parent-artifact=${{ steps.base-artifact.outputs.image-id }}" in workflow
+        "io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@"
+        "${{ needs.build-and-push.outputs.image-digest }}" in workflow
     )
+    assert "steps.base-artifact.outputs.image-id" not in workflow
 
 
 def test_release_base_records_exact_stable_runtime_parent() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
-    assert "id: runtime-base-artifact" in workflow
-    assert (
-        "io.booley.build.parent-artifact=${{ steps.runtime-base-artifact.outputs.image-id }}"
-    ) in workflow
+    assert ("io.booley.build.parent-artifact=${{ steps.runtime-base.outputs.image }}") in workflow
+    assert "runtime-base-artifact.outputs.image-id" not in workflow
 
 
 def test_candidate_builds_consume_compatible_stable_base_by_immutable_digest() -> None:
@@ -262,7 +263,13 @@ def test_release_demo_installs_cli_at_trusted_host_prefix() -> None:
 def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
 
+    contract_check = "      - name: Verify exact reviewed demo contract\n"
+    initialize = "      - name: Initialize demo cleanly as documented\n"
+    surface_smoke = "      - name: Run demo Doctor and ticket-authoring surface smoke\n"
     assert "uses: ./.github/actions/prepare-picorv32-demo" in workflow
+    assert contract_check in workflow
+    assert workflow.index(contract_check) < workflow.index(initialize)
+    assert workflow.index(initialize) < workflow.index(surface_smoke)
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
@@ -274,7 +281,9 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     assert "booley-ticket-create" in workflow
     assert "python -m booley.ticket_board validate-ticket" in workflow
     assert 'python -m booley.ticket_board show "${ticket_slug}"' in workflow
-    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in workflow
+    assert workflow.count("bash /booley-source/.github/scripts/verify_picorv32_demo.sh") == 1
+    contract_section = workflow[workflow.index(contract_check) : workflow.index(initialize)]
+    assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in contract_section
     assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
     assert "add-rv32-zbb-pcpi-co-processor" not in workflow
     assert "python -m booley.ticket_board parse-ticket" not in workflow

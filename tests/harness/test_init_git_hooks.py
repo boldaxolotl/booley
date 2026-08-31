@@ -38,6 +38,16 @@ def _autocrlf(root: Path) -> str:
     return proc.stdout.strip()
 
 
+def _local_autocrlf(root: Path) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(root), "config", "--local", "--get", "core.autocrlf"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip()
+
+
 def _git_commit(root: Path) -> None:
     subprocess.run(
         [
@@ -501,6 +511,226 @@ class TestLineEndingsStep:
         _step_line_endings(ctx)
 
         assert ctx.results[-1].status == "skip"
+
+    def test_separate_project_data_repository_is_normalized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        global_config = tmp_path / "global.gitconfig"
+        global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        hooks = project_dir / "hooks"
+        hooks.mkdir(parents=True)
+        _git_init(project_dir)
+        assert _local_autocrlf(tmp_path) == ""
+        assert _local_autocrlf(project_dir) == ""
+        self._add_file(project_dir, "hooks/post-setup.sh", b"#!/bin/sh\nset -euo pipefail\n")
+        _git_commit(project_dir)
+        hook = hooks / "post-setup.sh"
+        hook.unlink()
+        subprocess.run(
+            ["git", "-C", str(project_dir), "checkout", "--", "hooks/post-setup.sh"],
+            capture_output=True,
+            check=True,
+        )
+        assert b"\r\n" in hook.read_bytes()
+
+        _step_line_endings(_ctx(tmp_path), project_dir)
+
+        assert _local_autocrlf(tmp_path) == "false"
+        assert _local_autocrlf(project_dir) == "false"
+        assert hook.read_bytes() == b"#!/bin/sh\nset -euo pipefail\n"
+        for repository in (tmp_path, project_dir):
+            staged = subprocess.run(
+                ["git", "-C", str(repository), "diff", "--cached", "--quiet"],
+                capture_output=True,
+                check=False,
+            )
+            assert staged.returncode == 0
+
+    def test_unset_effective_policy_is_pinned_locally_in_both_repositories(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        assert _local_autocrlf(tmp_path) == ""
+        assert _local_autocrlf(project_dir) == ""
+
+        _step_line_endings(_ctx(tmp_path), project_dir)
+
+        assert _local_autocrlf(tmp_path) == "false"
+        assert _local_autocrlf(project_dir) == "false"
+
+    @pytest.mark.parametrize(
+        ("effective", "local", "detail"),
+        [
+            (None, None, "autocrlf unreadable"),
+            (False, None, "local autocrlf unreadable"),
+        ],
+    )
+    def test_unreadable_autocrlf_policy_fails_safe(
+        self,
+        tmp_path: Path,
+        effective: bool | None,
+        local: bool | None,
+        detail: str,
+    ):
+        from booley.harness import init_git_hooks
+        from booley.harness.init_git_hooks import (
+            AutocrlfSetting,
+            LineEndingRepository,
+        )
+
+        def read_setting(_root: Path, *, local: bool = False):
+            value = local_value if local else effective_value
+            return None if value is None else AutocrlfSetting(value, is_set=True)
+
+        effective_value = effective
+        local_value = local
+        repository = LineEndingRepository("project-checkout", tmp_path)
+        with patch.object(init_git_hooks, "read_autocrlf_setting", side_effect=read_setting):
+            outcome = init_git_hooks._repair_repository_line_endings(
+                repository,
+                check_only=False,
+            )
+
+        assert outcome.status == "warn"
+        assert outcome.detail == detail
+
+    def test_invalid_autocrlf_boolean_is_unreadable(self, tmp_path: Path):
+        from booley.harness import init_git_hooks
+
+        probe = subprocess.CompletedProcess(
+            args=["git", "config"],
+            returncode=0,
+            stdout="not-a-boolean\n",
+            stderr="",
+        )
+        with patch.object(init_git_hooks.subprocess, "run", return_value=probe):
+            setting = init_git_hooks.read_autocrlf_setting(tmp_path)
+
+        assert setting is None
+
+
+class TestLineEndingRepositoryDiscovery:
+    def test_project_data_inside_outer_repository_is_deduplicated(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import discover_line_ending_repositories
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+
+        discovery = discover_line_ending_repositories(tmp_path, project_dir)
+
+        assert discovery.failures == ()
+        assert [(repo.role, repo.root) for repo in discovery.repositories] == [
+            ("project-checkout", tmp_path.resolve())
+        ]
+
+    def test_separate_project_data_repository_is_discovered(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import discover_line_ending_repositories
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+
+        discovery = discover_line_ending_repositories(tmp_path, project_dir)
+
+        assert discovery.failures == ()
+        assert [(repo.role, repo.root) for repo in discovery.repositories] == [
+            ("project-checkout", tmp_path.resolve()),
+            ("project-data", project_dir.resolve()),
+        ]
+
+    def test_missing_project_data_prevents_aggregate_success(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        _git_init(tmp_path)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "core.autocrlf", "false"],
+            capture_output=True,
+            check=True,
+        )
+        ctx = _ctx(tmp_path)
+
+        _step_line_endings(ctx, tmp_path / "missing project data")
+
+        assert ctx.results[-1].status == "warn"
+        assert "project-data: directory does not exist" in ctx.results[-1].detail
+
+    def test_check_only_does_not_mutate_either_repository(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        _git_init(project_dir)
+        for repository in (tmp_path, project_dir):
+            subprocess.run(
+                ["git", "-C", str(repository), "config", "core.autocrlf", "true"],
+                capture_output=True,
+                check=True,
+            )
+        ctx = _ctx(tmp_path, check_only=True)
+
+        _step_line_endings(ctx, project_dir)
+
+        assert ctx.results[-1].status == "warn"
+        for repository in (tmp_path, project_dir):
+            assert _local_autocrlf(repository) == "true"
+            assert not (repository / ".gitattributes").exists()
+            staged = subprocess.run(
+                ["git", "-C", str(repository), "diff", "--cached", "--quiet"],
+                capture_output=True,
+                check=False,
+            )
+            assert staged.returncode == 0
+
+    def test_dirty_project_data_is_refused_while_outer_is_repaired(self, tmp_path: Path):
+        from booley.harness.init_git_hooks import _step_line_endings
+
+        _git_init(tmp_path)
+        project_dir = tmp_path / ".booley_project"
+        hooks = project_dir / "hooks"
+        hooks.mkdir(parents=True)
+        _git_init(project_dir)
+        for repository in (tmp_path, project_dir):
+            subprocess.run(
+                ["git", "-C", str(repository), "config", "core.autocrlf", "true"],
+                capture_output=True,
+                check=True,
+            )
+        TestLineEndingsStep._add_file(
+            project_dir,
+            "hooks/post-setup.sh",
+            b"#!/bin/sh\nset -euo pipefail\n",
+        )
+        _git_commit(project_dir)
+        hook = hooks / "post-setup.sh"
+        dirty = b"#!/bin/sh\r\nset -euo pipefail\r\necho local edit\r\n"
+        hook.write_bytes(dirty)
+        ctx = _ctx(tmp_path)
+
+        _step_line_endings(ctx, project_dir)
+
+        assert _local_autocrlf(tmp_path) == "false"
+        assert hook.read_bytes() == dirty
+        assert ctx.results[-1].status == "warn"
+        assert "project-data: dirty tree" in ctx.results[-1].detail
+        for repository in (tmp_path, project_dir):
+            staged = subprocess.run(
+                ["git", "-C", str(repository), "diff", "--cached", "--quiet"],
+                capture_output=True,
+                check=False,
+            )
+            assert staged.returncode == 0
 
 
 class TestLineEndingsAutoFix:

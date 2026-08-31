@@ -2,7 +2,7 @@
 
 Booley ticket execution uses a **developer agent** that invokes Booley Flows and
 Specialists to drive a ticket to completion. Tickets must have `criteria:`
-frontmatter. After setup, the developer invokes Flows (`sim`, `elab`, `lint`,
+frontmatter. After setup, the developer invokes Flows (`sim`, `lint`,
 `synth`, `fpga`) and Specialists (`reviewer`, `mutation_tester`). Progress is tracked in
 `logs/<slug>/.runtime/booley_state.json`.
 

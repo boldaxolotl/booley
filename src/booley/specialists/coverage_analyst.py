@@ -637,7 +637,7 @@ class CoverageAnalystSpecialist(Specialist):
                     self.args.work_dir,
                     resolved=None,
                 )
-            except Exception:  # fall through to the hard-require below
+            except Exception:  # fall through to the hard requirement
                 logger.debug("cocotb tb_top default failed", exc_info=True)
         if not getattr(self.args, "tb_top", None):
             return McpToolResult(
@@ -3138,7 +3138,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
                 trace_timeout,
             )
         except (
-            Exception
+            Exception  # isolate arbitrary adapter/configure failures
         ) as exc:  # isolate EDAM/configure failure and surface it as an error McpToolResult
             logger.debug("coverage EDAM/configure failed for %s", self.args.target, exc_info=True)
             return McpToolResult(

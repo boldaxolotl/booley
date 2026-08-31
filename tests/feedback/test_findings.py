@@ -197,7 +197,7 @@ class TestFilability:
         finding = Finding(
             title="CONFIG.md documents a removed table",
             bucket="docs",
-            component="docs/CONFIG.md",
+            component="docs/user/CONFIG.md",
             observed="describes [sources.rtl], which no longer exists",
         )
         assert finding.is_filable()

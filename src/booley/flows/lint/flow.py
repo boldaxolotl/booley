@@ -6,7 +6,7 @@ warnings, and deduplicates warnings across configs.
 
 Exit codes: 0 = clean, 1 = the design failed (warnings remain, or the
 linter rejected the RTL), 2 = the linter could not run at all (missing
-binary, setup failure, timeout). See docs/USAGE.md for the shared
+binary, setup failure, timeout). See docs/user/USAGE.md for the shared
 Booley Flow exit-code taxonomy.
 """
 
@@ -29,7 +29,7 @@ from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.sim.sim_result import write_run_log
 from booley.targets.flow_names import config_section
-from booley.targets.target import select_target, select_targets
+from booley.targets.target import TargetHandle, select_targets
 
 from .. import artifacts
 from .. import edam as edam_layer
@@ -419,21 +419,21 @@ class LintFlow(BooleyFlow):
         """Per-config timeout in seconds (CLI flag is ms)."""
         return self.args.timeout // 1000
 
-    def _get_targets(self) -> list[str]:
+    def _get_targets(self) -> tuple[TargetHandle, ...]:
         """Validated Target selection for this run (ADR 0030).
 
         Drives off canonical Target selection: each ``--target`` token is
         validated (a bare name must be unambiguous, a ``vlnv#name`` qualifier
-        disambiguates; unknown/ambiguous names raise). An empty ``--target``
-        returns ``[]`` — there is **no** enumerate-all sweep (ADR 0030): to lint
-        several Targets, name them (``--target a,b``). An empty ``--target``
-        returns no selection rather than linting every core.
+        disambiguates; unknown/ambiguous names raise). There is **no**
+        enumerate-all sweep (ADR 0030): to lint several Targets, name them
+        (``--target a,b``). An empty ``--target`` returns no selection rather
+        than linting every core.
         """
-        return [target.selector for target in select_targets(self.args.work_dir, self.args.target)]
+        return select_targets(self.args.work_dir, self.args.target)
 
     def _prepare_lint_command(
         self,
-        target: str,
+        target: TargetHandle,
     ) -> tuple[list[str], fusesoc_registry.ResolvedTarget]:
         """Resolve the lint Target through FuseSoC; return (make command, resolved).
 
@@ -452,22 +452,23 @@ class LintFlow(BooleyFlow):
         output is still parsed downstream by Booley (interpretation stays
         verification-intent, 0019 dec. 4).
 
-        ``target`` is the FuseSoC Target name (decision 10). The resolved build
-        dir is relocatable (FuseSoC copies sources in and references them
-        relatively), so ``make -C <relpath>`` is independent of the Runtime's
-        absolute workspace path. Raises on any setup failure so
-        the caller records it as a Flow error.
+        ``target`` is the already-selected Target handle (decision 10). The
+        resolved build dir is relocatable (FuseSoC copies sources in and
+        references them relatively), so ``make -C <relpath>`` is independent
+        of the Runtime's absolute workspace path. Raises on any setup failure
+        so the caller records it as a Flow error.
         """
-        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target)
+        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
         resolved = fusesoc_registry.resolve_target(
-            target,
+            target.selector,
             project_root=self.args.work_dir,
             build_root=build_root,
+            vlnv=target.vlnv,
         )
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
         return edam_layer.make_command(rel), resolved
 
-    def _dry_run_command(self, target: str) -> list[str]:
+    def _dry_run_command(self, target: TargetHandle) -> list[str]:
         """Build a side-effect-free ``--dry-run`` preview for one Target.
 
         Mirrors :meth:`SimulateFlow._dry_run_command`: unlike
@@ -481,12 +482,13 @@ class LintFlow(BooleyFlow):
         preview shows *what would run*, not a byte-exact runnable command. An
         unauthored Target yields a clean ``ERROR`` entry rather than raising.
         """
-        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target)
+        build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
         try:
             setup_cmd = fusesoc_registry.setup_command(
-                target,
+                target.selector,
                 project_root=self.args.work_dir,
                 build_root=build_root,
+                vlnv=target.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: lint dry-run: {exc}"]
@@ -494,32 +496,18 @@ class LintFlow(BooleyFlow):
         script = f"{shlex.join(setup_cmd)} && {shlex.join(edam_layer.make_command(rel))}"
         return ["sh", "-c", script]
 
-    def _dry_run(self, targets: list[str]) -> McpToolResult:
+    def _dry_run(self, targets: tuple[TargetHandle, ...]) -> McpToolResult:
         """Print the side-effect-free ``fusesoc run --setup`` + ``make`` preview.
 
         One ``sh -c`` script per Target, emitted as JSON — the same shape the
         simulate/elaborate built-ins use, so a dry-run never invokes fusesoc.
         """
-        commands = {tgt: self._dry_run_command(tgt) for tgt in targets}
+        commands = {target.selector: self._dry_run_command(target) for target in targets}
         output = json.dumps(commands, indent=2)
         print(output)
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="Dry run complete")
 
-    def _target_lint_family(self, target: str) -> str:
-        """The lint parser family for *target* — ``verilator`` or ``verible``.
-
-        A cheap ``.core`` YAML read (no subprocess), the same
-        ``flow_options.tool`` field :func:`fusesoc_registry.resolve_target`
-        later sees in the resolved EDAM. Any lookup failure falls back to the
-        Verilator family, keeping the historical path byte-for-byte.
-        """
-        try:
-            ref = select_target(self.args.work_dir, target)
-        except Exception:  # noqa: BLE001 — best-effort EDA-tool lookup; default preserves behavior
-            return "verilator"
-        return _lint_eda_tool_family(ref.eda_tool)
-
-    def _warn_non_lint_flow(self, targets: list[str]) -> None:
+    def _warn_non_lint_flow(self, targets: tuple[TargetHandle, ...]) -> None:
         """Warn when a selected Target isn't a lint-flow Target.
 
         Lint inherits the EDA tool from whatever Target it resolves; when
@@ -527,21 +515,17 @@ class LintFlow(BooleyFlow):
         run silently lints with that Target's eda_tool. Best-effort — a Target
         with no declared flow (legacy authoring) stays silent.
         """
-        for tgt in targets:
-            try:
-                ref = select_target(self.args.work_dir, tgt)
-            except Exception:  # noqa: BLE001 — advisory only; resolution errors surface later
-                continue
-            if ref.flow and ref.flow != "lint":
+        for target in targets:
+            if target.flow and target.flow != "lint":
                 print(
-                    f"[lint] WARN: Target '{tgt}' declares flow '{ref.flow}', not "
+                    f"[lint] WARN: Target '{target.selector}' declares flow '{target.flow}', not "
                     f"'lint' — linting anyway with its eda_tool "
-                    f"({ref.eda_tool or 'verilator'}). Check --target."
+                    f"({target.eda_tool or 'verilator'}). Check --target."
                 )
 
     def _run_lint_target(
         self,
-        target: str,
+        target: TargetHandle,
     ) -> LintConfigResult:
         """Run lint for a single Target via the Edalize lint flow, parse warnings.
 
@@ -553,21 +537,23 @@ class LintFlow(BooleyFlow):
         everything else (run.log, criteria, report, QA-7 error handling) is
         one shared path.
         """
-        result = LintConfigResult(target=target)
-        family = self._target_lint_family(target)
+        selector = target.selector
+        result = LintConfigResult(target=selector)
+        family = _lint_eda_tool_family(target.eda_tool)
         # Claim this Target's run.log up front: it is only WRITTEN at the end
         # of the run below, so until then it still holds the previous run's
         # findings and a tail would read them as this run's (F-26).
-        self._open_run_log(target, edam_layer.work_root_for(self.args.work_dir, "lint", target))
+        self._open_run_log(
+            selector,
+            edam_layer.work_root_for(self.args.work_dir, "lint", selector),
+        )
 
         try:
             cmd, resolved = self._prepare_lint_command(target)
-        except (
-            Exception
-        ) as exc:  # isolate per-target lint setup failure; recorded as a target error
+        except Exception as exc:  # isolate per-Target setup failure
             result.error = f"lint setup failed: {exc}"
             result.error_is_eda_tool_failure = True
-            logger.debug("lint EDAM/configure failed for %s", target, exc_info=True)
+            logger.debug("lint EDAM/configure failed for %s", selector, exc_info=True)
             return result
 
         if not self._record_coverage_facts(result, resolved, family):
@@ -591,18 +577,18 @@ class LintFlow(BooleyFlow):
         # lint regression had nothing on disk to act on.
         log_path: Path | None = None
         try:
-            build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target)
+            build_root = edam_layer.work_root_for(self.args.work_dir, "lint", selector)
             build_root.mkdir(parents=True, exist_ok=True)
             # write_run_log, not a bare write_text: it is atomic (no torn read
             # for a concurrent tail) and preserves the run header above.
             log_path = write_run_log(build_root, combined)
             result.log_path = posix_relpath(log_path, self.args.work_dir)
         except OSError:
-            logger.debug("could not persist lint run.log for %s", target, exc_info=True)
+            logger.debug("could not persist lint run.log for %s", selector, exc_info=True)
         if family == "verible":
-            result.warnings = parse_verible_warnings(combined, target)
+            result.warnings = parse_verible_warnings(combined, selector)
         else:
-            result.warnings = parse_warnings(combined, target)
+            result.warnings = parse_warnings(combined, selector)
         if proc.returncode != 0 and not result.error:
             _classify_lint_failure(result, family, combined)
             if result.error and log_path is not None:
@@ -724,13 +710,13 @@ class LintFlow(BooleyFlow):
 
     def _run_all_targets(
         self,
-        targets: list[str],
+        targets: tuple[TargetHandle, ...],
     ) -> tuple[list[LintConfigResult], list[LintWarning]]:
         """Run lint per Target sequentially, print per-Target summary."""
         all_warnings: list[LintWarning] = []
         target_results: list[LintConfigResult] = []
-        for tgt in targets:
-            cr = self._run_lint_target(tgt)
+        for target in targets:
+            cr = self._run_lint_target(target)
             target_results.append(cr)
             line = _target_summary_line(cr)
             print(line)
@@ -823,6 +809,7 @@ class LintFlow(BooleyFlow):
 
         overall_start = time.monotonic()
         target_results, all_warnings = self._run_all_targets(targets)
+        selectors = [target.selector for target in targets]
 
         # Deduplicate and scope-filter
         unique = deduplicate_warnings(all_warnings)
@@ -844,14 +831,14 @@ class LintFlow(BooleyFlow):
 
         elapsed = time.monotonic() - overall_start
         report_path = self._write_lint_report(
-            targets,
+            selectors,
             unique,
             elapsed,
             errored,
             target_results=target_results,
         )
 
-        display, detail = _lint_result_parts(targets, unique, elapsed, target_results)
+        display, detail = _lint_result_parts(selectors, unique, elapsed, target_results)
         # The copy that reaches the agent as MCP structuredContent: the stdout
         # "See <report> ..." line is tail-truncatable, ``detail`` is not.
         artifacts.merge_artifacts(

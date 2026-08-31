@@ -75,12 +75,6 @@ jobs:
           python .github/scripts/docker_base_contract.py --repo .
           --resolve-image "${BASE_REF}" --github-output "${GITHUB_OUTPUT}"
 
-      - name: Resolve stable runtime-base artifact ID
-        id: runtime-base-artifact
-        env:
-          RUNTIME_BASE: ${{ steps.runtime-base.outputs.image }}
-        run: echo "image-id=$(docker image inspect --format '{{.Id}}' "${RUNTIME_BASE}")" >> "$GITHUB_OUTPUT"
-
       - id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -101,10 +95,11 @@ jobs:
             BOOLEY_PAYLOAD_FINGERPRINT=${{ steps.version.outputs.payload_fingerprint }}
             BOOLEY_RUNTIME_BASE_IMAGE=${{ steps.runtime-base.outputs.image }}
           labels: |
-            io.booley.provenance.schema=1
+            io.booley.provenance.schema=2
             io.booley.payload.fingerprint=${{ steps.version.outputs.payload_fingerprint }}
             io.booley.build.recipe-fingerprint=${{ steps.version.outputs.recipe_fingerprint }}
-            io.booley.build.parent-artifact=${{ steps.runtime-base-artifact.outputs.image-id }}
+            io.booley.build.parent-artifact-kind=registry-digest
+            io.booley.build.parent-artifact=${{ steps.runtime-base.outputs.image }}
             io.booley.build.origin=registry
             booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
           cache-from: type=gha,scope=sandbox
@@ -147,14 +142,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve exact base artifact
-        id: base-artifact
-        env:
-          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
-        run: |
-          docker pull "${BASE_IMAGE}"
-          echo "image-id=$(docker image inspect --format '{{.Id}}' "${BASE_IMAGE}")" >> "$GITHUB_OUTPUT"
-
       - name: Build and push RISC-V image
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -167,10 +154,11 @@ jobs:
           tags: >-
             ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           labels: |
-            io.booley.provenance.schema=1
+            io.booley.provenance.schema=2
             io.booley.payload.fingerprint=${{ steps.version.outputs.payload_fingerprint }}
             io.booley.build.recipe-fingerprint=${{ steps.version.outputs.recipe_fingerprint }}
-            io.booley.build.parent-artifact=${{ steps.base-artifact.outputs.image-id }}
+            io.booley.build.parent-artifact-kind=registry-digest
+            io.booley.build.parent-artifact=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
             io.booley.build.origin=registry
             booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
           # No GHA cache here: the riscv image is ~10 GB, larger than the
@@ -239,7 +227,7 @@ jobs:
         run: |
           expected="$(PYTHONPATH=src python -P -c 'from pathlib import Path; from booley.harness.build_stamp import resolve_payload_fingerprint; print(resolve_payload_fingerprint(Path.cwd()))')"
           for image in booley-sandbox booley-sandbox-riscv; do
-            test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.provenance.schema" }}' "$image")" = "1"
+            test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.provenance.schema" }}' "$image")" = "2"
             test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.payload.fingerprint" }}' "$image")" = "$expected"
             test -n "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.recipe-fingerprint" }}' "$image")"
             test -n "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact" }}' "$image")"
@@ -247,8 +235,10 @@ jobs:
             actual="$(docker run --rm --entrypoint python3 "$image" -I -c 'from booley.runtime.build_metadata import current_build_metadata; print(current_build_metadata().payload_fingerprint)')"
             test "$actual" = "$expected"
           done
-          base_id="$(docker image inspect --format '{{.Id}}' booley-sandbox)"
-          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact" }}' booley-sandbox-riscv)" = "$base_id"
+          base_digest="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}"
+          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact-kind" }}' booley-sandbox-riscv)" = "registry-digest"
+          test "$(docker image inspect -f '{{ index .Config.Labels "io.booley.build.parent-artifact" }}' booley-sandbox-riscv)" = "$base_digest"
+          docker image inspect --format '{{json .RepoDigests}}' booley-sandbox | grep -Fq "${base_digest}"
 
       # Hosted runners have no desktop editor. Supply only the `code --version`
       # probe that init requires; the smoke never attempts to launch an editor.
@@ -257,6 +247,32 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/booley-ci-bin"
           ln -s "$(command -v git)" "${RUNNER_TEMP}/booley-ci-bin/code"
           echo "${RUNNER_TEMP}/booley-ci-bin" >> "${GITHUB_PATH}"
+
+      # The contract requires both reviewed checkouts to stay pristine. Run it
+      # before `booley init`, which deliberately creates local setup files.
+      - name: Prepare reviewed demo checkout ownership
+        run: sudo chown -R 1000:1000 demo
+
+      - name: Verify exact reviewed demo contract
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
+        run: |
+          docker run --init --rm --network none \
+            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
+            -w /work \
+            -e BOOLEY_PROJECT_DIR=/booley-project \
+            -e BOOLEY_IN_SANDBOX=1 \
+            -e TICKET_SLUG \
+            "${IMAGE}" bash -euo pipefail -c '
+              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
+            '
+
+      - name: Restore demo checkout ownership for initialization
+        run: sudo chown -R "$(id -u):$(id -g)" demo
 
       # Exercise the public quick start and reject warnings as well as errors.
       # Credentials are deliberately absent: this validation never contacts an
@@ -301,7 +317,6 @@ jobs:
               BOOLEY_AGENT_APP=codex python -m booley.runtime.incontainer_register
               ticket="${project_dir}/tickets/board/queue/${ticket_slug}.md"
               before="$(sha256sum "${ticket}")"
-              bash /booley-source/.github/scripts/verify_picorv32_demo.sh
 
               doctor_log="$(mktemp)"
               booley doctor --deep --skip-agent-checks | tee "${doctor_log}"

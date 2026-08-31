@@ -47,14 +47,14 @@ SKIP_MODULES = frozenset(
         "specialist",
         "registry",
         # Hidden: not yet mature / not proven effective. Code is retained;
-        # re-enable by removing the name from this set (see docs/ROADMAP.md).
+        # re-enable by removing the name from this set (see docs/internals/ROADMAP.md).
         # tb_coder is de-registered too: TB is authored by the developer directly for now.
         "coverage_analyst",
         "tb_coder",
     }
 )
 
-BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "elab", "fpga")
+BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga")
 
 
 def discover_mcp_tools(

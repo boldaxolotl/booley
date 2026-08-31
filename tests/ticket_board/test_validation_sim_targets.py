@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 from booley.ticket_board.validation import validate_ticket_fields
 
@@ -125,6 +126,26 @@ def test_unknown_sim_target_names_eligible_correction(tmp_path: Path) -> None:
         "Unknown target 'missing'" in error and "eligible simulation Targets: sim_toy" in error
         for error in errors
     )
+
+
+def test_sealed_sim_target_is_not_resolved_in_destination_view(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fields = _fields("contract_only")
+    fields["target_contract"] = {"sealed": True}
+
+    with patch(
+        "booley.ticket_board.target_contract.validate_contract_fields",
+        return_value=[],
+    ):
+        errors = validate_ticket_fields(
+            fields,
+            "## Description\nExercise sealed target validation.",
+            check_files=True,
+            check_tb_files=False,
+            project_root=project,
+        )
+
+    assert not any("contract_only" in error for error in errors)
 
 
 def test_ticket_created_sim_target_is_deferred(tmp_path: Path) -> None:

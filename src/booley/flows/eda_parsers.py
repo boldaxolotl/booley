@@ -3,7 +3,7 @@
 The pure text-extraction blocks of the built-in Flows: sim sentinel verdicts
 (re-exported from ``booley.sim.sim_result``), Verilator and Verible
 warning/error parsing (single source of truth — ``booley.flows.lint.flow`` imports
-these regexes), compiler-error gists (shared with ``booley.flows.elab.flow``),
+these regexes), compiler-error gists (shared with ``booley.flows.sim.flow``),
 and Yosys area extraction (re-exported from ``booley.yosys.syn_parse``).
 
 Formerly the public ``booley.adapterlib.parsers`` — the one module the
@@ -70,8 +70,7 @@ def extract_error_gist(error_output: str) -> str:
 
     Looks for common error patterns (Verilator, Icarus, sv2v) and returns the
     first meaningful error line, truncated for display — a ready-made
-    ``first_error`` for simulate responses. (Also the built-in elaborate
-    EDA tool's extractor.)
+    ``first_error`` for Simulation responses, including Elaboration Check mode.
     """
     if not error_output:
         return ""

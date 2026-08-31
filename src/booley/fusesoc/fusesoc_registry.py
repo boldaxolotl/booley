@@ -217,7 +217,8 @@ class TargetRef:
     """
 
 
-_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth", "elab"})
+_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth"})
+_RETIRED_DOCTOR_FLOW_NAMES = frozenset({"elab", "elaborate"})
 
 
 def core_target_eda_tool(core_doc: Mapping[str, Any], name: str) -> str | None:
@@ -542,10 +543,18 @@ def _check_booley_target_metadata(
         if not isinstance(doctor, list):
             errors.append(f"{label}.doctor must be an array")
         else:
+            retired = [flow for flow in doctor if flow in _RETIRED_DOCTOR_FLOW_NAMES]
+            if retired:
+                errors.append(
+                    f"{label}.doctor contains retired Flow value(s) {retired!r}; "
+                    "Elaboration Check is now Simulation mode, so replace "
+                    "doctor: [sim, elab] with doctor: [sim]"
+                )
             invalid = [
                 flow
                 for flow in doctor
-                if not isinstance(flow, str) or flow not in _DOCTOR_FLOW_NAMES
+                if not isinstance(flow, str)
+                or (flow not in _DOCTOR_FLOW_NAMES and flow not in _RETIRED_DOCTOR_FLOW_NAMES)
             ]
             if invalid:
                 allowed = ", ".join(sorted(_DOCTOR_FLOW_NAMES))
@@ -1841,8 +1850,13 @@ def _require_flow_compatible(for_flow: str | None, token: str, ref: TargetRef) -
     raise IncompatibleTargetError(
         f"Target {token!r} cannot be driven by the {flow!r} Flow "
         f"(declared flow={ref.flow!r}, EDA tool={ref.eda_tool!r}). "
-        f"Choose a compatible Target with `booley targets --for {flow}`."
+        f"Choose a compatible Target with `booley targets --for-flow {flow}`."
     )
+
+
+def parse_target_tokens(target_arg: str | None) -> list[str]:
+    """Split a comma-separated ``--target`` argument into nonempty tokens."""
+    return [token.strip() for token in (target_arg or "").split(",") if token.strip()]
 
 
 def resolve_target_selection(
@@ -1857,7 +1871,7 @@ def resolve_target_selection(
     Bare names must be unambiguous; ``vlnv#name`` qualifiers disambiguate.
     Doctor's private self-test Targets remain hidden from public selection.
     """
-    selected = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
+    selected = parse_target_tokens(target_arg)
     if not selected:
         return []
 

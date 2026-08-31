@@ -44,7 +44,6 @@ _ENDPOINT_STYLES: dict[str, str] = {
     "coverage_analyst": "color(183)",
     "mutation_tester": "color(183)",
     "sim": "color(75)",
-    "elab": "color(75)",
     "lint": "color(75)",
     "synth": "color(75)",
     "submit_run_report": "color(75)",
@@ -381,7 +380,7 @@ class MainPane(VerticalScroll):
         if result.hint:
             try:
                 self.app.query_one(StatusBar).show_hint(result.hint)
-            except Exception:  # hint display is cosmetic; failure must not break link handling
+            except Exception:  # cosmetic hint failure cannot break links
                 logger.debug("StatusBar hint dispatch failed", exc_info=True)
         event.stop()
 

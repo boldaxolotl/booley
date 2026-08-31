@@ -52,6 +52,7 @@ from booley.harness.colors import (
 )
 from booley.harness.doctor import run_doctor
 from booley.harness.init_cmd import run_init
+from booley.harness.init_common import configure_progress_output
 from booley.harness.orphan_handler import handle_post_run_orphans, handle_startup_orphans
 from booley.harness.render_md import render
 from booley.harness.subscription_limit import detect_subscription_limit
@@ -307,38 +308,18 @@ def _baked_commit() -> str | None:
 
 
 def _source_commit() -> str | None:
-    """Short git commit (``+dirty``) of the installed Booley source, if known.
+    """Short commit (``+dirty``) attributed to the imported Booley code.
 
-    Prefers the live git state of a checkout — that is the one that can be
-    ``+dirty`` — and falls back to the commit baked into the wheel at build
-    time. Lets ``--version`` disambiguate builds that all report the static
-    packaged version (SETUP-1), in a container as well as on the host (F-5).
+    Live source and installed distributions are disjoint: a source failure
+    never borrows a wheel stamp, and a wheel never borrows an enclosing repo.
     """
     import booley
 
-    pkg = Path(booley.__file__).resolve().parent
-    try:
-        rev = subprocess.run(
-            ["git", "-C", str(pkg), "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    attribution = booley.version_attribution
+    if attribution.distribution_name is not None:
         return _baked_commit()
-    if rev.returncode != 0 or not rev.stdout.strip():
-        return _baked_commit()
-    commit = rev.stdout.strip()
-    dirty = subprocess.run(
-        ["git", "-C", str(pkg), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-        check=False,
-    )
-    suffix = "+dirty" if dirty.returncode == 0 and dirty.stdout.strip() else ""
-    return f"{commit}{suffix}"
+    revision, _updated_at = attribution.source_git_metadata()
+    return revision or None
 
 
 def _version_string() -> str:
@@ -653,7 +634,9 @@ def _add_init_subparser(sub) -> None:
         help="Skip agent credential inspection; provider and auth policy are still recorded",
     )
     init_p.add_argument(
-        "--force", action="store_true", help="Overwrite existing configuration files"
+        "--force",
+        action="store_true",
+        help="Overwrite managed configuration and explicitly relink proven Booley skill links",
     )
     init_p.add_argument(
         "--verbose", "-v", action="store_true", help="Enable verbose logging output"
@@ -806,7 +789,7 @@ def _add_targets_subparser(sub) -> None:
         dest="for_flow",
         metavar="FLOW",
         default=None,
-        help="Only Targets this Booley Flow could drive (synth, fpga, sim, lint, elab)",
+        help="Only Targets this Booley Flow could drive (synth, fpga, sim, lint)",
     )
     targets_p.add_argument(
         "--json",
@@ -1228,6 +1211,7 @@ def _replace_refreshed_session(
 
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Session Image and replace its Session Runtime."""
+    configure_progress_output()
     from booley.harness import auto_doctor
     from booley.harness import session_runtime as sr
     from booley.harness.init_cmd import refresh_session_image

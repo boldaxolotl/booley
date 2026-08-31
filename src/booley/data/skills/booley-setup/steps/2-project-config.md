@@ -154,7 +154,7 @@ filelists, and EDA wrappers over guesses:
 - Inspect `.booley_project/hooks/post-setup.*` if present — evidence of
   project-specific sandbox setup.
 - Inspect the sandbox build recipe (the bundled `data/docker/Dockerfile`
-  above) and `docs/CONFIG.md` when considering image provisioning or the
+  above) and `docs/user/CONFIG.md` when considering image provisioning or the
   Linux x86-64 host-provisioned Vivado policy. Treat floating FlexNet behavior
   as experimental until the required paid-site evidence exists.
 - Read representative RTL/testbench headers only as needed to identify source
@@ -205,8 +205,8 @@ Authoring rules:
   `paramtype: vlogdefine` parameter; a `-G` parameter is
   `paramtype: vlogparam` with a **literal** `datatype` (no expr-params — see
   the security rules below).
-- **Target names are project-unique**, follow `<axis>_<subject>` (`sim_` for
-  `sim`/`elab`, `lint_`, `synth_`, `fpga_`, then a distinguishing subject,
+- **Target names are project-unique**, follow `<axis>_<subject>` (`sim_`,
+  `lint_`, `synth_`, `fpga_`, then a distinguishing subject,
   coarse to fine — `sim_soc`, `synth_matmul_b8`), and become the `<target>` in
   `sim_pass_<target>` / `lint_clean_<target>` / `synthesis_ok_<target>` and the value a
   Booley Flow passes as `--target`. The axis leads because nothing in CAPI2
@@ -515,14 +515,14 @@ What goes here:
   opt-out; use `[mcp_tools.<name>].enabled = false` for a Specialist or other
   non-Flow MCP endpoint. There is no source allowlist.
 - **First-run Flows start disabled** (`enabled = false`) for `sim`,
-  `elab`, `lint`, and `synth` unless the user explicitly asks
+  `lint`, and `synth` unless the user explicitly asks
   to wire a flow now. Every Flow command runs in the Session Runtime; the EDA
   tool (verilator/iverilog/yosys/vivado) lives in the `.core` Target's
   `flow_options.tool`. Host-provisioned Vivado is requested separately with
   `[eda.vivado]` and requires an exact Project Grant.
 - **Every Flow call names its Target explicitly.** There is no target fallback
   in `booley.toml`. Select Doctor's matrix in each `.core` Target with
-  `flow_options.booley.doctor: [sim, lint, synth, elab]`, listing only the
+  `flow_options.booley.doctor: [sim, lint, synth]`, listing only the
   compatible Flows that should audit that Target. An enabled Flow with no
   marked Doctor Target fails plain Doctor; either mark one or set
   `enabled = false` to opt out. Targets omitted from the list remain available

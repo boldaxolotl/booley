@@ -53,7 +53,6 @@ Deterministic end-to-end orchestration; no LLM:
 
 | Booley Flow | Purpose | Sets |
 |--------|---------|------|
-| `elab` | Compile + elaborate RTL/TB for one or more Targets (no simulation) | `elab*` |
 | `sim` | Run RTL simulation for one or more Targets | — |
 | `lint` | Run lint for one or more Targets | `lint_clean` |
 | `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
@@ -63,8 +62,7 @@ Common controls: `--target <name,...>` selects Target(s); `--dry-run` prints com
 
 Key Flow-specific controls:
 
-- `elab`: `--standalone` also proves every RTL module elaborates from its declaring file
-- `sim`: `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--elab-only` (`--build-only`) compiles, elaborates, and links without running tests; add `--standalone` for the stronger module sweep. `--test <name>` selects a test, `--skip <name,...>` excludes tests, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; `--default-clock <ps>` explicitly supplies a clock only when the Target has no SDC
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--no-cache` forces a fresh implementation
@@ -125,8 +123,8 @@ variants, and the first public test that killed each detected mutant.
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `elab` | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `elab --standalone` | pre-sim |
+| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim --elab-only` | pre-sim |
+| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim --elab-only --standalone` | pre-sim |
 | `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
 
 #### RTL Code Review
@@ -258,13 +256,13 @@ Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400, clk_2x.cr
 | Command | What it does |
 |---------|-------------|
 | `booley targets` | List every `.core` Target: flow, EDA tool, toplevel, and `Dr` Doctor selection |
-| `booley targets --for sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
+| `booley targets --for-flow sim` | Only Targets that Booley Flow could drive (any target-aware Booley Flow) |
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
 | `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
 
 `--json` composes with all of the above; agents get the same listing via the `booley_targets` MCP tool.
 
-Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_` for `sim`/`elab`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
+Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
 
 ### Project Files
 

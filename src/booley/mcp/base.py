@@ -452,7 +452,7 @@ class McpTool(ABC):
         source_target: str | None = None,
     ) -> None:
         """Set a criterion and persist state. No-op when state has no file."""
-        if getattr(self.args, "diagnostic", False) and self.state.strict_criteria:
+        if getattr(self.args, "diagnostic", False):
             logger.info("Diagnostic run: not recording criterion %s", key)
             return
         key = self._criterion_key_for_source(key, source_target)
@@ -622,6 +622,9 @@ class McpTool(ABC):
             "elapsed_s": elapsed_s,
             "passed": passed,
         }
+        mode = result.detail.get("mode")
+        if isinstance(mode, str) and mode:
+            report["mode"] = mode
         if self._eda_tool:
             report["eda_tool"] = self._eda_tool
         # Job identity (ADR 0027): the MCP dispatch layer exports the run_id

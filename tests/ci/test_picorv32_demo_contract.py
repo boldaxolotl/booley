@@ -97,6 +97,15 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         assert f"outputs.{key}" in action
     assert "${GITHUB_WORKSPACE}/.github/scripts/" in action
     assert "${GITHUB_ACTION_PATH}/../.." not in action
+    assert "Apply documented local checkout excludes" in action
+    assert "'/.booley_project'" in action
+    assert "'/.booley-projected-*.core'" in action
+    assert action.index("Check out reviewed demo-project revision") < action.index(
+        "Apply documented local checkout excludes"
+    )
+    assert action.index("Apply documented local checkout excludes") < action.index(
+        "Require reviewed revisions on public refs"
+    )
 
     action_reference = "uses: ./.github/actions/prepare-picorv32-demo"
     verifier = f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}"

@@ -66,6 +66,8 @@ def audit_legacy_distribution() -> EnvironmentFinding:
     """Detect the pre-rename distribution that can shadow ``booley-rtl``."""
     from importlib.metadata import PackageNotFoundError, distribution
 
+    import booley
+
     try:
         legacy = distribution("booley")
     except PackageNotFoundError:
@@ -74,12 +76,23 @@ def audit_legacy_distribution() -> EnvironmentFinding:
             "no legacy `booley` distribution shadowing `booley-rtl`",
         )
 
-    import booley
-
     resolved = Path(booley.__file__ or "?").resolve().parent
     legacy_version = legacy.metadata["Version"] or "?"
-    if booley.__dist_name__ == "booley":
+    try:
+        distribution("booley-rtl")
+        current_installed = True
+    except PackageNotFoundError:
+        current_installed = False
+    if booley.__dist_name__ == "booley" and not current_installed:
         return _legacy_only_finding(legacy_version, resolved)
+    if booley.version_attribution.source_root is not None:
+        return EnvironmentFinding(
+            EnvironmentSeverity.FAIL,
+            f"legacy `booley` distribution ({legacy_version}) is installed, but the "
+            f"active import resolves to the source checkout at {resolved}; stale "
+            "metadata can shadow a checkout on sys.path",
+            "pip uninstall -y booley  # then re-run doctor to confirm the stale metadata is gone",
+        )
     return EnvironmentFinding(
         EnvironmentSeverity.FAIL,
         f"both `booley` ({legacy_version}) and `booley-rtl` are installed; the "

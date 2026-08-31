@@ -107,7 +107,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_deep_checks": frozenset(
         {
-            "_run_elaborate_deep_check",
             "_run_fpga_impl_deep_notice",
             "_run_selftest_checks",
             "_run_flow_check",
@@ -122,10 +121,10 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
     ),
     "_run_project_phase": frozenset(
         {
+            "_audit_project_setup",
             "_check_agents_md",
             "_check_board_orphans",
             "_check_line_endings",
-            "_check_project_setup",
             "_check_stealth_cores",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",

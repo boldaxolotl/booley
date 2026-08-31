@@ -65,15 +65,10 @@ over that severity bug with a project waiver.
    is real. Resolve or waive host-only warnings too. If this changes the waiver
    file, repeat the final container plain and deep runs.
 
-### Two `--deep` lines specific to setup completeness
+### `--deep` lines specific to setup completeness
 
-- **`elab`**: enabled → it is deep-smoked and must pass; opted out with
-  `enabled = false` → a recorded SKIP. A project that
-  cannot support a standalone elaboration check (non-FuseSoC, `lint`/`sim` cover it)
-  should opt out rather than expose a broken Flow. Note that an exposed
-  `elab` with no Target marked by `flow_options.booley.doctor: [elab]` fails
-  the *plain* `booley doctor` too — that Flow can never run, so it is caught
-  before `--deep`.
+- **Simulation**: one full Simulation smoke is the authoritative elaboration
+  plus runtime check. Doctor does not run a redundant elab-only smoke.
 - **fail-path self-test**: each verification Flow WARNs
   `fail-path unvalidated` until its conventional project-owned bad fixture
   exists. Doctor infers the good case from the first marked Doctor Target and

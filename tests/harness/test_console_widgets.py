@@ -123,13 +123,13 @@ class TestMainPane:
             assert pane._box_width() == pane.scrollable_content_region.width
 
     @pytest.mark.asyncio
-    async def test_elaboration_endpoint_uses_simulation_flow_style(self):
+    async def test_simulation_endpoint_uses_flow_style(self):
         async with MainPaneTestApp().run_test() as pilot:
             pane = pilot.app.query_one(MainPane)
             pane.open_endpoint_box("sim", "default")
             simulation_style = pane._endpoint_style
             pane.close_endpoint_box("sim", "default", 0, 1.0, 0.0, None)
-            pane.open_endpoint_box("elab", "default")
+            pane.open_endpoint_box("sim", "elab-only")
             await pilot.pause()
 
             assert simulation_style == "color(75)"

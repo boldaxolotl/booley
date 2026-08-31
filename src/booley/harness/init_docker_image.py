@@ -32,7 +32,18 @@ from booley.harness.build_stamp import (
 )
 from booley.harness.docker_base_contract import contract as runtime_base_contract
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
-from booley.runtime.image_provenance import resolve_recipe_fingerprint
+from booley.runtime.docker_build import DockerBuildResult, run_docker_build
+from booley.runtime.image_provenance import (
+    LABEL_BUILD_ORIGIN,
+    LABEL_PARENT_ARTIFACT,
+    LABEL_PARENT_ARTIFACT_KIND,
+    LABEL_PAYLOAD_FINGERPRINT,
+    LABEL_RECIPE_FINGERPRINT,
+    LABEL_SCHEMA,
+    PARENT_ARTIFACT_LOCAL_IMAGE_ID,
+    PROVENANCE_SCHEMA,
+    resolve_recipe_fingerprint,
+)
 from booley.runtime.paths import docker_data_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -295,19 +306,6 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
     return bool(expected_version and _image_label(image, LABEL_VERSION) != expected_version)
 
 
-def _warn_on_distribution_version_drift(booley_root: Path) -> None:
-    """Surface stale editable-install metadata before image selection/build."""
-    source_version = _source_version(booley_root)
-    installed_version = _read_version()
-    if source_version and source_version != installed_version:
-        warn(
-            "installed Booley distribution metadata reports "
-            f"{installed_version}, but this checkout's VERSION is {source_version}; "
-            "using the checkout version for image provenance. Reinstall the "
-            "editable package to make `booley --version` agree."
-        )
-
-
 def _stamp_image_fingerprint(image: str, value: str) -> None:
     """Best-effort: set *image*'s build-fingerprint label to *value*.
 
@@ -527,7 +525,6 @@ def _step_docker_image(ctx: InitContext, selected_image: str = "") -> None:
     booley_root = docker_dir.parent.parent.parent.parent
     fingerprint = _image_build_fingerprint(booley_root)
     expected_version = _expected_version(booley_root)
-    _warn_on_distribution_version_drift(booley_root)
 
     if _prepare_existing_base_image(
         ctx,
@@ -769,12 +766,22 @@ def _report_wheel_failure(ctx: InitContext, exc: Exception) -> bool:
     elif "ensurepip is not available" in combined:
         # Debian/Ubuntu split venv out of the interpreter package; ``build``
         # needs it to make its isolated environment. The version must match the
-        # interpreter running init, not the distro default (docs/TROUBLESHOOTING.md).
+        # interpreter running init, not the distro default (docs/user/TROUBLESHOOTING.md).
         pyver = f"{sys.version_info.major}.{sys.version_info.minor}"
         info(f"  fix: sudo apt install python{pyver}-venv   (matches this interpreter)")
         info("       or: pip install build && python -m build --wheel --no-isolation")
     ctx.record("docker_image", "err", "wheel build failed")
     return False
+
+
+def _local_parent_label_args(parent_artifact: str) -> list[str]:
+    """Return Docker label arguments for exact local-image ancestry."""
+    return [
+        "--label",
+        f"{LABEL_PARENT_ARTIFACT_KIND}={PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
+        "--label",
+        f"{LABEL_PARENT_ARTIFACT}={parent_artifact}",
+    ]
 
 
 def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
@@ -788,14 +795,6 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     # 20-60 minute build.
     if spec.fingerprint:
         build_cmd += ["--label", f"{LABEL_FINGERPRINT}={spec.fingerprint}"]
-        from booley.runtime.image_provenance import (
-            LABEL_BUILD_ORIGIN,
-            LABEL_PAYLOAD_FINGERPRINT,
-            LABEL_RECIPE_FINGERPRINT,
-            LABEL_SCHEMA,
-            PROVENANCE_SCHEMA,
-        )
-
         build_cmd += [
             "--label",
             f"{LABEL_SCHEMA}={PROVENANCE_SCHEMA}",
@@ -807,16 +806,12 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
             f"{LABEL_BUILD_ORIGIN}=local",
         ]
     if spec.parent_artifact:
-        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
-
-        build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={spec.parent_artifact}"]
+        build_cmd += _local_parent_label_args(spec.parent_artifact)
     if spec.image in FLAVOR_IMAGES:
-        from booley.runtime.image_provenance import LABEL_PARENT_ARTIFACT
-
         base_image_id = _docker_image_id(DOCKER_IMAGE)
         if base_image_id:
             build_cmd += ["--label", f"{LABEL_BASE_IMAGE_ID}={base_image_id}"]
-            build_cmd += ["--label", f"{LABEL_PARENT_ARTIFACT}={base_image_id}"]
+            build_cmd += _local_parent_label_args(base_image_id)
     if spec.image == DOCKER_IMAGE:
         build_cmd += _image_build_metadata_args(spec.context)
     build_cmd += spec.build_args
@@ -826,34 +821,12 @@ def _docker_build_command(spec: _DockerBuildSpec) -> list[str]:
     return build_cmd
 
 
-def _run_docker_build(ctx: InitContext, build_cmd: list[str], timeout: int) -> int:
-    """Run a Docker build, streaming only its useful progress when non-verbose."""
-    if ctx.verbose:
-        return subprocess.run(build_cmd, text=True, timeout=timeout, check=False).returncode
-    # BuildKit emits UTF-8 regardless of the Windows console codec. Replacement
-    # keeps an undecodable log byte from aborting an otherwise healthy build.
-    proc = subprocess.Popen(
-        build_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    stdout = proc.stdout
-    if stdout is None:
-        raise OSError("docker build output pipe was not created")
-    last_msg = ""
-    with stdout:
-        for line in stdout:
-            if ">>>" not in line:
-                continue
-            msg = line[line.index(">>>") :].strip().split('"', 1)[0].rstrip(" \\")
-            if msg and msg != last_msg:
-                info(msg)
-                last_msg = msg
-    proc.wait(timeout=timeout)
-    return proc.returncode
+def _render_build_diagnostics(result: DockerBuildResult) -> None:
+    if not result.diagnostics:
+        return
+    info("recent Docker output:")
+    for line in result.diagnostics:
+        info(f"  {line}")
 
 
 def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
@@ -862,7 +835,21 @@ def _docker_build_image(ctx: InitContext, spec: _DockerBuildSpec) -> int | None:
     info(f"{action} {spec.image} image — {spec.build_note}.")
     build_timeout = int(os.environ.get("BOOLEY_IMAGE_BUILD_TIMEOUT", "7200"))
     try:
-        return _run_docker_build(ctx, _docker_build_command(spec), build_timeout)
+        result = run_docker_build(
+            _docker_build_command(spec),
+            image=spec.image,
+            verbose=ctx.verbose,
+            timeout=build_timeout,
+        )
+        _render_build_diagnostics(result)
+        if result.timed_out:
+            err(
+                f"docker build timed out after {build_timeout // 60} minutes "
+                "(override with BOOLEY_IMAGE_BUILD_TIMEOUT)"
+            )
+            ctx.record(spec.record_key, "err", "build timed out")
+            return None
+        return result.returncode
     except subprocess.TimeoutExpired:
         err(
             f"docker build timed out after {build_timeout // 60} minutes "

@@ -575,12 +575,12 @@ class TestBuildPrompt:
         instruction_file,
         work_dir,
     ):
-        """Full sim + lint are forbidden, but elaborate is now allowed."""
+        """Full sim + lint are forbidden, but Simulation build-only is allowed."""
         endpoint = _make_endpoint(state_file, instruction_file, work_dir)
         prompt = endpoint._build_prompt()
         assert "Do NOT run a full simulator or linter" in prompt
-        # elaborate is the one allowed pre-submit check
-        assert "elab" in prompt
+        assert "sim" in prompt
+        assert "elab_only=true" in prompt
         assert "testbench/verification changes compile and elaborate cleanly" in prompt
 
     def test_escalation_protocol(

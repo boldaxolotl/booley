@@ -36,7 +36,7 @@ targets:
     flow_options:
       tool: icarus
       iverilog_options: [-g2012]
-      booley: {doctor: [sim, elab]}
+      booley: {doctor: [sim]}
     filesets: [rtl, tb_pass]
     toplevel: tb_dut
   sim_fail:

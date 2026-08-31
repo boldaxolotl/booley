@@ -250,7 +250,7 @@ class TestCheatCommand:
         assert "alias: --docker" in out
 
     def test_usage_advertises_cheatsheet(self):
-        usage = (Path(__file__).resolve().parents[2] / "docs" / "USAGE.md").read_text(
+        usage = (Path(__file__).resolve().parents[2] / "docs" / "user" / "USAGE.md").read_text(
             encoding="utf-8"
         )
         assert "start with `booley cheat`" in usage

@@ -31,12 +31,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # project tools). cheatsheet.md is also spliced live by `booley cheat`, but its
 # committed copy must still match so the raw file is correct.
 _EMBEDDED_DOCS = [
-    REPO_ROOT / "docs" / "USAGE.md",
+    REPO_ROOT / "docs" / "user" / "USAGE.md",
 ]
 
 REGEN_HINT = (
     "Regenerate with: python -m booley.dev_support.flow_specialist_reference "
-    "docs/USAGE.md src/booley/data/cheatsheet.md"
+    "docs/user/USAGE.md src/booley/data/cheatsheet.md"
 )
 
 
@@ -100,7 +100,7 @@ def test_flows_follow_hardware_flow_order() -> None:
         for line in render_flow_reference().splitlines()
         if line.startswith("| `")
     ]
-    assert rows == ["elab", "sim", "lint", "synth", "fpga"]
+    assert rows == ["sim", "lint", "synth", "fpga"]
 
 
 def test_every_builtin_flow_has_key_controls() -> None:

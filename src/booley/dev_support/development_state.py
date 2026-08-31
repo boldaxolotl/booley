@@ -60,6 +60,22 @@ def _recipe_flow(baseline: Any, current: Any) -> str | None:
     return None
 
 
+def _canonical_implementation(detail: dict[str, Any]) -> dict[str, Any] | None:
+    implementation = detail.get("implementation")
+    return implementation if isinstance(implementation, dict) else None
+
+
+def _canonical_recipe_value(
+    implementation: dict[str, Any] | None,
+    section: str,
+    key: str,
+) -> Any:
+    if implementation is None:
+        return None
+    value = implementation.get(section)
+    return value.get(key) if isinstance(value, dict) else None
+
+
 @dataclass
 class CriterionEntry:
     """Single criterion with metadata."""
@@ -151,44 +167,80 @@ class _RecipeEvidence:
     basis_changes: list[dict[str, Any]]
 
 
-def _collect_recipe_evidence(entry: CriterionEntry) -> _RecipeEvidence:
-    detail = entry.detail
-    expected_recipe = entry.params.get(RECIPE_FINGERPRINT_PARAM)
-    actual_recipe = detail.get(RECIPE_FINGERPRINT_DETAIL)
-    expected_ref = entry.params.get(BASELINE_REF_PARAM)
-    actual_ref = detail.get(BASELINE_REF_DETAIL)
-    baseline_recipe = detail.get(BASELINE_RECIPE_FINGERPRINT_DETAIL)
-    complete = actual_recipe is not None
-    if expected_ref is not None:
-        complete = complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
-    baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
-    current_snapshot = detail.get(RECIPE_SNAPSHOT_DETAIL)
-    candidate_target = detail.get(CANDIDATE_TARGET_DETAIL)
-    baseline_target = detail.get(BASELINE_TARGET_DETAIL) or entry.params.get(
-        BASELINE_TARGET_PARAM, candidate_target
-    )
+def _canonical_recipe_sections(
+    detail: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any], dict[str, Any]]:
+    implementation = _canonical_implementation(detail)
+    comparison = implementation.get("comparison") if implementation else None
+    comparison = comparison if isinstance(comparison, dict) else {}
+    baseline = comparison.get("baseline")
+    baseline = baseline if isinstance(baseline, dict) else {}
+    recipe = baseline.get("recipe")
+    return implementation, comparison, recipe if isinstance(recipe, dict) else {}
+
+
+def _recipe_targets(
+    entry: CriterionEntry,
+    detail: dict[str, Any],
+    implementation: dict[str, Any] | None,
+    comparison: dict[str, Any],
+) -> tuple[Any, Any]:
+    identity = implementation.get("identity") if implementation else None
+    identity = identity if isinstance(identity, dict) else {}
+    candidate = comparison.get("candidate_target") or identity.get("target")
+    candidate = candidate or detail.get(CANDIDATE_TARGET_DETAIL)
+    baseline = comparison.get("baseline_target") or detail.get(BASELINE_TARGET_DETAIL)
+    baseline = baseline or entry.params.get(BASELINE_TARGET_PARAM, candidate)
+    return baseline, candidate
+
+
+def _validate_recipe_snapshots(
+    complete: bool,
+    baseline_snapshot: Any,
+    current_snapshot: Any,
+    baseline_target: Any,
+    candidate_target: Any,
+) -> tuple[bool, list[dict[str, Any]], list[dict[str, Any]]]:
     if isinstance(baseline_snapshot, dict):
         complete = complete and isinstance(current_snapshot, dict)
         if isinstance(baseline_target, str):
             complete = complete and baseline_snapshot.get("target") == baseline_target
     if isinstance(current_snapshot, dict) and isinstance(candidate_target, str):
         complete = complete and current_snapshot.get("target") == candidate_target
-    snapshots_available = isinstance(baseline_snapshot, dict) and isinstance(
-        current_snapshot, dict
-    )
-    directed_pair = (
-        snapshots_available
-        and isinstance(baseline_target, str)
-        and isinstance(candidate_target, str)
-    )
+    available = isinstance(baseline_snapshot, dict) and isinstance(current_snapshot, dict)
+    changes = recipe_changes(baseline_snapshot, current_snapshot) if available else []
+    directed = available and isinstance(baseline_target, str) and isinstance(candidate_target, str)
     basis_changes: list[dict[str, Any]] = []
-    if directed_pair and baseline_target != candidate_target:
+    if directed and baseline_target != candidate_target:
         basis_changes = recipe_changes(
             implementation_comparison_basis(baseline_snapshot),
             implementation_comparison_basis(current_snapshot),
         )
         complete = complete and not basis_changes
-    changes = recipe_changes(baseline_snapshot, current_snapshot) if snapshots_available else []
+    return complete, changes, basis_changes
+
+
+def _collect_recipe_evidence(entry: CriterionEntry) -> _RecipeEvidence:
+    detail = entry.detail
+    implementation, comparison, baseline_recipe_detail = _canonical_recipe_sections(detail)
+    expected_recipe = entry.params.get(RECIPE_FINGERPRINT_PARAM)
+    actual_recipe = _canonical_recipe_value(implementation, "recipe", "fingerprint")
+    actual_recipe = actual_recipe or detail.get(RECIPE_FINGERPRINT_DETAIL)
+    expected_ref = entry.params.get(BASELINE_REF_PARAM)
+    actual_ref = comparison.get("resolved_ref") or detail.get(BASELINE_REF_DETAIL)
+    baseline_recipe = baseline_recipe_detail.get("fingerprint") or detail.get(
+        BASELINE_RECIPE_FINGERPRINT_DETAIL
+    )
+    complete = actual_recipe is not None
+    if expected_ref is not None:
+        complete = complete and actual_ref == expected_ref and baseline_recipe == expected_recipe
+    baseline_snapshot = entry.params.get(RECIPE_SNAPSHOT_PARAM)
+    current_snapshot = _canonical_recipe_value(implementation, "recipe", "snapshot")
+    current_snapshot = current_snapshot or detail.get(RECIPE_SNAPSHOT_DETAIL)
+    baseline_target, candidate_target = _recipe_targets(entry, detail, implementation, comparison)
+    complete, changes, basis_changes = _validate_recipe_snapshots(
+        complete, baseline_snapshot, current_snapshot, baseline_target, candidate_target
+    )
     return _RecipeEvidence(
         complete,
         expected_recipe,
@@ -526,6 +578,54 @@ class DevelopmentState:
 
     # -- Threshold evaluation --------------------------------------------------
 
+    @staticmethod
+    def _threshold_evidence(
+        detail: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, str], set[str]]:
+        implementation = _canonical_implementation(detail)
+        metrics = implementation.get("metrics") if implementation else None
+        evaluation = {**detail, **metrics} if isinstance(metrics, dict) else detail
+        metric_map = detail.get("_metric_map", _SYNTH_METRIC_MAP)
+        min_allowed = set(detail.get("_min_allowed", ["fmax_mhz"]))
+        baseline = detail.get("baseline_metrics", {})
+        comparison = implementation.get("comparison") if implementation else None
+        canonical_baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
+        canonical_metrics = (
+            canonical_baseline.get("metrics") if isinstance(canonical_baseline, dict) else None
+        )
+        if isinstance(canonical_metrics, dict):
+            baseline = canonical_metrics
+        return evaluation, baseline, metric_map, min_allowed
+
+    def _evaluate_metric_params(
+        self,
+        entry: CriterionEntry,
+        checks: list[dict[str, Any]],
+        evaluation: dict[str, Any],
+        baseline: dict[str, Any],
+        metric_map: dict[str, str],
+        min_allowed: set[str],
+    ) -> bool:
+        all_pass = True
+        for param_key, threshold in entry.params.items():
+            if param_key.startswith("_") or param_key in {"target", "test"}:
+                continue
+            if param_key in CYCLE_COUNT_PARAMS:
+                result = evaluate_cycle_threshold(
+                    param_key,
+                    threshold,
+                    current=evaluation.get("cycles"),
+                    baseline=entry.detail.get("baseline_cycles"),
+                )
+            else:
+                result = self._check_single_threshold(
+                    param_key, threshold, evaluation, baseline, metric_map, min_allowed
+                )
+            if result is not None:
+                checks.append(result)
+                all_pass = all_pass and bool(result["pass"])
+        return all_pass
+
     def _evaluate_thresholds(self, entry: CriterionEntry) -> None:
         """Evaluate threshold params against reported metrics.
 
@@ -534,47 +634,17 @@ class DevelopmentState:
         Modifies entry.met and appends check results to entry.detail["checks"].
         """
         detail = entry.detail
-        params = entry.params
         checks: list[dict[str, Any]] = []
-        all_pass = True
-
-        metric_map = detail.get("_metric_map", _SYNTH_METRIC_MAP)
-        min_allowed = set(detail.get("_min_allowed", ["fmax_mhz"]))
-        baseline = detail.get("baseline_metrics", {})
-
-        if not self._evaluate_recipe_evidence(entry, checks):
-            all_pass = False
-
-        for param_key, threshold in params.items():
-            if param_key.startswith("_"):
-                continue
-            if param_key in {"target", "test"}:
-                continue
-            if param_key in CYCLE_COUNT_PARAMS:
-                result = evaluate_cycle_threshold(
-                    param_key,
-                    threshold,
-                    current=detail.get("cycles"),
-                    baseline=detail.get("baseline_cycles"),
-                )
-            else:
-                result = self._check_single_threshold(
-                    param_key,
-                    threshold,
-                    detail,
-                    baseline,
-                    metric_map,
-                    min_allowed,
-                )
-            if result is not None:
-                checks.append(result)
-                if not result["pass"]:
-                    all_pass = False
+        evaluation, baseline, metric_map, min_allowed = self._threshold_evidence(detail)
+        recipe_pass = self._evaluate_recipe_evidence(entry, checks)
+        metrics_pass = self._evaluate_metric_params(
+            entry, checks, evaluation, baseline, metric_map, min_allowed
+        )
 
         detail["checks"] = checks
-        if any(param in CYCLE_COUNT_PARAMS for param in params):
-            detail["cycle_comparison"] = build_cycle_comparison(params, detail, checks)
-        if not all_pass:
+        if any(param in CYCLE_COUNT_PARAMS for param in entry.params):
+            detail["cycle_comparison"] = build_cycle_comparison(entry.params, detail, checks)
+        if not recipe_pass or not metrics_pass:
             entry.met = False
             entry.ever_met = False
 

@@ -83,7 +83,7 @@ Booley can drive four flows: **`sim`**, **`lint`**, **`synth`**,
 and **`fpga`**. Feasibility is per-flow: a project may be a perfect fit
 for simulate and lint while its synthesis flow needs extra wiring. Per flow the
 verdict falls into one of three buckets. The authoritative EDA-tool → bucket mapping
-lives in the supported EDA tools matrix, `docs/SUPPORTED-EDA-TOOLS.md` — treat it as the
+lives in the supported EDA tools matrix, `docs/user/SUPPORTED-EDA-TOOLS.md` — treat it as the
 source of truth; the EDA-tool names in the buckets below are illustrative and can
 drift as the matrix grows. **Read the copy that matches the Booley you are
 setting up** (`booley --version` names it): a local Booley *checkout* on this
@@ -241,7 +241,7 @@ script lines) as you go.
   or by `pre_run_commands` (per test).
 - **Current EDA tools.** Whatever the repo uses today (visible in its
   Makefiles, `*.f` file lists, `scripts/`/`flow/` directories, TCL, and CI
-  configs) maps onto the supported EDA tools matrix (`docs/SUPPORTED-EDA-TOOLS.md`, read
+  configs) maps onto the supported EDA tools matrix (`docs/user/SUPPORTED-EDA-TOOLS.md`, read
   per the version rule in Part A's preamble). Verilator, Icarus, Yosys
   (+OpenROAD) and sv2v are built in. AMD Vivado 2025.2 is built in only
   through the Linux-x86-64 administrator-registered, host-provisioned policy.
@@ -320,7 +320,7 @@ script lines) as you go.
     cannot serve as a standalone lint/synthesis top, so both flows are dead until you add a thin
     **flat-port wrapper** (one small file, not a blocker; `booley doctor` flags
     it at setup time). `sim` is unaffected: a cocotb testbench brings its
-    own wrapper. Symptom and wrapper recipe: Booley's `docs/TROUBLESHOOTING.md` ("interface
+    own wrapper. Symptom and wrapper recipe: Booley's `docs/user/TROUBLESHOOTING.md` ("interface
     parameter mismatch").
   - **Packed-struct / user-typedef ports** (`input fp_operation_type op`, a
     `typedef struct packed` or an enum from a package) — **no wrapper needed.**
@@ -348,7 +348,7 @@ script lines) as you go.
   appendix), never to vendor a prebuilt blob. And don't stop at "a RISC-V
   toolchain exists in the image" — plan an execution-time check of the
   project's exact compile flags against the sandbox compiler, because vendor
-  `-march` strings are a classic trap (Booley's `docs/TROUBLESHOOTING.md`, "RISC-V
+  `-march` strings are a classic trap (Booley's `docs/user/TROUBLESHOOTING.md`, "RISC-V
   firmware won't assemble against the sandbox GCC").
 - **Repository shape.** Three topology traps are worth ten minutes of looking
   before any config is planned. *Self-referential symlinks*: some repos ship
@@ -518,8 +518,7 @@ separate columns (see "How a row resolves"). The standard checklist:
    **Lint each planned Target name against the axis convention before
    approval.** Every Booley-authored Target name must be `<axis>_<subject>`,
    lowercase snake_case, where `<axis>` is one of the four fixed tokens
-   `sim` / `lint` / `synth` / `fpga` (the Booley Flow family — `sim` also covers
-   `elab`). The axis is not derivable from
+   `sim` / `lint` / `synth` / `fpga` (the Booley Flow family). The axis is not derivable from
    `.core` metadata, so the name must carry it. Reject plausible-but-wrong
    names now rather than at the Step-4 doctor NOTE: `asic_core` is wrong
    (`asic` is a legacy word, not an axis — use `synth_core`);
@@ -595,8 +594,9 @@ separate columns (see "How a row resolves"). The standard checklist:
     `file_type: veribleLintRules` fileset entry — you are matching the project,
     not imposing. Unattended: signal ⇒ `yes` (`inferred`/high, not starred);
     no signal ⇒ `no`, and say so in one line.
-12. **`elab`** — expose it (needs a resolvable Target) or opt out with
-    `enabled = false`.
+12. **Elaboration Check** — record whether the project needs the stronger
+    `sim --elab-only --standalone` module sweep; ordinary Simulation already
+    records its authenticated build-stage outcome.
 13. **Timeouts, synthesis calibration & memory** —
     `[flows.<flow>].timeout_ms` where evidence (CI runtimes, log stamps)
     suggests the defaults will not fit. Mark every supported synthesis
@@ -864,7 +864,7 @@ compile-flag probe.
 
    The explicit `_zicsr` is not cosmetic — the sandbox GCC won't assemble an
    older project's default `-march=rv32imc` without it. See Booley's
-   `docs/TROUBLESHOOTING.md` ("RISC-V firmware won't assemble against the sandbox GCC")
+   `docs/user/TROUBLESHOOTING.md` ("RISC-V firmware won't assemble against the sandbox GCC")
    for that and the vendor-ISA `-march` trap.
 
    Keep the hook thin — have it call a **tracked** script in the repo

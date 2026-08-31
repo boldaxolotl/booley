@@ -237,40 +237,80 @@ class TestBakedBuildCommit:
         assert not hasattr(booley, "_build_commit")
         assert tlr._baked_commit() is None
 
-    def test_git_failure_falls_back_to_the_baked_commit(self, monkeypatch):
-        """The wheel-install path: no adjacent .git, so git lookup fails."""
+    def test_source_git_failure_does_not_borrow_baked_commit(self, tmp_path, monkeypatch):
+        """A checkout must not combine its version with another build's stamp."""
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 
-        def _no_git(*_args, **_kwargs):
-            raise OSError("git not found")
-
-        monkeypatch.setattr(tlr.subprocess, "run", _no_git)
-        monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
-        assert tlr._source_commit() == "cafe123"
-        assert "(cafe123)" in tlr._version_string()
-
-    def test_non_zero_git_falls_back_to_the_baked_commit(self, monkeypatch):
-        """An adjacent directory that is not a repo also has no HEAD."""
+        source_root = tmp_path / "checkout"
+        source_root.mkdir()
         monkeypatch.setattr(
-            tlr.subprocess,
-            "run",
-            lambda *a, **k: subprocess.CompletedProcess(
-                a[0] if a else [], 128, stdout="", stderr=""
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="4.5.6",
+                origin=VersionOrigin.SOURCE,
+                source_root=source_root,
             ),
         )
         monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
+        assert tlr._source_commit() is None
+        assert "(cafe123)" not in tlr._version_string()
+
+    def test_wheel_uses_baked_commit_without_live_git(self, monkeypatch):
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="4.5.6",
+                origin=VersionOrigin.DISTRIBUTION,
+                distribution_name="booley-rtl",
+            ),
+        )
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
+        )
+        monkeypatch.setattr(tlr, "_baked_commit", lambda: "cafe123")
+
         assert tlr._source_commit() == "cafe123"
 
     def test_live_checkout_wins_over_the_baked_commit(self, monkeypatch):
         """A checkout's live state is the truthful one — it can be +dirty."""
+        from booley.runtime.version_attribution import VersionAttribution
 
-        def _fake_run(cmd, **_kwargs):
-            if "rev-parse" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, stdout="live999\n", stderr="")
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        monkeypatch.setattr(tlr.subprocess, "run", _fake_run)
+        monkeypatch.setattr(
+            VersionAttribution,
+            "source_git_metadata",
+            lambda _self: ("live999", "2026-08-30T10:39:40Z"),
+        )
         monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
         assert tlr._source_commit() == "live999"
+
+    def test_source_without_git_does_not_borrow_enclosing_repository(self, tmp_path, monkeypatch):
+        import booley
+        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+
+        outer = tmp_path / "outer"
+        (outer / ".git").mkdir(parents=True)
+        source_root = outer / "unpacked-booley"
+        source_root.mkdir()
+        monkeypatch.setattr(
+            booley,
+            "version_attribution",
+            VersionAttribution(
+                version="4.5.6",
+                origin=VersionOrigin.SOURCE,
+                source_root=source_root,
+            ),
+        )
+        monkeypatch.setattr(tlr, "_baked_commit", lambda: "stale00")
+
+        assert tlr._source_commit() is None
 
     def test_baked_commit_reads_the_generated_module(self, monkeypatch):
         import types
