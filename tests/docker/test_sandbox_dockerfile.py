@@ -108,6 +108,25 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     assert "docker-build-evidence" in workflow
 
 
+def test_ci_builds_and_runs_python_3_14_sidecar_candidates() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+
+    assert workflow.count("docker build --pull --no-cache") == 3
+    for dockerfile in (
+        "Dockerfile.egress-proxy",
+        "Dockerfile.flexnet-relay",
+        "Dockerfile.reaper",
+    ):
+        assert dockerfile in workflow
+    assert '"Python 3.14.7"' in workflow
+    assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314" in workflow
+    assert "BOOLEY_REAPER_IMAGE: booley-reaper:py314" in workflow
+    assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow
+    assert "test_egress_proxy_image_e2e.py" in workflow
+    assert "test_reaper_image_e2e.py" in workflow
+    assert "test_flexnet_relay_e2e.py" in workflow
+
+
 def test_shipped_external_base_images_are_digest_pinned() -> None:
     for path in sorted(_DOCKER_DIR.glob("Dockerfile*")):
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -129,6 +148,23 @@ def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> Non
 
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
+
+
+def test_sidecars_pin_python_3_14_7_without_changing_distributions() -> None:
+    egress = (_DOCKER_DIR / "Dockerfile.egress-proxy").read_text(encoding="utf-8")
+    flexnet = (_DOCKER_DIR / "Dockerfile.flexnet-relay").read_text(encoding="utf-8")
+    reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
+
+    assert (
+        "FROM python:3.14.7-slim-bookworm@sha256:"
+        "416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63" in egress
+    )
+    alpine = (
+        "FROM python:3.14.7-alpine3.24@sha256:"
+        "05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc"
+    )
+    assert alpine in flexnet
+    assert alpine in reaper
 
 
 def test_sandbox_downloads_are_verified_before_use() -> None:
