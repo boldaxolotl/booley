@@ -112,6 +112,25 @@ def test_init_parser_accepts_skip_credentials():
     assert args.skip_credentials is True
 
 
+def test_chat_parser_and_dispatch_are_registered():
+    parser = tlr._build_parser()
+
+    args = parser.parse_args(["chat"])
+
+    assert args.command == "chat"
+    assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
+    assert "Open this Project's configured agent CLI" in parser.format_help()
+
+
+def test_bare_booley_defaults_to_chat():
+    parser = tlr._build_parser()
+
+    args = tlr._normalize_args(parser, parser.parse_args([]))
+
+    assert args.command == "chat"
+    assert "Run bare `booley`" in parser.format_help()
+
+
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
     from booley.harness import auto_doctor
 
@@ -329,7 +348,7 @@ def _host_venue(monkeypatch):
 
 
 class TestEnforceVenue:
-    @pytest.mark.parametrize("command", ["run", "board"])
+    @pytest.mark.parametrize("command", ["run", "chat", "board"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         with _host_venue(monkeypatch), pytest.raises(SystemExit) as exc:
@@ -340,7 +359,7 @@ class TestEnforceVenue:
         assert "Session Runtime" in err
         assert "Reopen in Container" in err  # names the fix, not just the rule
 
-    @pytest.mark.parametrize("command", ["run", "board"])
+    @pytest.mark.parametrize("command", ["run", "chat", "board"])
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
@@ -375,7 +394,7 @@ class TestEnforceVenue:
         `auth` is host-only too: it drives the host's browser OAuth flow and
         writes the host's ~/.config, neither of which exists in the sandbox.
         """
-        assert {"run", "board"} == tlr._CONTAINER_ONLY_COMMANDS
+        assert {"run", "chat", "board"} == tlr._CONTAINER_ONLY_COMMANDS
         assert {"init", "session", "auth", "eda"} == tlr._HOST_ONLY_COMMANDS
 
 
@@ -395,8 +414,8 @@ class TestEffectiveCommand:
         assert tlr._effective_command(self._parse(["--doctor"])) == "doctor"
         assert tlr._effective_command(self._parse(["--cheat"])) == "cheat"
 
-    def test_no_command_returns_none(self):
-        assert tlr._effective_command(self._parse([])) is None
+    def test_no_command_defaults_to_chat(self):
+        assert tlr._effective_command(self._parse([])) == "chat"
 
 
 def test_prepare_review_board_parser():

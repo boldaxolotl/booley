@@ -12,6 +12,8 @@ and nested actions.
 | `booley auth` | Configure or inspect agent credentials |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley session` | Start, enter, inspect, refresh, or stop the Session Runtime |
+| `booley` | Open the Project's configured Claude Code or Codex CLI |
+| `booley chat` | Explicit spelling of the default `booley` command |
 | `booley targets` | List or filter Targets and show resolved details |
 | `booley flow` | List or directly run deterministic Booley Flows |
 | `booley run` | Execute queued or named tickets |
@@ -330,8 +332,9 @@ The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and 
 | `booley session up` | Start the Session Runtime headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |
+| `booley` / `booley chat` | Open the Project's configured agent CLI inside the Session Runtime |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
 To extend the image, create `.booley_project/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley_project/booley.toml`.
 
-**`booley run` is container-only.** Run it from a terminal **inside** the devcontainer (Reopen in Container, or `booley session enter`), one terminal per concurrent ticket, up to `[jobs] max_tickets` (default 2); extra runs queue with "waiting for slot (position N)". Launched on the host it fails fast and names the fix. `booley init` and `booley session` stay host-side; `booley doctor` works on either side.
+**Bare `booley` (`booley chat`), `booley run`, and `booley board` are container-only.** Run them from a terminal **inside** the devcontainer (Reopen in Container, or `booley session enter`). For Ticket Mode, use one terminal per concurrent ticket, up to `[jobs] max_tickets` (default 2); extra runs queue with "waiting for slot (position N)". Launched on the host these commands fail fast and name the fix. `booley init` and `booley session` stay host-side; `booley doctor` works on either side.
