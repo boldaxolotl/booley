@@ -95,13 +95,15 @@ RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
 # csmith flows, ibex's UVM riscv-dv DV flow). Bundles libfesvr. Installed into
 # /opt/riscv so it shares the toolchain's already-on-PATH bin dir.
 #
-# Pinned to a master commit rather than the v1.1.0 tag: v1.1.0 predates the
-# <cstdint> header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's
-# default) with "uint64_t not declared". Fetch-by-SHA mirrors the Yosys layer.
-# Terminated with an explicit `test -x` so a broken build fails the image loudly
-# — NOT `|| true`, which would silently ship an image with no spike.
+# Spike has no maintained release series: v1.1.0 predates the <cstdint>
+# header-hygiene fixes and fails to compile on GCC 13 (Ubuntu 24.04's default)
+# with "uint64_t not declared". Use tested snapshots of official upstream
+# master, always pinned by full SHA. Before moving the pin, require upstream
+# Ubuntu 24.04 evidence plus this image build, make check, the PicoRV32 demo,
+# and Spike differential flows. See docs/research/spike-release-channel.md.
+# The explicit checks make a broken build fail the image loudly.
 # ---------------------------------------------------------------------------
-ARG SPIKE_REF=55b4658dbf574ba0b714083ec436ce2cb5be1998
+ARG SPIKE_REF=c09c0cce98696f52abe0fe8c11f93f9ed74dc2bb
 RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git init /tmp/spike \
     && cd /tmp/spike \
@@ -112,6 +114,7 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && mkdir -p /tmp/spike/build && cd /tmp/spike/build \
     && ../configure --prefix=/opt/riscv \
     && make -j"$(nproc)" \
+    && make check \
     && make install \
     && test -x /opt/riscv/bin/spike \
     && rm -rf /tmp/spike
