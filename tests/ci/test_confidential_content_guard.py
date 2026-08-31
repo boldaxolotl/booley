@@ -30,16 +30,19 @@ def _commit(
     return _commit_index(repo, message, name=name, email=email)
 
 
-def _commit_index(
-    repo: Path, message: str, *, name: str = "Safe User", email: str = "safe@example.test"
-) -> str:
-    env = os.environ | {
+def _identity_env(name: str = "Safe User", email: str = "safe@example.test") -> dict[str, str]:
+    return os.environ | {
         "GIT_AUTHOR_NAME": name,
         "GIT_AUTHOR_EMAIL": email,
         "GIT_COMMITTER_NAME": name,
         "GIT_COMMITTER_EMAIL": email,
     }
-    _git(repo, "commit", "-m", message, env=env)
+
+
+def _commit_index(
+    repo: Path, message: str, *, name: str = "Safe User", email: str = "safe@example.test"
+) -> str:
+    _git(repo, "commit", "-m", message, env=_identity_env(name, email))
     return _git(repo, "rev-parse", "HEAD")
 
 
@@ -274,7 +277,7 @@ def test_merge_introduced_blob_deleted_later_is_blocked(tmp_path: Path) -> None:
     _git(repo, "checkout", "main")
     (repo / "main.txt").write_text("clean main\n", encoding="utf-8")
     _commit(repo, "add clean main")
-    _git(repo, "merge", "--no-ff", "--no-commit", "side")
+    _git(repo, "merge", "--no-ff", "--no-commit", "side", env=_identity_env())
     (repo / "merge-only.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
     _commit(repo, "merge side with fixture")
     (repo / "merge-only.txt").unlink()
