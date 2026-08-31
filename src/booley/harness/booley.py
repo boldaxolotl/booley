@@ -3,6 +3,7 @@
 
 Subcommands:
     run       Persistent ticket execution loop
+    chat      Open the Project's configured agent CLI
     board     Print the ticket board
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
@@ -39,6 +40,7 @@ from booley.harness.booley_status_display import (  # noqa: F401  # re-exported 
     _read_checkpoint_status,
     _run_with_heartbeat,
 )
+from booley.harness.chat_cmd import run as run_chat
 from booley.harness.colors import (
     bold_accent,
     bold_amber,
@@ -333,6 +335,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="booley",
         description="Booley — RTL development harness.",
+        epilog="Run bare `booley` to open this Project's configured agent CLI.",
     )
     parser.add_argument(
         "--version",
@@ -345,7 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # usage line; subparsers added without `help=` stay out of the listing.
     sub = parser.add_subparsers(
         dest="command",
-        metavar="{run,board,cheat,doctor,init,eda,auth,session,targets,flow,feedback}",
+        metavar="{run,chat,board,cheat,doctor,init,eda,auth,session,targets,flow,feedback}",
     )
 
     run_p = sub.add_parser("run", help="Run the ticket execution loop")
@@ -746,6 +749,7 @@ def _add_shell_subparser(sub) -> None:
 
 def _add_utility_subparsers(sub) -> None:
     """Add host utilities, setup commands, and direct Flow commands."""
+    sub.add_parser("chat", help="Open this Project's configured agent CLI")
     _add_cheat_subparser(sub)
 
     from booley.eda import cli as eda_cli
@@ -820,8 +824,7 @@ def _normalize_args(
             args.command = "run"
             args.ticket = args.slug
         else:
-            parser.print_help()
-            sys.exit(0)
+            args.command = "chat"
 
     _validate_doctor_args(parser, args)
 
@@ -1554,6 +1557,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
 
 
 _EARLY_COMMANDS: dict[str, Callable] = {
+    "chat": run_chat,
     "cheat": _cmd_cheat,
     "board": _cmd_board,
     "doctor": run_doctor,
@@ -2114,7 +2118,7 @@ def _show_dry_run(venv_py: str) -> None:
 # `doctor` is dual (context-aware checks inside); `cheat` runs anywhere.
 # `shell` needs host Docker too, but keeps its own tailored refusal in
 # _cmd_shell ("you are already inside a sandbox — just use this shell").
-_CONTAINER_ONLY_COMMANDS = frozenset({"run", "board"})
+_CONTAINER_ONLY_COMMANDS = frozenset({"run", "chat", "board"})
 # `session` drives the Session Runtime from outside it: like `init` it needs host
 # Docker, and the sandbox has none (ADR 0016).
 _HOST_ONLY_COMMANDS = frozenset({"init", "session", "auth", "eda"})
@@ -2130,7 +2134,7 @@ def _effective_command(args: argparse.Namespace) -> str | None:
         return "doctor"
     if getattr(args, "cheat", False):
         return "cheat"
-    return None
+    return "chat"
 
 
 def _enforce_runtime_location(command: str | None) -> None:

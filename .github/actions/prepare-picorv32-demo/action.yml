@@ -24,8 +24,8 @@ runs:
         python "${GITHUB_WORKSPACE}/.github/scripts/export_demo_contract.py"
         --contract "${CONTRACT_PATH}" >> "${GITHUB_OUTPUT}"
 
-    # The RTL pin belongs to public main; the project-data pin belongs to a
-    # permanent CI-only contract branch so the demo can ship without a Ticket.
+    # Both reviewed pins must belong to the public main branches that users
+    # clone. The synthetic Ticket is installed only in this ephemeral checkout.
     - name: Check out reviewed PicoRV32 revision
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
@@ -58,11 +58,9 @@ runs:
 
     - name: Require reviewed revisions on public refs
       shell: bash
-      env:
-        PROJECT_CONTRACT_REF: ${{ steps.contract.outputs.project_contract_ref }}
       run: |
         git -C demo merge-base --is-ancestor HEAD origin/main
-        git -C demo/.booley_project merge-base --is-ancestor HEAD "origin/${PROJECT_CONTRACT_REF}"
+        git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main
 
     - name: Install CI-owned Ticket fixture into ticket-free checkout
       shell: bash

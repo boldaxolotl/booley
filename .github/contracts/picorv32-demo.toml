@@ -2,8 +2,7 @@ schema = 1
 upstream_repository = "YosysHQ/picorv32"
 upstream_ref = "a473fc8fca393771d83b0ffcf0b14db3393339d8"
 project_repository = "boldaxolotl/booley-prj-picorv32"
-project_ref = "9a8adfadd572b4869acc46a3016036d6edf9d709"
-project_contract_ref = "ci/agent-ticket-contract"
+project_ref = "da79489482a7bed69e275ba2c46358ea6636af4d"
 ticket_fixture = ".github/contracts/picorv32-demo-ticket.md"
 ticket_slug = "add-opt-in-rv32-zbb-pcpi-co-processor"
 
@@ -12,9 +11,7 @@ required_targets = [
   "sim_core",
   "sim_dhry",
   "sim_wb",
-  "sim_zbb_disabled",
   "synth_core",
-  "synth_core_zbb",
 ]
 
 [[required_binding]]
@@ -30,12 +27,8 @@ criterion = "criteria.mandatory.sim_pass"
 target = "sim_wb"
 
 [[required_binding]]
-criterion = "criteria.mandatory.sim_pass"
-target = "sim_zbb_disabled"
-
-[[required_binding]]
 criterion = "criteria.mandatory.synthesis_ok"
-target = "synth_core_zbb"
+target = "synth_core"
 
 [[required_binding]]
 criterion = "criteria.optional.mutation_score"
