@@ -142,9 +142,9 @@ processing cheap.
 
 ## Versions in the sandbox image
 
-Everything below is pinned in `src/booley/data/docker/Dockerfile` (the `ARG`
-lines are the source of truth). This table is what a fresh `booley-sandbox`
-build gives you; a project image may add to it, and `[sandbox].pip_requirements`
+Everything below is pinned in `src/booley/data/docker/Dockerfile.base` (the
+image digest and `ARG` lines are the source of truth). This table is what a
+fresh `booley-sandbox` build gives you; a project image may add to it, and `[sandbox].pip_requirements`
 may override the Python rows (see
 [CONFIG.md](CONFIG.md#python-dependencies-sandboxpip_requirements)).
 
@@ -156,7 +156,7 @@ may override the Python rows (see
 | Icarus Verilog | v13_0 |
 | Yosys | v0.68, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
 | sv2v | v0.0.13 |
-| OpenROAD | 2.0-17598-ga008522d8 (Precision-Innovations release 2024-12-14) |
+| OpenROAD | 26Q3 source commit `a9147cf3aebe65e058bb3fa89c1f9e524488dbb8` (the exact upstream OCI binary reports `26Q2-2580-ga9147cf3ae`) |
 | Verible | v0.0-4157-gfdbac312 |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
 | cocotb | 2.0.1, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |

@@ -33,7 +33,7 @@ _DONT_USE = "CLKBUF_* AOI211_X1 OAI211_X1"
 _GP_PAD_SITES = 1
 
 _AREA_RE = re.compile(
-    r"Design\s+area\s+([\d.]+)\s*u\^2\s+([\d.]+)\s*%\s*utilization",
+    r"Design\s+area\s+([\d.]+)\s*um?\^2\s+([\d.]+)\s*%\s*utilization",
     re.IGNORECASE,
 )
 _PRE_REPAIR_SLACK_RE = re.compile(r"STA_PRE_REPAIR_WORST_SLACK_NS:\s*([-+]?\d+(?:\.\d+)?)")
@@ -194,7 +194,7 @@ puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization {util:.3f} -aspect_ratio 1.0 -core_space 2.0 \\
   -site {_SITE}
 make_tracks
-remove_buffers
+remove_buffers [get_cells *]
 source {{{pdk.layer_rc.as_posix()}}}
 set_wire_rc -signal -layer {_SIGNAL_LAYER}
 set_wire_rc -clock -layer {_CLOCK_LAYER}
@@ -237,8 +237,8 @@ close $csv_out
 def parse_openroad_area(text: str) -> tuple[float | None, float | None]:
     """Parse ``report_design_area`` output → (area_um2, utilization_pct).
 
-    Matches e.g. ``Design area 235 u^2 33% utilization.`` Returns ``(None,
-    None)`` when the line is absent or unparseable.
+    Accepts both the legacy ``u^2`` unit and 26Q3's ``um^2`` spelling. Returns
+    ``(None, None)`` when the line is absent or unparseable.
     """
     m = _AREA_RE.search(text)
     if not m:

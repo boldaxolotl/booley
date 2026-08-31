@@ -36,6 +36,10 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert pyproject_copy < dependency_exporter < project_install
     assert project_install < image_dependencies
     assert "YOSYS_REF" in base
+    assert (
+        "FROM docker.io/openroad/ubuntu24.04@sha256:"
+        "c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a"
+    ) in base
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
     assert "COPY crates/bwave/" not in base
@@ -125,7 +129,6 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
     assert "| bash" not in dockerfile
     assert "@^" not in dockerfile
     for checksum_arg in (
-        "OPENROAD_SHA256",
         "SV2V_SHA256",
         "VERIBLE_SHA256",
         "NODE_SHA256",
@@ -149,18 +152,44 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
 
+def test_openroad_uses_verified_26q3_oci_artifact() -> None:
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8" in dockerfile
+    assert "ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae" in dockerfile
+    assert (
+        "ARG OPENROAD_SOURCE_SENTINEL_SHA256="
+        "c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f"
+    ) in dockerfile
+    assert '/OpenROAD/src/rsz/src/Resizer.tcl" | sha256sum -c -' in dockerfile
+    assert "/OpenROAD/build/bin/openroad" in dockerfile
+    assert "openroad -version" in dockerfile
+    assert "/OpenROAD/src/sta/LICENSE" in dockerfile
+    assert "Precision-Innovations/OpenROAD/releases/download" not in dockerfile
+    assert "/tmp/openroad.deb" not in dockerfile
+
+
+def test_cocotb_layer_overrides_openroad_parent_system_numpy() -> None:
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    layer_start = dockerfile.index("# Cocotb verification layer")
+    layer_end = dockerfile.index("# Build-time sanity", layer_start)
+
+    assert "--ignore-installed" in dockerfile[layer_start:layer_end]
+
+
 def test_source_builds_fetch_immutable_commits() -> None:
     dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
     refs = dict(re.findall(r"^ARG ([A-Z0-9_]+_REF)=([0-9a-f]{40})$", dockerfile, re.MULTILINE))
 
     assert set(refs) == {
+        "OPENROAD_SOURCE_REF",
         "YOSYS_REF",
         "ICARUS_REF",
         "VERILATOR_REF",
     }
     assert "git clone --depth 1 --branch" not in dockerfile
-    for name in refs:
-        assert f'git fetch --depth 1 origin "${{{name}}}"' in dockerfile
+    for name in refs.keys() - {"OPENROAD_SOURCE_REF"}:
+        assert f'git -c protocol.version=0 fetch --depth 1 origin "${{{name}}}"' in dockerfile
         assert f'test "$(git rev-parse HEAD)" = "${{{name}}}"' in dockerfile
 
 

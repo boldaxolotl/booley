@@ -1,6 +1,16 @@
 # Published Booley EDA/runtime base — invariant tools and Python dependencies.
 # Candidate application code, B-Wave, and repository patches belong in Dockerfile.
-FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+#
+# OpenROAD's public Debian channel ended after the 2024-12-14 release. Its
+# official 26Q3 OCI builder preserves the exact binary dependency closure and
+# Corresponding Source. The immutable index digest's provenance resolves to
+# OpenROAD commit a9147cf3aebe65e058bb3fa89c1f9e524488dbb8.
+FROM docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a
+
+# The upstream builder defaults to UID 9000 and /OpenROAD. Booley's invariant
+# setup layers install system-wide and its eventual runtime workdir is /work.
+USER root
+WORKDIR /
 
 # Tolerate host clock skew during image build (win_test): on Windows hosts the
 # Docker Desktop/WSL2 VM inherits the host clock; a skewed host (common on
@@ -57,10 +67,10 @@ RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source
     && git init /tmp/yosys \
     && cd /tmp/yosys \
     && git remote add origin https://github.com/YosysHQ/yosys.git \
-    && git fetch --depth 1 origin "${YOSYS_REF}" \
+    && git -c protocol.version=0 fetch --depth 1 origin "${YOSYS_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${YOSYS_REF}" \
-    && git submodule update --init --recursive \
+    && git -c protocol.version=0 submodule update --init --recursive \
     && cmake -B build -S . \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_COMPILER=gcc \
@@ -71,19 +81,28 @@ RUN echo ">>> Building Yosys ${YOSYS_VERSION} (${YOSYS_REF}) + slang from source
     && yosys -p 'help read_slang' >/dev/null \
     && rm -rf /tmp/yosys
 
-# OpenROAD (pinned prebuilt .deb) — physical synthesis: placement +
-# buffering/sizing + estimated wire RC. The ubuntu-22.04 deb installs on
-# 24.04 (Qt5 t64 Provides old names; deadsnakes ships libpython3.10).
-# Newer 24.04-native debs sit behind a registration wall, so pin the last
-# public asset.
-ARG OPENROAD_RELEASE_TAG=2024-12-14
-ARG OPENROAD_VERSION=2.0-17598-ga008522d8
-ARG OPENROAD_SHA256=40ed178396b0276a5d5dfbbe695c9de9aac9088157a6655be02b39a0cef07207
-RUN echo ">>> Installing OpenROAD ${OPENROAD_VERSION} (prebuilt deb)..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/Precision-Innovations/OpenROAD/releases/download/${OPENROAD_RELEASE_TAG}/openroad_${OPENROAD_VERSION}_amd64-ubuntu-22.04.deb" -o /tmp/openroad.deb \
-    && echo "${OPENROAD_SHA256}  /tmp/openroad.deb" | sha256sum -c - \
-    && apt-get update && apt-get install -y --no-install-recommends /tmp/openroad.deb \
-    && rm -f /tmp/openroad.deb && rm -rf /var/lib/apt/lists/* \
+# OpenROAD — physical synthesis: placement, buffering/sizing, and estimated
+# wire RC. The binary and full source tree come from the digest-pinned parent.
+# Its banner predates the quarterly tag by 79 minutes, but the OCI provenance,
+# 26Q3 tag, and source sentinel all resolve to the exact commit below.
+ARG OPENROAD_VERSION=26Q3
+ARG OPENROAD_SOURCE_REF=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8
+ARG OPENROAD_BINARY_VERSION=26Q2-2580-ga9147cf3ae
+ARG OPENROAD_SOURCE_SENTINEL_SHA256=c8bb060f372392663871afb62ca922f9da1fd58a1b635324da1ec713a88c928f
+RUN echo ">>> Verifying OpenROAD ${OPENROAD_VERSION} (${OPENROAD_SOURCE_REF})..." \
+    && test -x /OpenROAD/build/bin/openroad \
+    && test "$(/OpenROAD/build/bin/openroad -version | xargs)" = "${OPENROAD_BINARY_VERSION}" \
+    && echo "${OPENROAD_SOURCE_SENTINEL_SHA256}  /OpenROAD/src/rsz/src/Resizer.tcl" | sha256sum -c - \
+    && test -f /OpenROAD/LICENSE \
+    && test -f /OpenROAD/src/sta/LICENSE \
+    && ln -s /OpenROAD/build/bin/openroad /usr/local/bin/openroad \
+    && install -d /usr/local/share/doc/openroad \
+    && printf '%s\n' \
+        "OpenROAD source revision: ${OPENROAD_SOURCE_REF}" \
+        'Corresponding Source: /OpenROAD' \
+        'OpenROAD license: /OpenROAD/LICENSE' \
+        'OpenSTA license: /OpenROAD/src/sta/LICENSE' \
+        > /usr/local/share/doc/openroad/BOOLEY-SOURCE.txt \
     && openroad -version
 
 # Icarus Verilog is built from source because Ubuntu packages lag releases.
@@ -96,7 +115,7 @@ RUN echo ">>> Building Icarus Verilog ${ICARUS_VERSION} (${ICARUS_REF}) from sou
     && git init /tmp/iverilog \
     && cd /tmp/iverilog \
     && git remote add origin https://github.com/steveicarus/iverilog.git \
-    && git fetch --depth 1 origin "${ICARUS_REF}" \
+    && git -c protocol.version=0 fetch --depth 1 origin "${ICARUS_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${ICARUS_REF}" \
     && sh autoconf.sh \
@@ -113,7 +132,7 @@ RUN echo ">>> Building Verilator ${VERILATOR_VERSION} (${VERILATOR_REF}) from so
     && git init /tmp/verilator \
     && cd /tmp/verilator \
     && git remote add origin https://github.com/verilator/verilator.git \
-    && git fetch --depth 1 origin "${VERILATOR_REF}" \
+    && git -c protocol.version=0 fetch --depth 1 origin "${VERILATOR_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${VERILATOR_REF}" \
     && autoconf && ./configure --prefix=/usr/local \
@@ -229,7 +248,7 @@ RUN python -m pip install --break-system-packages --no-cache-dir \
 # network, so anything beyond this set is vendored in the project tree).
 # cocotbext-spi is ABSENT deliberately: no release imports against cocotb 2.x
 # (0.5.0 still uses the removed cocotb.clock.BaseClock).
-RUN python -m pip install --break-system-packages --no-cache-dir \
+RUN python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
     "cocotb==2.0.1" "numpy==2.5.2" "cocotbext-axi==0.1.28" "cocotbext-uart==0.1.4"
 
 # Build-time sanity (D2): the image fails to build rather than failing at
@@ -287,6 +306,8 @@ ARG BOOLEY_BASE_BUILT_AT=unknown
 LABEL org.opencontainers.image.source=https://github.com/boldaxolotl/booley \
       org.opencontainers.image.revision=${BOOLEY_BASE_SOURCE_REVISION} \
       org.opencontainers.image.created=${BOOLEY_BASE_BUILT_AT} \
-      io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT}
+      io.booley.runtime-base.contract=${BOOLEY_BASE_CONTRACT} \
+      io.booley.openroad.source-revision=a9147cf3aebe65e058bb3fa89c1f9e524488dbb8 \
+      io.booley.openroad.parent-artifact=docker.io/openroad/ubuntu24.04@sha256:c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a
 
 WORKDIR /work
