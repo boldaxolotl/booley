@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -46,6 +47,38 @@ class TestVSCodeEditor:
         executable.parent.mkdir(parents=True)
         executable.touch()
         assert editor_config.resolve_editor_install() == application
+
+    def test_macos_candidates_cover_system_and_user_applications(self, monkeypatch):
+        monkeypatch.setattr(editor_config.sys, "platform", "darwin")
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: Path("/Users/test")))
+
+        candidates = editor_config._editor_install_candidates()
+
+        assert len(candidates) == 10
+        assert candidates[0] == (
+            Path("/Applications/Visual Studio Code.app"),
+            Path("/Applications/Visual Studio Code.app/Contents/MacOS/Electron"),
+        )
+        assert candidates[-1] == (
+            Path("/Users/test/Applications/Windsurf.app"),
+            Path("/Users/test/Applications/Windsurf.app/Contents/MacOS/Windsurf"),
+        )
+
+    def test_windows_candidates_use_local_app_data(self, monkeypatch):
+        monkeypatch.setattr(editor_config.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", "C:/Users/test/AppData/Local")
+
+        candidates = editor_config._editor_install_candidates()
+
+        assert len(candidates) == 5
+        assert candidates[0][0] == Path(
+            "C:/Users/test/AppData/Local/Programs/Microsoft VS Code/Code.exe"
+        )
+        assert all(application == executable for application, executable in candidates)
+
+    def test_linux_has_no_native_gui_install_candidates(self, monkeypatch):
+        monkeypatch.setattr(editor_config.sys, "platform", "linux")
+        assert editor_config._editor_install_candidates() == ()
 
 
 class TestResolvedEditor:
