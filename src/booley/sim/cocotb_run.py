@@ -15,14 +15,16 @@ supplied (decision 9):
     comma-separated name list, cocotb 1.x; project images may pin a 1.x
     stack for legacy TBs even though the base sandbox ships 2.x), probed via
     ``cocotb-config --version`` — ``LIBPYTHON_LOC`` / ``PYGPI_PYTHON_BIN``
-    (via ``cocotb-config``, called in-sandbox at run
-    time), ``COCOTB_RESULTS_FILE`` (explicit — the path is never guessed), and
+    plus cocotb 2.1+'s ``GPI_USERS=<libpython>;<PyGPI entry point>`` (all via
+    ``cocotb-config``, called in-sandbox at run time),
+    ``COCOTB_RESULTS_FILE`` (explicit — the path is never guessed), and
     ``PYTHONPATH=<build dir>`` (spike S1: cocotb 2.x resolves the test module
     against the process cwd, so a project ``run_cwd`` would otherwise break
     the import at rc=0 with no XML);
-  * Icarus: ``vvp -n -M<build> -M `cocotb-config --lib-dir` -m
-    `cocotb-config --lib-name vpi icarus` <image> [+plusargs]`` (matches the
-    Makefile run target edalize generates, minus its ``-fst``);
+  * Icarus: ``vvp -n -M<build> -m
+    `cocotb-config --lib-name-path vpi icarus` <image> [+plusargs]``. The
+    absolute library path works with cocotb 1.x/2.0's extensionless ``.vpl``
+    lookup and cocotb 2.1+'s platform-suffixed shared library;
   * Verilator: runs the built binary — named ``Vtop``, not ``V<toplevel>``
     (edalize forces ``--prefix Vtop`` and compiles cocotb's own
     ``verilator.cpp`` main when ``cocotb_module`` is set).
@@ -142,19 +144,21 @@ def _cocotb_config(arg_sets: list[list[str]]) -> list[str]:
     return outputs
 
 
-def _cocotb_major_version() -> int:
-    """Best-effort cocotb major version via ``cocotb-config --version``.
+def _cocotb_version() -> tuple[int, int]:
+    """Best-effort ``(major, minor)`` cocotb version.
 
-    Defaults to 2 (the base-image-pinned generation) when the probe fails for
-    any reason: only a positive 1.x identification switches the selection
-    env-var dialect. A truly absent ``cocotb-config`` still surfaces the D3
-    stale-image message — the mandatory ``--libpython`` call raises for it.
+    The fallback retains the pre-2.1 environment contract. A successful 2.1+
+    probe is required before emitting ``GPI_USERS`` because older
+    ``cocotb-config`` versions do not provide ``--pygpi-entry-point``.
     """
     try:
         (version,) = _cocotb_config([["--version"]])
-        return int(version.strip().split(".")[0])
+        match = re.match(r"^(\d+)\.(\d+)", version.strip())
+        if match is None:
+            return (2, 0)
+        return (int(match.group(1)), int(match.group(2)))
     except (OSError, subprocess.SubprocessError, ValueError):
-        return 2
+        return (2, 0)
 
 
 def _build_cocotb_env(
@@ -165,11 +169,12 @@ def _build_cocotb_env(
 ) -> dict[str, str]:
     """The cocotb run environment (decision 9's run-stage glue)."""
     libpython, python_bin = _cocotb_config([["--libpython"], ["--python-bin"]])
+    cocotb_version = _cocotb_version()
     env = os.environ.copy()
     env["COCOTB_TEST_MODULES"] = module
     env["MODULE"] = module  # cocotb < 2.0 compat (harmless on 2.x)
     if tests:
-        if _cocotb_major_version() < 2:
+        if cocotb_version[0] < 2:
             # cocotb 1.x ignores COCOTB_TEST_FILTER entirely (it would
             # silently run the whole module); its selection dialect is
             # TESTCASE — comma-separated exact test-function names. Gated by
@@ -179,6 +184,16 @@ def _build_cocotb_env(
             env["COCOTB_TEST_FILTER"] = build_cocotb_test_filter(module, tests)
     env["LIBPYTHON_LOC"] = libpython
     env["PYGPI_PYTHON_BIN"] = python_bin
+    if cocotb_version >= (2, 1):
+        (pygpi_entry_point,) = _cocotb_config([["--pygpi-entry-point"]])
+        required_users = [libpython, pygpi_entry_point]
+        existing_users = env.get("GPI_USERS", "").split(";")
+        env["GPI_USERS"] = ";".join(
+            [
+                *required_users,
+                *(user for user in existing_users if user and user not in required_users),
+            ]
+        )
     env["COCOTB_RESULTS_FILE"] = str(results_file)
     # Spike S1: PyGPI imports resolve against the process cwd; pin the build
     # dir (where copyto staged the module) so a project run_cwd can't break it.
@@ -206,18 +221,14 @@ def _build_run_cmd(
         image = _find_icarus_image(build_dir)
         if image is None:
             return None
-        libdir, libname = _cocotb_config(
-            [["--lib-dir"], ["--lib-name", "vpi", "icarus"]],
-        )
+        (libpath,) = _cocotb_config([["--lib-name-path", "vpi", "icarus"]])
         vvp_bin = shutil.which("vvp") or "vvp"
         cmd = [
             vvp_bin,
             "-n",
             f"-M{build_dir}",
-            "-M",
-            libdir,
             "-m",
-            libname,
+            libpath,
             str(build_dir / image),
             *plus,
         ]

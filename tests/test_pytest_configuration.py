@@ -268,6 +268,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
         "Run FIFO pipeline smoke test",
         "Run native FST/Verilator cross-validation",
         "Run simulator ground-truth tests",
+        "Run cocotb Icarus/Verilator production-image flows",
         "Run Ticket Mode production-image smoke",
     }
 
@@ -282,6 +283,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert rendered.count(readonly_workspace) >= 4
     assert "native_fst_verilator_test.py" in rendered
     assert "simulator_ground_truth_test.py" in rendered
+    assert "cd /validation-tmp/project" in rendered
     cleanup_wrapper = ".github/scripts/run_with_container_cleanup.sh"
     assert all(cleanup_wrapper in step["run"] for step in validations)
 
