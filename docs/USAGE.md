@@ -119,18 +119,16 @@ These steps begin on your normal computer:
 3. In the reloaded VS Code window, select **Terminal → New Terminal**. This is
    now a **container terminal**. Booley's sandbox image already contains both
    agent CLIs. Start the provider selected in
-   `.booley_project/booley.toml`—either
-   [Claude Code](https://code.claude.com/docs/en/quickstart):
+   `.booley_project/booley.toml`:
 
    ```bash
-   claude
+   booley chat
    ```
 
-   or [Codex](https://developers.openai.com/codex/cli):
-
-   ```bash
-   codex
-   ```
+   Booley opens either [Claude Code](https://code.claude.com/docs/en/quickstart)
+   or [Codex](https://developers.openai.com/codex/cli), matching the Project's
+   `[agent].provider` setting. The command is an alias for the selected CLI: it
+   replaces itself with that CLI and leaves the terminal session native.
 
    If you use the Claude Code VS Code extension instead, open its chat panel in
    this reloaded window; there is no CLI command to run. For Codex, Booley
