@@ -873,8 +873,8 @@ Ticket Mode. Run these from a terminal **inside the Session Runtime**: open the 
 Code and accept **Reopen in Container** first, or, with no VS Code, enter it
 headlessly with `booley session enter` (see
 [Entering the Session Runtime without VS Code](#entering-the-session-runtime-without-vs-code)). (`booley
-cheat` works anywhere; `booley doctor` works on either side; `booley init` and
-`booley session` are host-side.)
+cheat` works anywhere; `booley doctor` works on either side; `booley bootstrap`,
+`booley init`, and `booley session` are host-side.)
 
 ```bash
 # Execute a single ticket end-to-end
