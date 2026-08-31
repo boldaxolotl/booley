@@ -9,12 +9,12 @@ versions on `main`.
 
 ## Decision
 
-**Hold until the implementation PR's fresh CI build passes and the dedicated
-authenticated matrix is run.** The offline executable policy boundary passes,
-but local disk pressure prevented rebuilding a current-commit control after
-`main` advanced, and no dedicated short-lived Anthropic or OpenAI test
-credentials were available. The candidate pin exists only on the unmerged
-implementation branch while those gates remain open.
+**Hold until the strict same-commit control/RISC-V comparison and dedicated
+authenticated matrix are run.** The fresh implementation-PR build and offline
+executable policy boundary pass, but local disk pressure prevented rebuilding
+a current-commit control after `main` advanced, and no dedicated short-lived
+Anthropic or OpenAI test credentials were available. The candidate pin exists
+only on the unmerged implementation branch while those gates remain open.
 
 ## Immutable inputs
 
@@ -60,7 +60,10 @@ After the rebase, the available Node 22/cocotb 2.1 control was
 at 1,364,299,524 bytes. A same-commit rebuild was requested but rejected by the
 host safety guard because the Docker host was 99% full. No Docker state was
 pruned and no unsafe workaround was attempted. The implementation PR's clean
-runner is therefore the authoritative current-commit build.
+runner is therefore the authoritative candidate build.
+[CI run 33394335645](https://github.com/boldaxolotl/booley/actions/runs/33394335645)
+tested head `15ce665974ba25771b1860f15566b7e74ca2340b` merged with its then-current
+`main`. Its production-image smoke passed in 4m52s.
 
 ## Executable policy evidence
 
@@ -85,9 +88,12 @@ request was made. The placeholder provider key was exported only to the child
 process and is not a credential.
 
 The same probe passed on the cached Node 22 control, the Node 24 base, and the
-Node 24 Session Image. CI now repeats it against the freshly built production
-image and uploads only its allowlisted JSON summary for 14 days. The artifact
-contains versions, package names, generated-config outcomes, policy
+Node 24 Session Image. CI repeated it against the freshly built production
+image and uploaded only its allowlisted JSON summary for 14 days. The
+[agent-policy evidence artifact](https://github.com/boldaxolotl/booley/actions/runs/33394335645/artifacts/9758907902)
+is `agent-policy-evidence-33394335645-1`, with archive digest
+`sha256:b84490412f0755bfd879f830b864f9e13d50e38673b598ccc23a6bf3fcd033c4`.
+It contains versions, package names, generated-config outcomes, policy
 diagnostics, and tool names; it contains no raw transcript, prompt, provider
 payload, account identifier, or secret.
 
@@ -115,6 +121,10 @@ Completed locally:
 - exact CLI versions, `npm ls`, lockfile integrity, SDK discovery, generated
   configuration, and all ten negative policy cases passed;
 - the Node 24 base and final Session Image built successfully;
+- the fresh PR production-image smoke passed the agent-policy, Verible,
+  isolation, FIFO, native-FST, simulator, cocotb, and Ticket Mode validations;
+- the required CI lint, docs, Rust, B-Wave integration, and Ubuntu/Windows
+  Python 3.11/3.13/3.14 matrix passed;
 - `ruff format --check src/ tests/` passed;
 - `pytest tests/docker/test_sandbox_dockerfile.py tests/harness/test_web_isolation.py`
   passed (29 tests);
@@ -129,14 +139,12 @@ silencing unrelated assertions.
 
 Still required before promotion:
 
-1. the implementation PR's current-commit production-image build and complete
-   smoke matrix must pass;
-2. a fresh same-commit Node 22 control must be compared with the Node 24 base,
+1. a fresh same-commit Node 22 control must be compared with the Node 24 base,
    Session Image, and RISC-V flavor on a host with sufficient disk;
-3. dedicated short-lived credentials must run one minimal authenticated turn
+2. dedicated short-lived credentials must run one minimal authenticated turn
    through each direct CLI and each Booley backend using the plan's mounted
    secret and redaction procedure;
-4. the resulting sanitized evidence must pass the confidential-content and
+3. the resulting sanitized evidence must pass the confidential-content and
    test-credential fingerprint scans.
 
 Until those items pass, this phase remains a hold and does not close #156.
