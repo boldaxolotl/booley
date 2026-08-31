@@ -683,15 +683,6 @@ jobs:
               python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
               -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
 
-      - name: Upload installed agent CLI policy evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json
-          if-no-files-found: warn
-          retention-days: 14
-
       - name: Clean up image validation containers
         if: always()
         shell: bash
@@ -701,6 +692,15 @@ jobs:
           if (( ${#containers[@]} )); then
             docker rm -f "${containers[@]}"
           fi
+
+      - name: Upload installed agent CLI policy evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json
+          if-no-files-found: warn
+          retention-days: 14
 
   ci-required:
     name: ci-required

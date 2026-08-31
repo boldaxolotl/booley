@@ -263,6 +263,7 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     )
     validations = group["parallel"]
     expected_names = {
+        "Run installed agent CLI policy probe",
         "Run Verible production-image end-to-end test",
         "Run sandbox isolation suite",
         "Run FIFO pipeline smoke test",
