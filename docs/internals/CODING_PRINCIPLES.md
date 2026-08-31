@@ -14,6 +14,10 @@ principles when working on Booley itself.
 Sources: NASA Power of Ten (Holzmann), SOLID (Martin), A Philosophy of
 Software Design (Ousterhout).
 
+These principles are enforced by review and automated checks where practical.
+The repository's configuration and `.github/workflows/test.yml` are the source
+of truth for the current tools, thresholds, and CI matrix.
+
 ---
 
 ## Complexity Control
@@ -70,22 +74,26 @@ inputs) not just "something failed."
 
 ## Design
 
-### 8. Single Responsibility
+### 8. One owner for each decision
 
-Every module/class has one reason to change. If describing what a module
-does requires "and," it does too much.
+Each rule, default, state transition, and data conversion has one authoritative
+implementation. Other modules call it or derive projections from it. When two
+places would have to stay synchronized, introduce a shared owner before adding
+another copy.
 
-### 9. Depend on abstractions, not concretions
+### 9. Dependencies point toward policy
 
-High-level development code should not import low-level implementation
-details. Pass behavior in (callbacks, protocols, configuration), don't
-reach down.
+Domain logic does not import CLI, UI, agent-SDK, process, or container adapters.
+Pass narrow data or behavior across those boundaries. Introduce an abstraction
+for a real seam—multiple implementations, an external boundary, or deterministic
+testing—not for a hypothetical future use.
 
-### 10. Design it twice
+### 10. State changes are atomic and recoverable
 
-Before implementing a non-trivial component, consider at least two
-approaches. You don't have to build both, but if you can't articulate why
-your approach is better than an alternative, you haven't thought enough.
+For persisted or external state, define what happens when execution stops after
+each step. Validate before mutation, publish complete state atomically, and make
+retries idempotent where the caller can repeat an operation. Never expose a
+partially written state as successful.
 
 ## Analyzability
 
@@ -110,3 +118,27 @@ Human-visible dates use uppercase English three-letter months regardless of
 process locale: `10 AUG 2026`. Combined timestamps use the user's local time
 as `HH:MM[:SS] · DD MMM YYYY`. Use `booley.runtime.timefmt`; do not hand-roll another
 format string.
+
+## Verification
+
+### 14. Tests prove behavior
+
+Every bug fix includes a regression test that fails without the fix. New
+behavior is tested at the closest stable boundary, including meaningful error
+cases and edge cases. Prefer tests of observable contracts over tests coupled
+to implementation details.
+
+### 15. A green check must prove it ran
+
+Required CI checks pass before merge. CI and test-infrastructure changes must
+demonstrate that the intended files and tests were exercised; a job that
+silently analyzes nothing, collects no relevant tests, or skips a required
+suite is a failure even when its process exits successfully.
+
+### 16. Verification is deterministic and bounded
+
+Control time, randomness, concurrency, and external state in automated tests.
+Subprocesses, retries, and integration tests have explicit time bounds. When an
+optional tool or licensed environment is unavailable, skip explicitly with the
+missing prerequisite; required suites assert their expected execution rather
+than accepting silent skips.
