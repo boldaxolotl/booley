@@ -48,9 +48,10 @@ Run the bootstrap on the host before the skill takes over. The host versus
 Session Runtime split is described in [ARCHITECTURE.md](ARCHITECTURE.md#overview).
 
 > **`booley init` is the host command; the workflow CLI is container-only.**
-> `booley chat`, `booley run`, `booley board`, and `bwave` refuse to run on the
-> host (Reopen in Container); `booley init` refuses inside the container, where
-> there is no Docker. Either side fails fast with a message naming the fix.
+> Bare `booley` (or `booley chat`), `booley run`, `booley board`, and `bwave`
+> refuse to run on the host (Reopen in Container); `booley init` refuses inside
+> the container, where there is no Docker. Either side fails fast with a message
+> naming the fix.
 
 > **For an existing project, start from a fresh clone when practical and run
 > `booley init` before making local edits.** A clean tracked tree gives the

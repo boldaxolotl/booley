@@ -354,6 +354,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="booley",
         description="Booley — RTL development harness.",
+        epilog="Run bare `booley` to open this Project's configured agent CLI.",
     )
     parser.add_argument(
         "--version",
@@ -840,8 +841,7 @@ def _normalize_args(
             args.command = "run"
             args.ticket = args.slug
         else:
-            parser.print_help()
-            sys.exit(0)
+            args.command = "chat"
 
     _validate_doctor_args(parser, args)
 
@@ -2150,7 +2150,7 @@ def _effective_command(args: argparse.Namespace) -> str | None:
         return "doctor"
     if getattr(args, "cheat", False):
         return "cheat"
-    return None
+    return "chat"
 
 
 def _enforce_runtime_location(command: str | None) -> None:

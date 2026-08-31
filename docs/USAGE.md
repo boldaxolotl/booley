@@ -122,13 +122,14 @@ These steps begin on your normal computer:
    `.booley_project/booley.toml`:
 
    ```bash
-   booley chat
+   booley
    ```
 
    Booley opens either [Claude Code](https://code.claude.com/docs/en/quickstart)
    or [Codex](https://developers.openai.com/codex/cli), matching the Project's
-   `[agent].provider` setting. The command is an alias for the selected CLI: it
-   replaces itself with that CLI and leaves the terminal session native.
+   `[agent].provider` setting. Bare `booley` is the short form of `booley chat`;
+   both replace themselves with the selected CLI and leave the terminal session
+   native. Use `booley --help` to see the command reference instead.
 
    If you use the Claude Code VS Code extension instead, open its chat panel in
    this reloaded window; there is no CLI command to run. For Codex, Booley

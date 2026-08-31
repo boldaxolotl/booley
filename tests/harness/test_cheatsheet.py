@@ -158,9 +158,9 @@ class TestCheatCommand:
 
     def test_commands_include_configured_agent_chat(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
-        out = capsys.readouterr().out
-        assert "booley chat" in out
-        assert "configured Claude Code or Codex CLI" in out
+        out = " ".join(capsys.readouterr().out.split())
+        assert "booley Open the Project's configured Claude Code or Codex CLI" in out
+        assert "booley chat Explicit spelling of the default booley command" in out
 
     def test_board_flag_explains_review_without_partial_rework(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--board"]), Path.cwd()) == 0

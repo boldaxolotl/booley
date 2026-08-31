@@ -122,6 +122,15 @@ def test_chat_parser_and_dispatch_are_registered():
     assert "Open this Project's configured agent CLI" in parser.format_help()
 
 
+def test_bare_booley_defaults_to_chat():
+    parser = tlr._build_parser()
+
+    args = tlr._normalize_args(parser, parser.parse_args([]))
+
+    assert args.command == "chat"
+    assert "Run bare `booley`" in parser.format_help()
+
+
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
     from booley.harness import auto_doctor
 
@@ -365,8 +374,8 @@ class TestEffectiveCommand:
         assert tlr._effective_command(self._parse(["--doctor"])) == "doctor"
         assert tlr._effective_command(self._parse(["--cheat"])) == "cheat"
 
-    def test_no_command_returns_none(self):
-        assert tlr._effective_command(self._parse([])) is None
+    def test_no_command_defaults_to_chat(self):
+        assert tlr._effective_command(self._parse([])) == "chat"
 
 
 def test_prepare_review_board_parser():
