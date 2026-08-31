@@ -51,6 +51,13 @@ def _repository(tmp_path: Path) -> tuple[Path, str]:
     return repo, _commit(repo, "initial commit")
 
 
+def _bare_remote(tmp_path: Path) -> Path:
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "--bare")
+    return origin
+
+
 def _encoded_config() -> str:
     document = f'''[guard]
 allowed_authors = ["{SAFE_IDENT}"]
@@ -129,9 +136,7 @@ def test_clean_commit_passes(tmp_path: Path) -> None:
 
 def test_new_ref_does_not_rescan_history_already_on_destination(tmp_path: Path) -> None:
     repo, _initial = _repository(tmp_path)
-    origin = tmp_path / "origin.git"
-    origin.mkdir()
-    _git(origin, "init", "--bare")
+    origin = _bare_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(origin))
     (repo / "historical.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
     _commit(repo, "add historical fixture")
@@ -192,9 +197,7 @@ def test_new_ref_does_not_trust_history_reachable_only_from_another_remote(
     tmp_path: Path,
 ) -> None:
     repo, origin_head = _repository(tmp_path)
-    origin = tmp_path / "origin.git"
-    origin.mkdir()
-    _git(origin, "init", "--bare")
+    origin = _bare_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(origin))
     _git(repo, "push", "origin", f"{origin_head}:refs/heads/main")
     (repo / "private.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
@@ -218,9 +221,7 @@ def test_new_ref_does_not_trust_history_reachable_only_from_another_remote(
 
 def test_new_ref_to_empty_destination_scans_full_history(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
-    origin = tmp_path / "origin.git"
-    origin.mkdir()
-    _git(origin, "init", "--bare")
+    origin = _bare_remote(tmp_path)
     (repo / "payload.txt").write_text(f"contains {SENTINEL}\n", encoding="utf-8")
     head = _commit(repo, "add fixture")
 
