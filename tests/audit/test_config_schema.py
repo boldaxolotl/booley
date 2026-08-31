@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
+from booley.config.host_config import host_config_path
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -199,6 +200,17 @@ def test_retired_structural_controls_have_actionable_failures() -> None:
         "delete it and select the runtime with [agent].provider",
         "delete enabled and use max_attempts = 0 to disable",
     ]
+
+
+def test_retired_project_interactive_policy_names_host_replacement() -> None:
+    audit = project_schema.audit_interactive_table(
+        {"interactive": {"idle_timeout_seconds": 600, "max_sessions": 2}}
+    )
+    assert not audit.is_valid
+    finding = audit.findings[0]
+    assert "~/.config" not in finding.message  # the diagnostic uses the actionable absolute path
+    assert str(host_config_path()) in finding.message
+    assert "[interactive]\nidle_timeout_seconds = 600\nmax_sessions = 2" in finding.message
 
 
 def test_agent_audit_uses_authoritative_provider_and_auth_parsers() -> None:

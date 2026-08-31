@@ -27,6 +27,7 @@ tell the `/booley-feedback` skill in your agent chat. See
 
 Contents:
 
+- [Host configuration](#host-configuration-configtoml): global Interactive Mode policy
 - [booley.toml](#booleytoml): project identity, Flow selection, agent config
 - [Design description (`.core`) and tests (`tests.toml`)](#design-description-core-and-tests-teststoml)
 - [Cocotb Targets](#cocotb-targets-python-testbenches): Python testbenches, and
@@ -35,6 +36,31 @@ Contents:
 - [Doctor waivers](#doctor-waivers-doctor-waiverstoml): reviewed exceptions to
   actionable setup warnings
 - [Advanced setups](#advanced-setups): custom images and MCP tools, guides, hooks
+
+## Host configuration (`config.toml`)
+
+Optional global policy lives at `~/.config/booley/config.toml` (or beneath
+`$XDG_CONFIG_HOME/booley`). An absent file selects these defaults and is never
+created automatically:
+
+```toml
+[interactive]
+idle_timeout_seconds = 7200
+max_sessions = 4
+egress_allowlist = []
+```
+
+The file is user-owned: Booley reads it but never rewrites it. Parsing is
+strict. Unknown tables or keys, malformed TOML, wrong types, non-positive
+limits, and invalid egress entries stop Host Bootstrap before mutation. Egress
+entries are hostnames only; schemes, paths, ports, IP literals, and wildcards
+are rejected.
+
+This policy applies to the whole Docker daemon, not the current Project. The
+timeout and session cap cover all Booley Session Runtimes, and every extra
+egress hostname becomes reachable from every Project. The former Project
+`booley.toml [interactive]` policy fields are retired; init and Doctor print a
+concrete replacement for this host file and never adopt Project values.
 
 ## booley.toml
 
@@ -1668,9 +1694,9 @@ make -C sw/... RV_ISA=rv32im_zicsr    # CoreMark's variable name
 The right variable name is the project's own; grep its makefiles for `rv32i`.
 Keep the override at the call site (the `post-setup` hook).
 
-`booley init` owns this image like the base, building it if missing and
-rebuilding it when the base moves (see the table above for what it does with a
-name it doesn't recognise).
+Project Initialization owns this flavor image, building it if missing and
+rebuilding it when the Host Bootstrap-owned base moves (see the table above for
+what it does with a name it doesn't recognise).
 
 To build or refresh it by hand (this also rebuilds the base first):
 

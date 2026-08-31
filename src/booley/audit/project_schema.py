@@ -216,9 +216,22 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 
 def audit_interactive_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Reject the retired provider duplicate from the interactive table."""
-    interactive = as_dict(data.get("interactive"))
-    if interactive is None or "app" not in interactive:
+    """Reject policy that moved from Project config to host config."""
+    raw = data.get("interactive")
+    if raw is None:
+        return ConfigTableAudit()
+    interactive = as_dict(raw)
+    if interactive is None:
+        return failure(
+            "booley.toml [interactive] must be a table",
+            "delete it or move host policy to ~/.config/booley/config.toml",
+        )
+    from booley.config.host_config import retired_project_policy_message
+
+    migration = retired_project_policy_message(data)
+    if migration:
+        return failure(migration, migration)
+    if "app" not in interactive:
         return ConfigTableAudit()
     return failure(
         "booley.toml [interactive].app is retired",

@@ -7,8 +7,7 @@ host policy, project-specific intent, and third-party lifecycle behavior.
 With an agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;
 it uses this troubleshooting guide before improvising a fix and verifies both plain and deep
 Doctor before calling the project healthy.
-Run both `booley doctor` and `/booley-heal` after every Booley version update so
-version-related drift is found, repaired, and fully verified.
+If Booley reports that its version changed, invoke `/booley-heal`.
 
 For installation see the [README](https://github.com/boldaxolotl/Booley#installation), for project setup see
 [SETUP.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SETUP.md), for day-to-day driving see [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md), and for
@@ -55,21 +54,21 @@ lifecycle is a Booley bug; report it with the Doctor output and MCP log.
 
 ## A Booley skill name is occupied or points to an older installation
 
-`booley init` preserves skill entries it cannot prove are safe to manage. A
+`booley bootstrap` preserves skill entries it cannot prove are safe to manage. A
 live link whose complete skill tree matches the active package is accepted
 without mutation. To move that equivalent link—or a link already recorded as
-Booley-managed—to the active package, run `booley init --force`. The command
+Booley-managed—to the active package, run `booley bootstrap --force`. The command
 shows the current and requested targets before replacing the link. A link with
 different content remains a conflict even under `--force`.
 
 For other conflicts, inspect the named entry under `~/.agents/skills` or
 `~/.claude/skills`. Keep it under another name when it is yours; remove it when
-it is a dangling stale link, then rerun `booley init --seed`.
+it is a dangling stale link, then rerun `booley bootstrap`.
 
 Booley-managed links carry ownership metadata for later upgrades. A corrupt
 `.booley-skill-links.json` fails closed instead of deleting links. Preserve the
 file for diagnosis, repair or remove only the malformed metadata, and rerun
-`booley init`.
+`booley bootstrap`.
 
 ## An MCP tool is missing from `/mcp`
 

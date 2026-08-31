@@ -221,6 +221,18 @@ def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> 
     }
 
 
+def test_both_changelog_paths_are_release_inputs(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "CHANGELOG.md")
+    _write(repo, "src/booley/data/refs/CHANGELOG.md")
+    head = _commit(repo, "release history")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["release"] == "true"
+    assert _required(outputs) == set(_jobs(outputs)) | {"changes"}
+
+
 def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, ".github/workflows/example.yml")

@@ -50,6 +50,14 @@ class TestTroubleshootingPath:
         assert paths.faq_path() == paths.troubleshooting_path()
 
 
+class TestChangelogPath:
+    def test_returns_packaged_changelog(self):
+        result = paths.changelog_path()
+        assert result.name == "CHANGELOG.md"
+        assert result.parent == paths.refs_dir()
+        assert result.is_file()
+
+
 class TestDockerDataDir:
     def test_name_is_docker(self):
         result = paths.docker_data_dir()

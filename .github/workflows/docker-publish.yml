@@ -274,6 +274,9 @@ jobs:
       - name: Restore demo checkout ownership for initialization
         run: sudo chown -R "$(id -u):$(id -g)" demo
 
+      - name: Bootstrap reusable host resources as documented
+        run: booley bootstrap
+
       # Exercise the public quick start and reject warnings as well as errors.
       # Credentials are deliberately absent: this validation never contacts an
       # agent provider, but still records the demo's configured agent policy.

@@ -19,6 +19,7 @@ EXPECTED_ENTRY_POINTS = {
     "bwave": "booley.bwave.cli:main",
 }
 EXPECTED_RESOURCES = {
+    "booley/data/refs/CHANGELOG.md",
     "booley/data/docker/Dockerfile",
     "booley/data/docker/Dockerfile.base",
     "booley/data/docker/build.sh",

@@ -361,51 +361,6 @@ class TestGitConflictsAndDirty:
 
 
 # ---------------------------------------------------------------------------
-# _check_interactive_docker_objects — WARN branches (ADR 0018 objects)
-# ---------------------------------------------------------------------------
-
-
-class TestInteractiveDockerObjects:
-    def test_no_runtime_skips(self):
-        rec = _Rec()
-        doctor._check_interactive_docker_objects(None, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"skip"}
-
-    def test_everything_missing_warns_three_times(self, monkeypatch):
-        monkeypatch.setattr(doctor.idk, "network_exists", lambda *a, **k: False)
-        monkeypatch.setattr(doctor.idk, "container_running", lambda _name: False)
-        monkeypatch.setattr(doctor.idk, "container_exists", lambda _name: False)
-        rec = _Rec()
-        doctor._check_interactive_docker_objects("docker", rec.p, rec.w, rec.s)
-        warns = rec.warns()
-        assert rec.kinds() == {"warn"}
-        assert len(warns) == 3  # network + proxy + reaper
-        assert any("network missing" in w for w in warns)
-        assert sum("missing - run booley init" in w for w in warns) >= 2
-
-    def test_leaky_network_and_stopped_containers_warn(self, monkeypatch):
-        monkeypatch.setattr(doctor.idk, "network_exists", lambda *a, **k: True)
-        monkeypatch.setattr(doctor.idk, "network_is_internal", lambda *a, **k: False)
-        monkeypatch.setattr(doctor.idk, "network_is_host_isolated", lambda *a, **k: False)
-        monkeypatch.setattr(doctor.idk, "container_running", lambda _name: False)
-        monkeypatch.setattr(doctor.idk, "container_exists", lambda _name: True)
-        rec = _Rec()
-        doctor._check_interactive_docker_objects("docker", rec.p, rec.w, rec.s)
-        warns = rec.warns()
-        assert any("not both --internal and host-isolated" in w for w in warns)
-        assert sum("stopped" in w for w in warns) == 2
-
-    def test_healthy_objects_pass(self, monkeypatch):
-        monkeypatch.setattr(doctor.idk, "network_exists", lambda *a, **k: True)
-        monkeypatch.setattr(doctor.idk, "network_is_internal", lambda *a, **k: True)
-        monkeypatch.setattr(doctor.idk, "network_is_host_isolated", lambda *a, **k: True)
-        monkeypatch.setattr(doctor.idk, "container_running", lambda _name: True)
-        rec = _Rec()
-        doctor._check_interactive_docker_objects("docker", rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-
-
-# ---------------------------------------------------------------------------
 # _check_legacy_distribution — both FAIL branches (pre-rename `booley` dist)
 # ---------------------------------------------------------------------------
 
@@ -469,44 +424,6 @@ class TestLegacyDistribution:
         rec = _Rec()
         doctor._check_legacy_distribution(rec.p, rec.f)
         assert rec.kinds() == {"pass"}
-
-
-# ---------------------------------------------------------------------------
-# _check_skills — empty-but-present dir downgrades FAIL to WARN
-# ---------------------------------------------------------------------------
-
-
-class TestSkills:
-    def test_existing_dir_with_zero_subdirs_warns_not_fails(self, tmp_path, monkeypatch):
-        home = tmp_path / "home"
-        skills = home / doctor._SKILL_DIRS[0]
-        skills.mkdir(parents=True)
-        # A stray FILE must not count as a skill — only subdirectories do.
-        (skills / "README.md").write_text("not a skill\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", lambda: home)
-        rec = _Rec()
-        doctor._check_skills(rec.p, rec.w, rec.f)
-        assert rec.kinds() == {"warn"}  # downgraded: dir exists, just empty
-        assert "no skills in" in rec.warns()[0]
-
-    def test_no_skills_dir_at_all_fails(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-        rec = _Rec()
-        doctor._check_skills(rec.p, rec.w, rec.f)
-        assert rec.kinds() == {"fail"}
-        assert "no system-level skills directory" in rec.fails()[0]
-
-    # LATENT (documenting, not fixing): the loop RETURNS on the first existing
-    # dir, so an empty first-priority dir WARNs even when the second dir is
-    # fully populated — the populated one is never consulted.
-    def test_empty_first_dir_shadows_populated_second(self, tmp_path, monkeypatch):
-        home = tmp_path / "home"
-        (home / doctor._SKILL_DIRS[0]).mkdir(parents=True)  # empty
-        (home / doctor._SKILL_DIRS[1] / "my-skill").mkdir(parents=True)  # populated
-        monkeypatch.setattr(Path, "home", lambda: home)
-        rec = _Rec()
-        doctor._check_skills(rec.p, rec.w, rec.f)
-        assert rec.kinds() == {"warn"}  # current behavior: second dir ignored
 
 
 # ---------------------------------------------------------------------------

@@ -149,6 +149,19 @@ class TestDiscoverSkills:
         assert "doctor" in skill.description.lower()
         assert 'default_prompt: "Use $booley-heal' in metadata_text
 
+    def test_heal_skill_preserves_version_review_order_and_cas_gate(self):
+        skills = {skill.name: skill for skill in discover_skills(skills_dir())}
+        text = skills["booley-heal"].source_path.read_text(encoding="utf-8")
+
+        status = text.index("booley upgrade status --json")
+        first_doctor = text.index("Run plain `booley doctor`")
+        acknowledge = text.index("booley upgrade acknowledge --expected-target")
+        final_doctor = text.index("On success, run final plain `booley doctor`")
+
+        assert status < first_doctor < acknowledge < final_doctor
+        assert "missing target entry" in text
+        assert "leaves the pending state unchanged" in text
+
     def test_setup_doctor_skill_metadata_is_packaged(self):
         skills = {skill.name: skill for skill in discover_skills(skills_dir())}
         skill = skills["booley-setup"]

@@ -65,7 +65,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_docker",
             "_check_host_clock",
             "_check_legacy_distribution",
-            "_check_skills",
         }
     ),
     "_run_container_checks": frozenset(
@@ -84,7 +83,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
         {
             "_check_devcontainer_excludes",
             "_check_devcontainer_spec",
-            "_check_interactive_docker_objects",
             "_check_issued_session_runtime",
             "_check_interactive_logs_gitignore",
             "_check_interactive_logs_tracked",
@@ -126,6 +124,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_check_board_orphans",
             "_check_line_endings",
             "_check_stealth_cores",
+            "_check_upgrade_review",
             "_check_worktree_core_shadow_guard",
             "_check_worktree_prune_guard",
             "_run_host_checks",

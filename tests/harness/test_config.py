@@ -208,7 +208,7 @@ class TestInteractiveConfig:
     def test_defaults_when_no_toml(self, tmp_path):
         assert load_interactive_config(tmp_path) == InteractiveConfig()
 
-    def test_reads_values(self, tmp_path):
+    def test_project_values_are_not_adopted_as_host_policy(self, tmp_path):
         _write_toml(
             tmp_path,
             "[interactive]\n"
@@ -217,9 +217,7 @@ class TestInteractiveConfig:
             "egress_allowlist = ['ex.com', 'foo.test']\n",
         )
         cfg = load_interactive_config(tmp_path)
-        assert cfg.idle_timeout_seconds == 600
-        assert cfg.max_sessions == 2
-        assert cfg.egress_allowlist == ("ex.com", "foo.test")
+        assert cfg == InteractiveConfig()
 
     def test_rejects_nonpositive(self, tmp_path):
         _write_toml(tmp_path, "[interactive]\nidle_timeout_seconds = 0\nmax_sessions = -3\n")

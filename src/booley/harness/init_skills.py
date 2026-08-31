@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness.colors import bold_chrome
 from booley.harness.init_common import InitContext, err, info, ok, skip, warn
 from booley.runtime.skill_links import SkillLinkEvent, SkillLinkReport, reconcile_skill_links
+
+
+@dataclass(frozen=True, slots=True)
+class HostSkillReconciliation:
+    """One detected host skill target and its reconciliation result."""
+
+    target: Path
+    report: SkillLinkReport
 
 
 def _find_skill_targets() -> list[Path]:
@@ -26,6 +35,27 @@ def _find_skill_targets() -> list[Path]:
     if not targets:
         targets.append(agents_dir / "skills")
     return targets
+
+
+def reconcile_host_skills(
+    source: Path,
+    *,
+    dry_run: bool,
+    allow_retarget: bool,
+) -> tuple[HostSkillReconciliation, ...]:
+    """Reconcile packaged skills across every detected host agent directory."""
+    return tuple(
+        HostSkillReconciliation(
+            target,
+            reconcile_skill_links(
+                target,
+                source,
+                dry_run=dry_run,
+                allow_retarget=allow_retarget,
+            ),
+        )
+        for target in _find_skill_targets()
+    )
 
 
 def _render_event(event: SkillLinkEvent, *, verbose: bool, dry_run: bool) -> None:

@@ -78,10 +78,40 @@ class TestDueReason:
         _report(tmp_path, clean=False, checked_at=now - timedelta(hours=25))
         assert auto_doctor.due_reason(tmp_path, now=now) == "automatic Doctor result expired"
 
+    def test_upgrade_only_warning_uses_weekly_cadence(self, tmp_path: Path):
+        _project(tmp_path)
+        now = datetime.now(tz=UTC)
+        payload = _report(tmp_path, clean=False, checked_at=now - timedelta(days=2))
+        payload["counts"].update({"fail": 0, "warn": 1})
+        payload["findings"] = [
+            {
+                "severity": "warn",
+                "message": "release review pending",
+                "fix": "invoke heal",
+                "check_id": "upgrade.review-pending",
+                "subject": None,
+            }
+        ]
+        payload["finding_hash"] = auto_doctor._finding_hash(payload)
+        auto_doctor.report_path(tmp_path / ".booley_project").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+        assert auto_doctor.due_reason(tmp_path, now=now) is None
+
     def test_config_change_invalidates_result(self, tmp_path: Path):
         project_dir = _project(tmp_path)
         _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
         (project_dir / "booley.toml").write_text("[project]\nname = 'edited'\n", encoding="utf-8")
+
+        assert auto_doctor.due_reason(tmp_path) == "Doctor inputs changed"
+
+    def test_upgrade_review_state_change_invalidates_result(self, tmp_path: Path):
+        project_dir = _project(tmp_path)
+        _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
+        state = project_dir / "runtime" / "upgrade_review.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"schema": 1, "reviewed_through": "1.0.0"}), encoding="utf-8")
 
         assert auto_doctor.due_reason(tmp_path) == "Doctor inputs changed"
 

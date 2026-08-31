@@ -116,6 +116,7 @@ def _path_categories(path: str) -> set[str]:
         ".github/workflows/publish.yml",
         ".github/workflows/docker-publish.yml",
         "CHANGELOG.md",
+        "src/booley/data/refs/CHANGELOG.md",
     }:
         categories.add("release")
     return categories

@@ -52,8 +52,16 @@ from booley.fusesoc import (
     fusesoc_registry,
     selftest_overlay,
 )
+from booley.harness import bootstrap as host_bootstrap
 from booley.harness import devcontainer as dc
-from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk, session_runtime
+from booley.harness import (
+    doctor_stamp,
+    image_lifecycle,
+    nangate_pdk,
+    session_runtime,
+    upgrade_cli,
+    upgrade_review,
+)
 from booley.harness import interactive_docker as idk
 from booley.harness.colors import green, red, yellow
 from booley.harness.devcontainer import (
@@ -170,10 +178,6 @@ _TOOL_EXIT_DESIGN_FAIL = 1
 # source classification in :mod:`booley.audit.design_size`.
 _HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 _CONTAINER_CLI = "doc" + "ker"
-_SKILL_DIRS = (
-    Path("." + "ag" + "ents") / "skills",
-    Path("." + "cl" + "aude") / "skills",
-)
 # B-Wave is unconditionally required; enabled deterministic Flows are added below.
 _BASE_REQUIRED_MCP_TOOLS = frozenset({"bwave"})
 # Specialist MCP tools worth a heads-up when expected-but-absent from
@@ -595,6 +599,7 @@ def _run_project_phase(
     banner("Host checks")
     docker_exe = _run_host_checks(reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_)
     project_dir, project = _audit_project_setup(project_root, reporter)
+    _check_upgrade_review(project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -634,6 +639,22 @@ def _run_project_phase(
         repair=not read_only,
     )
     return docker_exe, project
+
+
+def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None:
+    """Observe the running version and render its durable review status."""
+    if project_dir is None:
+        return
+    status = upgrade_review.observe(project_dir)
+    presentation = upgrade_cli.status_presentation(status)
+    if presentation.doctor_check_id is None:
+        reporter.pass_(presentation.summary)
+        return
+    assert presentation.action is not None
+    _warning_sink(reporter.warn_, presentation.doctor_check_id)(
+        presentation.summary,
+        presentation.action,
+    )
 
 
 def _audit_project_setup(
@@ -789,17 +810,47 @@ def _run_host_checks(_pass: Check, _warn: Check, _skip: Check, _fail: Fail) -> s
     except ImportError:
         _fail("booley package not importable", "pip install booley-rtl")
 
-    # _check_docker SKIPs itself inside the Session Runtime (QA-3, ADR 0028).
-    docker_exe = _check_docker(_pass, _skip, _fail)
-
     from booley.runtime import runtime_context
+
+    if runtime_context.inside_session_runtime():
+        _skip("Host Bootstrap check skipped inside the Session Runtime")
+        docker_exe = _check_docker(_pass, _skip, _fail)
+    else:
+        bootstrap_result = host_bootstrap.reconcile_bootstrap(image_lifecycle.Intent.CHECK)
+        _render_bootstrap_findings(bootstrap_result, _pass, _warn, _fail)
+        docker_finding = next(
+            (finding for finding in bootstrap_result.findings if finding.resource == "docker"),
+            None,
+        )
+        docker_exe = (
+            shutil.which(_CONTAINER_CLI)
+            if docker_finding is not None
+            and docker_finding.state is host_bootstrap.BootstrapState.CURRENT
+            else None
+        )
 
     # The host-clock check is a host-only concern (sandbox image builds run on
     # the host); skip it in-container where there is nothing to build (F-5).
     if not runtime_context.inside_session_runtime():
         _check_host_clock(_pass, _warn, _skip)
-    _check_skills(_pass, _warn, _fail)
     return docker_exe
+
+
+def _render_bootstrap_findings(
+    result: host_bootstrap.BootstrapResult,
+    _pass: Check,
+    _warn: Check,
+    _fail: Fail,
+) -> None:
+    """Translate authoritative bootstrap facts into Doctor presentation."""
+    for finding in result.findings:
+        message = f"Host Bootstrap {finding.resource}: {finding.detail}"
+        if finding.state is host_bootstrap.BootstrapState.ERROR:
+            _fail(message, "booley bootstrap")
+        elif finding.state is host_bootstrap.BootstrapState.PENDING:
+            _warn(f"{message} — run booley bootstrap")
+        else:
+            _pass(message)
 
 
 def _check_legacy_distribution(_pass: Check, _fail: Fail) -> None:
@@ -1920,25 +1971,6 @@ def _run_developer_probe(
     _pass("developer backend live authorization check completed successfully")
 
 
-def _check_skills(_pass: Check, _warn: Check, _fail: Fail) -> None:
-    """Check system-level skills directory."""
-    _warn = _warning_sink(_warn, "host.skills-empty")
-    home = Path.home()
-    for skill_rel in _SKILL_DIRS:
-        skills_dir = home / skill_rel
-        if skills_dir.is_dir():
-            skills_count = sum(1 for d in skills_dir.iterdir() if d.is_dir())
-            if skills_count > 0:
-                _pass(f"{skills_count} skill(s) in {skills_dir}")
-            else:
-                _warn(f"no skills in {skills_dir}; rerun booley init if skills are needed")
-            return
-    _fail(
-        "no system-level skills directory found",
-        "booley init",
-    )
-
-
 def _booley_dockerfile() -> Path | None:
     """Locate the Booley sandbox Dockerfile shipped with the package."""
     try:
@@ -2159,7 +2191,10 @@ def _check_image_bakes_current_booley(
     if image not in (DOCKER_IMAGE, generated, *FLAVOR_IMAGES):
         return
     if project is not None:
-        result = image_lifecycle.reconcile(project.project_root, image_lifecycle.Intent.CHECK)
+        result = image_lifecycle.reconcile(
+            image_lifecycle.ProjectImageScope(project.project_root),
+            image_lifecycle.Intent.CHECK,
+        )
         if result.status is image_lifecycle.Status.STALE:
             _warn(
                 f"'{image}' bakes Booley sources that no longer match this "
@@ -2456,7 +2491,6 @@ def _run_mcp_checks(
     _check_interactive_logs_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
     _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
-    _check_interactive_docker_objects(docker_exe, reporter.pass_, reporter.warn_, reporter.skip_)
     _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
     _check_interactive_state_volumes(
         project, docker_exe, verbose, reporter.pass_, reporter.note_, reporter.skip_
@@ -3576,42 +3610,6 @@ def _check_wcp_server(
         _pass(description)
     else:
         _fail(f"{description}: nothing is listening in '{container}'", _WCP_RELOAD_FIX)
-
-
-def _check_interactive_docker_objects(
-    docker_exe: str | None,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-) -> None:
-    """ADR 0018: the long-lived egress network, proxy, and reaper are healthy."""
-    if not docker_exe:
-        _skip("interactive Docker objects check skipped - runtime unavailable")
-        return
-    if not idk.network_exists():
-        _warning_sink(_warn, "interactive.docker-object-unhealthy", subject=idk.EGRESS_NETWORK)(
-            f"{idk.EGRESS_NETWORK} network missing - run booley init"
-        )
-    elif idk.network_is_internal() and idk.network_is_host_isolated():
-        _pass(f"{idk.EGRESS_NETWORK} network present (--internal, host-isolated)")
-    else:
-        _warning_sink(_warn, "interactive.docker-object-unhealthy", subject=idk.EGRESS_NETWORK)(
-            f"{idk.EGRESS_NETWORK} is not both --internal and host-isolated; "
-            "network or host-service access may leak - stop Sessions, remove the "
-            "network and booley-proxy, then run booley init --force"
-        )
-
-    for name in (idk.PROXY_CONTAINER, idk.REAPER_CONTAINER):
-        if idk.container_running(name):
-            _pass(f"{name} running")
-        elif idk.container_exists(name):
-            _warning_sink(_warn, "interactive.docker-object-unhealthy", subject=name)(
-                f"{name} exists but is stopped - docker start {name}"
-            )
-        else:
-            _warning_sink(_warn, "interactive.docker-object-unhealthy", subject=name)(
-                f"{name} missing - run booley init"
-            )
 
 
 def _check_interactive_state_volumes(

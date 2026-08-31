@@ -10,14 +10,19 @@ from tests.conftest import require_symlinks
 
 
 def test_main_launches_automatic_doctor_after_server(monkeypatch, capsys):
+    events: list[str] = []
     monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
     monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
     monkeypatch.setattr(reg, "register", lambda _app: "claude:current")
-    monkeypatch.setattr(reg, "launch_auto_doctor", lambda: "started")
+    monkeypatch.setattr(reg, "observe_upgrade", lambda: events.append("observe") or "current")
+    monkeypatch.setattr(reg, "launch_auto_doctor", lambda: events.append("health") or "started")
 
     reg.main()
 
-    assert "server:started health:started claude:current" in capsys.readouterr().err
+    assert (
+        "server:started upgrade:current health:started claude:current" in capsys.readouterr().err
+    )
+    assert events == ["observe", "health"]
 
 
 # ===========================================================================

@@ -1,6 +1,6 @@
 ---
 name: booley-setup
-description: Set up a Booley project end-to-end after `pip install` + `booley init` — plan first (feasibility + decision grill → SETUP-PLAN.md, Step 0), then execute gate-free (config, AGENTS.md, doctor audit — Steps 2–4). Phase-detects from the plan file; also runs a single step on request, or `new` for a from-scratch (`init --scaffold`) project with a lightweight grill. Post-gate Step 5 optionally cross-checks Booley's results against the repo's native build system; Step 6 always reports the run's findings and offers, once, to send the Booley-side ones upstream.
+description: Perform design-aware Project Setup after Host Bootstrap and Project Initialization — plan first (feasibility + decision grill → SETUP-PLAN.md, Step 0), then execute gate-free (config, AGENTS.md, doctor audit — Steps 2–4). Phase-detects from the plan file; also runs a single step on request, or `new` for a from-scratch (`init --scaffold`) project with a lightweight grill. Post-gate Step 5 optionally cross-checks Booley's results against the repo's native build system; Step 6 always reports the run's findings and offers, once, to send the Booley-side ones upstream.
 ---
 
 # Booley setup (plan → execute, Steps 0–4, + optional parity)
@@ -8,11 +8,11 @@ description: Set up a Booley project end-to-end after `pip install` + `booley in
 This skill owns Booley setup from **Step 0 (plan)** through **Step 4 (doctor)**,
 plus an **optional post-gate Step 5 (parity)** for projects that want their
 Booley results cross-checked against the repo's native build system.
-The only parts that live outside it are the mechanical host prefix:
-prerequisites and `pip install booley-rtl` in Booley's
-[README](https://github.com/boldaxolotl/Booley#installation), then the first
-`booley init` in `docs/user/SETUP.md` (which is what deploys this skill).
-None of those steps involves a project decision.
+The parts outside it are installation and Host Bootstrap in Booley's
+[README](https://github.com/boldaxolotl/Booley#installation), followed by
+Project Initialization with `booley init` in `docs/user/SETUP.md`. Host
+Bootstrap deploys this skill; Project Initialization records the Project's
+agent provider and authentication policy before this design-aware work begins.
 
 The model is **plan-first**: Step 0 gathers feasibility evidence and every
 decision the later steps need, refines them in a grilling session, and writes

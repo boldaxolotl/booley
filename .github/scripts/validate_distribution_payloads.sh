@@ -18,6 +18,15 @@ fi
 sdist="${sdists[0]}"
 wheel="${wheels[0]}"
 
+if ! tar -tzf "${sdist}" | grep -E '/src/booley/data/refs/CHANGELOG\.md$' >/dev/null; then
+    echo "packaged changelog missing from source distribution" >&2
+    exit 1
+fi
+if ! unzip -Z1 "${wheel}" | grep -Fx 'booley/data/refs/CHANGELOG.md' >/dev/null; then
+    echo "packaged changelog missing from wheel" >&2
+    exit 1
+fi
+
 if tar -tzf "${sdist}" | grep -E '/src/booley/data/docker/pdk/'; then
     echo "Nangate payload found in source distribution" >&2
     exit 1

@@ -131,6 +131,34 @@ def test_bare_booley_defaults_to_chat():
     assert "Run bare `booley`" in parser.format_help()
 
 
+def test_bootstrap_parser_exposes_only_host_reconciliation_flags():
+    args = tlr._build_parser().parse_args(["bootstrap", "--check-only", "--verbose"])
+    assert args.command == "bootstrap"
+    assert args.check_only is True
+    assert args.verbose is True
+    assert not hasattr(args, "project_root")
+
+
+def test_bootstrap_parser_rejects_check_only_with_force(capsys):
+    with pytest.raises(SystemExit) as raised:
+        tlr._build_parser().parse_args(["bootstrap", "--check-only", "--force"])
+    assert raised.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
+    args = tlr._build_parser().parse_args(["bootstrap"])
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(tlr, "run_bootstrap", lambda _args: 17)
+    monkeypatch.setattr(
+        tlr,
+        "find_project_root",
+        lambda: (_ for _ in ()).throw(AssertionError("Project discovery must not run")),
+    )
+    assert tlr.main() == 17
+
+
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
     from booley.harness import auto_doctor
 
@@ -140,6 +168,26 @@ def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch,
     tlr._report_session_health(tmp_path)
 
     assert "Automatic Doctor is running" in capsys.readouterr().err
+
+
+def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch):
+    from booley.harness import auto_doctor, session_runtime
+
+    events: list[str] = []
+    monkeypatch.setattr(
+        tlr, "_report_upgrade_before_session", lambda _root: events.append("observe")
+    )
+    monkeypatch.setattr(session_runtime, "conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        session_runtime,
+        "up",
+        lambda *_args, **_kwargs: events.append("up") or "session",
+    )
+    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+    monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
+
+    assert tlr._session_up(tlr._build_parser().parse_args(["session", "up"]), tmp_path) == 0
+    assert events == ["observe", "up"]
 
 
 def test_due_session_start_does_not_report_persisted_doctor_findings(
@@ -395,7 +443,7 @@ class TestEnforceVenue:
         writes the host's ~/.config, neither of which exists in the sandbox.
         """
         assert {"run", "chat", "board"} == tlr._CONTAINER_ONLY_COMMANDS
-        assert {"init", "session", "auth", "eda"} == tlr._HOST_ONLY_COMMANDS
+        assert {"bootstrap", "init", "session", "auth", "eda"} == tlr._HOST_ONLY_COMMANDS
 
 
 class TestEffectiveCommand:

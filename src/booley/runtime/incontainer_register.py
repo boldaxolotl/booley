@@ -674,6 +674,20 @@ def launch_auto_doctor(project_root: Path | None = None) -> str:
         return "failed"
 
 
+def observe_upgrade(project_root: Path | None = None) -> str:
+    """Observe the in-container package version without blocking registration."""
+    try:
+        from booley.harness import upgrade_cli, upgrade_review
+        from booley.runtime.project_dir import resolve_project_dir
+
+        status = upgrade_review.observe(resolve_project_dir(project_root or Path.cwd()))
+        if status.condition is not upgrade_review.ReviewCondition.CURRENT:
+            print(f"warning: {upgrade_cli.render_status(status)}", file=sys.stderr)
+        return status.condition.value
+    except Exception:  # noqa: BLE001 — postStart upgrade advice is fail-soft
+        return "unavailable"
+
+
 def main() -> None:
     app = os.environ.get("BOOLEY_AGENT_APP", "none")
     # Server first, registration second: the entry should point at a live URL
@@ -681,9 +695,10 @@ def main() -> None:
     # agent app there is no client, so nothing to serve or register.
     server = "skipped" if app == "none" else ensure_http_server()
     status = register(app)
+    upgrade = observe_upgrade()
     health = launch_auto_doctor()
     print(
-        f"booley incontainer-register: server:{server} health:{health} {status}",
+        f"booley incontainer-register: server:{server} upgrade:{upgrade} health:{health} {status}",
         file=sys.stderr,
     )
 
