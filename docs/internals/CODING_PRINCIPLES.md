@@ -74,14 +74,13 @@ inputs) not just "something failed."
 
 ## Design
 
-### 8. One owner for each decision
+### 8. Keep related responsibilities together
 
-Each rule, default, state transition, and data conversion has one authoritative
-implementation. Other modules call it or derive projections from it. When two
-places would have to stay synchronized, introduce a shared owner before adding
-another copy.
+Code that changes for the same reason belongs together. Split a module when its
+parts change independently and the resulting interfaces become simpler—not
+merely because the module performs more than one operation.
 
-### 9. Dependencies point toward policy
+### 9. Keep domain policy independent of infrastructure
 
 Domain logic does not import CLI, UI, agent-SDK, process, or container adapters.
 Pass narrow data or behavior across those boundaries. Introduce an abstraction
