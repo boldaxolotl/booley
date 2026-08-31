@@ -219,6 +219,28 @@ _Avoid_: allowlist
 A signal that a decision exceeds the current authority level, flowing Specialist to Developer Agent to Human. When the Developer Agent escalates, the ticket moves to blocked on the Ticket Board.
 _Avoid_: spec gap, blocker, impediment
 
+### Coverage
+
+**Coverage Campaign**:
+The complete, indivisible Target-bound record of one coverage-enabled Simulation invocation, including test selection, collector facts and artifacts, normalized observations, dispositions, rollups, collection truth, and any Coverage Criterion evaluation. It may exist without a Coverage Criterion and never combines evidence across Targets.
+_Avoid_: coverage report, coverage run, cross-Target coverage
+
+**Coverage Criterion**:
+A composite Target-bound Criterion that evaluates one Coverage Campaign against an exact test selection and per-metric minimums using the Project's Approved Waiver Set. Its coverage truth is independent of the simulation verdicts recorded by the Campaign.
+_Avoid_: per-metric coverage criterion, waveform coverage criterion, coverage gate
+
+**Coverage Point**:
+The most-specific normalized measurement site in a Coverage Campaign, identified by metric, repository-relative source span, elaborated hierarchy or instance, metric-specific subject, and retained collector identity. A Coverage Point preserves per-run observations independently of whether it is eligible, waived, or unscored.
+_Avoid_: coverage line, waiver selector, rollup row
+
+**Coverage Waiver Approval**:
+A human-approved, Target-bound record that permits exactly one scored Coverage Point from one fingerprinted RTL source to be excluded from evaluation, with durable approval provenance and either an `excluded` reason or proof-backed `unreachable` reason. A Coverage Analyst's waiver candidate is not a Coverage Waiver Approval.
+_Avoid_: waiver candidate, exclusion pattern, analyst waiver
+
+**Approved Waiver Set**:
+The immutable, project-wide collection of validated Coverage Waiver Approvals loaded from one explicitly repository-anchored directory and consumed independently by each Target's Coverage Campaign evaluation. Invalid, stale, duplicate, or ambiguous evidence invalidates the whole set rather than partially changing Coverage Point dispositions.
+_Avoid_: waiver config, waiver filters, per-Target waiver file
+
 ### Waveform analysis
 
 **B-Wave**:

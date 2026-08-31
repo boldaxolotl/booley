@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PROTOTYPE — Coverage waiver resolution</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18201d;
+      --muted: #66706b;
+      --paper: #f5f3ed;
+      --card: #fffef9;
+      --line: #d7d5cc;
+      --accent: #176b5b;
+      --accent-soft: #dff0e9;
+      --warn: #90621c;
+      --warn-soft: #fff0cc;
+      --bad: #a33a32;
+      --bad-soft: #f8dfdc;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 15px/1.5 Inter, system-ui, sans-serif; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 36px auto 72px; }
+    h1, h2, h3 { line-height: 1.15; margin: 0; }
+    h1 { font-size: clamp(28px, 5vw, 48px); letter-spacing: -.035em; }
+    h2 { font-size: 20px; margin-bottom: 14px; }
+    h3 { font-size: 15px; margin-bottom: 10px; }
+    p { margin: 10px 0 0; }
+    code, pre { font-family: var(--mono); }
+    code { font-size: .88em; }
+    .eyebrow { color: var(--accent); font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
+    .intro { max-width: 900px; font-size: 17px; }
+    .notice { margin-top: 18px; padding: 13px 16px; border-left: 4px solid var(--warn); background: var(--warn-soft); }
+    .grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; margin-top: 22px; }
+    .card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 20px; box-shadow: 0 8px 30px rgba(26, 37, 32, .05); }
+    .span { grid-column: 1 / -1; }
+    .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .fact { margin: 0; padding: 12px; background: #f7f7f2; border-radius: 8px; min-width: 0; }
+    .fact.wide { grid-column: 1 / -1; }
+    dt { color: var(--muted); font-size: 12px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+    dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+    .good { color: var(--accent); font-weight: 800; }
+    .warn { color: var(--warn); font-weight: 800; }
+    .bad { color: var(--bad); font-weight: 800; }
+    .muted { color: var(--muted); }
+    button { border: 1px solid var(--line); border-radius: 8px; background: white; color: var(--ink); padding: 9px 12px; cursor: pointer; font: inherit; text-align: left; }
+    button:hover { border-color: var(--accent); }
+    button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    button.danger { color: var(--bad); }
+    button:disabled { cursor: default; opacity: .5; }
+    .actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .finding { border-left: 4px solid var(--line); padding: 10px 12px; margin-top: 8px; background: #f7f7f2; }
+    .finding.error { border-color: var(--bad); background: var(--bad-soft); }
+    .finding.ok { border-color: var(--accent); background: var(--accent-soft); }
+    .tabs { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 16px; }
+    .tabs button[aria-selected="true"] { background: var(--ink); border-color: var(--ink); color: white; }
+    .scenario-copy { min-height: 68px; }
+    .steps { margin-top: 16px; display: grid; gap: 8px; }
+    .step { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; padding: 9px; }
+    .step.current { border-color: var(--accent); background: var(--accent-soft); }
+    .step.done { opacity: .62; }
+    .step-number { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 50%; background: var(--ink); color: white; font-weight: 800; }
+    pre { max-height: 500px; overflow: auto; border-radius: 8px; background: #17201d; color: #e9f1ed; padding: 16px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .interface { padding: 13px; background: #edf3f0; border-radius: 8px; font-family: var(--mono); font-size: 13px; white-space: pre-wrap; }
+    ul { margin: 7px 0 0; padding-left: 20px; }
+    @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } .span { grid-column: auto; } }
+    @media (max-width: 560px) { .facts, .actions { grid-template-columns: 1fr; } .fact.wide { grid-column: auto; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">Throwaway decision prototype</div>
+  <h1>Approved coverage waivers</h1>
+  <p class="intro">Question: does an exact, Target-bound approval record plus strict repository anchoring make waiver application safe and understandable across source edits, multiple Targets, analyst suggestions, and malformed policy?</p>
+  <div class="notice"><strong>Nothing here is production code.</strong> The proposed rule is fail-closed and transactional: if any applicable approval is invalid, stale, duplicate, or ambiguous, no waiver changes any point and coverage evaluation is blocked.</div>
+
+  <section class="grid">
+    <article class="card span">
+      <h2>Guided walkthroughs</h2>
+      <div id="tabs" class="tabs" role="tablist"></div>
+      <div class="scenario-copy">
+        <p id="scenario-intro"></p>
+        <p id="scenario-verdict" class="muted"></p>
+      </div>
+      <div id="steps" class="steps"></div>
+    </article>
+
+    <article class="card">
+      <h2>Current resolved state</h2>
+      <div id="facts" class="facts"></div>
+    </article>
+
+    <article class="card">
+      <h2>Free play</h2>
+      <div id="actions" class="actions"></div>
+    </article>
+
+    <article class="card">
+      <h2>Diagnostics</h2>
+      <div id="findings"></div>
+    </article>
+
+    <article class="card">
+      <h2>Proposed module seam</h2>
+      <div class="interface">load_approved_waiver_set(
+    config: CoverageWaiverConfig | None,
+    roots: CoverageRepositoryRoots,
+    known_targets: Collection[TargetIdentity],
+) -&gt; ApprovedWaiverSet</div>
+      <p>The caller supplies the exact RTL checkout root and the directory returned by <code>resolve_project_dir()</code>. The loader never guesses one root from the other. <code>ApprovedWaiverSet</code> owns exact matching; the pure evaluator consumes it without filesystem access.</p>
+    </article>
+
+    <article class="card">
+      <h2>Approval file</h2>
+      <p class="muted">Proposed TOML. One file at <code>&lt;waiver directory&gt;/&lt;RTL source path&gt;.toml</code> corresponds to exactly one repository-relative RTL source.</p>
+      <pre id="toml"></pre>
+    </article>
+
+    <article class="card">
+      <h2>Immutable set projection</h2>
+      <p class="muted">The digest covers the version, canonical configuration, sorted file paths, exact raw-file fingerprints, source fingerprints, and canonical records.</p>
+      <pre id="projection"></pre>
+    </article>
+  </section>
+</main>
+
+<script>
+// Portable prototype logic. No DOM references occur inside this module.
+const CoverageWaiverModel = (() => {
+  const TARGET = "acme:demo:counter:1.0#sim_default";
+  const OTHER_TARGET = "acme:demo:counter:1.0#sim_wide";
+  const SOURCE = "rtl/counter.sv";
+  const SOURCE_SHA = "sha256:7f5990f7d05616c4b625f42e3ea965c963c8d80e76c68117554f0bd7b89e4664";
+  const POINT = "cp1:toggle|rtl/counter.sv:31:3-31:10|tb.dut.count[7]|0_to_1|vlt:toggle:44";
+  const OTHER_POINT = "cp1:branch|rtl/counter.sv:24:3-27:6|tb.dut|else|vlt:branch:18";
+
+  function clone(value) { return JSON.parse(JSON.stringify(value)); }
+  function canonical(value) {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+    return JSON.stringify(value);
+  }
+  async function sha256(value) {
+    const bytes = new TextEncoder().encode(value);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return "sha256:" + [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+  function safeRelativePosix(path) {
+    if (typeof path !== "string" || !path || path.startsWith("/") || path.includes("\\") || path.includes("\0") || path.normalize("NFC") !== path) return false;
+    return path.split("/").every(part => part && part !== "." && part !== "..");
+  }
+  function diagnostic(code, message) { return {code, message}; }
+  function baseState() {
+    return {
+      config: {enabled: true, anchor: "rtl_repository", directory: "coverage-waivers"},
+      roots: {rtl_repository: "/work/rtl", project_data_repository: "/booley-project"},
+      knownTargets: [TARGET, OTHER_TARGET],
+      directorySymlink: false,
+      candidateInsideApprovalDirectory: false,
+      files: [{
+        path: `${SOURCE}.toml`,
+        source: SOURCE,
+        source_sha256: SOURCE_SHA,
+        current_source_sha256: SOURCE_SHA,
+        symlink: false,
+        formatting_revision: 0,
+        approvals: [{
+          id: "counter-unused-rising-bit7",
+          target: TARGET,
+          point_id: POINT,
+          reason: "excluded",
+          justification: "Bit 7 is reserved in this configuration and intentionally held low.",
+          approved_by: "verification-owner@example.test",
+          approved_at: "2026-08-31T09:00:00Z",
+          approval_ref: "review:CR-1042"
+        }]
+      }],
+      campaign: {
+        target: TARGET,
+        normalization: "complete",
+        points: [
+          {id: POINT, source: SOURCE, scoring: "scored_v1", disposition: "eligible", hits: 0},
+          {id: OTHER_POINT, source: SOURCE, scoring: "scored_v1", disposition: "eligible", hits: 6}
+        ]
+      }
+    };
+  }
+  function renderToml(file) {
+    const rows = [
+      'schema = "booley.coverage-waivers/v1"',
+      `source = ${JSON.stringify(file.source)}`,
+      `source_sha256 = ${JSON.stringify(file.source_sha256)}`,
+      ""
+    ];
+    file.approvals.forEach(record => {
+      rows.push("[[approval]]");
+      ["id", "target", "point_id", "reason", "justification", "approved_by", "approved_at", "approval_ref"].forEach(key => {
+        if (record[key] !== undefined) rows.push(`${key} = ${JSON.stringify(record[key])}`);
+      });
+      if (record.proof) {
+        rows.push("[approval.proof]");
+        ["kind", "reference", "sha256"].forEach(key => {
+          if (record.proof[key] !== undefined) rows.push(`${key} = ${JSON.stringify(record.proof[key])}`);
+        });
+      }
+      rows.push("");
+    });
+    if (file.formatting_revision) rows.unshift("# Reviewed formatting-only edit; semantics unchanged.");
+    return rows.join("\n");
+  }
+  async function resolve(input) {
+    const state = clone(input);
+    const diagnostics = [];
+    const matched = [];
+    const waivedPoints = [];
+
+    if (!state.config.enabled) {
+      const projection = {schema: "booley.approved-waiver-set/v1", config: {enabled: false}, files: []};
+      return {valid: true, status: "EMPTY", root: null, files: [], diagnostics, matched, waivedPoints, projection, digest: await sha256(canonical(projection))};
+    }
+    if (!["rtl_repository", "project_data_repository"].includes(state.config.anchor)) diagnostics.push(diagnostic("COV_WAIVER_ANCHOR_INVALID", "Anchor must name exactly one supplied repository root."));
+    if (!safeRelativePosix(state.config.directory)) diagnostics.push(diagnostic("COV_WAIVER_DIRECTORY_UNSAFE", "Directory must be a normalized relative POSIX path without dot segments or backslashes."));
+    if (state.directorySymlink) diagnostics.push(diagnostic("COV_WAIVER_DIRECTORY_SYMLINK", "No directory component beneath the selected root may be a symlink."));
+    if (state.candidateInsideApprovalDirectory) diagnostics.push(diagnostic("COV_WAIVER_CANDIDATE_FORBIDDEN", "Analyst waiver_candidate output is report-only and cannot appear in the approved directory."));
+
+    const root = state.roots[state.config.anchor];
+    const loadedFiles = [];
+    for (const file of state.files) {
+      const expected = `${file.source}.toml`;
+      if (!safeRelativePosix(file.path) || !safeRelativePosix(file.source)) diagnostics.push(diagnostic("COV_WAIVER_PATH_UNSAFE", `${file.path} or its source path is unsafe.`));
+      if (file.path !== expected) diagnostics.push(diagnostic("COV_WAIVER_SOURCE_FILE_MISMATCH", `${file.path} must equal ${expected}; one approval file corresponds to one RTL source.`));
+      if (file.symlink) diagnostics.push(diagnostic("COV_WAIVER_FILE_SYMLINK", `${file.path} is a symlink; approval files must be regular files opened without following links.`));
+      if (file.source_sha256 !== file.current_source_sha256) diagnostics.push(diagnostic("COV_WAIVER_SOURCE_STALE", `${file.source} changed since approval; every approval in its file is stale.`));
+      const raw = renderToml(file);
+      const fileSha = await sha256(raw);
+      const approvals = [...file.approvals].sort((a, b) => canonical([a.target, a.point_id, a.id]).localeCompare(canonical([b.target, b.point_id, b.id])));
+      loadedFiles.push({path: file.path, source: file.source, source_sha256: file.source_sha256, file_sha256: fileSha, approvals});
+      for (const record of approvals) {
+        if (!record.id || !record.target || !record.point_id || !record.justification || !record.approved_by || !record.approved_at || !record.approval_ref) diagnostics.push(diagnostic("COV_WAIVER_RECORD_INCOMPLETE", `${file.path} contains an incomplete approval record.`));
+        if (!state.knownTargets.includes(record.target)) diagnostics.push(diagnostic("COV_WAIVER_TARGET_UNKNOWN", `${record.id} names an unknown durable Target identity.`));
+        if (!["excluded", "unreachable"].includes(record.reason)) diagnostics.push(diagnostic("COV_WAIVER_REASON_INVALID", `${record.id} must use excluded or unreachable.`));
+        if (record.reason === "unreachable" && (!record.proof?.kind || !record.proof?.reference || !/^sha256:[0-9a-f]{64}$/.test(record.proof?.sha256 || ""))) diagnostics.push(diagnostic("COV_WAIVER_PROOF_REQUIRED", `${record.id} is unreachable but lacks a complete proof reference and digest.`));
+        if (record.reason === "excluded" && record.proof) diagnostics.push(diagnostic("COV_WAIVER_PROOF_UNEXPECTED", `${record.id} is excluded; proof is reserved for unreachable approvals.`));
+        if (!record.point_id.startsWith("cp1:")) diagnostics.push(diagnostic("COV_WAIVER_BINDING_NOT_EXACT", `${record.id} must bind the full canonical cp1 point id; patterns and partial selectors are forbidden.`));
+      }
+    }
+    const sources = new Map();
+    loadedFiles.forEach(file => sources.set(file.source, (sources.get(file.source) || 0) + 1));
+    [...sources].filter(([, count]) => count > 1).forEach(([source]) => diagnostics.push(diagnostic("COV_WAIVER_SOURCE_DUPLICATE", `More than one approval file claims ${source}.`)));
+    const bindings = new Map();
+    loadedFiles.flatMap(file => file.approvals.map(record => ({file, record}))).forEach(item => {
+      const key = canonical([item.record.target, item.record.point_id]);
+      bindings.set(key, [...(bindings.get(key) || []), item]);
+    });
+    [...bindings].filter(([, items]) => items.length > 1).forEach(([, items]) => diagnostics.push(diagnostic("COV_WAIVER_BINDING_DUPLICATE", `${items.length} approvals bind the same Target and exact point.`)));
+
+    const projection = {
+      schema: "booley.approved-waiver-set/v1",
+      config: {anchor: state.config.anchor, directory: state.config.directory},
+      files: loadedFiles.sort((a, b) => a.path.localeCompare(b.path))
+    };
+    const digest = await sha256(canonical(projection));
+    if (state.campaign.normalization === "complete") {
+      for (const file of loadedFiles) {
+        for (const record of file.approvals.filter(item => item.target === state.campaign.target)) {
+          const candidates = state.campaign.points.filter(point => point.id === record.point_id);
+          if (!candidates.length) diagnostics.push(diagnostic("COV_WAIVER_POINT_STALE", `${record.id} no longer matches a point in its Target Campaign.`));
+          if (candidates.length > 1) diagnostics.push(diagnostic("COV_WAIVER_MATCH_AMBIGUOUS", `${record.id} matches more than one normalized point.`));
+          if (candidates.length === 1 && candidates[0].source !== file.source) diagnostics.push(diagnostic("COV_WAIVER_POINT_SOURCE_MISMATCH", `${record.id} matched a point owned by a different RTL source.`));
+          if (candidates.length === 1 && candidates[0].scoring !== "scored_v1") diagnostics.push(diagnostic("COV_WAIVER_POINT_UNSCORABLE", `${record.id} matched a reported-only point that cannot be waived.`));
+          if (candidates.length === 1) matched.push({waiver_id: record.id, point_id: candidates[0].id, reason: record.reason, file: file.path, file_sha256: file.file_sha256});
+        }
+      }
+    }
+    if (!diagnostics.length) matched.forEach(item => waivedPoints.push(item.point_id));
+    return {valid: diagnostics.length === 0, status: diagnostics.length ? "BLOCKED — APPLY NONE" : "READY", root, files: loadedFiles, diagnostics, matched, waivedPoints, projection, digest};
+  }
+  function reduce(input, action) {
+    const state = clone(input);
+    const file = state.files[0];
+    switch (action.type) {
+      case "RESET": return baseState();
+      case "DISABLE": state.config.enabled = false; break;
+      case "ANCHOR_PROJECT": state.config.anchor = "project_data_repository"; break;
+      case "ANCHOR_RTL": state.config.anchor = "rtl_repository"; break;
+      case "UNSAFE_DIRECTORY": state.config.directory = "../outside"; break;
+      case "DIRECTORY_SYMLINK": state.directorySymlink = true; break;
+      case "FILE_SYMLINK": file.symlink = true; break;
+      case "SOURCE_EDIT": file.current_source_sha256 = "sha256:" + "1".repeat(64); break;
+      case "POINT_DRIFT": state.campaign.points[0].id = state.campaign.points[0].id.replace("31:3", "32:3"); break;
+      case "DUPLICATE_BINDING": file.approvals.push({...clone(file.approvals[0]), id: "second-approval-same-point", approval_ref: "review:CR-1043"}); break;
+      case "DUPLICATE_SOURCE_FILE": state.files.push({...clone(file), path: `copies/${SOURCE}.toml`}); break;
+      case "BROAD_SELECTOR": file.approvals[0].point_id = "toggle:rtl/counter.sv:*"; break;
+      case "CANDIDATE": state.candidateInsideApprovalDirectory = true; break;
+      case "UNREACHABLE": file.approvals[0].reason = "unreachable"; file.approvals[0].justification = "This branch is unreachable for all legal parameter values."; break;
+      case "ADD_PROOF": file.approvals[0].proof = {kind: "formal", reference: "proofs/counter-unused-bit7.sby#cover_17", sha256: "sha256:" + "a".repeat(64)}; break;
+      case "FORMAT_EDIT": file.formatting_revision += 1; break;
+      case "OTHER_TARGET": state.campaign.target = OTHER_TARGET; break;
+      case "UNKNOWN_TARGET": file.approvals[0].target = "acme:demo:retired:1.0#sim_old"; break;
+    }
+    return state;
+  }
+  return {TARGET, OTHER_TARGET, baseState, renderToml, resolve, reduce};
+})();
+
+const actionDefinitions = [
+  ["Reset approved example", {type: "RESET"}, "primary"],
+  ["Omit waiver configuration", {type: "DISABLE"}],
+  ["Anchor at RTL repository", {type: "ANCHOR_RTL"}],
+  ["Anchor at project-data repository", {type: "ANCHOR_PROJECT"}],
+  ["Use ../ in configured directory", {type: "UNSAFE_DIRECTORY"}, "danger"],
+  ["Make directory a symlink", {type: "DIRECTORY_SYMLINK"}, "danger"],
+  ["Make waiver file a symlink", {type: "FILE_SYMLINK"}, "danger"],
+  ["Edit the RTL source", {type: "SOURCE_EDIT"}, "danger"],
+  ["Drift the normalized point", {type: "POINT_DRIFT"}, "danger"],
+  ["Add duplicate point approval", {type: "DUPLICATE_BINDING"}, "danger"],
+  ["Add second file for source", {type: "DUPLICATE_SOURCE_FILE"}, "danger"],
+  ["Replace point id with wildcard", {type: "BROAD_SELECTOR"}, "danger"],
+  ["Copy analyst candidate inside", {type: "CANDIDATE"}, "danger"],
+  ["Change reason to unreachable", {type: "UNREACHABLE"}],
+  ["Attach formal proof", {type: "ADD_PROOF"}],
+  ["Make formatting-only edit", {type: "FORMAT_EDIT"}],
+  ["Evaluate the other Target", {type: "OTHER_TARGET"}],
+  ["Bind a retired Target", {type: "UNKNOWN_TARGET"}, "danger"]
+];
+
+const scenarios = [
+  {
+    name: "Exact approval",
+    intro: "Start with one uncovered directional toggle point and one reviewed excluded approval bound to its durable Target identity and full canonical point id.",
+    verdict: "Expected: the set is READY, exactly one point becomes waived, and its record/file provenance is retained.",
+    steps: [["Reset to the reviewed approval", {type: "RESET"}]]
+  },
+  {
+    name: "Two repository roots",
+    intro: "The same safe relative directory can live under either explicit repository root. No parent-directory inference is allowed.",
+    verdict: "Expected: the resolved absolute location and set digest change with the explicit anchor; point matching does not.",
+    steps: [["Reset", {type: "RESET"}], ["Resolve beneath project data", {type: "ANCHOR_PROJECT"}], ["Resolve beneath RTL", {type: "ANCHOR_RTL"}]]
+  },
+  {
+    name: "Stale means blocked",
+    intro: "First change the source bytes without renewing approval; then separately move the normalized point identity. Both are stale evidence.",
+    verdict: "Expected: either condition blocks the whole set and applies no waivers; there is no partial success or fuzzy fallback.",
+    steps: [["Reset", {type: "RESET"}], ["Edit the approved RTL source", {type: "SOURCE_EDIT"}], ["Reset again", {type: "RESET"}], ["Drift the point span", {type: "POINT_DRIFT"}]]
+  },
+  {
+    name: "No fuzzy matching",
+    intro: "Try a wildcard selector, then duplicate the exact Target+point binding. The proposal deliberately makes ambiguity unrepresentable in valid policy.",
+    verdict: "Expected: wildcard binding and duplicate binding both block before evaluation; zero points are waived.",
+    steps: [["Reset", {type: "RESET"}], ["Use a broad selector", {type: "BROAD_SELECTOR"}], ["Reset again", {type: "RESET"}], ["Duplicate exact binding", {type: "DUPLICATE_BINDING"}]]
+  },
+  {
+    name: "Unreachable needs proof",
+    intro: "An unreachable reason is stronger than an intentional exclusion, so it requires a durable proof reference plus digest.",
+    verdict: "Expected: changing only the reason blocks; adding proof restores READY without changing the normalized waived disposition.",
+    steps: [["Reset", {type: "RESET"}], ["Declare unreachable", {type: "UNREACHABLE"}], ["Attach formal proof", {type: "ADD_PROOF"}]]
+  },
+  {
+    name: "Candidates never approve",
+    intro: "The Coverage Analyst may propose waiver_candidate records in its report, but the approved directory accepts only the reviewed V1 approval schema.",
+    verdict: "Expected: placing candidate output in the approval directory blocks loading rather than silently promoting or ignoring it.",
+    steps: [["Reset", {type: "RESET"}], ["Copy an analyst candidate into approvals", {type: "CANDIDATE"}]]
+  },
+  {
+    name: "Target separation",
+    intro: "One project-wide set may carry records for many Targets, but a record is applicable only to its exact durable Target identity.",
+    verdict: "Expected: evaluating the other Target stays READY and applies zero waivers; binding an unknown retired Target makes the project-wide set invalid.",
+    steps: [["Reset", {type: "RESET"}], ["Evaluate the other Target", {type: "OTHER_TARGET"}], ["Bind the record to a retired Target", {type: "UNKNOWN_TARGET"}]]
+  },
+  {
+    name: "Exact provenance",
+    intro: "A formatting-only edit changes the raw approval-file fingerprint even though canonical record semantics are unchanged.",
+    verdict: "Expected: matching stays READY, while both the file fingerprint and project-wide set digest change so persisted evaluation evidence names exact reviewed bytes.",
+    steps: [["Reset", {type: "RESET"}], ["Make a reviewed formatting-only edit", {type: "FORMAT_EDIT"}]]
+  }
+];
+
+let state = CoverageWaiverModel.baseState();
+let activeScenario = 0;
+let scenarioStep = 0;
+let renderGeneration = 0;
+
+function esc(value) { return String(value).replace(/[&<>\"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[char])); }
+function short(value) { return value ? `${value.slice(0, 18)}…${value.slice(-8)}` : "—"; }
+async function render() {
+  const generation = ++renderGeneration;
+  const result = await CoverageWaiverModel.resolve(state);
+  if (generation !== renderGeneration) return;
+  const waived = state.campaign.points.filter(point => result.waivedPoints.includes(point.id));
+  document.getElementById("facts").innerHTML = `
+    <dl class="fact"><dt>ApprovedWaiverSet</dt><dd class="${result.valid ? "good" : "bad"}">${esc(result.status)}</dd></dl>
+    <dl class="fact"><dt>Waived points</dt><dd class="${waived.length ? "good" : "warn"}">${waived.length}</dd></dl>
+    <dl class="fact wide"><dt>Selected anchor</dt><dd>${esc(state.config.enabled ? state.config.anchor : "configuration omitted")}</dd></dl>
+    <dl class="fact wide"><dt>Resolved directory</dt><dd><code>${esc(result.root ? `${result.root}/${state.config.directory}` : "not scanned")}</code></dd></dl>
+    <dl class="fact wide"><dt>Campaign Target</dt><dd><code>${esc(state.campaign.target)}</code></dd></dl>
+    <dl class="fact wide"><dt>Set digest</dt><dd><code title="${esc(result.digest)}">${esc(short(result.digest))}</code></dd></dl>
+    <dl class="fact wide"><dt>Matched approval provenance</dt><dd>${result.matched.length ? result.matched.map(item => `<code>${esc(item.waiver_id)}</code> · ${esc(item.reason)} · <code title="${esc(item.file_sha256)}">${esc(item.file)} @ ${esc(short(item.file_sha256))}</code>`).join("<br>") : '<span class="muted">none applicable</span>'}</dd></dl>`;
+  document.getElementById("findings").innerHTML = result.diagnostics.length
+    ? result.diagnostics.map(item => `<div class="finding error"><strong>${esc(item.code)}</strong><br>${esc(item.message)}</div>`).join("")
+    : '<div class="finding ok"><strong>No waiver-policy diagnostics.</strong><br>The immutable set may be consumed by deterministic coverage evaluation.</div>';
+  document.getElementById("toml").textContent = state.config.enabled ? state.files.map(CoverageWaiverModel.renderToml).join("\n") : "# [coverage.waivers] omitted\n# ApprovedWaiverSet is empty; the directory is not scanned.";
+  document.getElementById("projection").textContent = JSON.stringify({...result.projection, digest: result.digest}, null, 2);
+}
+async function dispatch(action) { state = CoverageWaiverModel.reduce(state, action); await render(); }
+function renderActions() {
+  const root = document.getElementById("actions");
+  actionDefinitions.forEach(([label, action, style]) => {
+    const button = document.createElement("button");
+    button.textContent = label;
+    if (style) button.className = style;
+    button.addEventListener("click", () => dispatch(action));
+    root.appendChild(button);
+  });
+}
+async function startScenario(index) {
+  activeScenario = index;
+  scenarioStep = 0;
+  state = CoverageWaiverModel.baseState();
+  renderScenarios();
+  await render();
+}
+async function takeStep(index) {
+  if (index !== scenarioStep) return;
+  await dispatch(scenarios[activeScenario].steps[index][1]);
+  scenarioStep += 1;
+  renderScenarios();
+}
+function renderScenarios() {
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  scenarios.forEach((scenario, index) => {
+    const button = document.createElement("button");
+    button.textContent = scenario.name;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(index === activeScenario));
+    button.addEventListener("click", () => startScenario(index));
+    tabs.appendChild(button);
+  });
+  const scenario = scenarios[activeScenario];
+  document.getElementById("scenario-intro").textContent = scenario.intro;
+  document.getElementById("scenario-verdict").textContent = scenario.verdict;
+  const steps = document.getElementById("steps");
+  steps.innerHTML = "";
+  scenario.steps.forEach(([label], index) => {
+    const row = document.createElement("div");
+    row.className = `step ${index < scenarioStep ? "done" : index === scenarioStep ? "current" : ""}`;
+    row.innerHTML = `<span class="step-number">${index + 1}</span><span>${esc(label)}</span>`;
+    const button = document.createElement("button");
+    button.textContent = index < scenarioStep ? "Done" : "Run step";
+    button.disabled = index !== scenarioStep;
+    button.addEventListener("click", () => takeStep(index));
+    row.appendChild(button);
+    steps.appendChild(row);
+  });
+}
+
+renderActions();
+startScenario(0);
+</script>
+</body>
+</html>
