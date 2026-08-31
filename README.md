@@ -112,6 +112,7 @@ Support for additional commercial EDA tools is coming soon; see the
 
 ## Limitations
 
+- **The IDE shell is stock VS Code today.** Booley brings its agent chat, reproducible environment, EDA Flows, and waveform tooling together inside VS Code; it does not yet ship custom editor chrome or a standalone IDE. Native VS Code UI and, longer term, a VS Code fork are planned ([roadmap](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#native-ide-surface-in-vs-code)).
 - **Booley will not design hardware for you.** You design the architecture and write the specs; Booley handles the grunt work. Force multiplier, not replacement.
 - **You need prior digital design experience.** Even the most advanced LLM is useless without electronic engineering fundamentals; Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.
 - **Source languages are SystemVerilog and Verilog only.** VHDL is not supported.
