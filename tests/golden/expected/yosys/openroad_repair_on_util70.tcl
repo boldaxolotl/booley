@@ -9,7 +9,7 @@ puts "BOOLEY_STAGE: floorplan"
 initialize_floorplan -utilization 70.000 -aspect_ratio 1.0 -core_space 2.0 \
   -site FreePDK45_38x28_10R_NP_162NW_34O
 make_tracks
-remove_buffers
+remove_buffers [get_cells *]
 source {/opt/pdk/nangate45/Nangate45.rc}
 set_wire_rc -signal -layer metal3
 set_wire_rc -clock -layer metal6

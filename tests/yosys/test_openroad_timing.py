@@ -102,6 +102,9 @@ class TestWriteScript:
         # make_tracks is mandatory — the vendored tech LEF ships no TRACKS, so
         # without it place_pins dies with PPL-0021 (regression guard).
         assert "make_tracks" in text
+        # Select the intended whole flat netlist explicitly. OpenROAD changed
+        # the meaning of a no-argument remove_buffers call in 26Q3.
+        assert "remove_buffers [get_cells *]" in text
 
     def test_wire_rc_layers(self, tmp_path):
         text = self._write(tmp_path)
@@ -220,6 +223,15 @@ class TestParseArea:
 
         area, util = openroad_timing.parse_openroad_area(
             "Design area 1234.56 u^2 41.7% utilization."
+        )
+        assert area == 1234.56
+        assert util == 41.7
+
+    def test_26q3_um2_unit(self):
+        from booley.yosys import openroad_timing
+
+        area, util = openroad_timing.parse_openroad_area(
+            "Design area 1234.56 um^2 41.7% utilization."
         )
         assert area == 1234.56
         assert util == 41.7
