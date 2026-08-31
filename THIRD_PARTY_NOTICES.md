@@ -10,6 +10,53 @@ their own metadata and license files. Tools installed while building the
 sandbox image likewise retain the notices shipped by their operating-system or
 upstream packages.
 
+## Sandbox tool: OpenROAD and OpenSTA
+
+The sandbox image includes the OpenROAD executable from the official,
+digest-pinned `openroad/ubuntu24.04` OCI artifact. The selected artifact maps
+to OpenROAD 26Q3 source commit
+`a9147cf3aebe65e058bb3fa89c1f9e524488dbb8`. Its complete machine-readable
+source and build tree accompanies the executable at `/OpenROAD` in the image;
+the OpenROAD license is `/OpenROAD/LICENSE` and the OpenSTA license is
+`/OpenROAD/src/sta/LICENSE`. The immutable upstream artifact and source
+directions are also recorded in
+`/usr/local/share/doc/openroad/BOOLEY-SOURCE.txt`.
+
+OpenROAD's top-level code is BSD-3-Clause. Its binary links OpenSTA, whose
+open-source license is GPL-3.0; a separate commercial OpenSTA license is
+available from Parallax Software. Booley treats its public image as GPLv3
+object-code distribution: the exact Corresponding Source remains in the image
+beside the executable. This is a redistribution constraint on the OpenROAD
+program, not a replacement for Booley's Apache-2.0 license.
+
+### OpenROAD BSD-3-Clause
+
+Copyright (c) 2018-2025, The OpenROAD Authors. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
 ## Optional setup download: Nangate Open Cell Library
 
 Booley does **not** distribute the Nangate Open Cell Library in its repository,
