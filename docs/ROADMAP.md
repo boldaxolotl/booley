@@ -64,34 +64,69 @@ coverage can ship deterministic ahead of the slang-backed metrics.
 
 ## Continuous Integration (`booley ci`)
 
-**Planned.** A single command, `booley ci`, that runs the CI-enabled Targets
-through the Booley Flows that can drive them and reports the result as a matrix:
-what lints, what elaborates, what simulates, what synthesizes. CI membership
-belongs with each Target in its `.core` design description: Booley-owned
-per-Target metadata should explicitly include or exclude that Target rather
-than making users maintain a second Target allowlist in a workflow file. Push
-it to CI and the answer to "does this repo still build" stops being folklore.
+**Planned.** `booley ci` runs a named set of Criteria against the current
+checkout using Ticket Mode's catalog, syntax, Target bindings, threshold rules,
+and evidence model. CI has no separate check system. Project policies for pull
+requests and nightly runs choose Criteria, which choose Targets and Booley
+Flows. The usual starting point is `sim_pass`: every registered test must pass
+for each relevant Target. Other choices include lint, Cycle Count, area, Fmax,
+FPGA resources, coverage, and Custom Flow Criteria.
 
-Per-test Cycle Count Criteria already compare Ticket work with its immutable
-baseline and disclose known workload drift. A future `booley ci` will bring
-that evidence together with area, Fmax, and coverage in a hosted matrix measured
-against the same design before the change rather than against a stale number from last week. Reviewers
-see "+2.2% area, −6 MHz, +4.1% cycles" next to the diff, so users can track both
-area and performance in CI. A project can set limits so a regression fails the
-run instead of being noticed a month later.
+Each required Criterion has a deterministic verdict. An unmet Criterion is a CI
+failure with normalized evidence; an unavailable tool, invalid configuration,
+or failed runner is a CI execution error. Both fail the run. Separate names stop
+infrastructure faults from looking like design regressions. The report groups
+results and evidence by Criterion.
 
-Because the sandbox image already carries the EDA stack, there is nothing to
-install on a hosted runner: the workflow is a handful of lines and no simulator
-or synthesis setup at all. Slow Targets can be kept off every push and run
-nightly instead.
+Relative Criteria pin an immutable pull request merge base or configured target
+branch commit, never a previous CI result. Ticket Mode's per-test Cycle Count
+model also covers area, Fmax, FPGA resources, and coverage. Results such as
+"+2.2% area, −6 MHz, +4.1% cycles" appear beside the diff. Crossing a threshold
+fails CI.
 
-The same engine should also support [stealth
-mode](CONFIG.md#stealth-mode-stealth) without committing a Booley-shaped hosted
-workflow. In that deployment the runner and scheduler are local, and structured
-run results and history live in `.booley_project/`'s own repository rather than
-appearing as hosted checks or files in the RTL repository. The Target selection,
-matrix semantics, regression limits, and baseline comparison stay the same;
-only the execution and reporting plane changes.
+Phase one saves the candidate diff, baseline and candidate identities, Criterion
+parameters, normalized results, logs, waveforms, and detailed tool reports.
+Area and timing reports include hierarchy as well as totals. This lets later
+investigations work from evidence instead of scraped logs.
+
+Phase two is opt-in. After a deterministic failure, CI starts an investigator
+agent with the failed Criterion and saved evidence. The agent reports a probable
+cause, confidence, and possible fixes or mitigations. It uses logs, waveforms,
+and the diff for simulation failures; for area failures, it compares baseline
+and candidate synthesis breakdowns. It may find the evidence insufficient. Its
+advice cannot change the verdict, edit code, or push changes.
+
+Ticket Mode and CI call the same Criterion evaluator but keep separate
+orchestration. Ticket Mode passes a sealed Ticket and owns its lifecycle. CI
+passes Criteria, reports the verdict, and may start the investigator without
+depending on the Ticket Board or Harness lifecycle.
+
+The sandbox image contains the EDA stack, so a hosted workflow needs no setup
+and takes only a handful of lines. Slow Targets can run nightly. [Stealth
+mode](CONFIG.md#stealth-mode-stealth) keeps scheduling, structured results, and
+history in `.booley_project/`, with no hosted checks or files in the RTL
+repository. Execution and reporting differ; Criteria, baselines, and regression
+limits stay the same.
+
+## GitHub Issues in Ticket Mode
+
+**Planned.** GitHub Issues should be first-class Ticket sources alongside the
+local Markdown Ticket Board. Ticket creation, queue selection, execution, and
+triage should work through either surface. Booley should discover eligible
+issues from configured repositories and labels, claim each issue for exactly
+one Runner, prepare and seal the normal executable Ticket contract, and report
+blocked, review, and done transitions back through labels and comments. Issue
+references should be usable for dependencies, while local Tickets retain the
+complete offline workflow.
+
+**The Harness contract does not change.** GitHub is the collaboration surface,
+but each run snapshots the issue into a durable local record before execution.
+Edits to an issue after it is claimed must not silently change its sealed Scope,
+Criteria, or base revision; retries and recovery use the same snapshot and
+evidence history. Credentials and network operations belong in a trusted
+host-side integration rather than the Session Runtime or Developer Agent, and
+remote updates must be idempotent and conflict-aware so a GitHub outage cannot
+corrupt local work or acceptance evidence.
 
 ## Cocotb Support
 
