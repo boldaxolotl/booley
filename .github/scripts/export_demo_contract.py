@@ -18,7 +18,6 @@ OUTPUT_KEYS = (
     "upstream_ref",
     "project_repository",
     "project_ref",
-    "project_contract_ref",
     "ticket_fixture",
     "ticket_slug",
 )

@@ -58,7 +58,6 @@ class DemoContract:
     upstream_ref: str
     project_repository: str
     project_ref: str
-    project_contract_ref: str
     ticket_fixture: str
     ticket_slug: str
     required_targets: tuple[str, ...]
@@ -155,7 +154,6 @@ def load_contract(path: Path | str) -> DemoContract:
         if not is_str_list(raw_targets) or not raw_targets or not all(raw_targets):
             raise BoundaryError("required_targets must be a non-empty list[str]")
 
-        project_contract_ref = _require_trimmed_str(document, "project_contract_ref")
         ticket_fixture = _safe_relative_path(document, "ticket_fixture", field="ticket_fixture")
         ticket_slug = _require_trimmed_str(document, "ticket_slug")
         bindings = _parse_bindings(document)
@@ -169,7 +167,6 @@ def load_contract(path: Path | str) -> DemoContract:
         upstream_ref=upstream_ref,
         project_repository=project_repository,
         project_ref=project_ref,
-        project_contract_ref=project_contract_ref,
         ticket_fixture=ticket_fixture,
         ticket_slug=ticket_slug,
         required_targets=tuple(raw_targets),
