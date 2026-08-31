@@ -58,8 +58,8 @@ def test_stable_base_asserts_cocotb_2_1_icarus_library_contract() -> None:
 
     assert 'test "$(cocotb-config --version)" = "2.1.0"' in base
     assert 'test -e "$(cocotb-config --lib-name-path vpi icarus)"' in base
-    assert 'cocotb-config --lib-name vpi icarus' not in base
-    assert 'cocotb-config --lib-name-path vpi icarus).vpl' not in base
+    assert "cocotb-config --lib-name vpi icarus" not in base
+    assert "cocotb-config --lib-name-path vpi icarus).vpl" not in base
 
 
 def test_every_local_docker_copy_source_is_allowed_by_dockerignore() -> None:
