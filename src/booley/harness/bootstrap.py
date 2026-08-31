@@ -1,4 +1,4 @@
-"""Project-independent Host Bootstrap orchestration and CLI adapter."""
+"""Project-independent Host Bootstrap desired-state reconciliation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from pathlib import Path
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy, load_host_policy
 from booley.harness import host_sidecars, nangate_pdk
-from booley.harness.colors import accent, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
     HostImageScope,
     ImageLifecycleError,
@@ -23,9 +22,9 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
-from booley.harness.init_skills import _find_skill_targets
+from booley.harness.init_skills import reconcile_host_skills
 from booley.runtime.paths import skills_dir
-from booley.runtime.skill_links import SkillLinkReport, reconcile_skill_links
+from booley.runtime.skill_links import SkillLinkReport
 
 
 class BootstrapState(StrEnum):
@@ -81,7 +80,9 @@ def reconcile_bootstrap(intent: Intent, *, verbose: bool = False) -> BootstrapRe
             intent,
             (BootstrapFinding("host-config", BootstrapState.ERROR, str(exc)),),
         )
-    findings.append(BootstrapFinding("host-config", BootstrapState.CURRENT, "host policy is valid"))
+    findings.append(
+        BootstrapFinding("host-config", BootstrapState.CURRENT, "host policy is valid")
+    )
 
     prerequisites = _prerequisite_findings()
     findings.extend(prerequisites)
@@ -151,18 +152,20 @@ def _docker_daemon_error() -> str | None:
 
 
 def _vscode_finding() -> BootstrapFinding:
-    from booley.config.editor import resolve_editor_command
+    from booley.config.editor import resolve_editor_command, resolve_editor_install
 
     command = resolve_editor_command()
     if command:
-        return BootstrapFinding("vscode", BootstrapState.CURRENT, f"{Path(command).name} available")
-    for candidate in _vscode_config_dirs():
-        if candidate.is_dir():
-            return BootstrapFinding(
-                "vscode",
-                BootstrapState.CURRENT,
-                f"{candidate.name} GUI found; install its shell command for terminal use",
-            )
+        return BootstrapFinding(
+            "vscode", BootstrapState.CURRENT, f"{Path(command).name} available"
+        )
+    application = resolve_editor_install()
+    if application is not None:
+        return BootstrapFinding(
+            "vscode",
+            BootstrapState.CURRENT,
+            f"{application.name} application found; install its shell command for terminal use",
+        )
     return BootstrapFinding(
         "vscode",
         BootstrapState.ERROR,
@@ -170,43 +173,29 @@ def _vscode_finding() -> BootstrapFinding:
     )
 
 
-def _vscode_config_dirs() -> tuple[Path, ...]:
-    import os
-    import sys
-
-    home = Path.home()
-    names = ("Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf")
-    if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
-    elif sys.platform == "darwin":
-        base = home / "Library" / "Application Support"
-    else:
-        base = home / ".config"
-    return tuple(base / name for name in names)
-
-
 def _reconcile_skills(intent: Intent) -> BootstrapFinding:
     source = skills_dir()
     if not source.is_dir():
-        return BootstrapFinding("skills", BootstrapState.ERROR, f"packaged skills missing: {source}")
-    reports = tuple(
-        reconcile_skill_links(
-            target,
-            source,
-            dry_run=intent is Intent.CHECK,
-            allow_retarget=True,
+        return BootstrapFinding(
+            "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
         )
-        for target in _find_skill_targets()
+    reconciliations = reconcile_host_skills(
+        source,
+        dry_run=intent is Intent.CHECK,
+        allow_retarget=True,
     )
+    reports = tuple(item.report for item in reconciliations)
     failures = tuple(_skill_report_error(report) for report in reports)
     errors = tuple(error for error in failures if error)
     if errors:
         return BootstrapFinding("skills", BootstrapState.ERROR, "; ".join(errors))
     changed = sum(event.changed for report in reports for event in report.events)
     if intent is Intent.CHECK and changed:
-        return BootstrapFinding("skills", BootstrapState.PENDING, f"{changed} skill link change(s) pending")
+        return BootstrapFinding(
+            "skills", BootstrapState.PENDING, f"{changed} skill link change(s) pending"
+        )
     state = BootstrapState.CHANGED if changed else BootstrapState.CURRENT
-    return BootstrapFinding("skills", state, f"checked {len(reports)} skill target(s)")
+    return BootstrapFinding("skills", state, f"checked {len(reconciliations)} skill target(s)")
 
 
 def _skill_report_error(report: SkillLinkReport) -> str:
@@ -253,7 +242,9 @@ def _reconcile_base_image(
         ImageStatus.EXTERNAL: BootstrapState.ERROR,
     }[result.status]
     detail = "; ".join(item.message for item in result.diagnostics)
-    return result, BootstrapFinding("base-image", state, detail or f"{result.selected_reference} {result.status}")
+    return result, BootstrapFinding(
+        "base-image", state, detail or f"{result.selected_reference} {result.status}"
+    )
 
 
 def _sidecar_finding(finding: host_sidecars.SidecarFinding) -> BootstrapFinding:
@@ -264,32 +255,3 @@ def _sidecar_finding(finding: host_sidecars.SidecarFinding) -> BootstrapFinding:
         host_sidecars.SidecarState.ERROR: BootstrapState.ERROR,
     }[finding.state]
     return BootstrapFinding(finding.resource, state, finding.detail)
-
-
-def run_bootstrap(args: object) -> int:
-    """Run and render the public ``booley bootstrap`` command."""
-    intent = (
-        Intent.CHECK
-        if getattr(args, "check_only", False)
-        else Intent.REFRESH
-        if getattr(args, "force", False)
-        else Intent.ENSURE
-    )
-    result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
-    print(bold_chrome("Host Bootstrap"))
-    glyphs = {
-        BootstrapState.CURRENT: (accent, "[--]"),
-        BootstrapState.PENDING: (yellow, "[!!]"),
-        BootstrapState.CHANGED: (green, "[OK]"),
-        BootstrapState.ERROR: (red, "[XX]"),
-    }
-    for finding in result.findings:
-        color, glyph = glyphs[finding.state]
-        print(f"  {color(glyph)} {finding.resource}: {finding.detail}")
-    if result.exit_status == 0:
-        print(green("Host Bootstrap is current."))
-    elif result.exit_status == 1:
-        print(yellow("Host Bootstrap has pending work; run `booley bootstrap`."))
-    else:
-        print(red("Host Bootstrap is incomplete; fix the errors above and retry."))
-    return result.exit_status

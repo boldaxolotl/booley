@@ -10,7 +10,9 @@ from booley.harness import host_sidecars as sidecars
 from booley.harness.image_lifecycle import Intent
 
 
-def _cp(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _cp(
+    returncode: int = 0, stdout: str = "", stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(["docker"], returncode, stdout, stderr)
 
 
@@ -23,6 +25,25 @@ class FakeDocker:
         del timeout
         self.calls.append(args)
         return self.result
+
+
+def _container_spec(
+    resource: str,
+    name: str,
+    image: str,
+    role: str,
+    *,
+    run_args: tuple[str, ...] = ("run",),
+    required_network: str | None = None,
+) -> sidecars._ContainerSpec:
+    return sidecars._ContainerSpec(
+        resource,
+        name,
+        image,
+        role,
+        run_args,
+        required_network,
+    )
 
 
 def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
@@ -78,14 +99,10 @@ def test_foreign_fixed_name_collision_is_never_mutated(monkeypatch: pytest.Monke
     monkeypatch.setattr(sidecars, "_inspect_container", lambda *_args: state)
     monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:current", {}))
     finding = sidecars._reconcile_container(
-        "proxy",
-        "booley-proxy",
-        "proxy-image",
-        "egress-proxy",
+        _container_spec("proxy", "booley-proxy", "proxy-image", "egress-proxy"),
         "policy",
         Intent.REFRESH,
         docker,
-        run_args=["run"],
     )
     assert finding.state is sidecars.SidecarState.ERROR
     assert "foreign name collision" in finding.detail
@@ -106,14 +123,10 @@ def test_unstamped_container_with_exact_role_is_stale_not_foreign(
     monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:current", {}))
 
     finding = sidecars._reconcile_container(
-        "reaper",
-        "booley-reaper",
-        "reaper-image",
-        "reaper",
+        _container_spec("reaper", "booley-reaper", "reaper-image", "reaper"),
         "policy",
         Intent.CHECK,
         docker,
-        run_args=["run"],
     )
 
     assert finding.state is sidecars.SidecarState.PENDING
@@ -125,7 +138,9 @@ def test_missing_container_is_created_without_enumerating_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     docker = FakeDocker()
-    monkeypatch.setattr(sidecars, "_inspect_container", lambda *_args: sidecars._ContainerState(False))
+    monkeypatch.setattr(
+        sidecars, "_inspect_container", lambda *_args: sidecars._ContainerState(False)
+    )
     monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:current", {}))
     monkeypatch.setattr(
         sidecars,
@@ -134,14 +149,16 @@ def test_missing_container_is_created_without_enumerating_sessions(
     )
 
     finding = sidecars._reconcile_container(
-        "reaper",
-        "booley-reaper",
-        "reaper-image",
-        "reaper",
+        _container_spec(
+            "reaper",
+            "booley-reaper",
+            "reaper-image",
+            "reaper",
+            run_args=("run", "--label", "policy"),
+        ),
         "policy",
         Intent.ENSURE,
         docker,
-        run_args=["run", "--label", "policy"],
     )
 
     assert finding.state is sidecars.SidecarState.CHANGED
@@ -165,14 +182,10 @@ def test_active_sessions_block_stale_container_replacement(
     monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:new", {}))
     monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ("booley-session-a",))
     finding = sidecars._reconcile_container(
-        "reaper",
-        "booley-reaper",
-        "reaper-image",
-        "reaper",
+        _container_spec("reaper", "booley-reaper", "reaper-image", "reaper"),
         "new-policy",
         Intent.REFRESH,
         docker,
-        run_args=["run"],
     )
     assert finding.state is sidecars.SidecarState.ERROR
     assert "booley-session-a" in finding.detail
@@ -183,3 +196,65 @@ def test_session_enumeration_failure_is_not_treated_as_empty() -> None:
     docker = FakeDocker(_cp(1, stderr="daemon unavailable"))
     with pytest.raises(sidecars.SidecarError, match="cannot enumerate"):
         sidecars._active_session_names(docker)
+
+
+def test_foreign_sidecar_image_collision_is_never_retagged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    source = tmp_path / "sidecar.py"
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    source.write_text("pass\n", encoding="utf-8")
+    spec = sidecars._ImageSpec(
+        "proxy-image", "booley-egress-proxy:local", "egress-proxy", dockerfile, tmp_path, (source,)
+    )
+    monkeypatch.setattr(sidecars, "_inspect_image", lambda *_args: ("sha256:foreign", {}))
+    docker = FakeDocker()
+
+    finding = sidecars._reconcile_image(spec, Intent.ENSURE, docker)
+
+    assert finding.state is sidecars.SidecarState.ERROR
+    assert "foreign image collision" in finding.detail
+    assert docker.calls == []
+
+
+def test_stale_network_is_recreated_when_no_sessions_are_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDocker()
+    state = sidecars._NetworkState(True, False, (sidecars.legacy.PROXY_CONTAINER,))
+    proxy = sidecars._ContainerState(
+        True,
+        "sha256:proxy",
+        True,
+        {sidecars.ROLE_LABEL: "egress-proxy"},
+    )
+    monkeypatch.setattr(sidecars, "_inspect_network", lambda _docker: state)
+    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ())
+    monkeypatch.setattr(sidecars, "_inspect_container", lambda *_args: proxy)
+
+    finding = sidecars._reconcile_network(Intent.REFRESH, docker)
+
+    assert finding.state is sidecars.SidecarState.CHANGED
+    assert ["rm", "-f", sidecars.legacy.PROXY_CONTAINER] in docker.calls
+    assert ["network", "rm", sidecars.legacy.EGRESS_NETWORK] in docker.calls
+    assert any(call[:2] == ["network", "create"] for call in docker.calls)
+
+
+def test_active_sessions_block_stale_network_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker = FakeDocker()
+    monkeypatch.setattr(
+        sidecars,
+        "_inspect_network",
+        lambda _docker: sidecars._NetworkState(True, False),
+    )
+    monkeypatch.setattr(sidecars, "_active_session_names", lambda _docker: ("session-a",))
+
+    finding = sidecars._reconcile_network(Intent.ENSURE, docker)
+
+    assert finding.state is sidecars.SidecarState.ERROR
+    assert "session-a" in finding.detail
+    assert docker.calls == []

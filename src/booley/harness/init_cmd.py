@@ -1217,9 +1217,17 @@ def refresh_session_image(project_root: Path, *, verbose: bool = False) -> Lifec
             "build recipe to refresh. Rebuild that image yourself, then run "
             "`booley session up --rebuild`."
         )
-    from booley.harness.image_lifecycle import HostImageScope
-
-    base = reconcile_images(HostImageScope(), ImageLifecycleIntent.REFRESH, verbose=verbose)
+    bootstrap = reconcile_bootstrap(ImageLifecycleIntent.REFRESH, verbose=verbose)
+    base = _usable_bootstrap_base(bootstrap)
+    if not bootstrap.ready or base is None:
+        failures = "; ".join(
+            finding.detail
+            for finding in bootstrap.findings
+            if finding.state in {BootstrapState.ERROR, BootstrapState.PENDING}
+        )
+        raise RuntimeError(
+            f"Host Bootstrap refresh failed: {failures or 'base image unavailable'}"
+        )
     return reconcile_images(
         ProjectImageScope(project_root, base),
         ImageLifecycleIntent.REFRESH,
@@ -2417,6 +2425,27 @@ def _usable_bootstrap_base(result: BootstrapResult) -> LifecycleResult | None:
     return base
 
 
+def _reconcile_initialized_image(
+    ctx: InitContext,
+    bootstrap_result: BootstrapResult | None,
+) -> LifecycleResult | None:
+    """Reconcile the Project image against Bootstrap's verified host base."""
+    base = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
+    if base is not None:
+        return _step_image_lifecycle(ctx, base_result=base)
+    return _step_image_lifecycle(ctx)
+
+
+def _selected_session_image_id(result: LifecycleResult | None) -> str | None:
+    """Return the verified image identity suitable for Session issuance."""
+    if result is None or result.status not in {
+        ImageLifecycleStatus.CURRENT,
+        ImageLifecycleStatus.CHANGED,
+    }:
+        return None
+    return result.selected_id
+
+
 def _run_project_init_steps(
     ctx: InitContext,
     args: argparse.Namespace,
@@ -2450,23 +2479,13 @@ def _run_project_init_steps(
         skip_credentials=getattr(args, "skip_credentials", False),
     )
     pdk_root = nangate_pdk.cache_root()
-    base_result = _usable_bootstrap_base(bootstrap_result) if bootstrap_result else None
-    image_result = (
-        _step_image_lifecycle(ctx, base_result=base_result)
-        if base_result is not None
-        else _step_image_lifecycle(ctx)
-    )
+    image_result = _reconcile_initialized_image(ctx, bootstrap_result)
     _step_git_hooks(ctx)
     _step_project_git_hooks(ctx)
     _step_worktree_prune_guard(ctx)
     _step_line_endings(ctx, _line_ending_project_dir(ctx.project_root))
     _step_guidance_links(ctx, guidance_plan)
-    session_image_id = (
-        image_result.selected_id
-        if image_result is not None
-        and image_result.status in {ImageLifecycleStatus.CURRENT, ImageLifecycleStatus.CHANGED}
-        else None
-    )
+    session_image_id = _selected_session_image_id(image_result)
     _step_interactive(
         ctx,
         nangate_pdk_root=pdk_root,

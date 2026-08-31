@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
+from booley.config import editor as editor_config
 from booley.config.editor import VSCODE_EDITOR, ResolvedEditor, resolve_editor
 
 
@@ -30,6 +31,21 @@ class TestVSCodeEditor:
 
     def test_resolver_returns_none_when_no_editor_is_installed(self):
         assert resolve_editor(lambda _command: None) is None
+
+    def test_gui_resolver_requires_the_application_executable(self, tmp_path, monkeypatch):
+        application = tmp_path / "Visual Studio Code.app"
+        executable = application / "Contents" / "MacOS" / "Electron"
+        application.mkdir()
+        monkeypatch.setattr(
+            editor_config,
+            "_editor_install_candidates",
+            lambda: ((application, executable),),
+        )
+        assert editor_config.resolve_editor_install() is None
+
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        assert editor_config.resolve_editor_install() == application
 
 
 class TestResolvedEditor:

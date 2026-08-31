@@ -1742,10 +1742,11 @@ class TestSessionRefresh:
 
         refresh.assert_not_called()
 
-    def test_refresh_rebuilds_base_then_selected_flavor(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_cmd
+    def test_refresh_runs_host_bootstrap_then_rebuilds_selected_flavor(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from booley.harness import bootstrap, init_cmd
         from booley.harness.image_lifecycle import (
-            HostImageScope,
             Intent,
             LifecycleResult,
             ProjectImageScope,
@@ -1758,7 +1759,25 @@ class TestSessionRefresh:
             Status.CHANGED,
             changed_images=("booley-sandbox", "booley-sandbox-riscv"),
         )
+        base = LifecycleResult(
+            "booley-sandbox",
+            "sha256:base",
+            Status.CHANGED,
+            changed_images=("booley-sandbox",),
+        )
         calls = []
+        bootstrap_result = bootstrap.BootstrapResult(
+            Intent.REFRESH,
+            (bootstrap.BootstrapFinding("host", bootstrap.BootstrapState.CHANGED, "ready"),),
+            base_image=base,
+        )
+        monkeypatch.setattr(
+            init_cmd,
+            "reconcile_bootstrap",
+            lambda intent, *, verbose=False: (
+                calls.append(("bootstrap", intent, verbose)) or bootstrap_result
+            ),
+        )
         monkeypatch.setattr(
             init_cmd,
             "reconcile_images",
@@ -1770,9 +1789,36 @@ class TestSessionRefresh:
         assert init_cmd.refresh_session_image(tmp_path, verbose=True) is expected
         assert calls == [
             (ProjectImageScope(tmp_path), Intent.CHECK, True),
-            (HostImageScope(), Intent.REFRESH, True),
-            (ProjectImageScope(tmp_path, expected), Intent.REFRESH, True),
+            ("bootstrap", Intent.REFRESH, True),
+            (ProjectImageScope(tmp_path, base), Intent.REFRESH, True),
         ]
+
+    def test_refresh_fails_when_host_bootstrap_cannot_converge(self, tmp_path: Path, monkeypatch):
+        from booley.harness import bootstrap, init_cmd
+        from booley.harness.image_lifecycle import Intent, LifecycleResult, Status
+
+        monkeypatch.setattr(
+            init_cmd,
+            "reconcile_images",
+            lambda *_args, **_kwargs: LifecycleResult(
+                "booley-sandbox", "sha256:old", Status.CURRENT
+            ),
+        )
+        monkeypatch.setattr(
+            init_cmd,
+            "reconcile_bootstrap",
+            lambda *_args, **_kwargs: bootstrap.BootstrapResult(
+                Intent.REFRESH,
+                (
+                    bootstrap.BootstrapFinding(
+                        "proxy", bootstrap.BootstrapState.ERROR, "foreign collision"
+                    ),
+                ),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="foreign collision"):
+            init_cmd.refresh_session_image(tmp_path)
 
     def test_refresh_refuses_user_managed_image(self, tmp_path: Path, monkeypatch):
         from booley.harness import init_cmd

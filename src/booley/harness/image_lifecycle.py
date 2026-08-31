@@ -688,7 +688,9 @@ def _verify_host_base(result: LifecycleResult, docker: _DockerPort) -> None:
         Status.CURRENT,
         Status.CHANGED,
     }:
-        raise ImageLifecycleError("Project image reconciliation requires a current host base image")
+        raise ImageLifecycleError(
+            "Project image reconciliation requires a current host base image"
+        )
     if result.selected_id is None or docker.image_id(BASE_IMAGE) != result.selected_id:
         raise ImageLifecycleError("host base image identity changed before Project reconciliation")
 

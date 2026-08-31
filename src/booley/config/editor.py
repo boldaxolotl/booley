@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,49 @@ class ResolvedEditor:
 
 
 EDITOR_COMMANDS = ("code", "code-insiders", "codium", "cursor", "windsurf")
+
+
+def _editor_install_candidates() -> tuple[tuple[Path, Path], ...]:
+    """Return platform-native applications paired with their launch executables."""
+    home = Path.home()
+    if sys.platform == "darwin":
+        applications = (
+            ("Visual Studio Code.app", "Electron"),
+            ("Visual Studio Code - Insiders.app", "Electron"),
+            ("VSCodium.app", "Electron"),
+            ("Cursor.app", "Cursor"),
+            ("Windsurf.app", "Windsurf"),
+        )
+        roots = (Path("/Applications"), home / "Applications")
+        return tuple(
+            (application, application / "Contents" / "MacOS" / executable)
+            for root in roots
+            for name, executable in applications
+            for application in (root / name,)
+        )
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local"))
+        relative = (
+            Path("Programs/Microsoft VS Code/Code.exe"),
+            Path("Programs/Microsoft VS Code Insiders/Code - Insiders.exe"),
+            Path("Programs/VSCodium/VSCodium.exe"),
+            Path("Programs/cursor/Cursor.exe"),
+            Path("Programs/Windsurf/Windsurf.exe"),
+        )
+        return tuple((local / path, local / path) for path in relative)
+    return ()
+
+
+def resolve_editor_install() -> Path | None:
+    """Return an installed GUI application when it can be proven on disk."""
+    return next(
+        (
+            application
+            for application, executable in _editor_install_candidates()
+            if executable.is_file()
+        ),
+        None,
+    )
 
 
 def editor_for_command(command: str) -> ResolvedEditor:

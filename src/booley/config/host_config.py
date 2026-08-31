@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict, require_int
+from booley.core.boundary import BoundaryError, as_str, require_dict, require_int, require_list
 from booley.runtime.auth_token import config_dir
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 7200
@@ -18,9 +18,7 @@ DEFAULT_MAX_SESSIONS = 4
 HOST_CONFIG_FILENAME = "config.toml"
 
 _TOP_LEVEL_KEYS = frozenset({"interactive"})
-_INTERACTIVE_KEYS = frozenset(
-    {"idle_timeout_seconds", "max_sessions", "egress_allowlist"}
-)
+_INTERACTIVE_KEYS = frozenset({"idle_timeout_seconds", "max_sessions", "egress_allowlist"})
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
 
@@ -103,9 +101,7 @@ def _reject_unknown(
         raise HostConfigError(path, field, f"unknown key(s): {joined}")
 
 
-def _positive_int(
-    section: Mapping[str, Any], key: str, default: int, path: Path
-) -> int:
+def _positive_int(section: Mapping[str, Any], key: str, default: int, path: Path) -> int:
     if key not in section:
         return default
     try:
@@ -119,16 +115,19 @@ def _positive_int(
 
 def _egress_allowlist(section: Mapping[str, Any], path: Path) -> tuple[str, ...]:
     raw = section.get("egress_allowlist", [])
-    if not isinstance(raw, list):
+    try:
+        values = require_list(raw, field="interactive.egress_allowlist")
+    except BoundaryError as exc:
         raise HostConfigError(
             path, "interactive.egress_allowlist", "must be an array of hostnames"
-        )
+        ) from exc
     domains: list[str] = []
-    for index, value in enumerate(raw):
+    for index, value in enumerate(values):
         field = f"interactive.egress_allowlist[{index}]"
-        if not isinstance(value, str):
+        hostname = as_str(value)
+        if hostname is None:
             raise HostConfigError(path, field, "must be a hostname string")
-        domains.append(_hostname(value, path, field))
+        domains.append(_hostname(hostname, path, field))
     return tuple(domains)
 
 
@@ -136,7 +135,9 @@ def _hostname(value: str, path: Path, field: str) -> str:
     hostname = value.strip().lower()
     invalid_syntax = any(token in hostname for token in ("://", "/", "\\", ":", "*"))
     if not hostname or invalid_syntax or hostname.endswith(".") or len(hostname) > 253:
-        raise HostConfigError(path, field, "must be a hostname only (no scheme, path, port, or wildcard)")
+        raise HostConfigError(
+            path, field, "must be a hostname only (no scheme, path, port, or wildcard)"
+        )
     try:
         ipaddress.ip_address(hostname)
     except ValueError:
@@ -161,13 +162,14 @@ def retired_project_policy_message(
         return None
     target = destination or host_config_path()
     lines = [
-        "booley.toml [interactive] host policy is retired; move these fields to "
-        f"{target}:",
+        f"booley.toml [interactive] host policy is retired; move these fields to {target}:",
         "[interactive]",
     ]
     for key in sorted(retired):
         lines.append(f"{key} = {_toml_value(raw[key])}")
-    lines.append("Remove the moved fields from the Project booley.toml; Booley will not migrate them automatically.")
+    lines.append(
+        "Remove the moved fields from the Project booley.toml; Booley will not migrate them automatically."
+    )
     return "\n".join(lines)
 
 

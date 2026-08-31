@@ -41,7 +41,7 @@ from booley.harness.booley_status_display import (  # noqa: F401  # re-exported 
     _read_checkpoint_status,
     _run_with_heartbeat,
 )
-from booley.harness.bootstrap import run_bootstrap
+from booley.harness.bootstrap_cli import run_bootstrap
 from booley.harness.chat_cmd import run as run_chat
 from booley.harness.colors import (
     bold_accent,

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.config.host_config import HostConfigError, InteractiveHostPolicy
-from booley.harness import bootstrap
+from booley.harness import bootstrap, bootstrap_cli
 from booley.harness.image_lifecycle import Intent, LifecycleResult, Status
 
 
@@ -51,8 +51,9 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(
         bootstrap.host_sidecars,
         "reconcile_sidecars",
-        lambda _policy, _intent: calls.append("sidecars")
-        or bootstrap.host_sidecars.SidecarResult(sidecar_findings),
+        lambda _policy, _intent: (
+            calls.append("sidecars") or bootstrap.host_sidecars.SidecarResult(sidecar_findings)
+        ),
     )
     return calls
 
@@ -79,7 +80,9 @@ def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.Monke
     assert result.exit_status == 0
 
 
-def test_invalid_config_stops_before_any_other_probe(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_invalid_config_stops_before_any_other_probe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
     def invalid():
         raise HostConfigError(tmp_path / "config.toml", "interactive.max_sessions", "bad")
 
@@ -103,9 +106,46 @@ def test_check_only_pending_is_exit_one_but_mutating_pending_is_failure() -> Non
 def test_public_adapter_uses_refresh_for_force(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[Intent] = []
     monkeypatch.setattr(
-        bootstrap,
+        bootstrap_cli,
         "reconcile_bootstrap",
         lambda intent, **_kwargs: seen.append(intent) or bootstrap.BootstrapResult(intent, ()),
     )
-    assert bootstrap.run_bootstrap(SimpleNamespace(force=True, check_only=False, verbose=False)) == 0
+    assert (
+        bootstrap_cli.run_bootstrap(SimpleNamespace(force=True, check_only=False, verbose=False))
+        == 0
+    )
     assert seen == [Intent.REFRESH]
+
+
+def test_vscode_requires_an_executable_or_installed_application(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from booley.config import editor
+
+    (tmp_path / ".config" / "Code").mkdir(parents=True)
+    monkeypatch.setattr(editor, "resolve_editor_command", lambda: None)
+    monkeypatch.setattr(editor, "resolve_editor_install", lambda: None)
+
+    finding = bootstrap._vscode_finding()
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+
+
+def test_vscode_accepts_a_proven_gui_application(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from booley.config import editor
+
+    application = tmp_path / "Visual Studio Code.app"
+    executable = application / "Contents" / "MacOS" / "Electron"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setattr(editor, "resolve_editor_command", lambda: None)
+    monkeypatch.setattr(editor, "resolve_editor_install", lambda: application)
+
+    finding = bootstrap._vscode_finding()
+
+    assert finding.state is bootstrap.BootstrapState.CURRENT
+    assert application.name in finding.detail

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,10 @@ def _finding(
     resource: str = "resource",
 ) -> bootstrap.BootstrapFinding:
     return bootstrap.BootstrapFinding(resource, state, state.value)
+
+
+def test_project_init_coordinator_fits_on_a_screen() -> None:
+    assert len(inspect.getsourcelines(init_cmd._run_project_init_steps)[0]) <= 50
 
 
 def test_bootstrap_failure_precedes_every_project_write(

@@ -235,7 +235,10 @@ def test_packaged_install_accepts_exact_local_parent_when_contract_is_unavailabl
         lambda _root: (_ for _ in ()).throw(ValueError("manifest absent")),
     )
 
-    assert lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK).status is lifecycle.Status.CURRENT
+    assert (
+        lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK).status
+        is lifecycle.Status.CURRENT
+    )
 
 
 def test_ensure_rebuilds_base_then_flavor_and_returns_exact_id(tmp_path: Path, monkeypatch):
