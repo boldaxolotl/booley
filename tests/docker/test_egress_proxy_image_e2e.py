@@ -3,63 +3,31 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
-import subprocess
 import uuid
+from dataclasses import dataclass
 
 import pytest
+from tests.sidecar_image_helpers import (
+    assert_ok,
+    assert_python_version,
+    candidate_image,
+    docker,
+)
 
-
-def _docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-
-
-def _assert_ok(result: subprocess.CompletedProcess[str]) -> None:
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-def _candidate_image() -> str:
-    image = os.environ.get("BOOLEY_EGRESS_PROXY_IMAGE")
-    if image is None:
-        pytest.skip("set BOOLEY_EGRESS_PROXY_IMAGE to run the packaged proxy proof")
-    if shutil.which("docker") is None:
-        pytest.skip("docker is unavailable")
-    if _docker("image", "inspect", image).returncode != 0:
-        pytest.skip(f"{image} is not built")
-    return image
-
-
-@pytest.mark.slow()
-def test_candidate_connect_streams_bytes_and_reports_stats_on_shutdown() -> None:
-    image = _candidate_image()
-    version = _docker("run", "--rm", "--entrypoint", "python3", image, "--version")
-    _assert_ok(version)
-    assert (version.stdout + version.stderr).strip() == "Python 3.14.7"
-
-    unique = uuid.uuid4().hex[:12]
-    network = f"booley-egress-e2e-{unique}"
-    upstream = f"booley-egress-upstream-e2e-{unique}"
-    proxy = f"booley-egress-proxy-e2e-{unique}"
-    server = """\
+_UPSTREAM_SERVER = """\
 import socket
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.settimeout(10)
 s.bind((\"0.0.0.0\", 9443))
 s.listen()
-while True:
-    connection, _ = s.accept()
-    data = connection.recv(65536)
-    connection.sendall(b\"reply:\" + data)
-    connection.close()
+connection, _ = s.accept()
+data = connection.recv(65536)
+connection.sendall(b\"reply:\" + data)
+connection.close()
+s.close()
 """
-    client = """\
+_CLIENT = """\
 import socket
 import time
 for attempt in range(50):
@@ -72,8 +40,12 @@ for attempt in range(50):
         time.sleep(0.1)
 connection.sendall(b\"CONNECT upstream:9443 HTTP/1.1\\r\\nHost: upstream:9443\\r\\n\\r\\n\")
 response = b\"\"
-while b\"\\r\\n\\r\\n\" not in response:
+for _ in range(8):
     response += connection.recv(4096)
+    if b\"\\r\\n\\r\\n\" in response:
+        break
+else:
+    raise RuntimeError(\"proxy response headers were incomplete\")
 assert response.startswith(b\"HTTP/1.1 200\"), response
 connection.sendall(b\"stream-through-proxy\")
 reply = connection.recv(65536)
@@ -81,61 +53,97 @@ assert reply == b\"reply:stream-through-proxy\", reply
 print(reply.decode())
 """
 
-    try:
-        _assert_ok(_docker("network", "create", network))
-        _assert_ok(
-            _docker(
-                "run",
-                "-d",
-                "--name",
-                upstream,
-                "--network",
-                network,
-                "--network-alias",
-                "upstream",
-                "--entrypoint",
-                "python3",
-                image,
-                "-u",
-                "-c",
-                server,
-            )
+
+@dataclass(frozen=True)
+class _Resources:
+    network: str
+    upstream: str
+    proxy: str
+
+    @classmethod
+    def create(cls) -> _Resources:
+        unique = uuid.uuid4().hex[:12]
+        return cls(
+            network=f"booley-egress-e2e-{unique}",
+            upstream=f"booley-egress-upstream-e2e-{unique}",
+            proxy=f"booley-egress-proxy-e2e-{unique}",
         )
-        _assert_ok(
-            _docker(
-                "run",
-                "-d",
-                "--name",
-                proxy,
-                "--network",
-                network,
-                "--network-alias",
-                "proxy",
-                "-e",
-                'PROXY_ALLOWLIST=["upstream"]',
-                image,
-            )
-        )
-        flowed = _docker(
+
+
+def _start_upstream(image: str, resources: _Resources) -> None:
+    assert_ok(docker("network", "create", resources.network))
+    assert_ok(
+        docker(
             "run",
-            "--rm",
+            "-d",
+            "--name",
+            resources.upstream,
             "--network",
-            network,
+            resources.network,
+            "--network-alias",
+            "upstream",
             "--entrypoint",
             "python3",
             image,
+            "-u",
             "-c",
-            client,
+            _UPSTREAM_SERVER,
         )
-        _assert_ok(flowed)
-        assert flowed.stdout.strip() == "reply:stream-through-proxy"
+    )
 
-        stopped = _docker("stop", "--time", "5", proxy, timeout=15)
-        _assert_ok(stopped)
-        logs = _docker("logs", proxy)
-        _assert_ok(logs)
-        stats = json.loads(logs.stdout.strip().splitlines()[-1])
-        assert stats == {"allowed": 1, "blocked": 0, "errors": 0, "blocked_log": []}
+
+def _start_proxy(image: str, resources: _Resources) -> None:
+    assert_ok(
+        docker(
+            "run",
+            "-d",
+            "--name",
+            resources.proxy,
+            "--network",
+            resources.network,
+            "--network-alias",
+            "proxy",
+            "-e",
+            'PROXY_ALLOWLIST=["upstream"]',
+            image,
+        )
+    )
+
+
+def _exercise_proxy(image: str, resources: _Resources) -> None:
+    flowed = docker(
+        "run",
+        "--rm",
+        "--network",
+        resources.network,
+        "--entrypoint",
+        "python3",
+        image,
+        "-c",
+        _CLIENT,
+    )
+    assert_ok(flowed)
+    assert flowed.stdout.strip() == "reply:stream-through-proxy"
+
+
+def _assert_shutdown_stats(resources: _Resources) -> None:
+    assert_ok(docker("stop", "--time", "5", resources.proxy, timeout=15))
+    logs = docker("logs", resources.proxy)
+    assert_ok(logs)
+    stats = json.loads(logs.stdout.strip().splitlines()[-1])
+    assert stats == {"allowed": 1, "blocked": 0, "errors": 0, "blocked_log": []}
+
+
+@pytest.mark.slow()
+def test_candidate_connect_streams_bytes_and_reports_stats_on_shutdown() -> None:
+    image = candidate_image("BOOLEY_EGRESS_PROXY_IMAGE", "packaged proxy proof")
+    assert_python_version(image)
+    resources = _Resources.create()
+    try:
+        _start_upstream(image, resources)
+        _start_proxy(image, resources)
+        _exercise_proxy(image, resources)
+        _assert_shutdown_stats(resources)
     finally:
-        _docker("rm", "-f", proxy, upstream)
-        _docker("network", "rm", network)
+        docker("rm", "-f", resources.proxy, resources.upstream)
+        docker("network", "rm", resources.network)

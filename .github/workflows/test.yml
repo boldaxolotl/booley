@@ -502,26 +502,10 @@ jobs:
           # image is already built and the smoke test can still run.
           cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
 
-      - name: Build Python 3.14.7 sidecar candidates without cache
+      - name: Build sidecar controls and candidates without cache
         shell: bash
         run: |
-          docker build --pull --no-cache \
-            --file src/booley/data/docker/Dockerfile.egress-proxy \
-            --tag booley-egress-proxy:py314 src/booley/docker
-          docker build --pull --no-cache \
-            --file src/booley/data/docker/Dockerfile.flexnet-relay \
-            --tag booley-flexnet-relay:py314 src/booley/eda
-          docker build --pull --no-cache \
-            --file src/booley/data/docker/Dockerfile.reaper \
-            --tag booley-reaper:py314 src/booley/docker
-          docker tag booley-flexnet-relay:py314 booley-flexnet-relay:1
-          for image in \
-            booley-egress-proxy:py314 \
-            booley-flexnet-relay:py314 \
-            booley-reaper:py314; do
-            test "$(docker run --rm --entrypoint python3 "${image}" --version)" = \
-              "Python 3.14.7"
-          done
+          bash .github/scripts/sidecar-build-evidence.sh
 
       - name: Capture Docker cache and layer evidence
         shell: bash
@@ -532,38 +516,32 @@ jobs:
           docker history --no-trunc --format \
             '{{json .}}' booley-test \
             | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
-          for image in \
-            booley-egress-proxy:py314 \
-            booley-flexnet-relay:py314 \
-            booley-reaper:py314; do
-            artifact_name="${image/:/-}"
-            docker image inspect "${image}" \
-              > "${RUNNER_TEMP}/docker-build-evidence/${artifact_name}-inspect.json"
-            docker history --no-trunc --format '{{json .}}' "${image}" \
-              > "${RUNNER_TEMP}/docker-build-evidence/${artifact_name}-layers.jsonl"
-          done
+
+      - name: Run Python 3.14.7 sidecar behavior and hardening proofs
+        shell: bash
+        env:
+          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
+          BOOLEY_FLEXNET_DOCKER_TEST: "1"
+          BOOLEY_REAPER_IMAGE: booley-reaper:py314
+        run: |
+          set -o pipefail
+          pytest \
+            tests/docker/test_egress_proxy.py \
+            tests/docker/test_proxy_entry.py \
+            tests/docker/test_reaper.py \
+            tests/docker/test_egress_proxy_image_e2e.py \
+            tests/docker/test_reaper_image_e2e.py \
+            tests/docker/test_flexnet_relay_e2e.py \
+            -q --tb=short -rs 2>&1 \
+            | tee "${RUNNER_TEMP}/docker-build-evidence/sidecar-tests.log"
 
       - name: Upload Docker build evidence
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: docker-build-evidence
           path: ${{ runner.temp }}/docker-build-evidence/
           if-no-files-found: error
-
-      - name: Run Python 3.14.7 sidecar behavior and hardening proofs
-        env:
-          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
-          BOOLEY_FLEXNET_DOCKER_TEST: "1"
-          BOOLEY_REAPER_IMAGE: booley-reaper:py314
-        run: >-
-          pytest
-          tests/docker/test_egress_proxy.py
-          tests/docker/test_proxy_entry.py
-          tests/docker/test_reaper.py
-          tests/docker/test_egress_proxy_image_e2e.py
-          tests/docker/test_reaper_image_e2e.py
-          tests/docker/test_flexnet_relay_e2e.py
-          -q --tb=short -rs
 
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash

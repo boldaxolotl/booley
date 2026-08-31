@@ -1,9 +1,9 @@
-# Python 3.14 sidecar migration evidence — 2026-08-31
+# Python 3.14 sidecar migration evidence — 31 AUG 2026
 
 This report covers Phase 3 of the runtime migration plan in
 [#199](https://github.com/boldaxolotl/booley/pull/199) for
 [#156](https://github.com/boldaxolotl/booley/issues/156). The isolated branch
-starts from `main` at `b5ec64bbd17bd9e97fd04525268cb667e7ae74f5` and changes
+starts from `main` at `902d5bbb6469921755bde2d9841412683db61118` and changes
 only the Python base of the egress proxy, FlexNet relay, and idle reaper.
 
 ## Decision
@@ -15,7 +15,7 @@ images; it does not change the Phase 2 Session-Python hold or close #156.
 ## Immutable inputs
 
 The official multi-platform tags and their `linux/amd64` manifests were
-resolved on 2026-08-31 with `docker buildx imagetools inspect`. Both required
+resolved on 31 AUG 2026 with `docker buildx imagetools inspect`. Both required
 same-OS variants exist in the
 [Docker Official Images Python source](https://github.com/docker-library/python/tree/master/3.14).
 
@@ -82,14 +82,14 @@ unchanged. The reaper's copied Docker CLI layer remains 42.7 MB and uses the
 same digest-pinned stage. There is no duplicate interpreter, retained package
 cache, or build-only application layer.
 
-The hosted workflow builds all three candidates with `--pull --no-cache`,
-asserts `Python 3.14.7`, captures complete image inspect and history artifacts,
-and runs the proxy, reaper, and FlexNet suites as a required `bwave-smoke`
-step. [CI run 33398776175](https://github.com/boldaxolotl/booley/actions/runs/33398776175)
-tested implementation head `f3849cfd438899accaa24550197871d6a3f34ab1`;
-`bwave-smoke` passed in 5m07s, along
-with required lint, docs, Rust, B-Wave integration, packaging, and Ubuntu and
-Windows Python 3.11/3.13/3.14 jobs. The
-[Docker evidence artifact](https://github.com/boldaxolotl/booley/actions/runs/33398776175/artifacts/9760500403)
-is `docker-build-evidence` (ID `9760500403`) with archive digest
-`sha256:c0a32ae9ea8627c9ecac0c9abf4a554e9ddd75ddc89854da4bee7d9c047b62c3`.
+The hosted workflow builds all three controls and all three candidates with
+`--pull --no-cache` as a required `bwave-smoke` step. Its retained
+`docker-build-evidence` artifact contains the generated control Dockerfiles,
+exact build commands and UTC start/end times, complete build logs, Python
+versions, OS package inventories, filesystem cache checks, final image byte
+sizes, untruncated image histories and inspect output, and the sidecar behavior
+test log. Source-image inspect output and `source-repodigests.tsv` demonstrate
+that every locally pulled input has a RepoDigest matching its immutable pin.
+
+The immutable implementation commit and fresh workflow run that produced this
+evidence are recorded below after the required checks complete.
