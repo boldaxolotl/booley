@@ -33,16 +33,22 @@ INSTALL_SCRIPT = Path(".github/scripts/install_demo_ticket.py")
 VERIFY_SCRIPT = Path(".github/scripts/verify_picorv32_demo.sh")
 
 
-def test_repository_demo_contract_is_pinned_and_ticket_specific() -> None:
+def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
+    raw_contract = tomllib.loads(CONTRACT.read_text(encoding="utf-8"))
     contract = load_contract(CONTRACT)
 
+    assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert len(contract.project_ref) == 40
-    assert contract.project_contract_ref == "ci/agent-ticket-contract"
+    assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
     assert contract.ticket_fixture == ".github/contracts/picorv32-demo-ticket.md"
     assert contract.ticket_slug == "add-opt-in-rv32-zbb-pcpi-co-processor"
-    assert "sim_dhry" in contract.required_targets
-    assert "synth_core_zbb" in contract.required_targets
+    assert contract.required_targets == (
+        "lint_core",
+        "sim_core",
+        "sim_dhry",
+        "sim_wb",
+        "synth_core",
+    )
     assert {item.path for item in contract.generated_inputs} == {
         "firmware/firmware.hex",
         "dhrystone/dhry.hex",
@@ -51,11 +57,21 @@ def test_repository_demo_contract_is_pinned_and_ticket_specific() -> None:
     fixture = Path(contract.ticket_fixture)
     fields, _body = parse_frontmatter(fixture.read_text(encoding="utf-8"))
     sealed = TargetContract.from_mapping(fields["target_contract"])
-    assert sealed.schema == 3
+    assert sealed.schema == 4
     assert sealed.project_sha == contract.project_ref
     assert sealed.outer_sha == contract.upstream_ref
     assert len(sealed.participants) == 2
     assert sealed.surface_entries
+    assert sealed.targets == ("lint_core", "sim_core", "sim_wb", "synth_core")
+    project = next(item for item in sealed.participants if item.role == "project")
+    assert project.ticket_ref == "refs/heads/main"
+    assert project.destination_ref == "refs/heads/main"
+    assert project.destination_sha == contract.project_ref
+
+    serialized = fixture.read_text(encoding="utf-8")
+    assert "ci/agent-ticket-contract" not in serialized
+    assert "synth_core_zbb" not in serialized
+    assert "sim_zbb_disabled" not in serialized
 
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
@@ -89,7 +105,6 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         "upstream_ref",
         "project_repository",
         "project_ref",
-        "project_contract_ref",
         "ticket_fixture",
         "ticket_slug",
     ):
@@ -106,6 +121,9 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
     assert action.index("Apply documented local checkout excludes") < action.index(
         "Require reviewed revisions on public refs"
     )
+    assert "git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main" in action
+    assert "PROJECT_CONTRACT_REF" not in action
+    assert "ci/agent-ticket-contract" not in action
 
     action_reference = "uses: ./.github/actions/prepare-picorv32-demo"
     verifier = f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}"
@@ -199,7 +217,6 @@ def test_contract_exporter_emits_all_workflow_fields() -> None:
             "upstream_ref",
             "project_repository",
             "project_ref",
-            "project_contract_ref",
             "ticket_fixture",
             "ticket_slug",
         )
@@ -279,7 +296,6 @@ upstream_repository = "owner/upstream"
 upstream_ref = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 project_repository = "owner/project"
 project_ref = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-project_contract_ref = "ci/contract"
 ticket_fixture = ".github/contracts/ticket.md"
 ticket_slug = "demo"
 required_targets = ["sim"]
@@ -466,7 +482,6 @@ def _demo_contract() -> DemoContract:
         upstream_ref="a" * 40,
         project_repository="owner/project",
         project_ref="b" * 40,
-        project_contract_ref="ci/contract",
         ticket_fixture=".github/contracts/ticket.md",
         ticket_slug="demo",
         required_targets=("sim",),
