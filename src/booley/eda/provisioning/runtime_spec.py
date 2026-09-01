@@ -89,7 +89,12 @@ class Issuance:
 
 def stamp_path(project_root: Path) -> Path:
     """Private host path keyed by exact canonical Project identity."""
-    identity = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()
+    return stamp_path_for_identity(str(project_root.resolve()))
+
+
+def stamp_path_for_identity(project_root: str) -> Path:
+    """Private host path for an already-canonical persisted Project identity."""
+    identity = hashlib.sha256(project_root.encode()).hexdigest()
     return config_dir() / "eda" / "session-specs" / f"{identity}.json"
 
 

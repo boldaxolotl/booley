@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -59,6 +60,7 @@ from booley.harness.render_md import render
 from booley.harness.setup.common import configure_progress_output
 from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
+from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.paths import cheatsheet_path
 from booley.runtime.project_dir import PROJECT_DIR_NAME
@@ -87,6 +89,38 @@ _shutdown_event = None  # threading.Event, created in main()
 # overnight batch does not leave a live process behind; long enough to ride out
 # a board that is momentarily empty between tickets. 0 disables (daemon mode).
 DEFAULT_IDLE_TIMEOUT_S = 300
+
+
+class CommandLocation(Enum):
+    """Where one advertised top-level command is valid."""
+
+    HOST = "host"
+    SESSION_RUNTIME = "Session Runtime"
+    EITHER = "either"
+    MIXED = "mixed"
+
+    @property
+    def label(self) -> str:
+        return f"[{self.value}]"
+
+
+COMMAND_LOCATIONS = {
+    "run": CommandLocation.SESSION_RUNTIME,
+    "chat": CommandLocation.SESSION_RUNTIME,
+    "board": CommandLocation.SESSION_RUNTIME,
+    "cheat": CommandLocation.EITHER,
+    "doctor": CommandLocation.EITHER,
+    "bootstrap": CommandLocation.HOST,
+    "init": CommandLocation.HOST,
+    "eda": CommandLocation.HOST,
+    "auth": CommandLocation.HOST,
+    "session": CommandLocation.HOST,
+    "projects": CommandLocation.HOST,
+    "upgrade": CommandLocation.EITHER,
+    "targets": CommandLocation.EITHER,
+    "flow": CommandLocation.MIXED,
+    "feedback": CommandLocation.MIXED,
+}
 
 
 class _RetiredEdaToolOptionAction(argparse.Action):
@@ -337,7 +371,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="booley",
         description="Booley — RTL development harness.",
-        epilog="Run bare `booley` to open this Project's configured agent CLI.",
+        epilog=(
+            "Run bare `booley` to open this Project's configured agent CLI. "
+            "Locations: [host] host terminal only; [Session Runtime] container only; "
+            "[either] either location; [mixed] depends on the nested operation."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -351,7 +389,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         metavar=(
-            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,upgrade,targets,flow,feedback}"
+            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,projects,upgrade,targets,flow,feedback}"
         ),
     )
 
@@ -411,7 +449,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
 
+    _decorate_command_help(sub)
+
     return parser
+
+
+def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
+    """Prefix advertised command summaries from the location catalog."""
+    for action in subparsers._choices_actions:
+        location = COMMAND_LOCATIONS.get(action.dest)
+        if location is not None and action.help != argparse.SUPPRESS:
+            action.help = f"{location.label} {action.help}"
 
 
 def _project_root_parent() -> argparse.ArgumentParser:
@@ -787,6 +835,7 @@ def _add_utility_subparsers(sub) -> None:
 
     # Feedback spans runtime contexts: logging is in-container, submission host-only.
     feedback_cli.add_subparser(sub)
+    project_inventory_cli.add_subparser(sub)
     upgrade_cli.add_subparser(sub)
     _add_session_subparser(sub)
     _add_shell_subparser(sub)
@@ -2158,10 +2207,16 @@ def _show_dry_run(venv_py: str) -> None:
 # `doctor` is dual (context-aware checks inside); `cheat` runs anywhere.
 # `shell` needs host Docker too, but keeps its own tailored refusal in
 # _cmd_shell ("you are already inside a sandbox — just use this shell").
-_CONTAINER_ONLY_COMMANDS = frozenset({"run", "chat", "board"})
+_CONTAINER_ONLY_COMMANDS = frozenset(
+    command
+    for command, location in COMMAND_LOCATIONS.items()
+    if location is CommandLocation.SESSION_RUNTIME
+)
 # `session` drives the Session Runtime from outside it: like `init` it needs host
 # Docker, and the sandbox has none (ADR 0016).
-_HOST_ONLY_COMMANDS = frozenset({"bootstrap", "init", "session", "auth", "eda"})
+_HOST_ONLY_COMMANDS = frozenset(
+    command for command, location in COMMAND_LOCATIONS.items() if location is CommandLocation.HOST
+)
 
 
 def _effective_command(args: argparse.Namespace) -> str | None:
@@ -2206,6 +2261,8 @@ def main() -> int:
     _enforce_runtime_location(command)
     if command == "bootstrap":
         return run_bootstrap(args)
+    if command == "projects":
+        return project_inventory_cli.run(args)
 
     project_root = (
         Path(args.project_root).resolve()

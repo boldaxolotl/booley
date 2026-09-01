@@ -110,6 +110,14 @@ The design-description primitives Booley references but does not own. **Target**
 A codebase initialized with `booley init`, containing a `.booley_project/` directory with tickets, configuration, and logs. Booley discovers the active project by walking up the directory tree.
 _Avoid_: repo, workspace
 
+**Remembered Project Root**:
+A canonical Project path retained by the host as an administrative identity even when the path is missing or no longer contains initialized Project data.
+_Avoid_: Known Project, Project registry entry, workspace record
+
+**Project Inventory**:
+The host-owned catalog of **Remembered Project Roots** and their **Project Grants**, including roots whose Project data is missing or uninitialized.
+_Avoid_: Project registry, workspace list, filesystem scan
+
 **EDA Installation Registration**:
 A host-owned record of one approved **Host-Provisioned Sandbox EDA Tool** installation and its built-in compatibility policy. Registration identifies available immutable files but grants no Project access by itself.
 _Avoid_: tool enrollment, mount registration, host tool
@@ -119,7 +127,7 @@ A host-owned record of one approved commercial-license topology, including its f
 _Avoid_: project license config, forwarded license environment, license server setting
 
 **Project Grant**:
-Host-owned authorization for one exact canonical **Project** root and EDA kind to use an **EDA Installation Registration**, a **License Profile**, or both. Moving, copying, or separately opening a Project creates a different root that requires its own grant.
+Host-owned authorization for one exact canonical **Remembered Project Root** and EDA kind to use an **EDA Installation Registration**, a **License Profile**, or both. Moving, copying, or separately opening a Project creates a different root that requires its own grant.
 _Avoid_: workspace allowlist, project enrollment, inherited repository access
 
 **Target**:
