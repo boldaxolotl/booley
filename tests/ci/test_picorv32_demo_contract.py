@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.criteria.templates import CriteriaTemplate
 from booley.dev_support import demo_contract as demo_contract_module
 from booley.dev_support.demo_contract import (
     DemoContract,
@@ -72,6 +73,18 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
     assert "ci/agent-ticket-contract" not in serialized
     assert "synth_core_zbb" not in serialized
     assert "sim_zbb_disabled" not in serialized
+
+
+def test_repository_demo_ticket_uses_current_criteria_grammar() -> None:
+    contract = load_contract(CONTRACT)
+    fixture = Path(contract.ticket_fixture)
+    fields, _body = parse_frontmatter(fixture.read_text(encoding="utf-8"))
+
+    template = CriteriaTemplate.from_yaml(fields["criteria"])
+    synthesis = next(spec for spec in template.specs if spec.name == "synthesis_ok")
+
+    assert synthesis.params["cell_count_increase_at_most"] == 11
+    assert synthesis.params["critical_path_ps_increase_at_most"] == 3
 
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
