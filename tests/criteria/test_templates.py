@@ -186,12 +186,12 @@ class TestCriteriaTemplateYAML:
 class TestExpandParams:
     """expand_params() extracts {expanded_key: params} for specs with params."""
 
-    def test_integer_coverage_thresholds(self):
+    def test_explicit_coverage_percentages(self):
         yaml_section = {
             "mandatory": {
-                "coverage_toggle": 90,
-                "coverage_value": 85,
-                "coverage_branch": 80,
+                "coverage_toggle": "90%",
+                "coverage_value": "85%",
+                "coverage_branch": "80%",
             },
         }
         t = CriteriaTemplate.from_yaml(yaml_section)
@@ -204,7 +204,7 @@ class TestExpandParams:
         yaml_section = {
             "mandatory": {
                 "lint_clean": ["lite", "full"],
-                "coverage_value": 90,
+                "coverage_value": "90%",
             },
         }
         t = CriteriaTemplate.from_yaml(yaml_section)
@@ -212,6 +212,11 @@ class TestExpandParams:
         assert "lint_clean_lite" not in params
         assert "lint_clean_full" not in params
         assert params["coverage_value"] == {"min_pct": 90}
+
+    @pytest.mark.parametrize("value", [90, 90.0, "90"])
+    def test_coverage_threshold_requires_percent_suffix(self, value):
+        with pytest.raises(ValueError, match="must end in '%'"):
+            CriteriaTemplate.from_yaml({"mandatory": {"coverage_toggle": value}})
 
     def test_empty_template_returns_empty(self):
         t = CriteriaTemplate.from_yaml({})
@@ -467,7 +472,7 @@ class TestSynthesisOkParsing:
                 "synthesis_ok": {
                     "targets": ["lite", "full"],
                     "cell_count_max": 500,
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 },
             },
         }
@@ -480,12 +485,25 @@ class TestSynthesisOkParsing:
         assert synth_spec.params["cell_count_max"] == 500
         assert synth_spec.params["area_reduce_at_least"] == 10
 
+    def test_relative_qor_threshold_requires_percent_suffix(self):
+        with pytest.raises(ValueError, match="must end in '%'"):
+            CriteriaTemplate.from_yaml(
+                {
+                    "mandatory": {
+                        "synthesis_ok": {
+                            "targets": ["lite"],
+                            "area_reduce_at_least": 10,
+                        }
+                    }
+                }
+            )
+
     def test_paired_target_expands_by_candidate(self):
         yaml_section = {
             "mandatory": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 }
             }
         }
@@ -506,7 +524,7 @@ class TestSynthesisOkParsing:
                         "synth_default",
                         {"baseline": "synth_before", "candidate": "synth_after"},
                     ],
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 }
             }
         }
@@ -542,7 +560,7 @@ class TestSynthesisOkParsing:
                         {"baseline": "synth_a", "candidate": "synth_after"},
                         {"baseline": "synth_b", "candidate": "synth_after"},
                     ],
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 }
             }
         }
@@ -555,13 +573,13 @@ class TestSynthesisOkParsing:
             "mandatory": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_a", "candidate": "synth_after"}],
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 }
             },
             "optional": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_b", "candidate": "synth_after"}],
-                    "area_reduce_at_least": 5,
+                    "area_reduce_at_least": "5%",
                 }
             },
         }
@@ -588,7 +606,7 @@ class TestClockScopedParamValidation:
     def test_clock_scoped_delta_param_accepted(self):
         _validate_criterion_params(
             "synthesis_ok",
-            {"clk_i.critical_path_ps_increase_at_most": 5},
+            {"clk_i.critical_path_ps_increase_at_most": "5%"},
         )
 
     def test_clock_scope_rejected_for_non_per_clock_metric(self):

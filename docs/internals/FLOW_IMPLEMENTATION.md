@@ -266,7 +266,7 @@ cycle_count:
   - target: sim_coremark
     test: coremark
     cycle_count_max: 100000
-    cycle_count_reduce_at_least: 5
+    cycle_count_reduce_at_least: 5%
     cycle_count_reduce_at_least_cycles: 2000
 ```
 

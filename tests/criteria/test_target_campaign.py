@@ -41,7 +41,7 @@ def test_coverage_campaign_expands_target_and_threshold() -> None:
                 {
                     "target": "sim_top",
                     "scope": ["rtl/top.sv"],
-                    "min_pct": 95,
+                    "min_pct": "95%",
                 }
             ]
         },
@@ -81,7 +81,7 @@ def test_mutation_campaign_rejects_incoherent_counts(params) -> None:
         CriteriaTemplate.from_yaml({"mandatory": {"mutation_score": [campaign]}})
 
 
-@pytest.mark.parametrize("min_pct", [0, 101, True])
+@pytest.mark.parametrize("min_pct", ["0%", "101%", True])
 def test_coverage_campaign_rejects_invalid_threshold(min_pct) -> None:
     with pytest.raises(ValueError):
         CriteriaTemplate.from_yaml(

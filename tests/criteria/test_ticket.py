@@ -329,7 +329,7 @@ class TestInitCriteriaState:
         )
 
     def test_params_propagated_to_state(self, tmp_path: Path):
-        """Ticket YAML thresholds (e.g. coverage_value: 90) must reach CriterionEntry.params."""
+        """Explicit ticket percentages must reach CriterionEntry.params as numbers."""
         from unittest.mock import PropertyMock, patch
 
         from booley.harness.models import TicketContext
@@ -337,9 +337,9 @@ class TestInitCriteriaState:
 
         criteria = {
             "mandatory": {
-                "coverage_toggle": 90,
-                "coverage_fsm": 100,
-                "coverage_value": 85,
+                "coverage_toggle": "90%",
+                "coverage_fsm": "100%",
+                "coverage_value": "85%",
                 "lint_clean": ["lite"],
             },
         }
