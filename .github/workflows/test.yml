@@ -520,12 +520,16 @@ jobs:
       - name: Run Python 3.14.7 sidecar behavior and hardening proofs
         shell: bash
         env:
+          BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-sidecar
           BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
           BOOLEY_FLEXNET_DOCKER_TEST: "1"
           BOOLEY_REAPER_IMAGE: booley-reaper:py314
         run: |
           set -o pipefail
-          pytest \
+          .github/scripts/run_with_container_cleanup.sh \
+            "${BOOLEY_DOCKER_NAME_PREFIX}" \
+            pytest \
+            tests/docker/test_sidecar_image_helpers.py \
             tests/docker/test_egress_proxy.py \
             tests/docker/test_proxy_entry.py \
             tests/docker/test_reaper.py \
