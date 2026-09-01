@@ -13,8 +13,8 @@ the slot store -- the same ADR 0028 bookkeeping home, bind-mounted into the
 Session Runtime, so a host-written stamp is readable in-container and vice
 versa). Session start (``booley session up``) and the per-sweep ticket loop
 then check the stamp in microseconds -- no docker round-trips -- and emit a
-one-line advisory nag when doctor's blessing has gone stale or the
-fingerprint no longer matches the config on disk.
+prominent advisory when doctor's blessing has gone stale or the fingerprint
+no longer matches the config on disk.
 
 The fingerprint deliberately contains only inputs both launch contexts hash to the
 same bytes (``booley.toml``, ``doctor-waivers.toml``, and
@@ -35,6 +35,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.harness import colors
 from booley.harness.devcontainer import devcontainer_path
 from booley.harness.doctor_waivers import WAIVER_FILENAME
 from booley.runtime import runtime_context
@@ -46,6 +47,7 @@ STAMP_FILENAME = "doctor_stamp.json"
 # A clean doctor run older than this is considered stale. One week matches
 # the cadence at which sandbox images and agent CLIs realistically drift.
 MAX_AGE_DAYS = 7
+_VERSION_WARNING_SEPARATOR = "=" * 72
 
 
 def stamp_path(project_dir: Path) -> Path:
@@ -124,9 +126,15 @@ def _version_drift_message(stamp: dict) -> str | None:
     if stamped_version == booley.__version__:
         return None
     previous = str(stamped_version) if stamped_version else "unknown"
-    return (
-        f"Booley version changed from {previous} to {booley.__version__} "
-        "since the last clean `booley doctor` run -- invoke /booley-heal"
+    return colors.bold_amber(
+        "\n".join(
+            (
+                _VERSION_WARNING_SEPARATOR,
+                f"WARNING: Booley version changed from {previous} to {booley.__version__}.",
+                "ACTION REQUIRED: Invoke /booley-heal",
+                _VERSION_WARNING_SEPARATOR,
+            )
+        )
     )
 
 
@@ -137,7 +145,7 @@ def check_stamp(
     max_age_days: int = MAX_AGE_DAYS,
     now: datetime | None = None,
 ) -> str | None:
-    """One-line advisory nag, or None when doctor's blessing is current.
+    """Advisory nag, or None when doctor's blessing is current.
 
     Conditions are evaluated strongest first: a missing/corrupt stamp, an
     unreadable timestamp, package-version drift, config drift, then age beyond

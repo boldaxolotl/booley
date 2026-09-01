@@ -82,12 +82,24 @@ class TestCheckStamp:
         monkeypatch.setattr("booley.__version__", "1.0.0")
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
         monkeypatch.setattr("booley.__version__", "2.0.0")
+        monkeypatch.setattr(
+            doctor_stamp.colors,
+            "bold_amber",
+            lambda text: f"<bright-amber>{text}</bright-amber>",
+        )
 
         msg = doctor_stamp.check_stamp(project_dir, tmp_path)
 
         assert msg is not None
-        assert "Booley version changed from 1.0.0 to 2.0.0" in msg
-        assert "invoke /booley-heal" in msg
+        assert msg.startswith("<bright-amber>")
+        assert msg.endswith("</bright-amber>")
+        lines = msg.removeprefix("<bright-amber>").removesuffix("</bright-amber>").splitlines()
+        assert lines == [
+            "=" * 72,
+            "WARNING: Booley version changed from 1.0.0 to 2.0.0.",
+            "ACTION REQUIRED: Invoke /booley-heal",
+            "=" * 72,
+        ]
 
     def test_stale_stamp_nags_with_age(self, tmp_path):
         project_dir = _write_project(tmp_path)
