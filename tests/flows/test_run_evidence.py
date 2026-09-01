@@ -41,3 +41,34 @@ def test_run_evidence_records_only_artifact_provenance(tmp_path, monkeypatch):
     }
     with pytest.raises(FrozenInstanceError):
         evidence.run_id = "other"  # type: ignore[misc]
+
+
+def test_run_evidence_reuses_preflight_source_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_evidence, "git_full_sha", lambda *_args: "a" * 40)
+    monkeypatch.setattr(
+        run_evidence,
+        "compute_source_fingerprint",
+        lambda *_args, **_kwargs: {
+            "algorithm": "sha256",
+            "rtl": {"digest": "b" * 64},
+            "tb": {"digest": "c" * 64},
+        },
+    )
+    source = run_evidence.capture_flow_source_evidence(tmp_path, "core")
+    monkeypatch.setattr(
+        run_evidence,
+        "compute_source_fingerprint",
+        lambda *_args, **_kwargs: pytest.fail("source evidence was captured twice"),
+    )
+
+    evidence = run_evidence.build_flow_run_evidence(
+        flow="fpga",
+        target="core",
+        recipe_sha256="d" * 64,
+        work_dir=tmp_path,
+        run_id="run-1",
+        source_evidence=source,
+    )
+
+    assert evidence.source_revision == source.source_revision == "a" * 40
+    assert evidence.source_sha256 == source.source_sha256

@@ -217,7 +217,7 @@ class TargetRef:
     """
 
 
-_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth"})
+_DOCTOR_FLOW_NAMES = frozenset({"sim", "lint", "synth", "fpga"})
 _RETIRED_DOCTOR_FLOW_NAMES = frozenset({"elab", "elaborate"})
 
 

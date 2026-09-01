@@ -1,7 +1,9 @@
 # Troubleshooting
 
 Start with `booley doctor`; it catches setup breakage on its own, and `booley
-doctor --deep` additionally runs real sim/lint/synthesis smoke checks. What
+doctor --deep` additionally runs real sim/lint/synthesis smoke checks. Plain
+Doctor setup-checks marked FPGA Targets; deep mode prints their manual full-
+implementation commands instead of launching long Vivado runs. What
 follows is the residue Booley cannot safely repair itself: upstream constraints,
 host policy, project-specific intent, and third-party lifecycle behavior.
 With an agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;

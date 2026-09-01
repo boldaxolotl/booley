@@ -626,7 +626,7 @@ timing is met.
 
 The selected Target owns FPGA build intent: device part, out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
-policy and default Target selection. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
+policy; every invocation still names its Target. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
 owns the exact keys, defaults, and examples.
 
 The Target's `fpga` name axis is the drivability discriminator. Its declared
@@ -640,6 +640,19 @@ The device `part`, `out_of_context` choice, and other build-recipe inputs live
 under the selected Target's `flow_options`. XDC constraints are a Target
 `file_type: xdc` fileset, and compile-time defines are typed `vlogdefine`
 parameters. Doctor rejects those build inputs under `[flows.fpga]`.
+
+Dry-run and real execution share one validated Target-recipe preflight. Both
+run FuseSoC setup, validate part/top/XDC/parameters, partition the resolved
+sources, and inspect those sources for provenance. Only the real path then
+materializes the Vivado project and creates execution evidence. Multi-Target
+dry-run output is all-or-nothing: a later setup failure suppresses the resolved
+metadata for earlier Targets.
+
+Plain Doctor includes the optional FPGA axis when a Target marks
+`booley: {doctor: [fpga]}` or `[flows.fpga]` is present and enabled. It uses the
+same dry-run and checks `vivado` availability. Deep Doctor deliberately does not
+run full implementation; it emits one target-specific SKIP with the manual
+command instead.
 
 The Booley Flow generates an Edalize `vivado` project whose `make` target invokes
 Vivado inside the Session Runtime. With `provisioning = "image"`, the runtime

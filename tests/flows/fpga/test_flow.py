@@ -16,6 +16,7 @@ import pytest
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import TargetPair
+from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
@@ -25,7 +26,7 @@ from booley.flows.recipe_evidence import (
     RECIPE_FINGERPRINT_PARAM,
     RECIPE_SNAPSHOT_PARAM,
 )
-from booley.fusesoc import fusesoc_registry
+from booley.fusesoc import core_projection, fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
@@ -232,26 +233,6 @@ def _collect_flow(work_dir: Path) -> FpgaImplFlow:
     return flow
 
 
-def _patch_fpga_resolve(tmp_path: Path):
-    """Patch the design-description resolver the builtin path now uses.
-
-    ADR 0022 (decision 4) replaced ``FpgaImplFlow._resolve_sources`` (configs.toml
-    + source globbing) with ``fusesoc_registry.try_resolve_target``: the builtin
-    dry-run ``_resolve_fpga_summary`` resolves the ``.core`` Target and splits its
-    sources via ``_split_resolved_sources``. These dry-run tests therefore mock
-    ``try_resolve_target`` (a non-fusesoc fake EDAM) instead of the deleted
-    ``_resolve_sources``; part and XDC come from the Target.
-    """
-    return patch.object(
-        fusesoc_registry,
-        "try_resolve_target",
-        side_effect=lambda config="default", **k: _fake_fpga_resolved(
-            tmp_path,
-            config=config,
-        ),
-    )
-
-
 # ---------------------------------------------------------------------------
 # FuseSoC resolution stub (ADR 0022 Phase 2)
 # ---------------------------------------------------------------------------
@@ -330,8 +311,7 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file, "--dry-run")
 
-    with _patch_fpga_resolve(tmp_path):
-        result = flow._run()
+    result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
     assert "part=xc7a200tfbg484-1" in result.report_text
@@ -345,14 +325,109 @@ def test_dry_run_resolves_sources_from_work_dir(
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file, "--dry-run")
 
-    # The dry-run sources its source counts from the resolved .core Target
-    # (_resolve_fpga_summary → try_resolve_target → _split_resolved_sources): one .sv
-    # (rtl/top.sv) and one .v (rtl/legacy.v), excluding the include header & TB.
-    with _patch_fpga_resolve(tmp_path):
-        result = flow._run()
+    # The dry-run sources its source counts from the resolved .core Target: one
+    # .sv and one .v, excluding the include header and TB.
+    result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
     assert "sv_files=1 v_files=1" in result.report_text
+
+
+def test_dry_run_fails_before_reporting_uninspected_target(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    """Dry-run must cross the source-inspection gate used before dispatch."""
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    with patch.object(
+        run_evidence,
+        "capture_flow_source_evidence",
+        side_effect=fusesoc_registry.FuseSocError("projected core identity mismatch"),
+    ):
+        result = flow._run()
+
+    assert result.exit_code == EXIT_ERROR
+    assert "projected core identity mismatch" in result.report_text
+    assert "target=default" not in result.report_text
+    assert "part=" not in result.report_text
+    assert "top=" not in result.report_text
+    assert "xdc=" not in result.report_text
+    assert "sv_files=" not in result.report_text
+    assert "v_files=" not in result.report_text
+
+
+def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    def resolve(target="default", **_kwargs):
+        if target == "bad":
+            raise fusesoc_registry.FuseSocError("setup rejected bad")
+        return _fake_fpga_resolved(tmp_path, config=target)
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target", side_effect=resolve),
+        patch.object(
+            run_evidence,
+            "capture_flow_source_evidence",
+            return_value=run_evidence.FlowSourceEvidence("unversioned", "source-digest"),
+        ),
+    ):
+        result = flow._dry_run(["good", "bad"])
+
+    assert result.exit_code == EXIT_ERROR
+    assert "setup rejected bad" in result.report_text
+    assert "target=good" not in result.report_text
+    assert "part=" not in result.report_text
+
+
+def test_dry_run_and_real_setup_reject_same_stealth_projection_identity_fault(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    """Regression: projected stealth cores must cross real source inspection."""
+    _write_project_config(tmp_path)
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\n[stealth]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".booley_project" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    cores = tmp_path / ".booley_project" / "cores"
+    cores.mkdir()
+    (cores / "design.core").write_text(
+        "CAPI=2:\nname: ::fpga_demo:0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files:\n"
+        "      - rtl/top.sv: {file_type: systemVerilogSource}\n"
+        "  xdc:\n"
+        "    files:\n"
+        "      - constraints/timing.xdc: {file_type: xdc}\n"
+        "targets:\n"
+        "  fpga_board:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: vivado, part: xc7a200tfbg484-1}\n"
+        "    filesets: [rtl, xdc]\n"
+        "    toplevel: dut_top\n",
+        encoding="utf-8",
+    )
+    core_projection.reconcile_projected_cores(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    dry_run = flow._dry_run(["fpga_board"])
+    real_run = flow._run_single_target("fpga_board")
+
+    assert dry_run.exit_code == EXIT_ERROR
+    assert "FuseSoC selected" in dry_run.report_text
+    assert "target=fpga_board" not in dry_run.report_text
+    assert real_run.returncode == EXIT_ERROR
+    assert "FuseSoC selected" in (real_run.infra_error or "")
 
 
 def test_negative_wns_fails_fpga_criterion(

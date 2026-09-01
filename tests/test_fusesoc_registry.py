@@ -577,7 +577,6 @@ class TestDoctorTargetMetadata:
         [
             ("booley: sim", "booley must be a mapping"),
             ("booley: {doctor: sim}", "doctor must be an array"),
-            ("booley: {doctor: [fpga]}", "invalid Flow values"),
             ("booley: {doctor: [sim, sim]}", "must not contain duplicates"),
             ("booley: {doctor_selftest: bad}", "doctor_selftest must be a boolean"),
             ("booley: {doctor: [sim], mystery: true}", "mystery is not a supported"),
@@ -592,6 +591,25 @@ class TestDoctorTargetMetadata:
             encoding="utf-8",
         )
         assert any(needle in error for error in core_schema_errors(core))
+
+    def test_fpga_doctor_metadata_selects_target(self, tmp_path: Path):
+        core = tmp_path / "fpga.core"
+        core.write_text(
+            "CAPI=2:\nname: ::fpga:0\ntargets:\n"
+            "  fpga_board:\n"
+            "    flow: generic\n"
+            "    flow_options:\n"
+            "      tool: verilator\n"
+            "      part: xc7a35tcsg324-1\n"
+            "      booley: {doctor: [fpga]}\n",
+            encoding="utf-8",
+        )
+
+        doc = read_core(core)
+        assert core_schema_errors(core) == []
+        assert core_target_doctor_flows(doc, "fpga_board") == ("fpga",)
+        assert doctor_target_selectors(tmp_path, "fpga") == ["fpga_board"]
+        assert "fpga_board" in doctor_target_seed(tmp_path)
 
 
 class TestResolveConfigSelection:

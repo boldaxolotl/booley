@@ -4460,6 +4460,143 @@ def test_check_doctor_targets_names_available_targets_when_none_selected(tmp_pat
     assert "flow_options.booley.doctor" in fails[0][1]
 
 
+def _fpga_doctor_project(
+    root: Path,
+    *,
+    marked: bool,
+    fpga_table: dict[str, object] | None = None,
+) -> doctor.ProjectAudit:
+    metadata = ", booley: {doctor: [fpga]}" if marked else ""
+    (root / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\ntargets:\n"
+        "  fpga_board:\n"
+        "    flow: generic\n"
+        f"    flow_options: {{tool: verilator, part: xc7a35tcsg324-1{metadata}}}\n",
+        encoding="utf-8",
+    )
+    flows: dict[str, object] = {
+        "sim": {"enabled": False},
+        "lint": {"enabled": False},
+        "synth": {"enabled": False},
+    }
+    if fpga_table is not None:
+        flows["fpga"] = fpga_table
+    return doctor.ProjectAudit(
+        project_root=root,
+        project_dir=root / ".booley_project",
+        booley_toml={"flows": flows},
+        configs_toml={},
+        first_target="",
+    )
+
+
+def _run_isolated_flow_audit(project, monkeypatch):
+    rec = _Rec()
+    calls: list[tuple[str, str, bool]] = []
+    monkeypatch.setattr(doctor, "_check_design_size", lambda *args, **kwargs: None)
+    monkeypatch.setattr(doctor, "_check_flow_runtime_reality", lambda *args, **kwargs: None)
+
+    def record(_project, flow_name, **kwargs):
+        calls.append((flow_name, kwargs["target"], kwargs["dry_run"]))
+
+    monkeypatch.setattr(doctor, "_run_flow_check", record)
+    doctor._run_flow_audit(
+        project,
+        doctor._DoctorFlowRuntime(project.project_root, None),
+        False,
+        rec.p,
+        rec.n,
+        rec.w,
+        rec.s,
+        rec.f,
+    )
+    return rec, calls
+
+
+def test_flow_audit_dry_runs_marked_fpga_target_without_flow_table(tmp_path, monkeypatch):
+    project = _fpga_doctor_project(tmp_path, marked=True)
+
+    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+
+    assert calls == [("fpga", "fpga_board", True)]
+    assert not rec.fails()
+
+
+def test_flow_audit_fails_enabled_fpga_table_without_marked_target(tmp_path, monkeypatch):
+    project = _fpga_doctor_project(tmp_path, marked=False, fpga_table={})
+
+    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+
+    assert calls == []
+    assert any("fpga has no Doctor Target" in message for message in rec.fails())
+
+
+def test_flow_audit_skips_explicitly_disabled_marked_fpga_target(tmp_path, monkeypatch):
+    project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={"enabled": False})
+
+    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+
+    assert calls == []
+    assert ("skip", "fpga disabled in booley.toml") in rec.events
+
+
+def test_flow_audit_skips_fpga_when_not_configured_or_marked(tmp_path, monkeypatch):
+    project = _fpga_doctor_project(tmp_path, marked=False)
+
+    rec, calls = _run_isolated_flow_audit(project, monkeypatch)
+
+    assert calls == []
+    assert any(
+        level == "skip" and "fpga not applicable" in message
+        for level, message in rec.events
+    )
+
+
+def test_fpga_runtime_probe_checks_vivado_not_resolution_tool(tmp_path):
+    project = _fpga_doctor_project(tmp_path, marked=True)
+
+    assert doctor._runtime_probe_binaries(
+        project, ["fpga_board"], flow_name="fpga"
+    ) == ["vivado"]
+
+
+def test_fpga_deep_notice_names_marked_target_and_manual_command(tmp_path):
+    project = _fpga_doctor_project(tmp_path, marked=True)
+    skips: list[str] = []
+
+    doctor._run_fpga_impl_deep_notice(project, skips.append)
+
+    assert skips == [
+        "fpga deep smoke [fpga_board] skipped - a full FPGA implementation is too "
+        "slow for --deep; smoke it manually end-to-end: booley flow fpga --target fpga_board"
+    ]
+
+
+def test_marked_fpga_axis_requires_fpga_mcp_endpoint(tmp_path):
+    project = _fpga_doctor_project(tmp_path, marked=True)
+
+    assert "fpga" in doctor._required_mcp_tools(project)
+
+
+def test_disabled_fpga_axis_does_not_require_fpga_mcp_endpoint(tmp_path):
+    project = _fpga_doctor_project(tmp_path, marked=True, fpga_table={"enabled": False})
+
+    assert "fpga" not in doctor._required_mcp_tools(project)
+
+
+def test_marked_fpga_target_with_non_fpga_axis_fails_compatibility(tmp_path):
+    project = _fpga_doctor_project(tmp_path, marked=True)
+    core = tmp_path / "design.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace("fpga_board", "synth_board"),
+        encoding="utf-8",
+    )
+    rec = _Rec()
+
+    assert doctor._check_doctor_targets(project, "fpga", rec.f) == []
+    assert any("incompatible Doctor Flow 'fpga'" in message for message in rec.fails())
+
+
 def test_print_text_excerpt_keeps_reason_line(capsys):
     # The fusesoc parse-error reason lands on the line AFTER "Ignoring file X:";
     # a first-line-only excerpt dropped it — the excerpt must retain it.
