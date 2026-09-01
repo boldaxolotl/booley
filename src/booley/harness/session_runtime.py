@@ -391,9 +391,9 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
 
 def _warn_on_stale_booley_bake(workspace: Path) -> None:
     """Warn when the managed Session Image is stale by authoritative provenance."""
-    from booley.harness.image_lifecycle import Intent, Status, reconcile
+    from booley.harness.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
 
-    result = reconcile(workspace, Intent.CHECK)
+    result = reconcile(ProjectImageScope(workspace), Intent.CHECK)
     if result.status is Status.STALE:
         logger.warning(
             "sandbox image '%s' was built from Booley sources that no longer "

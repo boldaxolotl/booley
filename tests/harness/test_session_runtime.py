@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -692,15 +693,15 @@ def _write_spec(workspace: Path, spec: dict) -> None:
 
 
 @pytest.fixture
-def wired(workspace: Path):
-    """A workspace with a spec on disk and a fully mocked Docker."""
+def wired(workspace: Path, request: pytest.FixtureRequest):
+    """A workspace with a spec on disk and mocked external boundaries."""
     from booley.harness import image_lifecycle
 
     _write_spec(workspace, _spec())
-    with (
-        patch.object(sr.idk, "network_exists", return_value=True),
-        patch.object(sr.idk, "image_exists", return_value=True),
-        patch.object(
+    lifecycle_reconcile = (
+        nullcontext()
+        if getattr(request, "param", None) == "real-image-lifecycle"
+        else patch.object(
             image_lifecycle,
             "reconcile",
             return_value=image_lifecycle.LifecycleResult(
@@ -708,7 +709,12 @@ def wired(workspace: Path):
                 "sha256:fixture",
                 image_lifecycle.Status.CURRENT,
             ),
-        ),
+        )
+    )
+    with (
+        patch.object(sr.idk, "network_exists", return_value=True),
+        patch.object(sr.idk, "image_exists", return_value=True),
+        lifecycle_reconcile,
         patch(
             "booley.eda.runtime_spec.validate",
             return_value=SimpleNamespace(
@@ -737,6 +743,39 @@ def _argv_of(call) -> list[str]:
 
 
 class TestUp:
+    @pytest.mark.parametrize(
+        "wired",
+        ["real-image-lifecycle"],
+        indirect=True,
+        ids=["real-image-lifecycle"],
+    )
+    def test_checks_project_image_provenance_before_starting(
+        self,
+        wired,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.harness import image_lifecycle
+
+        workspace, _run = wired
+        project_dir = workspace / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            '[sandbox]\nimage = "custom/session"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            image_lifecycle,
+            "_docker_adapter",
+            lambda: SimpleNamespace(image_id=lambda _image: None),
+        )
+        ours = sr.session_container_name(workspace)
+
+        with (
+            patch.object(sr.idk, "container_exists", return_value=True),
+            patch.object(sr.idk, "container_running", return_value=True),
+        ):
+            assert sr.up(workspace) == ours
+
     def test_creates_container_and_runs_both_hooks(self, wired):
         workspace, run = wired
         ours = sr.session_container_name(workspace)
@@ -1316,7 +1355,10 @@ class TestStaleBooleyBakeWarning:
         with patch.object(image_lifecycle, "reconcile", return_value=result) as reconcile:
             sr._warn_on_stale_booley_bake(workspace)
 
-        reconcile.assert_called_once_with(workspace, image_lifecycle.Intent.CHECK)
+        reconcile.assert_called_once_with(
+            image_lifecycle.ProjectImageScope(workspace),
+            image_lifecycle.Intent.CHECK,
+        )
         assert "stale Booley code" in caplog.text
         assert "booley session refresh" in caplog.text
 
