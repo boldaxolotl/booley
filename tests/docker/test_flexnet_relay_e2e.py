@@ -47,6 +47,41 @@ def _require_docker() -> None:
         pytest.skip(f"{RELAY_IMAGE} is not built")
 
 
+def _wait_for_tcp_listeners(
+    container: str,
+    ports: tuple[int, ...],
+    *,
+    timeout: float = 10.0,
+) -> None:
+    checks = " && ".join(f"netstat -ltn | grep -Eq ':{port}[[:space:]]'" for port in ports)
+    deadline = time.monotonic() + timeout
+    captured = ""
+    while time.monotonic() < deadline:
+        result = _docker("exec", container, "sh", "-c", checks)
+        captured = result.stdout + result.stderr
+        if result.returncode == 0:
+            return
+        time.sleep(0.1)
+    pytest.fail(f"synthetic upstream listeners did not become ready: {captured}")
+
+
+def test_wait_for_tcp_listeners_retries_until_both_ports_are_bound(monkeypatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    returncodes = iter((1, 0))
+
+    def fake_docker(*args: str) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, next(returncodes), "", "listeners not ready")
+
+    monkeypatch.setitem(globals(), "_docker", fake_docker)
+
+    _wait_for_tcp_listeners("upstream", (32110, 32111), timeout=1)
+
+    assert len(calls) == 2
+    assert all(call[:3] == ("exec", "upstream", "sh") for call in calls)
+    assert all("32110" in call[-1] and "32111" in call[-1] for call in calls)
+
+
 @pytest.mark.slow()
 def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
     _require_docker()
@@ -135,6 +170,7 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
                 break
             time.sleep(0.1)
         assert ip
+        _wait_for_tcp_listeners(upstream, (first, second))
 
         profile = RelayProfile(ip, "license-server-01", first, second)
         created_resources = provision_relay(profile, identity, issuance_labels=labels)
