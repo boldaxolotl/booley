@@ -1,14 +1,10 @@
-"""Transactional loading and matching of project-wide approved coverage waivers."""
+"""Transactional loading of project-wide approved coverage waivers."""
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import json
-import os
 import re
-import stat
 import tomllib
 import unicodedata
 from collections.abc import Collection, Mapping
@@ -17,12 +13,21 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Literal
 
+from booley.core.boundary import BoundaryError, as_str, require_dict, require_list, require_str
 from booley.flows.sim.coverage_campaign import (
-    CoverageCampaign,
     CoverageFinding,
     DurableTargetIdentity,
     FrozenJson,
+    decode_coverage_point_id,
 )
+from booley.flows.sim.coverage_waiver_files import (
+    SecureFile,
+    SecureFileScan,
+    SecurePathError,
+    SecurePathProblem,
+    SecureTree,
+)
+from booley.flows.sim.coverage_waiver_matching import ApprovedWaiver, ApprovedWaiverSet
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 _SET_SCHEMA = "booley.approved-waiver-set/v1"
@@ -69,41 +74,6 @@ class CoverageWaiverValidationError(ValueError):
         super().__init__(f"approved waiver set is invalid ({len(findings)} findings)")
 
 
-@dataclass(frozen=True)
-class ApprovedWaiver:
-    """One validated exact Target-and-point exclusion."""
-
-    target: DurableTargetIdentity
-    point_id: str
-    reason: str
-    waiver_id: str
-    waiver_file: str
-    waiver_fingerprint: str
-    provenance: Mapping[str, FrozenJson]
-    source: str
-
-
-@dataclass(frozen=True)
-class ApprovedWaiverSet:
-    """Immutable project-wide approved waiver input."""
-
-    configuration: Mapping[str, FrozenJson]
-    digest: str
-    waivers: tuple[ApprovedWaiver, ...]
-
-    def match(self, campaign: CoverageCampaign) -> ApprovedWaiverMatch:
-        """Resolve applicable exact matches transactionally for one Campaign."""
-        return _match_campaign(self.waivers, campaign)
-
-
-@dataclass(frozen=True)
-class ApprovedWaiverMatch:
-    """All applicable waivers, or findings and no waivers."""
-
-    waivers: tuple[ApprovedWaiver, ...]
-    findings: tuple[CoverageFinding, ...]
-
-
 def _digest(document: object) -> str:
     encoded = json.dumps(
         document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -120,16 +90,17 @@ def _error(code: str, pointer: str, message: str) -> CoverageFinding:
 
 
 def _safe_relative_posix(value: object) -> bool:
-    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+    text = as_str(value)
+    if not text or "\\" in text or "\x00" in text:
         return False
-    if unicodedata.normalize("NFC", value) != value:
+    if unicodedata.normalize("NFC", text) != text:
         return False
-    path = PurePosixPath(value)
+    path = PurePosixPath(text)
     return (
         not path.is_absolute()
-        and _WINDOWS_DRIVE_RE.match(value) is None
+        and _WINDOWS_DRIVE_RE.match(text) is None
         and all(part not in {"", ".", ".."} for part in path.parts)
-        and path.as_posix() == value
+        and path.as_posix() == text
     )
 
 
@@ -154,45 +125,20 @@ def _config_findings(config: CoverageWaiverConfig) -> tuple[CoverageFinding, ...
     return tuple(findings)
 
 
-def _directory_findings(root: Path, relative: str) -> tuple[CoverageFinding, ...]:
-    current = root
-    for part in PurePosixPath(relative).parts:
-        current /= part
-        try:
-            mode = current.lstat().st_mode
-        except FileNotFoundError:
-            return (
-                _error(
-                    "COV_WAIVER_DIRECTORY_MISSING",
-                    "/directory",
-                    "Configured approved-waiver directory does not exist.",
-                ),
-            )
-        except OSError:
-            return (
-                _error(
-                    "COV_WAIVER_DIRECTORY_UNREADABLE",
-                    "/directory",
-                    "Configured approved-waiver directory is not readable.",
-                ),
-            )
-        if stat.S_ISLNK(mode):
-            return (
-                _error(
-                    "COV_WAIVER_DIRECTORY_SYMLINK",
-                    "/directory",
-                    "No configured directory component may be a symlink.",
-                ),
-            )
-        if not stat.S_ISDIR(mode):
-            return (
-                _error(
-                    "COV_WAIVER_DIRECTORY_INVALID",
-                    "/directory",
-                    "Configured approved-waiver path must be a directory.",
-                ),
-            )
-    return ()
+def _configured_directory_finding(error: SecurePathError) -> CoverageFinding:
+    codes = {
+        "missing": "COV_WAIVER_DIRECTORY_MISSING",
+        "symlink": "COV_WAIVER_DIRECTORY_SYMLINK",
+        "invalid": "COV_WAIVER_DIRECTORY_INVALID",
+        "unreadable": "COV_WAIVER_DIRECTORY_UNREADABLE",
+    }
+    messages = {
+        "missing": "Configured approved-waiver directory does not exist.",
+        "symlink": "No configured directory component may be a symlink.",
+        "invalid": "Configured approved-waiver path must be a directory.",
+        "unreadable": "Configured approved-waiver directory is not readable.",
+    }
+    return _error(codes[error.kind], "/directory", messages[error.kind])
 
 
 def _freeze(value: object) -> FrozenJson:
@@ -211,181 +157,90 @@ def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, FrozenJson]:
     return frozen
 
 
-def _read_regular_file(path: Path) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise OSError("path is not a regular file")
-        with os.fdopen(os.dup(descriptor), "rb") as stream:
-            return stream.read()
-    finally:
-        os.close(descriptor)
-
-
-def _read_rtl_source(
-    root: Path, relative: str, pointer: str
+def _read_evidence(
+    tree: SecureTree,
+    relative: str,
+    pointer: str,
+    *,
+    label: str,
 ) -> tuple[bytes | None, CoverageFinding | None]:
-    current = root
-    parts = PurePosixPath(relative).parts
-    for index, part in enumerate(parts):
-        current /= part
-        try:
-            mode = current.lstat().st_mode
-        except OSError:
-            return None, _error(
-                "COV_WAIVER_SOURCE_MISSING", pointer, "Approved RTL source is missing."
-            )
-        if stat.S_ISLNK(mode):
-            return None, _error(
-                "COV_WAIVER_SOURCE_SYMLINK",
-                pointer,
-                "RTL source path components cannot be symlinks.",
-            )
-        expected = stat.S_ISREG(mode) if index == len(parts) - 1 else stat.S_ISDIR(mode)
-        if not expected:
-            return None, _error(
-                "COV_WAIVER_SOURCE_INVALID",
-                pointer,
-                "RTL source must be a regular file beneath the RTL repository.",
-            )
     try:
-        return _read_regular_file(current), None
-    except OSError:
-        return None, _error(
-            "COV_WAIVER_SOURCE_UNREADABLE", pointer, "Approved RTL source is unreadable."
+        return tree.read_file(relative), None
+    except SecurePathError as error:
+        code = f"COV_WAIVER_{label}_{error.kind.upper()}"
+        noun = "RTL source" if label == "SOURCE" else "Approved proof artifact"
+        return None, _error(code, pointer, f"{noun} is {error.kind}.")
+
+
+def _scan_problem_finding(problem: SecurePathProblem) -> CoverageFinding:
+    pointer = f"/files/{problem.relative_path}"
+    if problem.kind == "symlink":
+        code = (
+            "COV_WAIVER_DIRECTORY_SYMLINK"
+            if problem.entry_kind == "directory"
+            else "COV_WAIVER_FILE_SYMLINK"
         )
-
-
-def _enumerate_approval_files(
-    directory: Path,
-) -> tuple[tuple[Path, ...], tuple[CoverageFinding, ...]]:
-    files: list[Path] = []
-    findings: list[CoverageFinding] = []
-    pending = [directory]
-    while pending:
-        current = pending.pop()
-        for entry in sorted(current.iterdir(), reverse=True):
-            relative = entry.relative_to(directory).as_posix()
-            mode = entry.lstat().st_mode
-            if stat.S_ISLNK(mode):
-                code = (
-                    "COV_WAIVER_FILE_SYMLINK"
-                    if entry.name.endswith(".toml")
-                    else "COV_WAIVER_DIRECTORY_SYMLINK"
-                )
-                findings.append(_error(code, f"/files/{relative}", "Symlinks are forbidden."))
-            elif stat.S_ISDIR(mode):
-                pending.append(entry)
-            elif stat.S_ISREG(mode):
-                files.append(entry)
-            else:
-                findings.append(
-                    _error(
-                        "COV_WAIVER_FILE_INVALID",
-                        f"/files/{relative}",
-                        "Approval directory entries must be regular files or directories.",
-                    )
-                )
-    return tuple(sorted(files)), tuple(sorted(findings, key=lambda item: item.pointer))
+        return _error(code, pointer, "Symlinks are forbidden.")
+    if problem.entry_kind == "directory":
+        code = "COV_WAIVER_DIRECTORY_UNREADABLE"
+        return _error(code, pointer, "Approval directory is not safely readable.")
+    code = "COV_WAIVER_FILE_INVALID" if problem.kind == "invalid" else "COV_WAIVER_FILE_UNREADABLE"
+    return _error(code, pointer, "Approval file is not a safely readable regular file.")
 
 
 def _point_source(point_id: object) -> str | None:
-    if not isinstance(point_id, str) or not re.fullmatch(r"cp1:[A-Za-z0-9_-]+", point_id):
+    identity = decode_coverage_point_id(point_id)
+    if identity is None:
         return None
-    payload = point_id.removeprefix("cp1:")
-    try:
-        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
-        identity = json.loads(raw)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    if not isinstance(identity, Mapping) or set(identity) != {
-        "metric",
-        "location",
-        "hierarchy",
-        "subject",
-        "collector",
-    }:
-        return None
-    location = identity.get("location")
-    source = location.get("source") if isinstance(location, Mapping) else None
-    canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    encoded = base64.urlsafe_b64encode(canonical.encode()).decode().rstrip("=")
-    return source if isinstance(source, str) and point_id == f"cp1:{encoded}" else None
+    location = require_dict(identity.get("location"), field="location")
+    return require_str(location, "source")
 
 
 def _timestamp_is_canonical(value: object) -> bool:
-    if not isinstance(value, str):
+    text = as_str(value)
+    if text is None:
         return False
     try:
-        parsed = parse_timestamp(value)
+        parsed = parse_timestamp(text)
     except ValueError:
         return False
-    return rfc3339_from_epoch(parsed.timestamp()) == value
+    return rfc3339_from_epoch(parsed.timestamp()) == text
 
 
 def _proof_findings(proof: object, pointer: str) -> list[CoverageFinding]:
-    if not isinstance(proof, Mapping):
+    try:
+        document = require_dict(proof, field="proof")
+        kind = require_str(document, "kind")
+        reference = require_str(document, "reference")
+        fingerprint = require_str(document, "sha256")
+    except BoundaryError:
         return [_error("COV_WAIVER_PROOF_INVALID", pointer, "Proof must be a table.")]
-    if set(proof) != {"kind", "reference", "sha256"}:
+    if set(document) != {"kind", "reference", "sha256"}:
         return [_error("COV_WAIVER_PROOF_INVALID", pointer, "Proof fields are closed.")]
-    valid = (
-        proof.get("kind") == "formal"
-        and isinstance(proof.get("reference"), str)
-        and bool(proof.get("reference"))
-        and _SHA256_RE.fullmatch(str(proof.get("sha256"))) is not None
-    )
+    valid = kind == "formal" and bool(reference) and _SHA256_RE.fullmatch(fingerprint) is not None
     return [] if valid else [_error("COV_WAIVER_PROOF_INVALID", pointer, "Invalid proof.")]
 
 
 def _proof_evidence_finding(
-    root: Path,
+    tree: SecureTree,
     record: Mapping[str, object],
     pointer: str,
 ) -> CoverageFinding | None:
     proof = record.get("proof")
     if record.get("reason") != "unreachable" or _proof_findings(proof, pointer):
         return None
-    assert isinstance(proof, Mapping)
-    reference = str(proof["reference"])
+    document = require_dict(proof, field="proof")
+    reference = require_str(document, "reference")
     relative = reference.split("#", 1)[0]
     if not _safe_relative_posix(relative):
         return _error("COV_WAIVER_PROOF_INVALID", pointer, "Unsafe proof reference.")
-    raw, finding = _read_proof_artifact(root, relative, pointer)
+    raw, finding = _read_evidence(tree, relative, pointer, label="PROOF")
     if finding is not None:
         return finding
     assert raw is not None
-    if proof["sha256"] != _fingerprint(raw):
+    if document["sha256"] != _fingerprint(raw):
         return _error("COV_WAIVER_PROOF_STALE", f"{pointer}/sha256", "Proof bytes changed.")
     return None
-
-
-def _read_proof_artifact(
-    root: Path, relative: str, pointer: str
-) -> tuple[bytes | None, CoverageFinding | None]:
-    current = root
-    parts = PurePosixPath(relative).parts
-    for index, part in enumerate(parts):
-        current /= part
-        try:
-            mode = current.lstat().st_mode
-        except OSError:
-            return None, _error(
-                "COV_WAIVER_PROOF_MISSING", pointer, "Approved proof artifact is missing."
-            )
-        if stat.S_ISLNK(mode):
-            return None, _error("COV_WAIVER_PROOF_SYMLINK", pointer, "Proof path is a symlink.")
-        expected = stat.S_ISREG(mode) if index == len(parts) - 1 else stat.S_ISDIR(mode)
-        if not expected:
-            return None, _error(
-                "COV_WAIVER_PROOF_INVALID", pointer, "Proof is not a regular file."
-            )
-    try:
-        return _read_regular_file(current), None
-    except OSError:
-        return None, _error(
-            "COV_WAIVER_PROOF_UNREADABLE", pointer, "Approved proof artifact is unreadable."
-        )
 
 
 def _record_shape_findings(
@@ -394,18 +249,21 @@ def _record_shape_findings(
     findings: list[CoverageFinding] = []
     unknown = set(record) - _APPROVAL_FIELDS
     missing = _REQUIRED_APPROVAL_FIELDS - set(record)
-    empty = [
-        key
-        for key in _REQUIRED_APPROVAL_FIELDS
-        if not isinstance(record.get(key), str) or not record[key]
-    ]
+    try:
+        for key in _REQUIRED_APPROVAL_FIELDS:
+            require_str(record, key)
+    except BoundaryError:
+        empty = True
+    else:
+        empty = False
     if unknown or missing or empty:
         findings.append(
             _error(
                 "COV_WAIVER_RECORD_INCOMPLETE", pointer, "Approval fields are closed and required."
             )
         )
-    if isinstance(record.get("target"), str) and record["target"] not in known_targets:
+    target = as_str(record.get("target"))
+    if target is not None and target not in known_targets:
         findings.append(
             _error("COV_WAIVER_TARGET_UNKNOWN", f"{pointer}/target", "Unknown Target.")
         )
@@ -471,11 +329,13 @@ def _record_findings(
     source: str,
     known_targets: frozenset[str],
 ) -> list[CoverageFinding]:
-    if not isinstance(record, Mapping):
+    try:
+        document = require_dict(record, field="approval")
+    except BoundaryError:
         return [_error("COV_WAIVER_RECORD_INVALID", pointer, "Approval must be a table.")]
-    findings = _record_shape_findings(record, pointer, known_targets)
-    findings.extend(_record_binding_findings(record, pointer, source))
-    if not _timestamp_is_canonical(record.get("approved_at")):
+    findings = _record_shape_findings(document, pointer, known_targets)
+    findings.extend(_record_binding_findings(document, pointer, source))
+    if not _timestamp_is_canonical(document.get("approved_at")):
         findings.append(
             _error(
                 "COV_WAIVER_APPROVED_AT_INVALID",
@@ -483,7 +343,7 @@ def _record_findings(
                 "Canonical UTC RFC 3339 required.",
             )
         )
-    findings.extend(_record_reason_findings(record, pointer))
+    findings.extend(_record_reason_findings(document, pointer))
     return findings
 
 
@@ -547,8 +407,11 @@ def _document_shape_findings(
                 "Source fingerprint must be lowercase SHA-256.",
             )
         )
-    approvals = document.get("approval")
-    if not isinstance(approvals, list) or not approvals:
+    try:
+        approvals = require_list(document.get("approval"), field="approval")
+    except BoundaryError:
+        approvals = []
+    if not approvals:
         findings.append(
             _error(
                 "COV_WAIVER_APPROVALS_INVALID",
@@ -564,13 +427,11 @@ def _load_approval_file(
     document: Mapping[str, object],
     relative_path: str,
 ) -> tuple[dict[str, object], list[ApprovedWaiver]]:
-    source = str(document["source"])
-    source_fingerprint = str(document["source_sha256"])
+    source = require_str(document, "source")
+    source_fingerprint = require_str(document, "source_sha256")
     file_fingerprint = _fingerprint(raw)
-    raw_approvals = document["approval"]
-    assert isinstance(raw_approvals, list)
-    approvals_as_mappings = [item for item in raw_approvals if isinstance(item, Mapping)]
-    assert len(approvals_as_mappings) == len(raw_approvals)
+    raw_approvals = require_list(document.get("approval"), field="approval")
+    approvals_as_mappings = [require_dict(item, field="approval") for item in raw_approvals]
     approval_documents = sorted(
         approvals_as_mappings,
         key=lambda item: (str(item["target"]), str(item["point_id"]), str(item["id"])),
@@ -595,28 +456,14 @@ def _load_approval_file(
 
 
 def _read_approval_document(
-    path: Path, pointer: str
+    raw: bytes, pointer: str
 ) -> tuple[bytes | None, Mapping[str, object] | None, tuple[CoverageFinding, ...]]:
-    try:
-        raw = _read_regular_file(path)
-    except OSError:
-        return (
-            None,
-            None,
-            (
-                _error(
-                    "COV_WAIVER_FILE_UNREADABLE",
-                    pointer,
-                    "Approval file is not a readable regular file.",
-                ),
-            ),
-        )
     try:
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         return None, None, (_error("COV_WAIVER_FILE_MALFORMED", pointer, str(exc)),)
-    schema = document.get("schema")
-    if "waiver_candidate" in document or (isinstance(schema, str) and "candidate" in schema):
+    schema = as_str(document.get("schema"))
+    if "waiver_candidate" in document or (schema is not None and "candidate" in schema):
         return (
             None,
             None,
@@ -635,10 +482,9 @@ def _source_file_findings(
     document: Mapping[str, object],
     relative: str,
     pointer: str,
-    rtl_root: Path,
+    rtl_tree: SecureTree,
 ) -> list[CoverageFinding]:
-    source = document["source"]
-    assert isinstance(source, str)
+    source = require_str(document, "source")
     findings: list[CoverageFinding] = []
     if relative != f"{source}.toml":
         findings.append(
@@ -648,7 +494,9 @@ def _source_file_findings(
                 "Approval file path must mirror its RTL source and append .toml.",
             )
         )
-    source_raw, source_finding = _read_rtl_source(rtl_root, source, f"{pointer}/source")
+    source_raw, source_finding = _read_evidence(
+        rtl_tree, source, f"{pointer}/source", label="SOURCE"
+    )
     if source_finding is not None:
         findings.append(source_finding)
     elif source_raw is not None and document.get("source_sha256") != _fingerprint(source_raw):
@@ -666,20 +514,21 @@ def _approval_record_findings(
     document: Mapping[str, object],
     pointer: str,
     known_targets: frozenset[str],
-    approval_root: Path,
+    approval_tree: SecureTree,
 ) -> list[CoverageFinding]:
-    source = document["source"]
-    approvals = document.get("approval")
-    assert isinstance(source, str)
-    assert isinstance(approvals, list)
+    source = require_str(document, "source")
+    approvals = require_list(document.get("approval"), field="approval")
     findings: list[CoverageFinding] = []
     for index, record in enumerate(approvals):
         record_pointer = f"{pointer}/approval/{index}"
         findings.extend(_record_findings(record, record_pointer, source, known_targets))
-        if isinstance(record, Mapping):
-            proof = _proof_evidence_finding(approval_root, record, f"{record_pointer}/proof")
-            if proof is not None:
-                findings.append(proof)
+        try:
+            record_document = require_dict(record, field="approval")
+        except BoundaryError:
+            continue
+        proof = _proof_evidence_finding(approval_tree, record_document, f"{record_pointer}/proof")
+        if proof is not None:
+            findings.append(proof)
     return findings
 
 
@@ -687,46 +536,50 @@ def _approval_file_findings(
     document: Mapping[str, object],
     relative: str,
     pointer: str,
-    roots: CoverageRepositoryRoots,
+    rtl_tree: SecureTree,
     known_targets: frozenset[str],
-    approval_root: Path,
+    approval_tree: SecureTree,
 ) -> tuple[CoverageFinding, ...]:
     findings = _document_shape_findings(document, pointer)
     if not _safe_relative_posix(relative):
         findings.append(_error("COV_WAIVER_PATH_UNSAFE", pointer, "Unsafe approval-file path."))
-    source = document.get("source")
-    if isinstance(source, str) and _safe_relative_posix(source):
-        findings.extend(_source_file_findings(document, relative, pointer, roots.rtl_repository))
-        if isinstance(document.get("approval"), list):
+    source = as_str(document.get("source"))
+    if source is not None and _safe_relative_posix(source):
+        findings.extend(_source_file_findings(document, relative, pointer, rtl_tree))
+        try:
+            require_list(document.get("approval"), field="approval")
+        except BoundaryError:
+            pass
+        else:
             findings.extend(
-                _approval_record_findings(document, pointer, known_targets, approval_root)
+                _approval_record_findings(document, pointer, known_targets, approval_tree)
             )
     return tuple(findings)
 
 
 def _try_load_approval_file(
-    path: Path,
-    directory: Path,
-    roots: CoverageRepositoryRoots,
+    file: SecureFile,
+    rtl_tree: SecureTree,
     known_targets: frozenset[str],
-    approval_root: Path,
+    approval_tree: SecureTree,
 ) -> tuple[
     tuple[dict[str, object], list[ApprovedWaiver]] | None,
     tuple[CoverageFinding, ...],
     str | None,
 ]:
-    relative = path.relative_to(directory).as_posix()
+    relative = file.relative_path
     pointer = f"/files/{relative}"
-    raw, document, read_findings = _read_approval_document(path, pointer)
+    raw, document, read_findings = _read_approval_document(file.raw, pointer)
     if document is None or raw is None:
         return None, read_findings, None
     findings = _approval_file_findings(
-        document, relative, pointer, roots, known_targets, approval_root
+        document, relative, pointer, rtl_tree, known_targets, approval_tree
     )
-    source = document.get("source")
+    source = as_str(document.get("source"))
     if findings:
-        return None, tuple(findings), source if isinstance(source, str) else None
-    return _load_approval_file(raw, document, relative), (), str(source)
+        return None, tuple(findings), source
+    assert source is not None
+    return _load_approval_file(raw, document, relative), (), source
 
 
 def _duplicate_source_findings(
@@ -779,73 +632,44 @@ def _duplicate_findings(
     return tuple(findings)
 
 
-def _match_campaign(
-    waivers: tuple[ApprovedWaiver, ...],
-    campaign: CoverageCampaign,
-) -> ApprovedWaiverMatch:
-    if campaign.normalization.get("status") not in {
-        "complete",
-        "complete_with_unknown_records",
-    }:
-        return ApprovedWaiverMatch(waivers=(), findings=())
-    matched: list[ApprovedWaiver] = []
-    findings: list[CoverageFinding] = []
-    applicable = [item for item in waivers if str(item.target) == campaign.target.identity]
-    for waiver in applicable:
-        pointer = f"/approved_waivers/{waiver.waiver_file}#{waiver.waiver_id}"
-        points = [point for point in campaign.points if point.id == waiver.point_id]
-        if not points:
-            findings.append(
-                _error("COV_WAIVER_POINT_STALE", pointer, "Approval no longer matches a point.")
-            )
-        elif len(points) > 1:
-            findings.append(
-                _error("COV_WAIVER_MATCH_AMBIGUOUS", pointer, "Approval matches multiple points.")
-            )
-        elif points[0].identity.location.get("source") != waiver.source:
-            findings.append(
-                _error(
-                    "COV_WAIVER_POINT_SOURCE_MISMATCH",
-                    pointer,
-                    "Matched point belongs to a different RTL source.",
-                )
-            )
-        elif points[0].disposition.get("kind") != "eligible":
-            findings.append(
-                _error(
-                    "COV_WAIVER_POINT_UNSCORABLE",
-                    pointer,
-                    "Only V1-scored eligible RTL points can be waived.",
-                )
-            )
-        else:
-            matched.append(waiver)
-    if findings:
-        return ApprovedWaiverMatch(waivers=(), findings=tuple(findings))
-    return ApprovedWaiverMatch(waivers=tuple(matched), findings=())
-
-
 def _load_enabled_set(
     config: CoverageWaiverConfig,
     roots: CoverageRepositoryRoots,
     known_targets: Collection[DurableTargetIdentity],
 ) -> ApprovedWaiverSet:
-    root = getattr(roots, config.anchor)
-    directory = root / config.directory
-    files, findings = _enumerate_approval_files(directory)
-    if findings:
-        raise CoverageWaiverValidationError(findings)
+    approval_root = getattr(roots, config.anchor)
+    try:
+        with (
+            SecureTree(approval_root) as approval_tree,
+            SecureTree(roots.rtl_repository) as rtl_tree,
+        ):
+            scan = approval_tree.scan_files(config.directory)
+            return _load_scanned_set(config, scan, approval_tree, rtl_tree, known_targets)
+    except SecurePathError as error:
+        raise CoverageWaiverValidationError((_configured_directory_finding(error),)) from error
+
+
+def _load_scanned_set(
+    config: CoverageWaiverConfig,
+    scan: SecureFileScan,
+    approval_tree: SecureTree,
+    rtl_tree: SecureTree,
+    known_targets: Collection[DurableTargetIdentity],
+) -> ApprovedWaiverSet:
+    scan_findings = tuple(_scan_problem_finding(problem) for problem in scan.problems)
+    if scan_findings:
+        raise CoverageWaiverValidationError(scan_findings)
     loaded: list[tuple[dict[str, object], list[ApprovedWaiver]]] = []
     parse_findings: list[CoverageFinding] = []
     claims: list[tuple[str, str]] = []
     known = frozenset(str(target) for target in known_targets)
-    for path in files:
+    for file in scan.files:
         result, file_findings, source = _try_load_approval_file(
-            path, directory, roots, known, root
+            file, rtl_tree, known, approval_tree
         )
         parse_findings.extend(file_findings)
         if source is not None:
-            claims.append((source, path.relative_to(directory).as_posix()))
+            claims.append((source, file.relative_path))
         if result is not None:
             loaded.append(result)
     parse_findings.extend(_duplicate_source_findings(claims))
@@ -888,10 +712,6 @@ def load_approved_waiver_set(
             waivers=(),
         )
     findings = _config_findings(config)
-    if findings:
-        raise CoverageWaiverValidationError(findings)
-    root = getattr(roots, config.anchor)
-    findings = _directory_findings(root, config.directory)
     if findings:
         raise CoverageWaiverValidationError(findings)
     return _load_enabled_set(config, roots, known_targets)

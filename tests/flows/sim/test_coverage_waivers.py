@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -8,6 +11,7 @@ from typing import Literal, cast
 
 import pytest
 
+from booley.flows.sim import coverage_waiver_files
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
     CoverageCapability,
@@ -117,68 +121,71 @@ approval_ref = "review:CR-1043"
     return waiver_file
 
 
-def _campaign() -> CoverageCampaign:
-    points = (
-        CoveragePoint(
-            id=_POINT_ID,
-            identity=CoveragePointIdentity(
-                metric="line",
-                location=MappingProxyType({"source": "rtl/counter.sv"}),
-                hierarchy="TOP.counter",
-                subject=MappingProxyType({"basic_block": 0}),
-                collector=MappingProxyType({"record_type": "v_line"}),
-            ),
-            hits_by_run=MappingProxyType({}),
-            disposition=MappingProxyType({"kind": "eligible"}),
+def _incomplete_point_id() -> str:
+    payload = _POINT_ID.removeprefix("cp1:")
+    identity = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    del identity["location"]["start"]
+    canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    encoded = base64.urlsafe_b64encode(canonical.encode()).decode().rstrip("=")
+    return f"cp1:{encoded}"
+
+
+def _point(point_id: str, basic_block: int, *, covered: bool) -> CoveragePoint:
+    hits = {"run:smoke": 1} if covered else {}
+    return CoveragePoint(
+        id=point_id,
+        identity=CoveragePointIdentity(
+            metric="line",
+            location=MappingProxyType({"source": "rtl/counter.sv"}),
+            hierarchy="TOP.counter",
+            subject=MappingProxyType({"basic_block": basic_block}),
+            collector=MappingProxyType({"record_type": "v_line"}),
         ),
-        CoveragePoint(
-            id="covered-point",
-            identity=CoveragePointIdentity(
-                metric="line",
-                location=MappingProxyType({"source": "rtl/counter.sv"}),
-                hierarchy="TOP.counter",
-                subject=MappingProxyType({"basic_block": 1}),
-                collector=MappingProxyType({"record_type": "v_line"}),
-            ),
-            hits_by_run=MappingProxyType({"run:smoke": 1}),
-            disposition=MappingProxyType({"kind": "eligible"}),
-        ),
+        hits_by_run=MappingProxyType(hits),
+        disposition=MappingProxyType({"kind": "eligible"}),
     )
+
+
+def _collector() -> CoverageCollector:
+    capability = CoverageCapability(
+        record_class="line",
+        status="reported",
+        attributes=MappingProxyType({"collection": "supported", "scoring": "scored_v1"}),
+    )
+    return CoverageCollector(
+        kind="verilator",
+        version=MappingProxyType({}),
+        native_format=MappingProxyType({"compatibility": "compatible"}),
+        capabilities=(capability,),
+    )
+
+
+def _run() -> CoverageRun:
+    return CoverageRun(
+        id="run:smoke",
+        test="smoke",
+        simulation_verdict="pass",
+        collection="included",
+        raw_artifact=None,
+        attributes=MappingProxyType({}),
+    )
+
+
+def _campaign() -> CoverageCampaign:
+    points = (_point(_POINT_ID, 0, covered=False), _point("covered-point", 1, covered=True))
     return CoverageCampaign(
         schema="booley.coverage-campaign/v1",
         campaign_id="campaign:sim_counter:12",
         invocation=MappingProxyType({"id": 12}),
         target=CoverageTarget(identity=str(_TARGET), selector="sim_counter"),
-        collector=CoverageCollector(
-            kind="verilator",
-            version=MappingProxyType({}),
-            native_format=MappingProxyType({"compatibility": "compatible"}),
-            capabilities=(
-                CoverageCapability(
-                    record_class="line",
-                    status="reported",
-                    attributes=MappingProxyType(
-                        {"collection": "supported", "scoring": "scored_v1"}
-                    ),
-                ),
-            ),
-        ),
+        collector=_collector(),
         build=MappingProxyType({}),
         coverage_window=MappingProxyType({}),
         fingerprints=MappingProxyType({}),
         source_closure=MappingProxyType({}),
         declared_tests=("smoke",),
         selected_tests=("smoke",),
-        runs=(
-            CoverageRun(
-                id="run:smoke",
-                test="smoke",
-                simulation_verdict="pass",
-                collection="included",
-                raw_artifact=None,
-                attributes=MappingProxyType({}),
-            ),
-        ),
+        runs=(_run(),),
         artifacts=(),
         normalization=MappingProxyType({"status": "complete"}),
         points=points,
@@ -321,6 +328,41 @@ def test_nested_symlinks_are_rejected_without_loading_targets(
     assert [item.code for item in raised.value.findings] == [expected_code]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows locks verified directory handles")
+def test_open_directory_replacement_cannot_redirect_enumeration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = _roots(tmp_path)
+    _write_valid_approval(roots)
+    approval_directory = roots.project_data_repository / "coverage-waivers"
+    retained_directory = roots.project_data_repository / "retained-waivers"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "candidate.toml").write_text(
+        'schema = "booley.coverage-waiver-candidate/v1"\n', encoding="utf-8"
+    )
+    real_listdir = os.listdir
+    replaced = False
+
+    def replace_before_enumeration(path: int | str | bytes | os.PathLike[str]) -> list[str]:
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            approval_directory.rename(retained_directory)
+            symlink_or_skip(approval_directory, outside, target_is_directory=True)
+        return real_listdir(path)
+
+    monkeypatch.setattr(coverage_waiver_files.os, "listdir", replace_before_enumeration)
+
+    approved = load_approved_waiver_set(
+        CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+        roots,
+        known_targets=(_TARGET,),
+    )
+
+    assert [item.waiver_id for item in approved.waivers] == ["counter-basic-block"]
+
+
 def test_malformed_and_candidate_files_are_aggregated_transactionally(tmp_path: Path) -> None:
     roots = _roots(tmp_path)
     directory = roots.project_data_repository / "coverage-waivers"
@@ -416,6 +458,24 @@ def test_unknown_target_inexact_binding_bad_timestamp_and_missing_proof_aggregat
         "COV_WAIVER_APPROVED_AT_INVALID",
         "COV_WAIVER_PROOF_REQUIRED",
     ]
+
+
+def test_incomplete_canonical_point_identity_is_rejected_during_loading(
+    tmp_path: Path,
+) -> None:
+    roots = _roots(tmp_path)
+    waiver_file = _write_valid_approval(roots)
+    document = waiver_file.read_text(encoding="utf-8").replace(_POINT_ID, _incomplete_point_id())
+    waiver_file.write_text(document, encoding="utf-8")
+
+    with pytest.raises(CoverageWaiverValidationError) as raised:
+        load_approved_waiver_set(
+            CoverageWaiverConfig("project_data_repository", "coverage-waivers"),
+            roots,
+            known_targets=(_TARGET,),
+        )
+
+    assert [item.code for item in raised.value.findings] == ["COV_WAIVER_BINDING_NOT_EXACT"]
 
 
 def test_unreachable_proof_artifact_must_match_approved_digest(tmp_path: Path) -> None:
