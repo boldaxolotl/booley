@@ -357,6 +357,7 @@ def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> Non
         ("COV_RUN_FOR_UNSELECTED_TEST", "/tests/runs/0"),
         ("COV_ARTIFACT_PATH_UNSAFE", "/artifacts/0/path"),
         ("COV_POINT_ID_MISMATCH", "/points/0/id"),
+        ("COV_POINT_ID_INCOMPLETE", "/points/0/id"),
         ("COV_POINT_RUN_UNKNOWN", "/points/0/hits_by_run/run:ghost"),
         ("COV_POINT_HIT_NONPOSITIVE", "/points/0/hits_by_run/run:ghost"),
         ("COV_ROLLUP_MISMATCH", "/rollups"),
