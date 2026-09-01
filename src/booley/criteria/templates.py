@@ -831,20 +831,15 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
         return _parse_list_criterion(key, value, mandatory=mandatory)
     if isinstance(value, dict):
         return _parse_dict_criterion(key, value, mandatory=mandatory)
+    text_value = as_str(value)
+    if text_value is not None and text_value.strip().lower() == "auto":
+        return [CriterionSpec(key, mandatory=mandatory, params={"auto": True})]
     if key.startswith("coverage_") and value is not None and not isinstance(value, bool):
-        percentage = _parse_percentage(value, field=f"{key} threshold")
-        _validate_percentage_range(
-            percentage,
-            field=f"{key} threshold",
-            allow_zero=False,
-            maximum=100,
-        )
+        percentage = _normalize_criterion_param_value(key, "min_pct", value)
         return [CriterionSpec(key, mandatory=mandatory, params={"min_pct": percentage})]
-    # Scalar: check for "auto" or "N/M" fraction format (e.g. "8/10")
-    if isinstance(value, str):
-        if value.strip().lower() == "auto":
-            return [CriterionSpec(key, mandatory=mandatory, params={"auto": True})]
-        m = re.fullmatch(r"(\d+)\s*/\s*(\d+)", value)
+    # Scalar: check for "N/M" fraction format (e.g. "8/10")
+    if text_value is not None:
+        m = re.fullmatch(r"(\d+)\s*/\s*(\d+)", text_value)
         if m:
             min_detected, total = int(m.group(1)), int(m.group(2))
             return [
@@ -1151,9 +1146,10 @@ def _normalize_criterion_param_value(key: str, param: str, value: Any) -> Any:
 
 def _parse_percentage(value: Any, *, field: str) -> int | float:
     """Parse an external percentage spelling such as ``"8%"``."""
-    if not isinstance(value, str):
+    text = as_str(value)
+    if text is None:
         raise ValueError(f"{field} must end in '%' (for example '8%'), got {value!r}")
-    text = value.strip()
+    text = text.strip()
     if not text.endswith("%"):
         raise ValueError(f"{field} must end in '%' (for example '8%'), got {value!r}")
     number = as_float(text[:-1])

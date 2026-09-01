@@ -200,6 +200,11 @@ class TestExpandParams:
         assert params["coverage_value"] == {"min_pct": 85}
         assert params["coverage_branch"] == {"min_pct": 80}
 
+    def test_coverage_auto_remains_non_percentage_criterion(self):
+        template = CriteriaTemplate.from_yaml({"mandatory": {"coverage_toggle": "auto"}})
+
+        assert template.expand_params([])["coverage_toggle"] == {"auto": True}
+
     def test_specs_without_params_excluded(self):
         yaml_section = {
             "mandatory": {
