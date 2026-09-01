@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from pathlib import Path
@@ -22,6 +23,18 @@ def test_claude_sdk_cli_duplicate_is_removed_in_install_layer() -> None:
     assert 'test ! -e "$CLAUDE_SDK_BUNDLED_CLI"' in install_layer
     assert "python -m pip check" in install_layer
     assert "ClaudeSDKBackend" not in install_layer
+
+
+def test_all_python_installs_tolerate_slow_publisher_reads() -> None:
+    dockerfile = _BASE_DOCKERFILE.read_text(encoding="utf-8")
+    install_start = dockerfile.index("RUN python -m ensurepip --default-pip")
+    install_end = dockerfile.index("\n\n# Publisher transfers", install_start)
+    invariant_install = dockerfile[install_start:install_end]
+
+    assert "--timeout 120" in invariant_install
+    assert "--retries 10" in invariant_install
+    assert "PIP_DEFAULT_TIMEOUT=120" in dockerfile
+    assert "PIP_RETRIES=10" in dockerfile
 
 
 def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> None:
@@ -53,7 +66,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.251"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.252"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -197,10 +210,22 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.251"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.252"' in lock
     assert '"@openai/codex": "0.151.0"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
+
+
+def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
+    package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
+    lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
+
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.252"
+    assert package["dependencies"]["@openai/codex-linux-x64"] == (
+        "npm:@openai/codex@0.151.0-linux-x64"
+    )
+    assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
+    assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
 
 
 def test_openroad_uses_verified_26q3_oci_artifact() -> None:
