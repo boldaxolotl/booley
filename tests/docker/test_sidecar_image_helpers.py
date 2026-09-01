@@ -144,6 +144,45 @@ def test_isolated_daemon_rejects_outer_daemon_identity(monkeypatch, tmp_path: Pa
     assert boundary.calls[-1][1:3] == ["rm", "-f"]
 
 
+@pytest.mark.parametrize(
+    "inspect_output",
+    [
+        "not JSON",
+        "{}",
+        '[{"HostConfig": []}]',
+        '[{"HostConfig": {"PortBindings": {}}, "Mounts": []}]',
+        '[{"HostConfig": {"NetworkMode": "none", "PortBindings": []}, "Mounts": []}]',
+        '[{"HostConfig": {"NetworkMode": "none"}, "Mounts": [42]}]',
+        '[{"HostConfig": {"NetworkMode": "none"}, "Mounts": [{}]}]',
+    ],
+)
+def test_isolated_daemon_rejects_malformed_inspection_payload(
+    monkeypatch,
+    tmp_path: Path,
+    inspect_output: str,
+) -> None:
+    class MalformedInspectBoundary(FakeDockerBoundary):
+        def __call__(self, args, **kwargs):
+            if args[1] == "inspect":
+                self.calls.append(args)
+                return self.completed(args, stdout=inspect_output)
+            return super().__call__(args, **kwargs)
+
+    boundary = MalformedInspectBoundary()
+    monkeypatch.setattr(subprocess, "run", boundary)
+
+    with (
+        pytest.raises(
+            AssertionError,
+            match="invalid Docker inspect response for 'booley-test-dind-",
+        ),
+        isolated_docker_daemon("candidate", tmp_path, name_prefix="booley-test"),
+    ):
+        pytest.fail("daemon with malformed inspection output was yielded")
+
+    assert boundary.calls[-1][1:3] == ["rm", "-f"]
+
+
 def test_cleanup_timeout_does_not_mask_body_failure(monkeypatch, tmp_path: Path) -> None:
     class CleanupTimeoutBoundary(FakeDockerBoundary):
         def __call__(self, args, **kwargs):

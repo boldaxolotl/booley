@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
+
 DIND_IMAGE = (
     "docker:29.7.2-dind@sha256:3ef33f2e220b79ed3ef3b99d81746f06f306cd6340e2cb7331d17ae996e74cb6"
 )
@@ -117,14 +119,34 @@ def _wait_for_dind(client: DockerClient, *, timeout: float = 30.0) -> str:
 def _assert_isolated_dind(name: str, inner_daemon_id: str) -> None:
     inspected = HOST_DOCKER.run("inspect", name)
     assert_ok(inspected)
-    config = json.loads(inspected.stdout)[0]
-    host_config = config["HostConfig"]
-    assert host_config["NetworkMode"] == "none", "DIND must have no outer network"
-    assert not host_config.get("PortBindings"), "DIND must publish no ports"
+    field = f"Docker inspect response for {name!r}"
+    try:
+        records = require_list(json.loads(inspected.stdout), field=field)
+        if len(records) != 1:
+            raise BoundaryError(f"{field} must contain exactly one container")
+        config = require_dict(records[0], field=f"{field}[0]")
+        host_config = require_dict(config.get("HostConfig"), field=f"{field}[0].HostConfig")
+        network_mode = require_str(host_config, "NetworkMode")
+        mounts = require_list(config.get("Mounts", []), field=f"{field}[0].Mounts")
+        mount_records = [
+            require_dict(mount, field=f"{field}[0].Mounts[{index}]")
+            for index, mount in enumerate(mounts)
+        ]
+        mount_paths = [
+            (require_str(mount, "Source"), require_str(mount, "Destination"))
+            for mount in mount_records
+        ]
+        port_bindings = host_config.get("PortBindings")
+        if port_bindings is not None:
+            require_dict(port_bindings, field=f"{field}[0].HostConfig.PortBindings")
+    except (json.JSONDecodeError, BoundaryError) as exc:
+        raise AssertionError(f"invalid {field}: {exc}") from exc
+    assert network_mode == "none", "DIND must have no outer network"
+    assert not port_bindings, "DIND must publish no ports"
     socket_paths = {"/var/run/docker.sock", "/run/docker.sock"}
     assert not any(
-        mount.get("Source") in socket_paths or mount.get("Destination") in socket_paths
-        for mount in config.get("Mounts", [])
+        source in socket_paths or destination in socket_paths
+        for source, destination in mount_paths
     ), "DIND must not mount an outer Docker socket"
     outer_info = HOST_DOCKER.run("info", "--format", "{{.ID}}")
     assert_ok(outer_info)
