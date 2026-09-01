@@ -109,6 +109,10 @@ def test_imported_checkout_ignores_stale_current_and_legacy_metadata(tmp_path) -
     runtime_dir = package_file.parent / "runtime"
     runtime_dir.mkdir()
     (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
+    (runtime_dir / "checkout_role.py").write_text(
+        (_ROOT / "src" / "booley" / "runtime" / "checkout_role.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (runtime_dir / "version_attribution.py").write_text(
         (_ROOT / "src" / "booley" / "runtime" / "version_attribution.py").read_text(
             encoding="utf-8"

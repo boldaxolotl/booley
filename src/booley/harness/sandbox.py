@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.config.project_config import PROJECT_NAME
+from booley.config.project_config import project_name
 from booley.runtime import auth_token
 from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
 
@@ -309,7 +309,7 @@ class DockerRunner:
             "--init",
             *(["--rm"] if remove else []),
             "--label",
-            f"booley.project={PROJECT_NAME}",
+            f"booley.project={project_name(self.worktree)}",
             "--mount",
             mount_spec,
             "-w",

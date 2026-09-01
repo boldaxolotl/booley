@@ -5,7 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.dev_support.commit_msg_hook import main, sanitize_message
+
+
+@pytest.fixture(autouse=True)
+def _project_hook_has_no_ambient_source_policy():
+    """Unit-test the vendored Project hook, not this source checkout's role."""
+    with patch("validate_commit_msg._current_repo_root", return_value=None):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # sanitize_message

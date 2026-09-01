@@ -472,7 +472,7 @@ class Specialist(McpTool):
     )
 
     @staticmethod
-    def commit_msg_banned_phrase_note() -> str:
+    def commit_msg_banned_phrase_note(project_root: Path | None = None) -> str:
         """Build a "do not use these words" note from the live banned-phrase list.
 
         Loaded dynamically so project-local overrides (booley.toml
@@ -481,14 +481,15 @@ class Specialist(McpTool):
         post-hoc commit-msg rejection (Pattern A4 — see field reports).
         """
         try:
-            from booley.dev_support.commit_msg_utils import BANNED_PHRASES, stealth_enabled
+            from booley.dev_support.commit_msg_utils import banned_phrases, stealth_enabled
         except ImportError:
             return ""
         # Stealth mode is opt-out ([stealth] enabled = false); when off, neither
         # the commit-msg hook nor this prompt warning applies.
-        if not stealth_enabled() or not BANNED_PHRASES:
+        phrases = banned_phrases(project_root)
+        if not stealth_enabled(project_root) or not phrases:
             return ""
-        joined = ", ".join(sorted(set(BANNED_PHRASES)))
+        joined = ", ".join(sorted(set(phrases)))
         return (
             "## Banned Words in Commit Message\n"
             "Your `commit_message` MUST NOT contain any of the following "
@@ -592,7 +593,7 @@ class Specialist(McpTool):
 
         from booley.dev_support.validate_commit_msg import validate_message
 
-        errors = validate_message(msg)
+        errors = validate_message(msg, project_root=work_dir)
         if errors:
             # Salvage: if the only errors are banned-phrase hits in the
             # agent's subject, retry with the Specialist's default commit message.
@@ -605,7 +606,7 @@ class Specialist(McpTool):
                     self._default_commit_message,
                     category=category_hint,
                 )
-                fallback_errors = validate_message(fallback)
+                fallback_errors = validate_message(fallback, project_root=work_dir)
                 if not fallback_errors:
                     logger.warning(
                         "Commit message rejected for banned phrase(s) "

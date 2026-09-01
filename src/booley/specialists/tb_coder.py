@@ -564,7 +564,7 @@ class TbCoderSpecialist(Specialist):
             "burns a full developer round.\n"
         )
         parts.append(f"\n{self.COMMIT_MSG_GUIDANCE}\n")
-        banned_note = self.commit_msg_banned_phrase_note()
+        banned_note = self.commit_msg_banned_phrase_note(self.args.work_dir)
         if banned_note:
             parts.append(f"\n{banned_note}\n")
         parts.append("\n## Escalation Protocol\n")

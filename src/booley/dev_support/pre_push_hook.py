@@ -41,7 +41,13 @@ _HOOK_DIR = str(Path(__file__).resolve().parent)
 if _HOOK_DIR not in sys.path:
     sys.path.insert(0, _HOOK_DIR)
 
-from commit_msg_utils import allowed_authors, find_banned, identity_allowed, stealth_enabled
+from commit_msg_utils import (
+    StealthPolicy,
+    allowed_authors,
+    identity_allowed,
+    stealth_enabled,
+    stealth_policy,
+)
 
 _ZERO_SHA_PREFIX = "0000000"
 
@@ -220,14 +226,19 @@ def _inside_project_state(path: Path, project_dir: Path | None) -> bool:
     return normalized == state or state in normalized.parents
 
 
-def _tree_offenses(sha: str, repository_root: Path, project_dir: Path | None) -> list[str]:
+def _tree_offenses(
+    sha: str,
+    repository_root: Path,
+    project_dir: Path | None,
+    policy: StealthPolicy,
+) -> list[str]:
     entries = _changed_tree_entries(sha)
     if entries is None:
         return ["cannot inspect changed tracked paths"]
 
     offenses: list[str] = []
     for entry in entries:
-        path_leaks = find_banned(entry.path)
+        path_leaks = policy.find_banned(entry.path)
         tracked_path = repository_root / entry.path
         if path_leaks:
             offenses.append(
@@ -243,7 +254,7 @@ def _tree_offenses(sha: str, repository_root: Path, project_dir: Path | None) ->
             offenses.append(error)
             continue
         assert target is not None
-        target_leaks = find_banned(target)
+        target_leaks = policy.find_banned(target)
         target_path = tracked_path.parent / target
         if target_leaks:
             offenses.append(
@@ -261,8 +272,22 @@ def _commit_offenses(
     *,
     repository_root: Path | None = None,
     project_dir: Path | None = None,
+    policy: StealthPolicy | None = None,
 ) -> list[str]:
     """Human-readable reasons this commit must not be pushed (empty = fine)."""
+    root = repository_root or _repository_root()
+    if root is not None:
+        try:
+            from booley.runtime.checkout_role import source_checkout_root
+        except ImportError:
+            source_checkout_root = None
+        if source_checkout_root is not None and source_checkout_root(root) is not None:
+            return []
+
+    active_policy = policy or stealth_policy(root)
+    if not active_policy.enabled:
+        return []
+
     facts = _commit_facts(sha)
     if facts is None:
         return []
@@ -270,7 +295,7 @@ def _commit_offenses(
 
     offenses: list[str] = []
     scanned = f"{message}\n{author_name} <{author_email}>\n{committer_name} <{committer_email}>"
-    leaks = find_banned(scanned)
+    leaks = active_policy.find_banned(scanned)
     if leaks:
         offenses.append(f"banned terms: {', '.join(sorted(set(leaks)))}")
 
@@ -284,12 +309,11 @@ def _commit_offenses(
     ):
         if not identity_allowed(name, email, allowlist):
             offenses.append(f"{role} not in [stealth] allowed_authors: {name} <{email}>")
-    root = repository_root or _repository_root()
     if root is None:
         offenses.append("cannot resolve repository root to inspect tracked metadata")
     else:
         state = project_dir if project_dir is not None else _guard_project_dir(root)
-        offenses.extend(_tree_offenses(sha, root, state))
+        offenses.extend(_tree_offenses(sha, root, state, active_policy))
     return offenses
 
 
@@ -297,10 +321,6 @@ def main() -> int:
     if os.environ.get("BOOLEY_SKIP_PUSH_GUARD"):
         print("pre-push: leak guard skipped (BOOLEY_SKIP_PUSH_GUARD set)", file=sys.stderr)
         return 0
-    if not stealth_enabled():
-        return 0
-
-    allowlist = allowed_authors()
     repository_root = _repository_root()
     if repository_root is None:
         print(
@@ -308,6 +328,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if not stealth_enabled(repository_root):
+        return 0
+
+    policy = stealth_policy(repository_root)
+    allowlist = allowed_authors(repository_root)
     project_dir = _guard_project_dir(repository_root)
 
     offenders: list[tuple[str, list[str]]] = []
@@ -328,6 +353,7 @@ def main() -> int:
                 allowlist,
                 repository_root=repository_root,
                 project_dir=project_dir,
+                policy=policy,
             )
             if offenses:
                 offenders.append((sha, offenses))

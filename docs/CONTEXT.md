@@ -118,6 +118,10 @@ _Avoid_: Known Project, Project registry entry, workspace record
 The host-owned catalog of **Remembered Project Roots** and their **Project Grants**, including roots whose Project data is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan
 
+**Booley Source Checkout**:
+A checkout or linked worktree of Booley's own source code. It is never a Project, never owns a `.booley_project/` directory, and never receives Project Stealth Mode policy or hooks.
+_Avoid_: Booley Project, framework project, self-hosted Project
+
 **EDA Installation Registration**:
 A host-owned record of one approved **Host-Provisioned Sandbox EDA Tool** installation and its built-in compatibility policy. Registration identifies available immutable files but grants no Project access by itself.
 _Avoid_: tool enrollment, mount registration, host tool
@@ -288,7 +292,7 @@ A Finding carrying what a user *thinks* of Booley — praise, a gripe, a feature
 _Avoid_: feature request, review, rating, testimonial
 
 **Findings Log**:
-The append-only `findings.jsonl` in the project state directory, one JSON entry per line, written concurrently by setup steps, sub-agents and ad-hoc reports. Outlives the run that started it: a project set up in March and hit by a bug in July appends to the same file, which is why entries carry an origin and a `filed` stamp. Rendered into one persistent, local, unredacted **user report** (`SETUP-REPORT.md`, or `FEEDBACK-REPORT.md` on a project that never ran setup). The maintainer-facing view is filtered and redacted transiently for preview/submission; outbound commands require explicit Finding IDs (or an intentional `--all`) so one conversation cannot pull in the unfiled backlog. The `/booley-feedback` skill persists the selected view as `BOOLEY-FEEDBACK.md` only when the user explicitly requests an export.
+The append-only `findings.jsonl` in local feedback state, one JSON entry per line, written concurrently by setup steps, sub-agents and ad-hoc reports. A Project keeps that state in its project state directory; a Booley Source Checkout keeps dogfood feedback outside the checkout in shared Git metadata. The log outlives the run that started it: a project set up in March and hit by a bug in July appends to the same file, which is why entries carry an origin and a `filed` stamp. Rendered into one persistent, local, unredacted **user report** (`SETUP-REPORT.md`, or `FEEDBACK-REPORT.md` on a project that never ran setup). The maintainer-facing view is filtered and redacted transiently for preview/submission; outbound commands require explicit Finding IDs (or an intentional `--all`) so one conversation cannot pull in the unfiled backlog. The `/booley-feedback` skill persists the selected view as `BOOLEY-FEEDBACK.md` only when the user explicitly requests an export.
 _Avoid_: bug database, feedback queue, telemetry (nothing here is automatic or silent)
 
 ## Inside Booley
