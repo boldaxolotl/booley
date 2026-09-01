@@ -271,6 +271,8 @@ Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400, clk_2x.cr
 
 Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
 
+For FPGA Targets the `fpga` axis, not `flow_options.tool`, determines drivability. The declared tool still controls FuseSoC resolution conditions; the FPGA Flow always rebuilds those resolved inputs into a Vivado EDAM. Unprefixed vendored Targets retain a `tool: vivado` fallback.
+
 ### Project Files
 
 Recognized user-owned inputs under `.booley_project/` are listed below.

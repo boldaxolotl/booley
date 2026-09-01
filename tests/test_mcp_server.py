@@ -1016,6 +1016,10 @@ class TestBooleyTargets:
             "  synth:\n"
             "    flow: generic\n"
             "    flow_options: {tool: yosys, arch: xilinx}\n"
+            "    filesets: [rtl]\n"
+            "  fpga_core:\n"
+            "    flow: generic\n"
+            "    flow_options: {tool: verilator, part: xc7a35tcpg236-1}\n"
             "    filesets: [rtl]\n",
             encoding="utf-8",
         )
@@ -1048,7 +1052,7 @@ class TestBooleyTargets:
 
         payload = json.loads(result[0].text)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
-        assert sorted(names) == ["sim", "synth"]
+        assert sorted(names) == ["fpga_core", "sim", "synth"]
 
     def test_dispatch_applies_filters(self, tmp_path, monkeypatch):
         import json
@@ -1061,6 +1065,20 @@ class TestBooleyTargets:
         payload = json.loads(result[0].text)
         names = [t["name"] for c in payload["cores"] for t in c["targets"]]
         assert names == ["synth"]
+
+    def test_dispatch_fpga_filter_uses_target_axis(self, tmp_path, monkeypatch):
+        import json
+
+        self._patch_text_content(monkeypatch)
+        monkeypatch.chdir(self._project(tmp_path))
+
+        result = self.mcp_server._dispatch_targets({"for_flow": "fpga"})
+
+        payload = json.loads(result[0].text)
+        targets = [target for core in payload["cores"] for target in core["targets"]]
+        assert [target["name"] for target in targets] == ["fpga_core"]
+        assert targets[0]["eda_tool"] == "verilator"
+        assert targets[0]["drivable_by"] == ["fpga"]
 
     def test_dispatch_rejects_bad_for_flow(self, tmp_path, monkeypatch):
         self._patch_text_content(monkeypatch)
