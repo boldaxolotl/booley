@@ -1306,7 +1306,7 @@ def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path):
 
     assert doctor._doctor_targets(project, "sim") == ["sim_fast", "sim_full"]
     assert doctor._doctor_targets(project, "lint") == []
-    assert doctor._doctor_target_seed(project) == ["sim_fast", "sim_full"]
+    assert doctor._project_target_matrix(project).seed_targets == ("sim_fast", "sim_full")
 
 
 def test_deep_timeout_honors_configured_timeout_ms(tmp_path):

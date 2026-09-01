@@ -12,7 +12,6 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import shutil
@@ -25,7 +24,6 @@ from pathlib import Path
 from booley.harness.build_stamp import (
     build_stamp,
     embedded_payload_fingerprint,
-    iter_payload_files,
     resolve_build_commit,
     resolve_payload_fingerprint,
     resolve_source_updated_at,
@@ -184,11 +182,6 @@ class _DockerBuildSpec:
     parent_artifact: str | None = None
 
 
-def _iter_fingerprint_files(booley_root: Path):
-    """Yield every source file that contributes to the sandbox image build."""
-    yield from iter_payload_files(booley_root)
-
-
 def _image_build_fingerprint(booley_root: Path) -> str | None:
     """SHA-256 over every source baked into the sandbox image.
 
@@ -304,25 +297,6 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
         return True
     expected_version = _source_version(booley_root)
     return bool(expected_version and _image_label(image, LABEL_VERSION) != expected_version)
-
-
-def _stamp_image_fingerprint(image: str, value: str) -> None:
-    """Best-effort: set *image*'s build-fingerprint label to *value*.
-
-    Used to mark a freshly *pulled* image as ``pulled:<version>`` so a later run
-    recognises it as intentional and doesn't treat the missing label as stale.
-    Implemented as a metadata-only ``FROM <image>`` rebuild (near-instant, no
-    new layers). Failure is non-fatal — the image just gets re-checked later.
-    """
-    with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
-        subprocess.run(
-            ["docker", "build", "-q", "--label", f"{LABEL_FINGERPRINT}={value}", "-t", image, "-"],
-            input=f"FROM {image}\n",
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
 
 
 def _read_version() -> str:

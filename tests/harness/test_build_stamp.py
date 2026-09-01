@@ -21,6 +21,7 @@ from booley.harness import init_docker_image
 from booley.harness.build_stamp import (
     STAMP_RELPATH,
     build_stamp,
+    iter_payload_files,
     resolve_build_commit,
     resolve_payload_fingerprint,
     resolve_source_updated_at,
@@ -237,5 +238,5 @@ class TestStampIsNotFingerprinted:
 
         assert init_docker_image._image_build_fingerprint(root) == before
         assert STAMP_RELPATH not in [
-            p.relative_to(root).as_posix() for p in init_docker_image._iter_fingerprint_files(root)
+            p.relative_to(root).as_posix() for p in iter_payload_files(root)
         ]

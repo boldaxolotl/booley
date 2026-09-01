@@ -41,13 +41,12 @@ import stat
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from booley import __version__
 from booley.config.guidance_links import ensure_guidance_links, plan_guidance_links
-from booley.config.host_config import InteractiveHostPolicy, retired_project_policy_message
+from booley.config.host_config import retired_project_policy_message
 from booley.core.boundary import require_dict
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
@@ -103,10 +102,7 @@ from booley.harness.init_docker_image import (
     _image_build_fingerprint,
     _image_is_stale,
     _image_label,
-    _iter_fingerprint_files,
     _read_version,
-    _stamp_image_fingerprint,
-    _step_docker_image,
     _try_pull_image,
     ensure_flavor_image,
     source_fingerprint_mismatch,
@@ -121,11 +117,10 @@ from booley.harness.init_git_hooks import (
 )
 from booley.harness.init_plan import InitPlan, InitPreconditionError
 from booley.harness.init_scaffold import step_scaffold
-from booley.harness.init_skills import _deploy_skills
 from booley.runtime import auth_token
 from booley.runtime import project_image as pi
 from booley.runtime.git import add_git_excludes
-from booley.runtime.paths import docker_data_dir, skills_dir
+from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
 from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
@@ -736,88 +731,6 @@ def _step_auth(
 
 
 # ---------------------------------------------------------------------------
-# Init step: required host prerequisites (record key: host_prerequisites)
-# ---------------------------------------------------------------------------
-
-
-def _docker_daemon_error(executable: str) -> str | None:
-    """Return a fatal Docker availability error, or ``None`` when ready."""
-    try:
-        result = subprocess.run(
-            [executable, "info"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return "docker daemon did not respond within 10 seconds"
-    except (subprocess.SubprocessError, OSError) as exc:
-        return f"could not contact docker daemon: {exc}"
-    if result.returncode == 0:
-        return None
-    detail = (result.stderr or result.stdout).strip().splitlines()
-    suffix = f": {detail[0][:200]}" if detail else ""
-    return f"docker daemon is not running or not accessible{suffix}"
-
-
-def _report_required_tool(name: str, version_arg: str, purpose: str) -> str | None:
-    """Report one required executable and return its resolved path."""
-    found = shutil.which(name)
-    if not found:
-        err(f"{name:<8} missing  (REQUIRED — {purpose})")
-        return None
-    try:
-        out = subprocess.run(
-            [found, version_arg],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            check=False,
-        )
-        version = (out.stdout or out.stderr).strip().splitlines()[0][:60]
-    except (subprocess.SubprocessError, IndexError):
-        version = "(version probe failed)"
-    ok(f"{name:<8} {version}")
-    return found
-
-
-def _report_vscode() -> bool:
-    """Report VS Code availability and return whether a usable install exists."""
-    state, detail = _detect_vscode()
-    if state == "cli":
-        ok(f"{'vscode':<8} {detail}  (Interactive Mode: Reopen in Container)")
-        return True
-    if state == "gui":
-        warn(
-            f"vscode found ({detail}) but the 'code' CLI is not on PATH — "
-            "run 'Shell Command: Install code command in PATH' from VS Code"
-        )
-        return True
-    err(
-        "vscode  missing  (REQUIRED — Interactive Mode uses "
-        "'Reopen in Container'; https://code.visualstudio.com)"
-    )
-    return False
-
-
-def _step_host_prerequisites(ctx: InitContext) -> bool:
-    """Check host tools and report whether Docker is ready for initialization."""
-    ctx.step_banner("host bootstrap tool detection")
-    git = _report_required_tool("git", "--version", "version control")
-    docker = _report_required_tool("docker", "--version", "container runtime for all EDA tools")
-    daemon_error = _docker_daemon_error(docker) if docker else None
-    if daemon_error:
-        err(daemon_error)
-    docker_ready = docker is not None and daemon_error is None
-    vscode_ready = _report_vscode()
-    any_missing = git is None or not docker_ready or not vscode_ready
-    detail = "docker unavailable" if not docker_ready else ""
-    ctx.record("host_prerequisites", "err" if any_missing else "ok", detail)
-    return docker_ready
-
-
-# ---------------------------------------------------------------------------
 # Init step: project sandbox image (bakes the repo's Python deps) — ADR 0018
 # (record key: project_image)
 # ---------------------------------------------------------------------------
@@ -1109,24 +1022,6 @@ def _step_project_image(ctx: InitContext) -> None:
     _build_and_configure_image(ctx, docker_dir, generated)
 
 
-def _step_sandbox_images(ctx: InitContext) -> None:
-    """Prepare only the runtime image chain selected by this project."""
-    selected = project_sandbox_image(ctx.project_root)
-    if selected not in FLAVOR_IMAGES:
-        _step_docker_image(ctx, selected)
-        _step_project_image(ctx)
-        return
-
-    ctx.step_banner("project sandbox image")
-    changed = ensure_flavor_image(
-        ctx,
-        selected,
-        ensure_base=lambda: _step_docker_image(ctx, selected),
-    )
-    if changed:
-        _warn_on_live_session_on_old_image(ctx, selected)
-
-
 def _step_image_lifecycle(
     ctx: InitContext, *, base_result: LifecycleResult | None = None
 ) -> LifecycleResult | None:
@@ -1379,56 +1274,6 @@ def _detect_codex() -> bool:
     return shutil.which("codex") is not None
 
 
-# Per-platform user config dir names that indicate a GUI install even when the
-# `code` CLI shim was never added to PATH (a common macOS/Windows situation).
-_VSCODE_CONFIG_NAMES = ("Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf")
-
-
-def _vscode_config_dirs() -> list[Path]:
-    """Return candidate VS Code(-family) user config dirs for this platform."""
-    home = Path.home()
-    if IS_WINDOWS:
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) if appdata else home / "AppData" / "Roaming"
-    elif sys.platform == "darwin":
-        base = home / "Library" / "Application Support"
-    else:
-        base = home / ".config"
-    return [base / name for name in _VSCODE_CONFIG_NAMES]
-
-
-def _detect_vscode() -> tuple[str, str]:
-    """Detect a VS Code(-family) editor for Interactive Mode.
-
-    Returns ``(state, detail)`` where *state* is one of:
-      - ``"cli"``     — a ``code``-style CLI is on PATH (best); *detail* is its
-                        ``--version`` line.
-      - ``"gui"``     — only a GUI config dir was found; the CLI shim isn't on
-                        PATH. *detail* is the discovered dir name.
-      - ``"missing"`` — no VS Code(-family) install found; *detail* is ``""``.
-    """
-    from booley.config.editor import resolve_editor_command
-
-    found = resolve_editor_command()
-    if found:
-        try:
-            out = subprocess.run(
-                [found, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                check=False,
-            )
-            version = (out.stdout or out.stderr).strip().splitlines()[0][:60]
-        except (subprocess.SubprocessError, IndexError):
-            version = "(version probe failed)"
-        return "cli", f"{Path(found).name} {version}"
-    for cfg in _vscode_config_dirs():
-        if cfg.is_dir():
-            return "gui", cfg.name
-    return "missing", ""
-
-
 def _select_interactive_app(project_root: Path | None = None) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
@@ -1590,114 +1435,6 @@ def _devcontainer_is_tracked(project_root: Path) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def _booley_repo_root() -> Path | None:
-    """Locate sidecar build assets in a checkout or installed package."""
-    docker_data = docker_data_dir()
-    repo_root = docker_data.parent.parent.parent.parent
-    if (repo_root / "pyproject.toml").is_file():
-        return repo_root
-
-    package_root = docker_data.parent.parent
-    if (package_root / "docker").is_dir():
-        return package_root
-    return None
-
-
-def _ensure_sidecar_image(
-    booley_root: Path | None,
-    ensure: Callable[..., bool],
-    *,
-    image: str,
-    force: bool,
-) -> bool:
-    """Run a sidecar image build while keeping its diagnostic user-visible."""
-    if booley_root is None:
-        if idk.image_exists(image):
-            return True
-        warn(f"could not locate packaged sidecar build assets for {image}")
-        return False
-    try:
-        return ensure(booley_root, force=force)
-    except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
-        warn(str(exc))
-        return False
-
-
-def _report_sidecar_unavailable(image: str, impact: str) -> None:
-    warn(f"{image} unavailable — {impact}")
-    info("  fix the build error above, then retry: booley init --seed")
-
-
-def _ensure_egress_sidecar(
-    ctx: InitContext, booley_root: Path | None, cfg: InteractiveHostPolicy, notes: list[str]
-) -> None:
-    ready = _ensure_sidecar_image(
-        booley_root,
-        idk.ensure_egress_proxy_image,
-        image=idk.PROXY_IMAGE,
-        force=ctx.force,
-    )
-    if not ready:
-        _report_sidecar_unavailable(
-            "egress-proxy image", "Session Runtime has no model-service egress"
-        )
-        notes.append("proxy:skipped")
-        return
-    status = idk.ensure_egress_proxy(allowlist=cfg.egress_allowlist or None)
-    ok(f"booley-proxy {status}")
-    notes.append(f"proxy:{status}")
-
-
-def _ensure_reaper_sidecar(
-    ctx: InitContext, booley_root: Path | None, cfg: InteractiveHostPolicy, notes: list[str]
-) -> None:
-    ready = _ensure_sidecar_image(
-        booley_root,
-        idk.ensure_reaper_image,
-        image=idk.REAPER_IMAGE,
-        force=ctx.force,
-    )
-    if not ready:
-        _report_sidecar_unavailable(
-            "reaper image", "idle timeout and maximum-session enforcement are unavailable"
-        )
-        notes.append("reaper:skipped")
-        return
-    status = idk.ensure_reaper(cfg, force=ctx.force)
-    ok(f"booley-reaper {status} (idle={cfg.idle_timeout_seconds}s, max={cfg.max_sessions})")
-    notes.append(f"reaper:{status}")
-
-
-def _ensure_interactive_docker(ctx: InitContext, *, license_required: bool = False) -> list[str]:
-    """Create the long-lived egress + reaper Docker objects. Returns status notes."""
-    notes: list[str] = []
-    booley_root = _booley_repo_root()
-    from booley.config.host_config import load_host_policy
-
-    cfg = load_host_policy()
-
-    if license_required:
-        from booley.eda.flexnet_docker import ensure_relay_image
-
-        if ensure_relay_image(force=ctx.force):
-            ok("built booley-flexnet-relay image")
-            notes.append("license-relay-image:built")
-        else:
-            skip("booley-flexnet-relay image already present")
-            notes.append("license-relay-image:present")
-
-    # Egress network + dual-homed proxy.
-    if idk.ensure_egress_network():
-        ok(f"created {idk.EGRESS_NETWORK} network (--internal, host-isolated)")
-        notes.append("network:created")
-    else:
-        skip(f"{idk.EGRESS_NETWORK} network already present")
-    _ensure_egress_sidecar(ctx, booley_root, cfg, notes)
-    _ensure_reaper_sidecar(ctx, booley_root, cfg, notes)
-
-    return notes
-
-
 def _cleanup_unlicensed_relay(project_root: Path) -> bool:
     """Remove deterministic relay leftovers when a reseed no longer has a profile."""
     from booley.eda.flexnet_docker import remove_relay, resources_for_session
@@ -1715,36 +1452,6 @@ def _cleanup_unlicensed_relay(project_root: Path) -> bool:
 
 
 _NANGATE_PDK_NOT_REQUESTED = object()
-
-
-def _step_nangate_pdk(ctx: InitContext) -> Path | None:
-    """Prepare the pinned, user-owned Nangate45 cache used by synthesis."""
-    ctx.step_banner("Nangate45 synthesis library")
-    root = nangate_pdk.cache_root()
-    issues = nangate_pdk.validation_errors(root)
-    if not issues:
-        skip(f"verified Nangate45 cache at {root}")
-        ctx.record("nangate_pdk", "skip", str(root))
-        return root
-
-    info("Nangate45 is an optional upstream download; Booley does not redistribute it.")
-    info("  License: non-commercial use; comparison with other libraries is restricted.")
-    info(f"  Terms:   {nangate_pdk.LICENSE_ID} (included beside the downloaded files)")
-    if ctx.check_only:
-        warn(f"would download and verify {len(nangate_pdk.FILES)} pinned files into {root}")
-        ctx.record("nangate_pdk", "warn", "; ".join(issues))
-        return root
-
-    try:
-        nangate_pdk.fetch(root)
-    except nangate_pdk.NangatePdkError as exc:
-        err(f"could not prepare Nangate45 synthesis library: {exc}")
-        ctx.record("nangate_pdk", "err", str(exc))
-        return None
-
-    ok(f"downloaded and verified Nangate45 at {root}")
-    ctx.record("nangate_pdk", "ok", str(root))
-    return root
 
 
 def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary

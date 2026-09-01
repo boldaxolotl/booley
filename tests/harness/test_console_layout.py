@@ -51,7 +51,6 @@ class _LayoutTestApp(ConsoleApp):
 
     # Without CSS, the dock/height directives don't apply — so we point
     # at the real stylesheet via an absolute path resolved at import time.
-    import os as _os
     from pathlib import Path as _Path
 
     CSS_PATH = str(

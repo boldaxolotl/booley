@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -629,39 +628,6 @@ class TestInitInteractive:
 
         assert init_cmd._select_interactive_app(tmp_path) == "codex"
 
-    def test_detect_vscode_cli_on_path(self, monkeypatch):
-        """A `code`-style CLI on PATH yields ('cli', '<name> <version>')."""
-        from booley.harness import init_cmd
-
-        monkeypatch.setattr(
-            init_cmd.shutil, "which", lambda n: "/usr/bin/code" if n == "code" else None
-        )
-        monkeypatch.setattr(
-            init_cmd.subprocess,
-            "run",
-            lambda *a, **k: SimpleNamespace(stdout="1.99.0\n", stderr=""),
-        )
-        state, detail = init_cmd._detect_vscode()
-        assert state == "cli"
-        assert detail == "code 1.99.0"
-
-    def test_detect_vscode_gui_only(self, tmp_path, monkeypatch):
-        """No CLI but a GUI config dir yields ('gui', <dir name>)."""
-        from booley.harness import init_cmd
-
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        (tmp_path / "Code").mkdir()
-        monkeypatch.setattr(init_cmd, "_vscode_config_dirs", lambda: [tmp_path / "Code"])
-        assert init_cmd._detect_vscode() == ("gui", "Code")
-
-    def test_detect_vscode_missing(self, monkeypatch):
-        """No CLI and no config dir yields ('missing', '')."""
-        from booley.harness import init_cmd
-
-        monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_vscode_config_dirs", lambda: [])
-        assert init_cmd._detect_vscode() == ("missing", "")
-
     def test_seed_only_fails_closed_without_private_project_state(self, tmp_path, monkeypatch):
         """`--seed` cannot invent the writable host Project-data authority."""
         import argparse
@@ -671,7 +637,6 @@ class TestInitInteractive:
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
-        monkeypatch.setattr(init_cmd, "_step_host_prerequisites", lambda _ctx: True)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
 
         args = argparse.Namespace(

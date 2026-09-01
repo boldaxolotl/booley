@@ -170,7 +170,7 @@ def upsert_claude(path: Path) -> bool:
 # but none of the ``booley-*`` skills. Mirror Step 8 here, container side, so the
 # agent discovers the skills on every container start.
 #
-# Per-app skills dir mirrors the host model (init Step 8 / deploy_skills.py):
+# Per-app skills dir mirrors the host model (host skill reconciliation):
 # Claude Code reads ``~/.claude/skills``; the Codex CLI reads the generic
 # cross-agent ``~/.agents/skills``.
 _SKILLS_REL = {

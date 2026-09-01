@@ -4752,7 +4752,7 @@ class TestScanTicketsPriority:
         """scan_all_tickets picks up priority from ticket files."""
         queue = tmp_path / "board" / "queue"
         queue.mkdir(parents=True)
-        ticket = queue.mkdir if False else queue / "test-ticket.md"
+        ticket = queue / "test-ticket.md"
         ticket.write_text(
             "---\nsummary: test\ntype: bugfix\nbranch: main\n"
             "scope_current:\n  - rtl/x.sv\n"

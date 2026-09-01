@@ -7,7 +7,6 @@ container run an image predating the container-side skill deployment.
 
 from __future__ import annotations
 
-import argparse
 import re
 import subprocess
 import sys
@@ -17,46 +16,6 @@ import booley
 from booley.harness import init_cmd, init_docker_image
 from booley.harness.init_common import InitContext
 from booley.runtime.docker_build import DockerBuildResult
-
-
-def test_docker_daemon_failure_is_fatal(tmp_path, monkeypatch, capsys):
-    def fake_run(args, **_kwargs):
-        if args[-1] == "info":
-            return subprocess.CompletedProcess(args, 1, "", "daemon unavailable")
-        return subprocess.CompletedProcess(args, 0, "version 1\n", "")
-
-    monkeypatch.setattr(init_cmd.shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(init_cmd.subprocess, "run", fake_run)
-    monkeypatch.setattr(init_cmd, "_detect_vscode", lambda: ("cli", "code 1"))
-    ctx = InitContext(project_root=tmp_path)
-
-    assert init_cmd._step_host_prerequisites(ctx) is False
-    assert ctx.results[-1].status == "err"
-    assert ctx.results[-1].detail == "docker unavailable"
-    assert init_cmd._print_summary(ctx) == 2
-    summary = capsys.readouterr().out
-    assert "host_prerequisites — docker unavailable" in summary
-    assert "eda_tools" not in summary
-
-
-def test_init_aborts_before_writing_when_docker_is_unavailable(tmp_path, monkeypatch):
-    def unavailable(ctx):
-        ctx.step_banner("host bootstrap tool detection")
-        ctx.record("host_prerequisites", "err", "docker unavailable")
-        return False
-
-    monkeypatch.setattr(init_cmd, "_step_host_prerequisites", unavailable)
-    args = argparse.Namespace(
-        seed=False,
-        check_only=False,
-        force=False,
-        verbose=False,
-        provider="claude",
-        auth="subscription",
-    )
-
-    assert init_cmd.run_init(args, tmp_path) == 2
-    assert not (tmp_path / ".booley_project").exists()
 
 
 def _seed_source(root: Path) -> None:

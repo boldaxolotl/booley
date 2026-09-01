@@ -893,11 +893,6 @@ def _check_docker(_pass: Check, _skip: Check, _fail: Fail) -> str | None:
     return audit.executable
 
 
-def _docker_permission_denied_fix() -> str:
-    """Compatibility facade for the extracted runtime permission guidance."""
-    return host_environment.docker_permission_denied_fix()
-
-
 def _sandbox_image(project: ProjectAudit | None) -> str:
     """Return configured sandbox image, falling back to the base image."""
     if project is None:
@@ -2146,29 +2141,6 @@ def _check_custom_image_freshness(
         )
     else:
         _pass(f"custom sandbox image '{image}' is newer than its Dockerfile")
-
-
-def _booley_package_dir() -> Path | None:
-    """The installed Booley package directory (for source-vs-image drift)."""
-    try:
-        import booley
-    except ImportError:
-        return None
-    p = Path(booley.__file__).resolve().parent
-    return p if p.is_dir() else None
-
-
-def _newest_source_mtime(pkg_dir: Path) -> float | None:
-    """Newest mtime among the package's ``*.py`` files, or None if none/unreadable."""
-    newest: float | None = None
-    for f in pkg_dir.rglob("*.py"):
-        try:
-            m = f.stat().st_mtime
-        except OSError:
-            continue
-        if newest is None or m > newest:
-            newest = m
-    return newest
 
 
 def _check_image_bakes_current_booley(
@@ -6798,11 +6770,6 @@ def _is_simulate_tb_top_skip(
 def _doctor_targets(project: ProjectAudit, flow_name: str) -> list[str]:
     """Every ``.core`` Target that explicitly selects one Doctor Flow."""
     return list(target_matrix.doctor_targets(project.project_root, flow_name))
-
-
-def _doctor_target_seed(project: ProjectAudit) -> list[str]:
-    """The deduplicated Target surface that Doctor gates and audits."""
-    return list(_project_target_matrix(project).seed_targets)
 
 
 def _project_target_matrix(project: ProjectAudit) -> target_matrix.DoctorTargetMatrix:

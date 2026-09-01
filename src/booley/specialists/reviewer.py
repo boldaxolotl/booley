@@ -2440,16 +2440,6 @@ Schema enforcement (applied upstream by the harness):
             dispositions[finding["index"]] = disposition
         return dispositions
 
-    @staticmethod
-    def _extract_verify_statuses(output: str) -> dict[int, str]:
-        """Backward-compatible status-only view used by older callers/tests."""
-        return {
-            index: disposition["status"]
-            for index, disposition in ReviewerSpecialist._extract_verify_dispositions(
-                output
-            ).items()
-        }
-
     def _capability_channel_issues(
         self,
         result: Any,
