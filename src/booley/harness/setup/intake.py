@@ -778,7 +778,8 @@ def _seed_project_criteria(
     if not project_defs:
         return
 
-    # Filter per-target criteria by each Target's declared EDA tool (decision 11).
+    # Filter per-target criteria by Target intent (decision 11). The declared
+    # tool covers most families; FPGA intent uses the Target axis when present.
     # Empty (no .core authored yet) leaves the expansion unfiltered.
     try:
         from booley.fusesoc.fusesoc_registry import target_eda_tools

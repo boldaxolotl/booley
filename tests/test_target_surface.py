@@ -90,7 +90,7 @@ _BETA_CORE = textwrap.dedent(
         filesets: [rtl]
       fpga:
         flow: generic
-        flow_options: {tool: vivado}
+        flow_options: {tool: verilator}
         filesets: [rtl]
         toplevel: beta
       smoke:
@@ -263,9 +263,15 @@ class TestTargetInterface:
 
 
 class TestFlowCanDrive:
-    def _ref(self, flow: str | None, eda_tool: str | None) -> TargetRef:
+    def _ref(
+        self,
+        flow: str | None,
+        eda_tool: str | None,
+        *,
+        name: str = "t",
+    ) -> TargetRef:
         return TargetRef(
-            name="t",
+            name=name,
             vlnv="a:b:c:1.0",
             core_file=Path("x.core"),
             eda_tool=eda_tool,
@@ -295,6 +301,14 @@ class TestFlowCanDrive:
         assert not flow_can_drive("fpga", yosys)
         assert flow_can_drive("fpga", vivado)
         assert not flow_can_drive("synth", vivado)
+
+    def test_fpga_axis_ignores_resolution_tool(self):
+        ref = self._ref("generic", "verilator", name="fpga_core_fast")
+        assert flow_can_drive("fpga", ref)
+
+    def test_non_fpga_axis_overrides_vivado_fallback(self):
+        ref = self._ref("generic", "vivado", name="synth_core_fast")
+        assert not flow_can_drive("fpga", ref)
 
     def test_legacy_flowless_target_falls_back_to_eda_tool_family(self):
         """A `tools:`-style Target (flow=None) must not vanish from --for."""
@@ -448,6 +462,11 @@ class TestFilterSurface:
     def test_for_flow_drops_empty_groups(self, project: Path):
         surface = filter_surface(collect_surface(project), for_flow="synth")
         assert [g.vlnv for g in surface.groups] == ["acme:ip:alpha:1.0"]
+
+    def test_for_fpga_uses_axis_instead_of_resolution_tool(self, project: Path):
+        surface = filter_surface(collect_surface(project), for_flow="fpga")
+        assert [entry.ref.name for entry in surface.entries()] == ["fpga"]
+        assert _entry(surface, "fpga").ref.eda_tool == "verilator"
 
     def test_for_flow_rejects_non_flow(self, project: Path):
         with pytest.raises(ValueError, match=", ".join(TARGET_AWARE_FLOWS)):

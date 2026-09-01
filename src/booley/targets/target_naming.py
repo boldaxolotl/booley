@@ -80,6 +80,20 @@ def axis_of(name: str) -> str | None:
     return None
 
 
+def fpga_intent(name: str, eda_tool: str | None) -> bool:
+    """Whether a Target declares FPGA implementation intent.
+
+    A recognized Booley axis is authoritative because the FPGA Flow rebuilds
+    the resolved design description into its own Vivado EDAM. Unprefixed
+    Targets fall back to the declared EDA tool so vendored upstream Vivado
+    Targets remain usable without being renamed.
+    """
+    axis = axis_of(name)
+    if axis is not None:
+        return axis == "fpga"
+    return eda_tool == "vivado"
+
+
 def is_conventional(name: str) -> bool:
     """True when *name* satisfies the convention (or is FuseSoC-reserved)."""
     if name in FUSESOC_RESERVED:
