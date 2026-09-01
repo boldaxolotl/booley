@@ -256,8 +256,10 @@ Useful controls:
 
 - `--baseline <git-ref>` compares implementation metrics with another revision.
 - `--no-cache` forces fresh implementation instead of reusing a matching result.
-- `--dry-run` validates the Target and prints resolved part, top, XDC, and source
-  inputs; it does not claim to preview a runnable Vivado command.
+- `--dry-run` performs the same FuseSoC setup and Target source inspection as a
+  real run, then prints resolved part, top, XDC, and source inputs. If any
+  selected Target fails setup, it reports no resolved metadata for any Target.
+  It does not claim to preview a runnable Vivado command.
 
 The Flow normalizes utilization, routed timing/Fmax, fixed critical-condition
 counts (latches, combinational loops, and multi-driven nets), constraint/recipe

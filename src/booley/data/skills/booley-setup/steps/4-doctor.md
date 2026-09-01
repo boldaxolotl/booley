@@ -69,6 +69,10 @@ over that severity bug with a project waiver.
 
 - **Simulation**: one full Simulation smoke is the authoritative elaboration
   plus runtime check. Doctor does not run a redundant elab-only smoke.
+- **FPGA**: plain Doctor runs the marked FPGA Targets through the real setup and
+  source-inspection path and probes Vivado. Deep Doctor does not launch a full
+  implementation; each marked Target gets an explicit SKIP with the exact
+  `booley flow fpga --target ...` command to run manually.
 - **fail-path self-test**: each verification Flow WARNs
   `fail-path unvalidated` until its conventional project-owned bad fixture
   exists. Doctor infers the good case from the first marked Doctor Target and

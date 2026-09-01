@@ -528,11 +528,14 @@ What goes here:
   `[eda.vivado]` and requires an exact Project Grant.
 - **Every Flow call names its Target explicitly.** There is no target fallback
   in `booley.toml`. Select Doctor's matrix in each `.core` Target with
-  `flow_options.booley.doctor: [sim, lint, synth]`, listing only the
+  `flow_options.booley.doctor: [sim, lint, synth, fpga]`, listing only the
   compatible Flows that should audit that Target. An enabled Flow with no
   marked Doctor Target fails plain Doctor; either mark one or set
   `enabled = false` to opt out. Targets omitted from the list remain available
-  for explicit CLI/MCP calls.
+  for explicit CLI/MCP calls. FPGA is optional: if neither `[flows.fpga]` nor a
+  Target marked `doctor: [fpga]` exists, plain Doctor reports that axis as not
+  applicable. Plain Doctor dry-runs marked FPGA Targets and probes Vivado;
+  `--deep` names their manual implementation commands but skips the long runs.
 - **Doctor runs the whole synthesis matrix.** Mark every synthesis Target that
   setup must validate with `booley: {doctor: [synth]}`. Deep Doctor runs all of
   them and retains the largest measured memory peak; there is no separately
