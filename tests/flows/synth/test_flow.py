@@ -1153,6 +1153,55 @@ class TestDryRun:
         assert "--sdc" not in result.report_text
         assert "--synth-mode logical" in result.report_text
 
+    def test_dry_run_records_evidence_for_projected_stealth_core(
+        self, state_file: Path, tmp_path: Path
+    ):
+        import shutil
+        import sys
+
+        work_dir = tmp_path / "proj"
+        _write_syn_demo_project(work_dir)
+        project_dir = work_dir / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (work_dir / "syn_demo.core").replace(cores / "syn_demo.core")
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(
+            [
+                "--target",
+                "syn",
+                "--work-dir",
+                str(work_dir),
+                "--dry-run",
+            ]
+        )
+        flow.read_state()
+        fusesoc_cmd = (
+            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+            if shutil.which("fusesoc")
+            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        )
+
+        with patch.object(
+            fusesoc_registry,
+            "resolve_target",
+            side_effect=lambda *args, **kwargs: _REAL_RESOLVE(
+                *args,
+                **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
+            ),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert "dry-run (syn)" in result.report_text
+        run_evidence = flow._recipe_evidence["syn"][2]
+        assert run_evidence["source_sha256"]
+
 
 # ===========================================================================
 # No configs
