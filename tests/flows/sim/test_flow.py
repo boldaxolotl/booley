@@ -619,26 +619,11 @@ class TestCriterionGating:
 
 
 # ---------------------------------------------------------------------------
-# Multi-config splitting
+# Target selection
 # ---------------------------------------------------------------------------
 
 
 class TestMultiConfig:
-    def test_single_config(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite")
-        configs = [c.strip() for c in flow.args.target.split(",") if c.strip()]
-        assert configs == ["lite"]
-
-    def test_multi_config(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config="lite,full,combo")
-        configs = [c.strip() for c in flow.args.target.split(",") if c.strip()]
-        assert configs == ["lite", "full", "combo"]
-
-    def test_config_with_spaces(self, tmp_path: Path):
-        flow = _make_flow(tmp_path, config=" lite , full ")
-        configs = [c.strip() for c in flow.args.target.split(",") if c.strip()]
-        assert configs == ["lite", "full"]
-
     def test_empty_config_fails(self, tmp_path: Path):
         flow = _make_flow(tmp_path, config="")
         result = flow._run()

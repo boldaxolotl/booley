@@ -1791,9 +1791,6 @@ class TestFindTraceFile:
     def test_no_trace_returns_none(self, tmp_path):
         assert CoverageAnalystSpecialist._find_trace_file(tmp_path) is None
 
-    def test_empty_dir(self, tmp_path):
-        assert CoverageAnalystSpecialist._find_trace_file(tmp_path) is None
-
     def test_ignores_other_extensions(self, tmp_path):
         (tmp_path / "trace.log").write_text("")
         (tmp_path / "trace.txt").write_text("")

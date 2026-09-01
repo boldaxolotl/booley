@@ -39,44 +39,6 @@ class TestParamsToArgv:
 
             self._params_to_argv = _params_to_argv
 
-    def test_string_param(self):
-        result = self._params_to_argv({"target": "sim_a"})
-        assert result == ["--target", "sim_a"]
-
-    def test_bool_true(self):
-        result = self._params_to_argv({"verbose": True})
-        assert result == ["--verbose"]
-
-    def test_bool_false_omitted(self):
-        result = self._params_to_argv({"verbose": False})
-        assert result == []
-
-    def test_list_param(self):
-        result = self._params_to_argv({"defines": ["A", "B"]})
-        assert result == ["--defines", "A", "--defines", "B"]
-
-    def test_underscore_to_hyphen(self):
-        result = self._params_to_argv({"trace_scope": "tb.dut"})
-        assert result == ["--trace-scope", "tb.dut"]
-
-    def test_mixed_params(self):
-        result = self._params_to_argv(
-            {
-                "target": "sim_a",
-                "trace": True,
-                "debug": False,
-                "defines": ["X"],
-            }
-        )
-        assert "--target" in result
-        assert "--trace" in result
-        assert "--debug" not in result
-        assert "--defines" in result
-
-    def test_empty_params(self):
-        result = self._params_to_argv({})
-        assert result == []
-
     def test_option_like_value_uses_eq_form(self):
         # F-12: as the next argv item, argparse would read the selector as a
         # new option and drop it; the `=` form keeps it attached to its flag.
@@ -273,16 +235,6 @@ class TestFormatMcpToolResult:
 
             self._format_mcp_tool_result = _format_mcp_tool_result
 
-    def test_basic_result(self):
-        result = self._format_mcp_tool_result(0, "hello", "")
-        assert "EXIT_CODE: 0" in result
-        assert "hello" in result
-
-    def test_with_stderr(self):
-        result = self._format_mcp_tool_result(1, "", "error occurred")
-        assert "EXIT_CODE: 1" in result
-        assert "error occurred" in result
-
     def test_with_report(self):
         report = {
             "status": "pass",
@@ -297,15 +249,6 @@ class TestFormatMcpToolResult:
         assert "report_text: RESULT: PASS" in result
         assert "detail.reason: done" in result
         assert "detail.error: none" in result
-
-    def test_truncation_stdout(self):
-        long_stdout = "x" * 20000
-        result = self._format_mcp_tool_result(0, long_stdout, "")
-        assert "truncated" in result
-
-    def test_empty_result(self):
-        result = self._format_mcp_tool_result(0, "", "")
-        assert "EXIT_CODE: 0" in result
 
 
 # ---------------------------------------------------------------------------

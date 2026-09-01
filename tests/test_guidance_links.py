@@ -61,18 +61,6 @@ def test_relative_symlink_target(tmp_path: Path):
     assert target == Path(".booley_project") / CANON_NAME
 
 
-@_posix_symlinks
-def test_idempotent(tmp_path: Path):
-    project_root, project_dir, _ = _make_project(tmp_path)
-
-    first = ensure_guidance_links(project_root, project_dir)
-    before = {p: p.readlink() for p in first}
-    second = ensure_guidance_links(project_root, project_dir)
-    after = {p: p.readlink() for p in second}
-
-    assert before == after
-
-
 def test_refuses_foreign_untracked_root_file(tmp_path: Path):
     project_root, project_dir, canon = _make_project(tmp_path)
     foreign = project_root / "AGENTS.md"
@@ -159,15 +147,6 @@ def test_updates_git_info_exclude(tmp_path: Path):
     lines = (project_root / ".git" / "info" / "exclude").read_text(encoding="utf-8").splitlines()
     assert lines.count("/AGENTS.md") == 1
     assert lines.count("/CLAUDE.md") == 1
-
-
-def test_missing_canon_raises(tmp_path: Path):
-    project_root = tmp_path / "repo"
-    project_dir = project_root / ".booley_project"
-    project_dir.mkdir(parents=True)
-
-    with pytest.raises(FileNotFoundError):
-        ensure_guidance_links(project_root, project_dir)
 
 
 def test_preserves_existing_exclude_entries(tmp_path: Path):

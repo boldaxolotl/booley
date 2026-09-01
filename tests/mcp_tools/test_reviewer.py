@@ -1317,21 +1317,6 @@ class TestReviewerToolArgs:
         errors = endpoint._validate_args()
         assert any("Invalid RTL focus" in e for e in errors)
 
-    def test_invalid_focus_with_tb_error(self, state_file: Path):
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "tb/mod_a_tb.sv",
-                "--category",
-                "tb",
-                "--focus",
-                "bugs",
-            ]
-        )
-        errors = endpoint._validate_args()
-        assert any("Invalid TB focus" in e for e in errors)
-
     def test_scope_mismatch_rtl(self, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(

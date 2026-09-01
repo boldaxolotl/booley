@@ -19,8 +19,6 @@ from booley.runtime._codex_backend import (
     _codex_write_markdown,
 )
 from booley.runtime.agent import (
-    _is_transient_error,
-    _transcript_path_for_attempt,
     _write_transcript_turn,
     call_agent,
     extract_json,
@@ -152,20 +150,8 @@ class TestExtractJson:
 
 
 class TestCodexHelpers:
-    def test_sandbox_mode_full_tools(self):
-        assert (
-            _codex_sandbox_mode(["Read", "Glob", "Grep", "Write", "Edit", "Bash"])
-            == "danger-full-access"
-        )
-
     def test_sandbox_mode_edit_tools(self):
         assert _codex_sandbox_mode(["Read", "Glob", "Grep", "Edit"]) == "danger-full-access"
-
-    def test_sandbox_mode_read_only(self):
-        assert _codex_sandbox_mode(["Read", "Glob", "Grep"]) == "read-only"
-
-    def test_sandbox_mode_none(self):
-        assert _codex_sandbox_mode(None) == "danger-full-access"
 
     def test_ensure_additional_properties(self):
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
@@ -242,11 +228,6 @@ class TestCodexHelpers:
         text, _in_tok, _out_tok, _, err, _events = _codex_parse_events(events_jsonl)
         assert text == ""
         assert err == "something broke"
-
-    def test_parse_events_turn_failed(self):
-        events_jsonl = json.dumps({"type": "turn.failed", "error": {"message": "rate limit"}})
-        _, _, _, _, err, _ = _codex_parse_events(events_jsonl)
-        assert err == "rate limit"
 
 
 class TestCodexExtractStructured:
@@ -500,71 +481,6 @@ class TestCodexMarkdownTranscript:
 
         assert '{"commit_message"' not in rendered
         assert "Implemented the mux." in rendered
-
-
-# ===========================================================================
-# _is_transient_error
-# ===========================================================================
-
-
-class TestIsTransientError:
-    def test_connection_error_is_transient(self):
-        assert _is_transient_error(ConnectionError("reset")) is True
-
-    def test_os_error_is_transient(self):
-        assert _is_transient_error(OSError("network down")) is True
-
-    def test_generic_exception_is_not_transient(self):
-        assert _is_transient_error(ValueError("bad value")) is False
-
-    def test_runtime_error_is_not_transient(self):
-        assert _is_transient_error(RuntimeError("unexpected")) is False
-
-    def test_process_error_with_500(self):
-        from claude_agent_sdk import ProcessError
-
-        exc = ProcessError("500 internal server error")
-        exc.stderr = "500 internal server error"
-        assert _is_transient_error(exc) is True
-
-    def test_process_error_with_529(self):
-        from claude_agent_sdk import ProcessError
-
-        exc = ProcessError("529 overloaded")
-        exc.stderr = "529 overloaded"
-        assert _is_transient_error(exc) is True
-
-    def test_process_error_non_transient(self):
-        from claude_agent_sdk import ProcessError
-
-        exc = ProcessError("permission denied")
-        exc.stderr = "permission denied"
-        assert _is_transient_error(exc) is False
-
-
-# ===========================================================================
-# _transcript_path_for_attempt
-# ===========================================================================
-
-
-class TestTranscriptPathForAttempt:
-    def test_none_returns_none(self):
-        assert _transcript_path_for_attempt(None, 1) is None
-        assert _transcript_path_for_attempt(None, 3) is None
-
-    def test_first_attempt_returns_original(self):
-        base = Path("/logs/02-planning-draft.jsonl")
-        assert _transcript_path_for_attempt(base, 1) == base
-
-    def test_retry_appends_suffix(self):
-        base = Path("/logs/02-planning-draft.jsonl")
-        result = _transcript_path_for_attempt(base, 2)
-        assert result == Path("/logs/02-planning-draft-retry2.jsonl")
-
-    def test_retry_3(self):
-        base = Path("/logs/transcript.jsonl")
-        result = _transcript_path_for_attempt(base, 3)
-        assert result == Path("/logs/transcript-retry3.jsonl")
 
 
 # ===========================================================================

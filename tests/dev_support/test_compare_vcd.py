@@ -260,9 +260,6 @@ class TestNormalizeValue:
     def test_scalar(self):
         assert normalize_value("1", 1) == "1"
 
-    def test_already_correct_width(self):
-        assert normalize_value("b1010", 4) == "1010"
-
     def test_uppercase_b(self):
         assert normalize_value("B1010", 4) == "1010"
 

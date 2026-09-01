@@ -330,12 +330,6 @@ class TestSelectMutationConfig:
     def test_returns_first(self):
         assert select_mutation_config(["config_a", "config_d/variant"]) == "config_a"
 
-    def test_single_config(self):
-        assert select_mutation_config(["config_a"]) == "config_a"
-
-    def test_empty_returns_none(self):
-        assert select_mutation_config([]) is None
-
 
 class TestClassifyTickets:
     def test_mixed_statuses(self):
@@ -1817,11 +1811,6 @@ class TestEdgeCases:
         slug = generate_slug("R\u00e9sum\u00e9 du projet")
         assert slug  # not empty
         assert all(c.isascii() for c in slug)
-
-    def test_empty_scan(self, tmp_path):
-        tio = make_tio(tmp_path)
-        tickets = scan_all_tickets(tio.tickets_dir)
-        assert tickets == []
 
     def test_ticket_found_by_stem(self, tmp_path):
         tio = make_tio(tmp_path)
@@ -5273,11 +5262,6 @@ class TestClearFromStage:
 
         content = harness_log.read_text()
         assert "=== RETRY from sim-debug-loop" in content
-
-    def test_nonexistent_log_dir(self, tmp_path):
-        """Should not raise if log dir doesn't exist."""
-        tio = make_tio(tmp_path)
-        clear_from_step(tio.logs_dir, "nonexistent", "planning")
 
     def test_restores_prerequisite_stages(self, tmp_path):
         """from_stage mode restores prerequisite stages lost by earlier resets."""

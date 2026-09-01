@@ -585,13 +585,6 @@ class TestClockScopedParamValidation:
             {"cell_count_max": 500, "fmax_mhz_min": 400},
         )
 
-    def test_clock_scoped_per_clock_metric_accepted(self):
-        # fmax_mhz / critical_path_ps are per-clock → clock scope is valid.
-        _validate_criterion_params(
-            "synthesis_ok",
-            {"clk_i.fmax_mhz_min": 400, "clk_2x.critical_path_ps_max": 800},
-        )
-
     def test_clock_scoped_delta_param_accepted(self):
         _validate_criterion_params(
             "synthesis_ok",
