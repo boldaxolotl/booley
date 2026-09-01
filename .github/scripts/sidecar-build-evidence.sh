@@ -114,9 +114,9 @@ build_image egress-proxy-control "${CONTROL_DIR}/Dockerfile.egress-proxy" \
 build_image egress-proxy-candidate src/booley/data/docker/Dockerfile.egress-proxy \
   booley-egress-proxy:py314 src/booley/docker
 build_image flexnet-relay-control "${CONTROL_DIR}/Dockerfile.flexnet-relay" \
-  booley-flexnet-relay:py313 src/booley/eda
+  booley-flexnet-relay:py313 src/booley/eda/provisioning/licensing
 build_image flexnet-relay-candidate src/booley/data/docker/Dockerfile.flexnet-relay \
-  booley-flexnet-relay:py314 src/booley/eda
+  booley-flexnet-relay:py314 src/booley/eda/provisioning/licensing
 build_image reaper-control "${CONTROL_DIR}/Dockerfile.reaper" \
   booley-reaper:py313 src/booley/docker
 build_image reaper-candidate src/booley/data/docker/Dockerfile.reaper \

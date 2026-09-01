@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.dev_support.criterion_categories import (
+from booley.criteria.categories import (
     CATEGORY_RTL,
     CATEGORY_TB,
 )

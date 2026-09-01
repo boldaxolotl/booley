@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 try:
-    from booley.dev_support.contract_path_policy import (
+    from booley.ticket_board.contract_path_policy import (
         is_static_contract_path,
         normalize_contract_path,
     )

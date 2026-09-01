@@ -8,7 +8,7 @@
 #   group        — functional family used only to group the docs/cheatsheet table
 #                  for readability (build | review | planning | simulation |
 #                  coverage | verification | implementation). See
-#                  booley.dev_support.criteria_reference for labels + ordering.
+#                  booley.criteria.reference for labels + ordering.
 
 # --- Pre-sim criteria ---
 

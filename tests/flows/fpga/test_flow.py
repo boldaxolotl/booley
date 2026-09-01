@@ -14,12 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.dev_support.criteria import TargetPair
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import TargetPair
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
+from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
-from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.recipe_evidence import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
@@ -382,7 +382,7 @@ def test_negative_wns_fails_fpga_criterion(
             "_prepare_fpga_command",
             return_value=(["make", "-C", "x"], tmp_path),
         ),
-        patch("booley.flows.fpga.edam.parse_fpga_reports", return_value=parsed),
+        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
         patch.object(
             flow,
             "_execute_boundary",
@@ -401,7 +401,7 @@ def test_negative_wns_fails_fpga_criterion(
 def test_enable_out_of_context_appends_synth_property(tmp_path: Path) -> None:
     """The OOC patch lands the -mode out_of_context property in the project tcl
     exactly once, even when applied to an already-patched materialization."""
-    from booley.flows.fpga import edam as fpga_edam
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
 
     tcl = tmp_path / "fpga_t.tcl"
     tcl.write_text("create_project fpga_t -force\n", encoding="utf-8")
@@ -416,7 +416,7 @@ def test_enable_out_of_context_appends_synth_property(tmp_path: Path) -> None:
 
 def test_enable_out_of_context_missing_tcl_raises(tmp_path: Path) -> None:
     """A missing project tcl is a hard setup error (surfaces as infra_error)."""
-    from booley.flows.fpga import edam as fpga_edam
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
 
     with pytest.raises(FileNotFoundError, match="out_of_context"):
         fpga_edam.enable_out_of_context(tmp_path, "fpga_missing")
@@ -451,9 +451,15 @@ def _patch_edam_build(captured: dict):
         )
 
     return (
-        patch("booley.flows.fpga.edam.build_fpga_edam", side_effect=fake_build_fpga_edam),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.build_fpga_edam",
+            side_effect=fake_build_fpga_edam,
+        ),
         patch("booley.flows.edam.configure", side_effect=fake_configure),
-        patch("booley.flows.fpga.edam.fpga_run_command", return_value=["make", "-C", "x"]),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.fpga_run_command",
+            return_value=["make", "-C", "x"],
+        ),
     )
 
 
@@ -1082,7 +1088,7 @@ class TestFailureCapture:
             ),
             # No status:pass => route not completed => the exit code (1) fails it.
             patch(
-                "booley.flows.fpga.edam.parse_fpga_reports",
+                "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
                 return_value={"lut_count": 10, "ff_count": 5},
             ),
         ):
@@ -1130,7 +1136,7 @@ class TestArtifactPointers:
         run's report files. Silently wrong, not merely dangling: a
         baseline-vs-current comparison would read the same numbers twice.
         """
-        from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
+        from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 
         metrics = FpgaMetrics(
             lut_count=10,
@@ -1151,7 +1157,7 @@ class TestArtifactPointers:
         """fpga_impl returned no ``detail`` at all, so its pointers reached
         state.json and the per-target JSON but never the MCP structuredContent
         an agent actually reads."""
-        from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
+        from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 
         metrics = FpgaMetrics(log_path="build/run.log", dirs={"impl": "build/impl_1"})
         detail = _metrics_detail(metrics)

@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, require_bool, require_opt_str
-from booley.synthesis.mode import SYNTH_MODE_CHOICES, SynthMode
-from booley.yosys.syn_core import (
+from booley.flows.synth.backends.yosys.core import (
     DEFAULT_FRONTEND,
     resolve_frontend,
     resolve_slang_options,
 )
-from booley.yosys.syn_discovery import resolve_liberty_lenient
+from booley.flows.synth.backends.yosys.discovery import resolve_liberty_lenient
+from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 
 from ..recipe_evidence import (
     BASELINE_RECIPE_FINGERPRINT_DETAIL,

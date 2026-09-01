@@ -9,7 +9,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from booley.dev_support.criteria import PER_TARGET_CRITERIA, TARGET_CAMPAIGN_CRITERIA
+from booley.criteria.templates import PER_TARGET_CRITERIA, TARGET_CAMPAIGN_CRITERIA
 
 from .constants import (
     CRITERION_FLOW_MAP,
@@ -215,7 +215,7 @@ def _validate_criterion_dict(section_name, key, value, errors):
     if key in TARGET_CAMPAIGN_CRITERIA and not _valid_campaign_scope(value.get("scope")):
         errors.append(f"criteria.{section_name}.{key}.scope must be a non-empty list[str]")
     if isinstance(targets, list):
-        from booley.dev_support.criteria import (
+        from booley.criteria.templates import (
             has_relative_qor_threshold,
             parse_target_pair,
         )
@@ -285,7 +285,7 @@ def _validate_structured_criteria_grammar(criteria: dict[str, Any], errors: list
     if not structured_sections:
         return
 
-    from booley.dev_support.criteria import CriteriaTemplate
+    from booley.criteria.templates import CriteriaTemplate
 
     try:
         CriteriaTemplate.from_yaml(structured_sections)
@@ -381,7 +381,7 @@ def _validate_basic_fields(fields: dict[str, Any], body: str) -> list[str]:
             # Name the legal shape right in the error (A-4): the accepted
             # criterion schema otherwise has to be dug out of the Python package.
             if f == "criteria":
-                from booley.dev_support.criteria import PER_TARGET_CRITERIA
+                from booley.criteria.templates import PER_TARGET_CRITERIA
 
                 names = ", ".join(sorted(PER_TARGET_CRITERIA))
                 msg += (
@@ -548,7 +548,7 @@ def _validate_criteria(
     # Retired-key guard: fail here, pre-flight, with the same actionable rename
     # hint the harness produces at intake — otherwise a ticket authored before a
     # criteria-key rename passes validate-ticket clean and only fails opaquely
-    # mid-run (see booley.dev_support.criteria.RETIRED_CRITERIA).
+    # mid-run (see booley.criteria.templates.RETIRED_CRITERIA).
     errors.extend(_validate_retired_criteria(criteria))
     errors.extend(_validate_known_mandatory_criteria(criteria, project_root))
 
@@ -583,7 +583,7 @@ def _validate_criteria(
     # on a clean result so it doesn't cascade noise onto an already-flagged
     # section (and so it never double-reports the param errors above).
     if not errors:
-        from booley.dev_support.criteria import CriteriaTemplate
+        from booley.criteria.templates import CriteriaTemplate
 
         try:
             CriteriaTemplate.from_yaml(criteria)
@@ -624,7 +624,7 @@ def _live_criterion_registry(
     project_root: str | Path | None,
 ) -> tuple[set[str], set[str]]:
     """Return merged criterion names and families owned by enabled endpoints."""
-    from booley.dev_support.criteria import (
+    from booley.criteria.templates import (
         load_base_criteria,
         load_project_criteria,
         merge_criteria_defs,
@@ -684,7 +684,7 @@ def _validate_criteria_params(criteria: dict[str, Any]) -> list[str]:
     """Validate params of registry-known parameterized criteria (synthesis_ok,
     fpga_impl_ok). Mirrors the harness's ``_validate_criterion_params`` so bad
     params are caught at authoring/enqueue, not at run time."""
-    from booley.dev_support.criteria import (
+    from booley.criteria.templates import (
         _CRITERION_PARAM_REGISTRY,
         _validate_criterion_params,
     )
@@ -712,7 +712,7 @@ _STATE_WORDS = frozenset({"pass", "fail", "none"})
 def _validate_sim_entries(criteria: dict[str, Any]) -> list[str]:
     """Validate structured sim criterion entries parse correctly."""
     errors: list[str] = []
-    from booley.dev_support.criteria import parse_sim_criterion
+    from booley.criteria.templates import parse_sim_criterion
 
     for section_name in ("mandatory", "optional"):
         section = criteria.get(section_name, {})
@@ -815,7 +815,7 @@ def _validate_sim_targets(
     project_root: str | Path,
 ) -> list[str]:
     """Reject structured ``sim_pass`` entries aimed at non-simulation Targets."""
-    from booley.dev_support.criteria import parse_sim_criterion
+    from booley.criteria.templates import parse_sim_criterion
     from booley.fusesoc import fusesoc_registry
     from booley.targets.target import flow_can_drive, select_target
 
@@ -876,7 +876,7 @@ def _validate_retired_criteria(criteria: dict[str, Any]) -> list[str]:
     actionable message the harness raises at intake — instead of that error only
     surfacing (and, historically, being mislabeled as a SIGINT crash) mid-run.
     """
-    from booley.dev_support.criteria import find_retired_criteria
+    from booley.criteria.templates import find_retired_criteria
 
     keys: list[str] = []
     for section_name in ("mandatory", "optional"):
@@ -917,7 +917,7 @@ def _validate_tb_paths(
 ) -> list[str]:
     """Validate TB filenames resolve against configured tb_source_prefixes."""
     errors: list[str] = []
-    from booley.dev_support.criteria import extract_tb_paths as _extract_tb
+    from booley.criteria.templates import extract_tb_paths as _extract_tb
 
     tb_paths = _extract_tb(criteria)
     if not tb_paths:
@@ -944,7 +944,7 @@ def _future_sim_entries(
     criteria: dict[str, Any], fields: dict[str, Any], body: str
 ) -> list[tuple[str, str]]:
     """Return structured sim entries whose Targets the ticket declares it will create."""
-    from booley.dev_support.criteria import parse_sim_criterion
+    from booley.criteria.templates import parse_sim_criterion
 
     entries: list[tuple[str, str]] = []
     for section_name in ("mandatory", "optional"):
@@ -1001,7 +1001,7 @@ def _scope_hits_prefix(scope: list[str], prefixes: list[str]) -> bool:
 
 def _has_mandatory_sim_criterion(criteria: Any, ticket_type: str) -> bool:
     """Return True when criteria contains a mandatory sim_* check."""
-    from booley.dev_support.criteria import CriteriaTemplate
+    from booley.criteria.templates import CriteriaTemplate
 
     if criteria is None:
         template = CriteriaTemplate.for_ticket_type(ticket_type)

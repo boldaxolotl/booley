@@ -10,7 +10,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.dev_support.contract_path_policy import is_static_contract_path
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
@@ -22,6 +21,7 @@ from booley.runtime.ticket_repositories import (
     resolve_inner_project_repo,
     ticket_project_worktree,
 )
+from booley.ticket_board.contract_path_policy import is_static_contract_path
 
 from .frontmatter import parse_frontmatter, update_frontmatter
 from .git_status import parse_porcelain_v1_z

@@ -170,7 +170,7 @@ def _expected_version() -> str:
 
 
 def _expected_payload_fingerprint() -> str | None:
-    from booley.harness.init_docker_image import _image_build_fingerprint
+    from booley.harness.setup.docker_image import _image_build_fingerprint
 
     return _image_build_fingerprint(docker_data_dir().parents[3]) or embedded_payload_fingerprint()
 
@@ -820,8 +820,8 @@ class _LegacyBuildAdapter:
 
     def build(self, node: _ImageNode, *, force: bool) -> None:
         from booley.harness import init_cmd
-        from booley.harness.init_common import InitContext
-        from booley.harness.init_docker_image import (
+        from booley.harness.setup.common import InitContext
+        from booley.harness.setup.docker_image import (
             _step_docker_image,
             _try_pull_image,
             ensure_flavor_image,

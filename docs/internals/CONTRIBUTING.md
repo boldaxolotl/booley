@@ -134,11 +134,12 @@ raw EDA-tool output into a **normalized structured verdict** (`pass` / `fail` /
 logs. That parsing lives in Booley and has to be written per EDA tool:
 
 - **Simulators** parse raw output into the structured sim result (shared
-  helpers in `sim_result.py`). See the existing parsers in
-  [src/booley/sim/](../../src/booley/sim/): `xcelium_run.py`, `vcs_run.py`,
-  `verilator_run.py`, `iverilog_run.py`. Xcelium and VCS parsing code is
-  internal incubation material only: those EDA tools are not selectable or
-  supported Booley simulators. A new simulator parser can start as a sibling
+  helpers in `result.py`). See the existing adapters in
+  [src/booley/flows/sim/backends/](../../src/booley/flows/sim/backends/):
+  `cocotb.py`, `icarus.py`, and `verilator.py`. Xcelium and VCS parsing code is
+  isolated under `backends/experimental/` as internal incubation material only:
+  those EDA tools are not selectable or
+  supported Booley simulators. A new simulator adapter can start as a sibling
   module, but it does not become public eligibility until the complete runtime
   policy and real licensed end-to-end evidence land with it.
 - **Synthesis / timing / impl** parse vendor report files into QoR

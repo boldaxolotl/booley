@@ -25,7 +25,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.dev_support.thresholds import has_relative_threshold
+from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
@@ -602,7 +602,7 @@ def _relative_params(value: Any) -> bool:
 
 def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
     if isinstance(value, Mapping):
-        from booley.dev_support.criteria import parse_target_pair
+        from booley.criteria.templates import parse_target_pair
 
         targets = value.get("targets")
         if isinstance(targets, list):
@@ -621,7 +621,7 @@ def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
 
 
 def _targets_from_list(key: str, value: list[Any]) -> list[tuple[str, str, bool]]:
-    from booley.dev_support.criteria import parse_sim_criterion
+    from booley.criteria.templates import parse_sim_criterion
 
     targets: list[tuple[str, str, bool]] = []
     for item in value:

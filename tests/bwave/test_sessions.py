@@ -358,7 +358,7 @@ def test_register_raw_vcd_with_build_converts_and_registers(tmp_path, monkeypatc
         out_path.write_bytes(MINIMAL_FST_BYTES)
         return True
 
-    monkeypatch.setattr("booley.sim.bwave_fifo.postprocess_vcd_to_bwave", _fake_build)
+    monkeypatch.setattr("booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave", _fake_build)
     monkeypatch.setattr("booley.bwave.sessions._trace_identity", lambda _t: "top")
 
     bwave.cmd_register(argparse.Namespace(sim_dir=str(vcd), alias="dut", build=True))
@@ -378,7 +378,7 @@ def test_register_raw_vcd_build_failure_exits_nonzero(tmp_path, monkeypatch):
     vcd = tmp_path / "waveform.vcd"
     vcd.write_text("$enddefinitions $end\n", encoding="utf-8")
     monkeypatch.setattr(
-        "booley.sim.bwave_fifo.postprocess_vcd_to_bwave",
+        "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
         lambda vcd_path, out_path, scope: False,
     )
 
@@ -409,7 +409,7 @@ def test_register_build_refuses_to_clobber_an_existing_store(tmp_path, monkeypat
 
     called = []
     monkeypatch.setattr(
-        "booley.sim.bwave_fifo.postprocess_vcd_to_bwave",
+        "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
         lambda *a: called.append(a) or True,
     )
 
@@ -449,7 +449,7 @@ def test_register_sim_dir_falling_back_to_vcd_shows_why_conversion_failed(
     )
     # The one way find() hands back a raw .vcd: its own conversion lost.
     monkeypatch.setattr(
-        "booley.sim.trace_session.TraceSession._convert_vcd", lambda self, path: None
+        "booley.flows.sim.trace_session.TraceSession._convert_vcd", lambda self, path: None
     )
 
     with pytest.raises(SystemExit) as exc:

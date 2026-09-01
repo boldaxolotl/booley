@@ -14,7 +14,7 @@ import time
 import pytest
 
 from booley.docker import reaper
-from booley.eda.flexnet_docker import (
+from booley.eda.provisioning.licensing.flexnet_docker import (
     RELAY_IMAGE,
     RelayProfile,
     connect_session,

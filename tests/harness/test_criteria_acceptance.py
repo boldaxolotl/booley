@@ -9,12 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.criteria import cycle_count_criterion_key
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
     compute_source_fingerprint,
 )
+from booley.criteria.templates import cycle_count_criterion_key
 from booley.ticket_board.criteria_acceptance import (
     CriteriaVerdict,
     build_criteria_summary_lines,
@@ -87,7 +87,7 @@ class TestCheckCriteriaAcceptance:
         # Write a dummy file so exists() check passes
         state_path.write_text("{}", encoding="utf-8")
 
-        with patch("booley.dev_support.development_state.DevelopmentState") as mock_cls:
+        with patch("booley.criteria.state.DevelopmentState") as mock_cls:
             mock_cls.load.return_value = fake_state
             return check_criteria_acceptance(state_path)
 
@@ -795,7 +795,7 @@ class TestBuildCriteriaSummaryLines:
         state_path = tmp_path / "booley_state.json"
         state_path.write_text("{}", encoding="utf-8")
         state = _FakeState(criteria=criteria)
-        with patch("booley.dev_support.development_state.DevelopmentState") as mock_cls:
+        with patch("booley.criteria.state.DevelopmentState") as mock_cls:
             mock_cls.load.return_value = state
             lines, _ = build_criteria_summary_lines(state_path)
         return lines

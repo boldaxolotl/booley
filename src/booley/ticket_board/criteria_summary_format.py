@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from booley.dev_support.criteria_actions import planned_invocation
+from booley.criteria.actions import planned_invocation
 from booley.flows.clock_timing import worst_fmax_from_json
 
 if TYPE_CHECKING:
@@ -283,7 +283,7 @@ def build_criteria_summary_lines(state_path: Path) -> tuple[list[str], str]:
 
     Returns (criterion_lines, totals_line). Empty lists if state is unreadable.
     """
-    from booley.dev_support.development_state import DevelopmentState
+    from booley.criteria.state import DevelopmentState
     from booley.harness.colors import amber, dim, gray, green, red
 
     # Local import (not module-level) to avoid a circular import with
