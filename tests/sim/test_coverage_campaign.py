@@ -27,31 +27,27 @@ _TESTBENCH_POINT_ID = (
     "YiLCJzdGFydCI6eyJjb2x1bW4iOjMsImxpbmUiOjEwfX0sIm1ldHJpYyI6ImxpbmUiLCJzdWJq"
     "ZWN0Ijp7ImJhc2ljX2Jsb2NrIjowfX0"
 )
+_FSM_POINT_ID = (
+    "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEwOmZzbS1ydW4td3JhcCIsInJlY29yZF90eX"
+    "BlIjoidl9mc20ifSwiaGllcmFyY2h5IjoiVE9QLmNvdW50ZXIiLCJsb2NhdGlvbiI6eyJlbmQiOnsi"
+    "Y29sdW1uIjoyOCwibGluZSI6MTB9LCJzb3VyY2UiOiJydGwvY291bnRlci5zdiIsInN0YXJ0Ijp7Im"
+    "NvbHVtbiI6MywibGluZSI6MTB9fSwibWV0cmljIjoiZnNtIiwic3ViamVjdCI6eyJtYWNoaW5lIjoi"
+    "Y291bnRlcl9zdGF0ZSIsInRyYW5zaXRpb24iOiJSVU5fdG9fV1JBUCJ9fQ"
+)
 
 
 def _fingerprint(character: str) -> str:
     return f"sha256:{character * 64}"
 
 
-def _valid_document() -> dict[str, object]:
+def _valid_provenance() -> dict[str, object]:
     return {
-        "$schema": "booley.coverage-campaign/v1",
-        "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
         "invocation": {"id": 12, "started_at": "2026-09-01T10:30:00Z"},
-        "target": {
-            "identity": "acme:demo:counter:1.0#sim_counter",
-            "selector": "sim_counter",
-        },
+        "target": {"identity": "acme:demo:counter:1.0#sim_counter", "selector": "sim_counter"},
         "collector": {
             "kind": "verilator",
-            "version": {
-                "tag": "v5.046",
-                "commit": "24b2ac24c721fdad89bba75a492e02c6aa63f32e",
-            },
-            "native_format": {
-                "name": "verilator-coverage",
-                "compatibility": "compatible",
-            },
+            "version": {"tag": "v5.046", "commit": "24b2ac24c721fdad89bba75a492e02c6aa63f32e"},
+            "native_format": {"name": "verilator-coverage", "compatibility": "compatible"},
             "capabilities": [{"record_class": "line", "status": "reported"}],
         },
         "build": {
@@ -72,66 +68,74 @@ def _valid_document() -> dict[str, object]:
             "rtl": [{"path": "rtl/counter.sv", "sha256": _fingerprint("6")}],
             "testbench": [{"path": "tb/counter_tb.sv", "sha256": _fingerprint("7")}],
         },
-        "tests": {
-            "declared": ["reset"],
-            "selected": ["reset"],
-            "runs": [
-                {
-                    "id": "run:reset",
-                    "test": "reset",
-                    "simulation_verdict": "pass",
-                    "collection": "included",
-                    "raw_artifact": "artifact:raw-reset",
-                }
-            ],
+    }
+
+
+def _valid_tests() -> dict[str, object]:
+    return {
+        "declared": ["reset"],
+        "selected": ["reset"],
+        "runs": [
+            {
+                "id": "run:reset",
+                "test": "reset",
+                "simulation_verdict": "pass",
+                "collection": "included",
+                "raw_artifact": "artifact:raw-reset",
+            },
+        ],
+    }
+
+
+def _valid_artifacts() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "artifact:raw-reset",
+            "kind": "raw_native",
+            "owner_run": "run:reset",
+            "path": "native/raw/reset.dat",
+            "sha256": _fingerprint("a"),
+            "bytes": 4120,
+            "state": "fresh_queryable",
         },
-        "artifacts": [
-            {
-                "id": "artifact:raw-reset",
-                "kind": "raw_native",
-                "owner_run": "run:reset",
-                "path": "native/raw/reset.dat",
-                "sha256": _fingerprint("a"),
-                "bytes": 4120,
-                "state": "fresh_queryable",
-            },
-            {
-                "id": "artifact:merged",
-                "kind": "merged_native",
-                "path": "native/merged/coverage.dat",
-                "sha256": _fingerprint("b"),
-                "bytes": 4250,
-                "state": "fresh_queryable",
-            },
-        ],
-        "normalization": {"status": "complete", "unrecognized_records": []},
-        "points": [
-            {
-                "id": _POINT_ID,
-                "identity": {
-                    "metric": "line",
-                    "location": {
-                        "source": "rtl/counter.sv",
-                        "start": {"line": 10, "column": 3},
-                        "end": {"line": 10, "column": 28},
-                    },
-                    "hierarchy": "TOP.counter",
-                    "subject": {"basic_block": 0},
-                    "collector": {
-                        "record_type": "v_line",
-                        "native_key": "10:basic-block-0",
-                    },
+        {
+            "id": "artifact:merged",
+            "kind": "merged_native",
+            "path": "native/merged/coverage.dat",
+            "sha256": _fingerprint("b"),
+            "bytes": 4250,
+            "state": "fresh_queryable",
+        },
+    ]
+
+
+def _valid_points() -> list[dict[str, object]]:
+    return [
+        {
+            "id": _POINT_ID,
+            "identity": {
+                "metric": "line",
+                "location": {
+                    "source": "rtl/counter.sv",
+                    "start": {"line": 10, "column": 3},
+                    "end": {"line": 10, "column": 28},
                 },
-                "hits_by_run": {"run:reset": 2},
-                "disposition": {"kind": "eligible"},
-            }
-        ],
+                "hierarchy": "TOP.counter",
+                "subject": {"basic_block": 0},
+                "collector": {"record_type": "v_line", "native_key": "10:basic-block-0"},
+            },
+            "hits_by_run": {"run:reset": 2},
+            "disposition": {"kind": "eligible"},
+        }
+    ]
+
+
+def _valid_outcomes() -> dict[str, object]:
+    return {
         "rollups": [
             {
                 "metric": "line",
-                "semantics": (
-                    "One Verilator basic-block point; covered when its count is greater than zero."
-                ),
+                "semantics": "One Verilator basic-block point; covered when its count is greater than zero.",
                 "total_points": 1,
                 "eligible_points": 1,
                 "covered_points": 1,
@@ -153,6 +157,19 @@ def _valid_document() -> dict[str, object]:
             "metrics": [],
             "diagnostics": [],
         },
+    }
+
+
+def _valid_document() -> dict[str, object]:
+    return {
+        "$schema": "booley.coverage-campaign/v1",
+        "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+        **_valid_provenance(),
+        "tests": _valid_tests(),
+        "artifacts": _valid_artifacts(),
+        "normalization": {"status": "complete", "unrecognized_records": []},
+        "points": _valid_points(),
+        **_valid_outcomes(),
     }
 
 
@@ -244,7 +261,11 @@ def test_unknown_native_record_requires_a_reported_capability_fact() -> None:
         (
             "COV_UNKNOWN_RECORD_CAPABILITY_MISSING",
             "/normalization/unrecognized_records/0/native_type",
-        )
+        ),
+        (
+            "COV_UNKNOWN_RECORD_FINDING_MISSING",
+            "/normalization/unrecognized_records/0",
+        ),
     ]
 
 
@@ -261,6 +282,8 @@ def test_incompatible_native_format_cannot_expose_normalized_points() -> None:
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_INCOMPATIBLE_FORMAT_NORMALIZED", "/normalization/status"),
         ("COV_INCOMPATIBLE_FORMAT_POINTS_PRESENT", "/points"),
+        ("COV_INCOMPATIBLE_FORMAT_COLLECTION", "/collection/status"),
+        ("COV_INCOMPATIBLE_FORMAT_EVALUATION", "/evaluation/status"),
     ]
 
 
@@ -299,6 +322,41 @@ def test_unknown_native_record_is_retained_without_blocking_known_evidence() -> 
     assert encode_coverage_campaign(campaign) == document
 
 
+def test_unknown_native_record_requires_artifact_and_finding_evidence() -> None:
+    document = _valid_document()
+    document["collector"]["capabilities"].append(
+        {"record_class": "native:mystery-27", "status": "reported"}
+    )
+    document["normalization"] = {
+        "status": "complete_with_unknown_records",
+        "unrecognized_records": [
+            {
+                "raw_artifact": "artifact:missing",
+                "record_ordinal": 27,
+                "native_type": "mystery-27",
+                "state": "unknown_retained",
+            }
+        ],
+    }
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        (
+            "COV_UNKNOWN_RECORD_ARTIFACT_UNKNOWN",
+            "/normalization/unrecognized_records/0/raw_artifact",
+        ),
+        (
+            "COV_UNKNOWN_RECORD_FINDING_MISSING",
+            "/normalization/unrecognized_records/0",
+        ),
+    ]
+
+
 def test_incompatible_native_format_round_trips_without_normalized_evidence() -> None:
     document = _valid_document()
     document["collector"]["native_format"]["compatibility"] = "incompatible"
@@ -321,6 +379,31 @@ def test_incompatible_native_format_round_trips_without_normalized_evidence() ->
     assert campaign.points == ()
     assert campaign.normalization["status"] == "incompatible"
     assert encode_coverage_campaign(campaign) == document
+
+
+def test_incompatible_native_format_requires_blocked_collection_and_evaluation() -> None:
+    document = _valid_document()
+    document["collector"]["native_format"]["compatibility"] = "incompatible"
+    document["normalization"] = {"status": "incompatible", "unrecognized_records": []}
+    document["points"] = []
+    document["rollups"] = []
+    document["collection"] = {
+        "status": "incomplete",
+        "merge": {"status": "not_attempted", "artifact": None},
+        "diagnostics": [],
+    }
+    document["evaluation"]["status"] = "not_requested"
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_INCOMPATIBLE_FORMAT_COLLECTION", "/collection/status"),
+        ("COV_INCOMPATIBLE_FORMAT_EVALUATION", "/evaluation/status"),
+    ]
 
 
 def test_decoded_campaign_is_deeply_immutable() -> None:
@@ -360,6 +443,53 @@ def test_decoder_aggregates_structural_findings_before_model_construction() -> N
         ("COV_FIELD_TYPE", "/artifacts/0/bytes"),
         ("COV_FIELD_TYPE", "/points/0/identity/location"),
     ]
+
+
+def test_decoder_aggregates_safe_semantic_findings_with_structural_findings() -> None:
+    document = _valid_document()
+    del document["campaign_id"]
+    document["$schema"] = "booley.coverage-campaign/v99"
+    document["target"]["identity"] = "acme:demo:other:1.0#sim_other"
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_FIELD_REQUIRED", "/campaign_id"),
+        ("COV_SCHEMA_VERSION_UNSUPPORTED", "/$schema"),
+        ("COV_TARGET_MISMATCH", "/target/identity"),
+    ]
+
+
+def test_decoder_rejects_unparseable_invocation_timestamp() -> None:
+    document = _valid_document()
+    document["invocation"]["started_at"] = "yesterday"
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_TIMESTAMP_INVALID", "/invocation/started_at")
+    ]
+
+
+def test_encoder_canonicalizes_legacy_invocation_timestamp() -> None:
+    document = _valid_document()
+    document["invocation"]["started_at"] = "2026-09-01T14:30:00.987654+04:00"
+
+    campaign = decode_coverage_campaign(
+        document,
+        DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+    )
+
+    encoded = encode_coverage_campaign(campaign)
+    assert encoded["invocation"]["started_at"] == "2026-09-01T10:30:00Z"
 
 
 def test_complete_collection_requires_fresh_raw_and_verified_merged_artifacts() -> None:
@@ -404,6 +534,41 @@ def test_points_require_reported_capabilities_and_exact_dispositions() -> None:
         ("COV_CAPABILITY_STATUS_INVALID", "/collector/capabilities/0/status"),
         ("COV_POINT_CAPABILITY_MISSING", "/points/0/identity/metric"),
         ("COV_WAIVER_REFERENCE_INCOMPLETE", "/points/0/disposition"),
+    ]
+
+
+def test_reported_only_point_must_be_unscored() -> None:
+    document = _valid_document()
+    point = document["points"][0]
+    point["id"] = _FSM_POINT_ID
+    point["identity"] = {
+        "metric": "fsm",
+        "location": {
+            "source": "rtl/counter.sv",
+            "start": {"line": 10, "column": 3},
+            "end": {"line": 10, "column": 28},
+        },
+        "hierarchy": "TOP.counter",
+        "subject": {"machine": "counter_state", "transition": "RUN_to_WRAP"},
+        "collector": {"record_type": "v_fsm", "native_key": "10:fsm-run-wrap"},
+    }
+    point["disposition"] = {
+        "kind": "waived",
+        "waiver_id": "waiver:fsm",
+        "waiver_file": "rtl/counter.sv.json",
+        "waiver_fingerprint": _fingerprint("e"),
+    }
+    document["collector"]["capabilities"] = [{"record_class": "fsm", "status": "reported"}]
+    document["rollups"] = []
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_REPORTED_ONLY_POINT_SCORED", "/points/0/disposition")
     ]
 
 
@@ -454,6 +619,21 @@ def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> N
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_EVALUATION_MISMATCH", "/evaluation")
+    ]
+
+
+def test_decoder_rejects_nonfinite_threshold_input() -> None:
+    document = _valid_document()
+    document["evaluation"]["thresholds"] = {"line": float("nan")}
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_FIELD_TYPE", "/evaluation/thresholds/line")
     ]
 
 
@@ -515,4 +695,26 @@ def test_decoder_rejects_duplicate_run_artifact_and_capability_identities() -> N
         ("COV_SELECTED_TEST_RUN_CARDINALITY", "/tests/selected/0"),
         ("COV_ARTIFACT_ID_DUPLICATE", "/artifacts/2/id"),
         ("COV_CAPABILITY_DUPLICATE", "/collector/capabilities/1/record_class"),
+    ]
+
+
+def test_decoder_rejects_unknown_run_states() -> None:
+    document = _valid_document()
+    document["tests"]["runs"][0]["simulation_verdict"] = "maybe"
+    document["tests"]["runs"][0]["collection"] = "sometimes"
+    document["collection"] = {
+        "status": "incomplete",
+        "merge": {"status": "not_attempted", "artifact": None},
+        "diagnostics": [],
+    }
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity("acme:demo:counter:1.0#sim_counter"),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_SIMULATION_VERDICT_INVALID", "/tests/runs/0/simulation_verdict"),
+        ("COV_RUN_COLLECTION_STATE_INVALID", "/tests/runs/0/collection"),
     ]

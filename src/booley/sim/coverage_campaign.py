@@ -15,9 +15,22 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
-from typing import NewType, TypeAlias
+from typing import Literal, NewType, TypeAlias, cast
+
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    as_str,
+    require_finite_number,
+    require_int,
+    require_list,
+)
+from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 DurableTargetIdentity = NewType("DurableTargetIdentity", str)
+CoverageCapabilityStatus: TypeAlias = Literal["reported", "absent", "unsupported"]
+SimulationVerdict: TypeAlias = Literal["pass", "fail", "elab_error", "timeout", "inconclusive"]
+CoverageRunCollectionState: TypeAlias = Literal["included", "collector_error"]
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
@@ -91,7 +104,7 @@ class CoverageCapability:
     """Collector support fact for one native coverage record class."""
 
     record_class: str
-    status: str
+    status: CoverageCapabilityStatus
     attributes: Mapping[str, FrozenJson]
 
 
@@ -111,8 +124,8 @@ class CoverageRun:
 
     id: str
     test: str
-    simulation_verdict: str
-    collection: str
+    simulation_verdict: SimulationVerdict
+    collection: CoverageRunCollectionState
     raw_artifact: str | None
     attributes: Mapping[str, FrozenJson]
 
@@ -212,16 +225,40 @@ def _error(code: str, pointer: str, message: str) -> CoverageFinding:
     return CoverageFinding("error", code, pointer, message)
 
 
+def _is_json_array(value: object) -> bool:
+    try:
+        require_list(value)
+    except BoundaryError:
+        return False
+    return True
+
+
+def _is_json_integer(value: object) -> bool:
+    try:
+        require_int(value)
+    except BoundaryError:
+        return False
+    return True
+
+
+def _is_json_number(value: object) -> bool:
+    try:
+        require_finite_number(value, field="value")
+    except BoundaryError:
+        return False
+    return True
+
+
 def _matches_json_type(value: object, expected: str) -> bool:
     matches = {
-        "object": isinstance(value, Mapping),
-        "array": isinstance(value, list),
-        "string": isinstance(value, str),
-        "integer": isinstance(value, int) and not isinstance(value, bool),
-        "number_or_null": value is None
-        or (isinstance(value, int | float) and not isinstance(value, bool)),
-        "string_or_null": value is None or isinstance(value, str),
+        "object": as_dict(value) is not None,
+        "array": _is_json_array(value),
+        "string": as_str(value) is not None,
+        "string_or_null": value is None or as_str(value) is not None,
         "boolean": isinstance(value, bool),
+        "integer": _is_json_integer(value),
+        "number": _is_json_number(value),
+        "number_or_null": value is None or _is_json_number(value),
     }
     if expected not in matches:
         raise AssertionError(f"unknown JSON type {expected}")
@@ -289,7 +326,18 @@ def _validate_invocation_shape(
     invocation: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
     _check_field(invocation, "id", "integer", "/invocation", findings)
-    _check_field(invocation, "started_at", "string", "/invocation", findings)
+    started_at = _check_field(invocation, "started_at", "string", "/invocation", findings)
+    if isinstance(started_at, str):
+        try:
+            parse_timestamp(started_at)
+        except ValueError:
+            findings.append(
+                _error(
+                    "COV_TIMESTAMP_INVALID",
+                    "/invocation/started_at",
+                    "Invocation timestamp must be valid ISO-8601/RFC-3339.",
+                )
+            )
 
 
 def _validate_capability_shapes(
@@ -385,6 +433,30 @@ def _validate_run_shapes(runs: list[object], findings: list[CoverageFinding]) ->
         _check_string_fields(
             run, ("id", "test", "simulation_verdict", "collection"), pointer, findings
         )
+        verdict = run.get("simulation_verdict")
+        if isinstance(verdict, str) and verdict not in {
+            "pass",
+            "fail",
+            "elab_error",
+            "timeout",
+            "inconclusive",
+        }:
+            findings.append(
+                _error(
+                    "COV_SIMULATION_VERDICT_INVALID",
+                    f"{pointer}/simulation_verdict",
+                    "Simulation verdict is not a supported normalized outcome.",
+                )
+            )
+        collection = run.get("collection")
+        if isinstance(collection, str) and collection not in {"included", "collector_error"}:
+            findings.append(
+                _error(
+                    "COV_RUN_COLLECTION_STATE_INVALID",
+                    f"{pointer}/collection",
+                    "Run collection state must be included or collector_error.",
+                )
+            )
         if "raw_artifact" in run:
             _check_field(run, "raw_artifact", "string", pointer, findings)
 
@@ -530,9 +602,19 @@ def _validate_evaluation_shape(
     _check_field(evaluation, "status", "string", "/evaluation", findings)
     _check_field(evaluation, "criterion_fingerprint", "string_or_null", "/evaluation", findings)
     _check_field(evaluation, "suite", "object", "/evaluation", findings)
-    _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
+    thresholds = _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
     _check_field(evaluation, "metrics", "array", "/evaluation", findings)
     _check_field(evaluation, "diagnostics", "array", "/evaluation", findings)
+    if isinstance(thresholds, Mapping):
+        for metric, threshold in thresholds.items():
+            if not _matches_json_type(threshold, "number"):
+                findings.append(
+                    _error(
+                        "COV_FIELD_TYPE",
+                        f"/evaluation/thresholds/{_pointer_token(metric)}",
+                        "Coverage threshold must be a finite JSON number.",
+                    )
+                )
 
 
 def _validate_provenance_shapes(
@@ -763,12 +845,12 @@ def _validate_point_disposition(
                 "Point disposition must be eligible, waived, or unscored.",
             )
         )
-    if kind == "eligible" and metric not in _SCORED_METRICS:
+    if metric not in _SCORED_METRICS and kind != "unscored":
         findings.append(
             _error(
-                "COV_UNSCORABLE_POINT_ELIGIBLE",
+                "COV_REPORTED_ONLY_POINT_SCORED",
                 f"{pointer}/disposition",
-                f"Metric {metric!r} is retained but not scored in V1.",
+                f"Metric {metric!r} must be retained as unscored in V1.",
             )
         )
     waiver_fields = {"waiver_id", "waiver_file", "waiver_fingerprint"}
@@ -1052,13 +1134,46 @@ def _calculate_rollups(document: Mapping[str, object]) -> list[dict[str, object]
     return rollups
 
 
-def _validate_native_format(document: Mapping[str, object]) -> list[CoverageFinding]:
+def _validate_unknown_records(document: Mapping[str, object]) -> list[CoverageFinding]:
+    normalization = document["normalization"]
+    artifacts = document["artifacts"]
+    stored_findings = document["findings"]
+    assert isinstance(normalization, Mapping)
+    assert isinstance(artifacts, list)
+    assert isinstance(stored_findings, list)
+    raw_artifact_ids = {
+        artifact["id"] for artifact in artifacts if artifact["kind"] == "raw_native"
+    }
+    finding_keys = {(finding["code"], finding["pointer"]) for finding in stored_findings}
+    findings: list[CoverageFinding] = []
+    for index, record in enumerate(normalization["unrecognized_records"]):
+        pointer = f"/normalization/unrecognized_records/{index}"
+        if record["raw_artifact"] not in raw_artifact_ids:
+            findings.append(
+                _error(
+                    "COV_UNKNOWN_RECORD_ARTIFACT_UNKNOWN",
+                    f"{pointer}/raw_artifact",
+                    "A retained unknown record must reference a raw native artifact.",
+                )
+            )
+        if ("COV_NATIVE_RECORD_UNKNOWN", pointer) not in finding_keys:
+            findings.append(
+                _error(
+                    "COV_UNKNOWN_RECORD_FINDING_MISSING",
+                    pointer,
+                    "A retained unknown record requires its explicit campaign finding.",
+                )
+            )
+    return findings
+
+
+def _validate_unknown_record_capabilities(
+    document: Mapping[str, object],
+) -> list[CoverageFinding]:
     collector = document["collector"]
     normalization = document["normalization"]
     assert isinstance(collector, Mapping)
     assert isinstance(normalization, Mapping)
-    native_format = collector["native_format"]
-    assert isinstance(native_format, Mapping)
     findings: list[CoverageFinding] = []
     capabilities = {
         (str(item["record_class"]), str(item["status"])) for item in collector["capabilities"]
@@ -1073,31 +1188,87 @@ def _validate_native_format(document: Mapping[str, object]) -> list[CoverageFind
                     "A retained unknown record requires a reported capability fact.",
                 )
             )
-    if native_format["compatibility"] == "incompatible":
-        if normalization["status"] != "incompatible":
-            findings.append(
-                _error(
-                    "COV_INCOMPATIBLE_FORMAT_NORMALIZED",
-                    "/normalization/status",
-                    "An incompatible native format cannot claim successful normalization.",
-                )
-            )
-        if document["points"]:
-            findings.append(
-                _error(
-                    "COV_INCOMPATIBLE_FORMAT_POINTS_PRESENT",
-                    "/points",
-                    "An incompatible native format cannot expose normalized points.",
-                )
-            )
     return findings
 
 
-def _semantic_findings(
-    document: Mapping[str, object], expected_target: DurableTargetIdentity
-) -> tuple[CoverageFinding, ...]:
+def _validate_incompatible_native_format(
+    document: Mapping[str, object],
+) -> list[CoverageFinding]:
+    collector = document["collector"]
+    normalization = document["normalization"]
+    collection = document["collection"]
+    evaluation = document["evaluation"]
+    assert isinstance(collector, Mapping)
+    assert isinstance(normalization, Mapping)
+    assert isinstance(collection, Mapping)
+    assert isinstance(evaluation, Mapping)
+    native_format = collector["native_format"]
+    assert isinstance(native_format, Mapping)
+    if native_format["compatibility"] != "incompatible":
+        return []
     findings: list[CoverageFinding] = []
-    if document["$schema"] != _SCHEMA:
+    if normalization["status"] != "incompatible":
+        findings.append(
+            _error(
+                "COV_INCOMPATIBLE_FORMAT_NORMALIZED",
+                "/normalization/status",
+                "An incompatible native format cannot claim successful normalization.",
+            )
+        )
+    if document["points"]:
+        findings.append(
+            _error(
+                "COV_INCOMPATIBLE_FORMAT_POINTS_PRESENT",
+                "/points",
+                "An incompatible native format cannot expose normalized points.",
+            )
+        )
+    if collection["status"] != "incompatible":
+        findings.append(
+            _error(
+                "COV_INCOMPATIBLE_FORMAT_COLLECTION",
+                "/collection/status",
+                "An incompatible native format requires incompatible collection state.",
+            )
+        )
+    if evaluation["status"] != "blocked":
+        findings.append(
+            _error(
+                "COV_INCOMPATIBLE_FORMAT_EVALUATION",
+                "/evaluation/status",
+                "An incompatible native format must block evaluation.",
+            )
+        )
+    return findings
+
+
+def _validate_native_format(document: Mapping[str, object]) -> list[CoverageFinding]:
+    findings = _validate_unknown_record_capabilities(document)
+    findings.extend(_validate_unknown_records(document))
+    findings.extend(_validate_incompatible_native_format(document))
+    return findings
+
+
+def _sections_are_structurally_valid(
+    structural_findings: tuple[CoverageFinding, ...], *pointers: str
+) -> bool:
+    return not any(
+        finding.pointer == pointer or finding.pointer.startswith(f"{pointer}/")
+        for finding in structural_findings
+        for pointer in pointers
+    )
+
+
+def _identity_semantic_findings(
+    document: Mapping[str, object],
+    expected_target: DurableTargetIdentity,
+    structural_findings: tuple[CoverageFinding, ...],
+) -> list[CoverageFinding]:
+    findings: list[CoverageFinding] = []
+    if (
+        _sections_are_structurally_valid(structural_findings, "/$schema")
+        and document["$schema"] != _SCHEMA
+    ):
         findings.append(
             _error(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
@@ -1105,6 +1276,8 @@ def _semantic_findings(
                 f"Expected {_SCHEMA!r}.",
             )
         )
+    if not _sections_are_structurally_valid(structural_findings, "/target"):
+        return findings
     target = document["target"]
     assert isinstance(target, Mapping)
     if target["identity"] != expected_target:
@@ -1115,13 +1288,46 @@ def _semantic_findings(
                 "Campaign belongs to a different Target.",
             )
         )
-    test_findings, run_ids = _validate_tests(document)
-    findings.extend(test_findings)
-    findings.extend(_validate_artifacts(document))
-    findings.extend(_validate_capabilities(document))
-    findings.extend(_validate_points(document, run_ids))
-    findings.extend(_validate_native_format(document))
-    if document["rollups"] != _calculate_rollups(document):
+    return findings
+
+
+def _observation_semantic_findings(
+    document: Mapping[str, object], structural_findings: tuple[CoverageFinding, ...]
+) -> list[CoverageFinding]:
+    findings: list[CoverageFinding] = []
+    tests_valid = _sections_are_structurally_valid(structural_findings, "/tests")
+    run_ids: set[str] = set()
+    if tests_valid:
+        test_findings, run_ids = _validate_tests(document)
+        findings.extend(test_findings)
+    if _sections_are_structurally_valid(structural_findings, "/artifacts"):
+        findings.extend(_validate_artifacts(document))
+    if _sections_are_structurally_valid(structural_findings, "/collector"):
+        findings.extend(_validate_capabilities(document))
+    point_dependencies = ("/points", "/collector", "/source_closure")
+    if tests_valid and _sections_are_structurally_valid(structural_findings, *point_dependencies):
+        findings.extend(_validate_points(document, run_ids))
+    native_dependencies = (
+        "/collector",
+        "/normalization",
+        "/points",
+        "/artifacts",
+        "/findings",
+        "/collection",
+        "/evaluation",
+    )
+    if _sections_are_structurally_valid(structural_findings, *native_dependencies):
+        findings.extend(_validate_native_format(document))
+    return findings
+
+
+def _outcome_semantic_findings(
+    document: Mapping[str, object], structural_findings: tuple[CoverageFinding, ...]
+) -> list[CoverageFinding]:
+    findings: list[CoverageFinding] = []
+    if _sections_are_structurally_valid(structural_findings, "/points", "/rollups") and document[
+        "rollups"
+    ] != _calculate_rollups(document):
         findings.append(
             _error(
                 "COV_ROLLUP_MISMATCH",
@@ -1129,8 +1335,23 @@ def _semantic_findings(
                 "Rollups do not match the deterministic derivation from points.",
             )
         )
-    findings.extend(_validate_collection(document))
-    findings.extend(_validate_evaluation(document))
+    collection_dependencies = ("/tests", "/artifacts", "/collection", "/normalization")
+    if _sections_are_structurally_valid(structural_findings, *collection_dependencies):
+        findings.extend(_validate_collection(document))
+    evaluation_dependencies = ("/evaluation", "/collection", "/rollups")
+    if _sections_are_structurally_valid(structural_findings, *evaluation_dependencies):
+        findings.extend(_validate_evaluation(document))
+    return findings
+
+
+def _semantic_findings(
+    document: Mapping[str, object],
+    expected_target: DurableTargetIdentity,
+    structural_findings: tuple[CoverageFinding, ...],
+) -> tuple[CoverageFinding, ...]:
+    findings = _identity_semantic_findings(document, expected_target, structural_findings)
+    findings.extend(_observation_semantic_findings(document, structural_findings))
+    findings.extend(_outcome_semantic_findings(document, structural_findings))
     return tuple(findings)
 
 
@@ -1140,7 +1361,7 @@ def _decode_capability(document: Mapping[str, object]) -> CoverageCapability:
     }
     return CoverageCapability(
         record_class=str(document["record_class"]),
-        status=str(document["status"]),
+        status=cast(CoverageCapabilityStatus, str(document["status"])),
         attributes=_freeze_mapping(attributes),
     )
 
@@ -1150,8 +1371,8 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
     return CoverageRun(
         id=str(document["id"]),
         test=str(document["test"]),
-        simulation_verdict=str(document["simulation_verdict"]),
-        collection=str(document["collection"]),
+        simulation_verdict=cast(SimulationVerdict, str(document["simulation_verdict"])),
+        collection=cast(CoverageRunCollectionState, str(document["collection"])),
         raw_artifact=(str(document["raw_artifact"]) if "raw_artifact" in document else None),
         attributes=_freeze_mapping(
             {key: value for key, value in document.items() if key not in known}
@@ -1229,10 +1450,19 @@ def _decode_collector(document: Mapping[str, object]) -> CoverageCollector:
     )
 
 
+def _decode_invocation(document: Mapping[str, object]) -> Mapping[str, FrozenJson]:
+    invocation = dict(document)
+    started_at = str(invocation["started_at"])
+    invocation["started_at"] = rfc3339_from_epoch(parse_timestamp(started_at).timestamp())
+    return _freeze_mapping(invocation)
+
+
 def _decode_valid_campaign(document: Mapping[str, object]) -> CoverageCampaign:
+    invocation = document["invocation"]
     target = document["target"]
     collector = document["collector"]
     tests = document["tests"]
+    assert isinstance(invocation, Mapping)
     assert isinstance(target, Mapping)
     assert isinstance(collector, Mapping)
     assert isinstance(tests, Mapping)
@@ -1249,7 +1479,7 @@ def _decode_valid_campaign(document: Mapping[str, object]) -> CoverageCampaign:
     return CoverageCampaign(
         schema=str(document["$schema"]),
         campaign_id=str(document["campaign_id"]),
-        invocation=_freeze_mapping(document["invocation"]),
+        invocation=_decode_invocation(invocation),
         target=CoverageTarget(identity=str(target["identity"]), selector=str(target["selector"])),
         collector=_decode_collector(collector),
         build=_freeze_mapping(document["build"]),
@@ -1285,11 +1515,10 @@ def decode_coverage_campaign(
             )
         )
     structural_findings = _structural_findings(document)
-    if structural_findings:
-        raise CoverageCampaignValidationError(structural_findings)
-    semantic_findings = _semantic_findings(document, expected_target)
-    if semantic_findings:
-        raise CoverageCampaignValidationError(semantic_findings)
+    semantic_findings = _semantic_findings(document, expected_target, structural_findings)
+    all_findings = structural_findings + semantic_findings
+    if all_findings:
+        raise CoverageCampaignValidationError(all_findings)
     return _decode_valid_campaign(document)
 
 
