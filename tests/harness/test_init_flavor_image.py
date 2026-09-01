@@ -392,6 +392,11 @@ class TestShippedFlavorFiles:
 
 
 class TestBaseImageNote:
+    @pytest.fixture(autouse=True)
+    def _disable_installed_image_refresh(self, monkeypatch):
+        """Keep presentation tests independent of Docker registry availability."""
+        monkeypatch.setattr(idi, "_refresh_installed_base_image", lambda *_args: False)
+
     def test_base_step_explains_the_flavor_relationship(self, monkeypatch, capsys):
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
