@@ -229,6 +229,7 @@ class TestCodexHelpers:
         assert text == ""
         assert err == "something broke"
 
+
 class TestCodexExtractStructured:
     """Tests for _codex_extract_structured — prefer last segment."""
 
