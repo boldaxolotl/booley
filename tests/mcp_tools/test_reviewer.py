@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
     compute_source_fingerprint,

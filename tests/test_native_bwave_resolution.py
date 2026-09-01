@@ -175,7 +175,7 @@ def test_fifo_streaming_prefers_the_binary_over_a_stale_path_wrapper(monkeypatch
     A stale `pip install --user` wrapper in ~/.local/bin is the classic PATH hit;
     the candidate list has to beat it.
     """
-    from booley.sim import bwave_fifo
+    from booley.flows.sim import bwave_fifo
 
     local_bin = tmp_path / ".local" / "bin"
     local_bin.mkdir(parents=True)
@@ -191,7 +191,7 @@ def test_fifo_streaming_prefers_the_binary_over_a_stale_path_wrapper(monkeypatch
 
 @pytest.mark.skipif(sys.platform == "win32", reason="FIFO streaming is POSIX-only")
 def test_fifo_streaming_declines_when_only_the_wrapper_exists(monkeypatch, tmp_path):
-    from booley.sim import bwave_fifo
+    from booley.flows.sim import bwave_fifo
 
     path_dir = tmp_path / "bin"
     path_dir.mkdir()

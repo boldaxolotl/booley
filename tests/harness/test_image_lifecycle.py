@@ -734,7 +734,7 @@ def test_packaged_refresh_uses_pull_capable_builder(
     monkeypatch: pytest.MonkeyPatch,
     reference: str,
 ) -> None:
-    from booley.harness import init_docker_image
+    from booley.harness.setup import docker_image as init_docker_image
 
     root = _project(tmp_path)
     docker_dir = tmp_path / "installed" / "src" / "booley" / "data" / "docker"
@@ -987,7 +987,7 @@ def test_docker_cli_preserves_label_and_mutation_failures(monkeypatch: pytest.Mo
 def test_packaged_builder_reports_pull_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import init_docker_image
+    from booley.harness.setup import docker_image as init_docker_image
 
     root = _project(tmp_path)
     docker_dir = tmp_path / "installed" / "src" / "booley" / "data" / "docker"
@@ -1010,7 +1010,8 @@ def test_packaged_builder_reports_pull_failure(
 def test_local_builder_dispatches_each_managed_recipe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import init_cmd, init_docker_image
+    from booley.harness import init_cmd
+    from booley.harness.setup import docker_image as init_docker_image
 
     root = _project(tmp_path)
     calls: list[str] = []
@@ -1053,7 +1054,7 @@ def test_local_builder_dispatches_each_managed_recipe(
 def test_local_builder_reports_step_and_user_recipe_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.harness import init_docker_image
+    from booley.harness.setup import docker_image as init_docker_image
 
     root = _project(tmp_path)
     payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")

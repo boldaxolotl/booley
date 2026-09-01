@@ -225,7 +225,7 @@ class BooleyFlow(McpTool):
 
         ``subprocess.run(..., timeout=...)`` only kills the direct child — for
         every mechanical Flow that child is a ``make``/``sh`` shim whose real
-        work is a grandchild (``python -m booley.sim.verilator_run`` and the
+        work is a grandchild (``python -m booley.flows.sim.backends.verilator`` and the
         ``V<top>`` binary it supervises, yosys+abc, sv2v, ...). Those get
         reparented to init on a timeout and keep burning a core forever
         (observed: 99.9% CPU for 38+ minutes after a simulate timeout, F-13).
@@ -350,7 +350,7 @@ class BooleyFlow(McpTool):
         Best-effort: a work dir we cannot write is the run's own problem to
         report, never a reason to fail the prepare half.
         """
-        from booley.sim.sim_result import begin_run_log
+        from booley.flows.run_log import begin_run_log
 
         try:
             log_dir.mkdir(parents=True, exist_ok=True)

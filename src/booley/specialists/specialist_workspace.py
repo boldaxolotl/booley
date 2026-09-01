@@ -12,8 +12,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.agent_workspace.isolation import get_category_dirs, hide_opposite_sources
 from booley.core.models import AgentCallParams, AgentResult
-from booley.dev_support.workspace_isolation import get_category_dirs, hide_opposite_sources
 
 WorkspaceAccess = Literal["read_only", "read_write"]
 

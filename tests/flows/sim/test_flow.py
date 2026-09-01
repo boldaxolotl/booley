@@ -11,8 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.run_log import write_run_log
 from booley.flows.sim.build import SimulationBuildPreparationError
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
@@ -36,7 +37,6 @@ from booley.flows.sim.flow import (
 )
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.project_dir import reset_cache
-from booley.sim.sim_result import write_run_log
 
 # Built-in Flow execution inside the Session Runtime.
 _FLOW_ENABLED = True
@@ -1388,12 +1388,12 @@ class TestEdalizeSimPath:
             assert command[command.index("--run-cwd") + 1] == "."
 
     def test_icarus_run_cmd_ships_through_iverilog_run(self, tmp_path: Path):
-        """Icarus runs are re-homed to booley.sim.iverilog_run (the edalize
+        """Icarus runs are re-homed to booley.flows.sim.backends.icarus (the edalize
         Icarus run-half) — the mirror of the verilator_run wiring, not `make run`.
         --trace rides along; the run-half adds the +trace plusarg itself."""
         traced = _make_flow(tmp_path, extra_args=["--trace"])
         cmd = traced._icarus_run_cmd("build/rel/dir", ["test_id=2"])
-        assert cmd[:3] == ["python3", "-m", "booley.sim.iverilog_run"]
+        assert cmd[:3] == ["python3", "-m", "booley.flows.sim.backends.icarus"]
         assert cmd[cmd.index("--build-dir") + 1] == "build/rel/dir"
         assert "--top" not in cmd  # vvp image is discovered, no toplevel needed
         assert "--trace" in cmd
@@ -1490,7 +1490,7 @@ class TestEdalizeSimPath:
 
     def test_resolve_trace_args_reads_booley_toml(self, tmp_path: Path):
         """[flows.sim].trace_args is read from booley.toml; unset -> empty."""
-        from booley.sim.config import resolve_trace_args
+        from booley.flows.sim.config import resolve_trace_args
 
         proj = tmp_path / ".booley_project"
         proj.mkdir()
@@ -1691,9 +1691,9 @@ class TestEdalizeSimPath:
         assert "Verilator elaboration failed" not in script
         assert "make" in script
         assert ".booley_project/.runtime/edalize/sim/lite/sim_demo_0/sim" in script
-        # Verilator run half ships through booley.sim.verilator_run, which builds
+        # Verilator run half ships through booley.flows.sim.backends.verilator, which builds
         # V<top> from --top (decision 12) over the FuseSoC build dir.
-        assert "booley.sim.verilator_run" in script
+        assert "booley.flows.sim.backends.verilator" in script
         assert "--top tb_counter" in script
 
     def test_prepare_sim_command_forwards_test_plusarg(self, tmp_path: Path):
@@ -1860,7 +1860,7 @@ class TestEdalizeSimPath:
         )
         assert not overlay_file.exists()  # cleanup() removed the transient overlay
         script = cmd[2]
-        assert "booley.sim.verilator_run" in script
+        assert "booley.flows.sim.backends.verilator" in script
         assert "--trace" in script
         assert "--trace-mode native_fst" in script
         assert "--trace-scope" not in script  # full-hierarchy trace, no scope knob
@@ -2109,11 +2109,11 @@ class TestEdalizeSimPath:
         assert cmd[:2] == ["sh", "-c"]
         script = cmd[2]
         # Build half is the edalize `make`; the run half is re-homed to the
-        # booley.sim.verilator_run wrapper (commit 374c97b) which execs the
+        # booley.flows.sim.backends.verilator wrapper (commit 374c97b) which execs the
         # verilated ./V<top> binary — so assert on the wrapper + top, not the
         # bare Vtb_counter binary name the pre-refactor command referenced.
         assert "make" in script
-        assert "booley.sim.verilator_run" in script and "tb_counter" in script
+        assert "booley.flows.sim.backends.verilator" in script and "tb_counter" in script
         make_dir = next((work_dir / ".booley_project" / ".runtime").rglob("Makefile")).parent
         vc = next(make_dir.glob("*.vc")).read_text(encoding="utf-8")
         assert "--timing" in vc and "--trace" in vc and "-Wno-fatal" in vc
@@ -2125,7 +2125,7 @@ class TestEdalizeSimPath:
     def test_real_fusesoc_icarus_sim_setup(self, tmp_path: Path):
         """End-to-end (Icarus): a real `fusesoc run --setup` leaves a makeable
         Icarus build dir, and simulate's command builds via `make` then runs the
-        vvp image through booley.sim.iverilog_run — NOT `make run`, and NOT the
+        vvp image through booley.flows.sim.backends.icarus — NOT `make run`, and NOT the
         Verilator run-half. Icarus trace is runtime (+trace) so no overlay/--exe.
         """
         import pytest
@@ -2180,8 +2180,8 @@ class TestEdalizeSimPath:
         # Build via edalize `make`; run via the iverilog run-half (not `make run`,
         # not verilator_run). --trace flows to the run-half; no overlay was made.
         assert "make" in script
-        assert "booley.sim.iverilog_run" in script
-        assert "booley.sim.verilator_run" not in script
+        assert "booley.flows.sim.backends.icarus" in script
+        assert "booley.flows.sim.backends.verilator" not in script
         assert "make run" not in script
         assert "--trace" in script
 
@@ -2606,7 +2606,7 @@ class TestTruncationResilientReport:
     def test_another_runs_log_is_never_vouched_for(self, tmp_path: Path):
         """A log whose header names a DIFFERENT run (a concurrent Flow, or a
         run whose header this one never wrote) is not citable."""
-        from booley.sim.sim_result import begin_run_log
+        from booley.flows.run_log import begin_run_log
 
         flow = _make_flow(tmp_path, config="lite")
         build_root = tmp_path / "build" / "lite"
@@ -2706,8 +2706,8 @@ class TestBuildContextReporting:
         failure, so the MCP layer's stdout truncation cut them off on exactly
         the long runs that needed them.
         """
+        from booley.flows.run_log import write_run_log
         from booley.flows.sim.flow import TargetResult
-        from booley.sim.sim_result import write_run_log
 
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
         flow = _make_flow(tmp_path, config="sim", seed_core=False)
@@ -2763,8 +2763,8 @@ class TestBuildContextReporting:
     def test_trace_pointer_follows_a_custom_dump_path(self, tmp_path: Path):
         """A project's own ``trace_files`` dump path (F-22) still gets cited —
         ``trace.fst`` is the conventional name, not the only one."""
+        from booley.flows.run_log import write_run_log
         from booley.flows.sim.flow import TargetResult
-        from booley.sim.sim_result import write_run_log
 
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
         flow = _make_flow(tmp_path, config="sim", seed_core=False)
@@ -2965,7 +2965,7 @@ class TestPerTargetSimEnv:
         guard.assert_called_once()
         script = cmd[2]
         assert "export FLAVOR=small" in script
-        assert script.index("export FLAVOR") < script.index("booley.sim.cocotb_run")
+        assert script.index("export FLAVOR") < script.index("booley.flows.sim.backends.cocotb")
 
     def test_cocotb_command_carries_target_plusargs(self, tmp_path: Path):
         from booley.fusesoc import fusesoc_registry
@@ -3313,11 +3313,13 @@ class TestSelectorRoundTrip:
     ]
 
     def test_verilator_selector_survives_to_binary_argv(self, tmp_path: Path):
-        from booley.sim import verilator_run
+        from booley.flows.sim.backends import verilator as verilator_run
 
         for selector in self._SELECTORS:
             cmd = _make_flow(tmp_path)._verilator_run_cmd("build/dir", "tb", [selector])
-            ns = verilator_run._parse_args(self._runner_argv(cmd, "booley.sim.verilator_run"))
+            ns = verilator_run._parse_args(
+                self._runner_argv(cmd, "booley.flows.sim.backends.verilator")
+            )
             assert ns.plusargs == [selector]
             # And onward to the binary: '+' restored for bare selectors,
             # option-like ones forwarded verbatim (SETUP-7).
@@ -3326,32 +3328,36 @@ class TestSelectorRoundTrip:
             assert run_cmd[1:] == [expected]
 
     def test_icarus_selector_survives_parse(self, tmp_path: Path):
-        from booley.sim import iverilog_run
+        from booley.flows.sim.backends import icarus as iverilog_run
 
         for selector in self._SELECTORS:
             cmd = _make_flow(tmp_path)._icarus_run_cmd("build/dir", [selector])
-            ns = iverilog_run._parse_args(self._runner_argv(cmd, "booley.sim.iverilog_run"))
+            ns = iverilog_run._parse_args(
+                self._runner_argv(cmd, "booley.flows.sim.backends.icarus")
+            )
             assert ns.plusargs == [selector]
 
     def test_cocotb_test_names_survive_parse(self, tmp_path: Path):
-        from booley.sim import cocotb_run
+        from booley.flows.sim.backends import cocotb as cocotb_run
 
         tests = ["test_reset", "test_count"]
         cmd = _make_flow(tmp_path)._cocotb_run_cmd("build/dir", "icarus", "tb.test_mod", tests)
-        ns = cocotb_run._parse_args(self._runner_argv(cmd, "booley.sim.cocotb_run"))
+        ns = cocotb_run._parse_args(self._runner_argv(cmd, "booley.flows.sim.backends.cocotb"))
         assert ns.tests == tests
         assert ns.cocotb_module == "tb.test_mod"
 
     def test_option_like_sentinels_survive_parse(self, tmp_path: Path):
         """A sentinel starting with '-' needs the `=` form to survive argparse."""
-        from booley.sim import verilator_run
+        from booley.flows.sim.backends import verilator as verilator_run
 
         with patch(
             "booley.flows.sim.flow._resolve_sim_sentinels",
             return_value=(["ALL TESTS PASSED."], ["-FAILED-", "ERROR!"]),
         ):
             cmd = _make_flow(tmp_path)._verilator_run_cmd("build/dir", "tb", [])
-        ns = verilator_run._parse_args(self._runner_argv(cmd, "booley.sim.verilator_run"))
+        ns = verilator_run._parse_args(
+            self._runner_argv(cmd, "booley.flows.sim.backends.verilator")
+        )
         assert ns.pass_sentinels == ["ALL TESTS PASSED."]
         assert ns.fail_sentinels == ["-FAILED-", "ERROR!"]
 
@@ -3418,7 +3424,7 @@ class TestTraceFilesKnob:
     """fpu F-22b: declare where a custom main() drops its dump."""
 
     def test_resolve_trace_files_reads_booley_toml(self, tmp_path: Path):
-        from booley.sim.config import resolve_trace_files
+        from booley.flows.sim.config import resolve_trace_files
 
         proj = tmp_path / ".booley_project"
         proj.mkdir()
@@ -3544,7 +3550,7 @@ class TestFullRunLogOnPass:
     """fpu F-29e: a PASSING sandbox run's log carries the build section too."""
 
     def test_persist_writes_build_and_run_halves(self, tmp_path: Path):
-        from booley.sim.sim_result import run_log_is_current
+        from booley.flows.run_log import run_log_is_current
 
         flow = _make_flow(tmp_path, config="lite")
         log_dir = tmp_path / "build" / "lite"

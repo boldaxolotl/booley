@@ -1,10 +1,10 @@
 """EDA log/report parsers shared by the built-in Booley Flows (private).
 
 The pure text-extraction blocks of the built-in Flows: sim sentinel verdicts
-(re-exported from ``booley.sim.sim_result``), Verilator and Verible
+(re-exported from ``booley.flows.sim.result``), Verilator and Verible
 warning/error parsing (single source of truth — ``booley.flows.lint.flow`` imports
 these regexes), compiler-error gists (shared with ``booley.flows.sim.flow``),
-and Yosys area extraction (re-exported from ``booley.yosys.syn_parse``).
+and Yosys area extraction (re-exported from ``booley.flows.synth.backends.yosys.parsing``).
 
 Formerly the public ``booley.adapterlib.parsers`` — the one module the
 built-in flows imported from the adapter library; it moved here as a private

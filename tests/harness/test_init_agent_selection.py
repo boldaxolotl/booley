@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.harness import init_cmd
-from booley.harness.init_common import InitContext
+from booley.harness.setup.common import InitContext
 
 
 def _args(**overrides) -> argparse.Namespace:

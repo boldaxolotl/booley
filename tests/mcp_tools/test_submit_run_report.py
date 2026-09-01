@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     CATEGORY_RTL,
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,

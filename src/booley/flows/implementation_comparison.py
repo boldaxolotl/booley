@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict, as_str
-from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
+from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.ticket_board.target_contract import SCHEMA_VERSION, TargetContract
 

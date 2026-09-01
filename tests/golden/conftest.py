@@ -8,8 +8,8 @@ two real bugs slipped through:
 
 * ``519842f`` — the generated OpenROAD script lacked ``make_tracks`` after
   ``initialize_floorplan``, so every placement run died with PPL-0021.
-* ``ca5adaf`` — asic_synthesize emitted a bare ``--sdc`` flag (run_yosys_syn's
-  ``--sdc`` takes a value), crashing argparse deep inside the sandbox.
+* ``ca5adaf`` — asic_synthesize emitted the retired ABC-only ``--sdc`` flag,
+  crashing argparse deep inside the sandbox.
 
 A golden test snapshots the FULL generated output, so any added, removed, or
 edited line surfaces as a unified diff at review time.

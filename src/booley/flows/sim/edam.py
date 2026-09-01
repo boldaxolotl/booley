@@ -49,7 +49,7 @@ def sim_run_command(
 
 def reemit_sim_summary(output: str, returncode: int) -> str:
     """Append Booley's structured verdict to raw simulator output."""
-    from booley.sim.sim_result import (
+    from booley.flows.sim.result import (
         SIM_SUMMARY_PREFIX,
         count_sva_errors,
         extract_vrfc_warnings,

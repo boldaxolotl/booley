@@ -39,8 +39,8 @@ _MINIMAL_FIELDS = {
 def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
     tmp_path: Path,
 ) -> None:
-    from booley.dev_support.criteria_actions import planned_invocation
-    from booley.dev_support.development_state import CriterionEntry
+    from booley.criteria.actions import planned_invocation
+    from booley.criteria.state import CriterionEntry
     from booley.harness.setup.intake import _apply_contract_selectors
 
     contract = TargetContract(
@@ -233,7 +233,7 @@ def test_fpga_relative_criterion_freezes_recipe_and_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FPGA QoR intake pins the same sealed-recipe evidence as synthesis."""
-    from booley.dev_support.criteria import BASELINE_TARGET_PARAM
+    from booley.criteria.templates import BASELINE_TARGET_PARAM
     from booley.flows.recipe_evidence import (
         BASELINE_REF_PARAM,
         RECIPE_FINGERPRINT_PARAM,
@@ -922,7 +922,7 @@ class TestMigrationGuards:
             },
         )
         _mock_cli_defaults(mock_cli, fields=fields)
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.harness.setup.intake import run
         from booley.ticket_board.helpers import tickets_dir_from_project_root
 

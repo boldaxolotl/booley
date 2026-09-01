@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from booley.harness import init_cmd
-from booley.harness.init_common import InitContext
+from booley.harness.setup.common import InitContext
 
 
 @pytest.fixture

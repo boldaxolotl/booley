@@ -8,7 +8,7 @@ from argparse import Namespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.ticket_board.acceptance_ledger import freeze_acceptance
 from booley.ticket_board.cli_handlers import (
     _cmd_board,

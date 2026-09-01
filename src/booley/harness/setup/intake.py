@@ -13,12 +13,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from booley.dev_support.criteria import (
+from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import (
     BASELINE_TARGET_PARAM,
     CriteriaTemplate,
     find_retired_criteria,
 )
-from booley.dev_support.development_state import DevelopmentState
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.paths import (
     existing_runtime_file,
@@ -544,7 +544,7 @@ def _pin_cycle_count_baselines(
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
     """Pin every relative Cycle Count Criterion to the Ticket's base SHA."""
-    from booley.dev_support.thresholds import has_relative_threshold
+    from booley.criteria.thresholds import has_relative_threshold
     from booley.flows.recipe_evidence import BASELINE_REF_PARAM
 
     for key, params in criterion_params.items():
@@ -725,7 +725,7 @@ def _snapshot_intake_recipe(
 
 def _has_relative_threshold(params: dict[str, Any]) -> bool:
     """Whether criterion params require baseline metrics."""
-    from booley.dev_support.thresholds import has_relative_threshold
+    from booley.criteria.thresholds import has_relative_threshold
 
     return has_relative_threshold(params)
 
@@ -766,7 +766,7 @@ def _seed_project_criteria(
     YAML also declares the same criterion, the ticket wins (already in expanded).
     """
     try:
-        from booley.dev_support.criteria import (
+        from booley.criteria.templates import (
             expand_criteria_defs,
             load_project_criteria,
         )

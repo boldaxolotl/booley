@@ -29,10 +29,6 @@ EXPECTED_RESOURCES = {
     "booley/dev_support/pre-commit-ruff.sh",
     "booley/dev_support/worktree_create.sh",
     "booley/harness/console/console.tcss",
-    "booley/vivado/xdc/timing.xdc",
-    "booley/yosys/abc_config.json",
-    "booley/yosys/abc_scripts/abc_balanced.script",
-    "booley/yosys/sdc/abc_simple.sdc",
 }
 
 
