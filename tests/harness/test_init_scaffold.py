@@ -24,8 +24,8 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.harness import doctor
 from booley.harness.init_cmd import BOOLEY_TOML_SKELETON, TESTS_TOML_SKELETON
-from booley.harness.init_common import InitContext
-from booley.harness.init_scaffold import (
+from booley.harness.setup.common import InitContext
+from booley.harness.setup.scaffold import (
     ScaffoldChoices,
     existing_design_files,
     gather_scaffold_choices,

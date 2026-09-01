@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.harness.init_common import InitContext
-from booley.harness.init_git_hooks import (
+from booley.harness.setup.common import InitContext
+from booley.harness.setup.git_hooks import (
     WORKTREE_PRUNE_KEY,
     WORKTREE_PRUNE_VALUE,
     _step_worktree_prune_guard,
@@ -140,7 +140,7 @@ class TestProjectCommitMsgHookVendoring:
     fix vendors the stdlib-only run_command.py flat beside them."""
 
     def test_vendors_run_tool_alongside_scripts(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import (
+        from booley.harness.setup.git_hooks import (
             _PROJECT_HOOK_SCRIPTS,
             _step_project_git_hooks,
         )
@@ -166,7 +166,7 @@ class TestProjectCommitMsgHookVendoring:
         Session Runtime then tries to exec ``/bin/sh\\r`` (ENOENT) and EVERY
         in-container commit fails — hence all of Ticket Mode.
         """
-        from booley.harness.init_git_hooks import _step_project_git_hooks
+        from booley.harness.setup.git_hooks import _step_project_git_hooks
 
         _git_init(tmp_path)
         ctx = _ctx(tmp_path)
@@ -184,7 +184,7 @@ class TestCommitMsgHookBody:
     Store nag, and winget's Python ships python.exe with no python3.exe."""
 
     def test_body_probes_interpreters_instead_of_bare_python3(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _build_commit_msg_hook_body
+        from booley.harness.setup.git_hooks import _build_commit_msg_hook_body
 
         body = _build_commit_msg_hook_body(
             tmp_path,
@@ -210,7 +210,7 @@ class TestHookInSecondaryWorktree:
     @staticmethod
     def _install(main: Path) -> None:
         """A git repo with a vendored hook script + the generated commit-msg hook."""
-        from booley.harness.init_git_hooks import _build_commit_msg_hook_body
+        from booley.harness.setup.git_hooks import _build_commit_msg_hook_body
 
         subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
         for key, val in (("user.email", "t@example.com"), ("user.name", "T")):
@@ -286,7 +286,7 @@ class TestPrePushFailsClosed:
     @staticmethod
     def _repo(root: Path) -> Path:
         """Repo with a bare origin, the pre-push delegator, and a stub script."""
-        from booley.harness.init_git_hooks import _build_pre_push_hook_body
+        from booley.harness.setup.git_hooks import _build_pre_push_hook_body
 
         main = root / "main"
         subprocess.run(["git", "init", "-q", "-b", "main", str(main)], check=True)
@@ -350,7 +350,7 @@ class TestPrePushFailsClosed:
 
     def test_only_pre_push_fails_closed(self, tmp_path: Path):
         """The two bodies are built by one helper — pin the divergence."""
-        from booley.harness.init_git_hooks import (
+        from booley.harness.setup.git_hooks import (
             _build_commit_msg_hook_body,
             _build_pre_push_hook_body,
         )
@@ -380,7 +380,7 @@ class TestLineEndingsStep:
         )
 
     def test_lf_tree_passes(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -401,7 +401,7 @@ class TestLineEndingsStep:
         # checks CRLF out, so index and worktree disagree (`i/lf w/crlf`) and
         # the container's git — which does no conversion — reports every such
         # file as modified.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -422,7 +422,7 @@ class TestLineEndingsStep:
         assert "[ii] detected core.autocrlf=true" in output
 
     def test_failed_autocrlf_update_remains_a_warning(self, tmp_path: Path, capsys):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         _git_init(tmp_path)
         subprocess.run(
@@ -447,7 +447,7 @@ class TestLineEndingsStep:
         # AND in the container. Counting these as phantom diffs is a false
         # positive — the check used to warn here purely because the worktree
         # said "crlf", never asking whether the index disagreed.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -468,7 +468,7 @@ class TestLineEndingsStep:
         # git never converts them — `i/crlf w/crlf attr/-text`, byte-identical
         # to the index. init flagged 8 such files with a blanket text rule plus
         # a delete + re-checkout, which would have corrupted them.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -488,7 +488,7 @@ class TestLineEndingsStep:
     def test_autocrlf_true_with_lf_tree_is_auto_fixed(self, tmp_path: Path):
         # Nothing on disk is CRLF yet — autocrlf alone is the whole problem,
         # and flipping it is repo-local and reversible, so init just does it.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -504,7 +504,7 @@ class TestLineEndingsStep:
         assert _autocrlf(tmp_path) == "false"
 
     def test_not_a_git_repo_skips(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         ctx = _ctx(tmp_path)
 
@@ -515,7 +515,7 @@ class TestLineEndingsStep:
     def test_separate_project_data_repository_is_normalized(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         global_config = tmp_path / "global.gitconfig"
         global_config.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
@@ -553,7 +553,7 @@ class TestLineEndingsStep:
             assert staged.returncode == 0
 
     def test_unset_effective_policy_is_pinned_locally_in_both_repositories(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -581,8 +581,8 @@ class TestLineEndingsStep:
         local: bool | None,
         detail: str,
     ):
-        from booley.harness import init_git_hooks
-        from booley.harness.init_git_hooks import (
+        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup.git_hooks import (
             AutocrlfSetting,
             LineEndingRepository,
         )
@@ -604,7 +604,7 @@ class TestLineEndingsStep:
         assert outcome.detail == detail
 
     def test_invalid_autocrlf_boolean_is_unreadable(self, tmp_path: Path):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         probe = subprocess.CompletedProcess(
             args=["git", "config"],
@@ -620,7 +620,7 @@ class TestLineEndingsStep:
 
 class TestLineEndingRepositoryDiscovery:
     def test_project_data_inside_outer_repository_is_deduplicated(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import discover_line_ending_repositories
+        from booley.harness.setup.git_hooks import discover_line_ending_repositories
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -634,7 +634,7 @@ class TestLineEndingRepositoryDiscovery:
         ]
 
     def test_separate_project_data_repository_is_discovered(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import discover_line_ending_repositories
+        from booley.harness.setup.git_hooks import discover_line_ending_repositories
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -650,7 +650,7 @@ class TestLineEndingRepositoryDiscovery:
         ]
 
     def test_missing_project_data_prevents_aggregate_success(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -666,7 +666,7 @@ class TestLineEndingRepositoryDiscovery:
         assert "project-data: directory does not exist" in ctx.results[-1].detail
 
     def test_check_only_does_not_mutate_either_repository(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -694,7 +694,7 @@ class TestLineEndingRepositoryDiscovery:
             assert staged.returncode == 0
 
     def test_dirty_project_data_is_refused_while_outer_is_repaired(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -767,7 +767,7 @@ class TestLineEndingsAutoFix:
         # appending the whole-tree LF default would override `-text` exemptions
         # that keep CRLF-native payloads intact. First line loses to every rule
         # below it — which is what a default should do.
-        from booley.harness.init_git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+        from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
 
         self._crlf_repo(tmp_path)
         (tmp_path / ".gitattributes").write_bytes(b"*.bat -text\n")
@@ -778,7 +778,7 @@ class TestLineEndingsAutoFix:
         assert lines == [GITATTRIBUTES_RULE, "*.bat -text"]
 
     def test_gitattributes_rule_preserves_binary_detection(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+        from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -805,7 +805,7 @@ class TestLineEndingsAutoFix:
     def test_existing_whole_tree_policy_is_left_alone(self, tmp_path: Path):
         # `* text=auto` is the project stating its own policy. Deliberate
         # choice, not our business.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         (tmp_path / ".gitattributes").write_bytes(b"* text=auto\n")
@@ -815,7 +815,7 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / ".gitattributes").read_bytes() == b"* text=auto\n"
 
     def test_check_only_previews_the_one_run_normalization(self, tmp_path: Path, capsys):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         ctx = _ctx(tmp_path, check_only=True)
@@ -834,7 +834,7 @@ class TestLineEndingsAutoFix:
         assert "--fix-line-endings" not in output
 
     def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path, capsys):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         ctx = _ctx(tmp_path)
@@ -863,7 +863,7 @@ class TestLineEndingsAutoFix:
         assert "[!!]" not in output
 
     def test_fix_flag_rechecks_out_as_lf(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         ctx = _ctx(tmp_path, fix_line_endings=True)
@@ -874,7 +874,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
 
     def test_rerun_heals_stale_index_from_earlier_normalization(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         subprocess.run(
@@ -909,7 +909,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].detail == "index refreshed"
 
     def test_partial_rewrite_refreshes_successful_paths(self, tmp_path: Path):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, "b.v", b"module b;\nendmodule\n")
@@ -949,7 +949,7 @@ class TestLineEndingsAutoFix:
         assert retry.results[-1].status == "ok"
 
     def test_phantom_status_failure_includes_git_context(self, tmp_path: Path):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         with patch.object(
             init_git_hooks.subprocess,
@@ -964,7 +964,7 @@ class TestLineEndingsAutoFix:
         assert "git unavailable" in error
 
     def test_fix_flag_ignores_init_created_untracked_gitattributes(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         # The compatibility flag remains harmless on the already-fixed output
         # of an ordinary first run, including its untracked policy file.
@@ -990,7 +990,7 @@ class TestLineEndingsAutoFix:
     def test_fix_flag_refuses_on_a_dirty_tree(self, tmp_path: Path):
         # Replacing even only the affected paths could lose uncommitted work,
         # so a dirty tree is a hard stop.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         (tmp_path / "b.v").write_bytes(b"module b;\nendmodule\n")
@@ -1011,7 +1011,7 @@ class TestLineEndingsAutoFix:
         # .gitattributes is normally tracked, so its staged replacement comes
         # from the index. Writing the rule before applying that replacement
         # would silently lose the part of the fix that reaches teammates.
-        from booley.harness.init_git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+        from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"*.bat -text\n")
@@ -1030,7 +1030,7 @@ class TestLineEndingsAutoFix:
         # The taxi shape. `*.bat -text` files are stored CRLF and checked out
         # CRLF deliberately; normalization must leave them byte-identical rather
         # than "fix" a payload that was never broken.
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"*.bat -text\n")
@@ -1045,7 +1045,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
 
     def test_untracked_files_survive_normalization(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         (tmp_path / "notes.txt").write_bytes(b"keep me\n")
@@ -1066,7 +1066,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
 
     def test_auto_fix_leaves_unaffected_skip_worktree_edits_untouched(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, "local.v", b"module local;\nendmodule\n")
@@ -1093,7 +1093,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
 
     def test_auto_fix_refuses_an_affected_skip_worktree_path(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         subprocess.run(
@@ -1118,7 +1118,7 @@ class TestLineEndingsAutoFix:
 
     def test_auto_fix_treats_tracked_names_as_literals(self, tmp_path: Path):
         """A candidate filename must not expand onto a hidden neighboring edit."""
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1150,7 +1150,7 @@ class TestLineEndingsAutoFix:
         assert (tmp_path / "a1.txt").read_bytes() == hidden_edit
 
     def test_explicit_crlf_attribute_is_not_a_phantom_diff(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1177,7 +1177,7 @@ class TestLineEndingsAutoFix:
 
     @pytest.mark.parametrize("true_value", ["yes", "on", "1"])
     def test_autocrlf_true_aliases_are_disabled(self, tmp_path: Path, true_value: str):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1191,7 +1191,7 @@ class TestLineEndingsAutoFix:
         assert _autocrlf(tmp_path) == "false"
 
     def test_unreadable_eol_scan_never_reports_container_safe(self, tmp_path: Path):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1208,7 +1208,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].detail == "EOL scan unreadable"
 
     def test_unreadable_post_normalization_scan_never_reports_success(self, tmp_path: Path):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         self._crlf_repo(tmp_path)
         real_count = init_git_hooks._count_crlf_worktree_files
@@ -1232,7 +1232,7 @@ class TestLineEndingsAutoFix:
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode")
     def test_non_utf8_tracked_filename_is_normalized(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1257,7 +1257,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "ok"
 
     def test_failed_smudge_filter_leaves_original_file_present(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"a.v filter=fail\n")
@@ -1293,7 +1293,7 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "warn"
 
     def test_edit_after_cleanliness_probe_is_not_overwritten(self, tmp_path: Path):
-        from booley.harness import init_git_hooks
+        from booley.harness.setup import git_hooks as init_git_hooks
 
         self._crlf_repo(tmp_path)
         local_edit = b"module a;\r\n  localparam int KEEP = 1;\r\nendmodule\r\n"
@@ -1311,7 +1311,7 @@ class TestLineEndingsAutoFix:
 
     @pytest.mark.skipif(not hasattr(os, "link"), reason="hard links unavailable")
     def test_hardlinked_candidate_is_refused_without_breaking_link(self, tmp_path: Path):
-        from booley.harness.init_git_hooks import _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         mirror = tmp_path / "untracked-mirror.v"

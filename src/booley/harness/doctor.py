@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from booley.agent_workspace.isolation import get_category_dirs
 from booley.audit import (
     agent_schema,
     config_common,
@@ -44,7 +45,6 @@ from booley.config.guidance_links import (
 )
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
-from booley.dev_support.workspace_isolation import get_category_dirs
 from booley.flows import execution
 from booley.fusesoc import (
     core_projection,
@@ -92,7 +92,7 @@ from booley.harness.init_cmd import (
     skip,
     warn,
 )
-from booley.harness.init_common import note
+from booley.harness.setup.common import note
 from booley.runtime import auth_token, runtime_context
 from booley.runtime import project_image as pi
 from booley.runtime.git import _git_common_dir
@@ -108,7 +108,7 @@ from booley.targets.target import inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 if TYPE_CHECKING:
-    from booley.harness.init_git_hooks import AutocrlfSetting, LineEndingRepository
+    from booley.harness.setup.git_hooks import AutocrlfSetting, LineEndingRepository
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -1251,7 +1251,7 @@ def _check_worktree_prune_guard(
     ``booley init`` sets the knob; this check catches repos initialized
     before ADR 0028 (or a user resetting their git config).
     """
-    from booley.harness.init_git_hooks import (
+    from booley.harness.setup.git_hooks import (
         WORKTREE_PRUNE_KEY,
         WORKTREE_PRUNE_VALUE,
     )
@@ -1303,7 +1303,7 @@ def _check_line_endings(
     project_dir: Path | None = None,
 ) -> None:
     """Catch unsafe line endings in every Git worktree that supplies Project files."""
-    from booley.harness.init_git_hooks import (
+    from booley.harness.setup.git_hooks import (
         discover_line_ending_repositories,
         line_ending_repository_display,
     )
@@ -1329,7 +1329,7 @@ def _read_repository_line_ending_state(
     unreadable: Check,
 ) -> tuple[AutocrlfSetting, AutocrlfSetting, int] | None:
     """Read a repository's effective policy, local policy, and CRLF count."""
-    from booley.harness.init_git_hooks import (
+    from booley.harness.setup.git_hooks import (
         _count_crlf_worktree_files,
         line_ending_repository_display,
         read_autocrlf_setting,
@@ -1377,7 +1377,7 @@ def _check_repository_line_endings(
     _fail: Fail,
 ) -> None:
     """Apply Doctor's line-ending verdicts to one resolved Git worktree."""
-    from booley.harness.init_git_hooks import line_ending_repository_display
+    from booley.harness.setup.git_hooks import line_ending_repository_display
 
     identity = line_ending_repository_display(repository.role, repository.root)
     unreadable = _warning_sink(
@@ -1422,7 +1422,7 @@ def _report_line_ending_index_metadata(
     _fail: Fail,
 ) -> None:
     """Report status-only dirtiness left by an earlier in-place LF repair."""
-    from booley.harness.init_git_hooks import _tracked_status_is_phantom
+    from booley.harness.setup.git_hooks import _tracked_status_is_phantom
 
     phantom_status, comparison_error = _tracked_status_is_phantom(repository.root)
     if phantom_status is None:
@@ -2796,7 +2796,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-close
             _pass("Session Runtime has no active host-mounted commercial EDA request")
         return
 
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     path = devcontainer_path(project.project_root)
     try:
@@ -2976,8 +2976,8 @@ def _check_issued_license_relay(
     _fail: Fail,
 ) -> None:
     """Validate exact live relay bytes, endpoints, aliases, and hardening."""
-    from booley.eda import runtime_spec
-    from booley.eda.flexnet_docker import (
+    from booley.eda.provisioning import runtime_spec
+    from booley.eda.provisioning.licensing.flexnet_docker import (
         RelayDockerError,
         RelayProfile,
         resources_for_session,
@@ -3029,7 +3029,11 @@ def _check_mounted_vivado_runtime(  # noqa: PLR0911 - ordered fail-closed runtim
     _pass: Check, _fail: Fail
 ) -> None:
     """Prove wrapper, release mount, architecture support, and runtime identity."""
-    from booley.eda.vivado import CONTAINER_TARGET, SUPPORTED_VERSION, wrapper_sha256
+    from booley.eda.provisioning.policies.vivado import (
+        CONTAINER_TARGET,
+        SUPPORTED_VERSION,
+        wrapper_sha256,
+    )
 
     wrapper = Path("/usr/local/bin/vivado")
     executable = Path(CONTAINER_TARGET) / "Vivado" / "bin" / "vivado"
@@ -3650,7 +3654,7 @@ def _check_issued_image_keepers(
         _pass("no retained Session Runtime image keepers")
         return
 
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     mine = runtime_spec.keeper_image(project.project_root)
     others = [tag for tag in tags if tag != mine]

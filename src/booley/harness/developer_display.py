@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 
 from . import terminal
 from .colors import bold_amber, chrome, dim, len_visible

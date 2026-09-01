@@ -214,7 +214,7 @@ def _vscode_labels(
     *,
     spec_digest: str = "current-spec",
 ) -> dict[str, str]:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     labels.update(
@@ -249,7 +249,7 @@ def _stub_prepare(
     issuance: SimpleNamespace,
     docker_stdout: object,
 ) -> None:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     _write_spec(workspace, _spec())
     monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
@@ -336,7 +336,7 @@ class TestPrepareMigration:
     def test_running_vscode_container_from_old_issuance_is_never_removed(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
+        from booley.eda.provisioning import runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = SimpleNamespace(
@@ -386,7 +386,7 @@ class TestPrepareMigration:
     def test_headless_session_container_is_never_reconciled_for_vscode(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
+        from booley.eda.provisioning import runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = SimpleNamespace(
@@ -428,7 +428,7 @@ class TestPrepareMigration:
     def test_inventory_is_scoped_to_the_current_project(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
+        from booley.eda.provisioning import runtime_spec
 
         _write_spec(workspace, _spec())
         issuance = SimpleNamespace(
@@ -528,7 +528,7 @@ class TestPrepareMigration:
     def test_missing_generated_bind_names_source_and_reseed_action(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.eda import runtime_spec
+        from booley.eda.provisioning import runtime_spec
 
         _write_spec(workspace, _spec())
         source = "/host/skills/renamed-skill"
@@ -572,10 +572,10 @@ class TestPrepareMigration:
             sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
         )
         monkeypatch.setattr(
-            "booley.eda.runtime_spec.authorized_project_data_source",
+            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
-        monkeypatch.setattr("booley.eda.runtime_spec.validate", validate)
+        monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", validate)
 
         with pytest.raises(sr.SessionError, match="predates the protected Project-data"):
             sr.prepare(workspace)
@@ -617,12 +617,12 @@ class TestPrepareMigration:
             sr, "_strict_running_interactive_states", lambda: [("current", json.dumps(current))]
         )
         monkeypatch.setattr(
-            "booley.eda.runtime_spec.authorized_project_data_source",
+            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
-        monkeypatch.setattr("booley.eda.runtime_spec.validate", lambda *_args: issuance)
+        monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", lambda *_args: issuance)
         monkeypatch.setattr(
-            "booley.eda.runtime_spec.requested_license", lambda _path, **_kwargs: None
+            "booley.eda.provisioning.runtime_spec.requested_license", lambda _path, **_kwargs: None
         )
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
@@ -636,10 +636,10 @@ class TestPrepareMigration:
         validate = Mock()
         monkeypatch.setattr(sr, "_docker_stdout", lambda _args: None)
         monkeypatch.setattr(
-            "booley.eda.runtime_spec.authorized_project_data_source",
+            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
-        monkeypatch.setattr("booley.eda.runtime_spec.validate", validate)
+        monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", validate)
 
         with pytest.raises(sr.SessionError, match="cannot inventory"):
             sr.prepare(workspace)
@@ -674,7 +674,7 @@ class TestPrepareMigration:
             sr, "_strict_running_interactive_states", lambda: [("legacy", json.dumps(legacy))]
         )
         monkeypatch.setattr(
-            "booley.eda.runtime_spec.authorized_project_data_source",
+            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
 
@@ -710,7 +710,7 @@ def wired(workspace: Path):
             ),
         ),
         patch(
-            "booley.eda.runtime_spec.validate",
+            "booley.eda.provisioning.runtime_spec.validate",
             return_value=SimpleNamespace(
                 project_root=str(workspace),
                 spec_sha256="abc",
@@ -721,7 +721,7 @@ def wired(workspace: Path):
             ),
         ),
         patch(
-            "booley.eda.runtime_spec.authorized_project_data_source",
+            "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             return_value=workspace / ".booley_project",
         ),
         patch.object(sr, "_strict_running_interactive_states", return_value=[]),
@@ -1027,7 +1027,7 @@ class TestLicensedRelayLifecycle:
             return subprocess.CompletedProcess([], 0, "", "")
 
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr.idk, "container_running", return_value=False),
             patch.object(sr, "_provision_license_relay", side_effect=provision),
@@ -1045,7 +1045,7 @@ class TestLicensedRelayLifecycle:
     def test_relay_start_failure_prevents_session_create(self, wired):
         workspace, run = wired
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr, "_provision_license_relay", side_effect=sr.SessionError("unhealthy")),
             pytest.raises(sr.SessionError, match="unhealthy"),
@@ -1056,7 +1056,7 @@ class TestLicensedRelayLifecycle:
     def test_fresh_create_replaces_deterministic_orphan_topology(self, workspace):
         profile = self._profile()
         expected = SimpleNamespace(relay_container="replacement")
-        with patch("booley.eda.flexnet_docker.recreate_relay", return_value=expected) as recreate:
+        with patch("booley.eda.provisioning.licensing.flexnet_docker.recreate_relay", return_value=expected) as recreate:
             assert (
                 sr._provision_license_relay(
                     workspace,
@@ -1075,7 +1075,7 @@ class TestLicensedRelayLifecycle:
         relay = SimpleNamespace(relay_container="relay")
         run.return_value = subprocess.CompletedProcess([], 1, "", "create failed")
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr, "_provision_license_relay", return_value=relay),
             patch.object(sr, "_remove_license_relay") as remove,
@@ -1089,7 +1089,7 @@ class TestLicensedRelayLifecycle:
         ours = sr.session_container_name(workspace)
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr, "_provision_license_relay", return_value=relay),
             patch.object(
@@ -1109,7 +1109,7 @@ class TestLicensedRelayLifecycle:
         ours = sr.session_container_name(workspace)
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr.idk, "container_exists", return_value=True),
             patch.object(sr.idk, "container_running", return_value=False),
             patch.object(sr, "_relay_resources", return_value=relay),
@@ -1123,7 +1123,7 @@ class TestLicensedRelayLifecycle:
         workspace, _run = wired
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr, "_relay_objects_exist", return_value=False),
             patch.object(sr, "_provision_license_relay", return_value=relay) as provision,
         ):
@@ -1134,10 +1134,10 @@ class TestLicensedRelayLifecycle:
         workspace, _run = wired
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=self._profile()),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
             patch.object(sr, "_relay_resources", return_value=relay),
             patch.object(sr, "_relay_objects_exist", return_value=True),
-            patch("booley.eda.flexnet_docker.validate_relay") as validate,
+            patch("booley.eda.provisioning.licensing.flexnet_docker.validate_relay") as validate,
             patch.object(sr, "_provision_license_relay") as provision,
         ):
             assert sr.prepare(workspace) == "abc"
@@ -1168,7 +1168,7 @@ class TestPreflight:
         _write_spec(workspace, _spec())
         with (
             patch(
-                "booley.eda.runtime_spec.validate",
+                "booley.eda.provisioning.runtime_spec.validate",
                 return_value=SimpleNamespace(license_profile=None),
             ),
             patch.object(sr.idk, "network_exists", return_value=True),
@@ -1186,7 +1186,7 @@ class TestPreflight:
             vendor_port=2101,
         )
         with (
-            patch("booley.eda.runtime_spec.requested_license", return_value=profile),
+            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=profile),
             patch.object(
                 sr.idk, "image_exists", side_effect=lambda image: image != "booley-flexnet-relay:1"
             ),
@@ -1918,7 +1918,7 @@ class TestSessionRefresh:
         assert events == ["reissue", "restore:True:True"]
 
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
-        from booley.eda import runtime_spec
+        from booley.eda.provisioning import runtime_spec
         from booley.harness import init_cmd
 
         spec_path = dc.devcontainer_path(tmp_path)

@@ -32,6 +32,7 @@ crates/bwave/tests/perf_real_baseline.json
 
 # Runtime directories (created by booley init)
 /worktrees/
+/.worktrees/
 /tmp/
 
 # Mutation testing cache and one-off helper scripts

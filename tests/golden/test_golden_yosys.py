@@ -4,7 +4,7 @@ What drift these protect against: the ``519842f`` class — a required line
 silently missing from generated TCL (``make_tracks`` after
 ``initialize_floorplan`` broke every OpenROAD placement with PPL-0021, and a
 padding tweak tripped GPL-0302), invisible to the substring asserts in
-``tests/yosys/test_openroad_timing.py``.  Each test here snapshots the FULL
+``tests/flows/synth/backends/openroad/test_timing.py``. Each test here snapshots the FULL
 generated script so any line-level change must be acknowledged by
 regenerating the golden (see ``tests/golden/conftest.py`` for the
 ``BOOLEY_REGEN_GOLDEN`` convention).
@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from booley.yosys import syn_core
-from booley.yosys.openroad_timing import OpenRoadPdk, write_openroad_script
-from booley.yosys.syn_core import (
+from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
+from booley.flows.synth.backends.yosys import core as syn_core
+from booley.flows.synth.timing import (
     StaTimingConfig,
     reg2reg_timing_tcl,
     write_sta_sdc,

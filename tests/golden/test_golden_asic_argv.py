@@ -1,7 +1,7 @@
 """Golden snapshots for the asic_synthesize sandbox argv.
 
 What drift these protect against: the ``ca5adaf`` class — a flag emitted with
-the wrong shape (a bare ``--sdc`` where run_yosys_syn expects ``--sdc <path>``)
+the wrong shape (the retired ABC-only ``--sdc`` flag)
 crashed argparse deep inside the sandbox, and the substring asserts in
 ``tests/dev_support/test_asic_synthesize.py`` could not see the *absence/shape* of a
 token.  Each test snapshots the FULL argv (one token per line) so any
@@ -28,7 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import fusesoc_registry
 from tests.golden.conftest import assert_matches_golden
@@ -222,7 +222,8 @@ def _configure_golden_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import dataclasses
 
     from booley.flows.edam import work_root_for
-    from booley.yosys import run_yosys_syn, syn_make
+    from booley.flows.synth import configure as run_yosys_syn
+    from booley.flows.synth import pipeline as syn_make
 
     monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
     tool = _make_tool(tmp_path, 'synth_mode = "logical"\n')

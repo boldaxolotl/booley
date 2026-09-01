@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley.dev_support.workspace_isolation import (
+from booley.agent_workspace.isolation import (
     CATEGORY_GUARD,
     build_category_deny_patterns,
     clean_sim_artifacts,

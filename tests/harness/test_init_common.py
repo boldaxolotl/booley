@@ -17,7 +17,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.harness.init_common import (
+from booley.harness.setup.common import (
     InitContext,
     WriteOutcome,
     configure_progress_output,

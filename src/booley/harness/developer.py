@@ -26,7 +26,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     DevelopmentState,
 )
 from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_budget
@@ -75,8 +75,9 @@ from .terminal import (
 from .worktree_health import check_worktree_health
 
 if TYPE_CHECKING:
+    from booley.review.preparation import ReviewPrepOutcome
+
     from .developer_guardrails import DirtyFile
-    from .review_prep import ReviewPrepOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -1340,8 +1341,9 @@ async def _prepare_review_handoff(
     run_index: int,
 ) -> ReviewPrepOutcome | None:
     """Prepare review artifacts; block and return no outcome on failure."""
+    from booley.review.preparation import prepare_review
+
     from .colors import dim, green, yellow
-    from .review_prep import prepare_review
 
     _write_status(ctx.logs_dir, ctx.slug, "post-processing")
     _console_setup_msg("post-processing: preparing review artifacts...")
@@ -1383,8 +1385,9 @@ def _verify_review_package(
     ctx: TicketContext, project_root: Path, run_index: int
 ) -> ReviewPrepOutcome | None:
     """Return the current review package or block a changed handoff."""
+    from booley.review.preparation import ReviewPrepError, verify_review_handoff
+
     from .colors import yellow
-    from .review_prep import ReviewPrepError, verify_review_handoff
 
     try:
         return verify_review_handoff(project_root, ctx.slug)

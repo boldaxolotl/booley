@@ -22,7 +22,7 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import (
     reconcile as reconcile_images,
 )
-from booley.harness.init_skills import reconcile_host_skills
+from booley.harness.setup.skills import reconcile_host_skills
 from booley.runtime.paths import skills_dir
 from booley.runtime.skill_links import SkillLinkReport
 

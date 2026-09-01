@@ -13,8 +13,9 @@ import sys
 from pathlib import Path
 
 import booley
-from booley.harness import init_cmd, init_docker_image
-from booley.harness.init_common import InitContext
+from booley.harness import init_cmd
+from booley.harness.setup import docker_image as init_docker_image
+from booley.harness.setup.common import InitContext
 from booley.runtime.docker_build import DockerBuildResult
 
 
@@ -774,8 +775,8 @@ class TestWheelFailureReport:
 
 _INIT_MODULES = (
     "init_cmd.py",
-    "init_docker_image.py",
-    "init_git_hooks.py",
+    "setup/docker_image.py",
+    "setup/git_hooks.py",
 )
 
 

@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.eda import authority, runtime_spec
-from booley.eda.vivado import CONTAINER_TARGET, wrapper_sha256
+from booley.eda.provisioning import authority, runtime_spec
+from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET, wrapper_sha256
 from booley.harness import devcontainer as dc
 from booley.harness import interactive_docker as idk
 from booley.harness import session_runtime

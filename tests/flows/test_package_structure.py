@@ -41,15 +41,35 @@ def test_old_flat_flow_modules_are_absent() -> None:
     assert not (REPO_ROOT / "src" / "booley" / "synthesis_profiles.py").exists()
 
 
+def test_flow_implementations_are_owned_by_their_flow_packages() -> None:
+    package_root = REPO_ROOT / "src" / "booley"
+    assert not (package_root / "sim").exists()
+    assert not (package_root / "synthesis").exists()
+    assert not (package_root / "yosys").exists()
+    assert not (package_root / "vivado").exists()
+
+    assert (FLOWS_ROOT / "sim" / "backends").is_dir()
+    assert (FLOWS_ROOT / "synth" / "backends" / "yosys").is_dir()
+    assert (FLOWS_ROOT / "synth" / "backends" / "openroad").is_dir()
+    assert (FLOWS_ROOT / "fpga" / "backends" / "vivado").is_dir()
+
+
 def _imported_modules(source_file: Path) -> set[str]:
     tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
+    package = source_file.relative_to(REPO_ROOT / "src").parent.parts
     imported: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            if node.level == 2:
-                imported.add(f"booley.flows.{node.module}")
-            elif node.level == 0:
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
                 imported.add(node.module)
+            elif node.level:
+                keep = len(package) - (node.level - 1)
+                base = (*package[:keep], *(node.module or "").split("."))
+                module = ".".join(part for part in base if part)
+                if node.module:
+                    imported.add(module)
+                else:
+                    imported.update(f"{module}.{alias.name}" for alias in node.names)
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
     return imported
@@ -58,7 +78,7 @@ def _imported_modules(source_file: Path) -> set[str]:
 def test_flow_packages_do_not_import_one_another() -> None:
     for owner in FLOW_PACKAGES:
         forbidden = {f"booley.flows.{other}" for other in FLOW_PACKAGES if other != owner}
-        for source_file in (FLOWS_ROOT / owner).glob("*.py"):
+        for source_file in (FLOWS_ROOT / owner).rglob("*.py"):
             imported = _imported_modules(source_file)
             violations = {
                 module
@@ -66,6 +86,23 @@ def test_flow_packages_do_not_import_one_another() -> None:
                 if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
             }
             assert not violations, f"{source_file}: cross-Flow imports {sorted(violations)}"
+
+
+def test_synth_backends_do_not_import_flow_or_one_another() -> None:
+    backends = FLOWS_ROOT / "synth" / "backends"
+    for owner in ("yosys", "openroad"):
+        forbidden = {
+            "booley.flows.synth.flow",
+            f"booley.flows.synth.backends.{'openroad' if owner == 'yosys' else 'yosys'}",
+        }
+        for source_file in (backends / owner).rglob("*.py"):
+            imported = _imported_modules(source_file)
+            violations = {
+                module
+                for module in imported
+                if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
+            }
+            assert not violations, f"{source_file}: backend imports {sorted(violations)}"
 
 
 @pytest.mark.parametrize("package_name", FLOW_PACKAGES)

@@ -33,7 +33,7 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
-from booley.dev_support.criteria import TargetPair
+from booley.criteria.templates import TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -82,12 +82,9 @@ from ..run_evidence import (
     RUN_EVIDENCE_DETAIL,
     build_flow_run_evidence,
 )
-from . import cache as fpga_cache
-from . import edam as fpga_edam
-from .implementation_report import (
-    build_fpga_implementation_report,
-)
-from .metrics import (
+from .backends.vivado import cache as fpga_cache
+from .backends.vivado import edam as fpga_edam
+from .backends.vivado.metrics import (
     FpgaMetrics,
     _delta_pct,
     _first_valid_display,
@@ -96,6 +93,9 @@ from .metrics import (
     _split_resolved_sources,
     _unique_strings,
     _vlogdefine_args,
+)
+from .implementation_report import (
+    build_fpga_implementation_report,
 )
 from .recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
 
@@ -682,7 +682,7 @@ class FpgaImplFlow(BooleyFlow):
         when the write failed — a log-write problem must never fail an
         otherwise-finished run.
         """
-        from booley.sim.sim_result import write_run_log
+        from booley.flows.run_log import write_run_log
 
         log_dir = edam_layer.work_root_for(self.args.work_dir, self.name, target)
         try:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.dev_support.criteria import eligible_eda_tool_criterion_families
+from booley.criteria.templates import eligible_eda_tool_criterion_families
 from booley.fusesoc.fusesoc_registry import TargetRef
 from booley.targets.target_surface import flow_can_drive
 
@@ -80,7 +80,7 @@ def test_production_has_no_retired_host_execution_symbols() -> None:
 
 
 def test_yosys_configure_surface_has_no_run_action() -> None:
-    from booley.yosys.run_yosys_syn import _build_parser
+    from booley.flows.synth.configure import _build_parser
 
     with pytest.raises(SystemExit):
         _build_parser().parse_args(["run"])

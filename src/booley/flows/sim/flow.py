@@ -26,21 +26,24 @@ from typing import Any, ClassVar
 from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
 from booley.core.boundary import BoundaryError, as_str_list
-from booley.dev_support.thresholds import has_relative_threshold
-from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.runtime import job_slots
-from booley.runtime.platform_paths import bash_bin, posix_relpath
-from booley.runtime.timefmt import utc_now_rfc3339
-from booley.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
-from booley.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
-from booley.sim.sim_result import (
+from booley.criteria.thresholds import has_relative_threshold
+from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
+from booley.flows.sim.result import (
     RUN_LOG_NAME,
     parse_summary_line,
     run_log_is_current,
     write_run_log,
 )
-from booley.sim.trace_recipe import TraceMode
+from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
+from booley.flows.sim.runner import (
+    resolve_sim_sentinels as _resolve_sim_sentinels,
+)
+from booley.flows.sim.trace_recipe import TraceMode
+from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
+from booley.runtime import job_slots
+from booley.runtime.platform_paths import bash_bin, posix_relpath
+from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
 from booley.targets.target import inspect_target, select_target, select_targets
 
@@ -188,11 +191,6 @@ _DEFAULT_MAX_RUNDIR_BYTES = 5 * 1024**3  # 5 GiB
 # Execution enablement is resolved once per run. Public simulation accepts only
 # the open-source Verilator and Icarus run halves.
 _TRACE_CLEANUP_MARGIN_S = 90
-
-_SIM_RUN_HALVES: dict[str, str] = {
-    "icarus": "booley.sim.iverilog_run",
-    "verilator": "booley.sim.verilator_run",
-}
 
 # Max error lines shown per test in the display box
 _MAX_DISPLAY_ERRORS = 3
@@ -511,7 +509,7 @@ def _build_run_script(
 def parse_sva_errors(output: str) -> int:
     """Count SVA assertion errors in sim output."""
     try:
-        from booley.sim.sim_result import count_sva_errors
+        from booley.flows.sim.result import count_sva_errors
 
         return count_sva_errors(output)
     except ImportError:
@@ -552,7 +550,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
     grow *during one run* before it is killed (SETUP-25: a default-on testbench
     tracer / ``$dumpfile`` / ``$fwrite`` sink once left 27GB and filled the disk,
     killing an in-flight synth). Growth, not total size — see
-    :class:`booley.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
+    :class:`booley.flows.sim.run_guard.DiskBudgetGuard` for why (F-23). ``0`` disables
     the guard. Forwarded to the builtin
     run-halves as ``--max-rundir-bytes``; mirrors the other ``_resolve_*`` knob
     readers. Defaults to :data:`_DEFAULT_MAX_RUNDIR_BYTES` when unset.
@@ -615,33 +613,6 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
     except (ImportError, TypeError, ValueError):
         pass
     return DEFAULT_SIM_TIME_GRACE_S
-
-
-def _resolve_sim_sentinels(
-    work_dir: Path | None = None,
-) -> tuple[list[str], list[str]]:
-    """Verdict sentinels from booley.toml ``[flows.sim]``.
-
-    Returns ``(pass_sentinels, fail_sentinels)`` — the substrings that mark a
-    passing / failing run in the testbench's own output. When set, they let a
-    project keep its existing TB wording (e.g. ``"ALL TESTS PASSED."``) instead
-    of being forced to emit Booley's ``[SIM_RESULT]`` markers. Empty lists mean
-    "unset" — the run-half then falls back to the built-in markers. Honored
-    end-to-end: forwarded as ``--pass-sentinel`` / ``--fail-sentinel`` to the
-    builtin Icarus/Verilator run-halves, which own the verdict inside the sandbox.
-    """
-    try:
-        from booley.runtime.shared_infra import _load_rtl_config
-
-        cfg = _load_rtl_config(work_dir)
-        if cfg:
-            sim = config_section(cfg.get("flows", {}), "sim")
-            passes = [str(s) for s in (sim.get("pass_sentinels") or [])]
-            fails = [str(s) for s in (sim.get("fail_sentinels") or [])]
-            return passes, fails
-    except ImportError:
-        pass
-    return [], []
 
 
 def _resolve_cycle_sentinels(work_dir: Path | None = None) -> list[str]:
@@ -1838,7 +1809,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         *,
         trace_mode: TraceMode = TraceMode.VCD_FIFO,
     ) -> list[str]:
-        """Build the ``booley.sim.verilator_run`` invocation for one sim run.
+        """Build the ``booley.flows.sim.backends.verilator`` invocation for one sim run.
 
         Paths are relative to the project root (the shipped shell's cwd);
         verilator_run resolves the binary to an absolute path before it changes
@@ -1849,7 +1820,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         cmd = [
             "python3",
             "-m",
-            "booley.sim.verilator_run",
+            "booley.flows.sim.backends.verilator",
             "--bin-dir",
             rel,
             "--top",
@@ -1874,7 +1845,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         return cmd
 
     def _icarus_run_cmd(self, rel: str, plusargs: list[str]) -> list[str]:
-        """Build the ``booley.sim.iverilog_run`` invocation for one sim run.
+        """Build the ``booley.flows.sim.backends.icarus`` invocation for one sim run.
 
         The Icarus mirror of :meth:`_verilator_run_cmd`. ``--build-dir`` is the
         edalize build dir relative to the project root (the generated shell's
@@ -1887,7 +1858,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         cmd = [
             "python3",
             "-m",
-            "booley.sim.iverilog_run",
+            "booley.flows.sim.backends.icarus",
             "--build-dir",
             rel,
             "--timeout",
@@ -1919,7 +1890,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         cmd = [
             "python3",
             "-m",
-            "booley.sim.cocotb_run",
+            "booley.flows.sim.backends.cocotb",
             "--build-dir",
             rel,
             "--eda-tool",
@@ -2129,7 +2100,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
         One command per Target — batching means there is no per-test command to
         expand. Shows the ``fusesoc run --setup`` resolution, the ``make``
-        build, and the batched :mod:`booley.sim.cocotb_run` invocation carrying
+        build, and the batched :mod:`booley.flows.sim.backends.cocotb` invocation carrying
         the selected ``--test`` set. The cocotb env (``COCOTB_TEST_FILTER``,
         ``cocotb-config``-derived paths) is computed by the run-half in-sandbox
         at run time, so the preview shows the exact process that will run
@@ -3552,7 +3523,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """Run a Cocotb Target: one build + one sim process for the whole set (B2).
 
         The per-test loop of :meth:`_run_target` collapses to a single
-        :mod:`booley.sim.cocotb_run` execution; per-test report entries are
+        :mod:`booley.flows.sim.backends.cocotb` execution; per-test report entries are
         fanned out from the parsed ``results.xml`` (via the run-half's
         ``[COCOTB_RESULTS]`` line). ``--test <substr>`` filtered the selected
         set upstream (``_resolve_tests_to_run``) before the filter regex is
@@ -3688,7 +3659,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         run that produced no ``TRACE_OK`` is a Flow-infrastructure failure reported as
         inconclusive, never a design FAIL.
         """
-        from booley.sim import cocotb_results as cocotb_results_mod
+        from booley.flows.sim.backends import cocotb_results as cocotb_results_mod
 
         elab_failed = (
             build_outcome.design_failed

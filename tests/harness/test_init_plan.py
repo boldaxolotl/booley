@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness.init_plan import (
+from booley.harness.setup.plan import (
     InitFilesystemRequest,
     InitPlanBlockedError,
     InitPreconditionError,

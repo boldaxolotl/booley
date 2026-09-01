@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.criteria import cycle_count_criterion_key
+from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 
@@ -53,7 +53,7 @@ class TestBooleyFlowExecution:
     def test_cycle_count_only_ticket_can_invoke_its_bound_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.runtime import runtime_context
 
         class CycleCountFlow(EchoFlow):
@@ -107,7 +107,7 @@ class TestBooleyFlowExecution:
 
     def test_successful_execution(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
 
@@ -124,7 +124,7 @@ class TestBooleyFlowExecution:
     def test_command_not_found(self, tmp_path: Path):
         """Verify graceful handling of missing commands."""
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
 
@@ -215,7 +215,7 @@ class TestBooleyFlowExecution:
 
     def test_empty_command(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
 
@@ -254,7 +254,7 @@ class TestResourceEvidence:
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
     def test_local_execution_measures_descendant_rss(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
@@ -285,7 +285,7 @@ class TestBoundaryExecutor:
 
     def test_runs_locally_and_stamps_dispatch_time(self, tmp_path: Path):
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
@@ -315,7 +315,7 @@ class TestOpenRunLog:
 
     def _flow(self, tmp_path: Path) -> EchoFlow:
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
         flow = EchoFlow()
@@ -352,7 +352,7 @@ class TestTimeoutKillsTheWholeTree:
     """A timed-out run must leave no orphan behind (SETUP-F-13).
 
     ``subprocess.run(timeout=...)`` kills only the direct child, so the
-    grandchild that does the actual work (``python -m booley.sim.verilator_run``
+    grandchild that does the actual work (``python -m booley.flows.sim.backends.verilator``
     and its ``V<top>``) was reparented to init and kept burning a core — 99.9%
     CPU for 38+ minutes was observed after a single simulate timeout.
     """
@@ -400,7 +400,7 @@ class TestTimeoutKillsTheWholeTree:
                 return 2
 
         state_file = tmp_path / "state.json"
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         DevelopmentState.load(state_file).save()
         flow = HangFlow()

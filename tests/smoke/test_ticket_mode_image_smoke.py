@@ -19,8 +19,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from booley.core.models import AgentCallParams, AgentResult
-from booley.dev_support.development_state import DevelopmentState
-from booley.harness.init_scaffold import ScaffoldChoices, scaffold_files
+from booley.criteria.state import DevelopmentState
+from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime import job_records, job_slots
 from booley.runtime._codex_backend import CodexBackend
 from booley.runtime.project_dir import reset_cache

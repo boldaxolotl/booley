@@ -474,7 +474,7 @@ def test_prepare_review_board_parser():
 
 
 def test_prepare_review_command_accepts_html_free_briefing(tmp_path, monkeypatch, capsys):
-    from booley.harness import review_prep
+    from booley.review import preparation as review_prep
 
     async def prepare(*_args, **_kwargs):
         return review_prep.ReviewPrepOutcome(

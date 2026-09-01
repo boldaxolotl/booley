@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import init_cmd, init_skills
-from booley.harness.init_common import InitContext
+from booley.harness import init_cmd
+from booley.harness.setup import skills as init_skills
+from booley.harness.setup.common import InitContext
 from booley.runtime import paths as runtime_paths
 from booley.runtime.skill_links import SkillLinkEvent, SkillLinkReport
 
