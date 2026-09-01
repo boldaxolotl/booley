@@ -84,7 +84,7 @@ names the candidate and omitted gates.
 At execution time, select one then-current production `main` commit and record
 its full object ID. Build every resumed candidate from that exact source
 commit. The closure update itself was prepared against production `main` at
-`fa07ed9962a3f6a558f07c0c6548e30424f3de26`; this is a status anchor, not a
+`96a0b3f38f32f8ce1d7184973045c376f49d271f`; this is a status anchor, not a
 permanent candidate pin.
 
 | ID | Definition | Purpose |
