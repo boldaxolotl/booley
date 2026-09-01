@@ -329,7 +329,7 @@ class TestInitCriteriaState:
         )
 
     def test_params_propagated_to_state(self, tmp_path: Path):
-        """Explicit ticket percentages must reach CriterionEntry.params as numbers."""
+        """Coverage policy must reach the expanded Target Criterion params."""
         from unittest.mock import PropertyMock, patch
 
         from booley.harness.models import TicketContext
@@ -337,9 +337,16 @@ class TestInitCriteriaState:
 
         criteria = {
             "mandatory": {
-                "coverage_toggle": "90%",
-                "coverage_fsm": "100%",
-                "coverage_value": "85%",
+                "coverage": [
+                    {
+                        "targets": ["sim_top"],
+                        "metrics": {
+                            "line": {"min_pct": 90},
+                            "branch": {"min_pct": 85.5},
+                        },
+                        "tests": "all",
+                    }
+                ],
                 "lint_clean": ["lite"],
             },
         }
@@ -350,9 +357,14 @@ class TestInitCriteriaState:
             _init_criteria_state(ctx)
 
         state = DevelopmentState.load(logs_dir / ".runtime" / "booley_state.json")
-        assert state.criteria["coverage_toggle"].params == {"min_pct": 90}
-        assert state.criteria["coverage_fsm"].params == {"min_pct": 100}
-        assert state.criteria["coverage_value"].params == {"min_pct": 85}
+        assert state.criteria["coverage_sim_top"].params == {
+            "target": "sim_top",
+            "metrics": {
+                "line": {"min_pct": 90},
+                "branch": {"min_pct": 85.5},
+            },
+            "tests": "all",
+        }
         # Criteria without params should have empty dict
         assert state.criteria["lint_clean_lite"].params == {}
 

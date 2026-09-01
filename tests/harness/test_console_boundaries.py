@@ -159,12 +159,12 @@ def test_unknown_exit_codes_keep_a_visible_indicator(exit_code: int) -> None:
 @pytest.mark.parametrize(
     ("key", "entry", "expected"),
     [
-        ("coverage_toggle", {"detail": None, "params": None}, ""),
-        ("coverage_toggle", {"detail": {"toggle": {"pct": "bad"}}}, ""),
+        ("coverage_sim", {"detail": None, "params": None}, ""),
+        ("coverage_sim", {"detail": {"status": None}}, ""),
         (
-            "coverage_toggle",
-            {"detail": {"toggle": {"pct": "87.5"}}, "params": {"min_pct": "80"}},
-            "88% (>=80%)",
+            "coverage_sim",
+            {"detail": {"status": "pass"}},
+            "pass",
         ),
         ("fpga_impl_ok", {"detail": {"lut_count": "bad", "wns_ns": []}}, ""),
         (

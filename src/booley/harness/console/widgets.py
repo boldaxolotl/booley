@@ -22,7 +22,6 @@ from textual.widgets import Static
 # Single Responsibility). Imported here so MainPane can render metric strings,
 # and re-exported for backward compatibility with existing import sites.
 from .criteria_format import (  # noqa: F401 — re-exported for backward compatibility
-    _COVERAGE_KEYS,
     _format_coverage_metric,
     _format_fpga_impl_metric,
     _format_metric,
@@ -55,7 +54,6 @@ _DEFAULT_ENDPOINT_STYLE = "color(249)"
 # ---------------------------------------------------------------------------
 
 _GROUP_PREFIXES: list[tuple[str, str]] = [
-    ("coverage_", "coverage"),
     ("review_", "reviews"),
     ("mutation_", "mutation"),
 ]
