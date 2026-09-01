@@ -229,12 +229,13 @@ class _DescriptorSecureTree:
         )
 
 
-def _windows_error_kind(exc: OSError) -> PathProblemKind:
+def _windows_error_kind(exc: OSError) -> PathProblemKind:  # pragma: no cover
+    """Classify errors from the Windows-only adapter, exercised in Windows CI."""
     winerror = getattr(exc, "winerror", None)
     return "missing" if winerror in {2, 3} else "unreadable"
 
 
-class _WindowsSecureTree:
+class _WindowsSecureTree:  # pragma: no cover
     """Windows adapter retaining no-delete handles for every ancestor."""
 
     def __init__(self, root: Path) -> None:
