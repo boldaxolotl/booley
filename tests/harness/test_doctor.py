@@ -4547,17 +4547,14 @@ def test_flow_audit_skips_fpga_when_not_configured_or_marked(tmp_path, monkeypat
 
     assert calls == []
     assert any(
-        level == "skip" and "fpga not applicable" in message
-        for level, message in rec.events
+        level == "skip" and "fpga not applicable" in message for level, message in rec.events
     )
 
 
 def test_fpga_runtime_probe_checks_vivado_not_resolution_tool(tmp_path):
     project = _fpga_doctor_project(tmp_path, marked=True)
 
-    assert doctor._runtime_probe_binaries(
-        project, ["fpga_board"], flow_name="fpga"
-    ) == ["vivado"]
+    assert doctor._runtime_probe_binaries(project, ["fpga_board"], flow_name="fpga") == ["vivado"]
 
 
 def test_fpga_deep_notice_names_marked_target_and_manual_command(tmp_path):

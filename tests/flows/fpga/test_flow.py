@@ -31,6 +31,8 @@ from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
 
+_REAL_RESOLVE_TARGET_SELECTION = fusesoc_registry.resolve_target_selection
+
 
 @pytest.fixture(autouse=True)
 def _adr0039_lenient_selection(monkeypatch):
@@ -45,7 +47,7 @@ def _adr0039_lenient_selection(monkeypatch):
     """
     from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root):
+    def _lenient(target_arg, project_root, *, for_flow=None):
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
 
     monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
@@ -331,6 +333,41 @@ def test_dry_run_resolves_sources_from_work_dir(
 
     assert result.exit_code == EXIT_SUCCESS
     assert "sv_files=1 v_files=1" in result.report_text
+
+
+def test_run_rejects_non_fpga_axis_before_setup(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FPGA endpoint must enforce the compatibility shown by target discovery."""
+    _write_project_config(tmp_path)
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files:\n"
+        "      - rtl/top.sv: {file_type: systemVerilogSource}\n"
+        "targets:\n"
+        "  synth_core:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: yosys}\n"
+        "    filesets: [rtl]\n"
+        "    toplevel: dut_top\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fusesoc_registry,
+        "resolve_target_selection",
+        _REAL_RESOLVE_TARGET_SELECTION,
+    )
+    flow = _flow(tmp_path, state_file, "--target", "synth_core", "--dry-run")
+
+    with pytest.raises(
+        fusesoc_registry.IncompatibleTargetError,
+        match=r"booley targets --for-flow fpga",
+    ):
+        flow._run()
 
 
 def test_dry_run_fails_before_reporting_uninspected_target(

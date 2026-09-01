@@ -7,9 +7,9 @@ command runs there via ``BooleyFlow._execute_boundary``. Interpretation
 stays in Booley: report collection, metric parsing
 (:func:`fpga_edam.parse_fpga_reports`), Criteria, and baseline comparison.
 
-There is one builder (the built-in flow) and no execution-location knob. The EDA Flow — Vivado —
-comes from the resolved Target, not the execution selection (ADR 0022
-decision 8).
+There is one builder (the built-in Flow) and no execution-location knob. The
+FPGA Flow owns its fixed Vivado backend; the resolved Target's EDA-selection
+field controls FuseSoC resolution inputs, not the implementation backend.
 
 ``--baseline <ref>`` re-implements the design at a past commit in a throwaway
 ``git worktree`` (see :mod:`booley.flows.baseline_worktree`) rather than checking the ref
@@ -267,6 +267,7 @@ class FpgaImplFlow(BooleyFlow):
         targets = fusesoc_registry.resolve_target_selection(
             self.args.target,
             self.args.work_dir,
+            for_flow="fpga",
         )
         if not targets:
             return McpToolResult(
@@ -388,9 +389,7 @@ class FpgaImplFlow(BooleyFlow):
                 f"  target={recipe.target} part={recipe.part} top={recipe.top} "
                 f"xdc={','.join(str(path) for path in recipe.xdc_files)}"
             )
-            lines.append(
-                f"  sv_files={len(recipe.sv_files)} v_files={len(recipe.v_files)}"
-            )
+            lines.append(f"  sv_files={len(recipe.sv_files)} v_files={len(recipe.v_files)}")
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
 
     def _resolve_fpga_recipe(self, target: str) -> _ResolvedFpgaRecipe:
