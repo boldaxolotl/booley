@@ -424,7 +424,7 @@ def _prepare_handoff_snapshot(  # noqa: PLR0911 - ordered handoff integrity gate
     expected_execution_id: str | None,
 ) -> bool:
     """Fence Jobs and freeze live acceptance before a review transition."""
-    from booley.dev_support.development_state import DevelopmentState
+    from booley.criteria.state import DevelopmentState
     from booley.harness.job_fence import active_ticket_jobs
 
     from .acceptance_ledger import (
@@ -741,7 +741,7 @@ def _effective_on_success(entry: dict, *, no_merge: bool, no_cleanup: bool) -> O
 
 def _completion_acceptance_valid(tio: Any, slug: str) -> bool:
     """Refuse destructive terminal actions when durable acceptance is broken."""
-    from booley.dev_support.development_state import DevelopmentState
+    from booley.criteria.state import DevelopmentState
 
     from .acceptance_ledger import (
         AcceptanceLedgerError,

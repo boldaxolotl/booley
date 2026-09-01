@@ -1,6 +1,6 @@
 python3
 -m
-booley.yosys.run_yosys_syn
+booley.flows.synth.backends.configure
 configure
 -t
 dut

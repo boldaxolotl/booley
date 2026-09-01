@@ -51,7 +51,7 @@ _PACKAGING_FILES = {
     "setup.py",
 }
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
-_IMAGE_TEST_FILES = {"tests/sim/test_bwave_fifo_pipeline.py"}
+_IMAGE_TEST_FILES = {"tests/flows/sim/backends/test_bwave_fifo_pipeline.py"}
 _NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
 
 

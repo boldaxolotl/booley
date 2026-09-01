@@ -1850,7 +1850,7 @@ class TestKnownTablesMatchLiveConfig:
     @pytest.mark.parametrize("fpga_part", [None, "xc7a35tcpg236-1"])
     def test_scaffolded_booley_toml_is_fully_recognized(self, asic, fpga_part):
         """`booley init --scaffold` must not write a table its own doctor warns about."""
-        from booley.harness.init_scaffold import ScaffoldChoices, _booley_toml
+        from booley.harness.setup.scaffold import ScaffoldChoices, _booley_toml
 
         body = _booley_toml(
             ScaffoldChoices(
@@ -2104,7 +2104,7 @@ def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> Non
 
 
 def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monkeypatch) -> None:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2141,7 +2141,7 @@ def _runtime_probe_subprocess(other_stdout: str):
 
 
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2179,7 +2179,7 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
 
 
 def _issued_runtime_state(tmp_path: Path):
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     image = "sha256:" + "a" * 64
     issuance = runtime_spec.Issuance(
@@ -2269,7 +2269,7 @@ def _issued_runtime_state(tmp_path: Path):
     ],
 )
 def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch, drift) -> None:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2315,7 +2315,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
 
 
 def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -2358,7 +2358,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
 
 
 def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monkeypatch) -> None:
-    from booley.eda import vivado
+    from booley.eda.provisioning.policies import vivado
 
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
@@ -6997,8 +6997,8 @@ class TestLineEndingsCheck:
         crlf_count: int | None,
         expected: str,
     ):
-        from booley.harness import init_git_hooks
-        from booley.harness.init_git_hooks import (
+        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup.git_hooks import (
             AutocrlfSetting,
             LineEndingRepository,
         )
@@ -7025,8 +7025,8 @@ class TestLineEndingsCheck:
         assert expected in warnings[0]
 
     def test_unreadable_index_comparison_warns(self, tmp_path: Path, monkeypatch):
-        from booley.harness import init_git_hooks
-        from booley.harness.init_git_hooks import LineEndingRepository
+        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup.git_hooks import LineEndingRepository
 
         monkeypatch.setattr(
             init_git_hooks,

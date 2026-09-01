@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
-from booley.harness.init_common import InitContext
+from booley.harness.setup.common import InitContext
 
 CONFIGURED_TOML = """\
 [project]

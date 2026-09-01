@@ -17,7 +17,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.harness import init_docker_image
 from booley.harness.build_stamp import (
     STAMP_RELPATH,
     build_stamp,
@@ -28,7 +27,8 @@ from booley.harness.build_stamp import (
     stamp_path,
     write_build_stamp,
 )
-from booley.harness.init_common import InitContext
+from booley.harness.setup import docker_image as init_docker_image
+from booley.harness.setup.common import InitContext
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
 WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"

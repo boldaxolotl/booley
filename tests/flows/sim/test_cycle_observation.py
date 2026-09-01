@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.dev_support.criteria import CriteriaTemplate
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import CriteriaTemplate
 from booley.flows.sim.flow import (
     SimulateFlow,
     TargetResult,

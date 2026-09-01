@@ -29,8 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley.dev_support.criterion_categories import verification_fingerprint_categories
-from booley.dev_support.development_state import (
+from booley.criteria.categories import verification_fingerprint_categories
+from booley.criteria.state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     CriterionChange,
     DevelopmentState,
@@ -541,7 +541,7 @@ class McpTool(ABC):
             return stamped
         source_detail = freshness.to_detail()
         if is_review and stamped.get("review_detail_version") == 3:
-            from booley.dev_support.review_receipt import finalize_review_detail
+            from booley.review.receipt import finalize_review_detail
 
             return finalize_review_detail(stamped, source_detail)
         stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = source_detail
@@ -852,7 +852,7 @@ class McpTool(ABC):
         if not missing:
             return None
 
-        from booley.dev_support.criteria_actions import planned_invocation
+        from booley.criteria.actions import planned_invocation
 
         pending: list[str] = []
         for key, entry in self.state.criteria.items():

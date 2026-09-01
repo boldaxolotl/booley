@@ -6,7 +6,8 @@ import argparse
 from pathlib import Path
 from unittest.mock import patch
 
-from booley.eda import authority, cli
+from booley.eda import cli
+from booley.eda.provisioning import authority
 
 
 def test_revoke_removes_authority_before_containers_and_networks(tmp_path: Path) -> None:
@@ -24,7 +25,7 @@ def test_revoke_removes_authority_before_containers_and_networks(tmp_path: Path)
             side_effect=lambda *_args: (events.append("authority"), grant)[1],
         ),
         patch(
-            "booley.eda.flexnet_docker.cleanup_project_resources",
+            "booley.eda.provisioning.licensing.flexnet_docker.cleanup_project_resources",
             side_effect=lambda _project: (events.append("cleanup"), ())[1],
         ),
     ):

@@ -29,10 +29,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from booley.eda import runtime_spec
+from booley.eda.provisioning import runtime_spec
 from booley.harness import init_cmd
 from booley.harness import session_runtime as sr
-from booley.harness.init_common import InitContext
+from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
 from booley.runtime.project_dir import reset_cache
 

@@ -117,17 +117,12 @@ include = ["booley*"]
 [tool.setuptools.package-data]
 booley = [
     "data/**/*",
-    "yosys/abc_scripts/*",
-    "yosys/sdc/*",
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
     # blocks at runtime: worktree_create.sh (ticket setup), pre-commit-ruff.sh
-    # (git hook), console.tcss (Console TUI — the default, non --no-console run),
-    # timing.xdc (fpga_impl), abc_config.json (yosys synthesis).
+    # (git hook), and console.tcss (Console TUI — the default, non --no-console run).
     "dev_support/*.sh",
     "harness/console/*.tcss",
-    "vivado/xdc/*",
-    "yosys/*.json",
 ]
 
 [tool.setuptools.exclude-package-data]
@@ -220,8 +215,8 @@ known-first-party = ["booley"]
 #             (tracked-guard, build spec, check-only branch, write, docker
 #             provisioning); the sequential guards are one cohesive step.
 #   F401 (init_cmd) — after the Single-Responsibility split, init_cmd is a
-#             facade that re-exports names moved into sibling init_* modules
-#             (init_common/init_docker_image/init_git_hooks/init_skills) so
+#             facade that re-exports names moved into harness.setup modules
+#             (common/docker_image/git_hooks/skills) so
 #             existing importers and tests keep resolving them by their old
 #             ``init_cmd`` names; some re-exports are intentionally unused here.
 #   PLR0915 (gen_xcelium_dialect_vcd) — main() is a standalone fixture-generator
@@ -231,9 +226,9 @@ known-first-party = ["booley"]
 #             node written in upstream Edalize idiom (mutable TOOL_OPTIONS
 #             class attr, one linear setup(), list concatenation) so the
 #             upstream PR ships the file byte-identical (ADR 0033).
-"src/booley/sim/trace_session.py" = ["PLR0915"]
+"src/booley/flows/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
-"src/booley/dev_support/development_state.py" = ["PLR0912", "N818"]
+"src/booley/criteria/state.py" = ["PLR0912", "N818"]
 "src/booley/mcp/base.py" = ["B027"]
 "src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/harness/developer.py" = ["PLR0915"]
@@ -241,7 +236,7 @@ known-first-party = ["booley"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
 "src/booley/fusesoc/fusesoc_trace_overlay.py" = ["PLR0912", "PLR0915"]
 "src/booley/harness/init_cmd.py" = ["PLR0915", "F401"]
-"src/booley/yosys/openroad_timing.py" = ["PLR0911"]
+"src/booley/flows/synth/backends/openroad/timing.py" = ["PLR0911"]
 "crates/bwave/tests/gen_xcelium_dialect_vcd.py" = ["PLR0915"]
 
 [tool.ruff.format]
@@ -303,16 +298,16 @@ include = [
     # silently fall out of the checked surface.
     "src/booley/core",
     "src/booley/runtime/project_dir.py",
-    "src/booley/sim/cocotb_results.py",
-    "src/booley/sim/sim_result.py",
+    "src/booley/flows/sim/backends/cocotb_results.py",
+    "src/booley/flows/sim/result.py",
 ]
 strict = [
     # External-input coercion and the project-directory trust boundary.
     "src/booley/core/boundary.py",
     "src/booley/runtime/project_dir.py",
     # Persisted simulator-result structures and verdict parsing.
-    "src/booley/sim/cocotb_results.py",
-    "src/booley/sim/sim_result.py",
+    "src/booley/flows/sim/backends/cocotb_results.py",
+    "src/booley/flows/sim/result.py",
 ]
 
 # ---------------------------------------------------------------------------

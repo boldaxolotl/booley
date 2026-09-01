@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from booley.flows.fpga.edam import build_fpga_edam
+from booley.flows.fpga.backends.vivado.edam import build_fpga_edam
 from tests.golden.conftest import assert_matches_golden
 
 # Canned workspace layout. work_root mirrors edam.work_root_for()'s real

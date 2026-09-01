@@ -1214,7 +1214,7 @@ class TestScanAllTickets:
         assert t["file"] == "board/queue/t1.md"
 
     def test_done_ticket_criteria_come_from_accepted_snapshot(self, tmp_path):
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import freeze_acceptance
 
         tio = make_tio(tmp_path)
@@ -1434,7 +1434,7 @@ class TestOpHandoff:
     def test_freezes_live_acceptance_before_review(self, tmp_path):
         import json
 
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import read_acceptance
 
         tio = make_tio(tmp_path)
@@ -4101,7 +4101,7 @@ class TestOpReturnValues:
         assert op_approve(tio, "t1") is True
 
     def test_complete_rejects_corrupt_accepted_snapshot(self, tmp_path, capsys):
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import freeze_acceptance
         from booley.ticket_board.operations import op_complete
 
@@ -4128,7 +4128,7 @@ class TestOpReturnValues:
     def test_complete_rejects_review_package_changed_after_binding(self, tmp_path, capsys):
         import json
 
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import bind_review_package, freeze_acceptance
         from booley.ticket_board.operations import op_complete
 

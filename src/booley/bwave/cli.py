@@ -95,7 +95,7 @@ def find_trace(work_dir: Path) -> Path | None:
 
     Thin wrapper around TraceSession.find() for CLI compatibility.
     """
-    from booley.sim.trace_session import TraceSession
+    from booley.flows.sim.trace_session import TraceSession
 
     return TraceSession(work_dir).find()
 

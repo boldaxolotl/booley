@@ -263,7 +263,7 @@ def _validate_custom_endpoints_and_criteria(project_root: Path) -> None:
         # Probe importability up front: if any of these are unavailable, skip
         # the whole validation (structural checks below re-import the same,
         # now-cached, names themselves rather than taking them as params).
-        from booley.dev_support.criteria import (  # noqa: F401
+        from booley.criteria.templates import (  # noqa: F401
             load_base_criteria,
             load_project_criteria,
             merge_criteria_defs,
@@ -303,7 +303,7 @@ def _validate_criteria_structure(project_root: Path) -> set[str]:
 
     Raises PreflightError on criteria conflicts (check 8).
     """
-    from booley.dev_support.criteria import (
+    from booley.criteria.templates import (
         load_base_criteria,
         load_project_criteria,
         merge_criteria_defs,

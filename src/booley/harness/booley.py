@@ -54,9 +54,9 @@ from booley.harness.colors import (
 )
 from booley.harness.doctor import run_doctor
 from booley.harness.init_cmd import run_init
-from booley.harness.init_common import configure_progress_output
 from booley.harness.orphan_handler import handle_post_run_orphans, handle_startup_orphans
 from booley.harness.render_md import render
+from booley.harness.setup.common import configure_progress_output
 from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
 from booley.runtime import runtime_context
@@ -967,10 +967,10 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     # Splice the criteria table live from the single source of truth
     # (criteria.toml + MCP tool registry), including any project-defined criteria.
     try:
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             render_criteria_reference,
         )
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             splice_generated as splice_criteria,
         )
 
@@ -986,10 +986,10 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     # Splice the synthesis_ok / fpga_impl_ok threshold-flavour table live from the
     # param registry so documented flavours never drift from the validator.
     try:
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             render_criteria_params_reference,
         )
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             splice_generated as splice_criteria,
         )
 
@@ -1034,7 +1034,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         # The stub must spell out what queueing requires (A-4): a draft with
         # no scope/criteria and no '## Description' fails validation on the
         # first `board move <slug> queue`, and the schema was otherwise only
-        # discoverable by reading booley.dev_support.criteria.
+        # discoverable by reading booley.criteria.templates.
         stub_body = (
             "\n## Description\n"
             "\nTODO: describe the change.\n"
@@ -1119,7 +1119,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     """Generate or refresh the agent-prepared HTML explanation."""
     import asyncio
 
-    from booley.harness.review_prep import prepare_review_command
+    from booley.review.preparation import prepare_review_command
 
     outcome = asyncio.run(
         prepare_review_command(project_root, args.slug, force=getattr(args, "force", False))
@@ -1138,7 +1138,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
 
 def _cmd_board_review_briefing(args: argparse.Namespace, project_root: Path) -> int:
     """Print and open an already prepared review package without agent work."""
-    from booley.harness.review_prep import review_briefing_command
+    from booley.review.preparation import review_briefing_command
 
     outcome = review_briefing_command(
         project_root,

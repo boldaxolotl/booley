@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.mcp.base import EXIT_SUCCESS, McpToolResult
 from booley.specialists.tb_coder import (
     TbCoderSpecialist,
