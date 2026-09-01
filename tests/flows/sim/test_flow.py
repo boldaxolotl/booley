@@ -3265,6 +3265,11 @@ class TestSubSecondDurations:
         assert _format_duration(1.0) == "1.0s"
         assert _format_duration(93.4) == "93.4s"
 
+    def test_format_bytes_supports_gigabytes(self):
+        from booley.flows.sim.flow import _format_bytes
+
+        assert _format_bytes(5 * 1024**3) == "5.0 GB"
+
     def test_status_line_distinguishes_two_fast_tests(self):
         fast = _test_status_line(SimTestResult(name="a", passed=True, elapsed_s=0.011))
         slower = _test_status_line(SimTestResult(name="b", passed=True, elapsed_s=0.019))

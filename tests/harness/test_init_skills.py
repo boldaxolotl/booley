@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from booley.harness import init_cmd, init_skills
 from booley.harness.init_common import InitContext
 from booley.runtime import paths as runtime_paths
@@ -52,3 +54,43 @@ def test_skill_deployment_adapter_records_reconciliation_failures(
 
     assert ctx.results[-1].status == "err"
     assert ctx.results[-1].detail == "2 reconciliation issue(s)"
+
+
+def test_skill_deployment_adapter_reports_missing_source(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: tmp_path / "missing")
+    ctx = InitContext(project_root=tmp_path, show_step_banners=False)
+
+    init_skills._deploy_skills(ctx)
+
+    assert ctx.results[-1].status == "warn"
+    assert ctx.results[-1].detail == "skills dir missing"
+
+
+@pytest.mark.parametrize(
+    ("check_only", "status", "detail"),
+    [
+        (True, "warn", "checked 0 target(s)"),
+        (False, "ok", "deployed to 0 target(s)"),
+    ],
+)
+def test_skill_deployment_adapter_records_success_modes(
+    tmp_path: Path,
+    monkeypatch,
+    check_only: bool,
+    status: str,
+    detail: str,
+) -> None:
+    source = tmp_path / "packaged"
+    source.mkdir()
+    monkeypatch.setattr(runtime_paths, "skills_dir", lambda: source)
+    monkeypatch.setattr(init_skills, "reconcile_host_skills", lambda *_args, **_kwargs: ())
+    ctx = InitContext(
+        project_root=tmp_path,
+        check_only=check_only,
+        show_step_banners=False,
+    )
+
+    init_skills._deploy_skills(ctx)
+
+    assert ctx.results[-1].status == status
+    assert ctx.results[-1].detail == detail
