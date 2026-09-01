@@ -600,7 +600,17 @@ def _validate_evaluation_shape(
     evaluation: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
     _check_field(evaluation, "status", "string", "/evaluation", findings)
-    _check_field(evaluation, "criterion_fingerprint", "string_or_null", "/evaluation", findings)
+    fingerprint = _check_field(
+        evaluation, "criterion_fingerprint", "string_or_null", "/evaluation", findings
+    )
+    if isinstance(fingerprint, str):
+        _check_field(
+            evaluation,
+            "approved_waiver_set_digest",
+            "string",
+            "/evaluation",
+            findings,
+        )
     _check_field(evaluation, "suite", "object", "/evaluation", findings)
     thresholds = _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
     _check_field(evaluation, "metrics", "array", "/evaluation", findings)

@@ -201,6 +201,7 @@ def test_evaluated_campaign_preserves_exact_metric_evidence() -> None:
     document["evaluation"] = {
         "status": "pass",
         "criterion_fingerprint": _fingerprint("c"),
+        "approved_waiver_set_digest": _fingerprint("d"),
         "suite": {
             "status": "match",
             "required": ["reset"],
@@ -229,6 +230,34 @@ def test_evaluated_campaign_preserves_exact_metric_evidence() -> None:
     )
 
     assert encode_coverage_campaign(campaign) == document
+
+
+def test_gated_campaign_requires_approved_waiver_set_digest() -> None:
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "blocked",
+        "criterion_fingerprint": _fingerprint("c"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"line": 100},
+        "metrics": [],
+        "diagnostics": [
+            {
+                "code": "COV_EVAL_EMPTY_DENOMINATOR",
+                "pointer": "/rollups",
+                "message": "Configured metric has no eligible points: line.",
+            }
+        ],
+    }
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity(document["target"]["identity"]),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_FIELD_REQUIRED", "/evaluation/approved_waiver_set_digest")
+    ]
 
 
 def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() -> None:
@@ -287,6 +316,7 @@ def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() 
     document["evaluation"] = {
         "status": "pass",
         "criterion_fingerprint": _fingerprint("c"),
+        "approved_waiver_set_digest": _fingerprint("d"),
         "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
         "thresholds": {"branch": 90, "line": 90},
         "metrics": metric_evidence,
@@ -710,6 +740,7 @@ def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> N
     document["evaluation"] = {
         "status": "fail",
         "criterion_fingerprint": _fingerprint("d"),
+        "approved_waiver_set_digest": _fingerprint("e"),
         "suite": {"status": "complete"},
         "thresholds": {"line": 50.0},
         "metrics": [

@@ -272,38 +272,23 @@ def _validate_criterion_value(section_name, key, value, errors):
         )
 
 
-def _validate_cycle_count_grammar(criteria: dict[str, Any], errors: list[str]) -> None:
-    """Apply the runtime Cycle Count grammar during section validation."""
-    cycle_count_sections: dict[str, dict[str, Any]] = {}
+def _validate_structured_criteria_grammar(criteria: dict[str, Any], errors: list[str]) -> None:
+    """Apply dedicated runtime grammars during section validation."""
+    structured_sections: dict[str, dict[str, Any]] = {}
     for section_name in ("mandatory", "optional"):
         section = criteria.get(section_name)
-        if isinstance(section, dict) and "cycle_count" in section:
-            cycle_count_sections[section_name] = {"cycle_count": section["cycle_count"]}
-    if not cycle_count_sections:
+        if not isinstance(section, dict):
+            continue
+        selected = {key: section[key] for key in ("cycle_count", "coverage") if key in section}
+        if selected:
+            structured_sections[section_name] = selected
+    if not structured_sections:
         return
 
     from booley.dev_support.criteria import CriteriaTemplate
 
     try:
-        CriteriaTemplate.from_yaml(cycle_count_sections)
-    except (ValueError, KeyError, TypeError) as exc:
-        errors.append(f"criteria: {exc}")
-
-
-def _validate_coverage_grammar(criteria: dict[str, Any], errors: list[str]) -> None:
-    """Apply the runtime Coverage Criterion grammar during Preflight."""
-    coverage_sections: dict[str, dict[str, Any]] = {}
-    for section_name in ("mandatory", "optional"):
-        section = criteria.get(section_name)
-        if isinstance(section, dict) and "coverage" in section:
-            coverage_sections[section_name] = {"coverage": section["coverage"]}
-    if not coverage_sections:
-        return
-
-    from booley.dev_support.criteria import CriteriaTemplate
-
-    try:
-        CriteriaTemplate.from_yaml(coverage_sections)
+        CriteriaTemplate.from_yaml(structured_sections)
     except (ValueError, KeyError, TypeError) as exc:
         errors.append(f"criteria: {exc}")
 
@@ -337,9 +322,7 @@ def validate_criteria_section(criteria: Any) -> list[str]:
         errors.append("criteria.mandatory must contain at least one criterion")
 
     if not errors:
-        _validate_cycle_count_grammar(criteria, errors)
-    if not errors:
-        _validate_coverage_grammar(criteria, errors)
+        _validate_structured_criteria_grammar(criteria, errors)
 
     return errors
 

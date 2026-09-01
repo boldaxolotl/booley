@@ -386,6 +386,26 @@ def test_blocked_gated_campaign_still_resolves_approved_dispositions() -> None:
     assert evaluated.rollups[0].waived_points == 1
 
 
+@pytest.mark.parametrize(
+    ("collection_status", "expected_status"),
+    [("complete", "pass"), ("incomplete", "blocked")],
+)
+def test_gated_evaluation_records_approved_waiver_set_digest(
+    collection_status: str,
+    expected_status: str,
+) -> None:
+    campaign = replace(
+        _campaign(),
+        collection=MappingProxyType({"status": collection_status}),
+    )
+    waivers = replace(_empty_waivers(), digest="sha256:reviewed-waivers")
+
+    evaluated = evaluate_coverage_campaign(campaign, _criterion(), waivers)
+
+    assert evaluated.evaluation["status"] == expected_status
+    assert evaluated.evaluation["approved_waiver_set_digest"] == waivers.digest
+
+
 def test_metrics_use_fixed_order_and_logical_and() -> None:
     criterion = CoverageCriterion(
         target=_TARGET,
@@ -434,3 +454,13 @@ def test_fingerprint_ignores_metric_authoring_order_and_numeric_spelling() -> No
         first_result.evaluation["criterion_fingerprint"]
         == second_result.evaluation["criterion_fingerprint"]
     )
+
+
+def test_fingerprint_binds_campaign_schema_version() -> None:
+    campaign_v1 = _campaign()
+    campaign_v2 = replace(campaign_v1, schema="booley.coverage-campaign/v2")
+
+    first = evaluate_coverage_campaign(campaign_v1, _criterion(), _empty_waivers())
+    second = evaluate_coverage_campaign(campaign_v2, _criterion(), _empty_waivers())
+
+    assert first.evaluation["criterion_fingerprint"] != second.evaluation["criterion_fingerprint"]

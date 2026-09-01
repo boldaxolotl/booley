@@ -77,6 +77,7 @@ def _number(value: Fraction) -> int | float:
 
 
 def _criterion_fingerprint(
+    campaign: CoverageCampaign,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
     waivers: ApprovedWaiverSet,
@@ -90,6 +91,7 @@ def _criterion_fingerprint(
     }
     payload = {
         "$schema": _CRITERION_SCHEMA,
+        "coverage_campaign_schema": campaign.schema,
         "target": str(criterion.target),
         "metrics": thresholds,
         "tests": sorted(required_tests),
@@ -184,7 +186,10 @@ def _blocked_campaign(
     ordered = sorted(criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric))
     evaluation = {
         "status": "blocked",
-        "criterion_fingerprint": _criterion_fingerprint(criterion, required_tests, waivers),
+        "criterion_fingerprint": _criterion_fingerprint(
+            campaign, criterion, required_tests, waivers
+        ),
+        "approved_waiver_set_digest": waivers.digest,
         "suite": {
             "status": "mismatch"
             if sorted(required_tests) != sorted(campaign.selected_tests)
@@ -199,7 +204,7 @@ def _blocked_campaign(
     return replace(campaign, evaluation=_freeze_mapping(evaluation))
 
 
-def _evidence_diagnostics(
+def _target_suite_diagnostics(
     campaign: CoverageCampaign,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
@@ -221,6 +226,15 @@ def _evidence_diagnostics(
                 "Campaign selection does not match the Coverage Criterion suite.",
             )
         )
+    return diagnostics
+
+
+def _evidence_diagnostics(
+    campaign: CoverageCampaign,
+    criterion: CoverageCriterion,
+    required_tests: tuple[str, ...],
+) -> list[dict[str, str]]:
+    diagnostics = _target_suite_diagnostics(campaign, criterion, required_tests)
     if campaign.collection.get("status") != "complete":
         diagnostics.append(
             _diagnostic(
@@ -301,8 +315,9 @@ def _scored_campaign(
     evaluation = {
         "status": status,
         "criterion_fingerprint": _criterion_fingerprint(
-            criterion, required_tests, approved_waivers
+            campaign, criterion, required_tests, approved_waivers
         ),
+        "approved_waiver_set_digest": approved_waivers.digest,
         "suite": {
             "status": "match",
             "required": sorted(required_tests),

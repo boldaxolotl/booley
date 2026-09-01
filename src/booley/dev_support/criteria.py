@@ -36,6 +36,7 @@ from booley.core.boundary import (
     require_bool,
     require_dict,
     require_finite_number,
+    require_list,
     require_str,
 )
 from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
@@ -835,10 +836,12 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
     Review base keys (``review_rtl_spec``, ``review_tb_quality``, etc.)
     expand into ``_clean``. Explicit ``_done`` retains terminal advisory semantics.
     """
-    if key == "coverage" and not isinstance(value, list):
-        raise ValueError("coverage must be a list of authoring records")
     if key == "coverage":
-        return _parse_coverage_entries(value, mandatory=mandatory)
+        try:
+            records = require_list(value, field="coverage")
+        except BoundaryError:
+            raise ValueError("coverage must be a list of authoring records") from None
+        return _parse_coverage_entries(records, mandatory=mandatory)
     if _is_review_base_key(key):
         return [CriterionSpec(f"{key}_clean", mandatory=mandatory)]
     if isinstance(value, list):
@@ -917,7 +920,7 @@ def _parse_cycle_count_entries(
 
 
 def _parse_coverage_entries(
-    items: list,
+    items: list[Any],
     *,
     mandatory: bool,
 ) -> list[CriterionSpec]:
@@ -926,9 +929,11 @@ def _parse_coverage_entries(
         raise ValueError("coverage must contain at least one authoring record")
     specs: list[CriterionSpec] = []
     for item in items:
-        if not isinstance(item, dict):
-            raise ValueError("coverage must be a list of authoring records")
-        targets, policy = _validate_coverage_record(item)
+        try:
+            record = require_dict(item, field="coverage record")
+        except BoundaryError:
+            raise ValueError("coverage must be a list of authoring records") from None
+        targets, policy = _validate_coverage_record(record)
         for target in targets:
             specs.append(
                 CriterionSpec(
@@ -993,9 +998,9 @@ def _parse_list_criterion(
 
 
 def _validate_name_list(value: object, *, field: str) -> list[str]:
-    if not isinstance(value, list) or not value:
+    if not is_str_list(value) or not value:
         raise ValueError(f"coverage.{field} must be a non-empty list of names")
-    if not all(isinstance(item, str) and item.strip() for item in value):
+    if not all(item.strip() for item in value):
         raise ValueError(f"coverage.{field} must contain only non-empty strings")
     names = [item.strip() for item in value]
     if len(set(names)) != len(names):
@@ -1004,13 +1009,21 @@ def _validate_name_list(value: object, *, field: str) -> list[str]:
 
 
 def _validate_coverage_metrics(value: object) -> dict[str, Any]:
-    if not isinstance(value, dict) or not value:
+    try:
+        metrics = require_dict(value, field="coverage.metrics")
+    except BoundaryError:
+        raise ValueError("coverage.metrics must be a non-empty mapping") from None
+    if not metrics:
         raise ValueError("coverage.metrics must be a non-empty mapping")
-    unknown = set(value) - _COVERAGE_METRICS
+    unknown = set(metrics) - _COVERAGE_METRICS
     if unknown:
-        raise ValueError(f"coverage.metrics has unknown metrics: {sorted(unknown)}")
-    for metric, policy in value.items():
-        if not isinstance(policy, dict) or set(policy) != {"min_pct"}:
+        raise ValueError(f"coverage.metrics has unknown metrics: {sorted(unknown, key=str)}")
+    for metric, raw_policy in metrics.items():
+        try:
+            policy = require_dict(raw_policy, field=f"coverage.metrics.{metric}")
+        except BoundaryError:
+            raise ValueError(f"coverage.metrics.{metric} must contain exactly 'min_pct'") from None
+        if set(policy) != {"min_pct"}:
             raise ValueError(f"coverage.metrics.{metric} must contain exactly 'min_pct'")
         threshold = policy["min_pct"]
         try:
@@ -1019,7 +1032,7 @@ def _validate_coverage_metrics(value: object) -> dict[str, Any]:
             raise ValueError(f"coverage.metrics.{metric}.min_pct must be numeric") from None
         if not 0 < number <= 100:
             raise ValueError(f"coverage.metrics.{metric}.min_pct must be in (0, 100]")
-    return value
+    return metrics
 
 
 def _validate_coverage_tests(value: object) -> str | list[str]:
