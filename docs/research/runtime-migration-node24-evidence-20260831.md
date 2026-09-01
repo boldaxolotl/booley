@@ -148,3 +148,33 @@ Still required before promotion:
    test-credential fingerprint scans.
 
 Until those items pass, this phase remains a hold and does not close #156.
+
+## Postscript — final Node 24 disposition on 1 SEP 2026
+
+The decision above is preserved as the contemporaneous decision at the time
+this evidence report was written. Later work on the same implementation commit
+closed the control/RISC-V comparison but did not make the authenticated matrix
+pass.
+
+PR #205 was rebased after the sidecar promotion and used implementation commit
+`86298fdfce128b93b477204bf5c11939eeb4ebae` for fresh Node 22 control and
+Node 24 candidate builds of the stable base, final Session Image, and RISC-V
+flavor. The maintainer's
+[dated comparison and decision](https://github.com/boldaxolotl/booley/pull/205#issuecomment-5484003578)
+records exact size deltas, identical PicoRV32 and Spike differential hashes,
+the independent readiness/demo result, and the required changed-area and
+confidential-history checks.
+
+The authenticated provider calls did **not** pass. Anthropic required an
+additional workspace selection and OpenAI reported no API credits. The
+maintainer explicitly waived the eight-turn authenticated Anthropic/OpenAI
+matrix for PR #205 rather than treating those failures as successful evidence.
+With that scoped waiver and the required GitHub checks, PR #205 was merged as
+[`182a42bfffc5a2fe738dd8b46c04da5fcf0fec3c`](https://github.com/boldaxolotl/booley/commit/182a42bfffc5a2fe738dd8b46c04da5fcf0fec3c),
+placing Node 24.20.0 on `main`.
+
+The final disposition is therefore **promoted by waiver**, not passed. The
+waiver applies only to the authenticated matrix omitted for PR #205. It does
+not cover authenticated checks for resumed Session-Python candidate `S2`,
+Ubuntu candidate `U2`, or any later interaction candidate; those checks must
+run or receive a new, explicitly scoped maintainer waiver.
