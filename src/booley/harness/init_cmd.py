@@ -121,6 +121,7 @@ from booley.harness.setup.git_hooks import (
 from booley.harness.setup.plan import InitPlan, InitPreconditionError
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
+from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import auth_token
 from booley.runtime import project_image as pi
 from booley.runtime.git import add_git_excludes
@@ -1894,6 +1895,25 @@ def _step_advisories(ctx: InitContext) -> None:
     ctx.record("advisories", "ok", detail)
 
 
+def _step_project_inventory(ctx: InitContext) -> None:
+    """Remember a Project only after its ordinary initialization succeeded."""
+    if ctx.check_only or any(result.status == "err" for result in ctx.results):
+        return
+    ctx.step_banner("Project Inventory")
+    try:
+        project_root = remember_project(ctx.project_root)
+    except ProjectInventoryError as exc:
+        err(f"could not remember Project root: {exc}")
+        ctx.record(
+            "project_inventory",
+            "err",
+            f"retry with `booley projects discover {ctx.project_root}`",
+        )
+        return
+    ok(f"remembered Project root {project_root}")
+    ctx.record("project_inventory", "ok", str(project_root))
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -2206,6 +2226,7 @@ def _run_project_init_steps(
         agent_app=selection.provider,
         session_image_id=session_image_id,
     )
+    _step_project_inventory(ctx)
     _step_advisories(ctx)
 
     return _print_summary(ctx)

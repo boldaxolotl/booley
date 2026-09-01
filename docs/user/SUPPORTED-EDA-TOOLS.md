@@ -67,10 +67,12 @@ the runtime.
 
 The Project requests host provisioning under `[eda.vivado]`; the administrator
 selects the exact Installation Registration in the Grant for one canonical
-Project root with `booley eda`. Host-provisioned Vivado is unavailable on
-Windows, macOS, and non-x86-64 Linux. Windows remains supported for Booley and
-EDA tools already provisioned in its Linux Docker image; a native Windows EDA
-installation cannot be mounted into a Linux container and executed there.
+Project root with `booley eda`. `booley projects` lists each remembered root and
+its Grants, including roots that have since been deleted. Host-provisioned
+Vivado is unavailable on Windows, macOS, and non-x86-64 Linux. Windows remains
+supported for Booley and EDA tools already provisioned in its Linux Docker
+image; a native Windows EDA installation cannot be mounted into a Linux
+container and executed there.
 
 The optional fixed-destination FlexNet relay is experimental. Its synthetic
 forwarding, isolation, failure, and cleanup tests pass, but an
