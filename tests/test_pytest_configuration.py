@@ -61,6 +61,22 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     assert '--basetemp "${{ runner.temp }}/pytest"' in parallel_step["run"]
 
 
+def test_sidecar_proofs_have_cancellation_cleanup() -> None:
+    workflow = _test_workflow()
+    step = next(
+        candidate
+        for candidate in workflow["jobs"]["bwave-smoke"]["steps"]
+        if candidate.get("name") == "Run Python 3.14.7 sidecar behavior and hardening proofs"
+    )
+
+    assert step["env"]["BOOLEY_DOCKER_NAME_PREFIX"] == (
+        "booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-sidecar"
+    )
+    assert ".github/scripts/run_with_container_cleanup.sh" in step["run"]
+    assert '"${BOOLEY_DOCKER_NAME_PREFIX}"' in step["run"]
+    assert "tests/docker/test_sidecar_image_helpers.py" in step["run"]
+
+
 def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     """The native integration job owns every test that executes B-Wave."""
     result = subprocess.run(
