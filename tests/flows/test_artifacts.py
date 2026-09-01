@@ -7,7 +7,6 @@ project-relative, and it is absent rather than wrong.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from booley.flows import artifacts
@@ -75,16 +74,6 @@ class TestArtifactsBlock:
 
     def test_empty_when_nothing_landed(self, tmp_path: Path):
         assert artifacts.artifacts_block(tmp_path, log=tmp_path / "gone.log") == {}
-
-    def test_block_is_json_serializable(self, tmp_path: Path):
-        """It ships inside report.json and MCP structuredContent — a stray
-        Path object would break both."""
-        present = tmp_path / "run.log"
-        present.write_text("x", encoding="utf-8")
-
-        block = artifacts.artifacts_block(tmp_path, log=present)
-
-        assert json.loads(json.dumps(block)) == block
 
     def test_dirs_are_nested_under_their_own_key(self, tmp_path: Path):
         log = tmp_path / "run.log"

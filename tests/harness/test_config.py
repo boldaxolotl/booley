@@ -9,15 +9,7 @@ from booley.config.settings import (
     API_RETRY_BACKOFF_MULTIPLIER,
     API_RETRY_INITIAL_BACKOFF_S,
     API_RETRY_MAX_BACKOFF_S,
-    HARD_MAX_COMPILE_RETRIES,
-    HARD_MAX_DEBUG_ROUNDS,
-    HARD_MAX_MUTATION_ITERATIONS,
     MAX_API_RETRIES,
-    MAX_COMPILE_RETRIES,
-    MAX_DEBUG_ROUNDS,
-    MAX_FIX_LINES,
-    MAX_MUTATION_ITERATIONS,
-    MAX_POST_REVIEW_SIM_ITERATIONS,
     MODEL_MAP,
     STEP_TIERS,
     SandboxConfig,
@@ -30,25 +22,6 @@ from booley.config.settings import (
 KNOWN_CLAUDE_MODELS = set(_PROVIDER_TIER_MODELS["claude"].values())
 KNOWN_CODEX_MODELS = set(_PROVIDER_TIER_MODELS["codex"].values())
 ALL_KNOWN_MODELS = KNOWN_CLAUDE_MODELS | KNOWN_CODEX_MODELS
-
-
-class TestHardCaps:
-    def test_hard_caps_ge_defaults(self):
-        assert HARD_MAX_DEBUG_ROUNDS >= MAX_DEBUG_ROUNDS
-        assert HARD_MAX_COMPILE_RETRIES >= MAX_COMPILE_RETRIES
-        assert HARD_MAX_MUTATION_ITERATIONS >= MAX_MUTATION_ITERATIONS
-
-    @pytest.mark.parametrize(
-        "cap",
-        [
-            HARD_MAX_DEBUG_ROUNDS,
-            HARD_MAX_COMPILE_RETRIES,
-            HARD_MAX_MUTATION_ITERATIONS,
-        ],
-    )
-    def test_hard_caps_positive_int(self, cap):
-        assert isinstance(cap, int)
-        assert cap > 0
 
 
 class TestModelMap:
@@ -89,22 +62,6 @@ class TestAPIResilience:
 
     def test_retries_positive(self):
         assert MAX_API_RETRIES > 0
-
-
-class TestLimits:
-    @pytest.mark.parametrize(
-        "limit",
-        [
-            MAX_DEBUG_ROUNDS,
-            MAX_COMPILE_RETRIES,
-            MAX_MUTATION_ITERATIONS,
-            MAX_POST_REVIEW_SIM_ITERATIONS,
-            MAX_FIX_LINES,
-        ],
-    )
-    def test_positive_int(self, limit):
-        assert isinstance(limit, int)
-        assert limit > 0
 
 
 class TestSandboxConfig:

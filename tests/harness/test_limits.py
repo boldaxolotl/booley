@@ -63,7 +63,9 @@ class TestHardCapsReasonable:
             HARD_MAX_MUTATION_ITERATIONS,
         ],
     )
-    def test_under_100(self, cap):
+    def test_positive_int_under_100(self, cap):
+        assert isinstance(cap, int)
+        assert cap > 0
         assert cap < 100, "Hard cap suspiciously large — possible runaway risk"
 
 

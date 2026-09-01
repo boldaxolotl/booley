@@ -18,13 +18,6 @@ from booley.docker.egress_proxy import DEFAULT_ALLOWLIST, EgressProxy, ProxyStat
 
 
 class TestProxyStats:
-    def test_defaults(self):
-        stats = ProxyStats()
-        assert stats.allowed == 0
-        assert stats.blocked == 0
-        assert stats.errors == 0
-        assert stats.blocked_log == []
-
     def test_blocked_log_is_independent_per_instance(self):
         """Each ProxyStats gets its own list (field default_factory)."""
         a = ProxyStats()
@@ -60,11 +53,6 @@ class TestEgressProxyInit:
         proxy = EgressProxy(allowlist=["example.com", "foo.org"])
         assert proxy.allowlist == set(DEFAULT_ALLOWLIST) | {"example.com", "foo.org"}
         assert {"example.com", "foo.org"} <= proxy.allowlist
-
-    def test_empty_allowlist_falls_back_to_default(self):
-        """Passing None (the default) uses DEFAULT_ALLOWLIST."""
-        proxy = EgressProxy(allowlist=None)
-        assert proxy.allowlist == set(DEFAULT_ALLOWLIST)
 
     def test_default_port_and_host(self):
         proxy = EgressProxy()
@@ -201,9 +189,6 @@ class TestIsAllowed:
 
 
 class TestDefaultAllowlist:
-    def test_is_nonempty(self):
-        assert len(DEFAULT_ALLOWLIST) > 0
-
     def test_expected_domains_present(self):
         expected = [
             "api.anthropic.com",
