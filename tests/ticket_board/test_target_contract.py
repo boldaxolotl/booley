@@ -481,6 +481,54 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
     assert contract.bindings[0].candidate_selector == "synth_after"
 
 
+def test_coverage_criteria_bind_every_authored_target() -> None:
+    criteria = {
+        "mandatory": {
+            "coverage": [
+                {
+                    "targets": ["sim_small", "sim_large"],
+                    "metrics": {"line": {"min_pct": 90}},
+                    "tests": "all",
+                }
+            ]
+        }
+    }
+
+    bindings = criterion_targets(criteria)
+
+    assert [(binding.key, binding.target, binding.flow) for binding in bindings] == [
+        ("coverage", "sim_small", "sim"),
+        ("coverage", "sim_large", "sim"),
+    ]
+
+
+def test_coverage_suite_rejects_unregistered_test_names(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    (project / ".booley_project" / "tests.toml").write_text(
+        "[sim_toy]\ntests = ['smoke', 'reset']\n",
+        encoding="utf-8",
+    )
+    fields = {
+        "criteria": {
+            "mandatory": {
+                "coverage": [
+                    {
+                        "targets": ["sim_toy"],
+                        "metrics": {"line": {"min_pct": 90}},
+                        "tests": ["smkoe"],
+                    }
+                ]
+            }
+        }
+    }
+
+    errors = validate_criterion_targets(fields, project)
+
+    assert errors == [
+        "criteria.mandatory.coverage: target 'sim_toy' has unregistered tests: smkoe"
+    ]
+
+
 def test_materialized_contract_validates_directed_targets_in_sealed_view(
     tmp_path: Path,
 ) -> None:

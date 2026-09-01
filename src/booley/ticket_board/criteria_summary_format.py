@@ -46,29 +46,13 @@ def format_criteria_verdict(verdict: CriteriaVerdict) -> str:
 # Terminal criteria summary (per-criterion detail lines)
 # ---------------------------------------------------------------------------
 
-_COVERAGE_DETAIL_KEYS = {
-    "coverage_toggle": "toggle",
-    "coverage_fsm": "fsm",
-    "coverage_value": "value",
-    "coverage_branch": "branch",
-    "coverage_expression": "expression",
-    "coverage_mean": "mean",
-}
-
 
 def _format_coverage_metric(key: str, d: dict, p: dict, stale: bool) -> str | None:
-    """Format a coverage criterion's ``pct`` (need threshold%), or None if N/A."""
-    for prefix, sub_key in _COVERAGE_DETAIL_KEYS.items():
-        if key == prefix or key.startswith(f"{prefix}_"):
-            sub = d.get(sub_key, {})
-            pct = sub.get("pct") if isinstance(sub, dict) else None
-            if pct is not None:
-                thr = p.get("min_pct", "")
-                thr_str = f" / need {thr}%" if thr else ""
-                val = "?%" if stale else f"{pct:.0f}%"
-                return f"{val}{thr_str}"
-            break
-    return None
+    """Format a Coverage Campaign status, or None for another Criterion family."""
+    if key != "coverage" and not key.startswith("coverage_"):
+        return None
+    status = d.get("status")
+    return "?" if stale else (str(status) if status else None)
 
 
 def _format_fpga_impl_metric(d: dict, stale: bool) -> str | None:
@@ -186,7 +170,7 @@ def format_criterion_metric(key: str, entry) -> str:  # noqa: PLR0911 — metric
     p = entry.params or {}
     stale = getattr(entry, "stale", False)
 
-    # Coverage criteria: pct (need threshold%)
+    # Coverage Campaign status.
     coverage = _format_coverage_metric(key, d, p, stale)
     if coverage is not None:
         return coverage
@@ -229,7 +213,6 @@ def format_criterion_metric(key: str, entry) -> str:  # noqa: PLR0911 — metric
 
 
 _COLLAPSIBLE_GROUPS = [
-    ("coverage_", "coverage"),
     ("review_", "reviews"),
     ("mutation_", "mutation"),
 ]
