@@ -5,22 +5,35 @@
 Every public top-level command; run `booley <command> --help` for its options
 and nested actions.
 
+#### Host-only commands
+
 | Command | Purpose |
 |---------|---------|
 | `booley bootstrap` | Check or reconcile reusable host resources |
 | `booley init` | Initialize, scaffold, or reseed project integration |
-| `booley doctor` | Check project, runtime, and toolchain health |
-| `booley upgrade` | Inspect or acknowledge a pending Booley release review |
+| `booley projects` | List remembered Project roots and their Grants |
 | `booley auth` | Configure or inspect agent credentials |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley session` | Start, enter, inspect, refresh, or stop the Session Runtime |
+
+#### Session Runtime-only commands
+
+| Command | Purpose |
+|---------|---------|
 | `booley` | Open the Project's configured Claude Code or Codex CLI |
 | `booley chat` | Explicit spelling of the default `booley` command |
-| `booley targets` | List or filter Targets and show resolved details |
-| `booley flow` | List or directly run deterministic Booley Flows |
 | `booley run` | Execute queued or named tickets |
 | `booley board` | Create, inspect, move, reset, or archive tickets |
-| `booley cheat` | Show this reference, whole or by section |
+
+#### Either-location and mixed commands
+
+| Command | Location | Purpose |
+|---------|----------|---------|
+| `booley doctor` | either | Check project, runtime, and toolchain health |
+| `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
+| `booley targets` | either | List or filter Targets and show resolved details |
+| `booley flow` | mixed | List or directly run deterministic Booley Flows |
+| `booley cheat` | either | Show this reference, whole or by section |
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
 `--force` refreshes Booley-managed resources while preserving caches and

@@ -125,6 +125,18 @@ the installation name and host path; Project configuration cannot select
 either. The host administrator manages registrations and grants using
 `booley eda installation register` and `booley eda grant add`.
 
+Successful ordinary `booley init` runs remember their canonical Project root
+in the host-owned Project Inventory. `booley projects` joins those roots with
+their Grants and reports each root as `present`, `missing`, or `uninitialized`.
+Use `booley projects discover <root>...` to import existing initialized
+Projects; discovery scans only the roots named on the command line and does not
+follow directory symlinks. `booley projects forget <project>` removes an
+obsolete remembered root only after its live Grants have been revoked.
+
+EDA administration prints human-readable confirmations by default. Add
+`--json` to a public leaf operation when a script needs the stable structured
+record.
+
 License Profiles are host-owned and never appear in Project configuration. A
 licensed runtime receives only a fixed FlexNet relay pointer; it cannot choose
 an upstream server or arbitrary license environment. Invalid, missing, drifted,

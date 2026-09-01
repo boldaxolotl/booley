@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.policies.vivado import Inspection
+from booley.runtime import private_store
 
 
 @pytest.fixture
@@ -34,15 +36,29 @@ def _registered(tmp_path: Path) -> tuple[Path, Path]:
     return project, source
 
 
-def test_authority_lock_contention_has_controlled_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_authority_lock_contention_has_controlled_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(
-        authority, "lock_fd", lambda _lock: (_ for _ in ()).throw(BlockingIOError())
+        private_store,
+        "acquire_file_lock",
+        lambda _lock: (_ for _ in ()).throw(BlockingIOError()),
     )
     times = iter((0.0, 11.0))
-    monkeypatch.setattr(authority.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(private_store.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(private_store.time, "sleep", lambda _seconds: None)
+    store = authority._store()
+    store.ensure_directory()
 
-    with pytest.raises(authority.AuthorityError, match="busy with another operation"):
-        authority._wait_for_lock(object())
+    with (
+        pytest.raises(authority.AuthorityError, match="busy with another operation"),
+        store.locked(
+            "authority.lock",
+            busy_message="EDA authority is busy with another operation; retry after it completes",
+        ),
+    ):
+        pass
 
 
 def test_registration_grant_resolution_and_referential_integrity(
@@ -202,14 +218,70 @@ def test_revoke_cleans_exact_runtime_after_authority_removal(
 ) -> None:
     project, _ = _registered(tmp_path)
     authority.add_grant(project, "vivado", installation="vivado_2025_2")
-    cleaned: list[Path] = []
+    cleaned: list[str] = []
     monkeypatch.setattr(authority, "_cleanup_revoked_runtime", cleaned.append)
 
     authority.revoke_grant(project, "vivado")
 
-    assert cleaned == [project.resolve()]
+    assert cleaned == [str(project.resolve())]
     with pytest.raises(authority.AuthorityError, match="no exact"):
         authority.resolve_grant(project, "vivado")
+
+
+def test_revoke_uses_stored_identity_after_project_root_is_deleted(
+    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = _registered(tmp_path)
+    grant = authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    shutil.rmtree(project)
+    invalidated: list[str] = []
+    cleaned: list[str] = []
+    monkeypatch.setattr(authority, "invalidate_project_specs", invalidated.append)
+    monkeypatch.setattr(authority, "_cleanup_revoked_runtime", cleaned.append)
+
+    assert authority.revoke_grant(project, "vivado") == grant
+
+    assert invalidated == [grant.project_root]
+    assert cleaned == [grant.project_root]
+    assert authority.load_state().grants == ()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory symlink privileges vary on Windows")
+def test_revoke_uses_stored_identity_after_project_path_is_rebound(
+    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = _registered(tmp_path)
+    grant = authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    shutil.rmtree(project)
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    project.symlink_to(replacement, target_is_directory=True)
+    invalidated: list[str] = []
+    cleaned: list[str] = []
+    monkeypatch.setattr(authority, "invalidate_project_specs", invalidated.append)
+    monkeypatch.setattr(authority, "_cleanup_revoked_runtime", cleaned.append)
+
+    assert authority.revoke_grant(project, "vivado") == grant
+
+    assert invalidated == [grant.project_root]
+    assert cleaned == [grant.project_root]
+
+
+def test_revoke_missing_relative_root_points_to_project_inventory(
+    tmp_path: Path, private_state: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = _registered(tmp_path)
+    authority.add_grant(project, "vivado", installation="vivado_2025_2")
+    shutil.rmtree(project)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(
+        authority.AuthorityError,
+        match=r"absolute canonical path.*`booley projects`",
+    ):
+        authority.revoke_grant(Path("project"), "vivado")
+
+    assert len(authority.load_state().grants) == 1
 
 
 def test_revoke_reports_cleanup_failure_but_keeps_authority_revoked(

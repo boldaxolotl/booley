@@ -866,14 +866,26 @@ setup cost on our project" is as useful as praise, and a lot rarer.
 
 ## CLI reference
 
-The whole `booley` command set. A few are general (`cheat`, `doctor`, `targets`
-from the [orientation block](#first-verify-your-setup) above); the rest drive
-Ticket Mode. Run these from a terminal **inside the Session Runtime**: open the repo in VS
-Code and accept **Reopen in Container** first, or, with no VS Code, enter it
-headlessly with `booley session enter` (see
-[Entering the Session Runtime without VS Code](#entering-the-session-runtime-without-vs-code)). (`booley
-cheat` works anywhere; `booley doctor` works on either side; `booley bootstrap`,
-`booley init`, and `booley session` are host-side.)
+`booley --help` labels every top-level command as `[host]`,
+`[Session Runtime]`, `[either]`, or `[mixed]`. Session Runtime commands run after
+VS Code accepts **Reopen in Container**, or through `booley session enter` in a
+headless environment. Mixed commands enforce location at their nested
+operation.
+
+The host-owned Project Inventory records roots initialized by successful
+`booley init` runs. Existing Projects can be imported with an explicit,
+bounded discovery scan:
+
+```bash
+booley projects                         # roots, status, and grants
+booley projects discover ~/workplace    # scan only this directory tree
+booley projects --json                  # stable machine-readable listing
+booley projects forget /old/project     # only after all grants are revoked
+```
+
+Missing and uninitialized roots remain visible so their host administration can
+be cleaned up. Use the exact absolute path printed by `booley projects` to
+revoke a grant even after its directory has been deleted.
 
 ```bash
 # Execute a single ticket end-to-end
