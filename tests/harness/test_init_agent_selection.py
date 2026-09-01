@@ -204,7 +204,6 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
         "_step_core_projections",
         "_step_tickets",
         "_step_auth",
-        "_deploy_skills",
         "_step_git_hooks",
         "_step_project_git_hooks",
         "_step_worktree_prune_guard",

@@ -940,28 +940,6 @@ class McpTool(ABC):
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
-    def _reject_with_gate(self, result: McpToolResult) -> int:
-        """Record a gate rejection and return the exit code.
-
-        Surfaces the rejection reason to stderr so MCP-wrapped Developer Agents
-        (which see only the subprocess's stdout/stderr, not report.json) get
-        the actionable message.  Without this, callers see only ambient
-        startup noise on stderr and misattribute the cause.
-        """
-        self._start_time = time.monotonic()
-        if result.report_text:
-            print(result.report_text, file=sys.stderr, flush=True)
-        self.write_report(result)
-        self.state.record_mcp_tool_run(
-            self.name,
-            result.exit_code,
-            endpoint_kind=self.endpoint_kind,
-            duration_s=0.0,
-        )
-        if self.state._file_path is not None:
-            self.state.save()
-        return result.exit_code
-
     def _pre_state_gate(self) -> McpToolResult | None:
         """Reject before loading mutable ticket state; subclasses may override."""
         return None
@@ -1204,7 +1182,7 @@ class McpTool(ABC):
         # is given. On failure that otherwise leaves a bare exit-1 with the real
         # reason trapped in a file that may not exist. Surface it on stderr so a
         # human — or an MCP wrapper that sees only stdout/stderr — gets the cause.
-        # (Gate rejections take the _reject_with_gate path and already do this.)
+        # Pre-state gate rejections exit before this point.
         #
         # Skip the echo whenever the endpoint already printed the same text on
         # stdout. Callers commonly capture stdout/stderr separately and merge

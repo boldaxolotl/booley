@@ -177,19 +177,6 @@ def _raise_if_missing_executable(text: str) -> None:
         raise MissingExecutableError(binary, context=text)
 
 
-def _raise_if_build_eda_tool_missing(combined: str) -> None:
-    """Escalate a build half that broke because its compiler is not installed.
-
-    Gated on the elaboration-failure marker: only a run whose *build* died is
-    inspected, so a live simulation's own output can never be mistaken for a
-    missing toolchain. Without the gate the run still reports
-    "Verilator elaboration failed (rc=2)" — accurate about the exit code,
-    wrong about the stage, and graded as a design failure (F-32).
-    """
-    if _ELAB_FAIL_RE.search(combined):
-        _raise_if_missing_executable(combined)
-
-
 _DEFAULT_TIMEOUT_MS = 600_000
 # Per-run disk budget for the sim run directory (SETUP-25) — on how much the dir
 # GROWS during one run, not on its total size (F-23: run_cwd is routinely shared
@@ -804,11 +791,11 @@ def _format_duration(seconds: float) -> str:
 def _format_bytes(size: int) -> str:
     """Compact human size for a trace artifact (F-35)."""
     value = float(size)
-    for unit in ("B", "KB", "MB", "GB"):
-        if value < 1024 or unit == "GB":
+    for unit in ("B", "KB", "MB"):
+        if value < 1024:
             return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
         value /= 1024
-    return f"{value:.1f} GB"  # pragma: no cover - unreachable, loop always returns
+    return f"{value:.1f} GB"
 
 
 def _trace_artifact(combined: str, work_dir: Path | str) -> tuple[str, int]:

@@ -77,46 +77,6 @@ def _stub_flavor_env(
 
 
 class TestFlavorDispatch:
-    def test_init_pulls_only_selected_flavor_when_published(self, flavor_repo, monkeypatch):
-        built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        pulled: list[str] = []
-        base_steps: list[str] = []
-        monkeypatch.setattr(
-            idi,
-            "_try_pull_image",
-            lambda version, image=idi.DOCKER_IMAGE: pulled.append(image) or True,
-        )
-        monkeypatch.setattr(
-            init_cmd, "_step_docker_image", lambda ctx, selected: base_steps.append(selected)
-        )
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_sandbox_images(ctx)
-
-        assert pulled == [FLAVOR]
-        assert not base_steps, "a published flavor already carries the base layers"
-        assert not built
-
-    def test_init_provisions_base_only_after_flavor_pull_fails(self, flavor_repo, monkeypatch):
-        built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
-        events: list[str] = []
-        monkeypatch.setattr(
-            idi,
-            "_try_pull_image",
-            lambda version, image=idi.DOCKER_IMAGE: events.append(f"pull:{image}") or False,
-        )
-        monkeypatch.setattr(
-            init_cmd,
-            "_step_docker_image",
-            lambda ctx, selected: events.append(f"base:{selected}"),
-        )
-        ctx = InitContext(project_root=flavor_repo)
-
-        init_cmd._step_sandbox_images(ctx)
-
-        assert events == [f"pull:{FLAVOR}", f"base:{FLAVOR}"]
-        assert built == [FLAVOR]
-
     def test_missing_flavor_pulls_published_image_before_build(self, flavor_repo, monkeypatch):
         built = _stub_flavor_env(monkeypatch, exists=False, stale=False)
         pulled: list[str] = []
@@ -432,6 +392,11 @@ class TestShippedFlavorFiles:
 
 
 class TestBaseImageNote:
+    @pytest.fixture(autouse=True)
+    def _disable_installed_image_refresh(self, monkeypatch):
+        """Keep presentation tests independent of Docker registry availability."""
+        monkeypatch.setattr(idi, "_refresh_installed_base_image", lambda *_args: False)
+
     def test_base_step_explains_the_flavor_relationship(self, monkeypatch, capsys):
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)

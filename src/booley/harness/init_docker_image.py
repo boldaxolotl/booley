@@ -185,7 +185,7 @@ class _DockerBuildSpec:
 
 
 def _iter_fingerprint_files(booley_root: Path):
-    """Yield every source file that contributes to the sandbox image build."""
+    """Compatibility view of files contributing to the sandbox image build."""
     yield from iter_payload_files(booley_root)
 
 
@@ -307,16 +307,19 @@ def source_fingerprint_mismatch(image: str) -> bool | None:
 
 
 def _stamp_image_fingerprint(image: str, value: str) -> None:
-    """Best-effort: set *image*'s build-fingerprint label to *value*.
-
-    Used to mark a freshly *pulled* image as ``pulled:<version>`` so a later run
-    recognises it as intentional and doesn't treat the missing label as stale.
-    Implemented as a metadata-only ``FROM <image>`` rebuild (near-instant, no
-    new layers). Failure is non-fatal — the image just gets re-checked later.
-    """
+    """Best-effort compatibility helper for stamping a pulled image."""
     with contextlib.suppress(subprocess.SubprocessError, FileNotFoundError):
         subprocess.run(
-            ["docker", "build", "-q", "--label", f"{LABEL_FINGERPRINT}={value}", "-t", image, "-"],
+            [
+                "docker",
+                "build",
+                "-q",
+                "--label",
+                f"{LABEL_FINGERPRINT}={value}",
+                "-t",
+                image,
+                "-",
+            ],
             input=f"FROM {image}\n",
             capture_output=True,
             text=True,
