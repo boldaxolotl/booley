@@ -45,6 +45,7 @@ from commit_msg_utils import (
     StealthPolicy,
     allowed_authors,
     identity_allowed,
+    source_checkout_policy_owner,
     stealth_enabled,
     stealth_policy,
 )
@@ -276,13 +277,8 @@ def _commit_offenses(
 ) -> list[str]:
     """Human-readable reasons this commit must not be pushed (empty = fine)."""
     root = repository_root or _repository_root()
-    if root is not None:
-        try:
-            from booley.runtime.checkout_role import source_checkout_root
-        except ImportError:
-            source_checkout_root = None
-        if source_checkout_root is not None and source_checkout_root(root) is not None:
-            return []
+    if source_checkout_policy_owner(root):
+        return []
 
     active_policy = policy or stealth_policy(root)
     if not active_policy.enabled:

@@ -94,15 +94,60 @@ def _stealth_section(project_root: Path | None = None) -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def _source_checkout(project_root: Path | None) -> bool:
-    """Return whether an explicit policy owner lies inside Booley source."""
+def _source_layout(root: Path) -> bool:
+    """Return whether *root* has Booley's distinctive source-tree layout."""
+    return (root / "src" / "booley" / "__init__.py").is_file()
+
+
+def _standalone_source_checkout(root: Path) -> bool:
+    """Classify source when a self-contained vendored hook has no package."""
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file():
+        return False
+    try:
+        import tomllib
+
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except ModuleNotFoundError:
+        return False
+    except (OSError, tomllib.TOMLDecodeError):
+        return _source_layout(root)
+
+    tool = document.get("tool", {})
+    booley = tool.get("booley", {}) if isinstance(tool, dict) else {}
+    if isinstance(booley, dict) and booley.get("source_checkout") is True:
+        return True
+    project = document.get("project", {})
+    legacy_identity = isinstance(project, dict) and project.get("name") == "booley-rtl"
+    return legacy_identity and _source_layout(root)
+
+
+def source_checkout_policy_owner(project_root: Path | None) -> bool:
+    """Return whether an explicit policy owner lies inside Booley source.
+
+    Project hooks are deliberately runnable as self-contained vendored scripts,
+    where importing :mod:`booley` is impossible.  The fallback mirrors the
+    tracked-marker and legacy-layout contract needed to disable stale hooks in
+    source checkouts; packaged callers retain the runtime classifier as the
+    single authoritative implementation.
+    """
     if project_root is None:
         return False
+    root = Path(project_root).resolve()
     try:
         from booley.runtime.checkout_role import source_checkout_root
     except ImportError:
-        return False  # vendored Project hooks intentionally carry no package
-    return source_checkout_root(Path(project_root)) is not None
+        return any(_standalone_source_checkout(candidate) for candidate in (root, *root.parents))
+    return source_checkout_root(root) is not None
+
+
+def _boolean_setting(section: dict, name: str, default: bool) -> bool:
+    """Return one validated boolean setting, or its documented default."""
+    value = section.get(name, default)
+    if isinstance(value, bool):
+        return value
+    logger.warning("[stealth] %s must be a boolean, got %r — using %r", name, value, default)
+    return default
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +171,7 @@ class StealthPolicy:
 
 def stealth_policy(project_root: Path | None = None) -> StealthPolicy:
     """Load one Project's Stealth policy; source checkouts are always disabled."""
-    if _source_checkout(project_root):
+    if source_checkout_policy_owner(project_root):
         return StealthPolicy(False, (), None, False, ())
 
     section = _stealth_section(project_root)
@@ -164,10 +209,10 @@ def stealth_policy(project_root: Path | None = None) -> StealthPolicy:
         )
         authors = ()
     return StealthPolicy(
-        enabled=bool(section.get("enabled", True)),
+        enabled=_boolean_setting(section, "enabled", True),
         banned_phrases=words,
         max_body_lines=cap,
-        enforce_convention=bool(section.get("enforce_convention", False)),
+        enforce_convention=_boolean_setting(section, "enforce_convention", False),
         allowed_authors=authors,
     )
 

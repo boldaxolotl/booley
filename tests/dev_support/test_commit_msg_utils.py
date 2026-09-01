@@ -12,6 +12,7 @@ from booley.dev_support.commit_msg_utils import (
     find_banned,
     has_banned_content,
     redact_banned,
+    source_checkout_policy_owner,
 )
 
 # ---------------------------------------------------------------------------
@@ -214,6 +215,28 @@ class TestStealthEnabled:
         assert stealth_enabled(root) is False
         assert banned_phrases(root) == []
 
+    def test_source_checkout_fallback_works_without_package_import(self, tmp_path):
+        root = tmp_path / "source"
+        root.mkdir()
+        (root / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "builtins.__import__",
+            side_effect=_selective_import_error("booley.runtime.checkout_role"),
+        ):
+            assert source_checkout_policy_owner(root)
+
+    def test_invalid_enabled_type_logs_and_uses_default(self, tmp_path, caplog):
+        from booley.dev_support.commit_msg_utils import stealth_enabled
+
+        root = self._project(tmp_path, b'[stealth]\nenabled = "false"\n')
+
+        assert stealth_enabled(root) is True
+        assert "[stealth] enabled must be a boolean" in caplog.text
+
 
 class TestMaxBodyLines:
     """[stealth] max_body_lines — opt-in cap, unlimited when absent."""
@@ -302,6 +325,14 @@ class TestEnforceConvention:
 
         root = self._project(tmp_path, b"[stealth]\nenforce_convention = false\n")
         assert enforce_convention(root) is False
+
+    def test_invalid_type_logs_and_uses_default(self, tmp_path, caplog):
+        from booley.dev_support.commit_msg_utils import enforce_convention
+
+        root = self._project(tmp_path, b'[stealth]\nenforce_convention = "false"\n')
+
+        assert enforce_convention(root) is False
+        assert "[stealth] enforce_convention must be a boolean" in caplog.text
 
 
 class TestAllowedAuthors:

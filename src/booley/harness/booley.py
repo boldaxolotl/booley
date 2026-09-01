@@ -2265,7 +2265,7 @@ def _enforce_runtime_location(command: str | None) -> None:
         sys.exit(2)
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each command's exit code
     """Entry point: parse CLI, handle early exits, set up runtime, run ticket loop."""
     args = _parse_cli()
     command = _effective_command(args)

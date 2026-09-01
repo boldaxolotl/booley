@@ -21,7 +21,13 @@ from pathlib import Path
 
 try:
     from ..core.run_command import run_command
-    from .commit_msg_utils import enforce_convention, find_banned, max_body_lines, stealth_enabled
+    from .commit_msg_utils import (
+        enforce_convention,
+        find_banned,
+        max_body_lines,
+        source_checkout_policy_owner,
+        stealth_enabled,
+    )
 except ImportError:
     # When run as a standalone script (e.g. inside Docker), the package-relative
     # import fails.  Ensure this file's dir and the package root are on sys.path
@@ -37,7 +43,13 @@ except ImportError:
     # resolved via the hook dir already on sys.path.
     import importlib
 
-    from commit_msg_utils import enforce_convention, find_banned, max_body_lines, stealth_enabled
+    from commit_msg_utils import (
+        enforce_convention,
+        find_banned,
+        max_body_lines,
+        source_checkout_policy_owner,
+        stealth_enabled,
+    )
 
     run_command = None
     for _mod in ("core.run_command", "run_command"):
@@ -108,11 +120,7 @@ _PROJECT_CONFIG_NAMES = ("booley.toml", "pipeline.toml")
 
 def _has_project_config(repo_root: Path) -> bool:
     """Whether *repo_root* is a configured design or project-state repository."""
-    try:
-        from booley.runtime.checkout_role import source_checkout_root
-    except ImportError:
-        source_checkout_root = None
-    if source_checkout_root is not None and source_checkout_root(repo_root) is not None:
+    if source_checkout_policy_owner(repo_root):
         return False
 
     nested = (

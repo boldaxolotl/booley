@@ -177,7 +177,10 @@ def project_name(work_dir: Path | None = None) -> str:
         path = resolve_toml(project_dir)
         with path.open("rb") as stream:
             document = tomllib.load(stream)
-    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+    except FileNotFoundError:
+        return "rtl_project"
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        _logger.warning("could not read Project name for checkout %s: %s", work_dir, exc)
         return "rtl_project"
     project = document.get("project", {})
     name = project.get("name", "rtl_project") if isinstance(project, dict) else "rtl_project"
