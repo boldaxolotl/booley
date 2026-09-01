@@ -46,8 +46,10 @@ from fusesoc.capi2.exprs import Exprs
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_PREFIX,
     CoreProjectionError,
+    isolated_core_path,
     isolated_registry_root,
     native_cores_ignored,
+    projected_core_path,
     projection_enabled,
     reconcile_isolated_registry,
     reconcile_projected_cores,
@@ -343,6 +345,75 @@ def discover_cores(project_root: Path | str) -> list[Path]:
         # FUSESOC_IGNORE *at or under* it is honored, matching FuseSoC).
         cores += _scan_core_root(stealth_root)
     return sorted(cores)
+
+
+@dataclass(frozen=True)
+class CoreLibraryPlan:
+    """Prepared FuseSoC library roots and canonical-to-operational core paths."""
+
+    roots: tuple[Path, ...]
+    ignored_dirs: tuple[frozenset[str], ...]
+    _operational_cores: tuple[tuple[Path, Path], ...]
+
+    def operational_core(self, authored_core: Path | str) -> Path:
+        """Return the prepared operational view of one canonical authored core."""
+        authored = Path(authored_core).resolve()
+        for canonical, operational in self._operational_cores:
+            if canonical == authored:
+                return operational
+        raise FuseSocError(f"core is outside the prepared FuseSoC library plan: {authored}")
+
+
+def _core_library_ignored_dirs(root: Path) -> frozenset[str]:
+    """Return real paths CoreManager must prune from the Project-root library."""
+    ignored = {os.path.realpath(root / _STATE_DIR_NAME)}
+    for current, dirnames, _filenames in os.walk(root, followlinks=False):
+        directory = Path(current)
+        if directory == root / _STATE_DIR_NAME:
+            dirnames.clear()
+            continue
+        retained: list[str] = []
+        for name in dirnames:
+            if name in _BUILD_DIR_NAMES:
+                ignored.add(os.path.realpath(directory / name))
+            else:
+                retained.append(name)
+        dirnames[:] = retained
+    return frozenset(ignored)
+
+
+def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
+    """Reconcile and describe the FuseSoC library view for one Project."""
+    root = Path(project_root).resolve()
+    cores = tuple(path.resolve() for path in discover_cores(root))
+    stealth_root = state_cores_dir(root).resolve()
+    if projection_enabled(root):
+        reconcile_projected_cores(root)
+    if native_cores_ignored(root):
+        reconcile_isolated_registry(root)
+        library_roots = (isolated_registry_root(root).resolve(),)
+        operational = tuple(
+            (core, isolated_core_path(root, core).resolve()) for core in cores
+        )
+    elif projection_enabled(root):
+        library_roots = (root,)
+        operational = tuple(
+            (
+                core,
+                projected_core_path(root, core).resolve()
+                if core.is_relative_to(stealth_root)
+                else core,
+            )
+            for core in cores
+        )
+    else:
+        library_roots = (root, stealth_root) if stealth_root.is_dir() else (root,)
+        operational = tuple((core, core) for core in cores)
+    ignored = tuple(
+        _core_library_ignored_dirs(root) if library_root == root else frozenset()
+        for library_root in library_roots
+    )
+    return CoreLibraryPlan(library_roots, ignored, operational)
 
 
 def core_setup_hazards(project_root: Path | str) -> list[CoreSetupHazard]:
@@ -2141,13 +2212,10 @@ def setup_command(
     """
     project_root = Path(project_root)
     build_root = Path(build_root)
-    if projection_enabled(project_root):
-        try:
-            reconcile_projected_cores(project_root)
-            if native_cores_ignored(project_root):
-                reconcile_isolated_registry(project_root)
-        except (CoreProjectionError, OSError) as exc:
-            raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
+    try:
+        library_plan = prepare_core_library_plan(project_root)
+    except (CoreProjectionError, OSError) as exc:
+        raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
     if vlnv is None:
         try:
             ref = resolve_ref(project_root, target)
@@ -2170,26 +2238,17 @@ def setup_command(
     flag_args: list[str] = []
     if ref is not None and ref.flow and ref.eda_tool:
         flag_args = ["--flag", f"tool_{ref.eda_tool}"]
-    # Stealth authored cores (ADR 0036) need their own --cores-root: FuseSoC's
-    # scan of project_root prunes at .booley_project/FUSESOC_IGNORE, but a scan
-    # *rooted below* the marker never sees it. --cores-root is repeatable
-    # (argparse action="append" in the pinned fusesoc).
-    stealth_root = state_cores_dir(project_root)
-    stealth_args = (
-        ["--cores-root", str(stealth_root)]
-        if stealth_root.is_dir() and not projection_enabled(project_root)
-        else []
-    )
-    cores_root = (
-        isolated_registry_root(project_root)
-        if native_cores_ignored(project_root)
-        else project_root
-    )
+    # --cores-root is repeatable (argparse action="append" in the pinned
+    # FuseSoC). The prepared plan keeps CLI setup and in-process inspection on
+    # the same ordered library view.
+    library_args = [
+        argument
+        for library_root in library_plan.roots
+        for argument in ("--cores-root", str(library_root))
+    ]
     return [
         *fusesoc_cmd,
-        "--cores-root",
-        str(cores_root),
-        *stealth_args,
+        *library_args,
         "run",
         "--build-root",
         str(build_root),

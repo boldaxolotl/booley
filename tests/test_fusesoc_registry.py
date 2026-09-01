@@ -411,6 +411,26 @@ class TestStealthCores:
         assert roots == [str(isolated_registry_root(tmp_path))]
         assert discover_cores(tmp_path) == [canonical]
 
+    def test_setup_command_refuses_foreign_expected_projection(self, tmp_path: Path):
+        from booley.fusesoc.core_projection import projected_core_path
+        from booley.fusesoc.fusesoc_registry import setup_command
+
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        canonical = _write_core(state_cores_dir(tmp_path), create_sources=False)
+        projected = projected_core_path(tmp_path, canonical)
+        foreign_content = "CAPI=2:\nname: foreign::core:0\n"
+        projected.write_text(foreign_content, encoding="utf-8")
+
+        with pytest.raises(TargetResolutionError, match="refusing to overwrite non-Booley file"):
+            setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+
+        assert projected.read_text(encoding="utf-8") == foreign_content
+
 
 # ---------------------------------------------------------------------------
 # enumerate_targets

@@ -17,7 +17,7 @@ from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.librarymanager import Library, LibraryManager
 from fusesoc.vlnv import Vlnv
 
-from booley.fusesoc import core_projection, fusesoc_registry
+from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
 
 TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
@@ -174,19 +174,22 @@ def _inspection_flags(handle: TargetHandle) -> dict[str, Any]:
 
 
 def _inspection_cores(root: Path, handle: TargetHandle, flags: Mapping[str, Any]) -> list[Any]:
-    library_root = root
-    selected_core = handle.core_file
-    if core_projection.native_cores_ignored(root):
-        core_projection.reconcile_isolated_registry(root)
-        library_root = core_projection.isolated_registry_root(root)
-        selected_core = core_projection.isolated_core_path(root, handle.core_file)
+    plan = fusesoc_registry.prepare_core_library_plan(root)
+    selected_core = plan.operational_core(handle.core_file)
     manager = CoreManager(_InspectionConfig(), library_manager=LibraryManager(""))
-    manager.add_library(Library("project", str(library_root)), ignored_dirs=set())
+    for index, (library_root, ignored_dirs) in enumerate(
+        zip(plan.roots, plan.ignored_dirs, strict=True)
+    ):
+        manager.add_library(
+            Library(f"project-{index}", str(library_root)),
+            ignored_dirs=set(ignored_dirs),
+        )
     top = manager.get_core(Vlnv(handle.vlnv))
-    if Path(top.core_file).resolve() != selected_core.resolve():
+    actual_core = Path(top.core_file).resolve()
+    if actual_core != selected_core.resolve():
         raise fusesoc_registry.FuseSocError(
-            f"FuseSoC selected {top.core_file} for {handle.vlnv}, "
-            f"but Booley selected {selected_core}"
+            f"FuseSoC selected {actual_core} for {handle.vlnv}; "
+            f"Booley authored {handle.core_file} and expected operational view {selected_core}"
         )
     return manager.get_depends(top.name, dict(flags))
 

@@ -12,7 +12,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.fusesoc.core_projection import reconcile_projected_cores
+from booley.fusesoc.core_projection import (
+    CoreProjectionError,
+    projected_core_path,
+    reconcile_projected_cores,
+)
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
 from booley.targets import target_surface
 from booley.targets.target import inspect_target, select_target, select_targets
@@ -125,6 +129,228 @@ def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surfa
 
 
 class TestTargetInterface:
+    def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "demo.sv").write_text(
+            "module demo; endmodule\n",
+            encoding="utf-8",
+        )
+        authored = cores / "demo.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::demo:0
+                filesets:
+                  rtl:
+                    files: [rtl/demo.sv]
+                targets:
+                  synth:
+                    flow: generic
+                    flow_options: {tool: yosys, arch: xilinx}
+                    filesets: [rtl]
+                    toplevel: demo
+                """
+            ),
+            encoding="utf-8",
+        )
+        inspection = inspect_target(tmp_path, "synth")
+
+        assert inspection.handle.core_file == authored
+        assert [item.path for item in inspection.inputs] == ["rtl/demo.sv"]
+
+    def test_inspection_refreshes_owned_stale_projection(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (tmp_path / "rtl").mkdir()
+        (tmp_path / "rtl" / "old.sv").write_text(
+            "module old; endmodule\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "rtl" / "fresh.sv").write_text(
+            "module fresh; endmodule\n",
+            encoding="utf-8",
+        )
+        authored = cores / "demo.core"
+        core_template = textwrap.dedent(
+            """\
+            CAPI=2:
+            name: booley::demo:0
+            filesets:
+              rtl:
+                files: [rtl/{module}.sv]
+            targets:
+              synth:
+                flow: generic
+                flow_options: {{tool: yosys, arch: xilinx}}
+                filesets: [rtl]
+                toplevel: {module}
+            """
+        )
+        authored.write_text(core_template.format(module="old"), encoding="utf-8")
+        reconcile_projected_cores(tmp_path)
+        authored.write_text(core_template.format(module="fresh"), encoding="utf-8")
+
+        inspection = inspect_target(tmp_path, "synth")
+
+        assert inspection.toplevel == "fresh"
+        assert [item.path for item in inspection.inputs] == ["rtl/fresh.sv"]
+
+    def test_inspection_uses_state_core_as_second_library_when_projection_is_disabled(
+        self, tmp_path: Path
+    ):
+        project_dir = tmp_path / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = false\n",
+            encoding="utf-8",
+        )
+        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        authored = cores / "demo.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::demo:0
+                targets:
+                  lint:
+                    flow: lint
+                    flow_options: {tool: verible}
+                    toplevel: demo
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        inspection = inspect_target(tmp_path, "lint")
+
+        assert inspection.handle.core_file == authored
+        assert inspection.toplevel == "demo"
+        assert inspection.inputs == ()
+
+    def test_inspection_ignores_generated_build_core_copy(self, tmp_path: Path):
+        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley_project" / "booley.toml").write_text(
+            "[stealth]\nenabled = false\n",
+            encoding="utf-8",
+        )
+        authored = tmp_path / "demo.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::demo:0
+                targets:
+                  lint:
+                    flow: lint
+                    flow_options: {tool: verible}
+                    toplevel: authored
+                """
+            ),
+            encoding="utf-8",
+        )
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        (build_dir / "stale.core").write_text(
+            authored.read_text(encoding="utf-8").replace("authored", "stale"),
+            encoding="utf-8",
+        )
+
+        inspection = inspect_target(tmp_path, "lint")
+
+        assert inspection.handle.core_file == authored
+        assert inspection.toplevel == "authored"
+
+    def test_inspection_ignores_state_worktree_core_copies(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        authored = cores / "demo.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::demo:0
+                targets:
+                  lint:
+                    flow: lint
+                    flow_options: {tool: verible}
+                    toplevel: authored
+                """
+            ),
+            encoding="utf-8",
+        )
+        reconcile_projected_cores(tmp_path)
+        for state_copy in (
+            project_dir / "worktrees" / "ticket" / "stale.core",
+            project_dir / ".baseline-wt-old" / "stale.core",
+        ):
+            state_copy.parent.mkdir(parents=True)
+            state_copy.write_text(
+                authored.read_text(encoding="utf-8").replace("authored", "stale"),
+                encoding="utf-8",
+            )
+
+        inspection = inspect_target(tmp_path, "lint")
+
+        assert inspection.handle.core_file == authored
+        assert inspection.toplevel == "authored"
+
+    def test_inspection_refuses_foreign_expected_projection(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        authored = cores / "demo.core"
+        authored.write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::demo:0
+                targets:
+                  lint:
+                    flow: lint
+                    flow_options: {tool: verible}
+                    toplevel: demo
+                """
+            ),
+            encoding="utf-8",
+        )
+        projected = projected_core_path(tmp_path, authored)
+        foreign_content = "CAPI=2:\nname: foreign::core:0\n"
+        projected.write_text(foreign_content, encoding="utf-8")
+
+        with pytest.raises(
+            fusesoc_registry.FuseSocError,
+            match="refusing to overwrite non-Booley file",
+        ) as failure:
+            inspect_target(tmp_path, "lint")
+
+        assert isinstance(failure.value.__cause__, CoreProjectionError)
+        assert projected.read_text(encoding="utf-8") == foreign_content
+
     def test_inspection_uses_isolated_registry_when_native_cores_are_ignored(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
         cores = project_dir / "cores"
