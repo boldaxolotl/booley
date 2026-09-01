@@ -11,36 +11,13 @@ from __future__ import annotations
 from booley.core.boundary import as_dict, as_float, as_int
 from booley.flows.clock_timing import worst_fmax_from_json
 
-_COVERAGE_KEYS = {
-    "coverage_toggle": "toggle",
-    "coverage_fsm": "fsm",
-    "coverage_value": "value",
-    "coverage_branch": "branch",
-    "coverage_expression": "expression",
-    "coverage_mean": "mean",
-}
-
 
 def _format_coverage_metric(key: str, d: dict, p: dict, stale: bool) -> str | None:
-    """Coverage-family metric: "<pct>% (>=<thr>%)". None if not a coverage key/no pct."""
-    sub_key = next(
-        (
-            detail_key
-            for base_key, detail_key in _COVERAGE_KEYS.items()
-            if key == base_key or key.startswith(f"{base_key}_")
-        ),
-        None,
-    )
-    if sub_key is None:
+    """Coverage Campaign status, or None for another Criterion family."""
+    if key != "coverage" and not key.startswith("coverage_"):
         return None
-    sub = as_dict(d.get(sub_key), default={})
-    pct = as_float(sub.get("pct"))
-    if pct is None:
-        return None
-    thr = as_float(p.get("min_pct"))
-    val = "?%" if stale else f"{pct:.0f}%"
-    threshold = f" (>={thr:g}%)" if thr is not None else ""
-    return f"{val}{threshold}"
+    status = d.get("status")
+    return "?" if stale else str(status or "")
 
 
 def _format_fpga_impl_metric(d: dict, stale: bool) -> str:

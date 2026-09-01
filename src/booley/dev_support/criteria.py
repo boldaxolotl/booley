@@ -105,6 +105,9 @@ def has_relative_qor_threshold(params: dict[str, Any]) -> bool:
 # opaque mid-run CRITICAL crash that motivated this registry. An unrecognized
 # key is otherwise silently created as *optional*, downgrading a mandatory gate
 # to a no-op; hence a hard error, not a warning.
+_COVERAGE_MIGRATION_HINT = (
+    "replace it with 'coverage: [{targets: [...], metrics: {...}, tests: all}]'"
+)
 RETIRED_CRITERIA: dict[str, str] = {
     "plan_done": "remove it; the planner specialists were pruned",
     "plan_created": "remove it; the planner specialists were pruned",
@@ -115,6 +118,12 @@ RETIRED_CRITERIA: dict[str, str] = {
     "review_rtl_functional": "rename to 'review_rtl_bugs'",
     "review_rtl_quality": "rename to 'review_rtl_code_style'",
     "review_rtl_ifdef": "remove it; ifdef/config review folded into 'review_rtl_bugs'",
+    "coverage_toggle": _COVERAGE_MIGRATION_HINT,
+    "coverage_fsm": _COVERAGE_MIGRATION_HINT,
+    "coverage_value": _COVERAGE_MIGRATION_HINT,
+    "coverage_branch": _COVERAGE_MIGRATION_HINT,
+    "coverage_expression": _COVERAGE_MIGRATION_HINT,
+    "coverage_mean": _COVERAGE_MIGRATION_HINT,
 }
 
 
@@ -141,6 +150,7 @@ def find_retired_criteria(keys: Iterable[str]) -> list[tuple[str, str]]:
 
 _VALID_WORKFLOW_REGIONS = frozenset({"pre_sim", "core_loop", "post_sim"})
 _VALID_CATEGORIES = frozenset({"rtl", "tb", "none"})
+_COVERAGE_METRICS = frozenset({"line", "branch", "expression", "toggle", "cover_property"})
 
 
 @dataclass(frozen=True)
@@ -492,12 +502,6 @@ _TARGET_CAMPAIGN_PARAM_REGISTRY: dict[str, tuple[frozenset[str], list[tuple[str,
         frozenset({"scope", "min_detected", "total", "auto"}),
         [("auto", "total")],
     ),
-    "coverage_toggle": (frozenset({"scope", "min_pct"}), []),
-    "coverage_fsm": (frozenset({"scope", "min_pct"}), []),
-    "coverage_value": (frozenset({"scope", "min_pct"}), []),
-    "coverage_branch": (frozenset({"scope", "min_pct"}), []),
-    "coverage_expression": (frozenset({"scope", "min_pct"}), []),
-    "coverage_mean": (frozenset({"scope", "min_pct"}), []),
 }
 
 # Criteria whose execution and acceptance evidence belong to one Target campaign.
@@ -679,7 +683,7 @@ PER_TARGET_CRITERIA: frozenset[str] = (
         spec.name for specs in TEMPLATE_REGISTRY.values() for spec in specs if spec.per_target
     )
     | TARGET_CAMPAIGN_CRITERIA
-    | {"cycle_count"}
+    | {"coverage", "cycle_count"}
 )
 
 
@@ -729,8 +733,15 @@ class CriteriaTemplate:
                 else _parse_criterion_entry(key, value, mandatory=False)
             )
         baselines: dict[tuple[str, str], str] = {}
+        coverage_targets: set[str] = set()
         for spec in specs:
             for candidate in spec.targets or []:
+                if spec.name == "coverage":
+                    if candidate in coverage_targets:
+                        raise ValueError(
+                            f"Target {candidate!r} occurs in more than one coverage record"
+                        )
+                    coverage_targets.add(candidate)
                 baseline = spec.params.get(BASELINE_TARGET_PARAM, candidate)
                 identity = (spec.name, candidate)
                 prior = baselines.get(identity)
@@ -824,6 +835,10 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
     Review base keys (``review_rtl_spec``, ``review_tb_quality``, etc.)
     expand into ``_clean``. Explicit ``_done`` retains terminal advisory semantics.
     """
+    if key == "coverage" and not isinstance(value, list):
+        raise ValueError("coverage must be a list of authoring records")
+    if key == "coverage":
+        return _parse_coverage_entries(value, mandatory=mandatory)
     if _is_review_base_key(key):
         return [CriterionSpec(f"{key}_clean", mandatory=mandatory)]
     if isinstance(value, list):
@@ -844,7 +859,7 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
                     params={"min_detected": min_detected, "total": total},
                 )
             ]
-    # Integer percentage (e.g. coverage_toggle: 90)
+    # Integer percentage shorthand retained for compatible custom Criteria.
     if isinstance(value, int):
         return [CriterionSpec(key, mandatory=mandatory, params={"min_pct": value})]
     return [CriterionSpec(key, mandatory=mandatory)]
@@ -901,6 +916,32 @@ def _parse_cycle_count_entries(
     return specs
 
 
+def _parse_coverage_entries(
+    items: list,
+    *,
+    mandatory: bool,
+) -> list[CriterionSpec]:
+    """Expand canonical Coverage Criterion authoring records by Target."""
+    if not items:
+        raise ValueError("coverage must contain at least one authoring record")
+    specs: list[CriterionSpec] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("coverage must be a list of authoring records")
+        targets, policy = _validate_coverage_record(item)
+        for target in targets:
+            specs.append(
+                CriterionSpec(
+                    "coverage",
+                    mandatory=mandatory,
+                    per_target=True,
+                    targets=[target],
+                    params={"target": target, **policy},
+                )
+            )
+    return specs
+
+
 def _parse_list_criterion(
     key: str,
     items: list,
@@ -949,6 +990,63 @@ def _parse_list_criterion(
                 params = sub_val if isinstance(sub_val, dict) else {}
                 specs.append(CriterionSpec(flat_key, mandatory=mandatory, params=params))
     return specs
+
+
+def _validate_name_list(value: object, *, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"coverage.{field} must be a non-empty list of names")
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        raise ValueError(f"coverage.{field} must contain only non-empty strings")
+    names = [item.strip() for item in value]
+    if len(set(names)) != len(names):
+        raise ValueError(f"coverage.{field} must not contain duplicates")
+    return names
+
+
+def _validate_coverage_metrics(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError("coverage.metrics must be a non-empty mapping")
+    unknown = set(value) - _COVERAGE_METRICS
+    if unknown:
+        raise ValueError(f"coverage.metrics has unknown metrics: {sorted(unknown)}")
+    for metric, policy in value.items():
+        if not isinstance(policy, dict) or set(policy) != {"min_pct"}:
+            raise ValueError(f"coverage.metrics.{metric} must contain exactly 'min_pct'")
+        threshold = policy["min_pct"]
+        try:
+            number = require_finite_number(threshold, field=f"coverage metric {metric}")
+        except BoundaryError:
+            raise ValueError(f"coverage.metrics.{metric}.min_pct must be numeric") from None
+        if not 0 < number <= 100:
+            raise ValueError(f"coverage.metrics.{metric}.min_pct must be in (0, 100]")
+    return value
+
+
+def _validate_coverage_tests(value: object) -> str | list[str]:
+    if value == "all":
+        return "all"
+    try:
+        return _validate_name_list(value, field="tests")
+    except ValueError as exc:
+        if "duplicates" in str(exc):
+            raise
+        raise ValueError("coverage.tests must be 'all' or a non-empty list of names") from None
+
+
+def _validate_coverage_record(item: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    unknown = set(item) - {"targets", "metrics", "tests"}
+    if unknown:
+        raise ValueError(f"coverage record has unknown fields: {sorted(unknown)}")
+    if "targets" not in item:
+        raise ValueError("coverage.targets is required")
+    if "metrics" not in item:
+        raise ValueError("coverage.metrics is required")
+    if "tests" not in item:
+        raise ValueError("coverage.tests is required")
+    targets = _validate_name_list(item["targets"], field="targets")
+    metrics = _validate_coverage_metrics(item["metrics"])
+    tests = _validate_coverage_tests(item["tests"])
+    return targets, {"metrics": metrics, "tests": tests}
 
 
 def _parse_string_list_item(
@@ -1131,14 +1229,6 @@ def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
     if key == "mutation_score" and param in {"min_detected", "total"}:
         if as_positive_int(value, 0) == 0:
             raise ValueError(f"{key} param {param!r} must be a positive integer, got {value!r}")
-        return
-    if key.startswith("coverage_") and param == "min_pct":
-        try:
-            number = require_finite_number(value, field=f"{key} param 'min_pct'")
-        except BoundaryError:
-            raise ValueError(f"{key} param 'min_pct' must be numeric, got {value!r}") from None
-        if not 0 < number <= 100:
-            raise ValueError(f"{key} param 'min_pct' must be in (0, 100], got {value!r}")
         return
     try:
         number = require_finite_number(value, field=f"{key} param {param!r}")

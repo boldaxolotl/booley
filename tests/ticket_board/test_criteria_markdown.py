@@ -16,17 +16,24 @@ from booley.ticket_board.frontmatter import format_frontmatter, parse_frontmatte
 # Fixtures — representative criteria dicts
 # ---------------------------------------------------------------------------
 
+COVERAGE_RECORD = [
+    {
+        "targets": ["default"],
+        "metrics": {
+            "line": {"min_pct": 90},
+            "branch": {"min_pct": 80},
+        },
+        "tests": "all",
+    }
+]
+
 REAL_TICKET_CRITERIA = {
     "mandatory": {
         "review_rtl_bugs_clean": True,
         "review_tb_quality_clean": True,
         "sim_pass": ["verif/tb_aes128_enc.sv @ default @ none -> pass"],
         "elab_pass": ["verif/tb_aes128_enc.sv @ default @ none -> pass"],
-        "coverage_toggle": 90,
-        "coverage_fsm": 100,
-        "coverage_value": 90,
-        "coverage_branch": 80,
-        "coverage_expression": 80,
+        "coverage": COVERAGE_RECORD,
     }
 }
 
@@ -34,8 +41,7 @@ CRITERIA_WITH_OPTIONAL = {
     "mandatory": {
         "sim_pass": ["verif/tb.sv @ default @ none -> pass"],
         "elab_pass": ["verif/tb.sv @ default @ none -> pass"],
-        "coverage_toggle": 90,
-        "coverage_fsm": 100,
+        "coverage": COVERAGE_RECORD,
     },
     "optional": {
         "mutation_score": "8/10",
@@ -50,11 +56,7 @@ CRITERIA_WITH_LINT = {
         "lint_clean": ["default"],
         "review_rtl_bugs_clean": True,
         "review_tb_quality_clean": True,
-        "coverage_toggle": 90,
-        "coverage_fsm": 100,
-        "coverage_value": 90,
-        "coverage_branch": 80,
-        "coverage_expression": 80,
+        "coverage": COVERAGE_RECORD,
     }
 }
 
@@ -87,11 +89,11 @@ CRITERIA_WITH_DIRECTED_SYNTHESIS_TARGET = {
 CRITERIA_WITH_TARGET_CAMPAIGNS = {
     "mandatory": {
         "sim_pass": ["verif/tb.sv @ sim_core @ smoke @ pass -> pass"],
-        "coverage_toggle": [
+        "coverage": [
             {
-                "target": "sim_core",
-                "scope": ["rtl/core.sv", "rtl/decoder.sv"],
-                "min_pct": 95,
+                "targets": ["sim_core"],
+                "metrics": {"toggle": {"min_pct": 95}},
+                "tests": ["smoke"],
             }
         ],
     },
@@ -199,39 +201,18 @@ class TestRoundTrip:
 # ---------------------------------------------------------------------------
 
 
-class TestCoverageGrouping:
-    def test_coverage_grouped_into_single_bullet(self):
-        criteria = {
-            "mandatory": {
-                "coverage_toggle": 90,
-                "coverage_fsm": 100,
-                "coverage_value": 90,
-            }
-        }
+class TestCoverageRendering:
+    def test_coverage_record_round_trips_losslessly(self):
+        criteria = {"mandatory": {"coverage": COVERAGE_RECORD}}
         rendered = render_criteria_section(criteria)
-        assert "- **coverage**:" in rendered
-        assert "toggle >= 90" in rendered
-        assert "fsm >= 100" in rendered
-        assert "value >= 90" in rendered
-        assert "coverage_toggle" not in rendered
-        assert "coverage_fsm" not in rendered
+        assert "- **coverage**: `json:" in rendered
+        assert parse_criteria_section(rendered) == criteria
 
-    def test_coverage_parses_gte_operator(self):
-        body = "## Criteria\n\n- **coverage**: toggle >= 90, fsm >= 100"
+    @pytest.mark.parametrize("operator", [">=", "=", "≥"])
+    def test_legacy_coverage_prose_is_not_silently_translated(self, operator):
+        body = f"## Criteria\n\n- **coverage**: toggle {operator} 90"
         parsed = parse_criteria_section(body)
-        assert parsed["mandatory"]["coverage_toggle"] == 90
-        assert parsed["mandatory"]["coverage_fsm"] == 100
-
-    def test_coverage_parses_eq_operator(self):
-        body = "## Criteria\n\n- **coverage**: toggle = 90, fsm = 100"
-        parsed = parse_criteria_section(body)
-        assert parsed["mandatory"]["coverage_toggle"] == 90
-        assert parsed["mandatory"]["coverage_fsm"] == 100
-
-    def test_coverage_parses_unicode_gte(self):
-        body = "## Criteria\n\n- **coverage**: toggle ≥ 90"
-        parsed = parse_criteria_section(body)
-        assert parsed["mandatory"]["coverage_toggle"] == 90
+        assert parsed == {"mandatory": {"coverage": f"toggle {operator} 90"}}
 
 
 class TestReviewGrouping:
@@ -397,7 +378,6 @@ class TestBackwardsCompat:
             "  mandatory:\n"
             "    sim_pass:\n"
             "      - verif/tb.sv @ default @ none -> pass\n"
-            "    coverage_toggle: 90\n"
             "---\n"
             "## Description\n"
             "Hello."
@@ -405,7 +385,9 @@ class TestBackwardsCompat:
         fields, _body = parse_frontmatter(text)
         assert "criteria" in fields
         assert "mandatory" in fields["criteria"]
-        assert fields["criteria"]["mandatory"]["coverage_toggle"] == 90
+        assert fields["criteria"]["mandatory"]["sim_pass"] == [
+            "verif/tb.sv @ default @ none -> pass"
+        ]
 
     def test_new_body_format_parses(self):
         """Ticket with criteria in body section should populate fields."""
@@ -421,14 +403,16 @@ class TestBackwardsCompat:
             "## Criteria\n"
             "\n"
             "- **sim_pass**: `verif/tb.sv @ default @ none -> pass`\n"
-            "- **coverage**: toggle >= 90\n"
+            '- **coverage**: `json:[{"targets":["default"],"metrics":'
+            '{"line":{"min_pct":90},"branch":{"min_pct":80}},'
+            '"tests":"all"}]`\n'
             "\n"
             "## Description\n"
             "Hello."
         )
         fields, _body = parse_frontmatter(text)
         assert "criteria" in fields
-        assert fields["criteria"]["mandatory"]["coverage_toggle"] == 90
+        assert fields["criteria"]["mandatory"]["coverage"] == COVERAGE_RECORD
         assert fields["criteria"]["mandatory"]["sim_pass"] == [
             "verif/tb.sv @ default @ none -> pass"
         ]
@@ -458,8 +442,7 @@ class TestBackwardsCompat:
                 "elab_pass": ["verif/tb.sv @ default @ none -> pass"],
                 "review_rtl_bugs_clean": True,
                 "review_tb_quality_clean": True,
-                "coverage_toggle": 90,
-                "coverage_fsm": 100,
+                "coverage": COVERAGE_RECORD,
             }
         }
         fields = {

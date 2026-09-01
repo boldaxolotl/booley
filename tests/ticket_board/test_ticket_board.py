@@ -749,14 +749,23 @@ class TestValidateTicketFields:
             "type": "verification",
             "branch": "m",
             "scope": ["docs/coverage.md"],
-            "criteria": {"mandatory": {"coverage_toggle": 90}},
+            "criteria": {
+                "mandatory": {
+                    "coverage": [
+                        {
+                            "targets": ["sim"],
+                            "metrics": {"line": {"min_pct": 90}},
+                            "tests": "all",
+                        }
+                    ]
+                }
+            },
         }
 
         errors = validate_ticket_fields(fields, "## Description\ntext")
 
         assert any(
-            "coverage_toggle" in error and "no enabled Flow or Specialist" in error
-            for error in errors
+            "coverage" in error and "no enabled Flow or Specialist" in error for error in errors
         )
 
     def test_rtl_scope_without_mandatory_sim_rejected(self, tmp_path: Path):
@@ -814,7 +823,17 @@ class TestValidateTicketFields:
             "type": "verification",
             "branch": "m",
             "scope": ["tb/foo_tb.sv"],
-            "criteria": {"mandatory": {"coverage_toggle": 80}},
+            "criteria": {
+                "mandatory": {
+                    "coverage": [
+                        {
+                            "targets": ["sim"],
+                            "metrics": {"line": {"min_pct": 80}},
+                            "tests": "all",
+                        }
+                    ]
+                }
+            },
         }
         errors = validate_ticket_fields(
             fields,

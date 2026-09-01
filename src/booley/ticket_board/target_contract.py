@@ -45,12 +45,7 @@ _FLOW_BY_CRITERION = {
     "synthesis_ok": "synth",
     "fpga_impl_ok": "fpga",
     "mutation_score": "sim",
-    "coverage_toggle": "sim",
-    "coverage_fsm": "sim",
-    "coverage_value": "sim",
-    "coverage_branch": "sim",
-    "coverage_expression": "sim",
-    "coverage_mean": "sim",
+    "coverage": "sim",
 }
 
 

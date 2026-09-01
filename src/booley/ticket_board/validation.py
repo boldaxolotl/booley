@@ -290,6 +290,24 @@ def _validate_cycle_count_grammar(criteria: dict[str, Any], errors: list[str]) -
         errors.append(f"criteria: {exc}")
 
 
+def _validate_coverage_grammar(criteria: dict[str, Any], errors: list[str]) -> None:
+    """Apply the runtime Coverage Criterion grammar during Preflight."""
+    coverage_sections: dict[str, dict[str, Any]] = {}
+    for section_name in ("mandatory", "optional"):
+        section = criteria.get(section_name)
+        if isinstance(section, dict) and "coverage" in section:
+            coverage_sections[section_name] = {"coverage": section["coverage"]}
+    if not coverage_sections:
+        return
+
+    from booley.dev_support.criteria import CriteriaTemplate
+
+    try:
+        CriteriaTemplate.from_yaml(coverage_sections)
+    except (ValueError, KeyError, TypeError) as exc:
+        errors.append(f"criteria: {exc}")
+
+
 def validate_criteria_section(criteria: Any) -> list[str]:
     """Validate a ticket's ``criteria:`` section. Returns error strings."""
     errors: list[str] = []
@@ -320,6 +338,8 @@ def validate_criteria_section(criteria: Any) -> list[str]:
 
     if not errors:
         _validate_cycle_count_grammar(criteria, errors)
+    if not errors:
+        _validate_coverage_grammar(criteria, errors)
 
     return errors
 

@@ -1039,9 +1039,14 @@ def _expected_evaluation_metrics(document: Mapping[str, object]) -> list[dict[st
     assert isinstance(evaluation, Mapping)
     thresholds = evaluation["thresholds"]
     assert isinstance(thresholds, Mapping)
+    if set(thresholds) - _SCORED_METRICS:
+        return None
     by_metric = {str(rollup["metric"]): rollup for rollup in document["rollups"]}
     metrics: list[dict[str, object]] = []
-    for metric, threshold in thresholds.items():
+    for metric in _METRIC_SEMANTICS:
+        if metric not in thresholds:
+            continue
+        threshold = thresholds[metric]
         rollup = by_metric.get(str(metric))
         if (
             rollup is None
@@ -1056,6 +1061,12 @@ def _expected_evaluation_metrics(document: Mapping[str, object]) -> list[dict[st
         metrics.append(
             {
                 "metric": metric,
+                "total_points": rollup["total_points"],
+                "eligible_points": rollup["eligible_points"],
+                "covered_points": rollup["covered_points"],
+                "waived_points": rollup["waived_points"],
+                "actual_numerator": rollup["covered_points"] * 100,
+                "actual_denominator": rollup["eligible_points"],
                 "actual_percent": rollup["percent"],
                 "minimum_percent": threshold,
                 "verdict": verdict,

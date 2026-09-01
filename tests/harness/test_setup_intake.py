@@ -949,6 +949,12 @@ class TestMigrationGuards:
             ("review_rtl_functional", "review_rtl_bugs"),
             ("review_rtl_quality", "review_rtl_code_style"),
             ("review_rtl_ifdef", "review_rtl_bugs"),
+            ("coverage_toggle", "coverage: [{targets:"),
+            ("coverage_fsm", "coverage: [{targets:"),
+            ("coverage_value", "coverage: [{targets:"),
+            ("coverage_branch", "coverage: [{targets:"),
+            ("coverage_expression", "coverage: [{targets:"),
+            ("coverage_mean", "coverage: [{targets:"),
         ],
     )
     async def test_retired_criteria_are_rejected(

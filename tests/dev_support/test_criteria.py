@@ -186,32 +186,50 @@ class TestCriteriaTemplateYAML:
 class TestExpandParams:
     """expand_params() extracts {expanded_key: params} for specs with params."""
 
-    def test_integer_coverage_thresholds(self):
+    def test_coverage_policy_parameters(self):
         yaml_section = {
             "mandatory": {
-                "coverage_toggle": 90,
-                "coverage_value": 85,
-                "coverage_branch": 80,
+                "coverage": [
+                    {
+                        "targets": ["sim"],
+                        "metrics": {
+                            "line": {"min_pct": 90},
+                            "branch": {"min_pct": 80},
+                        },
+                        "tests": "all",
+                    }
+                ],
             },
         }
         t = CriteriaTemplate.from_yaml(yaml_section)
         params = t.expand_params([])
-        assert params["coverage_toggle"] == {"min_pct": 90}
-        assert params["coverage_value"] == {"min_pct": 85}
-        assert params["coverage_branch"] == {"min_pct": 80}
+        assert params["coverage_sim"] == {
+            "target": "sim",
+            "metrics": {
+                "line": {"min_pct": 90},
+                "branch": {"min_pct": 80},
+            },
+            "tests": "all",
+        }
 
     def test_specs_without_params_excluded(self):
         yaml_section = {
             "mandatory": {
                 "lint_clean": ["lite", "full"],
-                "coverage_value": 90,
+                "coverage": [
+                    {
+                        "targets": ["sim"],
+                        "metrics": {"line": {"min_pct": 90}},
+                        "tests": "all",
+                    }
+                ],
             },
         }
         t = CriteriaTemplate.from_yaml(yaml_section)
         params = t.expand_params(["lite", "full"])
         assert "lint_clean_lite" not in params
         assert "lint_clean_full" not in params
-        assert params["coverage_value"] == {"min_pct": 90}
+        assert params["coverage_sim"]["metrics"] == {"line": {"min_pct": 90}}
 
     def test_empty_template_returns_empty(self):
         t = CriteriaTemplate.from_yaml({})
@@ -730,6 +748,6 @@ class TestCriterionEligibility:
 
     def test_non_tool_gated_family_always_kept(self):
         """A non-tool-gated family (e.g. coverage) is never filtered."""
-        defs = [_per_config_def("coverage_toggle")]
+        defs = [_per_config_def("coverage")]
         out = expand_criteria_defs(defs, ["c"], {"c": "yosys"})
-        assert set(out) == {"coverage_toggle_c"}
+        assert set(out) == {"coverage_c"}

@@ -11,10 +11,9 @@ import json
 import re
 from typing import Any
 
-_COVERAGE_PREFIX = "coverage_"
 _REVIEW_CLEAN_RE = re.compile(r"^review_(.+)_clean$")
 _BULLET_RE = re.compile(r"^-\s+\*\*(.+?)\*\*(?:\s*\(.*?\))?(?::\s*(.*))?$")
-_STRUCTURED_LIST_CRITERIA = frozenset({"cycle_count", "mutation_score"})
+_STRUCTURED_LIST_CRITERIA = frozenset({"coverage", "cycle_count", "mutation_score"})
 
 
 # ---------------------------------------------------------------------------
@@ -50,28 +49,18 @@ def render_criteria_section(criteria: dict[str, Any]) -> str:
 
 
 def _render_items(items: dict[str, Any]) -> list[str]:
-    """Render criteria items as bullets, grouping coverage_* and review_*_clean."""
+    """Render criteria items as bullets, grouping review_*_clean."""
     lines: list[str] = []
-    coverage: dict[str, Any] = {}
     reviews: list[str] = []
-    coverage_rendered = False
     reviews_rendered = False
 
     # First pass: collect groups
     for key, val in items.items():
-        if key.startswith(_COVERAGE_PREFIX) and not isinstance(val, (list, dict)):
-            coverage[key[len(_COVERAGE_PREFIX) :]] = val
-        elif _REVIEW_CLEAN_RE.match(key) and val is True:
+        if _REVIEW_CLEAN_RE.match(key) and val is True:
             reviews.append(_REVIEW_CLEAN_RE.match(key).group(1))
 
     # Second pass: render in order, inserting groups at first occurrence
     for key, val in items.items():
-        if key.startswith(_COVERAGE_PREFIX) and not isinstance(val, (list, dict)):
-            if not coverage_rendered and coverage:
-                parts = ", ".join(f"{m} >= {v}" for m, v in coverage.items())
-                lines.append(f"- **coverage**: {parts}")
-                coverage_rendered = True
-            continue
         if _REVIEW_CLEAN_RE.match(key) and val is True:
             if not reviews_rendered and reviews:
                 focuses = ", ".join(reviews)
@@ -81,9 +70,6 @@ def _render_items(items: dict[str, Any]) -> list[str]:
         lines.append(_render_bullet(key, val))
 
     # Safety: render groups that had no positional anchor
-    if not coverage_rendered and coverage:
-        parts = ", ".join(f"{m} >= {v}" for m, v in coverage.items())
-        lines.append(f"- **coverage**: {parts}")
     if not reviews_rendered and reviews:
         focuses = ", ".join(reviews)
         lines.append(f"- **reviews**: {focuses} -- all must be clean")
@@ -206,7 +192,7 @@ def _parse_bullets(lines: list[str]) -> dict[str, Any]:
         raw_val = raw_val.strip()
 
         if key == "coverage":
-            _expand_coverage(raw_val, result)
+            result[key] = _parse_value(raw_val, structured_list_items=True)
         elif key == "reviews":
             _expand_reviews(raw_val, result)
         else:
@@ -216,14 +202,6 @@ def _parse_bullets(lines: list[str]) -> dict[str, Any]:
             )
 
     return result
-
-
-def _expand_coverage(text: str, result: dict[str, Any]) -> None:
-    """``toggle >= 90, fsm = 100`` -> ``coverage_toggle: 90, ...``"""
-    for part in text.split(", "):
-        m = re.match(r"(\w+)\s*(?:>=|≥|=)\s*(\d+)", part.strip())
-        if m:
-            result[f"coverage_{m.group(1)}"] = int(m.group(2))
 
 
 def _expand_reviews(text: str, result: dict[str, Any]) -> None:
