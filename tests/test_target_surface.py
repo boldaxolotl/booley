@@ -31,6 +31,7 @@ from booley.targets.target_surface import (
     render_listing,
     surface_payload,
 )
+from tests.conftest import symlink_or_skip
 
 # ---------------------------------------------------------------------------
 # Fixture project: two cores, one ambiguous target name, one legacy target,
@@ -314,6 +315,43 @@ class TestTargetInterface:
 
         assert inspection.handle.core_file == authored
         assert inspection.toplevel == "authored"
+
+    @pytest.mark.parametrize(
+        "excluded_tree",
+        [Path(".booley_project/worktrees/ticket"), Path("build/cache")],
+        ids=["project-state", "generated-build"],
+    )
+    def test_inspection_prunes_symlink_aliases_into_excluded_trees(
+        self, tmp_path: Path, excluded_tree: Path
+    ):
+        hidden_root = tmp_path / excluded_tree
+        hidden_root.mkdir(parents=True)
+        (hidden_root / "hidden.core").write_text(
+            "CAPI=2:\nname: booley::hidden:0\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "top.core").write_text(
+            textwrap.dedent(
+                """\
+                CAPI=2:
+                name: booley::top:0
+                filesets:
+                  rtl:
+                    depend: [booley::hidden:0]
+                targets:
+                  lint:
+                    flow: lint
+                    flow_options: {tool: verible}
+                    filesets: [rtl]
+                    toplevel: top
+                """
+            ),
+            encoding="utf-8",
+        )
+        symlink_or_skip(tmp_path / "shadow-alias", hidden_root, target_is_directory=True)
+
+        with pytest.raises(fusesoc_registry.FuseSocError, match="could not inspect Target"):
+            inspect_target(tmp_path, "lint")
 
     def test_inspection_refuses_foreign_expected_projection(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"

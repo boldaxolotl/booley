@@ -366,20 +366,27 @@ class CoreLibraryPlan:
 
 def _core_library_ignored_dirs(root: Path) -> frozenset[str]:
     """Return real paths CoreManager must prune from the Project-root library."""
-    ignored = {os.path.realpath(root / _STATE_DIR_NAME)}
+    excluded_roots: set[Path] = set()
+    symlink_targets: set[Path] = set()
     for current, dirnames, _filenames in os.walk(root, followlinks=False):
         directory = Path(current)
-        if directory == root / _STATE_DIR_NAME:
-            dirnames.clear()
-            continue
         retained: list[str] = []
         for name in dirnames:
-            if name in _BUILD_DIR_NAMES:
-                ignored.add(os.path.realpath(directory / name))
-            else:
-                retained.append(name)
+            candidate = directory / name
+            resolved = Path(os.path.realpath(candidate))
+            if name == _STATE_DIR_NAME or name in _BUILD_DIR_NAMES:
+                excluded_roots.add(resolved)
+                continue
+            retained.append(name)
+            if candidate.is_symlink():
+                symlink_targets.add(resolved)
         dirnames[:] = retained
-    return frozenset(ignored)
+    ignored = excluded_roots | {
+        target
+        for target in symlink_targets
+        if any(target.is_relative_to(excluded) for excluded in excluded_roots)
+    }
+    return frozenset(str(path) for path in ignored)
 
 
 def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
@@ -392,9 +399,7 @@ def prepare_core_library_plan(project_root: Path | str) -> CoreLibraryPlan:
     if native_cores_ignored(root):
         reconcile_isolated_registry(root)
         library_roots = (isolated_registry_root(root).resolve(),)
-        operational = tuple(
-            (core, isolated_core_path(root, core).resolve()) for core in cores
-        )
+        operational = tuple((core, isolated_core_path(root, core).resolve()) for core in cores)
     elif projection_enabled(root):
         library_roots = (root,)
         operational = tuple(
