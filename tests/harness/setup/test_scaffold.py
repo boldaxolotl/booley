@@ -373,6 +373,7 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
         "tool": "vivado",
         "part": "xc7a200tfbg484-1",
         "out_of_context": True,
+        "booley": {"doctor": ["fpga"]},
     }
     assert "xdc" in fpga["filesets"]
     xdc_entry = core["filesets"]["xdc"]["files"][0]

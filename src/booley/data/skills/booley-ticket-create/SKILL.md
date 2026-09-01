@@ -273,6 +273,8 @@ name one `target` and registered `test`, plus at least one threshold. Absolute
 `cycle_count_max` / `cycle_count_min` use the current run. Relative percentage and `_cycles`
 forms automatically compare the same Target/test at `base_sha`; consult
 `booley cheat --criteria` for the complete signed-bound vocabulary.
+Write every percentage value with an explicit `%` suffix (for example,
+`cycle_count_reduce_at_least: 8%`); bare numbers are invalid for percentage thresholds.
 
 `synthesis_ok` / `fpga_impl_ok` take threshold **params** in four flavours per metric:
 absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_at_least`
@@ -281,6 +283,7 @@ absolute `_max` / `_min`, plus baseline-relative `_increase_at_most` / `_reduce_
 (FPGA). Don't hardcode a subset here — for the full per-metric matrix and which pairs are
 mutually exclusive, run `booley cheat --criteria` (the "threshold flavours" table, also in
 `docs/user/USAGE.md`); it is generated from the validator, so it never drifts.
+The baseline-relative values are percentages and therefore require the `%` suffix.
 
 For a relative threshold, use a plain Target name when baseline and candidate are the same.
 When the ticket intentionally needs different frozen Targets, put
