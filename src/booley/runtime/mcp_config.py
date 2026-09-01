@@ -44,6 +44,7 @@ _BASELINE_ENV: dict[str, str] = {
     "HOME": "/home/agent",
     "PYTHONUSERBASE": "/home/agent/.local",
     "BOOLEY_MCP_NESTED": "1",
+    "CODEX_MCP_PROTOCOL_VERSION": "2026-07-28",
 }
 
 # Env vars forwarded from this process into the Codex-spawned MCP server when
@@ -82,6 +83,9 @@ def generate_codex_config(
     """
     lines = [
         'web_search = "disabled"',
+        "",
+        "[features]",
+        "mcp_2026_07_28 = true",
         "",
         "[mcp_servers.booley]",
         'command = "python"',

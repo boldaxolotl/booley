@@ -5,13 +5,11 @@ Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
   inside Docker. Used by Ticket Mode, where the harness owns the child and
   restarts it together with the run.
-- ``http`` — a stateless streamable-HTTP server on ``127.0.0.1``. Used by
+- ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
   Interactive Mode (ADR 0023): the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
   to a URL instead of owning a child process — so a devcontainer stop→start
   no longer strands the client with a dead stdio pipe it never re-spawns.
-  Stateless matters: Claude Code caches its ``Mcp-Session-Id`` across a server
-  restart, and a stateless server accepts such requests instead of 404-ing.
 
 Each MCP tool call dispatches to the endpoint's canonical Python module,
 inheriting env vars (BOOLEY_SLUG, BOOLEY_LOGS_DIR, etc.) from the container.
@@ -32,19 +30,28 @@ import os
 import socket
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from mcp import MCPError
 from mcp.server import Server
-from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import ServerCapabilities, TextContent, ToolsCapability
+from mcp.types import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    CallToolRequestParams,
+    CallToolResult,
+    ListToolsResult,
+    PaginatedRequestParams,
+    TextContent,
+)
 from mcp.types import Tool as McpSdkTool
 
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.mcp.application import McpApplication, McpToolDefinition, UnknownMcpToolError
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots, runtime_context
 from booley.runtime.build_metadata import format_status_line
@@ -67,6 +74,9 @@ from booley.runtime.process_group import (
 )
 from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
 from booley.ticket_board.paths import existing_ticket_runtime_file, ticket_runtime_dir
+
+if TYPE_CHECKING:
+    from mcp.server.context import ServerRequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -2097,10 +2107,8 @@ def _sleep_mcp_tool_def() -> dict[str, Any] | None:
     }
 
 
-def _build_mcp_tool_list(
-    mcp_tools: list[dict[str, Any]],
-) -> list[McpSdkTool]:
-    """Convert all MCP tool definitions to MCP SDK tool objects for list_tools."""
+def _all_mcp_tool_defs(mcp_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collect every tool definition visible in the current server mode."""
     mcp_tool_defs = [*mcp_tools, *_bwave_mcp_tools_for_mode()]
     status_def = _status_mcp_tool_def()
     if status_def is not None:
@@ -2120,10 +2128,7 @@ def _build_mcp_tool_list(
     targets_def = _targets_mcp_tool_def()
     if targets_def is not None:
         mcp_tool_defs.append(targets_def)
-    return [
-        McpSdkTool(name=t["name"], description=t["description"], inputSchema=t["schema"])
-        for t in mcp_tool_defs
-    ]
+    return sorted(mcp_tool_defs, key=lambda item: item["name"])
 
 
 def _format_status_card(mcp_tool_names: list[str]) -> str:
@@ -3257,58 +3262,30 @@ async def _dispatch_special_mcp_tool(
 def _build_server(
     lifetime: _McpLifetime | None = None,
 ) -> tuple[Server, list[dict[str, Any]]]:
-    """Build the MCP server with all MCP tool registrations."""
+    """Build the MCP v2 adapter around the Booley MCP application."""
+    from booley.targets.flow_names import canonical
+
     _reconcile_orphaned_locks()
     _reconcile_orphaned_jobs()
     lifetime = lifetime or _McpLifetime(None, None)
-    server = Server("booley")
 
     mcp_tools, discovery_errors = _discover_booley_mcp_tools()
     logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
-    if discovery_errors:
-        _log_discovery_errors(mcp_tools, discovery_errors)
-
     mcp_tool_index = _build_mcp_tool_index(mcp_tools)
-    status_mcp_tool_names = list(mcp_tool_index)
-    all_mcp_tools = _build_mcp_tool_list(mcp_tools)
+    status_mcp_tool_names: list[str] = []
     jobs = _JobManager(lifetime)
-
-    @server.list_tools()
-    async def handle_list_tools() -> list[McpSdkTool]:
-        lifetime.mark_activity()
-        return all_mcp_tools
-
     mcp_tool_call_counts: dict[str, int] = collections.defaultdict(int)
 
-    @server.call_tool()
-    async def handle_call_tool(
-        name: str,
-        arguments: dict[str, Any] | None,
-    ) -> McpToolContent:
-        arguments = arguments or {}
-        lifetime.mark_mcp_endpoint_start()
-        try:
-            return await _handle_call_tool(name, arguments)
-        finally:
-            lifetime.mark_mcp_endpoint_end()
-
-    async def _handle_call_tool(
+    async def dispatch(
         name: str,
         arguments: dict[str, Any],
+        mcp_tool_def: Mapping[str, Any],
     ) -> McpToolContent:
-        from booley.targets.flow_names import canonical
-
-        name = canonical(name)
         special_result = await _dispatch_special_mcp_tool(
             name, arguments, jobs, status_mcp_tool_names
         )
         if special_result is not None:
             return special_result
-
-        mcp_tool_def = mcp_tool_index.get(name)
-        if mcp_tool_def is None:
-            hidden = _interactive_hidden_note(name)
-            return [TextContent(type="text", text=hidden or f"Unknown MCP tool: {name}")]
 
         bwave_result = await _dispatch_bwave(name, arguments)
         if bwave_result is not None:
@@ -3318,13 +3295,74 @@ def _build_server(
             await _dispatch_booley_mcp_tool(
                 name,
                 arguments,
-                mcp_tool_def,
+                dict(mcp_tool_def),
                 mcp_tool_call_counts,
                 jobs,
             )
         )
 
+    application = McpApplication(
+        _all_mcp_tool_defs(mcp_tools),
+        dispatch=dispatch,
+        canonicalize=canonical,
+        on_discovery_error=discovery_errors.append,
+    )
+    status_mcp_tool_names.extend(
+        tool.name for tool in application.list_tools() if tool.name in mcp_tool_index
+    )
+    if discovery_errors:
+        _log_discovery_errors(mcp_tools, discovery_errors)
+
+    async def handle_list_tools(
+        _ctx: ServerRequestContext,
+        _params: PaginatedRequestParams | None,
+    ) -> ListToolsResult:
+        lifetime.mark_activity()
+        return ListToolsResult(tools=[_sdk_tool(tool) for tool in application.list_tools()])
+
+    async def handle_call_tool(
+        _ctx: ServerRequestContext,
+        params: CallToolRequestParams,
+    ) -> CallToolResult:
+        lifetime.mark_mcp_endpoint_start()
+        try:
+            payload = await application.call_tool(params.name, params.arguments or {})
+            return CallToolResult(
+                content=[TextContent(type="text", text=block.text) for block in payload.content],
+                structuredContent=payload.structured_content,
+                isError=payload.is_error,
+            )
+        except UnknownMcpToolError as exc:
+            hidden = _interactive_hidden_note(exc.name)
+            raise MCPError(
+                INVALID_PARAMS,
+                hidden or f"Unknown MCP tool: {exc.name}",
+            ) from None
+        except MCPError:
+            raise
+        except Exception as exc:
+            logger.exception("Unexpected MCP tool failure for %s", params.name)
+            raise MCPError(INTERNAL_ERROR, "Internal server error") from exc
+        finally:
+            lifetime.mark_mcp_endpoint_end()
+
+    server = Server(
+        "booley",
+        version=__version__,
+        on_list_tools=handle_list_tools,
+        on_call_tool=handle_call_tool,
+    )
     return server, mcp_tools
+
+
+def _sdk_tool(tool: McpToolDefinition) -> McpSdkTool:
+    """Convert one Booley-owned definition at the MCP SDK seam."""
+    return McpSdkTool(
+        name=tool.name,
+        description=tool.description,
+        inputSchema=tool.input_schema,
+        outputSchema=tool.output_schema,
+    )
 
 
 def _interactive_session_id() -> str:
@@ -3413,13 +3451,7 @@ async def _main() -> None:
             server.run(
                 read_stream,
                 write_stream,
-                InitializationOptions(
-                    server_name="booley",
-                    server_version=__version__,
-                    capabilities=ServerCapabilities(
-                        tools=ToolsCapability(),
-                    ),
-                ),
+                server.create_initialization_options(),
             ),
         )
         watchdog_task = asyncio.create_task(lifetime.wait_until_stale())
@@ -3444,42 +3476,39 @@ async def _main() -> None:
 
 
 def _run_http(port: int) -> None:
-    """Serve the MCP tools over stateless streamable HTTP on loopback.
+    """Serve the MCP tools over protected streamable HTTP on loopback.
 
     Interactive Mode transport (ADR 0023): started by the devcontainer's
     ``postStartCommand`` (via ``incontainer_register.ensure_http_server``), so
     a container stop→start transparently brings the endpoint back — the agent
-    apps hold only a URL, not a child process. ``stateless=True`` is load-
-    bearing: Claude Code keeps using its cached ``Mcp-Session-Id`` after a
-    server restart, and a stateful server would reject it with a 404 the
-    client never recovers from.
+    apps hold only a URL, not a child process.
     """
     import uvicorn
-    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-    from starlette.applications import Starlette
-    from starlette.routing import Mount
 
     _maybe_configure_interactive_logs_dir()
     _load_backend_config_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)
     server, _ = _build_server(lifetime)
-    manager = StreamableHTTPSessionManager(
-        app=server,
-        json_response=True,  # plain JSON responses; no SSE stream to strand
-        stateless=True,
-    )
-
-    @contextlib.asynccontextmanager
-    async def lifespan(app: Starlette):
-        async with manager.run():
-            yield
-
-    app = Starlette(
-        routes=[Mount(HTTP_ENDPOINT_PATH, app=manager.handle_request)],
-        lifespan=lifespan,
-    )
+    app = _streamable_http_app(server)
     logger.info("Interactive MCP server (HTTP) on %s:%d", _HTTP_HOST, port)
     uvicorn.run(app, host=_HTTP_HOST, port=port, log_level="warning")
+
+
+def _streamable_http_app(server: Server):
+    """Build Booley's JSON-response HTTP adapter with loopback-only headers."""
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    security = TransportSecuritySettings(
+        allowed_hosts=["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*"],
+        allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
+    )
+    return server.streamable_http_app(
+        streamable_http_path=HTTP_ENDPOINT_PATH,
+        json_response=True,
+        max_request_body_size=4 * 1024 * 1024,
+        transport_security=security,
+        host=_HTTP_HOST,
+    )
 
 
 def main() -> None:

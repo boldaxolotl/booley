@@ -804,16 +804,12 @@ class TestBooleyStatus:
         assert mcp_tool_def["schema"]["additionalProperties"] is False
 
     def test_status_mcp_tool_list_entry_is_appended(self, monkeypatch):
-        def fake_mcp_tool(**kwargs):
-            return SimpleNamespace(**kwargs)
-
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-        monkeypatch.setattr(self.mcp_server, "McpSdkTool", fake_mcp_tool)
         monkeypatch.setattr(self.mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
 
-        mcp_tools = self.mcp_server._build_mcp_tool_list(
+        mcp_tools = self.mcp_server._all_mcp_tool_defs(
             [
                 {
                     "name": "sim",
@@ -823,13 +819,13 @@ class TestBooleyStatus:
             ]
         )
 
-        assert [mcp_tool.name for mcp_tool in mcp_tools] == [
-            "sim",
-            "booley_status",
-            "booley_report",
-            "booley_poll",
+        assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_poll",
+            "booley_report",
+            "booley_status",
             "booley_targets",
+            "sim",
         ]
 
     def test_dispatch_status_returns_text_content(self, monkeypatch):
@@ -930,17 +926,13 @@ class TestBooleySleep:
         assert self.mcp_server._sleep_mcp_tool_visible() is True
 
     def test_list_entry_appended_when_enabled(self, monkeypatch):
-        def fake_mcp_tool(**kwargs):
-            return SimpleNamespace(**kwargs)
-
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
         monkeypatch.setenv("BOOLEY_MCP_DEBUG_TOOLS", "1")
-        monkeypatch.setattr(self.mcp_server, "McpSdkTool", fake_mcp_tool)
         monkeypatch.setattr(self.mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
 
-        mcp_tools = self.mcp_server._build_mcp_tool_list(
+        mcp_tools = self.mcp_server._all_mcp_tool_defs(
             [
                 {
                     "name": "sim",
@@ -950,14 +942,14 @@ class TestBooleySleep:
             ]
         )
 
-        assert [mcp_tool.name for mcp_tool in mcp_tools] == [
-            "sim",
-            "booley_status",
-            "booley_report",
-            "booley_poll",
+        assert [mcp_tool["name"] for mcp_tool in mcp_tools] == [
             "booley_cancel",
+            "booley_poll",
+            "booley_report",
             "booley_sleep",
+            "booley_status",
             "booley_targets",
+            "sim",
         ]
 
     def test_dispatch_rejects_bad_seconds(self, monkeypatch):

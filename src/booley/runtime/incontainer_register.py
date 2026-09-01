@@ -308,7 +308,10 @@ def _codex_entry_is_current(existing: str) -> bool:
     except tomllib.TOMLDecodeError:
         return False
     entry = parsed.get("mcp_servers", {}).get(MCP_SERVER_NAME)
-    return entry == {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC}
+    features = parsed.get("features", {})
+    return entry == {"url": http_url(), "tool_timeout_sec": _TOOL_TIMEOUT_SEC} and (
+        isinstance(features, dict) and features.get("mcp_2026_07_28") is True
+    )
 
 
 def _strip_codex_table(existing: str) -> str:
@@ -331,6 +334,32 @@ def _strip_codex_table(existing: str) -> str:
     return "".join(out)
 
 
+def _upsert_codex_modern_mcp_feature(existing: str) -> str:
+    """Enable MCP 2026-07-28 while preserving the user's other feature flags."""
+    lines = existing.splitlines(keepends=True)
+    header_index = next(
+        (index for index, line in enumerate(lines) if line.strip() == "[features]"),
+        None,
+    )
+    if header_index is None:
+        sep = "" if not existing or existing.endswith("\n\n") else "\n"
+        return existing + sep + "[features]\nmcp_2026_07_28 = true\n"
+    section_end = next(
+        (
+            index
+            for index in range(header_index + 1, len(lines))
+            if lines[index].strip().startswith("[")
+        ),
+        len(lines),
+    )
+    for index in range(header_index + 1, section_end):
+        if lines[index].partition("=")[0].strip() == "mcp_2026_07_28":
+            lines[index] = "mcp_2026_07_28 = true\n"
+            return "".join(lines)
+    lines.insert(header_index + 1, "mcp_2026_07_28 = true\n")
+    return "".join(lines)
+
+
 def upsert_codex(path: Path) -> bool:
     """Ensure the Booley MCP table matches the desired form. Returns True if changed.
 
@@ -344,6 +373,7 @@ def upsert_codex(path: Path) -> bool:
         if _codex_entry_is_current(existing):
             return False
         existing = _strip_codex_table(existing)
+    existing = _upsert_codex_modern_mcp_feature(existing)
     sep = (
         ""
         if not existing or existing.endswith("\n\n")

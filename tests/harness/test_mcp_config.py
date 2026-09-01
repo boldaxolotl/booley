@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import tomllib
+
 from booley.runtime.mcp_config import generate_codex_config
 
 
 class TestGenerateCodexConfig:
     def test_default_all_mcp_tools(self):
         config = generate_codex_config()
+        parsed = tomllib.loads(config)
         assert "[mcp_servers.booley]" in config
         assert 'command = "python"' in config
         assert 'args = ["-m", "booley.mcp.server"]' in config
         assert "enabled_mcp_tools" not in config
+        assert parsed["features"]["mcp_2026_07_28"] is True
+        assert parsed["mcp_servers"]["booley"]["env"]["CODEX_MCP_PROTOCOL_VERSION"] == "2026-07-28"
 
     def test_baseline_env_always_present(self):
         """PATH and HOME must always be present so the MCP server can start."""
