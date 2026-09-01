@@ -186,6 +186,32 @@ class TestCriteriaTemplateYAML:
 class TestExpandParams:
     """expand_params() extracts {expanded_key: params} for specs with params."""
 
+    def test_coverage_policy_parameters(self):
+        yaml_section = {
+            "mandatory": {
+                "coverage": [
+                    {
+                        "targets": ["sim"],
+                        "metrics": {
+                            "line": {"min_pct": 90},
+                            "branch": {"min_pct": 80},
+                        },
+                        "tests": "all",
+                    }
+                ],
+            },
+        }
+        t = CriteriaTemplate.from_yaml(yaml_section)
+        params = t.expand_params([])
+        assert params["coverage_sim"] == {
+            "target": "sim",
+            "metrics": {
+                "line": {"min_pct": 90},
+                "branch": {"min_pct": 80},
+            },
+            "tests": "all",
+        }
+
     def test_explicit_coverage_percentages(self):
         yaml_section = {
             "mandatory": {
@@ -194,11 +220,13 @@ class TestExpandParams:
                 "coverage_branch": "80%",
             },
         }
-        t = CriteriaTemplate.from_yaml(yaml_section)
-        params = t.expand_params([])
-        assert params["coverage_toggle"] == {"min_pct": 90}
-        assert params["coverage_value"] == {"min_pct": 85}
-        assert params["coverage_branch"] == {"min_pct": 80}
+        template = CriteriaTemplate.from_yaml(yaml_section)
+
+        assert template.expand_params([]) == {
+            "coverage_toggle": {"min_pct": 90},
+            "coverage_value": {"min_pct": 85},
+            "coverage_branch": {"min_pct": 80},
+        }
 
     def test_coverage_auto_remains_non_percentage_criterion(self):
         template = CriteriaTemplate.from_yaml({"mandatory": {"coverage_toggle": "auto"}})
@@ -209,6 +237,13 @@ class TestExpandParams:
         yaml_section = {
             "mandatory": {
                 "lint_clean": ["lite", "full"],
+                "coverage": [
+                    {
+                        "targets": ["sim"],
+                        "metrics": {"line": {"min_pct": 90}},
+                        "tests": "all",
+                    }
+                ],
                 "coverage_value": "90%",
             },
         }
@@ -216,6 +251,7 @@ class TestExpandParams:
         params = t.expand_params(["lite", "full"])
         assert "lint_clean_lite" not in params
         assert "lint_clean_full" not in params
+        assert params["coverage_sim"]["metrics"] == {"line": {"min_pct": 90}}
         assert params["coverage_value"] == {"min_pct": 90}
 
     @pytest.mark.parametrize("value", [90, 90.0, "90"])
@@ -753,6 +789,6 @@ class TestCriterionEligibility:
 
     def test_non_tool_gated_family_always_kept(self):
         """A non-tool-gated family (e.g. coverage) is never filtered."""
-        defs = [_per_config_def("coverage_toggle")]
+        defs = [_per_config_def("coverage")]
         out = expand_criteria_defs(defs, ["c"], {"c": "yosys"})
-        assert set(out) == {"coverage_toggle_c"}
+        assert set(out) == {"coverage_c"}

@@ -34,6 +34,13 @@ _FSM_POINT_ID = (
     "NvbHVtbiI6MywibGluZSI6MTB9fSwibWV0cmljIjoiZnNtIiwic3ViamVjdCI6eyJtYWNoaW5lIjoi"
     "Y291bnRlcl9zdGF0ZSIsInRyYW5zaXRpb24iOiJSVU5fdG9fV1JBUCJ9fQ"
 )
+_BRANCH_POINT_ID = (
+    "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEyOmJyYW5jaC10cnVlIiwicmVjb3JkX3"
+    "R5cGUiOiJ2X2JyYW5jaCJ9LCJoaWVyYXJjaHkiOiJUT1AuY291bnRlciIsImxvY2F0aW9uIjp7"
+    "ImVuZCI6eyJjb2x1bW4iOjI4LCJsaW5lIjoxMn0sInNvdXJjZSI6InJ0bC9jb3VudGVyLnN2Ii"
+    "wic3RhcnQiOnsiY29sdW1uIjozLCJsaW5lIjoxMn19LCJtZXRyaWMiOiJicmFuY2giLCJzdWJq"
+    "ZWN0Ijp7Im91dGNvbWUiOiJ0cnVlIn19"
+)
 
 
 def _fingerprint(character: str) -> str:
@@ -189,6 +196,141 @@ def test_known_literal_decodes_to_immutable_campaign_and_encodes_canonically() -
     assert encode_coverage_campaign(campaign) == document
 
 
+def test_evaluated_campaign_preserves_exact_metric_evidence() -> None:
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "pass",
+        "criterion_fingerprint": _fingerprint("c"),
+        "approved_waiver_set_digest": _fingerprint("d"),
+        "suite": {
+            "status": "match",
+            "required": ["reset"],
+            "selected": ["reset"],
+        },
+        "thresholds": {"line": 100},
+        "metrics": [
+            {
+                "metric": "line",
+                "total_points": 1,
+                "eligible_points": 1,
+                "covered_points": 1,
+                "waived_points": 0,
+                "actual_numerator": 100,
+                "actual_denominator": 1,
+                "actual_percent": 100.0,
+                "minimum_percent": 100,
+                "verdict": "pass",
+            }
+        ],
+        "diagnostics": [],
+    }
+
+    campaign = decode_coverage_campaign(
+        document, DurableTargetIdentity(document["target"]["identity"])
+    )
+
+    assert encode_coverage_campaign(campaign) == document
+
+
+def test_gated_campaign_requires_approved_waiver_set_digest() -> None:
+    document = _valid_document()
+    document["evaluation"] = {
+        "status": "blocked",
+        "criterion_fingerprint": _fingerprint("c"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"line": 100},
+        "metrics": [],
+        "diagnostics": [
+            {
+                "code": "COV_EVAL_EMPTY_DENOMINATOR",
+                "pointer": "/rollups",
+                "message": "Configured metric has no eligible points: line.",
+            }
+        ],
+    }
+
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(
+            document,
+            DurableTargetIdentity(document["target"]["identity"]),
+        )
+
+    assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
+        ("COV_FIELD_REQUIRED", "/evaluation/approved_waiver_set_digest")
+    ]
+
+
+def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() -> None:
+    document = _valid_document()
+    document["collector"]["capabilities"].append({"record_class": "branch", "status": "reported"})
+    document["points"].append(
+        {
+            "id": _BRANCH_POINT_ID,
+            "identity": {
+                "metric": "branch",
+                "location": {
+                    "source": "rtl/counter.sv",
+                    "start": {"line": 12, "column": 3},
+                    "end": {"line": 12, "column": 28},
+                },
+                "hierarchy": "TOP.counter",
+                "subject": {"outcome": "true"},
+                "collector": {
+                    "record_type": "v_branch",
+                    "native_key": "12:branch-true",
+                },
+            },
+            "hits_by_run": {"run:reset": 1},
+            "disposition": {"kind": "eligible"},
+        }
+    )
+    document["rollups"].append(
+        {
+            "metric": "branch",
+            "semantics": (
+                "One branch outcome; each outcome is a separate point covered when count is "
+                "greater than zero."
+            ),
+            "total_points": 1,
+            "eligible_points": 1,
+            "covered_points": 1,
+            "waived_points": 0,
+            "percent": 100.0,
+        }
+    )
+    metric_evidence = [
+        {
+            "metric": metric,
+            "total_points": 1,
+            "eligible_points": 1,
+            "covered_points": 1,
+            "waived_points": 0,
+            "actual_numerator": 100,
+            "actual_denominator": 1,
+            "actual_percent": 100.0,
+            "minimum_percent": 90,
+            "verdict": "pass",
+        }
+        for metric in ("line", "branch")
+    ]
+    document["evaluation"] = {
+        "status": "pass",
+        "criterion_fingerprint": _fingerprint("c"),
+        "approved_waiver_set_digest": _fingerprint("d"),
+        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "thresholds": {"branch": 90, "line": 90},
+        "metrics": metric_evidence,
+        "diagnostics": [],
+    }
+
+    campaign = decode_coverage_campaign(
+        document,
+        DurableTargetIdentity(document["target"]["identity"]),
+    )
+
+    assert [item["metric"] for item in campaign.evaluation["metrics"]] == ["line", "branch"]
+
+
 def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> None:
     document = _valid_document()
     document["$schema"] = "booley.coverage-campaign/v99"
@@ -215,6 +357,7 @@ def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> Non
         ("COV_RUN_FOR_UNSELECTED_TEST", "/tests/runs/0"),
         ("COV_ARTIFACT_PATH_UNSAFE", "/artifacts/0/path"),
         ("COV_POINT_ID_MISMATCH", "/points/0/id"),
+        ("COV_POINT_ID_INCOMPLETE", "/points/0/id"),
         ("COV_POINT_RUN_UNKNOWN", "/points/0/hits_by_run/run:ghost"),
         ("COV_POINT_HIT_NONPOSITIVE", "/points/0/hits_by_run/run:ghost"),
         ("COV_ROLLUP_MISMATCH", "/rollups"),
@@ -598,6 +741,7 @@ def test_decoder_recomputes_stored_evaluation_from_rollups_and_thresholds() -> N
     document["evaluation"] = {
         "status": "fail",
         "criterion_fingerprint": _fingerprint("d"),
+        "approved_waiver_set_digest": _fingerprint("e"),
         "suite": {"status": "complete"},
         "thresholds": {"line": 50.0},
         "metrics": [

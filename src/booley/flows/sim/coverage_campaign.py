@@ -8,6 +8,7 @@ already-read JSON value and its output is one immutable per-Target campaign.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import math
 import re
@@ -21,9 +22,11 @@ from booley.core.boundary import (
     BoundaryError,
     as_dict,
     as_str,
+    require_dict,
     require_finite_number,
     require_int,
     require_list,
+    require_str,
 )
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
@@ -600,7 +603,17 @@ def _validate_evaluation_shape(
     evaluation: Mapping[str, object], findings: list[CoverageFinding]
 ) -> None:
     _check_field(evaluation, "status", "string", "/evaluation", findings)
-    _check_field(evaluation, "criterion_fingerprint", "string_or_null", "/evaluation", findings)
+    fingerprint = _check_field(
+        evaluation, "criterion_fingerprint", "string_or_null", "/evaluation", findings
+    )
+    if isinstance(fingerprint, str):
+        _check_field(
+            evaluation,
+            "approved_waiver_set_digest",
+            "string",
+            "/evaluation",
+            findings,
+        )
     _check_field(evaluation, "suite", "object", "/evaluation", findings)
     thresholds = _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
     _check_field(evaluation, "metrics", "array", "/evaluation", findings)
@@ -687,6 +700,46 @@ def _canonical_json(value: object) -> bytes:
 def _point_id(identity: object) -> str:
     payload = base64.urlsafe_b64encode(_canonical_json(identity)).decode("ascii").rstrip("=")
     return f"cp1:{payload}"
+
+
+def _valid_point_position(position: object) -> bool:
+    try:
+        document = require_dict(position, field="position")
+        line = require_int(document.get("line"), field="line")
+        column = require_int(document.get("column"), field="column")
+    except BoundaryError:
+        return False
+    return set(document) == {"line", "column"} and line > 0 and column > 0
+
+
+def decode_coverage_point_id(point_id: object) -> Mapping[str, object] | None:
+    """Return one complete canonical cp1 identity, or ``None`` when malformed."""
+    text = as_str(point_id)
+    if text is None or re.fullmatch(r"cp1:[A-Za-z0-9_-]+", text) is None:
+        return None
+    payload = text.removeprefix("cp1:")
+    try:
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+        identity = require_dict(json.loads(raw), field="point identity")
+        metric = require_str(identity, "metric")
+        location = require_dict(identity.get("location"), field="location")
+        hierarchy = require_str(identity, "hierarchy")
+        subject = require_dict(identity.get("subject"), field="subject")
+        collector = require_dict(identity.get("collector"), field="collector")
+        source = require_str(location, "source")
+        require_str(collector, "record_type")
+        require_str(collector, "native_key")
+    except (BoundaryError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    complete = (
+        set(identity) == {"metric", "location", "hierarchy", "subject", "collector"}
+        and set(location) == {"source", "start", "end"}
+        and _valid_point_position(location.get("start"))
+        and _valid_point_position(location.get("end"))
+        and bool(metric and hierarchy and source and subject)
+        and text == _point_id(identity)
+    )
+    return identity if complete else None
 
 
 def _pointer_token(value: object) -> str:
@@ -803,6 +856,14 @@ def _validate_point_identity(
                 "COV_POINT_ID_MISMATCH",
                 f"{pointer}/id",
                 "Point id does not encode its full canonical identity.",
+            )
+        )
+    if decode_coverage_point_id(point["id"]) is None:
+        findings.append(
+            _error(
+                "COV_POINT_ID_INCOMPLETE",
+                f"{pointer}/id",
+                "Point id must encode one complete canonical Coverage Point identity.",
             )
         )
     encoded_identity = _canonical_json(point["identity"])
@@ -1039,9 +1100,14 @@ def _expected_evaluation_metrics(document: Mapping[str, object]) -> list[dict[st
     assert isinstance(evaluation, Mapping)
     thresholds = evaluation["thresholds"]
     assert isinstance(thresholds, Mapping)
+    if set(thresholds) - _SCORED_METRICS:
+        return None
     by_metric = {str(rollup["metric"]): rollup for rollup in document["rollups"]}
     metrics: list[dict[str, object]] = []
-    for metric, threshold in thresholds.items():
+    for metric in _METRIC_SEMANTICS:
+        if metric not in thresholds:
+            continue
+        threshold = thresholds[metric]
         rollup = by_metric.get(str(metric))
         if (
             rollup is None
@@ -1056,6 +1122,12 @@ def _expected_evaluation_metrics(document: Mapping[str, object]) -> list[dict[st
         metrics.append(
             {
                 "metric": metric,
+                "total_points": rollup["total_points"],
+                "eligible_points": rollup["eligible_points"],
+                "covered_points": rollup["covered_points"],
+                "waived_points": rollup["waived_points"],
+                "actual_numerator": rollup["covered_points"] * 100,
+                "actual_denominator": rollup["eligible_points"],
                 "actual_percent": rollup["percent"],
                 "minimum_percent": threshold,
                 "verdict": verdict,
