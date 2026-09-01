@@ -43,6 +43,7 @@ from booley.fusesoc.fusesoc_registry import (
     selectable_core_closure,
 )
 from booley.runtime.git import scope_matches_file
+from booley.targets import target_naming
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +118,10 @@ def _check_fpga_hooks(core_doc: Mapping[str, Any], core_file: Path) -> list[Core
 
     Session Runtimes execute inside the container, never through a host-command
     broker.  The narrower rule remains because implementation hooks add
-    uncontrolled side effects around a privileged commercial-tool policy; it is
-    intentionally unrelated to unsupported simulator names.
+    uncontrolled side effects around a privileged commercial-tool policy. The
+    same axis-first classification as ``flow_can_drive`` prevents a different
+    resolution tool from bypassing this boundary.
     """
-    fpga_eda_tools = fpga_impl_eda_tools()
     targets = core_doc.get("targets")
     if not isinstance(targets, Mapping):
         return []
@@ -129,7 +130,7 @@ def _check_fpga_hooks(core_doc: Mapping[str, Any], core_file: Path) -> list[Core
         if not isinstance(target, Mapping):
             continue
         eda_tool = core_target_eda_tool(core_doc, name)
-        if eda_tool not in fpga_eda_tools:
+        if not target_naming.fpga_intent(str(name), eda_tool):
             continue
         hooks = target.get("hooks")
         declared = _declared_hook_phases(hooks)
@@ -141,7 +142,7 @@ def _check_fpga_hooks(core_doc: Mapping[str, Any], core_file: Path) -> list[Core
                 core_file=core_file,
                 target=name,
                 message=(
-                    f"fpga Target (EDA tool '{eda_tool}') declares hooks "
+                    f"fpga Target (resolution tool '{eda_tool}') declares hooks "
                     f"({', '.join(declared)}); implementation hooks are rejected "
                     "at the design-description boundary. Move the work into a "
                     "resolution-time generator or out of the .core entirely."

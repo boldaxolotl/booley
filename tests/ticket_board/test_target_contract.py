@@ -815,6 +815,35 @@ def test_optional_and_mandatory_targets_use_same_flow_rules(tmp_path: Path) -> N
     assert any("cannot satisfy synthesis_ok" in error for error in errors)
 
 
+def test_fpga_axis_target_satisfies_contract_with_resolution_tool(tmp_path: Path) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "core.sv").write_text("module core; endmodule\n")
+    (tmp_path / "fpga.core").write_text(
+        textwrap.dedent(
+            """\
+            CAPI=2:
+            name: acme:ip:core:1.0
+            filesets:
+              rtl:
+                files: [rtl/core.sv]
+                file_type: systemVerilogSource
+            targets:
+              fpga_core:
+                flow: generic
+                flow_options: {tool: verilator, part: xc7a35tcpg236-1}
+                filesets: [rtl]
+                toplevel: core
+            """
+        )
+    )
+    fields = {
+        "scope": [],
+        "criteria": {"mandatory": {"fpga_impl_ok": {"targets": ["fpga_core"]}}},
+    }
+
+    assert validate_criterion_targets(fields, tmp_path) == []
+
+
 def test_future_nonrelative_target_accepts_only_scope_new_sources(tmp_path: Path) -> None:
     project = _project(tmp_path)
     fields = {

@@ -39,6 +39,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.dev_support.thresholds import CYCLE_COUNT_PARAMS
+from booley.targets import target_naming
 
 logger = logging.getLogger(__name__)
 
@@ -280,11 +281,11 @@ def merge_criteria_defs(
     return merged, errors
 
 
-# EDA tool → eligible per-target criterion families (ADR 0022 decision 11). A
-# Target's resolved EDA tool (``flow_options.tool``) decides which criterion
-# families it can carry: a Yosys synth Target is not eligible for ``sim_pass_*``,
-# a sim Target not for ``synthesis_ok_*``, etc. Drives off the EDA tool Booley reads
-# from the ``.core`` (``fusesoc_registry.target_eda_tools``).
+# EDA tool → eligible per-target criterion families (ADR 0022 decision 11).
+# Simulation, lint, and synthesis eligibility follow the declared tool. FPGA
+# intent follows the Target axis when present because that Flow rebuilds the
+# resolved inputs into a Vivado EDAM; unprefixed vendored Targets retain the
+# Vivado fallback. ``expand_criteria_defs`` applies that exception.
 EDA_TOOL_CRITERION_FAMILIES: dict[str, frozenset[str]] = {
     "verilator": frozenset({"sim_pass", "cycle_count", "lint_clean"}),
     "icarus": frozenset({"sim_pass", "cycle_count"}),
@@ -322,14 +323,24 @@ def unsupported_eda_tool_boundary(eda_tool: str) -> str:
     )
 
 
-def _criterion_eligible(crit_name: str, eda_tool: str | None) -> bool:
-    """Whether a criterion family is eligible for a Target's EDA tool.
+def _criterion_eligible(
+    crit_name: str,
+    eda_tool: str | None,
+    *,
+    target_name: str | None = None,
+) -> bool:
+    """Whether a criterion family is eligible for a Target declaration.
 
-    Non-EDA-tool-gated families are always eligible. A gated family is filtered
-    only when the Target's EDA tool is *known* and does not own it: a ``.core``
-    Target may legitimately declare no ``flow_options.tool``/``default_tool``
-    (EDA tool ``None``), and an unknown EDA tool must widen eligibility, not narrow it.
+    FPGA eligibility uses the Target axis when *target_name* is available.
+    Other gated families are filtered only when the EDA tool is known and does
+    not own them; an unknown tool widens eligibility rather than narrowing it.
     """
+    if (
+        crit_name == "fpga_impl_ok"
+        and target_name is not None
+        and target_naming.axis_of(target_name) is not None
+    ):
+        return target_naming.fpga_intent(target_name, eda_tool)
     if crit_name not in _EDA_TOOL_GATED_FAMILIES:
         return True
     if eda_tool is None:
@@ -344,10 +355,10 @@ def expand_criteria_defs(
 ) -> dict[str, CriterionDef]:
     """Expand per_target criteria across all project targets.
 
-    When ``target_eda_tools`` (Target name → declared EDA tool) is supplied, a
-    per-target criterion is skipped for any target whose EDA tool is not eligible for
-    that criterion family (decision 11). Omitting it (or an empty map) preserves
-    the unfiltered expansion — the behaviour before the EDA tool was known.
+    When ``target_eda_tools`` (Target name → declared resolution tool) is
+    supplied, a per-target criterion is skipped when the Target declaration is
+    incompatible with that family (decision 11). FPGA uses its name axis;
+    other built-ins use the tool. Omitting the map preserves unfiltered expansion.
 
     Returns dict of expanded_name -> CriterionDef.
     """
@@ -358,7 +369,8 @@ def expand_criteria_defs(
         if crit.per_target and targets:
             for tgt in targets:
                 eda_tool = eda_tools.get(tgt)
-                if not _criterion_eligible(crit.name, eda_tool):
+                target_name = tgt if tgt in eda_tools else None
+                if not _criterion_eligible(crit.name, eda_tool, target_name=target_name):
                     # A known EDA tool with no row in the matrix is the ADR 0039
                     # §5 boundary (an unsupported simulator), not a routine
                     # cross-family skip — say so, once per EDA tool.
