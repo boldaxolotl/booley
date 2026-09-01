@@ -55,6 +55,22 @@ def _skip_workspace_snapshot_for_mocked_agents(monkeypatch: pytest.MonkeyPatch) 
     )
 
 
+def test_verify_statuses_compatibility_view() -> None:
+    output = json.dumps(
+        {
+            "findings": [
+                {"index": 1, "status": "STILL_PRESENT"},
+                {"index": 2, "status": "FIXED", "evidence": "removed"},
+            ]
+        }
+    )
+
+    assert ReviewerSpecialist._extract_verify_statuses(output) == {
+        1: "STILL_PRESENT",
+        2: "FIXED",
+    }
+
+
 @pytest.fixture()
 def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Create a minimal state file and set env vars."""

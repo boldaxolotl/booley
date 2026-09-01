@@ -83,31 +83,6 @@ def find_worktree_for_branch(branch: str) -> str | None:
     return None
 
 
-def find_checkout_of_branch(branch: str) -> str | None:
-    """Return the path of ANY worktree where *branch* is checked out.
-
-    Unlike :func:`find_worktree_for_branch`, this includes the main worktree.
-    Git refuses to check out a branch in two worktrees at once, so a merge
-    into a checked-out branch must run *in* that checkout rather than in a
-    fresh temp worktree (F-16a).
-    """
-    r = git("worktree", "list", "--porcelain")
-    if not r or r.returncode != 0:
-        return None
-
-    current_wt = None
-    for line in r.stdout.splitlines():
-        if line.startswith("worktree "):
-            current_wt = line[len("worktree ") :]
-        elif (
-            line.startswith("branch ")
-            and current_wt
-            and line[len("branch refs/heads/") :] == branch
-        ):
-            return current_wt
-    return None
-
-
 def _worktree_relative_path(wt_path: str, path: str | Path) -> str | None:
     candidate = Path(path)
     if not candidate.is_absolute():

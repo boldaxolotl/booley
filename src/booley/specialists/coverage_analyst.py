@@ -2073,32 +2073,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
 
     # --- Main execution ---
 
-    def _report_structural_noise(
-        self,
-        structural_noise: list[SignalStats],
-        output_lines: list[str],
-    ) -> None:
-        """Emit progress + output lines summarising excluded structural noise."""
-        ivl_count = sum(1 for s in structural_noise if "$ivl_for_loop" in s.name)
-        gen_count = sum(
-            1
-            for s in structural_noise
-            if "$ivl_for_loop" not in s.name and self._GENERATE_SCOPE_RE.search(s.name)
-        )
-        elab_count = len(structural_noise) - ivl_count - gen_count
-        parts = []
-        if elab_count:
-            parts.append(f"{elab_count} params/genvar")
-        if ivl_count:
-            parts.append(f"{ivl_count} ivl_for_loop")
-        if gen_count:
-            parts.append(f"{gen_count} generate-scope")
-        detail = ", ".join(parts)
-        self.emit_progress(
-            f"structural noise: excluded {len(structural_noise)} signals ({detail})"
-        )
-        output_lines.append(f"  structural noise: excluded {len(structural_noise)} ({detail})")
-
     def _run_vsc_and_fsm(
         self,
         work_dir: Path,
@@ -2416,49 +2390,6 @@ abort path". Omit this field or leave empty if all criteria are already met.
         output_lines.append(f"  {len(stats)} aggregate signals measured")
         output_lines.append(
             f"  {len(toggle_failures)} toggle failures, {len(low_diversity)} low-diversity signals"
-        )
-        return stats, structural_noise, toggle_failures, low_diversity, None
-
-    def _run_phase1_measurement(
-        self,
-        trace_dir: Path,
-        scope_files: list[str],
-        output_lines: list[str],
-    ) -> tuple[list, list, list[str], list[str], McpToolResult | None]:
-        """Phase 1: mechanical measurement + structural-noise filter + waiver pre-filter.
-
-        Returns ``(stats, structural_noise, toggle_failures, low_diversity, error)``.
-        """
-        logger.info("Phase 1: Mechanical measurement via bwave --stats")
-        output_lines.append("[coverage] phase 1: mechanical measurement")
-        self.emit_progress("phase 1: mechanical measurement (bwave --stats)")
-        stats, phase1_err, phase1_infra = self._run_mechanical_measurement(trace_dir)
-        if not stats:
-            return (
-                [],
-                [],
-                [],
-                [],
-                McpToolResult(
-                    exit_code=EXIT_ERROR if phase1_infra else EXIT_FAILURE,
-                    report_text=f"Phase 1 failed: {phase1_err or 'unknown'}",
-                ),
-            )
-        output_lines.append(f"  {len(stats)} signals measured")
-
-        # Structural noise filter (simulator-dependent)
-        stats, structural_noise = self._filter_structural_noise(stats, scope_files)
-        if structural_noise:
-            self._report_structural_noise(structural_noise, output_lines)
-
-        toggle_failures, low_diversity = self._pre_filter_for_waiver(stats)
-        self.emit_progress(
-            f"phase 1 done: {len(stats)} signals, "
-            f"{len(toggle_failures)} toggle failures, "
-            f"{len(low_diversity)} low-diversity",
-        )
-        output_lines.append(
-            f"  {len(toggle_failures)} toggle failures, {len(low_diversity)} low-diversity signals",
         )
         return stats, structural_noise, toggle_failures, low_diversity, None
 

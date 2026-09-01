@@ -82,10 +82,7 @@ if "claude_agent_sdk" not in sys.modules:
     _sdk.query = AsyncMock()
     sys.modules["claude_agent_sdk"] = _sdk
 
-from booley.harness.models import (
-    AgentResult,
-    TicketContext,
-)
+from booley.harness.models import TicketContext
 
 
 @pytest.fixture(autouse=True)
@@ -168,90 +165,3 @@ def sample_ctx(project_root: Path) -> TicketContext:
         worktree_path=project_root / ".booley" / "worktrees" / "fix-fsm-counter",
         project_root=project_root,
     )
-
-
-@pytest.fixture
-def sample_exec_ctx() -> dict:
-    """Sample execution context dict."""
-    return {
-        "configs": ["config_a", "config_b"],
-        "defines": ["PROTECTED_MODE"],
-        "testbench_top": "my_module_tb",
-        "synthesis": {},
-    }
-
-
-@pytest.fixture
-def sample_manifest() -> dict:
-    """Sample command manifest dict (DEPRECATED -- for backward-compat tests)."""
-    return {
-        "sim_configs": {
-            "config_a": {
-                "run": {
-                    "cmd": "python3 .booley/src/sim/run_sim_batch.py --config config_a --tb-top my_module_tb",
-                    "timeout_ms": 600000,
-                },
-                "run_vcd": {
-                    "cmd": "python3 .booley/src/sim/run_sim_batch.py --config config_a --tb-top my_module_tb --trace --debug",
-                    "timeout_ms": 600000,
-                },
-            },
-            "config_b": {
-                "run": {
-                    "cmd": "python3 .booley/src/sim/run_sim_batch.py --config config_b --tb-top my_module_tb",
-                    "timeout_ms": 600000,
-                },
-                "run_vcd": {
-                    "cmd": "python3 .booley/src/sim/run_sim_batch.py --config config_b --tb-top my_module_tb --trace --debug",
-                    "timeout_ms": 600000,
-                },
-            },
-        },
-        "synthesis": {},
-    }
-
-
-@pytest.fixture
-def mock_agent_result() -> AgentResult:
-    """A mock agent result with some tokens."""
-    return AgentResult(
-        output="Done. Fixed the bug.",
-        structured=None,
-        input_tokens=5000,
-        output_tokens=2000,
-    )
-
-
-def make_agent_result(
-    output: str = "",
-    structured: dict | None = None,
-    input_tokens: int = 1000,
-    output_tokens: int = 500,
-) -> AgentResult:
-    """Helper to create AgentResult instances for tests."""
-    return AgentResult(
-        output=output,
-        structured=structured,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Shared test helpers (importable by test modules)
-# ---------------------------------------------------------------------------
-
-
-def setup_worktree(ctx: TicketContext) -> None:
-    """Create minimal worktree dir structure expected by steps.
-
-    Creates `.agents/plans` inside the work directory, a `.git` marker if
-    worktree_path is set, and ensures `ctx.logs_dir` exists.
-    """
-    wt = ctx.work_dir
-    (wt / ".agents" / "plans").mkdir(parents=True, exist_ok=True)
-    if ctx.worktree_path:
-        git_marker = ctx.worktree_path / ".git"
-        if not git_marker.exists():
-            git_marker.write_text("gitdir: fake", encoding="utf-8")
-    ctx.logs_dir.mkdir(parents=True, exist_ok=True)
