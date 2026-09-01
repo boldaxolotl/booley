@@ -277,6 +277,7 @@ def test_waiving_every_point_blocks_zero_eligible_denominator() -> None:
             ApprovedWaiver(
                 target=_TARGET,
                 point_id=point_id,
+                source="rtl/counter.sv",
                 reason="excluded",
                 waiver_id=f"waiver:{point_id}",
                 waiver_file=f"rtl/counter.sv/{point_id}.toml",
@@ -328,6 +329,7 @@ def test_ungated_campaign_rejects_nonempty_waiver_input() -> None:
     waiver = ApprovedWaiver(
         target=_TARGET,
         point_id="point-0",
+        source="rtl/counter.sv",
         reason="excluded",
         waiver_id="waiver:point-0",
         waiver_file="rtl/counter.sv/point-0.toml",
@@ -370,6 +372,7 @@ def test_blocked_gated_campaign_still_resolves_approved_dispositions() -> None:
     waiver = ApprovedWaiver(
         target=_TARGET,
         point_id="point-1",
+        source="rtl/counter.sv",
         reason="excluded",
         waiver_id="waiver:point-1",
         waiver_file="rtl/counter.sv/point-1.toml",
