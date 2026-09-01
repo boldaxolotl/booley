@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -61,10 +62,37 @@ _SECOND_SOURCE_POINT_ID = (
 )
 
 
-def test_windows_open_flags_do_not_require_missing_pywin32_constant() -> None:
-    win32_constants = SimpleNamespace(FILE_FLAG_BACKUP_SEMANTICS=0x02000000)
+def test_windows_open_does_not_require_missing_pywin32_constant(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    constants = SimpleNamespace(
+        FILE_ATTRIBUTE_DIRECTORY=0x10,
+        FILE_ATTRIBUTE_REPARSE_POINT=0x400,
+        FILE_FLAG_BACKUP_SEMANTICS=0x02000000,
+        FILE_SHARE_READ=1,
+        GENERIC_READ=0x80000000,
+        OPEN_EXISTING=3,
+    )
+    handle = SimpleNamespace(Close=lambda: None)
+    observed: dict[str, int] = {}
 
-    assert coverage_waiver_files._windows_open_flags(win32_constants) == 0x02200000
+    def create_file(*args: object) -> object:
+        observed["flags"] = cast(int, args[5])
+        return handle
+
+    win32file = SimpleNamespace(
+        CreateFile=create_file,
+        GetFileInformationByHandle=lambda _handle: (0,),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", constants)
+    monkeypatch.setitem(sys.modules, "win32file", win32file)
+
+    opened = coverage_waiver_files._WindowsSecureTree._open(
+        tmp_path / "approval.toml", expected_directory=False
+    )
+
+    assert opened is handle
+    assert observed["flags"] == 0x02200000
 
 
 def _roots(tmp_path: Path) -> CoverageRepositoryRoots:

@@ -12,6 +12,7 @@ from typing import Any, Literal, Protocol
 
 PathProblemKind = Literal["missing", "symlink", "invalid", "unreadable"]
 PathEntryKind = Literal["directory", "file"]
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 
 
 @dataclass(frozen=True)
@@ -235,12 +236,6 @@ def _windows_error_kind(exc: OSError) -> PathProblemKind:  # pragma: no cover
     return "missing" if winerror in {2, 3} else "unreadable"
 
 
-def _windows_open_flags(win32_constants: Any) -> int:
-    """Compose no-follow flags without relying on PyWin32's incomplete constants."""
-    file_flag_open_reparse_point = 0x00200000  # FILE_FLAG_OPEN_REPARSE_POINT in WinNT.h
-    return win32_constants.FILE_FLAG_BACKUP_SEMANTICS | file_flag_open_reparse_point
-
-
 class _WindowsSecureTree:  # pragma: no cover
     """Windows adapter retaining no-delete handles for every ancestor."""
 
@@ -256,7 +251,7 @@ class _WindowsSecureTree:  # pragma: no cover
         share = win32con.FILE_SHARE_READ
         if expected_directory:
             share |= win32con.FILE_SHARE_WRITE
-        flags = _windows_open_flags(win32con)
+        flags = win32con.FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT
         try:
             handle = win32file.CreateFile(
                 str(path),
