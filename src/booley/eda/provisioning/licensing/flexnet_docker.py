@@ -467,8 +467,15 @@ def cleanup_project_resources(
     project_root: Path, *, runner: Runner | None = None
 ) -> tuple[str, ...]:
     """Remove exact Project-labeled containers before networks and report residue."""
+    return cleanup_project_resources_for_identity(str(project_root.resolve()), runner=runner)
+
+
+def cleanup_project_resources_for_identity(
+    project_root: str, *, runner: Runner | None = None
+) -> tuple[str, ...]:
+    """Remove resources for an already-canonical persisted Project identity."""
     run = runner or _run_docker
-    project_id = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()
+    project_id = hashlib.sha256(project_root.encode()).hexdigest()
     label = f"booley.project-id={project_id}"
     residual: list[str] = []
     for kind, list_args in (

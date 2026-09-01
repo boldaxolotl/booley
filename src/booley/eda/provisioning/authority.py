@@ -7,18 +7,12 @@ import ipaddress
 import json
 import os
 import re
-import stat
-import tempfile
-import time
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from booley.runtime.auth_token import config_dir
-from booley.runtime.file_lock import acquire_file_lock, release_file_lock
-
-lock_fd = acquire_file_lock
-unlock_fd = release_file_lock
+from booley.runtime.private_store import PrivateStore
 
 from ..config import installation_name_error
 from .policies.vivado import KIND as VIVADO_KIND
@@ -62,21 +56,6 @@ class AuthorityError(RuntimeError):
 
 class InstallationValidationError(AuthorityError):
     """A registered EDA installation is unavailable or has drifted."""
-
-
-def _wait_for_lock(lock: object, timeout_s: float = 10.0) -> None:
-    """Acquire the authority lock with a bounded, user-readable wait."""
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            lock_fd(lock)
-            return
-        except BlockingIOError as exc:
-            if time.monotonic() >= deadline:
-                raise AuthorityError(
-                    "EDA authority is busy with another operation; retry after it completes"
-                ) from exc
-            time.sleep(0.1)
 
 
 @dataclass(frozen=True)
@@ -132,26 +111,30 @@ def state_path() -> Path:
     return state_dir() / _STATE_FILENAME
 
 
+def _store() -> PrivateStore:
+    root = state_dir()
+    return PrivateStore(root, config_dir().parent, "EDA authority", AuthorityError)
+
+
 def ensure_state_dir() -> Path:
     """Create or validate the private authority directory."""
-    return _ensure_state_dir()
+    return _store().ensure_directory()
 
 
 def load_state(*, allow_missing: bool = True) -> AuthorityState:
     """Load and validate private state, rejecting insecure existing objects."""
-    root = state_dir()
-    if not root.exists():
+    store = _store()
+    if not store.validate_existing_directory():
         if allow_missing:
             return _empty_state()
-        raise AuthorityError(f"EDA authority directory is missing: {root}")
-    _validate_private_directory(root)
+        raise AuthorityError(f"EDA authority directory is missing: {store.root}")
     path = state_path()
     if not path.exists():
         if allow_missing:
             return _empty_state()
         raise AuthorityError(f"EDA authority registry is missing: {path}")
     try:
-        raw = _read_private_json(path)
+        raw = store.read_json(_STATE_FILENAME)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AuthorityError(f"EDA authority registry is unreadable: {exc}") from exc
     return _decode_state(raw)
@@ -242,34 +225,34 @@ def add_grant(
         if any(_grant_key(item) == _grant_key(grant) for item in state.grants):
             raise AuthorityError(f"a {kind} grant already exists for {project}")
         state.grants = (*state.grants, grant)
-    invalidate_project_specs(project)
+    invalidate_project_specs(str(project))
     return grant
 
 
 def revoke_grant(project_root: Path, kind: str) -> ProjectGrant:
     """Remove authority first and invalidate every affected runtime spec."""
-    project = _canonical_project(project_root)
     removed: ProjectGrant | None = None
     with _locked_state() as state:
+        project = _revoke_project_identity(project_root, kind, state)
         kept = []
         for grant in state.grants:
-            if _grant_key(grant) == (str(project), kind):
+            if _grant_key(grant) == (project, kind):
                 removed = grant
             else:
                 kept.append(grant)
         if removed is None:
             raise AuthorityError(f"no {kind} grant exists for {project}")
         state.grants = tuple(kept)
-    invalidate_project_specs(project)
-    _cleanup_revoked_runtime(project)
+    invalidate_project_specs(removed.project_root)
+    _cleanup_revoked_runtime(removed.project_root)
     return removed
 
 
-def _cleanup_revoked_runtime(project: Path) -> None:
+def _cleanup_revoked_runtime(project_root: str) -> None:
     """Remove every exact Project runtime before its relay/network topology."""
-    from .licensing.flexnet_docker import cleanup_project_resources
+    from .licensing.flexnet_docker import cleanup_project_resources_for_identity
 
-    residual = cleanup_project_resources(project)
+    residual = cleanup_project_resources_for_identity(project_root)
     if residual:
         raise AuthorityError(
             "EDA authority is revoked, but Session Runtime cleanup left residual objects: "
@@ -319,10 +302,12 @@ def resolve_for_issuance(
     wholly after issuance instead of combining records from different states.
     """
     project = _canonical_project(project_root)
-    root = _ensure_state_dir()
-    lock = _open_lock(root / _LOCK_FILENAME)
-    try:
-        _wait_for_lock(lock)
+    store = _store()
+    store.ensure_directory()
+    with store.locked(
+        _LOCK_FILENAME,
+        busy_message="EDA authority is busy with another operation; retry after it completes",
+    ):
         state = load_state()
         matches = [
             grant for grant in state.grants if _grant_key(grant) == (str(project), VIVADO_KIND)
@@ -354,18 +339,14 @@ def resolve_for_issuance(
             state.licenses[grant.license_profile] if grant.license_profile is not None else None
         )
         yield installation, profile
-    finally:
-        with contextlib.suppress(OSError):
-            unlock_fd(lock)
-        lock.close()
 
 
-def invalidate_project_specs(project_root: Path) -> None:
+def invalidate_project_specs(project_root: str) -> None:
     """Remove host-issued spec stamps for one canonical Project identity."""
-    from .runtime_spec import stamp_path
+    from .runtime_spec import stamp_path_for_identity
 
     with contextlib.suppress(FileNotFoundError):
-        stamp_path(project_root).unlink()
+        stamp_path_for_identity(project_root).unlink()
 
 
 def _revalidate_installation(record: Installation, project_root: Path) -> None:
@@ -448,6 +429,21 @@ def _canonical_project(project_root: Path) -> Path:
     ):
         raise AuthorityError(f"unsafe Project root: {project}")
     return project
+
+
+def _revoke_project_identity(project_root: Path, kind: str, state: AuthorityState) -> str:
+    """Select one persisted grant identity without requiring its root to exist."""
+    if project_root.is_absolute():
+        lexical = os.path.normpath(str(project_root))
+        if any(_grant_key(grant) == (lexical, kind) for grant in state.grants):
+            return lexical
+    if not project_root.exists():
+        raise AuthorityError(
+            f"cannot match missing Project root {project_root}; use the absolute canonical "
+            "path shown by `booley projects`"
+        )
+    project = _canonical_project(project_root)
+    return str(project)
 
 
 def _validate_new_grant_project(project: Path) -> None:
@@ -569,132 +565,12 @@ def _encode_state(state: AuthorityState) -> str:
 
 @contextlib.contextmanager
 def _locked_state() -> Iterator[AuthorityState]:
-    root = _ensure_state_dir()
-    lock = _open_lock(root / _LOCK_FILENAME)
-    try:
-        lock_fd(lock)
+    store = _store()
+    store.ensure_directory()
+    with store.locked(
+        _LOCK_FILENAME,
+        busy_message="EDA authority is busy with another operation; retry after it completes",
+    ):
         state = load_state()
         yield state
-        _atomic_write(state_path(), _encode_state(state))
-    finally:
-        with contextlib.suppress(OSError):
-            unlock_fd(lock)
-        lock.close()
-
-
-def _ensure_state_dir() -> Path:
-    root = state_dir()
-    config_root = root.parent
-    platform_root = config_root.parent
-    if not platform_root.exists():
-        platform_root.mkdir(parents=True, mode=0o700)
-        if os.name != "nt":
-            platform_root.chmod(0o700)
-    _validate_safe_ancestor(platform_root)
-    if not config_root.exists():
-        config_root.mkdir(mode=0o700)
-        if os.name != "nt":
-            config_root.chmod(0o700)
-    _validate_safe_ancestor(config_root)
-    if root.exists():
-        _validate_private_directory(root)
-        return root
-    root.mkdir(parents=True, mode=0o700)
-    root.chmod(0o700)
-    _validate_private_directory(root)
-    return root
-
-
-def _validate_safe_ancestor(path: Path) -> None:
-    """Reject a redirected or other-user-writable authority parent."""
-    if path.is_symlink():
-        raise AuthorityError(f"EDA authority ancestor must not be a symlink: {path}")
-    info = path.stat()
-    if not stat.S_ISDIR(info.st_mode):
-        raise AuthorityError(f"EDA authority ancestor is not a directory: {path}")
-    if os.name != "nt" and info.st_uid != os.getuid():
-        raise AuthorityError(f"EDA authority ancestor is not owned by the current user: {path}")
-    if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o022:
-        raise AuthorityError(
-            f"EDA authority ancestor is writable by another user or group: {path}"
-        )
-
-
-def _open_lock(path: Path):
-    flags = os.O_RDWR | os.O_CREAT
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except OSError as exc:
-        raise AuthorityError(f"cannot open EDA authority lock securely: {exc}") from exc
-    if os.name != "nt":
-        os.fchmod(descriptor, 0o600)
-    info = os.fstat(descriptor)
-    _validate_owner_mode(path, info, 0o600)
-    return os.fdopen(descriptor, "r+")
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temporary)
-    try:
-        if os.name != "nt":
-            os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temp_path.replace(path)
-        _fsync_directory(path.parent)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _validate_private_directory(path: Path) -> None:
-    if path.is_symlink():
-        raise AuthorityError(f"EDA authority directory must not be a symlink: {path}")
-    info = path.stat()
-    if not stat.S_ISDIR(info.st_mode):
-        raise AuthorityError(f"EDA authority path is not a directory: {path}")
-    _validate_owner_mode(path, info, 0o700)
-
-
-def _read_private_json(path: Path) -> object:
-    """Read a private registry through the same no-follow descriptor we validate."""
-    if path.is_symlink():
-        raise AuthorityError(f"EDA authority file must not be a symlink: {path}")
-    flags = os.O_RDONLY
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise AuthorityError(f"EDA authority path is not a regular file: {path}")
-        _validate_owner_mode(path, info, 0o600)
-        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-            descriptor = -1
-            return json.load(handle)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _validate_owner_mode(path: Path, info: os.stat_result, required: int) -> None:
-    if os.name != "nt" and info.st_uid != os.getuid():
-        raise AuthorityError(f"EDA authority path is not owned by the current user: {path}")
-    if os.name != "nt" and stat.S_IMODE(info.st_mode) != required:
-        raise AuthorityError(f"EDA authority path must have mode {required:o}: {path}")
+        store.atomic_write_text(_STATE_FILENAME, _encode_state(state))

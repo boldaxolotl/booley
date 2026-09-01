@@ -119,7 +119,8 @@ def test_chat_parser_and_dispatch_are_registered():
 
     assert args.command == "chat"
     assert tlr._EARLY_COMMANDS["chat"] is tlr.run_chat
-    assert "Open this Project's configured agent CLI" in parser.format_help()
+    help_text = parser.format_help()
+    assert "[Session Runtime] Open this Project's configured agent" in help_text
 
 
 def test_bare_booley_defaults_to_chat():
@@ -157,6 +158,22 @@ def test_bootstrap_dispatch_precedes_project_discovery(monkeypatch):
         lambda: (_ for _ in ()).throw(AssertionError("Project discovery must not run")),
     )
     assert tlr.main() == 17
+
+
+def test_projects_dispatch_precedes_active_project_discovery(monkeypatch):
+    from booley.projects import cli as project_inventory_cli
+
+    args = tlr._build_parser().parse_args(["projects", "--json"])
+    monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
+    monkeypatch.setattr(project_inventory_cli, "run", lambda _args: 19)
+    monkeypatch.setattr(
+        tlr,
+        "find_project_root",
+        lambda: (_ for _ in ()).throw(AssertionError("Project discovery must not run")),
+    )
+
+    assert tlr.main() == 19
 
 
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
@@ -443,7 +460,41 @@ class TestEnforceVenue:
         writes the host's ~/.config, neither of which exists in the sandbox.
         """
         assert {"run", "chat", "board"} == tlr._CONTAINER_ONLY_COMMANDS
-        assert {"bootstrap", "init", "session", "auth", "eda"} == tlr._HOST_ONLY_COMMANDS
+        assert {
+            "bootstrap",
+            "init",
+            "session",
+            "auth",
+            "eda",
+            "projects",
+        } == tlr._HOST_ONLY_COMMANDS
+
+    def test_top_level_help_labels_every_advertised_command_location(self):
+        help_text = tlr._build_parser().format_help()
+
+        assert "run" in help_text and "[Session Runtime]" in help_text
+        assert "projects" in help_text and "[host]" in help_text
+        assert "doctor" in help_text and "[either]" in help_text
+        assert "flow" in help_text and "[mixed]" in help_text
+        assert "Locations:" in help_text
+
+    def test_runtime_guards_are_derived_from_command_location_catalog(self):
+        assert (
+            frozenset(
+                command
+                for command, location in tlr.COMMAND_LOCATIONS.items()
+                if location is tlr.CommandLocation.SESSION_RUNTIME
+            )
+            == tlr._CONTAINER_ONLY_COMMANDS
+        )
+        assert (
+            frozenset(
+                command
+                for command, location in tlr.COMMAND_LOCATIONS.items()
+                if location is tlr.CommandLocation.HOST
+            )
+            == tlr._HOST_ONLY_COMMANDS
+        )
 
 
 class TestEffectiveCommand:

@@ -215,6 +215,13 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: "pdk")
     monkeypatch.setattr(init_cmd, "_step_image_lifecycle", lambda _ctx: result)
     monkeypatch.setattr(init_cmd, "_print_summary", lambda _ctx: 0)
+    remembered = []
+    monkeypatch.setattr(
+        init_cmd,
+        "remember_project",
+        remembered.append,
+        raising=False,
+    )
     calls = []
     monkeypatch.setattr(
         init_cmd,
@@ -242,6 +249,7 @@ def test_full_init_passes_verified_session_image_id_to_interactive_mode(tmp_path
             "session_image_id": result.selected_id,
         }
     ]
+    assert remembered == [tmp_path]
 
 
 @pytest.mark.parametrize(

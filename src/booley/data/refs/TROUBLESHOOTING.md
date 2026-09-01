@@ -407,4 +407,16 @@ Do not attempt to expose a host daemon, a Docker socket, a direct license-server
 address, or a license environment variable to repair this. Those paths are not
 part of the product and a failed registration/licensing check deliberately fails
 closed. Use `booley eda installation list`, `booley eda license list`, and
-`booley eda grant list` to inspect administrator-owned records.
+`booley projects` to inspect administrator-owned records and see each Project's
+Grants together.
+
+If a granted Project directory was deleted, do not recreate it just to revoke
+authority. Run `booley projects`, copy the missing root's exact absolute path,
+then run:
+
+```bash
+booley eda grant revoke --kind vivado /exact/deleted/project
+```
+
+After every Grant for that root is gone, remove the obsolete inventory entry
+with `booley projects forget /exact/deleted/project`.
