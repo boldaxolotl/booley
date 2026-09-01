@@ -6,7 +6,7 @@ import os
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Literal, cast
 
 import pytest
@@ -59,6 +59,12 @@ _SECOND_SOURCE_POINT_ID = (
     "YiLCJzdGFydCI6eyJjb2x1bW4iOjMsImxpbmUiOjEwfX0sIm1ldHJpYyI6ImxpbmUiLCJzdWJq"
     "ZWN0Ijp7ImJhc2ljX2Jsb2NrIjowfX0"
 )
+
+
+def test_windows_open_flags_do_not_require_missing_pywin32_constant() -> None:
+    win32_constants = SimpleNamespace(FILE_FLAG_BACKUP_SEMANTICS=0x02000000)
+
+    assert coverage_waiver_files._windows_open_flags(win32_constants) == 0x02200000
 
 
 def _roots(tmp_path: Path) -> CoverageRepositoryRoots:
