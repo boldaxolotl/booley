@@ -36,6 +36,15 @@ The Session Runtime is the shared execution and containment boundary. The `boole
 
 Capabilities fall into two architectural categories. **Booley Flows** deterministically turn structured requests into EDA invocations and their results into evidence. **Specialists** are scoped LLM sub-agents for work such as review and mutation testing. The calling agent reaches both through a uniform MCP surface rather than spawning EDA tools directly. The live capability catalog and controls are in [USAGE.md](../user/USAGE.md#booley-flows--specialists); the build and evidence contracts are in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md), and the extension model is in [MCP-TOOLS.md](MCP-TOOLS.md).
 
+Source ownership follows those boundaries. Each built-in Flow owns its
+tool-specific adapters beneath `src/booley/flows/<flow>/backends/`; for example,
+simulation owns Cocotb, Icarus, and Verilator adapters, synthesis owns Yosys and
+OpenROAD adapters, and FPGA implementation owns its Vivado adapter. Here
+`backends` is an internal package-layout term for interchangeable implementation
+adapters. Product configuration and documentation still call the external
+program an **EDA tool**, and `eda/provisioning/` separately owns host installation
+and licensing policy.
+
 All modes and tickets share the runtime's resources. Admission control therefore treats each Flow, Specialist, and Developer Agent run as a Job in a separately capped Job Class. Excess work queues, with Interactive work ahead of Ticket work, so concurrent sessions cannot exhaust the container's memory. Configuration belongs under [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs).
 
 The runtime is network-restricted by default. Deterministic compile and simulation work receives no egress; LLM-backed work receives only provider access. Approved host EDA installations may be mounted read-only, but their tools still execute inside the runtime. This keeps dispatch, configuration, execution, and result interpretation on the container side of the trust boundary.

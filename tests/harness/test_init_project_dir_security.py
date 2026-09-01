@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness import init_cmd
-from booley.harness.init_common import InitContext
+from booley.harness.setup.common import InitContext
 
 
 @pytest.mark.skipif(init_cmd.os.name == "nt", reason="POSIX permission contract")

@@ -53,7 +53,7 @@ class TestToolEndSummary:
 
 class TestCriteriaUpdateEvent:
     def test_criteria_update_emitted_on_set_criterion(self, tmp_path: Path):
-        from booley.dev_support.development_state import CriterionEntry, DevelopmentState
+        from booley.criteria.state import CriterionEntry, DevelopmentState
 
         state = DevelopmentState()
         state._file_path = tmp_path / "state.json"
@@ -74,7 +74,7 @@ class TestCriteriaUpdateEvent:
             assert event["criteria"]["lint_clean"]["mandatory"] is True
 
     def test_criteria_update_excludes_internal_entries(self, tmp_path: Path):
-        from booley.dev_support.development_state import CriterionEntry, DevelopmentState
+        from booley.criteria.state import CriterionEntry, DevelopmentState
 
         state = DevelopmentState()
         state._file_path = tmp_path / "state.json"
@@ -92,7 +92,7 @@ class TestCriteriaUpdateEvent:
             assert "_blocked_reason" not in event["criteria"]
 
     def test_criteria_update_includes_status_history(self, tmp_path: Path):
-        from booley.dev_support.development_state import CriterionEntry, DevelopmentState
+        from booley.criteria.state import CriterionEntry, DevelopmentState
 
         state = DevelopmentState()
         state._file_path = tmp_path / "state.json"
@@ -116,7 +116,7 @@ class TestCriteriaUpdateEvent:
         assert entry["ever_failed"] is True
 
     def test_initial_criteria_include_status_history(self, tmp_path: Path):
-        from booley.dev_support.development_state import CriterionEntry, DevelopmentState
+        from booley.criteria.state import CriterionEntry, DevelopmentState
         from booley.harness.console.events import CriteriaChanged
 
         state_path = tmp_path / "state.json"

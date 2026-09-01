@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.dev_support.criteria import CriteriaTemplate
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
     compute_source_fingerprint,
 )
+from booley.criteria.templates import CriteriaTemplate
 from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
 from booley.ticket_board.criteria_summary_format import build_criteria_summary_lines
 

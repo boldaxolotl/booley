@@ -14,11 +14,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from booley.flows.base import SubprocessResult
+from booley.flows.sim.backends import cocotb_results as cr
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.result import format_summary
 from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.sim import cocotb_results as cr
-from booley.sim.sim_result import format_summary
 from tests.flows.sim.test_flow import _make_flow
 
 # A .core declaring a Cocotb Target (flow_options.cocotb_module — decision 2).
@@ -475,7 +475,7 @@ class TestCocotbBatching:
         assert result.exit_code == EXIT_SUCCESS
         assert len(calls) == 1  # one build + one sim process for 3 tests
         script = calls[0][-1]
-        assert "booley.sim.cocotb_run" in script
+        assert "booley.flows.sim.backends.cocotb" in script
         assert script.count("--test=") == 3
         assert "--cocotb-module test_counter" in script
         assert "--result-verbosity compact" in script
@@ -667,7 +667,7 @@ class TestCocotbDryRun:
         assert len(commands) == 1  # batched: one command for three tests
         script = commands[0][-1]
         assert "fusesoc" in script and "--setup" in script
-        assert "booley.sim.cocotb_run" in script
+        assert "booley.flows.sim.backends.cocotb" in script
         assert script.count("--test=") == 3
         assert "--eda-tool icarus" in script
         assert "--cocotb-module test_counter" in script
@@ -680,7 +680,7 @@ class TestCocotbDryRun:
         assert result.exit_code == EXIT_SUCCESS
         script = result.detail["commands"][0][-1]
         assert "cocotb" not in script
-        assert "booley.sim.verilator_run" in script
+        assert "booley.flows.sim.backends.verilator" in script
 
 
 class TestCocotbBuildFailureShape:

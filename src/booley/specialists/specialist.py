@@ -22,6 +22,7 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import Any
 
+from booley.agent_workspace.isolation import remove_shadow_package
 from booley.core.models import AgentCallParams
 
 # Also re-exported for backward compatibility: tb_coder + tests import
@@ -34,7 +35,6 @@ from booley.dev_support.commit_git_io import (
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.dev_support.validate_commit_msg import ALLOWED_TYPES
-from booley.dev_support.workspace_isolation import remove_shadow_package
 from booley.mcp.base import EXIT_ERROR, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for

@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from booley.dev_support.development_state import CATEGORY_RTL, CATEGORY_TB
+from booley.criteria.state import CATEGORY_RTL, CATEGORY_TB
 from booley.fusesoc.fusesoc_registry import classified_sources, source_dirs_from_core
 from booley.mcp.diff_classify import _classify_files
 

@@ -14,7 +14,7 @@ from booley.flows.implementation_report import (
 )
 
 if TYPE_CHECKING:
-    from booley.dev_support.criteria import TargetPair
+    from booley.criteria.templates import TargetPair
 
     from .flow import SynthMetrics
 

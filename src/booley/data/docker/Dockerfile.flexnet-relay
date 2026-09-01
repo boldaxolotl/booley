@@ -1,5 +1,6 @@
 # Minimal production image for the fixed-destination Xilinx FlexNet relay.
-# Build with src/booley/eda as the context so only the standalone relay enters.
+# Build with the provisioning/licensing package as the context so only the
+# standalone relay enters.
 FROM python:3.14.7-alpine3.24@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

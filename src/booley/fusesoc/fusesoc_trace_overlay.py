@@ -33,16 +33,16 @@ from typing import Any
 
 import yaml
 
-from booley.fusesoc.core_projection import (
-    native_cores_ignored,
-    projected_core_path,
-    projection_enabled,
-)
-from booley.sim.trace_recipe import (
+from booley.flows.sim.trace_recipe import (
     TraceMode,
     TraceRecipeError,
     require_cocotb_trace_mode,
     resolve_verilator_trace_mode,
+)
+from booley.fusesoc.core_projection import (
+    native_cores_ignored,
+    projected_core_path,
+    projection_enabled,
 )
 
 logger = logging.getLogger(__name__)

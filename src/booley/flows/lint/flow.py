@@ -23,11 +23,11 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.flows import eda_parsers
+from booley.flows.run_log import write_run_log
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.sim.sim_result import write_run_log
 from booley.targets.flow_names import config_section
 from booley.targets.target import TargetHandle, select_targets
 

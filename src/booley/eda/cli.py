@@ -8,7 +8,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from . import authority
+from .provisioning import authority
 
 
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -150,6 +150,6 @@ def _grant_action(args: argparse.Namespace, action: str) -> object:
 
 def _cleanup_project_resources(project: Path) -> list[str]:
     """Remove labeled containers then networks after authority is revoked."""
-    from .flexnet_docker import cleanup_project_resources
+    from .provisioning.licensing.flexnet_docker import cleanup_project_resources
 
     return list(cleanup_project_resources(project))

@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from booley.harness.triage_package import _write_diff_pair
+from booley.review.triage_package import _write_diff_pair
 
 
 def test_triage_diff_paths_preserve_repository_filenames(tmp_path, monkeypatch):
     ctx = type("Context", (), {"base_sha": "base", "head_sha": "head"})()
     monkeypatch.setattr(
-        "booley.harness.triage_package._revision_content",
+        "booley.review.triage_package._revision_content",
         lambda _ctx, _revision, path: path.encode(),
     )
 

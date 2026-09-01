@@ -19,14 +19,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.boundary import as_str_list
-from booley.dev_support.criterion_categories import (
+from booley.criteria.categories import (
     verification_fingerprint_categories as _verification_fingerprint_categories,
 )
 
 # NOTE: DevelopmentState is imported function-locally (not here) because the
-# test suite patches ``booley.dev_support.development_state.DevelopmentState`` at
+# test suite patches ``booley.criteria.state.DevelopmentState`` at
 # its source module; a module-level binding here would defeat that patch.
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     compute_source_fingerprint,
 )
@@ -87,7 +87,7 @@ def check_criteria_acceptance(
     Returns:
         CriteriaVerdict with disposition and summary stats.
     """
-    from booley.dev_support.development_state import DevelopmentState
+    from booley.criteria.state import DevelopmentState
 
     if not state_path.exists():
         logger.warning("State file not found: %s", state_path)
@@ -166,7 +166,7 @@ def _sim_contract_requirements(
 ) -> tuple[set[str], int | None]:
     """Resolve required names and minimum count from a sealed simulation criterion."""
     from booley.config.project_config import lookup_target_section
-    from booley.dev_support.criteria_actions import criterion_target
+    from booley.criteria.actions import criterion_target
 
     params = entry.params or {}
     target = criterion_target(key, entry, "sim_pass")
@@ -337,7 +337,7 @@ def _mark_review_receipt_stale(
 
 
 def _review_receipt_is_stale(entry, *, work_dir: Path, categories: list[str], now: str) -> bool:
-    from booley.dev_support.review_receipt import ReviewTicketError, review_receipt_drift
+    from booley.review.receipt import ReviewTicketError, review_receipt_drift
 
     try:
         changed = review_receipt_drift(entry.detail or {}, work_dir)
@@ -649,7 +649,7 @@ def _determine_disposition(state, stats: dict) -> CriteriaVerdict:
 def _run_report_gate_error(state) -> str | None:
     """Return why final report evidence is insufficient, or ``None``."""
     from booley.config.project_config import is_run_report_enabled
-    from booley.dev_support.review_dispositions import review_report_required
+    from booley.review.dispositions import review_report_required
 
     unmet_optional = sorted(
         key

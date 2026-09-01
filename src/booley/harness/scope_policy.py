@@ -29,10 +29,6 @@ import json
 import logging
 from pathlib import Path
 
-from booley.dev_support.contract_path_policy import (
-    is_static_contract_path,
-    normalize_contract_path,
-)
 from booley.runtime.git import (
     git_run,
     is_new_scope_entry,
@@ -40,6 +36,10 @@ from booley.runtime.git import (
     scope_matches_dirty_file,
     scope_matches_file,
     strip_scope_new_tag,
+)
+from booley.ticket_board.contract_path_policy import (
+    is_static_contract_path,
+    normalize_contract_path,
 )
 
 logger = logging.getLogger(__name__)

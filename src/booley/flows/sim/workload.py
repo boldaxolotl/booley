@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from booley.dev_support.cycle_count import PROVENANCE_LIMITATION
+from booley.criteria.cycle_count import PROVENANCE_LIMITATION
 from booley.flows.recipe_evidence import jsonable
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 

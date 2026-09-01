@@ -138,6 +138,7 @@ def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
     assert '"Python 3.13.15"' in evidence_script
     assert '"Python 3.14.7"' in evidence_script
     assert "source-repodigests.tsv" in evidence_script
+    assert evidence_script.count("src/booley/eda/provisioning/licensing") == 2
     assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314" in workflow
     assert "BOOLEY_REAPER_IMAGE: booley-reaper:py314" in workflow
     assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow

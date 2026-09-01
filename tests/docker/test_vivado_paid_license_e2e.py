@@ -22,9 +22,9 @@ from tests.license_evidence import (
     require_checkout_then_release,
 )
 
-from booley.eda import authority, runtime_spec
-from booley.eda.flexnet_docker import resources_for_session
-from booley.eda.vivado import CONTAINER_TARGET
+from booley.eda.provisioning import authority, runtime_spec
+from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
+from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
 from booley.harness import devcontainer as dc
 from booley.harness import session_runtime
 

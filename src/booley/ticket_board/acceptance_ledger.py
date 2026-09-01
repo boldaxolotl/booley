@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from booley.dev_support.development_state import CriterionChange, DevelopmentState
+from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.runtime.timefmt import utc_now_rfc3339
 
 SCHEMA_VERSION = 1

@@ -18,10 +18,10 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
+from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.target_tests import NoRunnableTestsError
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
-from booley.sim.cocotb_run import _parse_args as parse_cocotb_run_args
 from booley.specialists.mutation_tester import (
     MutationResult,
     MutationRunPlan,
@@ -565,7 +565,7 @@ def _patch_sim_runner(monkeypatch, sim_returncode: int = 0):
 
     def _fake(cmd, *args, **kwargs):
         joined = " ".join(cmd) if isinstance(cmd, list) else ""
-        if "booley.sim.verilator_run" in joined:
+        if "booley.flows.sim.backends.verilator" in joined:
             return _fake_proc(rc=sim_returncode, stdout="[sim] ok", stderr="")
         if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
             return _fake_proc(rc=0, stdout="[make] ok", stderr="")
@@ -607,7 +607,7 @@ def test_elab_and_sim_run_verilator_binary(tmp_path: Path, monkeypatch):
     # _run_elab records the bin dir marker for the run-many loop to reuse.
     assert (build_dir / ".booley_edalize_bindir").exists()
     # Run half: the active Python drives verilator_run with no mutation selector.
-    assert sim_cmd[:3] == [sys.executable, "-m", "booley.sim.verilator_run"]
+    assert sim_cmd[:3] == [sys.executable, "-m", "booley.flows.sim.backends.verilator"]
     assert not any("MUT_ID" in arg for arg in sim_cmd)
     assert "--top" in sim_cmd and "tb" in sim_cmd
     assert "--trace" not in sim_cmd
@@ -921,7 +921,7 @@ class TestColdStart:
             if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
                 build_calls.append(cmd)
                 return _fake_proc(rc=0)
-            if "booley.sim.verilator_run" in joined:
+            if "booley.flows.sim.backends.verilator" in joined:
                 return _fake_proc(rc=0)
             return original(cmd, *args, **kwargs)
 
@@ -1171,7 +1171,7 @@ class TestColdScopeEnforcement:
 
         def _fake_run(cmd, *args, **kwargs):
             joined = " ".join(cmd) if isinstance(cmd, list) else ""
-            if "booley.sim.verilator_run" in joined:
+            if "booley.flows.sim.backends.verilator" in joined:
                 return _fake_proc(rc=0, stdout="[sim] ok")
             if isinstance(cmd, list) and cmd[:2] == ["make", "-C"]:
                 return _fake_proc(rc=0, stdout="[make] ok")
@@ -1306,7 +1306,7 @@ class TestCocotbSimDispatch:
         endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
         sim_cmd = captured[-1]
-        assert sim_cmd[:3] == [sys.executable, "-m", "booley.sim.cocotb_run"]
+        assert sim_cmd[:3] == [sys.executable, "-m", "booley.flows.sim.backends.cocotb"]
         parsed = parse_cocotb_run_args(sim_cmd[3:])
         assert "--cocotb-module" in sim_cmd and "tb.test_ravenoc" in sim_cmd
         assert parsed.eda_tool == "verilator"
@@ -1356,7 +1356,7 @@ class TestCocotbSimDispatch:
         endpoint._run_elab("default", tmp_path, build_dir)
         endpoint._run_sim_pinned("default", tmp_path, build_dir, "tb")
 
-        assert captured[-1][:3] == [sys.executable, "-m", "booley.sim.verilator_run"]
+        assert captured[-1][:3] == [sys.executable, "-m", "booley.flows.sim.backends.verilator"]
 
     def test_classic_icarus_target_uses_iverilog_run(self, tmp_path: Path, monkeypatch):
         """F-6: a classic Icarus build must be executed as a vvp image."""
@@ -1377,7 +1377,7 @@ class TestCocotbSimDispatch:
 
         sim_cmd = captured[-1]
         assert sim_cmd[:2] == [sys.executable, "-m"]
-        assert sim_cmd[2].endswith(".sim.iverilog_run")
+        assert sim_cmd[2] == "booley.flows.sim.backends.icarus"
         assert sim_cmd[sim_cmd.index("--build-dir") + 1] == "build"
         assert not any("MUT_ID" in arg for arg in sim_cmd)
         assert "--top" not in sim_cmd

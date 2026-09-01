@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     DevelopmentState,
 )
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
@@ -906,5 +906,5 @@ class TestRunIntegration:
 
 
 # ---------------------------------------------------------------------------
-# Isolation tests moved to tests/dev_support/test_workspace_isolation.py
+# Isolation tests live in tests/agent_workspace/test_isolation.py.
 # ---------------------------------------------------------------------------
