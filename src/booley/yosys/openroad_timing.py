@@ -36,7 +36,6 @@ _AREA_RE = re.compile(
     r"Design\s+area\s+([\d.]+)\s*um?\^2\s+([\d.]+)\s*%\s*utilization",
     re.IGNORECASE,
 )
-_PRE_REPAIR_SLACK_RE = re.compile(r"STA_PRE_REPAIR_WORST_SLACK_NS:\s*([-+]?\d+(?:\.\d+)?)")
 
 
 class OpenRoadPdk(NamedTuple):
@@ -247,31 +246,6 @@ def parse_openroad_area(text: str) -> tuple[float | None, float | None]:
         return float(m.group(1)), float(m.group(2))
     except ValueError:
         return None, None
-
-
-def _salvage_pre_repair(
-    config: StaTimingConfig,
-    report_dir: Path,
-    output: str,
-) -> bool:
-    """Emit stable markers from a pre-repair snapshot left by the boundary run."""
-    match = _PRE_REPAIR_SLACK_RE.search(output)
-    slack_ns = float(match.group(1)) if match else None
-    if slack_ns is None:
-        slack_ns = syn_core.parse_sta_worst_slack(report_dir / "pre_repair.csv.rpt")
-    if slack_ns is None:
-        return False
-    period_ps = syn_core.effective_period_ps(config, output)
-    critical_path_ps = period_ps - (slack_ns * 1000.0)
-    fmax_mhz = 1_000_000.0 / critical_path_ps if critical_path_ps > 0 else None
-    print("STA_REPAIR_INCOMPLETE: repair_timing did not complete; reporting pre-repair placed STA")
-    print(f"STA_WORST_SLACK_NS: {slack_ns:.6f}")
-    print(f"STA_CRITICAL_PATH_PS: {critical_path_ps:.3f}")
-    if fmax_mhz is not None:
-        print(f"STA_FMAX_MHZ: {fmax_mhz:.3f}")
-    print(f"STA_REPORT: {report_dir / 'pre_repair.rpt'}")
-    print(f"STA_CSV_REPORT: {report_dir / 'pre_repair.csv.rpt'}")
-    return True
 
 
 def _print_openroad_area_markers(stdout: str) -> None:

@@ -12,13 +12,11 @@ IMAGE="booley-sandbox"
 VERBOSE="${1:-}"
 PASS=0
 FAIL=0
-SKIP=0
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
 green()  { printf "\033[32m✓ %s\033[0m\n" "$1"; }
 red()    { printf "\033[31m✗ %s\033[0m\n" "$1"; }
-yellow() { printf "\033[33m⊘ %s\033[0m\n" "$1"; }
 
 # Run a command inside a fresh container that mirrors pipeline settings.
 # Uses the same flags as DockerRunner._build_docker_cmd.
@@ -224,7 +222,7 @@ assert_fails "Cannot use chroot escape" \
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
+echo "Results: $PASS passed, $FAIL failed"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ $FAIL -gt 0 ]; then

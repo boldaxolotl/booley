@@ -60,31 +60,6 @@ class SkillLinkEvent:
         """Whether this event changed a link or its ownership record."""
         return self.outcome in {"created", "adopted", "retargeted", "removed"}
 
-    @property
-    def always_visible(self) -> bool:
-        """Whether adapters should render this event outside verbose mode."""
-        return self.failed or self.outcome not in {"created", "unchanged"}
-
-    @property
-    def replaces_target(self) -> bool:
-        """Whether applying this event replaces one link target with another."""
-        return self.outcome == "retargeted"
-
-    @property
-    def preview_label(self) -> str:
-        """Human-readable action label for a dry-run event."""
-        verbs = {
-            "created": "create",
-            "adopted": "adopt",
-            "equivalent": "accept as equivalent",
-            "retargeted": "retarget",
-            "removed": "remove",
-            "unchanged": "leave unchanged",
-            "conflict": "report conflict for",
-            "error": "report error for",
-        }
-        return f"would {verbs[self.outcome]}"
-
 
 @dataclass(frozen=True)
 class SkillLinkReport:
