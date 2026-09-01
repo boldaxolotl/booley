@@ -12,6 +12,7 @@ from typing import Any, Literal, Protocol
 
 PathProblemKind = Literal["missing", "symlink", "invalid", "unreadable"]
 PathEntryKind = Literal["directory", "file"]
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 
 
 @dataclass(frozen=True)
@@ -250,7 +251,7 @@ class _WindowsSecureTree:  # pragma: no cover
         share = win32con.FILE_SHARE_READ
         if expected_directory:
             share |= win32con.FILE_SHARE_WRITE
-        flags = win32con.FILE_FLAG_BACKUP_SEMANTICS | win32con.FILE_FLAG_OPEN_REPARSE_POINT
+        flags = win32con.FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT
         try:
             handle = win32file.CreateFile(
                 str(path),
