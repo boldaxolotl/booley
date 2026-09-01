@@ -14,10 +14,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 from booley.flows.synth.pdk import DEFAULT_LIB_DIR
-from booley.flows.synth.timing import (
-    StaTimingConfig,
-    effective_period_ps,
-    parse_sta_worst_slack,
+from booley.flows.synth.timing import StaTimingConfig
+
+from .reporting import (
     perclock_timing_tcl,
     reg2reg_timing_tcl,
 )

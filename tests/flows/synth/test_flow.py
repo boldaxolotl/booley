@@ -21,7 +21,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming, make_clock_timing
-from booley.flows.synth import pipeline as syn_make
+from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     KGE_DIVISOR,
     AsicSynthesizeFlow,
@@ -3074,7 +3074,7 @@ class TestSynthResolution:
 
         joined = " ".join(cmd)
         # Configuration over the resolved sources (no legacy config selector).
-        assert cmd[:4] == ["python3", "-m", "booley.flows.synth.configure", "configure"]
+        assert cmd[:4] == ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
         assert "-c" not in cmd
         assert cmd[cmd.index("-t") + 1] == "dut"
         # Resolved RTL sources are forwarded as relative (sandbox-safe) paths.

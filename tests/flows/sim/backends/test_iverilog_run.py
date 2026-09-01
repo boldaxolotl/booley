@@ -16,16 +16,17 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.backends import icarus as ir
+from booley.flows.sim.backends.shared import find_icarus_image
 
 
 def test_find_image_strips_scr_extension(tmp_path: Path):
     """Edalize writes <name>.scr next to the vvp image named <name> (no ext)."""
     (tmp_path / "sim_cfg.scr").write_text("")
-    assert ir._find_image(tmp_path) == "sim_cfg"
+    assert find_icarus_image(tmp_path) == "sim_cfg"
 
 
 def test_find_image_none_when_no_scr(tmp_path: Path):
-    assert ir._find_image(tmp_path) is None
+    assert find_icarus_image(tmp_path) is None
 
 
 def test_build_vvp_cmd_uses_M_and_absolute_image_no_fst(tmp_path: Path):  # noqa: N802 — `M` names the -M flag under test

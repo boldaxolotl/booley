@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from tests.conftest import MINIMAL_FST_BYTES
 
+from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends import verilator as vr
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
 from booley.flows.sim.trace_session import TraceArtifact, TraceInspection, TraceSession
@@ -534,9 +535,9 @@ def test_stream_output_refreshes_run_log_while_running(tmp_path: Path, monkeypat
     import os
     import sys
 
-    from booley.flows.sim.result import begin_run_log, run_log_is_current
+    from booley.flows.run_log import begin_run_log, run_log_is_current
 
-    monkeypatch.setattr(vr, "RUN_LOG_PROGRESS_INTERVAL_S", 0.0)
+    monkeypatch.setattr(backend_shared, "RUN_LOG_PROGRESS_INTERVAL_S", 0.0)
     run = tmp_path / "run"
     run.mkdir()
     work = tmp_path / "work"
@@ -612,7 +613,7 @@ class TestDeclaredTraceFiles:
         kill, so past the cap the raw VCD is adopted as-is — the run is still
         reported as having produced a waveform, which was F-22's real complaint.
         """
-        monkeypatch.setattr(vr, "_MAX_ADOPTED_VCD_BYTES", 16)
+        monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
         big = tmp_path / "fpu.vcd"
         big.write_bytes(b"0" * 64)
         trace = self._FakeTrace(tmp_path / "trace.fst")
@@ -623,7 +624,7 @@ class TestDeclaredTraceFiles:
         assert trace.postprocessed == []  # no unbounded conversion was attempted
 
     def test_huge_raw_vcd_cannot_earn_trace_ok(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setattr(vr, "_MAX_ADOPTED_VCD_BYTES", 16)
+        monkeypatch.setattr(backend_shared, "MAX_ADOPTED_VCD_BYTES", 16)
         (tmp_path / "huge.vcd").write_bytes(b"0" * 64)
 
         suffix = vr._finalize_trace(

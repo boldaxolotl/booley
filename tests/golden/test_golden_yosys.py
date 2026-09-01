@@ -19,13 +19,10 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.synth.backends.openroad.reporting import reg2reg_timing_tcl, write_sta_sdc
 from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
 from booley.flows.synth.backends.yosys import core as syn_core
-from booley.flows.synth.timing import (
-    StaTimingConfig,
-    reg2reg_timing_tcl,
-    write_sta_sdc,
-)
+from booley.flows.synth.timing import StaTimingConfig
 from tests.golden.conftest import assert_matches_golden, normalize_work_dir
 
 # Canned, machine-independent input paths. These are embedded verbatim in the

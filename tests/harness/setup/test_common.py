@@ -1,4 +1,4 @@
-"""Tests for init_common.guarded_write — the single init clobber-guard.
+"""Tests for setup.common.guarded_write — the single init clobber-guard.
 
 Every scaffolding step routes its writes through guarded_write, so these
 tests pin the ownership contract each historical per-site scheme (bare
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from booley.harness.setup.common import (
     InitContext,
@@ -193,7 +193,7 @@ class TestStepBanner:
     def test_no_init_module_hardcodes_a_step_number(self):
         """The drift guard: a new step must call ctx.step_banner, not bake in a
         literal that the next retirement turns into a hole."""
-        harness = Path(__file__).resolve().parents[2] / "src" / "booley" / "harness"
+        harness = Path(__file__).resolve().parents[3] / "src" / "booley" / "harness"
         offenders = [
             p.name
             for p in harness.glob("init_*.py")

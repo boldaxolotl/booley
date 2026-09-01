@@ -8,7 +8,7 @@ git ref. The baseline is synthesized in a throwaway ``git worktree`` (see
 and Interactive Mode.
 
 The configure half renders scripts and a Makefile into the per-target build dir
-in-process (:mod:`booley.flows.synth.pipeline`), execution runs ``make -C <rel>`` in
+in-process (:mod:`booley.flows.synth.backends.pipeline`), execution runs ``make -C <rel>`` in
 the Session Runtime, and the interpret half reconstructs the report from files
 the make run left in the build directory.
 """
@@ -1162,7 +1162,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         resolved = self._resolve_synth_target(target)
         self._record_recipe_evidence(target, resolved)
         work_dir = Path(self.args.work_dir)
-        cmd = ["python3", "-m", "booley.flows.synth.configure", "configure"]
+        cmd = ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
         top = self._append_rtl_source_args(cmd, resolved, work_dir)
         synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
         self._append_sta_constraint_args(cmd, resolved, target, work_dir, synth_mode)
@@ -1190,7 +1190,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         ``_build_synth_cmd``) is parsed back by run_yosys_syn's own parser —
         guaranteeing the two stay shape-compatible — resolved against this
         run's work_dir, and rendered into scripts + a Makefile. Returns the
-        :class:`booley.flows.synth.pipeline.SynthPlan` the interpret half consumes.
+        :class:`booley.flows.synth.backends.pipeline.SynthPlan` the interpret half consumes.
 
         The liberty existence check is hard because configuration and execution
         share the Session Runtime filesystem.
@@ -1198,8 +1198,8 @@ class AsicSynthesizeFlow(BooleyFlow):
         Raises ``SystemExit`` (run_yosys_syn's validation guards) or ``OSError``
         (render failure); ``_run_single_config`` maps both to infra errors.
         """
-        from booley.flows.synth import configure as run_yosys_syn
-        from booley.flows.synth import pipeline as syn_make
+        from booley.flows.synth.backends import configure as run_yosys_syn
+        from booley.flows.synth.backends import pipeline as syn_make
 
         args = run_yosys_syn.parse_configure_argv(cmd)
         spec = run_yosys_syn.resolve_spec(
@@ -1295,7 +1295,7 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _read_boundary_output(self, plan: Any, result: SubprocessResult) -> tuple[Any, str]:
         """Reconstruct fresh synthesis output from boundary artifacts."""
-        from booley.flows.synth import pipeline as syn_make
+        from booley.flows.synth.backends import pipeline as syn_make
 
         outcome = syn_make.boundary_output(
             plan,
@@ -1415,7 +1415,7 @@ class AsicSynthesizeFlow(BooleyFlow):
 
         Lands as ``run.log`` in ``.booley_project/.runtime/edalize/
         asic_synthesize/<target>/`` — the per-target dir the FuseSoC resolution
-        already uses. Reuses the sim layer's :func:`write_run_log` for its
+        already uses. Reuses the Flow-neutral :func:`write_run_log` for its
         tail-cap + atomic-write semantics (flows/ already depends on sim/ — see
         simulate.py).
 

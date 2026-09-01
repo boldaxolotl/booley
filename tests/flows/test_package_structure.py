@@ -52,6 +52,11 @@ def test_flow_implementations_are_owned_by_their_flow_packages() -> None:
     assert (FLOWS_ROOT / "synth" / "backends" / "yosys").is_dir()
     assert (FLOWS_ROOT / "synth" / "backends" / "openroad").is_dir()
     assert (FLOWS_ROOT / "fpga" / "backends" / "vivado").is_dir()
+    assert not (FLOWS_ROOT / "synth" / "configure.py").exists()
+    assert not (FLOWS_ROOT / "synth" / "pipeline.py").exists()
+    assert (FLOWS_ROOT / "synth" / "backends" / "configure.py").is_file()
+    assert (FLOWS_ROOT / "synth" / "backends" / "pipeline.py").is_file()
+    assert (FLOWS_ROOT / "synth" / "backends" / "openroad" / "reporting.py").is_file()
 
 
 def _imported_modules(source_file: Path) -> set[str]:
@@ -88,13 +93,58 @@ def test_flow_packages_do_not_import_one_another() -> None:
             assert not violations, f"{source_file}: cross-Flow imports {sorted(violations)}"
 
 
-def test_synth_backends_do_not_import_flow_or_one_another() -> None:
+def test_flow_neutral_modules_do_not_depend_on_concrete_flows() -> None:
+    forbidden = {f"booley.flows.{flow}" for flow in FLOW_PACKAGES}
+    for source_file in FLOWS_ROOT.glob("*.py"):
+        imported = _imported_modules(source_file)
+        violations = {
+            module
+            for module in imported
+            if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
+        }
+        assert not violations, f"{source_file}: neutral module imports {sorted(violations)}"
+
+
+def test_backend_adapters_do_not_import_sibling_adapters() -> None:
+    owners = {
+        "sim": {
+            "cocotb": ("cocotb.py", "cocotb_results.py"),
+            "icarus": ("icarus.py",),
+            "verilator": ("verilator.py",),
+        },
+        "synth": {
+            "openroad": ("openroad",),
+            "yosys": ("yosys",),
+        },
+    }
+    for flow, adapters in owners.items():
+        backends = FLOWS_ROOT / flow / "backends"
+        for owner, owned_paths in adapters.items():
+            forbidden = {
+                f"booley.flows.{flow}.backends.{sibling}"
+                for sibling in adapters
+                if sibling != owner
+            }
+            source_files = []
+            for relative in owned_paths:
+                path = backends / relative
+                source_files.extend(path.rglob("*.py") if path.is_dir() else (path,))
+            for source_file in source_files:
+                imported = _imported_modules(source_file)
+                violations = {
+                    module
+                    for module in imported
+                    if any(
+                        module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden
+                    )
+                }
+                assert not violations, f"{source_file}: sibling imports {sorted(violations)}"
+
+
+def test_synth_leaf_backends_do_not_import_flow_or_one_another() -> None:
     backends = FLOWS_ROOT / "synth" / "backends"
     for owner in ("yosys", "openroad"):
-        forbidden = {
-            "booley.flows.synth.flow",
-            f"booley.flows.synth.backends.{'openroad' if owner == 'yosys' else 'yosys'}",
-        }
+        forbidden = {"booley.flows.synth.flow"}
         for source_file in (backends / owner).rglob("*.py"):
             imported = _imported_modules(source_file)
             violations = {

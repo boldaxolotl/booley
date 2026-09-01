@@ -27,13 +27,9 @@ from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
 from booley.core.boundary import BoundaryError, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
+from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
-from booley.flows.sim.result import (
-    RUN_LOG_NAME,
-    parse_summary_line,
-    run_log_is_current,
-    write_run_log,
-)
+from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.runner import (
     resolve_sim_sentinels as _resolve_sim_sentinels,

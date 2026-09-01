@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from booley.flows.sim.run_guard import DiskBudgetGuard, SimTimeStallGuard
 
+from booley.flows.run_log import write_run_log
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     VERDICT_PASS,
@@ -72,12 +73,12 @@ from booley.flows.sim.backends.cocotb_results import (
     recover_timeout_progress,
     results_payload,
 )
+from booley.flows.sim.backends.shared import find_icarus_image
 from booley.flows.sim.result import (
     count_sva_errors,
     format_infra_error,
     format_summary,
     write_result_json,
-    write_run_log,
 )
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_stall
 from booley.flows.sim.trace_session import TraceSession
@@ -117,13 +118,6 @@ def _find_verilator_binary(build_dir: Path) -> Path | None:
     """The cocotb Verilator binary — always ``Vtop`` (edalize pins the prefix)."""
     exe = build_dir / "Vtop"
     return exe if exe.exists() else None
-
-
-def _find_icarus_image(build_dir: Path) -> str | None:
-    """Locate the vvp image via its ``.scr`` sibling (iverilog_run's discovery)."""
-    from booley.flows.sim.backends.icarus import _find_image
-
-    return _find_image(build_dir)
 
 
 def _cocotb_config(arg_sets: list[list[str]]) -> list[str]:
@@ -218,7 +212,7 @@ def _build_run_cmd(
     """
     plus = [pa if pa.startswith(("+", "-")) else f"+{pa}" for pa in plusargs]
     if eda_tool == "icarus":
-        image = _find_icarus_image(build_dir)
+        image = find_icarus_image(build_dir)
         if image is None:
             return None
         (libpath,) = _cocotb_config([["--lib-name-path", "vpi", "icarus"]])

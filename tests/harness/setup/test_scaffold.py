@@ -1,4 +1,4 @@
-"""Tests for ``booley init --scaffold`` (init_scaffold).
+"""Tests for ``booley init --scaffold`` in the setup.scaffold module.
 
 The generators are pure (choices in, files out), so most combos are validated
 without touching disk; the step-level tests exercise the refusal gate and the

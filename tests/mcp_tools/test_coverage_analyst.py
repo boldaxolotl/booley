@@ -1807,7 +1807,9 @@ class TestInvalidateTraceCache:
         from booley.flows.sim.trace_session import TraceSession
 
         work_dir = Path("sim_default")
-        with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"):
+        with patch(
+            "booley.flows.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"
+        ):
             # The bucket name is derived (work-dir name + path digest), so ask
             # TraceSession for it instead of hardcoding the old bare name.
             stale = TraceSession(work_dir).cache_dir / "trace.fst"
@@ -1816,7 +1818,9 @@ class TestInvalidateTraceCache:
         assert not stale.exists()
 
     def test_noop_when_no_cache_dir(self, tmp_path):
-        with patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"):
+        with patch(
+            "booley.flows.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"
+        ):
             CoverageAnalystSpecialist._invalidate_trace_cache(Path("nonexistent"))
 
 

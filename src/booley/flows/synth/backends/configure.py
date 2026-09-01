@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
-from booley.flows.synth import pipeline as syn_make
+from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.openroad import ppa as openroad_ppa_options
 from booley.flows.synth.backends.yosys import ppa as yosys_ppa_options
 from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
@@ -304,7 +304,7 @@ def parse_configure_argv(cmd: list[str]) -> argparse.Namespace:
     Accepts the argv with or without the ``python3 -m <module>`` prefix.
     """
     tokens = list(cmd)
-    if tokens[:3] == ["python3", "-m", "booley.flows.synth.configure"]:
+    if tokens[:3] == ["python3", "-m", "booley.flows.synth.backends.configure"]:
         tokens = tokens[3:]
     return _build_parser().parse_args(tokens)
 

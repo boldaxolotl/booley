@@ -1,4 +1,4 @@
-"""Tests for `booley init` git-side steps (init_git_hooks module).
+"""Tests for `booley init` git-side steps in the setup.git_hooks module.
 
 Currently covers Step 10c — the worktree prune guard (ADR 0028 Decision 10):
 Ticket Mode worktrees are created in-container, so their git metadata records

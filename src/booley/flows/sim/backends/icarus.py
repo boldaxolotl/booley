@@ -45,18 +45,23 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 from collections import deque
 from pathlib import Path
 
+from booley.flows.run_log import write_run_log
+from booley.flows.sim.backends.shared import (
+    RunLogProgress,
+    adopt_declared_trace_files,
+    find_icarus_image,
+    format_idle_note,
+)
 from booley.flows.sim.result import (
     count_sva_errors,
     extract_vrfc_warnings,
     format_summary,
     parse_sim_verdict,
     write_result_json,
-    write_run_log,
 )
 from booley.flows.sim.trace_session import TraceSession
 
@@ -74,24 +79,6 @@ def _find_vvp() -> str:
     Sandbox image (Phase 0).
     """
     return shutil.which("vvp") or "vvp"
-
-
-def _find_image(build_dir: Path) -> str | None:
-    """Locate the vvp image name in *build_dir* via its ``<name>.scr`` sibling.
-
-    Edalize emits one ``.scr`` next to the image; the image is that stem with no
-    extension. Returns the bare image name (not a path), or ``None`` when no
-    ``.scr`` is present (an unbuilt / non-Icarus build dir).
-    """
-    scripts = sorted(build_dir.glob("*.scr"))
-    if not scripts:
-        return None
-    if len(scripts) > 1:
-        print(
-            f"WARNING: multiple .scr files in {build_dir}; using {scripts[0].name}",
-            file=sys.stderr,
-        )
-    return scripts[0].stem
 
 
 def _build_vvp_cmd(
@@ -143,7 +130,6 @@ def _stream_output(  # noqa: PLR0915 — linear spawn+watchdog+guard+drain pipel
     """
     import threading
 
-    from booley.flows.sim.backends.verilator import RunLogProgress, format_idle_note
     from booley.flows.sim.run_guard import (
         DiskBudgetGuard,
         child_death_kwargs,
@@ -320,7 +306,7 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
     work_dir = Path(work_dir).resolve() if work_dir is not None else build_dir
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    image = _find_image(build_dir)
+    image = find_icarus_image(build_dir)
     if image is None:
         msg = f"ERROR: no vvp image (*.scr) found in {build_dir}"
         print(msg)
@@ -375,8 +361,6 @@ def run_icarus_image(  # noqa: PLR0915 — linear vvp run+capture pipeline: buil
         if found is None and trace_files:
             # F-22: the TB writes its dump under a name only the project knows
             # ([flows.sim].trace_files).
-            from booley.flows.sim.backends.verilator import adopt_declared_trace_files
-
             found = adopt_declared_trace_files(trace, trace_files, [run_cwd, work_dir, build_dir])
         if found is None:
             reason = "trace requested but no queryable .fst store or .vcd was produced"

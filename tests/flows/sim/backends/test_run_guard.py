@@ -493,7 +493,10 @@ def test_child_death_kwargs_kill_the_simulator_when_its_parent_dies():
         env={
             **os.environ,
             "PYTHONPATH": os.pathsep.join(
-                [str(Path(__file__).resolve().parents[4] / "src"), os.environ.get("PYTHONPATH", "")]
+                [
+                    str(Path(__file__).resolve().parents[4] / "src"),
+                    os.environ.get("PYTHONPATH", ""),
+                ]
             ),
         },
     )

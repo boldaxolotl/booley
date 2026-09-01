@@ -13,6 +13,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
+from booley.flows.run_log import write_run_log
 from booley.flows.sim.build import SimulationBuildPreparationError
 from booley.flows.sim.flow import (
     _INCONCLUSIVE_NO_SENTINEL,
@@ -34,7 +35,6 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.flow import (
     TestResult as SimTestResult,  # aliased: a Test* name would be pytest-collected
 )
-from booley.flows.sim.result import write_run_log
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime.project_dir import reset_cache
 
@@ -2606,7 +2606,7 @@ class TestTruncationResilientReport:
     def test_another_runs_log_is_never_vouched_for(self, tmp_path: Path):
         """A log whose header names a DIFFERENT run (a concurrent Flow, or a
         run whose header this one never wrote) is not citable."""
-        from booley.flows.sim.result import begin_run_log
+        from booley.flows.run_log import begin_run_log
 
         flow = _make_flow(tmp_path, config="lite")
         build_root = tmp_path / "build" / "lite"
@@ -2706,8 +2706,8 @@ class TestBuildContextReporting:
         failure, so the MCP layer's stdout truncation cut them off on exactly
         the long runs that needed them.
         """
+        from booley.flows.run_log import write_run_log
         from booley.flows.sim.flow import TargetResult
-        from booley.flows.sim.result import write_run_log
 
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
         flow = _make_flow(tmp_path, config="sim", seed_core=False)
@@ -2763,8 +2763,8 @@ class TestBuildContextReporting:
     def test_trace_pointer_follows_a_custom_dump_path(self, tmp_path: Path):
         """A project's own ``trace_files`` dump path (F-22) still gets cited —
         ``trace.fst`` is the conventional name, not the only one."""
+        from booley.flows.run_log import write_run_log
         from booley.flows.sim.flow import TargetResult
-        from booley.flows.sim.result import write_run_log
 
         (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
         flow = _make_flow(tmp_path, config="sim", seed_core=False)
@@ -3317,7 +3317,9 @@ class TestSelectorRoundTrip:
 
         for selector in self._SELECTORS:
             cmd = _make_flow(tmp_path)._verilator_run_cmd("build/dir", "tb", [selector])
-            ns = verilator_run._parse_args(self._runner_argv(cmd, "booley.flows.sim.backends.verilator"))
+            ns = verilator_run._parse_args(
+                self._runner_argv(cmd, "booley.flows.sim.backends.verilator")
+            )
             assert ns.plusargs == [selector]
             # And onward to the binary: '+' restored for bare selectors,
             # option-like ones forwarded verbatim (SETUP-7).
@@ -3330,7 +3332,9 @@ class TestSelectorRoundTrip:
 
         for selector in self._SELECTORS:
             cmd = _make_flow(tmp_path)._icarus_run_cmd("build/dir", [selector])
-            ns = iverilog_run._parse_args(self._runner_argv(cmd, "booley.flows.sim.backends.icarus"))
+            ns = iverilog_run._parse_args(
+                self._runner_argv(cmd, "booley.flows.sim.backends.icarus")
+            )
             assert ns.plusargs == [selector]
 
     def test_cocotb_test_names_survive_parse(self, tmp_path: Path):
@@ -3351,7 +3355,9 @@ class TestSelectorRoundTrip:
             return_value=(["ALL TESTS PASSED."], ["-FAILED-", "ERROR!"]),
         ):
             cmd = _make_flow(tmp_path)._verilator_run_cmd("build/dir", "tb", [])
-        ns = verilator_run._parse_args(self._runner_argv(cmd, "booley.flows.sim.backends.verilator"))
+        ns = verilator_run._parse_args(
+            self._runner_argv(cmd, "booley.flows.sim.backends.verilator")
+        )
         assert ns.pass_sentinels == ["ALL TESTS PASSED."]
         assert ns.fail_sentinels == ["-FAILED-", "ERROR!"]
 
@@ -3544,7 +3550,7 @@ class TestFullRunLogOnPass:
     """fpu F-29e: a PASSING sandbox run's log carries the build section too."""
 
     def test_persist_writes_build_and_run_halves(self, tmp_path: Path):
-        from booley.flows.sim.result import run_log_is_current
+        from booley.flows.run_log import run_log_is_current
 
         flow = _make_flow(tmp_path, config="lite")
         log_dir = tmp_path / "build" / "lite"

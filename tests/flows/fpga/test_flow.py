@@ -451,9 +451,15 @@ def _patch_edam_build(captured: dict):
         )
 
     return (
-        patch("booley.flows.fpga.backends.vivado.edam.build_fpga_edam", side_effect=fake_build_fpga_edam),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.build_fpga_edam",
+            side_effect=fake_build_fpga_edam,
+        ),
         patch("booley.flows.edam.configure", side_effect=fake_configure),
-        patch("booley.flows.fpga.backends.vivado.edam.fpga_run_command", return_value=["make", "-C", "x"]),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.fpga_run_command",
+            return_value=["make", "-C", "x"],
+        ),
     )
 
 

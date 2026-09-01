@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.synth import timing as synth_timing
+from booley.flows.synth.backends.openroad import reporting as openroad_reporting
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.mode import runs_openroad
@@ -276,24 +277,22 @@ def _write_boundary_sdc(config: StaTimingConfig, build_dir: Path) -> None:
 
     When the clock is statically known — an explicit ``--clock`` or a
     ``create_clock -name`` in the Target's authored SDC — this is byte-for-byte
-    :func:`syn_core.write_sta_sdc`. Otherwise the legacy flow detected the
+    OpenROAD adapter's SDC renderer. Otherwise the legacy flow detected the
     clock *port* from the synthesized netlist, which does not exist at
     configure time; the generated block then resolves the port at read time
     with a Tcl candidate probe (SDC is a Tcl dialect, and the generated file
     already uses ``if``/``catch``).
     """
-    clock = config.clock or synth_timing._first_authored_clock(config)
+    clock = config.clock or synth_timing.first_authored_clock(config)
     if clock:
-        synth_timing.write_sta_sdc(config, clock, build_dir)
+        openroad_reporting.write_sta_sdc(config, clock, build_dir)
         return
 
     period_ns = config.period_ps / 1000.0
     input_delay_ns = period_ns * (config.input_delay_pct / 100.0)
     output_delay_ns = period_ns * (config.output_delay_pct / 100.0)
     user_sdc = synth_timing.read_user_sdc_text(config)
-    owns_clock = bool(synth_timing._SDC_CREATE_CLOCK_RE.search(user_sdc))
-    owns_input = bool(synth_timing._SDC_INPUT_DELAY_RE.search(user_sdc))
-    owns_output = bool(synth_timing._SDC_OUTPUT_DELAY_RE.search(user_sdc))
+    ownership = synth_timing.sdc_ownership(config)
 
     lines: list[str] = []
     if user_sdc:
@@ -316,21 +315,21 @@ def _write_boundary_sdc(config: StaTimingConfig, build_dir: Path) -> None:
             "} else {",
         ]
     )
-    if not owns_clock:
+    if not ownership.clock:
         lines.append(
             f"  create_clock -name $_booley_clk -period {period_ns:.6f} [get_ports $_booley_clk]"
         )
-    if not owns_input:
+    if not ownership.input_delay:
         lines.append(
             "  if { [catch { set input_ports [remove_from_collection [all_inputs]"
             " [get_ports $_booley_clk]] }] } { set input_ports [all_inputs] }"
         )
         lines.append(f"  set_input_delay -clock $_booley_clk {input_delay_ns:.6f} $input_ports")
-    if not owns_output:
+    if not ownership.output_delay:
         lines.append(f"  set_output_delay -clock $_booley_clk {output_delay_ns:.6f} [all_outputs]")
-    if not owns_input:
+    if not ownership.input_delay:
         lines.append("  catch { set_driving_cell -lib_cell BUF_X1 $input_ports }")
-    if not owns_output:
+    if not ownership.output_delay:
         lines.append("  catch { set_load 10.0 [all_outputs] }")
     lines.append("}")
     (build_dir / "sta_constraints.sdc").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -602,7 +601,9 @@ def _timing_sections(
         surfaced = False
         if openroad_text is not None:
             parts.append(f"--- openroad.log ---\n{openroad_text}")
-            surfaced = syn_core.emit_timing_markers(openroad_text, spec.timing, report_dir)
+            surfaced = openroad_reporting.emit_timing_markers(
+                openroad_text, spec.timing, report_dir
+            )
             openroad_timing._print_openroad_area_markers(openroad_text)
         if not surfaced and openroad_text is not None:
             print("WARNING: STA completed but no timing path slack was reported")

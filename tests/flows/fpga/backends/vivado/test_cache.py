@@ -159,7 +159,10 @@ def test_run_single_target_skips_executor_on_valid_cache_hit(tmp_path: Path) -> 
             "load",
             return_value=fpga_cache.CacheHit("a" * 64, "reports", _run_evidence()),
         ),
-        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=_parsed_pass()),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value=_parsed_pass(),
+        ),
         patch.object(flow, "_execute_boundary") as execute,
     ):
         metrics = flow._run_single_target("fpga_demo")
@@ -193,7 +196,10 @@ def test_cache_miss_forces_make_recipe(tmp_path: Path) -> None:
         patch.object(fpga_cache, "store", return_value=True),
         patch.object(flow, "_execute_boundary", side_effect=execute),
         patch.object(flow, "_collect_route_reports", return_value="reports"),
-        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=_parsed_pass()),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value=_parsed_pass(),
+        ),
     ):
         metrics = flow._run_single_target("fpga_demo")
     assert executed[-1] == "-B"
@@ -217,7 +223,10 @@ def test_no_cache_forces_executor_despite_valid_hit(tmp_path: Path) -> None:
             ),
         ) as execute,
         patch.object(flow, "_collect_route_reports", return_value="reports"),
-        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=_parsed_pass()),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
+            return_value=_parsed_pass(),
+        ),
     ):
         metrics = flow._run_single_target("fpga_demo")
     load.assert_not_called()

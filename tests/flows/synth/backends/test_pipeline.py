@@ -1,6 +1,6 @@
 """Tests for the make-driven boundary split of the synthesis flow (ADR 0037 §8).
 
-Covers the two in-sandbox halves in :mod:`booley.flows.synth.pipeline`:
+Covers the two in-sandbox halves in :mod:`booley.flows.synth.backends.pipeline`:
 
 * configure — script + Makefile rendering (relative script-internal paths,
   EDA-binaries-only recipes, BOOLEY_STAGE markers, physical timing stage,
@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.synth import configure as run_yosys_syn
-from booley.flows.synth import pipeline as syn_make
+from booley.flows.synth.backends import configure as run_yosys_syn
+from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.backends.yosys import core as syn_core
 from booley.flows.synth.timing import StaTimingConfig
 
@@ -488,7 +488,7 @@ class TestResolveSpec:
 
     def test_parse_configure_argv_strips_module_prefix(self):
         args = run_yosys_syn.parse_configure_argv(
-            ["python3", "-m", "booley.flows.synth.configure", "configure", "-t", "top"]
+            ["python3", "-m", "booley.flows.synth.backends.configure", "configure", "-t", "top"]
         )
         assert args.action == "configure"
         assert args.top == "top"

@@ -6,4 +6,3 @@ import sys
 from pathlib import Path
 
 DEFAULT_LIB_DIR = Path("C:/tools") if sys.platform == "win32" else Path("/opt/pdk")
-

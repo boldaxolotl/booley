@@ -620,7 +620,9 @@ class TestPrepareMigration:
             "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             lambda _path: workspace / ".booley_project",
         )
-        monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", lambda *_args: issuance)
+        monkeypatch.setattr(
+            "booley.eda.provisioning.runtime_spec.validate", lambda *_args: issuance
+        )
         monkeypatch.setattr(
             "booley.eda.provisioning.runtime_spec.requested_license", lambda _path, **_kwargs: None
         )
@@ -1027,7 +1029,10 @@ class TestLicensedRelayLifecycle:
             return subprocess.CompletedProcess([], 0, "", "")
 
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr.idk, "container_running", return_value=False),
             patch.object(sr, "_provision_license_relay", side_effect=provision),
@@ -1045,7 +1050,10 @@ class TestLicensedRelayLifecycle:
     def test_relay_start_failure_prevents_session_create(self, wired):
         workspace, run = wired
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr, "_provision_license_relay", side_effect=sr.SessionError("unhealthy")),
             pytest.raises(sr.SessionError, match="unhealthy"),
@@ -1056,7 +1064,10 @@ class TestLicensedRelayLifecycle:
     def test_fresh_create_replaces_deterministic_orphan_topology(self, workspace):
         profile = self._profile()
         expected = SimpleNamespace(relay_container="replacement")
-        with patch("booley.eda.provisioning.licensing.flexnet_docker.recreate_relay", return_value=expected) as recreate:
+        with patch(
+            "booley.eda.provisioning.licensing.flexnet_docker.recreate_relay",
+            return_value=expected,
+        ) as recreate:
             assert (
                 sr._provision_license_relay(
                     workspace,
@@ -1075,7 +1086,10 @@ class TestLicensedRelayLifecycle:
         relay = SimpleNamespace(relay_container="relay")
         run.return_value = subprocess.CompletedProcess([], 1, "", "create failed")
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr, "_provision_license_relay", return_value=relay),
             patch.object(sr, "_remove_license_relay") as remove,
@@ -1089,7 +1103,10 @@ class TestLicensedRelayLifecycle:
         ours = sr.session_container_name(workspace)
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr.idk, "container_exists", return_value=False),
             patch.object(sr, "_provision_license_relay", return_value=relay),
             patch.object(
@@ -1109,7 +1126,10 @@ class TestLicensedRelayLifecycle:
         ours = sr.session_container_name(workspace)
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr.idk, "container_exists", return_value=True),
             patch.object(sr.idk, "container_running", return_value=False),
             patch.object(sr, "_relay_resources", return_value=relay),
@@ -1123,7 +1143,10 @@ class TestLicensedRelayLifecycle:
         workspace, _run = wired
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr, "_relay_objects_exist", return_value=False),
             patch.object(sr, "_provision_license_relay", return_value=relay) as provision,
         ):
@@ -1134,7 +1157,10 @@ class TestLicensedRelayLifecycle:
         workspace, _run = wired
         relay = SimpleNamespace(relay_container="relay")
         with (
-            patch("booley.eda.provisioning.runtime_spec.requested_license", return_value=self._profile()),
+            patch(
+                "booley.eda.provisioning.runtime_spec.requested_license",
+                return_value=self._profile(),
+            ),
             patch.object(sr, "_relay_resources", return_value=relay),
             patch.object(sr, "_relay_objects_exist", return_value=True),
             patch("booley.eda.provisioning.licensing.flexnet_docker.validate_relay") as validate,

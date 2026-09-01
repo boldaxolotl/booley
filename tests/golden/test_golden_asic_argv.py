@@ -222,8 +222,8 @@ def _configure_golden_plan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     import dataclasses
 
     from booley.flows.edam import work_root_for
-    from booley.flows.synth import configure as run_yosys_syn
-    from booley.flows.synth import pipeline as syn_make
+    from booley.flows.synth.backends import configure as run_yosys_syn
+    from booley.flows.synth.backends import pipeline as syn_make
 
     monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
     tool = _make_tool(tmp_path, 'synth_mode = "logical"\n')

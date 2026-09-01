@@ -27,10 +27,10 @@ _YOSYS_PROFILES = {
     "max_frequency": YosysPpaSettings(abc_recipe="fast"),
 }
 
+
 def yosys_profile(profile: str) -> YosysPpaSettings:
     """Translate a generic profile into Yosys mapping defaults."""
     return _YOSYS_PROFILES[validate_ppa_profile(profile)]
-
 
 
 def validate_abc_recipe(value: Any, *, field: str = "abc_recipe") -> str:

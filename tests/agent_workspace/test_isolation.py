@@ -972,9 +972,7 @@ class TestRemoveShadowPackage:
     def test_handles_permission_error(self, tmp_path):
         shadow = tmp_path / "booley"
         shadow.mkdir()
-        with patch(
-            "booley.agent_workspace.isolation.shutil.rmtree", side_effect=OSError("perm")
-        ):
+        with patch("booley.agent_workspace.isolation.shutil.rmtree", side_effect=OSError("perm")):
             remove_shadow_package(tmp_path)  # logs warning, doesn't raise
         assert shadow.is_dir()
 

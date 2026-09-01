@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.flows.synth import timing as synth_timing
+from booley.flows.synth.backends.openroad import reporting as openroad_reporting
+
 # ---------------------------------------------------------------------------
 # resolve_liberty
 # ---------------------------------------------------------------------------
@@ -43,7 +46,9 @@ class TestResolveLiberty:
         monkeypatch.delenv("PRJ_LIB_DIR", raising=False)
         # DEFAULT_LIBERTY moved to booley.flows.synth.backends.yosys.discovery (re-exported by
         # syn_core); patch it where resolve_liberty now reads it.
-        monkeypatch.setattr("booley.flows.synth.backends.yosys.discovery.DEFAULT_LIBERTY", Path("/nonexistent/lib"))
+        monkeypatch.setattr(
+            "booley.flows.synth.backends.yosys.discovery.DEFAULT_LIBERTY", Path("/nonexistent/lib")
+        )
         with pytest.raises(SystemExit):
             syn_core.resolve_liberty(None)
 
@@ -288,16 +293,14 @@ class TestPhysicalStaHelpers:
         assert syn_core.detect_clock_port(netlist) == "clk_i"
 
     def test_parse_sta_worst_slack_marker(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.parse_sta_worst_slack("STA_WORST_SLACK_NS: -0.125") == -0.125
+        assert openroad_reporting.parse_sta_worst_slack("STA_WORST_SLACK_NS: -0.125") == -0.125
 
     def test_parse_sta_worst_slack_csv_takes_min(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         csv = tmp_path / "overall.csv.rpt"
         csv.write_text("a,b,0.100\nc,d,-0.250\n", encoding="utf-8")
-        assert syn_core.parse_sta_worst_slack(csv) == -0.25
+        assert openroad_reporting.parse_sta_worst_slack(csv) == -0.25
 
     def test_parse_sta_worst_slack_malformed_marker_degrades(self, monkeypatch):
         # Simulate STA marker-format drift: the regex matches but the
@@ -305,11 +308,9 @@ class TestPhysicalStaHelpers:
         # scan (here yielding None) rather than crashing synthesis.
         import re
 
-        from booley.flows.synth import timing as synth_timing
-
         drifted = re.compile(r"STA_WORST_SLACK_NS:\s*(\S+)")
-        monkeypatch.setattr(synth_timing, "_STA_SLACK_RE", drifted)
-        assert synth_timing.parse_sta_worst_slack("STA_WORST_SLACK_NS: n/a") is None
+        monkeypatch.setattr(openroad_reporting, "_STA_SLACK_RE", drifted)
+        assert openroad_reporting.parse_sta_worst_slack("STA_WORST_SLACK_NS: n/a") is None
 
     def test_write_sta_sdc_uses_config(self, tmp_path):
         from booley.flows.synth.backends.yosys import core as syn_core
@@ -322,7 +323,7 @@ class TestPhysicalStaHelpers:
             output_delay_pct=60.0,
             sdc=(),
         )
-        path = syn_core.write_sta_sdc(cfg, "clk_i", tmp_path)
+        path = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path)
         text = path.read_text(encoding="utf-8")
         assert "create_clock -name clk_i -period 2.000000" in text
         assert "set_input_delay -clock clk_i 0.500000" in text
@@ -332,9 +333,8 @@ class TestPhysicalStaHelpers:
         assert "set input_ports [all_inputs] }" in text
 
     def test_reg2reg_tcl_is_register_scoped_and_guarded(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        tcl = syn_core.reg2reg_timing_tcl()
+        tcl = openroad_reporting.reg2reg_timing_tcl()
         # Restricts the worst-path search to register endpoints (internal path).
         assert "-from [all_registers]" in tcl
         assert "-to [all_registers]" in tcl
@@ -343,16 +343,14 @@ class TestPhysicalStaHelpers:
         assert "STA_REG2REG_SLACK_NS" in tcl
 
     def test_reg2reg_tcl_omits_report_when_no_path_given(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         # Default stays the arg-free slack-only block: callers that only want
         # the marker (and the golden snapshot) must not grow a stray file write.
-        assert "report_checks" not in syn_core.reg2reg_timing_tcl()
+        assert "report_checks" not in openroad_reporting.reg2reg_timing_tcl()
 
     def test_reg2reg_tcl_writes_path_detail_when_asked(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        tcl = syn_core.reg2reg_timing_tcl("reports/timing/reg2reg.rpt")
+        tcl = openroad_reporting.reg2reg_timing_tcl("reports/timing/reg2reg.rpt")
         # Full gate-by-gate detail of the *reg->reg* path, not the overall one.
         assert "report_checks" in tcl
         assert "-format full" in tcl
@@ -363,9 +361,8 @@ class TestPhysicalStaHelpers:
         assert "  catch {report_checks" in tcl
 
     def test_perclock_tcl_iterates_all_clocks(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        tcl = syn_core.perclock_timing_tcl()
+        tcl = openroad_reporting.perclock_timing_tcl()
         # Iterates every clock and reports paths ending in that clock domain.
         assert "all_clocks" in tcl
         assert "STA_PERCLOCK" in tcl
@@ -376,24 +373,23 @@ class TestPhysicalStaHelpers:
         assert "catch" in tcl
 
     def test_parse_reg2reg_slack_marker(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.parse_reg2reg_slack("STA_REG2REG_SLACK_NS: -0.30") == -0.30
-        assert syn_core.parse_reg2reg_slack("nothing here") is None
+        assert openroad_reporting.parse_reg2reg_slack("STA_REG2REG_SLACK_NS: -0.30") == -0.30
+        assert openroad_reporting.parse_reg2reg_slack("nothing here") is None
 
     def test_print_reg2reg_fmax_emits_derived(self, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         # slack +0.5 ns at a 2000 ps period → crit 1500 ps → 666.667 MHz.
-        assert syn_core.print_reg2reg_fmax("STA_REG2REG_SLACK_NS: 0.500000", 2000.0) is True
+        assert (
+            openroad_reporting.print_reg2reg_fmax("STA_REG2REG_SLACK_NS: 0.500000", 2000.0) is True
+        )
         out = capsys.readouterr().out
         assert "STA_REG2REG_CRITICAL_PATH_PS: 1500.000" in out
         assert "STA_REG2REG_FMAX_MHZ: 666.667" in out
 
     def test_print_reg2reg_fmax_noop_when_absent(self, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.print_reg2reg_fmax("STA_WORST_SLACK_NS: -1.0", 2000.0) is False
+        assert openroad_reporting.print_reg2reg_fmax("STA_WORST_SLACK_NS: -1.0", 2000.0) is False
         assert capsys.readouterr().out == ""
 
 
@@ -418,10 +414,9 @@ class TestEmitTimingMarkers:
         )
 
     def test_overall_and_reg2reg_both_emitted(self, tmp_path, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         stdout = "STA_WORST_SLACK_NS: -0.100000\nSTA_REG2REG_SLACK_NS: 0.500000\n"
-        assert syn_core.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.100000" in out
         assert "STA_CRITICAL_PATH_PS: 2100.000" in out
@@ -431,11 +426,10 @@ class TestEmitTimingMarkers:
     def test_reg2reg_survives_when_overall_absent(self, tmp_path, capsys):
         """A false-pathed / I/O-bound overall worst path leaves no
         STA_WORST_SLACK_NS, but the internal reg->reg Fmax must still surface."""
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         # No overall marker, and no overall.csv.rpt on disk — only reg->reg.
         stdout = "STA_REG2REG_SLACK_NS: 0.500000\n"
-        assert syn_core.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS" not in out
         assert "STA_REG2REG_CRITICAL_PATH_PS: 1500.000" in out
@@ -444,21 +438,22 @@ class TestEmitTimingMarkers:
         assert "STA_REPORT:" in out
 
     def test_nothing_surfaced_returns_false(self, tmp_path, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.emit_timing_markers("no markers here", self._config(), tmp_path) is False
+        assert (
+            openroad_reporting.emit_timing_markers("no markers here", self._config(), tmp_path)
+            is False
+        )
         out = capsys.readouterr().out
         assert "STA_REPORT:" not in out
 
     def test_overall_from_csv_when_stdout_marker_absent(self, tmp_path, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         # Overall slack only in the CSV report; reg->reg absent.
         (tmp_path / "overall.csv.rpt").write_text(
             "startpt,endpt,-0.250000\n",
             encoding="utf-8",
         )
-        assert syn_core.emit_timing_markers("", self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers("", self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_WORST_SLACK_NS: -0.250000" in out
 
@@ -468,24 +463,22 @@ class TestEmitTimingMarkers:
         The Tcl skips the report on a register-free design and the pre-repair
         salvage path never reaches it, so an unconditional pointer would send
         the reader to a file that isn't there."""
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         stdout = "STA_REG2REG_SLACK_NS: 0.500000\n"
-        assert syn_core.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         assert "STA_REG2REG_REPORT:" not in capsys.readouterr().out
 
         (tmp_path / "reg2reg.rpt").write_text("Startpoint: ...\n", encoding="utf-8")
-        assert syn_core.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert f"STA_REG2REG_REPORT: {tmp_path / 'reg2reg.rpt'}" in out
 
     def test_perclock_surfaces_when_overall_and_reg2reg_absent(self, tmp_path, capsys):
         # A design whose overall/reg2reg queries are empty still reports genuine
         # per-clock timing — emit_timing_markers must surface it (return True).
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         stdout = "STA_PERCLOCK: name=clk period_ns=2.000000 wns_ns=0.750000 whs_ns=0.100000\n"
-        assert syn_core.emit_timing_markers(stdout, self._config(), tmp_path) is True
+        assert openroad_reporting.emit_timing_markers(stdout, self._config(), tmp_path) is True
         out = capsys.readouterr().out
         assert "STA_PERCLOCK: name=clk" in out
         assert "STA_REPORT:" in out
@@ -508,79 +501,72 @@ class TestPerClockMarkers:
         )
 
     def test_parse_basic(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        rows = syn_core.parse_perclock(self._marker("clk", 2.0, 0.75, 0.1))
+        rows = synth_timing.parse_perclock(self._marker("clk", 2.0, 0.75, 0.1))
         assert rows == {"clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.1}}
 
     def test_parse_na_becomes_none(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        row = syn_core.parse_perclock(self._marker("clk", 2.0, None, None))["clk"]
+        row = synth_timing.parse_perclock(self._marker("clk", 2.0, None, None))["clk"]
         assert row["period_ns"] == 2.0
         assert row["wns_ns"] is None
         assert row["whs_ns"] is None
 
     def test_parse_dedup_keeps_min_slack(self):
         # A clock reported twice: the most pessimistic (minimum) slack wins.
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         output = self._marker("clk", 2.0, 0.75, 0.30) + self._marker("clk", 2.0, 0.20, 0.05)
-        row = syn_core.parse_perclock(output)["clk"]
+        row = synth_timing.parse_perclock(output)["clk"]
         assert row["wns_ns"] == 0.20
         assert row["whs_ns"] == 0.05
 
     def test_parse_na_never_displaces_real_value(self):
         # A later NA must not overwrite an earlier real slack.
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         output = self._marker("clk", 2.0, 0.75, 0.30) + self._marker("clk", 2.0, None, None)
-        row = syn_core.parse_perclock(output)["clk"]
+        row = synth_timing.parse_perclock(output)["clk"]
         assert row["wns_ns"] == 0.75
         assert row["whs_ns"] == 0.30
 
     def test_parse_multi_clock(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         output = self._marker("clk_a", 2.0, 0.5, 0.1) + self._marker("clk_b", 4.0, 1.0, 0.2)
-        rows = syn_core.parse_perclock(output)
+        rows = synth_timing.parse_perclock(output)
         assert set(rows) == {"clk_a", "clk_b"}
         assert rows["clk_b"]["period_ns"] == 4.0
 
     def test_emit_perclock_roundtrip(self, capsys):
         # Re-emitting parses the input and prints canonical marker lines that
         # parse back to the same values.
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         stdout = self._marker("clk", 2.0, 0.75, 0.1)
-        assert syn_core.emit_perclock_markers(stdout) is True
+        assert openroad_reporting.emit_perclock_markers(stdout) is True
         out = capsys.readouterr().out
-        assert syn_core.parse_perclock(out) == {
+        assert synth_timing.parse_perclock(out) == {
             "clk": {"period_ns": 2.0, "wns_ns": 0.75, "whs_ns": 0.1},
         }
 
     def test_emit_perclock_na_roundtrips_as_na(self, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.emit_perclock_markers(self._marker("clk", 2.0, None, None)) is True
+        assert (
+            openroad_reporting.emit_perclock_markers(self._marker("clk", 2.0, None, None)) is True
+        )
         out = capsys.readouterr().out
         assert "wns_ns=NA" in out and "whs_ns=NA" in out
 
     def test_emit_perclock_noop_when_absent(self, capsys):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.emit_perclock_markers("no markers here") is False
+        assert openroad_reporting.emit_perclock_markers("no markers here") is False
         assert capsys.readouterr().out == ""
 
     def test_parse_sdc_clock_names_in_order(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         text = (
             "create_clock -name clk_core -period 2.0 [get_ports clk]\n"
             "# create_clock -name commented_out -period 1.0\n"
             "create_clock -name clk_io -period 5.0 [get_ports pclk]\n"
         )
-        assert syn_core.parse_sdc_clock_names(text) == ["clk_core", "clk_io"]
+        assert synth_timing.parse_sdc_clock_names(text) == ["clk_core", "clk_io"]
 
 
 # ---------------------------------------------------------------------------
@@ -855,47 +841,41 @@ def _sdc_config(tmp_path, *sdc_texts, period_ps=4000.0):
 
 class TestSdcClockPeriodParsing:
     def test_single_clock_ns_to_ps(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.parse_sdc_clock_periods_ps(
+        assert synth_timing.parse_sdc_clock_periods_ps(
             "create_clock -name clk -period 25 [get_ports clk]"
         ) == [25000.0]
 
     def test_decimal_period(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.parse_sdc_clock_periods_ps("create_clock -period 3.5 [get_ports clk]") == [
-            3500.0
-        ]
+        assert synth_timing.parse_sdc_clock_periods_ps(
+            "create_clock -period 3.5 [get_ports clk]"
+        ) == [3500.0]
 
     def test_multiple_clocks_in_order(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         text = (
             "create_clock -name a -period 10 [get_ports a]\n"
             "create_clock -name b -period 4 [get_ports b]\n"
         )
-        assert syn_core.parse_sdc_clock_periods_ps(text) == [10000.0, 4000.0]
+        assert synth_timing.parse_sdc_clock_periods_ps(text) == [10000.0, 4000.0]
 
     def test_commented_line_ignored(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         text = (
             "# create_clock -name old -period 999 [get_ports x]\n"
             "create_clock -period 8 [get_ports clk]\n"
         )
-        assert syn_core.parse_sdc_clock_periods_ps(text) == [8000.0]
+        assert synth_timing.parse_sdc_clock_periods_ps(text) == [8000.0]
 
     def test_no_period_yields_empty(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.parse_sdc_clock_periods_ps("set_false_path -from x") == []
+        assert synth_timing.parse_sdc_clock_periods_ps("set_false_path -from x") == []
 
     def test_sta_clock_period_marker(self):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
-        assert syn_core.parse_sta_clock_period_ps("STA_CLOCK_PERIOD_NS: 4.0") == 4000.0
-        assert syn_core.parse_sta_clock_period_ps("nope") is None
+        assert openroad_reporting.parse_sta_clock_period_ps("STA_CLOCK_PERIOD_NS: 4.0") == 4000.0
+        assert openroad_reporting.parse_sta_clock_period_ps("nope") is None
 
 
 class TestEffectivePeriod:
@@ -911,10 +891,9 @@ class TestEffectivePeriod:
             output_delay_pct=70.0,
             sdc=(),
         )
-        assert syn_core.effective_period_ps(cfg, "irrelevant stdout") == 4000.0
+        assert openroad_reporting.effective_period_ps(cfg, "irrelevant stdout") == 4000.0
 
     def test_sdc_owned_clock_wins(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(
             tmp_path,
@@ -922,36 +901,33 @@ class TestEffectivePeriod:
             period_ps=4000.0,
         )
         # SDC declares 25 ns; the config scalar (4000 ps) must be ignored.
-        assert syn_core.effective_period_ps(cfg, "") == 25000.0
+        assert openroad_reporting.effective_period_ps(cfg, "") == 25000.0
 
     def test_tightest_of_multiple_clocks(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(
             tmp_path,
             "create_clock -name a -period 10 [get_ports a]\n"
             "create_clock -name b -period 4 [get_ports b]\n",
         )
-        assert syn_core.effective_period_ps(cfg, "") == 4000.0
+        assert openroad_reporting.effective_period_ps(cfg, "") == 4000.0
 
     def test_falls_back_to_sta_marker_when_no_period(self, tmp_path):
         # Authored clock but no parseable -period → STA-reported period (prio 2).
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(tmp_path, "create_clock -name clk_i [get_ports clk_i]")
-        assert syn_core.effective_period_ps(cfg, "STA_CLOCK_PERIOD_NS: 6.0") == 6000.0
+        assert openroad_reporting.effective_period_ps(cfg, "STA_CLOCK_PERIOD_NS: 6.0") == 6000.0
 
     def test_concatenates_sdc_files_in_order(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(
             tmp_path,
             "set_false_path -from x\n",
             "create_clock -period 12 [get_ports clk_i]\n",
         )
-        text = syn_core.read_user_sdc_text(cfg)
+        text = synth_timing.read_user_sdc_text(cfg)
         assert "set_false_path" in text and "create_clock" in text
-        assert syn_core.effective_period_ps(cfg, "") == 12000.0
+        assert openroad_reporting.effective_period_ps(cfg, "") == 12000.0
 
 
 class TestWriteStaSdcSuppression:
@@ -966,16 +942,15 @@ class TestWriteStaSdcSuppression:
             output_delay_pct=60.0,
             sdc=(),
         )
-        text = syn_core.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
+        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
         assert "create_clock -name clk_i" in text
         assert "set_input_delay" in text
         assert "set_output_delay" in text
 
     def test_owned_clock_suppresses_generated_clock(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(tmp_path, "create_clock -period 25 [get_ports clk_i]\n")
-        text = syn_core.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
+        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
         # The authored clock is present; no generated -name default is added.
         assert "create_clock -period 25" in text
         assert "create_clock -name clk_i" not in text
@@ -984,14 +959,13 @@ class TestWriteStaSdcSuppression:
         assert "set_output_delay" in text
 
     def test_owned_io_suppresses_generated_delays(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(
             tmp_path,
             "set_input_delay -clock clk_i 0.1 [all_inputs]\n"
             "set_output_delay -clock clk_i 0.2 [all_outputs]\n",
         )
-        text = syn_core.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
+        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
         # No generated delay lines beyond the authored ones; the $input_ports
         # helper + set_driving_cell (which needs it) are suppressed too.
         assert "$input_ports" not in text
@@ -1000,7 +974,6 @@ class TestWriteStaSdcSuppression:
         assert "create_clock -name clk_i" in text
 
     def test_fully_owned_suppresses_all_generated(self, tmp_path):
-        from booley.flows.synth.backends.yosys import core as syn_core
 
         cfg = _sdc_config(
             tmp_path,
@@ -1008,7 +981,7 @@ class TestWriteStaSdcSuppression:
             "set_input_delay -clock clk_i 0 [all_inputs]\n"
             "set_output_delay -clock clk_i 0 [all_outputs]\n",
         )
-        text = syn_core.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
+        text = openroad_reporting.write_sta_sdc(cfg, "clk_i", tmp_path).read_text()
         assert "create_clock -name clk_i" not in text
         assert "$input_ports" not in text
         assert "set_driving_cell" not in text

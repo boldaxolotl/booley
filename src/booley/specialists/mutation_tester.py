@@ -2112,12 +2112,12 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _persist_capped_log(self, path: Path, output: str, label: str) -> str:
         """Best-effort capped transcript persistence shared by all variants."""
-        from booley.flows.sim.result import _cap_log_bytes
+        from booley.flows.run_log import cap_log_bytes
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(
-                _cap_log_bytes(
+                cap_log_bytes(
                     output.encode("utf-8", errors="replace"),
                     _MUTANT_LOG_MAX_BYTES,
                 )

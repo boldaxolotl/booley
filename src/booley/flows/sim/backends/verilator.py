@@ -22,7 +22,6 @@ deleted (Unit 6).
 from __future__ import annotations
 
 import argparse
-import contextlib
 import os
 import subprocess
 import sys
@@ -32,6 +31,15 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.flows.run_log import write_run_log
+from booley.flows.sim.backends.shared import (
+    RunLogProgress,
+    TraceFileSnapshot,
+    adopt_declared_trace_files,
+    format_idle_note,
+    snapshot_declared_trace_files,
+    trace_file_stamp,
+)
 from booley.flows.sim.result import (
     count_sva_errors,
     extract_vrfc_warnings,
@@ -39,16 +47,9 @@ from booley.flows.sim.result import (
     format_summary,
     parse_sim_verdict,
     write_result_json,
-    write_run_log,
-    write_run_log_progress,
 )
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.trace_session import TraceSession
-
-#: How often the streaming loop refreshes run.log with a live tail (seconds).
-#: Frequent enough that a poll a few seconds apart shows movement, rare enough
-#: that a chatty sim does not turn the log into a write loop (fpu F-18).
-RUN_LOG_PROGRESS_INTERVAL_S = 5.0
 
 
 def _find_binary(bin_dir: Path, top_module: str) -> Path | None:
@@ -220,73 +221,6 @@ def _supervise(proc: subprocess.Popen) -> None:
         supervise_child(proc)
     except ImportError:  # pragma: no cover - defensive against partial installs
         pass
-
-
-class RunLogProgress:
-    """Periodic live-tail flush of the streamed output into ``run.log`` (F-18).
-
-    run.log used to hold nothing but the "run in progress" placeholder for the
-    whole duration of a run, so a healthy six-minute sim and a wedged one looked
-    identical to anyone polling. This writes the current tail — plus elapsed and
-    idle time, the hang-versus-slow signal — every few seconds. Disabled (all
-    methods no-op) when no work dir is known.
-    """
-
-    def __init__(self, work_dir: Path | None, started: float) -> None:
-        self._work_dir = work_dir
-        self._started = started
-        self._last_flush = started
-        self._last_line_at = started
-
-    @property
-    def idle_s(self) -> float:
-        """Seconds since the sim last printed a line."""
-        return time.monotonic() - self._last_line_at
-
-    def observe(self, lines: deque[str]) -> None:
-        """Record a freshly streamed line; flush the tail when due."""
-        self._last_line_at = time.monotonic()
-        if self._work_dir is None:
-            return
-        if self._last_line_at - self._last_flush < RUN_LOG_PROGRESS_INTERVAL_S:
-            return
-        self._last_flush = self._last_line_at
-        self._write(lines)
-
-    def final_flush(self, lines: deque[str]) -> None:
-        """Land one last tail on the way out of the streaming loop.
-
-        The timeout/kill paths return before ``_evaluate_verdict`` writes the
-        real log, so without this a killed run's log keeps a tail from up to one
-        interval before the kill.
-        """
-        if self._work_dir is not None:
-            self._write(lines)
-
-    def _write(self, lines: deque[str]) -> None:
-        # Observability only: a run.log we cannot refresh must never be the
-        # reason a simulation fails.
-        with contextlib.suppress(OSError):
-            write_run_log_progress(
-                self._work_dir,
-                "".join(lines),
-                elapsed_s=time.monotonic() - self._started,
-                line_count=len(lines),
-                idle_s=self.idle_s,
-            )
-
-
-def format_idle_note(idle_s: float, line_count: int) -> str:
-    """Attribution suffix for a timeout: how long the sim has been silent.
-
-    fpu F-21: a testbench whose ``$fopen`` "succeeded" on a *directory* never
-    printed a sentinel and simply spun out the whole budget. "Timed out" alone
-    does not distinguish that from a legitimately slow run; "timed out, last
-    output 900 s ago" does — the sim stopped talking almost immediately.
-    """
-    if line_count == 0:
-        return " — the simulation printed NO output at all"
-    return f" — last output {idle_s:.0f}s ago, {line_count} line(s) total"
 
 
 def _stream_output(  # noqa: PLR0915 — one linear spawn+watchdogs+drain pipeline; splitting it would strand the shared proc/timer/guard/progress state
@@ -498,19 +432,6 @@ def _resolve_single_scope(trace_scope: str | None) -> str | None:
     return scope
 
 
-#: Largest declared ``.vcd`` this adopts by *converting* it to a queryable
-#: store. ``TraceSession.postprocess`` shells out to an unbounded ``bwave
-#: build``, and it runs at finalize time — after the sim's own ``--timeout`` has
-#: been honoured, but still inside the caller's Flow-level ``timeout_ms``. So
-#: the 4.66 GB dump this feature was written for (fpu F-22) would turn a passing
-#: simulation into a timeout kill. Past the cap the dump is adopted as-is: the
-#: run is still reported as having produced a waveform (F-22's actual
-#: complaint), the user just converts it by hand or scopes the dump down.
-_MAX_ADOPTED_VCD_BYTES = 2 * 1024**3
-
-TraceFileSnapshot = dict[Path, tuple[int, int, int]]
-
-
 @dataclass(frozen=True)
 class _RunPaths:
     """Resolved filesystem locations for one verilated execution."""
@@ -533,41 +454,6 @@ class _TraceRuntime:
     keepalive_fd: int | None
 
 
-def _trace_file_stamp(path: Path) -> tuple[int, int, int] | None:
-    """Return a cheap identity for freshness checks, or ``None`` if absent."""
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    return stat.st_mtime_ns, stat.st_size, stat.st_ino
-
-
-def _declared_trace_matches(pattern: str, search_dirs: list[Path]) -> list[Path]:
-    """Resolve one declared artifact pattern using the documented search order."""
-    candidate = Path(pattern)
-    if candidate.is_absolute():
-        return sorted(path for path in candidate.parent.glob(candidate.name) if path.is_file())
-    for base in search_dirs:
-        matches = sorted(path for path in base.glob(pattern) if path.is_file())
-        if matches:
-            return matches
-    return []
-
-
-def snapshot_declared_trace_files(
-    trace_files: list[str] | None,
-    search_dirs: list[Path],
-) -> TraceFileSnapshot:
-    """Snapshot declared artifacts so only output from this run can be adopted."""
-    snapshot: TraceFileSnapshot = {}
-    for pattern in trace_files or []:
-        for match in _declared_trace_matches(pattern, search_dirs):
-            stamp = _trace_file_stamp(match)
-            if stamp is not None:
-                snapshot[match.resolve()] = stamp
-    return snapshot
-
-
 def _prepare_trace_artifacts(
     trace: TraceSession | None,
     trace_files: list[str] | None,
@@ -582,56 +468,6 @@ def _prepare_trace_artifacts(
     return search_dirs, snapshot_declared_trace_files(trace_files, search_dirs)
 
 
-def adopt_declared_trace_files(
-    trace: TraceSession,
-    trace_files: list[str] | None,
-    search_dirs: list[Path],
-    before: TraceFileSnapshot | None = None,
-) -> Path | None:
-    """Adopt the first declared custom trace artifact that exists; None if none do.
-
-    A testbench that owns its C++ ``main()`` writes whatever dump file it likes,
-    wherever its cwd happens to be — ``fpu.vcd`` in ``run_cwd``, say. Booley's
-    checker probes only the bin dir for ``trace.{fst,fifo,vcd}`` plus the bwave
-    cache, so such a run was reported as "no waveform produced" while a 4.66 GB
-    VCD sat right there, with no knob to say otherwise (fpu F-22). Declaring the
-    artifact is what ``[flows.sim].trace_files`` is for.
-
-    Entries are paths relative to each of *search_dirs* in order (absolute paths
-    are used as given), and may be globs. A ``.vcd`` under
-    :data:`_MAX_ADOPTED_VCD_BYTES` is fed through the ``TraceSession`` VCD→bwave
-    postprocess so the result is genuinely queryable. A bigger one is retained
-    only for incident diagnostics rather than risking the caller's budget on
-    conversion; it cannot earn ``TRACE_OK``. An artifact that is already an FST
-    store is inspected as found.
-    """
-    for pattern in trace_files or []:
-        matches = _declared_trace_matches(pattern, search_dirs)
-        for match in matches:
-            if before is not None and before.get(match.resolve()) == _trace_file_stamp(match):
-                continue
-            if not match.is_file() or (size := match.stat().st_size) == 0:
-                continue
-            if match.suffix.lower() == ".vcd":
-                if size > _MAX_ADOPTED_VCD_BYTES:
-                    # Bounded on purpose — see _MAX_ADOPTED_VCD_BYTES.
-                    print(
-                        f"WARNING: declared trace {match} is {size:,} bytes, over the "
-                        f"{_MAX_ADOPTED_VCD_BYTES:,}-byte finalize-time conversion cap; "
-                        "retaining the raw VCD for incident diagnostics; it cannot "
-                        "earn TRACE_OK (convert it separately with `bwave build`, "
-                        "or scope the dump down)"
-                    )
-                    return match
-                trace.postprocess(match)
-                found = trace.find()
-                if found is not None:
-                    return found
-                continue
-            return match
-    return None
-
-
 def _find_current_trace(
     trace: TraceSession,
     trace_files: list[str] | None,
@@ -643,7 +479,7 @@ def _find_current_trace(
     if (
         found is not None
         and before is not None
-        and before.get(found.resolve()) == _trace_file_stamp(found)
+        and before.get(found.resolve()) == trace_file_stamp(found)
     ):
         found = None
     if found is None and trace_files:

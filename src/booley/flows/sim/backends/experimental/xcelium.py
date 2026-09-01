@@ -29,13 +29,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.flows.run_log import write_run_log
 from booley.flows.sim.result import (
     SIM_SUMMARY_PREFIX,
     count_sva_errors_xcelium,
     format_summary,
     parse_sim_verdict,
     write_result_json,
-    write_run_log,
 )
 
 # Substrings that mark a log line as an xrun error worth surfacing as

@@ -676,7 +676,7 @@ class FpgaImplFlow(BooleyFlow):
         """Write *target*'s full combined run log to its Edalize work dir.
 
         Lands as ``run.log`` in the per-target Edalize work root the FuseSoC
-        resolution already uses. Reuses the sim layer's :func:`write_run_log`
+        resolution already uses. Reuses the Flow-neutral :func:`write_run_log`
         for its tail-cap + atomic-write semantics (mirrors asic's
         ``_persist_synth_log``). Returns the project-relative path, or ``""``
         when the write failed — a log-write problem must never fail an

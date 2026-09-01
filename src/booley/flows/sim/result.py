@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import time
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
@@ -27,7 +25,6 @@ from booley.core.boundary import (
     require_dict,
     require_int,
 )
-from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +288,8 @@ def write_result_json(
 
     Survives stdout truncation — agents can always read this file. Carries
     only the structured verdict (plus a 500-char first_error); the full raw
-    output is persisted separately by :func:`write_run_log` as ``run.log``
+    output is persisted separately by :func:`booley.flows.run_log.write_run_log`
+    as ``run.log``
     in the same directory.
     """
     from pathlib import Path
@@ -308,252 +306,6 @@ def write_result_json(
     Path(work_dir, "result.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )
-
-
-# The raw-output log's filename inside the sim work dir. CONTRACT: the
-# simulate summary prints ``<work_dir>/run.log`` as the place to read the
-# full output back — renaming this breaks that pointer.
-RUN_LOG_NAME = "run.log"
-
-#: First line of every run.log Booley opens, written at run START by
-#: :func:`begin_run_log`. It names the run that OWNS the file, so anyone
-#: tailing during a long run sees THIS run's identity instead of the previous
-#: run's leftover bytes (a stale "TEST PASSED" tail read as live progress
-#: burned a real debugging session — ravenoc F-26).
-RUN_LOG_HEADER_PREFIX = "[BOOLEY RUN_LOG]"
-
-#: Prefix of every "this run has not finished yet" body line — both the
-#: freshly-opened :data:`RUN_LOG_PENDING` marker and the live-progress
-#: heartbeat :func:`write_run_log_progress` replaces it with. The single
-#: in-flight signal :func:`run_log_is_current` reads, so adding progress
-#: reporting cannot accidentally make a mid-run log look finished.
-RUN_LOG_IN_PROGRESS_PREFIX = "(run in progress"
-
-#: Body a freshly opened run.log carries until the run produces output. Its
-#: presence is the "no output yet" signal :func:`run_log_is_current` reads.
-RUN_LOG_PENDING = f"{RUN_LOG_IN_PROGRESS_PREFIX} — the full output lands here when it finishes)"
-
-#: Fallback run identity for Flow invocations outside the async-job dispatch
-#: (no ``BOOLEY_RUN_ID``): PID plus process start second, so two sequential
-#: runs from the same shell never collide even if the PID is recycled.
-_PROCESS_RUN_TOKEN = f"pid{os.getpid()}-{int(time.time())}"
-
-
-def current_run_token() -> str:
-    """Identity of the Flow invocation that owns the run.logs it opens.
-
-    The async-job dispatch layer exports ``BOOLEY_RUN_ID`` into every Flow
-    child (ADR 0027), which is exactly the identity an agent polls with — use
-    it when present so a header and a poll name the same run.
-    """
-    return os.environ.get("BOOLEY_RUN_ID", "") or _PROCESS_RUN_TOKEN
-
-
-def begin_run_log(
-    work_dir: str | Path,
-    *,
-    flow: str,
-    target: str,
-    run: str | None = None,
-) -> Path:
-    """Open a FRESH ``<work_dir>/run.log`` for a run that is about to start.
-
-    Truncates whatever the previous run left there and writes a one-line
-    header naming this run (id, Flow, target, start time) plus the
-    :data:`RUN_LOG_PENDING` marker. Without this the file keeps the PREVIOUS
-    run's bytes for the whole duration of a run — :func:`write_run_log` only
-    lands at the end — so a tail shows an old verdict as if it were current.
-
-    Truncation is in place (not the atomic tmp+replace :func:`write_run_log`
-    uses): a reader racing it sees an empty file at worst, never stale
-    content, and an already-open ``tail -f`` follows the same inode.
-    """
-    path = Path(work_dir, RUN_LOG_NAME)
-    started = utc_now_rfc3339()
-    header = (
-        f"{RUN_LOG_HEADER_PREFIX} run={run or current_run_token()} "
-        f"flow={flow} target={target} started={started}\n"
-    )
-    path.write_text(f"{header}{RUN_LOG_PENDING}\n", encoding="utf-8")
-    return path
-
-
-def _read_run_log_head(path: Path) -> tuple[bytes, bytes]:
-    """First two lines of *path*, or ``(b"", b"")`` when unreadable.
-
-    Bounded reads: a run.log's first line is a header by construction, but a
-    log written by something else can be one enormous line.
-    """
-    try:
-        with path.open("rb") as fh:
-            return fh.readline(4096), fh.readline(4096)
-    except OSError:
-        return b"", b""
-
-
-def read_run_log_header(work_dir: str | Path) -> dict[str, str] | None:
-    """Parse ``<work_dir>/run.log``'s header into its ``key=value`` fields.
-
-    Returns None when the log is missing, unreadable, or carries no header
-    (written by a path that never called :func:`begin_run_log`).
-    """
-    first, _ = _read_run_log_head(Path(work_dir, RUN_LOG_NAME))
-    line = first.decode("utf-8", errors="replace")
-    if not line.startswith(RUN_LOG_HEADER_PREFIX) or not line.endswith("\n"):
-        return None
-    fields: dict[str, str] = {}
-    for token in line[len(RUN_LOG_HEADER_PREFIX) :].split():
-        key, sep, value = token.partition("=")
-        if sep and value:
-            fields[key] = value
-    return fields
-
-
-def run_log_is_current(work_dir: str | Path, run: str | None = None) -> bool:
-    """True when ``<work_dir>/run.log`` holds THIS run's FINISHED output.
-
-    The single freshness notion behind every "see run.log" pointer: the log
-    must carry the header this invocation wrote (:func:`begin_run_log`) and
-    must no longer be sitting on the :data:`RUN_LOG_PENDING` marker. A
-    header-less log is somebody else's — never vouched for. This replaces the
-    old mtime-versus-start-time heuristic, which could not tell a run that
-    never wrote its log from one that did.
-    """
-    header = read_run_log_header(work_dir)
-    if header is None or header.get("run") != (run or current_run_token()):
-        return False
-    _, second = _read_run_log_head(Path(work_dir, RUN_LOG_NAME))
-    body = second.decode("utf-8", errors="replace").rstrip("\n")
-    return not body.startswith(RUN_LOG_IN_PROGRESS_PREFIX)
-
-
-def _cap_log_bytes(data: bytes, max_bytes: int) -> bytes:
-    """Clamp *data* to *max_bytes*, keeping the TAIL behind a marker line.
-
-    The tail is where the verdict sentinel, assertion failures and ``$fatal``
-    wording live. Never starts mid-line unless the tail is one unbroken line.
-    """
-    if len(data) <= max_bytes:
-        return data
-    marker = (
-        f"[RUN_LOG TRUNCATED] original size {len(data)} bytes > cap {max_bytes}; keeping tail\n"
-    ).encode()
-    keep = max(0, max_bytes - len(marker))
-    tail = data[-keep:] if keep else b""
-    cut = tail.find(b"\n")
-    if 0 <= cut < len(tail) - 1:
-        tail = tail[cut + 1 :]
-    return marker + tail
-
-
-def _atomic_write(path: Path, data: bytes) -> None:
-    """Replace *path*'s contents with *data* in one step (PID-suffixed tmp).
-
-    The ``_job_records`` idiom: a concurrent reader (an agent tailing run.log
-    mid-run) never sees a torn file, only the old bytes or the new ones.
-    """
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_bytes(data)
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)  # don't leave a stray tmp behind
-        raise
-
-
-#: How much of the live tail :func:`write_run_log_progress` keeps. Small on
-#: purpose: this file is rewritten every few seconds for the whole run, and the
-#: point is "is it moving / what is it saying now", not the full transcript —
-#: which :func:`write_run_log` lands in one piece at the end anyway.
-RUN_LOG_PROGRESS_MAX_BYTES = 200_000
-
-
-def write_run_log_progress(
-    work_dir: str | Path,
-    tail_text: str,
-    *,
-    elapsed_s: float,
-    line_count: int,
-    idle_s: float | None = None,
-    max_bytes: int = RUN_LOG_PROGRESS_MAX_BYTES,
-) -> Path:
-    """Refresh ``<work_dir>/run.log`` with a live tail while the run is STILL going.
-
-    Without this, run.log holds :data:`RUN_LOG_PENDING` for the whole duration
-    of a run — so a healthy 6-minute simulation and a wedged one are
-    indistinguishable until the timeout fires, and the only way to tell them
-    apart is to wait out ``timeout_ms`` (fpu F-18).
-
-    The body line stays inside :data:`RUN_LOG_IN_PROGRESS_PREFIX`, so every
-    freshness check (:func:`run_log_is_current`) still reads this as "not
-    finished" — a live tail must never be mistaken for a verdict. *idle_s* (how
-    long since the sim last printed anything) is the hang-versus-slow signal:
-    a sim that has printed nothing for minutes is stuck, not merely slow
-    (fpu F-21, where an ``$fopen`` on a directory spun silently to the timeout).
-
-    Best-effort by contract — callers ignore ``OSError``; losing a progress
-    refresh must never fail a run that is otherwise fine.
-    """
-    path = Path(work_dir, RUN_LOG_NAME)
-    first, _ = _read_run_log_head(path)
-    is_header = first.startswith(RUN_LOG_HEADER_PREFIX.encode()) and first.endswith(b"\n")
-    header = first if is_header else b""
-    idle = "" if idle_s is None else f", last output {idle_s:.0f}s ago"
-    status = (
-        f"{RUN_LOG_IN_PROGRESS_PREFIX} — {elapsed_s:.0f}s elapsed, "
-        f"{line_count} output line(s){idle}; live tail below, replaced by the "
-        f"full output when the run finishes)\n"
-    ).encode()
-    body = tail_text.encode("utf-8", errors="replace")
-    data = header + status + _cap_log_bytes(body, max(0, max_bytes - len(status)))
-    _atomic_write(path, data)
-    return path
-
-
-def write_run_log(
-    work_dir: str | Path,
-    text: str,
-    max_bytes: int | None = 10_000_000,
-) -> Path:
-    """Persist the raw simulator output to ``<work_dir>/run.log``.
-
-    Companion to :func:`write_result_json`, written into the same directory:
-    result.json carries only the verdict plus a 500-char ``first_error``, so
-    when the MCP layer truncates the Flow's stdout the full simulator output
-    is otherwise gone forever. run.log is the durable copy an agent can
-    always read back after the fact.
-
-    Oversized output keeps the TAIL (that is where the verdict sentinel,
-    assertion failures and ``$fatal`` wording live) and prepends a one-line
-    truncation marker recording the original size; the written file never
-    exceeds *max_bytes*. Pass ``None`` when the caller's contract requires an
-    unabridged archival copy. The write is atomic (PID-suffixed tmp + rename,
-    the ``_job_records`` idiom) so a concurrent reader never sees a torn log.
-
-    An existing :func:`begin_run_log` header is carried over verbatim — the
-    run-halves write this file from their own child process and know nothing
-    about the run identity the prepare half stamped in, so preserving the
-    line here is what keeps :func:`run_log_is_current` answerable.
-    """
-    path = Path(work_dir, RUN_LOG_NAME)
-    first, _ = _read_run_log_head(path)
-    is_header = first.startswith(RUN_LOG_HEADER_PREFIX.encode()) and first.endswith(b"\n")
-    header = first if is_header else b""
-    # errors="replace": runner output is usually already decoded with
-    # errors="replace" upstream, but a TB can still smuggle lone surrogates
-    # through — never let an encode error lose the whole log.
-    body = text.encode("utf-8", errors="replace")
-    data = (
-        header + body
-        if max_bytes is None
-        else header
-        + _cap_log_bytes(
-            body,
-            max(0, max_bytes - len(header)),
-        )
-    )
-    _atomic_write(path, data)
-    return path
 
 
 def parse_summary_line(output: str) -> SimSummary | None:

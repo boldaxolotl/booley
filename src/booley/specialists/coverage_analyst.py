@@ -2887,7 +2887,11 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> tuple[list[str], str]:
         """Build one traced native-HDL simulator invocation."""
         is_icarus = context.eda_tool == "icarus"
-        module = "booley.flows.sim.backends.icarus" if is_icarus else "booley.flows.sim.backends.verilator"
+        module = (
+            "booley.flows.sim.backends.icarus"
+            if is_icarus
+            else "booley.flows.sim.backends.verilator"
+        )
         build_option = "--build-dir" if is_icarus else "--bin-dir"
         run_cmd = [
             "python3",

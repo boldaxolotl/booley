@@ -679,7 +679,7 @@ class TestDockerBuildCommand:
 # wheel gets baked into the image. These are source invariants: cheap guards that
 # fail loudly if the `-P` (or the freshness assertion) is ever dropped.
 
-_BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
+_BUILD_SH = Path(__file__).resolve().parents[3] / "src" / "booley" / "data" / "docker" / "build.sh"
 
 
 def test_build_sh_probe_uses_dash_p_isolation() -> None:
