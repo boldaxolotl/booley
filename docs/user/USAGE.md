@@ -57,8 +57,10 @@ Flows, Specialists, Criteria, Targets, skills, artifacts, and runtime commands.
 Print the whole sheet or use `booley cheat --list` and combine section flags,
 such as `booley cheat --board` or `booley cheat --commands --project`.
 
-`booley doctor --deep` goes further and runs real smoke sims/lints/synthesis, but
-that one needs the Session Runtime; both it and the full command set are in the
+Plain Doctor also setup-checks marked FPGA Targets and probes Vivado.
+`booley doctor --deep` goes further and runs real smoke sims/lints/synthesis,
+while reporting FPGA implementation as a target-specific manual check; it needs
+the Session Runtime. Both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
 Credential-free release automation can use
@@ -914,7 +916,8 @@ booley cheat --commands --project
 # Run diagnostics
 booley doctor
 
-# Run real smoke checks against the first applicable sim/lint/synthesis Targets
+# Run real smoke checks against marked sim/lint/synthesis Targets
+# (marked FPGA Targets get explicit manual implementation commands)
 booley doctor --deep
 
 # Release smoke only: omit credentials and the live Developer probe

@@ -7,9 +7,9 @@ command runs there via ``BooleyFlow._execute_boundary``. Interpretation
 stays in Booley: report collection, metric parsing
 (:func:`fpga_edam.parse_fpga_reports`), Criteria, and baseline comparison.
 
-There is one builder (the built-in flow) and no execution-location knob. The EDA Flow — Vivado —
-comes from the resolved Target, not the execution selection (ADR 0022
-decision 8).
+There is one builder (the built-in Flow) and no execution-location knob. The
+FPGA Flow owns its fixed Vivado backend; the resolved Target's EDA-selection
+field controls FuseSoC resolution inputs, not the implementation backend.
 
 ``--baseline <ref>`` re-implements the design at a past commit in a throwaway
 ``git worktree`` (see :mod:`booley.flows.baseline_worktree`) rather than checking the ref
@@ -42,7 +42,7 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent, vlogparam_values
 
-from .. import artifacts
+from .. import artifacts, run_evidence
 from .. import edam as edam_layer
 from ..base import BooleyFlow, SubprocessResult
 from ..baseline_worktree import (
@@ -80,7 +80,6 @@ from ..recipe_evidence import (
 from ..run_evidence import (
     BASELINE_RUN_EVIDENCE_DETAIL,
     RUN_EVIDENCE_DETAIL,
-    build_flow_run_evidence,
 )
 from .backends.vivado import cache as fpga_cache
 from .backends.vivado import edam as fpga_edam
@@ -89,7 +88,6 @@ from .backends.vivado.metrics import (
     _delta_pct,
     _first_valid_display,
     _metrics_detail,
-    _split_csv,
     _split_resolved_sources,
     _unique_strings,
     _vlogdefine_args,
@@ -118,6 +116,26 @@ class _PreparedFpgaCommand:
         """Keep the historical ``run_cmd, work_root = ...`` test/API shape."""
         yield self.run_cmd
         yield self.work_root
+
+
+@dataclass(frozen=True)
+class _ResolvedFpgaRecipe:
+    """Validated Target recipe shared by dry-run and real materialization."""
+
+    target: str
+    resolved: Any
+    part: str
+    top: str
+    xdc_files: tuple[Path, ...]
+    sv_files: tuple[Path, ...]
+    v_files: tuple[Path, ...]
+    include_dirs: tuple[Path, ...]
+    defines: tuple[str, ...]
+    vlogparams: dict[str, Any]
+    out_of_context: bool
+    recipe_snapshot: dict[str, Any]
+    recipe_fingerprint: str
+    source_evidence: run_evidence.FlowSourceEvidence
 
 
 _FPGA_METRIC_MAP: dict[str, str] = {
@@ -249,6 +267,7 @@ class FpgaImplFlow(BooleyFlow):
         targets = fusesoc_registry.resolve_target_selection(
             self.args.target,
             self.args.work_dir,
+            for_flow="fpga",
         )
         if not targets:
             return McpToolResult(
@@ -353,28 +372,68 @@ class FpgaImplFlow(BooleyFlow):
         return error
 
     def _dry_run(self, targets: list[str]) -> McpToolResult:
-        # Unlike the make-driven built-ins' side-effect-free setup_command preview
-        # (simulate/lint/elaborate), fpga_impl's dry-run emits the boundary-command
-        # artifact *description* — the part/top/xdc + source counts that
-        # feed the Vivado run — sourced via the non-fatal try_resolve_target
-        # (None → an actionable resolution error). The real Vivado run
-        # stays gated on a Vivado installation issued to the Session Runtime,
-        # so a runnable command is not previewable.
-        lines = ["[fpga] dry-run mode (session-runtime)"]
-        for tgt in targets:
+        """Resolve every Target recipe before reporting an all-or-nothing preview."""
+        recipes: list[_ResolvedFpgaRecipe] = []
+        for target in targets:
             try:
-                params = self._resolve_fpga_summary(tgt)
-            except ValueError as exc:
-                return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+                recipes.append(self._resolve_fpga_recipe(target))
+            except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
+                logger.debug("fpga dry-run setup failed for %s", target, exc_info=True)
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"fpga dry-run setup failed for {target}: {exc}",
+                )
+        lines = ["[fpga] dry-run mode (session-runtime)"]
+        for recipe in recipes:
             lines.append(
-                f"  target={tgt} part={params['part']} top={params['top_module']} "
-                f"xdc={params['xdc_paths']}"
+                f"  target={recipe.target} part={recipe.part} top={recipe.top} "
+                f"xdc={','.join(str(path) for path in recipe.xdc_files)}"
             )
-            lines.append(
-                f"  sv_files={len(_split_csv(params['sv_files']))} "
-                f"v_files={len(_split_csv(params['v_files']))}"
-            )
+            lines.append(f"  sv_files={len(recipe.sv_files)} v_files={len(recipe.v_files)}")
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
+
+    def _resolve_fpga_recipe(self, target: str) -> _ResolvedFpgaRecipe:
+        """Resolve and validate every Target input shared with a real dispatch."""
+        work_dir = Path(self.args.work_dir)
+        build_root = edam_layer.work_root_for(work_dir, self.name, target, variant="fusesoc")
+        resolved = fusesoc_registry.resolve_target(
+            target,
+            project_root=work_dir,
+            build_root=build_root,
+        )
+        validate_top_parameter_intent(resolved, flow="fpga")
+        part = self._resolve_part(resolved.flow_options)
+        xdc_files = tuple(self._resolve_xdc_files(resolved, target))
+        top = str(resolved.toplevel or "")
+        if not top:
+            raise ValueError(
+                f"fpga: top module not found for target {target!r} (set the Target toplevel)"
+            )
+        sv_files, v_files, include_dirs = _split_resolved_sources(resolved)
+        out_of_context = require_bool(
+            resolved.flow_options,
+            "out_of_context",
+            field=f"Target {target!r} flow_options.out_of_context",
+        )
+        snapshot = fpga_recipe_snapshot(resolved, target=target)
+        fingerprint = fpga_recipe_snapshot_fingerprint(snapshot)
+        source = run_evidence.capture_flow_source_evidence(work_dir, target)
+        return _ResolvedFpgaRecipe(
+            target=target,
+            resolved=resolved,
+            part=part,
+            top=top,
+            xdc_files=xdc_files,
+            sv_files=tuple(sv_files),
+            v_files=tuple(v_files),
+            include_dirs=tuple(include_dirs),
+            defines=tuple(_unique_strings(_vlogdefine_args(resolved.parameters))),
+            vlogparams=vlogparam_values(resolved.parameters),
+            out_of_context=out_of_context,
+            recipe_snapshot=snapshot,
+            recipe_fingerprint=fingerprint,
+            source_evidence=source,
+        )
 
     def _prepare_fpga_command(
         self,
@@ -404,45 +463,18 @@ class FpgaImplFlow(BooleyFlow):
         all three as infra errors).
         """
         work_dir = Path(self.args.work_dir)
-        # Resolve the FPGA Target through FuseSoC (decision 4). The build dir is
-        # kept distinct from the vivado configure() work_root below so the two
-        # trees never collide.
-        fusesoc_build_root = edam_layer.work_root_for(
-            work_dir, self.name, target, variant="fusesoc"
-        )
-        resolved = fusesoc_registry.resolve_target(
-            target, project_root=work_dir, build_root=fusesoc_build_root
-        )
-        validate_top_parameter_intent(resolved, flow="fpga")
-        part = self._resolve_part(resolved.flow_options)
-        # XDC constraints from the Target's file_type:xdc fileset (ADR 0031),
-        # with a deprecation fallback to the legacy global key. Resolved after
-        # the Target so the fileset can be read.
-        xdc_files = self._resolve_xdc_files(resolved, target)
-
-        # Top comes from the resolved Target (decision 12).
-        top = resolved.toplevel
-        if not top:
-            raise ValueError(
-                f"fpga: top module not found for target {target!r} (set the Target toplevel)"
-            )
-
-        sv_files, v_files, include_dirs = _split_resolved_sources(resolved)
-
-        defines = _vlogdefine_args(resolved.parameters)
-        vlogparams = vlogparam_values(resolved.parameters)
-
+        recipe = self._resolve_fpga_recipe(target)
         work_root = edam_layer.work_root_for(work_dir, "fpga", target)
         edam = fpga_edam.build_fpga_edam(
             name=f"fpga_{target}",
-            toplevel=str(top),
-            part=str(part),
-            sv_files=sv_files,
-            v_files=v_files,
-            include_dirs=include_dirs,
-            xdc_files=xdc_files,
-            defines=_unique_strings(defines),
-            vlogparams=vlogparams,
+            toplevel=recipe.top,
+            part=recipe.part,
+            sv_files=recipe.sv_files,
+            v_files=recipe.v_files,
+            include_dirs=recipe.include_dirs,
+            xdc_files=recipe.xdc_files,
+            defines=recipe.defines,
+            vlogparams=recipe.vlogparams,
             workspace_root=self.args.work_dir,
             work_root=work_root,
         )
@@ -451,42 +483,36 @@ class FpgaImplFlow(BooleyFlow):
         fpga_edam.validate_vivado_parameter_contract(
             work_root,
             project_name,
-            vlogparams,
+            recipe.vlogparams,
         )
         # QoR-gate targets whose bare toplevel out-ports the package (e.g. an
         # engine block never meant for pin mapping) opt into OOC synthesis so
         # placement does not fail on IO-buffer overutilization. Strictly typed:
         # a string ``"false"`` is truthy and would silently enable OOC, so a
         # non-bool raises (BoundaryError is a ValueError → infra error upstream).
-        out_of_context = require_bool(
-            resolved.flow_options,
-            "out_of_context",
-            field=f"Target {target!r} flow_options.out_of_context",
-        )
-        if out_of_context:
+        if recipe.out_of_context:
             fpga_edam.enable_out_of_context(work_root, project_name)
         run_cmd = fpga_edam.fpga_run_command(work_root, Path(self.args.work_dir))
-        recipe_snapshot = fpga_recipe_snapshot(resolved, target=target)
         fingerprint = fpga_cache.input_fingerprint(
-            resolved,
+            recipe.resolved,
             edam,
-            out_of_context=out_of_context,
+            out_of_context=recipe.out_of_context,
         )
-        recipe_fingerprint = fpga_recipe_snapshot_fingerprint(recipe_snapshot)
-        run_evidence = build_flow_run_evidence(
+        dispatch_evidence = run_evidence.build_flow_run_evidence(
             flow=self.name,
             target=target,
-            recipe_sha256=recipe_fingerprint,
+            recipe_sha256=recipe.recipe_fingerprint,
             work_dir=work_dir,
+            source_evidence=recipe.source_evidence,
         )
         return _PreparedFpgaCommand(
             run_cmd=run_cmd,
             work_root=work_root,
             fingerprint=fingerprint,
-            require_bitstream=not out_of_context,
-            recipe_snapshot=recipe_snapshot,
-            recipe_fingerprint=recipe_fingerprint,
-            run_evidence=run_evidence.as_dict(),
+            require_bitstream=not recipe.out_of_context,
+            recipe_snapshot=recipe.recipe_snapshot,
+            recipe_fingerprint=recipe.recipe_fingerprint,
+            run_evidence=dispatch_evidence.as_dict(),
         )
 
     def _resolve_part(self, flow_options: Any) -> str:
@@ -778,40 +804,6 @@ class FpgaImplFlow(BooleyFlow):
             role = "impl" if run_dir.name.startswith("impl") else "synth"
             dirs.setdefault(role, run_dir)
         return artifacts.artifacts_block(self.args.work_dir, dirs=dirs).get("dirs", {})  # type: ignore[return-value]
-
-    def _resolve_fpga_summary(self, target: str) -> dict[str, Any]:
-        """Resolve a target to the human-readable inputs the dry-run reports.
-
-        A side-effect-light preview of what would feed the Vivado run: the
-        part/top/xdc and the resolved source counts, all resolved from the
-        ``.core`` Target via FuseSoC.
-        """
-        resolved = fusesoc_registry.try_resolve_target(
-            target,
-            project_root=self.args.work_dir,
-        )
-        if resolved is None:
-            raise ValueError(
-                f"fpga: cannot resolve .core Target {target!r} (a resolvable FPGA "
-                f"Target + fusesoc are required; Booley-authored Targets use the "
-                f"fpga name axis, and the legacy configs.toml source was removed)."
-            )
-        part = self._resolve_part(resolved.flow_options)
-        xdc_files = self._resolve_xdc_files(resolved, target)
-        sv_files, v_files, _include_dirs = _split_resolved_sources(resolved)
-        top = resolved.toplevel
-        if not top:
-            raise ValueError(
-                f"fpga: top module not found for target {target!r} (set the Target toplevel)"
-            )
-
-        return {
-            "part": str(part),
-            "top_module": str(top),
-            "xdc_paths": ",".join(str(p) for p in xdc_files),
-            "sv_files": ",".join(str(path) for path in sv_files),
-            "v_files": ",".join(str(path) for path in v_files),
-        }
 
     @staticmethod
     def _metrics_from_parsed_reports(raw: dict[str, Any], elapsed_s: float) -> FpgaMetrics:

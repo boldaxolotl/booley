@@ -123,9 +123,12 @@ _DEEP_TIMEOUTS_S = {
 # that inner boundary expires.
 _SYNTH_DEEP_FINALIZE_MARGIN_S = 180
 
-# The Booley Flows the audit loop dry-runs or deep-smokes. The EDA tool comes
-# from the resolved Target; every command executes in the Session Runtime.
-_AUDITED_FLOWS = ("sim", "lint", "synth")
+# The three core Flow tables remain required project configuration. FPGA is an
+# optional axis: plain Doctor covers it when configured or selected by Target
+# metadata, while deep Doctor deliberately stops short of implementation.
+_REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
+_PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
+_DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -1066,7 +1069,7 @@ def _validate_booley_toml(
     valid &= _render_config_audit(project_schema.audit_feedback_table(data), _pass, _warn, _fail)
     valid &= _render_config_audit(project_schema.audit_stealth_table(data), _pass, _warn, _fail)
     valid &= _render_config_audit(
-        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS), _pass, _warn, _fail
+        flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), _pass, _warn, _fail
     )
     valid &= _render_config_audit(project_schema.audit_sandbox_table(data), _pass, _warn, _fail)
     valid &= _render_config_audit(
@@ -1119,7 +1122,7 @@ def _validate_models_table(data: dict[str, Any], _pass: Check, _warn: Check, _fa
 def _validate_flow_tables(data: dict[str, Any], _warn: Check, _fail: Fail) -> bool:
     """Compatibility facade for the extracted Flow configuration audit."""
     return _render_config_audit(
-        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS),
+        flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES),
         lambda _message: None,
         _warn,
         _fail,
@@ -3791,9 +3794,11 @@ def _check_mcp_tool_payload(
 
 def _required_mcp_tools(project: ProjectAudit) -> set[str]:
     required = set(_BASE_REQUIRED_MCP_TOOLS)
-    for flow_name in _AUDITED_FLOWS:
+    for flow_name in _REQUIRED_FLOW_TABLES:
         if _flow_enabled(project, flow_name):
             required.add(flow_name)
+    if _fpga_doctor_applicable(project) and _flow_enabled(project, "fpga"):
+        required.add("fpga")
     return required
 
 
@@ -4082,9 +4087,12 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Session Runtime dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
-    for flow_name in _AUDITED_FLOWS:
+    for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
+            continue
+        if flow_name == "fpga" and not _fpga_doctor_applicable(project):
+            _skip("fpga not applicable - no [flows.fpga] table or marked Doctor Target")
             continue
         _pass(f"{flow_name} executes in the Session Runtime")
         # Pre-Run Commands (ADR 0039): a true observation about healthy config —
@@ -4140,7 +4148,7 @@ def _check_flow_runtime_reality(
     _fail: Fail,
 ) -> None:
     """Probe every selected Target's EDA binary in the Session Runtime."""
-    for binary in _runtime_probe_binaries(project, targets):
+    for binary in _runtime_probe_binaries(project, targets, flow_name=flow_name):
         _check_session_binary(
             flow_name,
             binary,
@@ -4160,8 +4168,15 @@ _EDA_TOOL_BINARIES = {
 }
 
 
-def _runtime_probe_binaries(project: ProjectAudit, targets: list[str]) -> list[str]:
+def _runtime_probe_binaries(
+    project: ProjectAudit,
+    targets: list[str],
+    *,
+    flow_name: str | None = None,
+) -> list[str]:
     """Return the distinct runtime executables required by selected Targets."""
+    if flow_name == "fpga":
+        return ["vivado"]
     binaries: list[str] = []
     for target in targets:
         try:
@@ -6049,7 +6064,7 @@ def _run_deep_checks(
     _fail: Fail,
 ) -> None:
     """Run the real EDA smoke matrix selected by ``.core`` metadata."""
-    for flow_name in _AUDITED_FLOWS:
+    for flow_name in _DEEP_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
             continue
@@ -6078,23 +6093,20 @@ def _run_deep_checks(
 def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
     """Disclose that ``fpga_impl`` gets no deep smoke (F-15).
 
-    fpga_impl is deliberately excluded from :data:`_AUDITED_FLOWS` — a full FPGA
+    FPGA is deliberately excluded from :data:`_DEEP_DOCTOR_FLOWS` — a full FPGA
     implementation is far too slow for ``--deep`` — but it was *silently*
     absent: ``--deep`` produced no line for it at all. Nothing ever smokes it
     end-to-end, and nothing said so. Emit an
     explicit SKIP naming the manual command, so the gap is loud, not invisible.
     """
-    flows = project.booley_toml.get("flows", {})
-    section = flows.get("fpga") if isinstance(flows, dict) else None
-    if not isinstance(section, dict):
-        return
     if not _flow_enabled(project, "fpga"):
         return
-    _skip(
-        "fpga deep smoke skipped - a full FPGA implementation is too slow "
-        "for --deep (binary presence is probed separately); smoke "
-        "it manually end-to-end: booley flow fpga --target <fpga_target>"
-    )
+    for target in _doctor_targets(project, "fpga"):
+        _skip(
+            f"fpga deep smoke [{target}] skipped - a full FPGA implementation is too "
+            "slow for --deep; smoke it manually end-to-end: "
+            f"booley flow fpga --target {target}"
+        )
 
 
 @dataclass(frozen=True)
@@ -6367,6 +6379,13 @@ def _run_one_selftest(
 def _flow_enabled(project: ProjectAudit, flow_name: str) -> bool:
     """Return *flow_name*'s enablement from parsed booley.toml."""
     return execution.flow_enabled_from_config(flow_name, project.booley_toml)
+
+
+def _fpga_doctor_applicable(project: ProjectAudit) -> bool:
+    """Whether this project asks plain Doctor to cover the optional FPGA axis."""
+    flows = project.booley_toml.get("flows")
+    has_flow_table = isinstance(flows, dict) and "fpga" in flows
+    return has_flow_table or bool(_doctor_targets(project, "fpga"))
 
 
 def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:
