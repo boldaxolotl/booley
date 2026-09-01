@@ -127,6 +127,19 @@ def _wait_for_cleanup(topology: _Topology) -> None:
     pytest.fail("candidate reaper did not remove its owned topology")
 
 
+def _wait_for_log(container: str, expected: str) -> None:
+    deadline = time.monotonic() + 3
+    captured = ""
+    while time.monotonic() < deadline:
+        logs = docker("logs", container)
+        assert_ok(logs)
+        captured = logs.stdout + logs.stderr
+        if expected in captured:
+            return
+        time.sleep(0.1)
+    pytest.fail(f"candidate reaper did not log {expected!r}; captured logs:\n{captured}")
+
+
 def _cleanup(topology: _Topology) -> None:
     docker("rm", "-f", topology.reaper, topology.session, topology.relay)
     docker("network", "rm", topology.private, topology.outbound)
@@ -153,9 +166,7 @@ def test_candidate_entrypoint_reaps_owned_topology() -> None:
         _start_session(image, topology)
         _start_reaper(image, topology)
         _wait_for_cleanup(topology)
-        logs = docker("logs", topology.reaper)
-        assert_ok(logs)
-        assert "reaped 1 session container" in logs.stdout + logs.stderr
+        _wait_for_log(topology.reaper, "reaped 1 session container")
     finally:
         _cleanup(topology)
 
