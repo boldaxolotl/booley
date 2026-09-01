@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-EXPECTED_CLAUDE = "2.1.251"
+EXPECTED_CLAUDE = "2.1.252"
 EXPECTED_CODEX = "0.151.0"
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"

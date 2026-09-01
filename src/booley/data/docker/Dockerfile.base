@@ -182,7 +182,7 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
     && npm ci --prefix /opt/agent-clis --omit=dev --no-audit --no-fund \
     && ln -s /opt/agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
     && ln -s /opt/agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.251" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.252" \
     && test "$(codex --version | awk '{print $2}')" = "0.151.0" \
     && command -v bwrap \
     && rm -rf /var/lib/apt/lists/*
@@ -225,6 +225,7 @@ RUN python -m ensurepip --default-pip \
         /tmp/booley-build/pyproject.toml \
         /tmp/booley-build/project-dependencies.txt \
     && python -m pip install --break-system-packages --no-cache-dir --ignore-installed \
+        --timeout 120 --retries 10 \
         --requirement /tmp/booley-build/project-dependencies.txt \
     && rm -f /tmp/booley-build/project-dependencies.txt \
     && python -m pip check \
@@ -233,6 +234,13 @@ RUN python -m ensurepip --default-pip \
     && test -x "$CLAUDE_SDK_BUNDLED_CLI" \
     && rm -f "$CLAUDE_SDK_BUNDLED_CLI" \
     && test ! -e "$CLAUDE_SDK_BUNDLED_CLI"
+
+# Publisher transfers for numerical and other large wheels can pause long
+# enough to exceed pip's 15-second default even while the connection is sound.
+# The large invariant SDK install above carries the same explicit policy; this
+# inherited setting protects every later base- and candidate-image install.
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 # EDA invocation/registry layer (ADR 0019 + 0022) — pinned EXACTLY to the
 # flow-API-stable pair. These also arrive transitively via the wheel's
