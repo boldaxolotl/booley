@@ -2950,7 +2950,7 @@ class TestValidateCriteriaField:
                 "mandatory": {
                     "synthesis_ok": {
                         "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                        "area_reduce_at_least": 10,
+                        "area_reduce_at_least": "10%",
                     }
                 }
             },
@@ -2990,7 +2990,7 @@ class TestValidateCriteriaField:
                 "mandatory": {
                     "synthesis_ok": {
                         "targets": [{"baseline": "synth_before"}],
-                        "area_reduce_at_least": 10,
+                        "area_reduce_at_least": "10%",
                     }
                 }
             },

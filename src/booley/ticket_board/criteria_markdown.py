@@ -219,11 +219,11 @@ def _parse_bullets(lines: list[str]) -> dict[str, Any]:
 
 
 def _expand_coverage(text: str, result: dict[str, Any]) -> None:
-    """``toggle >= 90, fsm = 100`` -> ``coverage_toggle: 90, ...``"""
+    """``toggle >= 90%, fsm = 100%`` -> explicit percentage values."""
     for part in text.split(", "):
-        m = re.match(r"(\w+)\s*(?:>=|≥|=)\s*(\d+)", part.strip())
+        m = re.fullmatch(r"(\w+)\s*(?:>=|≥|=)\s*(.+)", part.strip())
         if m:
-            result[f"coverage_{m.group(1)}"] = int(m.group(2))
+            result[f"coverage_{m.group(1)}"] = _coerce(m.group(2).strip())
 
 
 def _expand_reviews(text: str, result: dict[str, Any]) -> None:

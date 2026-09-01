@@ -48,14 +48,14 @@ criteria:
       - target: sim_coremark
         test: coremark
         cycle_count_max: 100000              # absolute inclusive cap
-        cycle_count_reduce_at_least: 5       # ≥5% reduction vs base_sha
+        cycle_count_reduce_at_least: 5%      # ≥5% reduction vs base_sha
         cycle_count_reduce_at_least_cycles: 2000  # ≥2000-cycle reduction vs base_sha
     synthesis_ok:                            # -> synth Flow
       targets:                               # strings use one Target at both revisions
         - target1
         - {baseline: target2_before, candidate: target2_after}  # relative thresholds only
       cell_count_max: 500                    # absolute cap (optional)
-      cell_count_reduce_at_least: 10         # require ≥10% reduction vs base_sha (optional)
+      cell_count_reduce_at_least: 10%        # require ≥10% reduction vs base_sha (optional)
     fpga_impl_ok:                            # -> fpga Flow
       targets: [target1, target2]            # paired mapping form is also supported
       lut_count_max: 100000                  # FPGA LUT budget (optional)
