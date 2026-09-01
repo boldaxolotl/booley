@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc.core_security import (
     CoreViolation,
-    fpga_impl_eda_tools,
     validate_core,
     validate_project_cores,
 )
@@ -107,6 +106,36 @@ class TestFpgaHooks:
         assert _kinds(v) == {"fpga_hook"}
         assert v[0].target == "impl"
         assert "post_build" in v[0].message
+
+    def test_fpga_axis_hook_rejected_with_resolution_tool(self):
+        doc = _doc(
+            """\
+            CAPI=2:
+            name: ::demo:0
+            targets:
+              fpga_core:
+                flow: generic
+                flow_options: {tool: verilator}
+                hooks:
+                  post_build: [run_bitstream]
+        """
+        )
+        assert _kinds(validate_core(doc, core_file=Path("d.core"))) == {"fpga_hook"}
+
+    def test_non_fpga_axis_is_not_reclassified_by_vivado(self):
+        doc = _doc(
+            """\
+            CAPI=2:
+            name: ::demo:0
+            targets:
+              synth_core:
+                flow: generic
+                flow_options: {tool: vivado}
+                hooks:
+                  post_build: [run_synthesis]
+        """
+        )
+        assert validate_core(doc, core_file=Path("d.core")) == []
 
     def test_fpga_impl_generator_allowed(self):
         # Generators run at resolution time (in-sandbox), so fpga_impl may use them.
@@ -471,15 +500,3 @@ class TestFuseSocScopedAudit:
         violations = validate_project_cores(tmp_path, scope=["rtl/*"])
         assert _kinds(violations) == {"in_scope_script"}
         assert any("rogue" in v.core_file.name for v in violations)
-
-
-# ---------------------------------------------------------------------------
-# fpga_impl_eda_tools derivation
-# ---------------------------------------------------------------------------
-
-
-def test_fpga_impl_eda_tools_tracks_criteria_map():
-    eda_tools = fpga_impl_eda_tools()
-    assert "vivado" in eda_tools
-    assert "verilator" not in eda_tools
-    assert "yosys" not in eda_tools

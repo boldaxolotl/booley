@@ -216,10 +216,15 @@ Authoring rules:
   dependency-build fallback, never a selectable config, and doctor flags a
   dead one (drop it from a depended-on core and that core silently
   contributes zero filesets).
-- **Per-EDA-tool Target families:** `verilator` ⇒ may carry
-  `sim_pass`/`lint_clean`; `verible` ⇒ `lint_clean` (lint only); `icarus` ⇒
-  `sim_pass`; `yosys` ⇒ `synthesis_ok`; `vivado` ⇒ `fpga_impl_ok`. Split
-  intents into separate targets when one design needs several.
+- **Per-Target Flow families:** the `fpga` name axis is authoritative:
+  `fpga`/`fpga_*` ⇒ `fpga_impl_ok`, regardless of the resolution tool. The
+  FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
+  FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
+  vendored Targets retain `tool: vivado` as a compatibility fallback. Other
+  families follow their declared flow/tool: Verilator or Icarus simulation ⇒
+  `sim_pass`; Verilator or Verible lint ⇒ `lint_clean`; Yosys synthesis ⇒
+  `synthesis_ok`. Split intents into separate Targets when one design needs
+  several.
 - **Verilator 5 sim Targets need timing options.** Any event-driven Verilog
   TB (delays, `@(...)` waits — i.e. the normal self-checking TB this skill
   produces) fails Verilator 5 elaboration with `%Error-NEEDTIMINGOPT` unless
@@ -312,11 +317,12 @@ The generated config must pass Booley's `.core` validator (`booley doctor`
 runs it). "Validated" means **provenance + confinement**, not a content scan.
 Author within these limits:
 
-- **No `fpga` hooks.** A Target whose EDA tool is `vivado` (or any future
-  FPGA implementation EDA tool) must not declare a `hooks:` block. Commercial
-  provisioning is a fixed, reviewed Booley policy; Project-supplied imperative
-  hooks are not part of that policy. Resolution-time `generators` are fine for
-  `fpga` (they run inside the Session Runtime).
+- **No `fpga` hooks.** A Target classified by its `fpga` name axis (or an
+  unprefixed vendored Target using the `tool: vivado` fallback) must not declare
+  a `hooks:` block. Commercial provisioning is a fixed, reviewed Booley policy;
+  Project-supplied imperative hooks are not part of that policy.
+  Resolution-time `generators` are fine for `fpga` (they run inside the Session
+  Runtime).
 - **No expr-params.** Every `parameters:` entry must use a CAPI2 literal
   `datatype` (`bool`/`file`/`int`/`real`/`str`). An HDL expression cannot be
   a faithful `-G` vlogparam and Booley ships no evaluator, so

@@ -19,6 +19,7 @@ from fusesoc.vlnv import Vlnv
 
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
+from booley.targets import target_naming
 
 TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
 
@@ -27,7 +28,12 @@ _LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
 
 
 def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
-    """Return whether a Booley Flow can drive a declared Target."""
+    """Return whether a Booley Flow can drive a declared Target.
+
+    FPGA intent comes from the Target axis when present because that Flow
+    rebuilds the resolved inputs into a Vivado EDAM. The declared EDA tool
+    remains a FuseSoC resolution input, not the FPGA execution backend.
+    """
     from booley.targets.flow_names import canonical
 
     flow = canonical(flow)
@@ -36,13 +42,15 @@ def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
             f"{flow!r} is not a target-aware Booley Flow; "
             f"choose one of: {', '.join(TARGET_AWARE_FLOWS)}"
         )
+    if target_naming.fpga_intent(ref.name, ref.eda_tool):
+        return flow == "fpga"
     if flow == "sim":
         return ref.eda_tool in _SIM_EDA_TOOLS and (ref.flow == "sim" or ref.flow is None)
     if flow == "lint":
         return ref.flow == "lint" or (ref.flow is None and ref.eda_tool in _LINT_EDA_TOOLS)
     if flow == "synth":
         return ref.eda_tool == "yosys"
-    return ref.eda_tool == "vivado"
+    return False
 
 
 @dataclass(frozen=True)

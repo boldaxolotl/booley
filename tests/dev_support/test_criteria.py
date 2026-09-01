@@ -688,13 +688,19 @@ class TestCriterionEligibility:
 
     def test_expand_unfiltered_without_target_tools(self):
         """No tool map → every config gets every per-config criterion."""
-        defs = [_per_config_def("sim_pass"), _per_config_def("synthesis_ok")]
+        defs = [
+            _per_config_def("sim_pass"),
+            _per_config_def("synthesis_ok"),
+            _per_config_def("fpga_impl_ok"),
+        ]
         out = expand_criteria_defs(defs, ["a", "b"])
         assert set(out) == {
             "sim_pass_a",
             "sim_pass_b",
             "synthesis_ok_a",
             "synthesis_ok_b",
+            "fpga_impl_ok_a",
+            "fpga_impl_ok_b",
         }
 
     def test_expand_filters_by_target_tool(self):
@@ -703,6 +709,18 @@ class TestCriterionEligibility:
         tools = {"sim_cfg": "verilator", "syn_cfg": "yosys"}
         out = expand_criteria_defs(defs, ["sim_cfg", "syn_cfg"], tools)
         assert set(out) == {"sim_pass_sim_cfg", "synthesis_ok_syn_cfg"}
+
+    def test_fpga_axis_carries_fpga_criterion_with_resolution_tool(self):
+        defs = [
+            _per_config_def("sim_pass"),
+            _per_config_def("cycle_count"),
+            _per_config_def("lint_clean"),
+            _per_config_def("synthesis_ok"),
+            _per_config_def("fpga_impl_ok"),
+        ]
+        tools = {"fpga_core": "verilator", "synth_core": "vivado"}
+        out = expand_criteria_defs(defs, ["fpga_core", "synth_core"], tools)
+        assert set(out) == {"fpga_impl_ok_fpga_core"}
 
     def test_unknown_tool_is_not_filtered(self):
         """A config whose tool is None (pre-migration) keeps every criterion."""

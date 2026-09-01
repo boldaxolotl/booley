@@ -23,10 +23,11 @@ half and leave the VHDL half alone.
 
 Two axes govern every flow:
 
-- **EDA tool**: the concrete external program, declared in the resolved FuseSoC Target's
-  `.core` file (its `flow_options.tool`, or the legacy `default_tool` mirror),
-  *not* set by config knobs. Every command is built by Booley's one builder,
-  the FuseSoC/Edalize path (Edalize generates EDA commands).
+- **EDA tool**: the concrete external program a Flow executes. The Target's
+  `flow_options.tool` (or legacy `default_tool`) normally selects it and always
+  participates in FuseSoC resolution. FPGA implementation is the fixed-backend
+  exception: its Target-name axis declares intent, and Booley always executes
+  Vivado after rebuilding the resolved inputs into a Vivado EDAM.
 - **Provisioning** decides where the installation files originate, never where
   the command runs. `image` means the runtime image supplies the tool. `host`
   means a built-in policy mounts one administrator-registered installation

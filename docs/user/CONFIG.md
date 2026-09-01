@@ -368,6 +368,14 @@ the host.
 belong to the invocation and `.core` Target: put `part` and `out_of_context`
 under its `flow_options`, and XDC constraints in a `file_type: xdc` fileset.
 
+Name Booley-authored implementation Targets `fpga` or `fpga_<subject>`; that
+axis declares that the FPGA Flow can drive them. `flow_options.tool` still
+controls FuseSoC resolution, including `tool_<name>` conditional files, but it
+does not choose the implementation backend: the FPGA Flow always builds its
+own Vivado EDAM. Use `tool: vivado` normally; another runtime-available tool is
+valid when a project deliberately needs its resolution conditions. Unprefixed
+vendored Targets fall back to `tool: vivado` because their names are immutable.
+
 ```toml
 [flows.fpga]
 timeout_ms = 7200000

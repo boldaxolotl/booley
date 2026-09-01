@@ -45,7 +45,7 @@ must return. The remaining sections are per-Flow references for `sim`,
 
 Rather than hand-build commands per EDA tool, Booley builds command generation on two upstream libraries: **FuseSoC** resolves the design description and **Edalize** emits the backend command. These are internal building blocks, not external services. The deliberate line Booley draws is in *what it delegates to them*: it uses them to generate the command, but interpreting the result back into facts stays in Booley's own code.
 
-The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool to use (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). The `--target` argument to `sim`, `lint`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
+The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool used for resolution (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). Simulation and lint execute that selected tool. FPGA implementation instead rebuilds the resolved Target inputs into a Vivado EDAM; its `fpga` Target-name axis declares Flow intent, while `flow_options.tool` still selects `tool_*` conditional inputs during FuseSoC setup. The `--target` argument to `sim`, `lint`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
 
 Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
 side-effect-free parse of the `.core` YAML (to validate `--target` names and
@@ -628,6 +628,13 @@ The selected Target owns FPGA build intent: device part, out-of-context choice,
 sources, XDC, toplevel, and compile-time defines. `[flows.fpga]` owns execution
 policy and default Target selection. [CONFIG.md](../user/CONFIG.md#fpga-implementation-flowsfpga)
 owns the exact keys, defaults, and examples.
+
+The Target's `fpga` name axis is the drivability discriminator. Its declared
+`flow_options.tool` remains a FuseSoC resolution input—most notably for
+`tool_<name>` conditional files—but it does not select the implementation
+backend. Booley always builds and executes the Vivado EDAM below. Unprefixed
+vendored Targets retain a `tool: vivado` compatibility fallback because they
+cannot be renamed to the Booley convention.
 
 The device `part`, `out_of_context` choice, and other build-recipe inputs live
 under the selected Target's `flow_options`. XDC constraints are a Target

@@ -152,11 +152,11 @@ _Avoid_: pre-test hook, prebuild adapter, test fixture script
 | **MCP tool** | Protocol-level mechanism used to invoke a Flow or Specialist | Implementation detail rather than product taxonomy |
 
 **Booley Flow**:
-Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked by the outer runtime through an MCP tool with no Criteria side effects. The EDA tool a Booley Flow drives is chosen by the resolved **Target**'s EDA-selection field. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Session Runtime**, and interprets the result into evidence.
+Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked by the outer runtime through an MCP tool with no Criteria side effects. A resolved **Target** supplies the EDA-selection field used during FuseSoC resolution. Simulation and lint drive that selected tool directly; the FPGA Flow rebuilds the resolved design inputs into its fixed Vivado EDAM, so the Target's `fpga` naming axis declares drivability while its EDA-selection field remains a resolution input. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Session Runtime**, and interprets the result into evidence.
 _Avoid_: B-Tool, mechanical tool, utility, command
 
 **EDA tool**:
-Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target selects the EDA tool; the Booley Flow owns orchestration, evidence normalization, artifacts, and Criteria rather than delegating those responsibilities to the EDA tool.
+Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field participates in FuseSoC resolution and normally selects the program; the FPGA Flow is the fixed-backend exception and always drives Vivado. The Booley Flow owns orchestration, evidence normalization, artifacts, and Criteria rather than delegating those responsibilities to the EDA tool.
 _Avoid_: bare tool, Booley Flow, backend
 
 **Elaboration Check**:

@@ -48,6 +48,16 @@ class TestAxisOf:
         assert target_naming.axis_of(name) is None
 
 
+class TestFpgaIntent:
+    def test_fpga_axis_is_authoritative_over_resolution_tool(self):
+        assert target_naming.fpga_intent("fpga_core", "verilator")
+        assert not target_naming.fpga_intent("synth_core", "vivado")
+
+    def test_unprefixed_vendored_target_falls_back_to_vivado(self):
+        assert target_naming.fpga_intent("upstream_board", "vivado")
+        assert not target_naming.fpga_intent("upstream_board", "verilator")
+
+
 class TestViolation:
     def test_conformant_name_has_no_violation(self):
         assert target_naming.violation("sim_soc") is None
