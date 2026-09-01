@@ -17,6 +17,16 @@ from booley.flows.sim.coverage_campaign import (
     FrozenJson,
     _freeze_mapping,
 )
+from booley.flows.sim.coverage_waivers import ApprovedWaiver, ApprovedWaiverSet
+
+__all__ = [
+    "ApprovedWaiver",
+    "ApprovedWaiverSet",
+    "CoverageCriterion",
+    "CoverageThreshold",
+    "EvaluatedCoverageCampaign",
+    "evaluate_coverage_campaign",
+]
 
 _CRITERION_SCHEMA = "booley.coverage-criterion/v1"
 _METRIC_ORDER = ("line", "branch", "expression", "toggle", "cover_property")
@@ -37,28 +47,6 @@ class CoverageCriterion:
     target: DurableTargetIdentity
     thresholds: tuple[CoverageThreshold, ...]
     tests: tuple[str, ...] | None
-
-
-@dataclass(frozen=True)
-class ApprovedWaiver:
-    """One already-validated exact Target-and-point exclusion."""
-
-    target: DurableTargetIdentity
-    point_id: str
-    reason: str
-    waiver_id: str
-    waiver_file: str
-    waiver_fingerprint: str
-    provenance: Mapping[str, FrozenJson]
-
-
-@dataclass(frozen=True)
-class ApprovedWaiverSet:
-    """Immutable project-wide waiver input produced by the Phase 2B loader."""
-
-    configuration: Mapping[str, FrozenJson]
-    digest: str
-    waivers: tuple[ApprovedWaiver, ...]
 
 
 EvaluatedCoverageCampaign: TypeAlias = CoverageCampaign
@@ -339,8 +327,13 @@ def evaluate_coverage_campaign(
     if criterion is None:
         return _ungated_campaign(campaign, approved_waivers)
     required_tests = campaign.declared_tests if criterion.tests is None else criterion.tests
-    campaign = _apply_waivers(campaign, approved_waivers)
-    diagnostics = _evidence_diagnostics(campaign, criterion, required_tests)
+    waiver_match = approved_waivers.match(campaign)
+    matched_set = replace(approved_waivers, waivers=waiver_match.waivers)
+    campaign = _apply_waivers(campaign, matched_set)
+    diagnostics = [
+        _diagnostic(item.code, item.pointer, item.message) for item in waiver_match.findings
+    ]
+    diagnostics.extend(_evidence_diagnostics(campaign, criterion, required_tests))
     diagnostics.extend(_empty_denominator_diagnostics(campaign, criterion))
     if diagnostics:
         return _blocked_campaign(
