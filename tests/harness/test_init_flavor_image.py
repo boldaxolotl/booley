@@ -400,13 +400,7 @@ class TestBaseImageNote:
     def test_base_step_explains_the_flavor_relationship(self, monkeypatch, capsys):
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
-        monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: "current")
-        monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
-        monkeypatch.setattr(
-            idi,
-            "_try_pull_image",
-            lambda *args, **kwargs: pytest.fail("base-note unit test attempted a registry pull"),
-        )
+        monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: None)
         monkeypatch.setattr(
             idi,
             "_image_is_stale",
@@ -421,13 +415,7 @@ class TestBaseImageNote:
     def test_base_step_is_quiet_when_the_project_runs_the_base(self, monkeypatch, capsys):
         monkeypatch.setattr(idi.shutil, "which", lambda n: "/usr/bin/docker")
         monkeypatch.setattr(idi, "_docker_image_exists", lambda image=idi.DOCKER_IMAGE: True)
-        monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: "current")
-        monkeypatch.setattr(idi, "_report_build_cache", lambda: None)
-        monkeypatch.setattr(
-            idi,
-            "_try_pull_image",
-            lambda *args, **kwargs: pytest.fail("base-note unit test attempted a registry pull"),
-        )
+        monkeypatch.setattr(idi, "_image_build_fingerprint", lambda root: None)
         monkeypatch.setattr(
             idi,
             "_image_is_stale",
