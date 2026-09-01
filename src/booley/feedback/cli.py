@@ -44,20 +44,12 @@ from booley.feedback.findings import (
     read_log,
     rewrite,
 )
-from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
+from booley.feedback.storage import feedback_storage_dir
 
 
 def _project_dir(project_root: Path) -> Path:
-    """Booley's state dir, preferring the normal resolution chain.
-
-    Falls back to ``<project_root>/.booley_project`` so a report can still be
-    written on a project whose config is too broken for discovery to work —
-    which is exactly when the findings matter most.
-    """
-    try:
-        return resolve_project_dir(project_root)
-    except FileNotFoundError:
-        return project_root / PROJECT_DIR_NAME
+    """Return Project feedback state or source-checkout dogfood state."""
+    return feedback_storage_dir(project_root)
 
 
 def add_subparser(sub: argparse._SubParsersAction) -> None:
@@ -255,7 +247,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     export_p.add_argument(
         "--output",
         metavar="PATH",
-        help="Write here instead of .booley_project/BOOLEY-FEEDBACK.md",
+        help="Write here instead of the feedback state directory",
     )
 
     submit_p = fb.add_parser(

@@ -1623,6 +1623,20 @@ def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | N
     return None
 
 
+def _reject_source_project_command(command: str | None, project_root: Path) -> int | None:
+    """Reject Project commands in Booley source while allowing dogfood feedback."""
+    if command in {None, "feedback"}:
+        return None
+    from booley.runtime.checkout_role import SourceCheckoutProjectError, require_project_checkout
+
+    try:
+        require_project_checkout(project_root)
+    except SourceCheckoutProjectError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return None
+
+
 def _setup_runtime(args: argparse.Namespace, project_root: Path) -> str:
     """Set up venv, logging, PID stamp, signal handlers, and clear screen."""
     venv_py = find_venv_python(project_root)
@@ -2212,6 +2226,9 @@ def main() -> int:
         if hasattr(args, "project_root") and args.project_root
         else find_project_root()
     )
+    source_rejection = _reject_source_project_command(command, project_root)
+    if source_rejection is not None:
+        return source_rejection
 
     # Runtime-location guard: one chokepoint after argparse, before anything
     # touches the filesystem or clears the screen.

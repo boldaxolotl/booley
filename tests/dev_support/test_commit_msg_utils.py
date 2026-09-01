@@ -202,6 +202,18 @@ class TestStealthEnabled:
         root = self._project(tmp_path, b'stealth = "yes"\n')
         assert stealth_enabled(root) is True
 
+    def test_source_checkout_is_never_stealth_even_with_stale_config(self, tmp_path):
+        from booley.dev_support.commit_msg_utils import banned_phrases, stealth_enabled
+
+        root = self._project(tmp_path, b"[stealth]\nenabled = true\n")
+        (root / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+
+        assert stealth_enabled(root) is False
+        assert banned_phrases(root) == []
+
 
 class TestMaxBodyLines:
     """[stealth] max_body_lines — opt-in cap, unlimited when absent."""

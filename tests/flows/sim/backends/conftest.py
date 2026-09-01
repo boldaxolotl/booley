@@ -14,4 +14,5 @@ def _set_project_dir(tmp_path, monkeypatch):
     proj_dir = tmp_path / ".booley_project"
     proj_dir.mkdir()
     (proj_dir / "booley.toml").write_text('[flows.sim]\nsandbox = "sandboxed"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(proj_dir))

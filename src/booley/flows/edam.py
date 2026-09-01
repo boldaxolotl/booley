@@ -408,9 +408,12 @@ def work_root_for(
     own cached work dir keyed by ``(target, trace)`` (ADR 0022 dec. 20),
     composing as a separate directory from the untraced build.
     """
+    from booley.runtime.checkout_role import require_project_checkout
+
+    root = require_project_checkout(Path(work_dir))
     safe = _NAME_SANITIZE_RE.sub("_", config).strip("_") or "config"
     leaf = f"{safe}-{variant}" if variant else safe
-    return Path(work_dir) / _EDALIZE_SUBDIR / flow / leaf
+    return root / _EDALIZE_SUBDIR / flow / leaf
 
 
 def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:
