@@ -792,9 +792,9 @@ class FpgaImplFlow(BooleyFlow):
         )
         if resolved is None:
             raise ValueError(
-                f"fpga: cannot resolve .core Target {target!r} (a flow:vivado "
-                f".core Target + fusesoc are required; the legacy configs.toml "
-                f"source was removed)."
+                f"fpga: cannot resolve .core Target {target!r} (a resolvable FPGA "
+                f"Target + fusesoc are required; Booley-authored Targets use the "
+                f"fpga name axis, and the legacy configs.toml source was removed)."
             )
         part = self._resolve_part(resolved.flow_options)
         xdc_files = self._resolve_xdc_files(resolved, target)

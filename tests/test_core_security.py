@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from booley.fusesoc.core_security import (
     CoreViolation,
-    fpga_impl_eda_tools,
     validate_core,
     validate_project_cores,
 )
@@ -501,15 +500,3 @@ class TestFuseSocScopedAudit:
         violations = validate_project_cores(tmp_path, scope=["rtl/*"])
         assert _kinds(violations) == {"in_scope_script"}
         assert any("rogue" in v.core_file.name for v in violations)
-
-
-# ---------------------------------------------------------------------------
-# fpga_impl_eda_tools derivation
-# ---------------------------------------------------------------------------
-
-
-def test_fpga_impl_eda_tools_tracks_criteria_map():
-    eda_tools = fpga_impl_eda_tools()
-    assert "vivado" in eda_tools
-    assert "verilator" not in eda_tools
-    assert "yosys" not in eda_tools

@@ -711,7 +711,13 @@ class TestCriterionEligibility:
         assert set(out) == {"sim_pass_sim_cfg", "synthesis_ok_syn_cfg"}
 
     def test_fpga_axis_carries_fpga_criterion_with_resolution_tool(self):
-        defs = [_per_config_def("fpga_impl_ok")]
+        defs = [
+            _per_config_def("sim_pass"),
+            _per_config_def("cycle_count"),
+            _per_config_def("lint_clean"),
+            _per_config_def("synthesis_ok"),
+            _per_config_def("fpga_impl_ok"),
+        ]
         tools = {"fpga_core": "verilator", "synth_core": "vivado"}
         out = expand_criteria_defs(defs, ["fpga_core", "synth_core"], tools)
         assert set(out) == {"fpga_impl_ok_fpga_core"}

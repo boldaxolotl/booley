@@ -42,13 +42,15 @@ def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
             f"{flow!r} is not a target-aware Booley Flow; "
             f"choose one of: {', '.join(TARGET_AWARE_FLOWS)}"
         )
+    if target_naming.fpga_intent(ref.name, ref.eda_tool):
+        return flow == "fpga"
     if flow == "sim":
         return ref.eda_tool in _SIM_EDA_TOOLS and (ref.flow == "sim" or ref.flow is None)
     if flow == "lint":
         return ref.flow == "lint" or (ref.flow is None and ref.eda_tool in _LINT_EDA_TOOLS)
     if flow == "synth":
         return ref.eda_tool == "yosys"
-    return target_naming.fpga_intent(ref.name, ref.eda_tool)
+    return False
 
 
 @dataclass(frozen=True)

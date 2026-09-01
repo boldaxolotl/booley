@@ -32,9 +32,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.dev_support.criteria import (
-    EDA_TOOL_CRITERION_FAMILIES as EDA_EDA_TOOL_CRITERION_FAMILIES,
-)
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     core_target_eda_tool,
@@ -65,22 +62,6 @@ _CAPI2_PARAM_DATATYPES: frozenset[str] = frozenset({"bool", "file", "int", "real
 _SCRIPT_EXTENSIONS: frozenset[str] = frozenset(
     {".py", ".sh", ".tcl", ".pl", ".rb", ".js", ".bash"}
 )
-
-
-def fpga_impl_eda_tools() -> frozenset[str]:
-    """EDA tools whose Targets are FPGA implementation Targets.
-
-    Derived from the criteria EDA-tool map so it stays in lockstep with the
-    criterion-family map: an EDA tool that gates ``fpga_impl_ok`` is, by
-    definition, an FPGA implementation EDA tool (today just ``vivado``;
-    Quartus when added).  Every hook on such a Target is rejected (decision
-    21), regardless of whether its tool arrives through a trusted mount.
-    """
-    return frozenset(
-        eda_tool
-        for eda_tool, families in EDA_EDA_TOOL_CRITERION_FAMILIES.items()
-        if "fpga_impl_ok" in families
-    )
 
 
 # ---------------------------------------------------------------------------

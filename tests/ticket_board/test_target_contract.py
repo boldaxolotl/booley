@@ -830,7 +830,7 @@ def test_fpga_axis_target_satisfies_contract_with_resolution_tool(tmp_path: Path
             targets:
               fpga_core:
                 flow: generic
-                flow_options: {tool: verilator, part: xc7a35tcpg236-1}
+                flow_options: {tool: yosys, part: xc7a35tcpg236-1}
                 filesets: [rtl]
                 toplevel: core
             """
@@ -842,6 +842,10 @@ def test_fpga_axis_target_satisfies_contract_with_resolution_tool(tmp_path: Path
     }
 
     assert validate_criterion_targets(fields, tmp_path) == []
+
+    fields["criteria"] = {"mandatory": {"synthesis_ok": {"targets": ["fpga_core"]}}}
+    errors = validate_criterion_targets(fields, tmp_path)
+    assert any("cannot satisfy synthesis_ok" in error for error in errors)
 
 
 def test_future_nonrelative_target_accepts_only_scope_new_sources(tmp_path: Path) -> None:

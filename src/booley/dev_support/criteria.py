@@ -281,11 +281,10 @@ def merge_criteria_defs(
     return merged, errors
 
 
-# EDA tool → eligible per-target criterion families (ADR 0022 decision 11).
-# Simulation, lint, and synthesis eligibility follow the declared tool. FPGA
-# intent follows the Target axis when present because that Flow rebuilds the
-# resolved inputs into a Vivado EDAM; unprefixed vendored Targets retain the
-# Vivado fallback. ``expand_criteria_defs`` applies that exception.
+# Resolution tool → eligible per-target criterion families (ADR 0022
+# decision 11). FPGA intent overrides this map because that Flow rebuilds the
+# resolved inputs into a Vivado EDAM; ``expand_criteria_defs`` applies the
+# Target-name policy before consulting the declared tool.
 EDA_TOOL_CRITERION_FAMILIES: dict[str, frozenset[str]] = {
     "verilator": frozenset({"sim_pass", "cycle_count", "lint_clean"}),
     "icarus": frozenset({"sim_pass", "cycle_count"}),
@@ -300,22 +299,21 @@ _EDA_TOOL_GATED_FAMILIES: frozenset[str] = frozenset().union(*EDA_TOOL_CRITERION
 
 
 def eligible_eda_tool_criterion_families(eda_tool: str | None) -> frozenset[str]:
-    """Per-target criterion families a Target with this EDA tool may carry."""
+    """Criterion families contributed by a Target's declared resolution tool."""
     return EDA_TOOL_CRITERION_FAMILIES.get(eda_tool or "", frozenset())
 
 
 def unsupported_eda_tool_boundary(eda_tool: str) -> str:
     """The ADR 0039 §5 boundary statement for an EDA tool outside the matrix.
 
-    ``EDA_TOOL_CRITERION_FAMILIES`` is the single choke point: a Target resolving
-    to an EDA tool with no row here can carry no EDA-tool-gated criteria, so RTL
-    tickets cannot run against it — by declared boundary, not accident. The
-    message states that boundary instead of implying a workaround.
+    ``EDA_TOOL_CRITERION_FAMILIES`` is the resolution-tool boundary for
+    simulation, lint, and synthesis. FPGA-axis Targets are the exception: their
+    name selects the fixed Vivado backend while this tool controls resolution.
     """
     return (
         f"EDA tool {eda_tool!r} is outside Booley's built-in matrix "
-        f"({', '.join(sorted(EDA_TOOL_CRITERION_FAMILIES))}): its Targets carry "
-        "no sim/lint/synth criteria, so RTL tickets cannot run against them "
+        f"({', '.join(sorted(EDA_TOOL_CRITERION_FAMILIES))}): it contributes "
+        "no sim/lint/synth criteria, so non-FPGA Targets cannot run RTL tickets "
         "(ADR 0039 §5). Widening the matrix (edalize wiring → output parser "
         "→ criteria-map row → doctor probe) is the supported extension axis; "
         "a Custom Flow adds new analyses with its own criterion families but "
@@ -331,18 +329,17 @@ def _criterion_eligible(
 ) -> bool:
     """Whether a criterion family is eligible for a Target declaration.
 
-    FPGA eligibility uses the Target axis when *target_name* is available.
-    Other gated families are filtered only when the EDA tool is known and does
-    not own them; an unknown tool widens eligibility rather than narrowing it.
+    FPGA intent is exclusive when *target_name* is available: an FPGA Target
+    carries only ``fpga_impl_ok`` among the gated families. Other Targets follow
+    the declared tool; an unknown tool widens eligibility rather than narrowing it.
     """
-    if (
-        crit_name == "fpga_impl_ok"
-        and target_name is not None
-        and target_naming.axis_of(target_name) is not None
-    ):
-        return target_naming.fpga_intent(target_name, eda_tool)
     if crit_name not in _EDA_TOOL_GATED_FAMILIES:
         return True
+    if target_name is not None:
+        if target_naming.fpga_intent(target_name, eda_tool):
+            return crit_name == "fpga_impl_ok"
+        if crit_name == "fpga_impl_ok" and target_naming.axis_of(target_name) is not None:
+            return False
     if eda_tool is None:
         return True
     return crit_name in eligible_eda_tool_criterion_families(eda_tool)
