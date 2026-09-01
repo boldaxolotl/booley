@@ -138,7 +138,7 @@ def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -458,7 +458,7 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -537,7 +537,7 @@ def test_materialized_contract_validates_directed_targets_in_sealed_view(
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -632,7 +632,7 @@ def test_directed_target_validation_reports_missing_role(
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -694,7 +694,7 @@ def test_legacy_contract_schema_is_rejected() -> None:
             "mandatory": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 }
             }
         },
@@ -968,7 +968,7 @@ def test_future_relative_target_requires_executable_baseline(tmp_path: Path) -> 
             "optional": {
                 "synthesis_ok": {
                     "targets": ["synth_future"],
-                    "area_um2_increase_at_most": 5,
+                    "area_um2_increase_at_most": "5%",
                 }
             }
         },
@@ -989,7 +989,7 @@ def test_paired_relative_candidate_accepts_scope_new_source(tmp_path: Path) -> N
             "optional": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_future"}],
-                    "area_reduce_at_least": 5,
+                    "area_reduce_at_least": "5%",
                 }
             }
         },
@@ -1006,7 +1006,7 @@ def test_paired_relative_candidate_rejects_undeclared_missing_source(tmp_path: P
             "optional": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_future"}],
-                    "area_reduce_at_least": 5,
+                    "area_reduce_at_least": "5%",
                 }
             }
         },

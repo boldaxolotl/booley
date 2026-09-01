@@ -165,6 +165,9 @@ def _implementation_params_intro() -> list[str]:
         "| `_increase_at_most` | yes | metric may grow **at most N%** above baseline |",
         "| `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |",
         "",
+        "Percentage threshold values must include the `%` suffix (for example, "
+        "`cell_count_reduce_at_least: 8%`).",
+        "",
         "Syntax (ticket criteria): "
         "`synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.",
         "",
@@ -243,7 +246,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
             "",
             "Syntax (ticket criteria): "
             "`cycle_count: [{target: sim_coremark, test: coremark, "
-            "cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.",
+            "cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}]`.",
             "",
             "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
             "that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, "

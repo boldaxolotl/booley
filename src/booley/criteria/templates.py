@@ -30,6 +30,7 @@ from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
+    as_float,
     as_positive_int,
     as_str,
     is_str_list,
@@ -39,7 +40,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
+from booley.criteria.thresholds import CYCLE_COUNT_PARAMS, describe_threshold
 from booley.targets import target_naming
 
 logger = logging.getLogger(__name__)
@@ -848,11 +849,15 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
         return _parse_list_criterion(key, value, mandatory=mandatory)
     if isinstance(value, dict):
         return _parse_dict_criterion(key, value, mandatory=mandatory)
-    # Scalar: check for "auto" or "N/M" fraction format (e.g. "8/10")
-    if isinstance(value, str):
-        if value.strip().lower() == "auto":
-            return [CriterionSpec(key, mandatory=mandatory, params={"auto": True})]
-        m = re.fullmatch(r"(\d+)\s*/\s*(\d+)", value)
+    text_value = as_str(value)
+    if text_value is not None and text_value.strip().lower() == "auto":
+        return [CriterionSpec(key, mandatory=mandatory, params={"auto": True})]
+    if key.startswith("coverage_") and value is not None and not isinstance(value, bool):
+        percentage = _normalize_criterion_param_value(key, "min_pct", value)
+        return [CriterionSpec(key, mandatory=mandatory, params={"min_pct": percentage})]
+    # Scalar: check for "N/M" fraction format (e.g. "8/10")
+    if text_value is not None:
+        m = re.fullmatch(r"(\d+)\s*/\s*(\d+)", text_value)
         if m:
             min_detected, total = int(m.group(1)), int(m.group(2))
             return [
@@ -862,9 +867,6 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
                     params={"min_detected": min_detected, "total": total},
                 )
             ]
-    # Integer percentage shorthand retained for compatible custom Criteria.
-    if isinstance(value, int):
-        return [CriterionSpec(key, mandatory=mandatory, params={"min_pct": value})]
     return [CriterionSpec(key, mandatory=mandatory)]
 
 
@@ -908,7 +910,7 @@ def _parse_cycle_count_entries(
             raise ValueError(
                 f"cycle_count[{index}] must declare at least one Cycle Count threshold"
             )
-        _validate_criterion_params("cycle_count", thresholds)
+        thresholds = _validate_criterion_params("cycle_count", thresholds)
         specs.append(
             CriterionSpec(
                 cycle_count_criterion_key(target, test),
@@ -969,7 +971,7 @@ def _parse_list_criterion(
                 raise ValueError(f"{key} campaign target must be a non-empty string")
             params = {name: value for name, value in item.items() if name != "target"}
             if key in _CRITERION_PARAM_REGISTRY:
-                _validate_criterion_params(key, params)
+                params = _validate_criterion_params(key, params)
             specs.append(
                 CriterionSpec(
                     key,
@@ -1120,7 +1122,7 @@ def _parse_dict_criterion(
 
     # Validate params via registry (synthesis_ok, fpga_impl_ok, etc.)
     if key in _CRITERION_PARAM_REGISTRY:
-        _validate_criterion_params(key, params)
+        params = _validate_criterion_params(key, params)
 
     if isinstance(targets, list):
         # Preserve the legacy all-string representation exactly. Besides being
@@ -1181,8 +1183,8 @@ def _paired_target_specs(
     return specs
 
 
-def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
-    """Validate criterion params using the registry. Raises ValueError on invalid.
+def _validate_criterion_params(key: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Validate and normalize criterion params using the registry.
 
     A param may be flat (``fmax_mhz_min``) or clock-scoped
     (``clk_i.fmax_mhz_min``) — the latter only for per-clock metrics
@@ -1203,14 +1205,16 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
             f"(per-clock metrics {sorted(_PER_CLOCK_METRICS)} may be clock-scoped "
             f"as '<clock>.<param>')"
         )
-    for param, value in params.items():
-        _validate_criterion_param_value(key, param, value)
+    normalized = {
+        param: _normalize_criterion_param_value(key, param, value)
+        for param, value in params.items()
+    }
     if key == "cycle_count":
-        _validate_cycle_count_bounds(params)
+        _validate_cycle_count_bounds(normalized)
     if (
         key == "mutation_score"
-        and {"min_detected", "total"} <= params.keys()
-        and params["min_detected"] > params["total"]
+        and {"min_detected", "total"} <= normalized.keys()
+        and normalized["min_detected"] > normalized["total"]
     ):
         raise ValueError("mutation_score min_detected cannot exceed total")
     # Mutex is per scope: clk_i.critical_path_ps_max and clk_i.fmax_mhz_min clash,
@@ -1224,6 +1228,60 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> None:
             if a in bases and b in bases:
                 where = f" (clock {scope!r})" if scope else ""
                 raise ValueError(f"{key} params {a!r} and {b!r} are mutually exclusive{where}")
+    return normalized
+
+
+def _normalize_criterion_param_value(key: str, param: str, value: Any) -> Any:
+    """Validate one parameter and normalize ticket percentages to numbers."""
+    _clock, base_param = _split_clock_scope(param)
+    descriptor = describe_threshold(base_param)
+    percentage = key.startswith("coverage_") and base_param == "min_pct"
+    percentage = percentage or (descriptor is not None and descriptor.unit == "percent")
+    if not percentage:
+        _validate_criterion_param_value(key, param, value)
+        return value
+
+    field = f"{key} param {param!r}"
+    number = _parse_percentage(value, field=field)
+    coverage = key.startswith("coverage_")
+    _validate_percentage_range(
+        number,
+        field=field,
+        allow_zero=not coverage,
+        maximum=100 if coverage else None,
+    )
+    if key == "cycle_count" and base_param == "cycle_count_reduce_at_least" and number > 100:
+        raise ValueError(f"{field} cannot exceed 100%, got {value!r}")
+    return number
+
+
+def _parse_percentage(value: Any, *, field: str) -> int | float:
+    """Parse an external percentage spelling such as ``"8%"``."""
+    text = as_str(value)
+    if text is None:
+        raise ValueError(f"{field} must end in '%' (for example '8%'), got {value!r}")
+    text = text.strip()
+    if not text.endswith("%"):
+        raise ValueError(f"{field} must end in '%' (for example '8%'), got {value!r}")
+    number = as_float(text[:-1])
+    if number is None:
+        raise ValueError(f"{field} must be a number followed by '%', got {value!r}")
+    return int(number) if number.is_integer() else number
+
+
+def _validate_percentage_range(
+    number: int | float,
+    *,
+    field: str,
+    allow_zero: bool,
+    maximum: int | None,
+) -> None:
+    """Validate the shared non-negative percentage range."""
+    if number < 0 or (not allow_zero and number == 0):
+        qualifier = "positive" if not allow_zero else "non-negative"
+        raise ValueError(f"{field} must be a {qualifier} percentage")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{field} cannot exceed {maximum}%")
 
 
 def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
@@ -1262,18 +1320,7 @@ def _validate_cycle_count_value(param: str, value: Any) -> None:
                 f"cycle_count param {param!r} must be a non-negative integer, got {value!r}"
             )
         return
-    try:
-        number = require_finite_number(value, field=f"cycle_count param {param!r}")
-    except BoundaryError:
-        raise ValueError(
-            f"cycle_count param {param!r} must be a non-negative finite number, got {value!r}"
-        ) from None
-    if number < 0:
-        raise ValueError(
-            f"cycle_count param {param!r} must be a non-negative finite number, got {value!r}"
-        )
-    if param == "cycle_count_reduce_at_least" and number > 100:
-        raise ValueError(f"cycle_count param {param!r} cannot exceed 100, got {value!r}")
+    raise AssertionError(f"percentage Cycle Count param {param!r} was not normalized")
 
 
 def _validate_cycle_count_bounds(params: dict[str, Any]) -> None:

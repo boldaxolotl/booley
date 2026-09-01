@@ -103,9 +103,14 @@ targets:
 ```
 
 Doctor dry-runs and deep-smokes every compatible Target whose `doctor` list
-contains that Flow. Omit `booley.doctor` to keep a Target available only for
-explicit calls. The allowed Doctor names are `sim`, `lint`, `synth`, and
-FPGA remains an explicit-only implementation Flow. The former
+contains `sim`, `lint`, or `synth`. For `fpga`, plain Doctor performs the same
+Target setup and source inspection as `fpga --dry-run` and probes `vivado` in
+the Session Runtime; deep Doctor reports the full implementation as skipped and
+prints the target-specific manual command. Omit `booley.doctor` to keep a Target
+available only for explicit calls. The allowed Doctor names are `sim`, `lint`,
+`synth`, and `fpga`. A `[flows.fpga]` table makes that optional axis applicable,
+so an enabled table without a marked compatible Target is a Doctor failure;
+`enabled = false` is the explicit opt-out. The former
 `target`, `default_target`, and `calibration_target` Flow keys are retired.
 
 ### Commercial EDA provisioning

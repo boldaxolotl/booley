@@ -65,8 +65,8 @@ CRITERIA_WITH_SYNTHESIS = {
         "sim_pass": ["verif/tb.sv @ default @ none -> pass"],
         "synthesis_ok": {
             "configs": ["default", "lite"],
-            "cell_count_reduce_at_least": 20,
-            "wire_count_reduce_at_least": 20,
+            "cell_count_reduce_at_least": "20%",
+            "wire_count_reduce_at_least": "20%",
         },
     }
 }
@@ -80,8 +80,8 @@ CRITERIA_WITH_DIRECTED_SYNTHESIS_TARGET = {
                     "candidate": "synth_core_zbb",
                 }
             ],
-            "cell_count_increase_at_most": 11,
-            "critical_path_ps_increase_at_most": 3,
+            "cell_count_increase_at_most": "11%",
+            "critical_path_ps_increase_at_most": "3%",
         }
     }
 }
@@ -215,6 +215,41 @@ class TestCoverageRendering:
         assert parsed == {"mandatory": {"coverage": f"toggle {operator} 90"}}
 
 
+class TestCoverageGrouping:
+    def test_coverage_grouped_into_single_bullet(self):
+        criteria = {
+            "mandatory": {
+                "coverage_toggle": "90%",
+                "coverage_fsm": "100%",
+                "coverage_value": "90%",
+            }
+        }
+        rendered = render_criteria_section(criteria)
+        assert "- **coverage**:" in rendered
+        assert "toggle >= 90%" in rendered
+        assert "fsm >= 100%" in rendered
+        assert "value >= 90%" in rendered
+        assert "coverage_toggle" not in rendered
+        assert "coverage_fsm" not in rendered
+
+    def test_coverage_parses_gte_operator(self):
+        body = "## Criteria\n\n- **coverage**: toggle >= 90%, fsm >= 100%"
+        parsed = parse_criteria_section(body)
+        assert parsed["mandatory"]["coverage_toggle"] == "90%"
+        assert parsed["mandatory"]["coverage_fsm"] == "100%"
+
+    def test_coverage_parses_eq_operator(self):
+        body = "## Criteria\n\n- **coverage**: toggle = 90%, fsm = 100%"
+        parsed = parse_criteria_section(body)
+        assert parsed["mandatory"]["coverage_toggle"] == "90%"
+        assert parsed["mandatory"]["coverage_fsm"] == "100%"
+
+    def test_coverage_parses_unicode_gte(self):
+        body = "## Criteria\n\n- **coverage**: toggle ≥ 90%"
+        parsed = parse_criteria_section(body)
+        assert parsed["mandatory"]["coverage_toggle"] == "90%"
+
+
 class TestReviewGrouping:
     def test_reviews_grouped_into_single_bullet(self):
         criteria = {
@@ -273,14 +308,14 @@ class TestIndividualCriteria:
         criteria = {
             "mandatory": {
                 "synthesis_ok": {
-                    "cell_count_reduce_at_least": 20,
+                    "cell_count_reduce_at_least": "20%",
                     "configs": ["default", "lite"],
                 },
             }
         }
         rendered = render_criteria_section(criteria)
         assert "- **synthesis_ok**:" in rendered
-        assert "cell_count_reduce_at_least: 20" in rendered
+        assert "cell_count_reduce_at_least: 20%" in rendered
         assert "configs: default, lite" in rendered
 
     def test_boolean_true_no_value(self):

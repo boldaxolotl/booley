@@ -67,7 +67,7 @@ def test_cycle_count_requires_non_empty_binding_fields(missing: str) -> None:
         ("cycle_count_max", -1),
         ("cycle_count_min", True),
         ("cycle_count_increase_at_most_cycles", 1.5),
-        ("cycle_count_reduce_at_least", 100.1),
+        ("cycle_count_reduce_at_least", "100.1%"),
         ("cycle_count_increase_at_least", math.inf),
         ("cycle_count_increase_at_most", math.nan),
     ],
@@ -78,19 +78,30 @@ def test_cycle_count_rejects_invalid_numeric_values(param: str, value: object) -
 
 
 def test_cycle_count_accepts_zero_and_fractional_percentages() -> None:
-    CriteriaTemplate.from_yaml(
+    template = CriteriaTemplate.from_yaml(
         {
             "mandatory": {
                 "cycle_count": [
                     _entry(
                         cycle_count_max=0,
-                        cycle_count_increase_at_most=0,
-                        cycle_count_reduce_at_least=99.9,
+                        cycle_count_increase_at_most="0%",
+                        cycle_count_reduce_at_least="99.9%",
                     )
                 ]
             }
         }
     )
+    params = next(iter(template.expand_params([]).values()))
+    assert params["cycle_count_increase_at_most"] == 0
+    assert params["cycle_count_reduce_at_least"] == 99.9
+
+
+@pytest.mark.parametrize("value", [8, 8.5, "8", "8 percent"])
+def test_cycle_count_percentage_requires_percent_suffix(value: object) -> None:
+    with pytest.raises(ValueError, match="must end in '%'"):
+        CriteriaTemplate.from_yaml(
+            {"mandatory": {"cycle_count": [_entry(cycle_count_reduce_at_least=value)]}}
+        )
 
 
 def test_cycle_count_rejects_static_same_unit_contradictions() -> None:
@@ -157,7 +168,11 @@ def test_synthesis_and_fpga_thresholds_accept_zero() -> None:
 
 def test_development_state_ands_all_cycle_thresholds() -> None:
     template = CriteriaTemplate.from_yaml(
-        {"mandatory": {"cycle_count": [_entry(cycle_count_max=95, cycle_count_reduce_at_least=5)]}}
+        {
+            "mandatory": {
+                "cycle_count": [_entry(cycle_count_max=95, cycle_count_reduce_at_least="5%")]
+            }
+        }
     )
     key = next(iter(template.expand([])))
     state = DevelopmentState()

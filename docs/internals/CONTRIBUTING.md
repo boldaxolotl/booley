@@ -115,12 +115,15 @@ question for any EDA tool is: does Edalize already have a backend for it?**
 - **Yes** (VCS, Genus, DC, Questa, … many are already in Edalize) → you get
   much of the invocation layer. Point the EDA-tool selector at it: a `.core` Target's
   `default_tool` field (or a per-flow `flow_options.tool`) chooses which EDA tool
-  builds that Target. Then wire it through the built-in Booley Flow path. There
-  is one builder (Booley's FuseSoC/Edalize flow) and no `backend` or execution-
-  location knob: every Flow executes inside the Session Runtime. For commercial
-  EDA, an Edalize backend is necessary but not sufficient—the contribution also
-  needs a built-in installation, licensing, security, Doctor, and end-to-end
-  validation policy comparable to Vivado's. See
+  normally builds that Target. FPGA implementation is the fixed-backend exception:
+  the Target's `fpga` name axis selects the Flow, its EDA-selection field controls
+  FuseSoC resolution inputs, and Booley always rebuilds those inputs into a Vivado
+  EDAM. Then wire the tool through the built-in Booley Flow path. There is one
+  builder (Booley's FuseSoC/Edalize flow) and no `backend` or execution-location
+  knob: every Flow executes inside the Session Runtime. For commercial EDA, an
+  Edalize backend is necessary but not sufficient—the contribution also needs a
+  built-in installation, licensing, security, Doctor, and end-to-end validation
+  policy comparable to Vivado's. See
   [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 - **No** → contribute the backend upstream to Edalize, then integrate that
   flow node with the same Session Runtime and commercial-policy requirements.
