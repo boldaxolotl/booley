@@ -1558,6 +1558,33 @@ class TestEdalizeSimPath:
         # Unconfigured project -> the built-in 600s default.
         assert _resolve_sim_timeout_ms(tmp_path / "nowhere") == _DEFAULT_TIMEOUT_MS
 
+    def test_sim_config_numeric_boundaries_reject_booleans(self, tmp_path: Path):
+        from booley.flows.sim.flow import (
+            _DEFAULT_MAX_RUNDIR_BYTES,
+            _DEFAULT_TIMEOUT_MS,
+            _resolve_max_rundir_bytes,
+            _resolve_pre_run_commands,
+            _resolve_sim_time_grace_s,
+            _resolve_sim_timeout_ms,
+        )
+        from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
+
+        proj = tmp_path / ".booley_project"
+        proj.mkdir()
+        (proj / "booley.toml").write_text(
+            "[flows.sim]\n"
+            "pre_run_commands = true\n"
+            "max_rundir_bytes = true\n"
+            "timeout_ms = true\n"
+            "sim_time_grace_s = true\n",
+            encoding="utf-8",
+        )
+
+        assert _resolve_pre_run_commands(tmp_path) == []
+        assert _resolve_max_rundir_bytes(tmp_path) == _DEFAULT_MAX_RUNDIR_BYTES
+        assert _resolve_sim_timeout_ms(tmp_path) == _DEFAULT_TIMEOUT_MS
+        assert _resolve_sim_time_grace_s(tmp_path) == DEFAULT_SIM_TIME_GRACE_S
+
     def test_effective_timeout_ms_precedence(self, tmp_path: Path):
         """--timeout arg wins over [flows.sim].timeout_ms wins over default (F4)."""
         from booley.flows.sim.flow import _DEFAULT_TIMEOUT_MS
