@@ -441,7 +441,7 @@ jobs:
             exit 0
           fi
           python .github/scripts/docker_base_contract.py --repo . \
-            --resolver shadow --resolve-image "${PUBLISHED_BASE}" \
+            --resolver remote --resolve-image "${PUBLISHED_BASE}" \
             --github-output "${GITHUB_OUTPUT}"
           echo "build=false" >> "${GITHUB_OUTPUT}"
 
