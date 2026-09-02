@@ -213,3 +213,53 @@ def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path) -> N
         session_refresh.refresh(tmp_path)
 
     assert events == ["up", "restore-spec", "discard:True:True"]
+
+
+def test_candidate_cleanup_failure_is_reported_with_rollback_errors(tmp_path: Path) -> None:
+    candidate_issuance = SimpleNamespace()
+    with (
+        patch.object(session_refresh, "restore_session_spec"),
+        patch.object(
+            sr,
+            "discard_refresh_candidate",
+            side_effect=sr.SessionError("candidate busy"),
+        ),
+    ):
+        errors = session_refresh._rollback(
+            tmp_path,
+            object(),
+            None,
+            candidate_issuance,
+        )
+
+    assert errors == ("new Session Runtime: candidate busy",)
+
+
+def test_invalid_recovery_issuance_is_a_session_error(tmp_path: Path) -> None:
+    with (
+        patch.object(
+            session_refresh.runtime_spec,
+            "load_issued_snapshot",
+            side_effect=session_refresh.runtime_spec.RuntimeSpecError("stamp drift"),
+        ),
+        pytest.raises(sr.SessionError, match=r"cannot preserve.*stamp drift"),
+    ):
+        session_refresh._load_recovery_issuance(tmp_path)
+
+
+def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path) -> None:
+    result = LifecycleResult("booley-sandbox", None, Status.CHANGED)
+    snapshot = object()
+    with (
+        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
+        patch.object(session_refresh, "inspect_refreshable_session_image"),
+        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
+        patch.object(session_refresh, "_load_recovery_issuance", return_value=object()),
+        patch.object(sr, "park_session_for_refresh", return_value=None),
+        patch.object(session_refresh, "refresh_session_image", return_value=result),
+        patch.object(session_refresh, "restore_session_spec") as restore,
+        pytest.raises(sr.SessionError, match="immutable Session Image ID"),
+    ):
+        session_refresh.refresh(tmp_path)
+
+    restore.assert_called_once_with(tmp_path, snapshot)

@@ -110,6 +110,30 @@ def test_recovery_snapshot_uses_sealed_issuance_without_current_authority(
     assert runtime_spec.load_issued_snapshot(project) == stamp
 
 
+def test_recovery_snapshot_rejects_different_project_identity(issued, monkeypatch) -> None:
+    project, _spec, _path, stamp = issued
+    monkeypatch.setattr(
+        runtime_spec,
+        "_load_stamp",
+        lambda _path: replace(stamp, project_root=str(project.parent / "other")),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="different Project"):
+        runtime_spec.load_issued_snapshot(project)
+
+
+def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None:
+    project, _spec, _path, stamp = issued
+    monkeypatch.setattr(
+        runtime_spec,
+        "_load_stamp",
+        lambda _path: replace(stamp, keeper_image="foreign:session"),
+    )
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="image keeper differs"):
+        runtime_spec.load_issued_snapshot(project)
+
+
 def test_no_eda_issuance_and_validation_never_open_authority_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
