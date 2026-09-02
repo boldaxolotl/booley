@@ -241,6 +241,74 @@ def test_remote_resolution_rejects_malformed_raw_manifest(monkeypatch) -> None:
         docker_base_contract.resolve_image_remote(reference, "contract-value")
 
 
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("malformed-document-json", "invalid remote Manifest response"),
+        ("non-object-document", "invalid remote Manifest response"),
+        ("malformed-raw-json", "invalid remote raw manifest"),
+        ("missing-manifest-list", "invalid OCI image index"),
+        ("non-object-descriptor", "invalid OCI image index"),
+        ("wrong-config-platform", "remote image configuration is not Linux/AMD64"),
+        ("unsupported-top-media", "unsupported OCI media type"),
+        ("unsupported-manifest-media", "selected descriptor is not an image manifest"),
+        ("invalid-config-descriptor", "invalid image configuration descriptor"),
+    ],
+)
+def test_remote_resolution_rejects_malformed_oci_metadata(
+    monkeypatch, case: str, message: str
+) -> None:
+    reference, documents = _remote_image_documents()
+    image_reference = next(key[0] for key in documents if key[0] != reference)
+    raw_responses: dict[tuple[str, str], str] = {}
+    if case == "malformed-document-json":
+        raw_responses[(reference, "{{json .Manifest}}")] = "not-json"
+    elif case == "non-object-document":
+        documents[(reference, "{{json .Manifest}}")] = []
+    elif case == "malformed-raw-json":
+        raw_responses[(image_reference, "--raw")] = "not-json"
+    elif case == "missing-manifest-list":
+        documents[(reference, "{{json .Manifest}}")]["manifests"] = None
+    elif case == "non-object-descriptor":
+        documents[(reference, "{{json .Manifest}}")]["manifests"] = [None]
+    elif case == "wrong-config-platform":
+        documents[(image_reference, "{{json .Image}}")]["architecture"] = "arm64"
+    elif case == "unsupported-top-media":
+        documents[(reference, "{{json .Manifest}}")]["mediaType"] = "application/vnd.in-toto+json"
+    elif case == "unsupported-manifest-media":
+        documents[(image_reference, "--raw")]["mediaType"] = "application/vnd.in-toto+json"
+    else:
+        documents[(image_reference, "--raw")]["config"] = None
+
+    def fake_run(command, **_kwargs):
+        selector = "--raw" if command[5] == "--raw" else command[6]
+        key = (command[4], selector)
+        output = raw_responses.get(key)
+        if output is None:
+            output = json.dumps(documents[key])
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match=message):
+        docker_base_contract.resolve_image_remote(reference, "contract-value")
+
+
+def test_remote_resolution_accepts_single_platform_manifest(monkeypatch) -> None:
+    reference, documents = _remote_image_documents()
+    image_reference = next(key[0] for key in documents if key[0] != reference)
+    image_digest = image_reference.rsplit("@", 1)[1]
+    documents[(reference, "{{json .Manifest}}")] = {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": image_digest,
+    }
+    monkeypatch.setattr(docker_base_contract.subprocess, "run", _remote_runner(documents))
+
+    assert docker_base_contract.resolve_image_remote(reference, "contract-value") == (
+        f"ghcr.io/acme/base@{image_digest}"
+    )
+
+
 def test_remote_resolution_rejects_non_image_platform_descriptor(monkeypatch) -> None:
     reference = "ghcr.io/acme/base:main"
     index = {
@@ -422,6 +490,59 @@ def test_runtime_base_callers_use_shadow_resolver(workflow_path: str) -> None:
 
     assert resolver_calls, workflow_path
     assert "--resolver shadow" in workflow, workflow_path
+
+
+@pytest.mark.parametrize(
+    ("resolver_name", "expected_image"),
+    [
+        ("shadow", "ghcr.io/acme/base@sha256:shadow"),
+        ("remote", "ghcr.io/acme/base@sha256:remote"),
+        ("pull", "ghcr.io/acme/base@sha256:pull"),
+    ],
+)
+def test_cli_selects_requested_image_resolver(
+    monkeypatch, capsys, resolver_name: str, expected_image: str
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    def resolver(name: str, result: str):
+        def resolve(reference: str, expected_contract: str) -> str:
+            calls.append((name, reference, expected_contract))
+            return result
+
+        return resolve
+
+    monkeypatch.setattr(docker_base_contract, "contract", lambda _repo, _manifest: "contract")
+    monkeypatch.setattr(
+        docker_base_contract,
+        "resolve_image",
+        resolver("shadow", "ghcr.io/acme/base@sha256:shadow"),
+    )
+    monkeypatch.setattr(
+        docker_base_contract,
+        "resolve_image_remote",
+        resolver("remote", "ghcr.io/acme/base@sha256:remote"),
+    )
+    monkeypatch.setattr(
+        docker_base_contract,
+        "resolve_image_pull",
+        resolver("pull", "ghcr.io/acme/base@sha256:pull"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "docker_base_contract.py",
+            "--resolve-image",
+            "ghcr.io/acme/base:main",
+            "--resolver",
+            resolver_name,
+        ],
+    )
+
+    assert docker_base_contract.main() == 0
+    assert calls == [(resolver_name, "ghcr.io/acme/base:main", "contract")]
+    assert capsys.readouterr().out.strip() == expected_image
 
 
 def test_image_resolution_rejects_malformed_digest_inventory(monkeypatch) -> None:
