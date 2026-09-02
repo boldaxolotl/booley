@@ -688,6 +688,7 @@ jobs:
             -w /work \
             -e BOOLEY_PROJECT_DIR=/booley-project \
             -e BOOLEY_IN_SANDBOX=1 \
+            -e BOOLEY_RUN_PICORV32_FLOWS=1 \
             -e PYTHONPATH=/booley-source/src \
             -e TICKET_SLUG \
             booley-riscv-test bash -euo pipefail -c \

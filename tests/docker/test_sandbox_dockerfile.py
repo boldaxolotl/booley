@@ -128,6 +128,7 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
 
 def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
 
     assert "--file src/booley/data/docker/Dockerfile.riscv" in workflow
     assert "--build-context booley-sandbox=docker-image://booley-test" in workflow
@@ -136,6 +137,9 @@ def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
     assert "--flavor riscv" in workflow
     assert "--runtime-image riscv=booley-riscv-test" in workflow
     assert "verify_picorv32_demo.sh" in workflow
+    assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in workflow
+    assert "python -m booley.flows.lint --work-dir /work --target lint_core" in verifier
+    assert "python -m booley.flows.sim --work-dir /work --target sim_core" in verifier
     assert "riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
 
 

@@ -26,7 +26,24 @@ def test_repository_contract_distinguishes_standard_and_riscv_capabilities() -> 
     assert "/usr/local/cargo" in standard["absent_paths"]
     assert "riscv-none-elf-gcc" not in standard["required_commands"]
     assert "riscv-none-elf-gcc" in riscv["required_commands"]
+    assert "riscv32-unknown-elf-g++" in riscv["required_commands"]
+    assert "riscv64-unknown-elf-g++" in riscv["required_commands"]
     assert len(riscv["probes"]) > len(standard["probes"])
+
+    multilib_probe = next(
+        probe for probe in riscv["probes"] if probe["name"] == "RISC-V multilib C and C++ links"
+    )
+    for architecture in (
+        "rv32i ilp32",
+        "rv32im ilp32",
+        "rv32imc ilp32",
+        "rv32e ilp32e",
+        "rv32imaf ilp32f",
+        "rv32imafd ilp32d",
+        "rv64gc lp64d",
+    ):
+        assert architecture in multilib_probe["command"]
+    assert "riscv32-unknown-elf riscv64-unknown-elf" in multilib_probe["command"]
 
 
 def test_contract_rejects_single_path_hard_link_group(tmp_path: Path) -> None:
@@ -37,6 +54,28 @@ def test_contract_rejects_single_path_hard_link_group(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="at least two paths"):
+        image_contract.load_contract(contract, "standard")
+
+
+def test_contract_rejects_boolean_schema_version(tmp_path: Path) -> None:
+    contract = tmp_path / "contract.toml"
+    contract.write_text("schema = true\n[common]\n[standard]\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runtime contract schema"):
+        image_contract.load_contract(contract, "standard")
+
+
+@pytest.mark.parametrize("timeout", [True, 0, -1, "5"])
+def test_contract_rejects_invalid_probe_timeout(tmp_path: Path, timeout: object) -> None:
+    contract = tmp_path / "contract.toml"
+    contract.write_text(
+        "schema = 1\n[common]\n[[common.probe]]\n"
+        f'name = "probe"\ncommand = "true"\ntimeout_seconds = {json.dumps(timeout)}\n'
+        "[standard]\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
         image_contract.load_contract(contract, "standard")
 
 

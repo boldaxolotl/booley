@@ -169,7 +169,9 @@ required_commands = [
   "riscv-none-elf-gcc",
   "riscv-none-elf-g++",
   "riscv32-unknown-elf-gcc",
+  "riscv32-unknown-elf-g++",
   "riscv64-unknown-elf-gcc",
+  "riscv64-unknown-elf-g++",
 ]
 required_paths = [
   "/opt/riscv-docs/INDEX.md",
@@ -191,10 +193,31 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 printf '%s\n' 'int main(void) { return 0; }' > "$work/main.c"
 printf '%s\n' '#include <array>' 'int main() { std::array<int, 2> v{1, 2}; return v[0] - 1; }' > "$work/main.cc"
-for tuple in "rv32imc ilp32" "rv64gc lp64d"; do
-  set -- $tuple
-  riscv-none-elf-gcc -march="$1" -mabi="$2" -specs=nosys.specs "$work/main.c" -o "$work/c-$1.elf"
-  riscv-none-elf-g++ -march="$1" -mabi="$2" -specs=nosys.specs "$work/main.cc" -o "$work/cpp-$1.elf"
+while read -r architecture abi; do
+  riscv-none-elf-gcc -march="$architecture" -mabi="$abi" -specs=nosys.specs \
+    "$work/main.c" -o "$work/c-$architecture.elf"
+  riscv-none-elf-g++ -march="$architecture" -mabi="$abi" -specs=nosys.specs \
+    "$work/main.cc" -o "$work/cpp-$architecture.elf"
+done <<'MULTILIBS'
+rv32i ilp32
+rv32im ilp32
+rv32imc ilp32
+rv32e ilp32e
+rv32imaf ilp32f
+rv32imafd ilp32d
+rv64gc lp64d
+MULTILIBS
+for triple in riscv32-unknown-elf riscv64-unknown-elf; do
+  architecture=rv32imc
+  abi=ilp32
+  if test "$triple" = riscv64-unknown-elf; then
+    architecture=rv64gc
+    abi=lp64d
+  fi
+  "$triple-gcc" -march="$architecture" -mabi="$abi" -specs=nosys.specs \
+    "$work/main.c" -o "$work/c-$triple.elf"
+  "$triple-g++" -march="$architecture" -mabi="$abi" -specs=nosys.specs \
+    "$work/main.cc" -o "$work/cpp-$triple.elf"
 done
 '''
 

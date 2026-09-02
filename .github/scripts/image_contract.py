@@ -8,10 +8,56 @@ import hashlib
 import json
 import subprocess
 import tomllib
-from datetime import UTC, datetime
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
-from booley.core.boundary import require_dict, require_list, require_str
+from booley.core.boundary import require_dict, require_int, require_list, require_str
+from booley.runtime.timefmt import utc_now_rfc3339
+
+
+class ProbeDefinition(TypedDict):
+    name: str
+    command: str
+    timeout_seconds: int
+
+
+class RuntimeContract(TypedDict):
+    required_commands: list[str]
+    required_paths: list[str]
+    absent_paths: list[str]
+    stripped_elf: list[str]
+    hard_link_groups: list[list[str]]
+    probes: list[ProbeDefinition]
+
+
+class ImageIdentity(TypedDict):
+    reference: str
+    image_id: str
+    os: str
+    architecture: str
+    runtime_user: str
+    working_dir: str
+    rootfs_diff_ids: list[str]
+
+
+class LayerContract(TypedDict):
+    base_reference: str | None
+    base_image_id: NotRequired[str]
+    prefix_match: bool | None
+    additional_layer_count: int | None
+
+
+class ValidationEvidence(TypedDict):
+    schema: int
+    measured_at: str
+    contract: str
+    contract_sha256: str
+    flavor: str
+    image: ImageIdentity
+    layers: LayerContract
+    assertions: dict
+    errors: list[str]
+
 
 _CONTAINER_PROBE = r"""
 import hashlib
@@ -150,12 +196,12 @@ def _link_groups(section: dict) -> list[list[str]]:
     return groups
 
 
-def _probes(section: dict) -> list[dict[str, object]]:
-    probes: list[dict[str, object]] = []
+def _probes(section: dict) -> list[ProbeDefinition]:
+    probes: list[ProbeDefinition] = []
     for raw in require_list(section.get("probe", []), field="probe"):
         probe = require_dict(raw, field="probe entry")
-        timeout = probe.get("timeout_seconds", 60)
-        if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1:
+        timeout = require_int(probe.get("timeout_seconds", 60), field="probe timeout_seconds")
+        if timeout < 1:
             raise ValueError("probe timeout_seconds must be a positive integer")
         probes.append(
             {
@@ -167,16 +213,20 @@ def _probes(section: dict) -> list[dict[str, object]]:
     return probes
 
 
-def _normalized_section(section: dict) -> dict[str, object]:
-    return {
-        field: _string_list(section, field)
-        for field in ("required_commands", "required_paths", "absent_paths", "stripped_elf")
-    } | {"hard_link_groups": _link_groups(section), "probes": _probes(section)}
+def _normalized_section(section: dict) -> RuntimeContract:
+    return RuntimeContract(
+        required_commands=_string_list(section, "required_commands"),
+        required_paths=_string_list(section, "required_paths"),
+        absent_paths=_string_list(section, "absent_paths"),
+        stripped_elf=_string_list(section, "stripped_elf"),
+        hard_link_groups=_link_groups(section),
+        probes=_probes(section),
+    )
 
 
-def load_contract(path: Path, flavor: str) -> dict[str, object]:
+def load_contract(path: Path, flavor: str) -> RuntimeContract:
     document = require_dict(tomllib.loads(path.read_text(encoding="utf-8")), field="contract")
-    if document.get("schema") != 1:
+    if require_int(document.get("schema"), field="runtime contract schema") != 1:
         raise ValueError("runtime contract schema must be 1")
     if flavor not in {"standard", "riscv"}:
         raise ValueError(f"unsupported image flavor: {flavor}")
@@ -184,13 +234,14 @@ def load_contract(path: Path, flavor: str) -> dict[str, object]:
     specific = _normalized_section(
         require_dict(document.get(flavor, {}), field=f"{flavor} contract")
     )
-    return {
-        field: [
-            *require_list(common[field], field=field),
-            *require_list(specific[field], field=field),
-        ]
-        for field in common
-    }
+    return RuntimeContract(
+        required_commands=[*common["required_commands"], *specific["required_commands"]],
+        required_paths=[*common["required_paths"], *specific["required_paths"]],
+        absent_paths=[*common["absent_paths"], *specific["absent_paths"]],
+        stripped_elf=[*common["stripped_elf"], *specific["stripped_elf"]],
+        hard_link_groups=[*common["hard_link_groups"], *specific["hard_link_groups"]],
+        probes=[*common["probes"], *specific["probes"]],
+    )
 
 
 def _docker_json(argv: list[str]) -> object:
@@ -202,25 +253,25 @@ def _docker_json(argv: list[str]) -> object:
     return json.loads(result.stdout)
 
 
-def _image_identity(image: str) -> dict[str, object]:
+def _image_identity(image: str) -> ImageIdentity:
     rows = require_list(_docker_json(["image", "inspect", image]), field="image inspect")
     if len(rows) != 1:
         raise ValueError(f"Docker returned {len(rows)} inspect rows for {image!r}")
     row = require_dict(rows[0], field="image inspect row")
     rootfs = require_dict(row.get("RootFS"), field="image RootFS")
     config = require_dict(row.get("Config"), field="image Config")
-    return {
-        "reference": image,
-        "image_id": require_str(row, "Id"),
-        "os": require_str(row, "Os"),
-        "architecture": require_str(row, "Architecture"),
-        "runtime_user": require_str(config, "User"),
-        "working_dir": require_str(config, "WorkingDir"),
-        "rootfs_diff_ids": _string_list(rootfs, "Layers"),
-    }
+    return ImageIdentity(
+        reference=image,
+        image_id=require_str(row, "Id"),
+        os=require_str(row, "Os"),
+        architecture=require_str(row, "Architecture"),
+        runtime_user=require_str(config, "User"),
+        working_dir=require_str(config, "WorkingDir"),
+        rootfs_diff_ids=_string_list(rootfs, "Layers"),
+    )
 
 
-def _probe_image(image: str, contract: dict[str, object]) -> dict:
+def _probe_image(image: str, contract: RuntimeContract) -> dict:
     result = subprocess.run(
         [
             "docker",
@@ -251,47 +302,50 @@ def _probe_image(image: str, contract: dict[str, object]) -> dict:
     return require_dict(json.loads(result.stdout), field="container probe report")
 
 
-def _layer_contract(image: dict[str, object], base: dict[str, object] | None) -> dict:
-    image_layers = require_list(image["rootfs_diff_ids"], field="image diff IDs")
+def _layer_contract(image: ImageIdentity, base: ImageIdentity | None) -> LayerContract:
+    image_layers = image["rootfs_diff_ids"]
     if base is None:
-        return {"base_reference": None, "prefix_match": None, "additional_layer_count": None}
-    base_layers = require_list(base["rootfs_diff_ids"], field="base diff IDs")
+        return LayerContract(
+            base_reference=None,
+            prefix_match=None,
+            additional_layer_count=None,
+        )
+    base_layers = base["rootfs_diff_ids"]
     prefix_match = image_layers[: len(base_layers)] == base_layers
     additional = len(image_layers) - len(base_layers)
-    return {
-        "base_reference": base["reference"],
-        "base_image_id": base["image_id"],
-        "prefix_match": prefix_match,
-        "additional_layer_count": additional,
-    }
+    return LayerContract(
+        base_reference=base["reference"],
+        base_image_id=base["image_id"],
+        prefix_match=prefix_match,
+        additional_layer_count=additional,
+    )
 
 
-def _timestamp() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def validate(image: str, flavor: str, contract_path: Path, base_image: str | None) -> dict:
+def validate(
+    image: str, flavor: str, contract_path: Path, base_image: str | None
+) -> ValidationEvidence:
     contract = load_contract(contract_path, flavor)
     identity = _image_identity(image)
     base = _image_identity(base_image) if base_image else None
     layer_contract = _layer_contract(identity, base)
     probe = _probe_image(image, contract)
-    errors = list(require_list(probe.get("errors"), field="probe errors"))
+    errors = _string_list(probe, "errors")
     if base is not None and not layer_contract["prefix_match"]:
         errors.append("derived image RootFS layers do not prefix-match the standard image")
-    if base is not None and layer_contract["additional_layer_count"] < 1:
+    additional_layer_count = layer_contract["additional_layer_count"]
+    if base is not None and (additional_layer_count is None or additional_layer_count < 1):
         errors.append("derived image added no RootFS layer")
-    return {
-        "schema": 1,
-        "measured_at": _timestamp(),
-        "contract": str(contract_path),
-        "contract_sha256": hashlib.sha256(contract_path.read_bytes()).hexdigest(),
-        "flavor": flavor,
-        "image": identity,
-        "layers": layer_contract,
-        "assertions": probe,
-        "errors": errors,
-    }
+    return ValidationEvidence(
+        schema=1,
+        measured_at=utc_now_rfc3339(),
+        contract=str(contract_path),
+        contract_sha256=hashlib.sha256(contract_path.read_bytes()).hexdigest(),
+        flavor=flavor,
+        image=identity,
+        layers=layer_contract,
+        assertions=probe,
+        errors=errors,
+    )
 
 
 def main() -> int:
@@ -304,9 +358,8 @@ def main() -> int:
     args = parser.parse_args()
     evidence = validate(args.image, args.flavor, args.contract, args.base_image)
     args.evidence.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-    errors = require_list(evidence["errors"], field="validation errors")
-    if errors:
-        for error in errors:
+    if evidence["errors"]:
+        for error in evidence["errors"]:
             print(f"ERROR: {error}")
         return 1
     print(f"Session Runtime contract passed for {args.image} ({args.flavor})")

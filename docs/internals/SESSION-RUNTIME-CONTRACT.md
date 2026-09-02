@@ -73,9 +73,10 @@ RootFS history:
 - the pinned offline ISA, debug, and psABI reference set under
   `$BOOLEY_RISCV_DOCS`.
 
-CI compiles and links representative RV32/ILP32 and RV64/LP64D C and C++
-programs, checks the multilib count, and executes an RV32 ELF under Spike. The
-PicoRV32 candidate path provides project-level validation.
+CI compiles and links C and C++ through all three documented compiler prefixes
+and representative RV32I, RV32IM, RV32IMC, RV32E, RV32F, RV32D, and
+RV64/LP64D multilibs, checks the multilib count, and executes an RV32 ELF under
+Spike. The PicoRV32 candidate path provides project-level validation.
 
 The RISC-V RootFS DiffIDs must begin with the exact standard-image DiffID list.
 This proves the derived image continues to share the standard layers instead of
@@ -109,3 +110,11 @@ digests, environment, counts, and largest-directory inventory used by the plan.
 The proposed 3.1–3.4 GB standard and 4.6–4.9 GB RISC-V visible-filesystem
 endpoints remain design targets, not measured results or CI limits, until the
 candidate images prove them.
+
+This first contract stage is not the complete optimization-promotion gate. It
+establishes exact storage evidence, image identity, command/file invariants,
+representative compiler and Spike execution, and a real PicoRV32 lint/simulation
+run. Before a PR changes the shipped runtime payload, the promotion gate must
+also cover the Ibex demo, Spike differential and extension-loading behavior,
+agent-client signal and exit propagation, OpenROAD physical execution, cold
+start time, and representative peak RSS as specified by the image-size audit.

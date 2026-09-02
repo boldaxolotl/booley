@@ -8,7 +8,6 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.core.boundary import (
@@ -19,6 +18,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.runtime.timefmt import utc_now_rfc3339
 
 
 @dataclass(frozen=True)
@@ -73,12 +73,9 @@ def compressed_layers(
     document: object, *, os_name: str = "linux", architecture: str = "amd64"
 ) -> dict[str, int]:
     """Return unique compressed layer sizes from verbose manifest JSON."""
-    result: dict[str, int] = {}
-    for layer in _compressed_layer_rows(document, os_name=os_name, architecture=architecture):
-        if layer.digest in result and result[layer.digest] != layer.bytes:
-            raise ValueError(f"layer {layer.digest} has conflicting sizes")
-        result[layer.digest] = layer.bytes
-    return result
+    return _unique_layers(
+        _compressed_layer_rows(document, os_name=os_name, architecture=architecture)
+    )
 
 
 def _compressed_layer_rows(
@@ -321,19 +318,24 @@ def _merged_layers(layer_sets: list[dict[str, int]]) -> dict[str, int]:
     merged: dict[str, int] = {}
     for layers in layer_sets:
         for digest, size in layers.items():
-            if digest in merged and merged[digest] != size:
-                raise ValueError(f"layer {digest} has conflicting cross-image sizes")
-            merged[digest] = size
+            _record_layer_size(merged, digest, size, scope="cross-image")
     return merged
 
 
 def _unique_layers(layers: tuple[LayerMeasurement, ...]) -> dict[str, int]:
     unique: dict[str, int] = {}
     for layer in layers:
-        if layer.digest in unique and unique[layer.digest] != layer.bytes:
-            raise ValueError(f"layer {layer.digest} has conflicting sizes")
-        unique[layer.digest] = layer.bytes
+        _record_layer_size(unique, layer.digest, layer.bytes)
     return unique
+
+
+def _record_layer_size(
+    target: dict[str, int], digest: str, size: int, *, scope: str | None = None
+) -> None:
+    if digest in target and target[digest] != size:
+        qualifier = f" {scope}" if scope else ""
+        raise ValueError(f"layer {digest} has conflicting{qualifier} sizes")
+    target[digest] = size
 
 
 def report(
@@ -414,10 +416,6 @@ def _named_reference(value: str) -> tuple[str, str]:
     return name, reference
 
 
-def _timestamp() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--registry-image", action="append", default=[], type=_named_reference)
@@ -442,7 +440,7 @@ def main() -> int:
     payload = report(
         measurements,
         environment=measurement_environment(),
-        measured_at=_timestamp(),
+        measured_at=utc_now_rfc3339(),
     )
     args.json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     args.markdown.write_text(markdown(payload), encoding="utf-8")
