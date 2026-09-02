@@ -614,6 +614,17 @@ class TestCli:
 
 
 class TestClaudeMintLocation:
+    def test_missing_project_state_is_not_initialized(self, tmp_path, monkeypatch):
+        from booley.runtime import project_dir
+
+        monkeypatch.setattr(
+            project_dir,
+            "resolve_checkout_project_dir",
+            Mock(side_effect=FileNotFoundError("missing")),
+        )
+
+        assert not auth_cmd._project_is_initialized(tmp_path)
+
     def test_project_mint_uses_runtime_without_host_cli(self, tmp_path, monkeypatch):
         project = tmp_path / "rtl"
         project.mkdir()
@@ -691,6 +702,27 @@ class TestClaudeMintLocation:
         assert "initialized Booley Project" in errors[0]
         assert "Session Runtime" in errors[0]
 
+    def test_failed_host_mint_reports_exit_and_does_not_prompt(self, tmp_path, monkeypatch):
+        prompt = Mock()
+        errors: list[str] = []
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
+        monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: "/host/bin/claude")
+        monkeypatch.setattr(
+            auth_cmd.subprocess,
+            "run",
+            Mock(return_value=SimpleNamespace(returncode=7)),
+        )
+        monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+
+        token = auth_cmd._mint_claude_token(
+            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+        )
+
+        assert token is None
+        prompt.assert_not_called()
+        assert errors == ["`claude setup-token` failed (exit 7)"]
+
     def test_external_project_directory_counts_as_initialized(self, tmp_path, monkeypatch):
         project = tmp_path / "rtl"
         project_data = tmp_path / "private-state"
@@ -712,6 +744,58 @@ class TestClaudeMintLocation:
 
         assert token == _TOKEN
         project_probe.assert_not_called()
+
+    def test_interactive_acquire_uses_mint_path(self, tmp_path, monkeypatch):
+        mint = Mock(return_value=_TOKEN)
+        monkeypatch.setattr(auth_cmd, "_mint_claude_token", mint)
+        credential = auth_token.CREDENTIALS[auth_token.APP_CLAUDE]
+
+        assert auth_cmd._acquire(credential, False, tmp_path) == _TOKEN
+        mint.assert_called_once_with(credential, tmp_path)
+
+    def test_non_project_reseed_is_a_successful_noop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
+
+        assert auth_cmd._reseed_spec(tmp_path)
+
+    def test_project_reseed_reports_run_init_result(self, tmp_path, monkeypatch):
+        from booley.harness import init_cmd
+
+        run_init = Mock(return_value=0)
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
+        monkeypatch.setattr(init_cmd, "run_init", run_init)
+
+        assert auth_cmd._reseed_spec(tmp_path)
+        assert run_init.call_args.args[1] == tmp_path
+        assert run_init.call_args.args[0].seed is True
+
+    def test_store_rejects_invalid_credential(self, tmp_path, monkeypatch):
+        errors: list[str] = []
+        monkeypatch.setattr(
+            auth_token,
+            "store_token",
+            Mock(side_effect=ValueError("credential is empty")),
+        )
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+
+        stored = auth_cmd._store_and_reseed(
+            "invalid", auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+        )
+
+        assert stored is None
+        assert errors == ["credential is empty"]
+
+    def test_store_returns_path_after_successful_reseed(self, tmp_path, monkeypatch):
+        stored = tmp_path / "claude-oauth-token"
+        monkeypatch.setattr(auth_token, "store_token", Mock(return_value=stored))
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=True))
+
+        assert (
+            auth_cmd._store_and_reseed(
+                _TOKEN, auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+            )
+            == stored
+        )
 
     def test_reseed_failure_keeps_stored_token_but_returns_failure(self, tmp_path, monkeypatch):
         stored = tmp_path / "config" / "booley" / "claude-oauth-token"

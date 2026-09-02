@@ -30,6 +30,10 @@ def _fake_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
         "#!/usr/bin/python3\n"
         "import os,sys\n"
         "args=sys.argv[1:]\n"
+        "for index,arg in enumerate(args):\n"
+        " if arg=='-e':\n"
+        "  key,value=args[index+1].split('=',1)\n"
+        "  os.environ[key]=value\n"
         "start=args.index('python3')\n"
         "os.execvp(args[start],args[start:])\n",
         encoding="utf-8",
@@ -93,6 +97,26 @@ def test_normal_command_uses_structured_terminal_result(tmp_path: Path, monkeypa
     assert result.exit_code == 7
     assert result.state == "terminal"
     assert result.tree_terminal is True
+
+
+def test_explicit_environment_reaches_attached_command(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "project"
+    data = root / ".booley_project"
+    data.mkdir(parents=True)
+    _fake_docker(tmp_path, monkeypatch, data)
+    observed = tmp_path / "proxy.txt"
+    script = f"import os; open({str(observed)!r}, 'w').write(os.environ['HTTPS_PROXY'])"
+
+    result = runtime_attachment.run_command(
+        root,
+        "session-name",
+        [sys.executable, "-c", script],
+        tty=False,
+        env={"HTTPS_PROXY": "http://booley-proxy:8080"},
+    )
+
+    assert result.exit_code == 0
+    assert observed.read_text(encoding="utf-8") == "http://booley-proxy:8080"
 
 
 def test_sigint_requests_cancellation_and_returns_130(tmp_path: Path, monkeypatch) -> None:

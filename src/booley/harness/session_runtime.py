@@ -998,13 +998,13 @@ def _up_unlocked(
     return request.name
 
 
-def _recover_before_lifecycle(workspace: Path, command: str) -> None:
+def _recover_before_lifecycle(workspace: Path, retry_command: str) -> None:
     from booley.harness.session_refresh import RecoveryOutcome, recover_project_locked
 
     recovered = recover_project_locked(workspace)
     if recovered.outcome is not RecoveryOutcome.NONE:
         raise SessionError(
-            f"recovered an interrupted Session refresh; run `booley session {command}` again"
+            f"recovered an interrupted Session refresh; run `{retry_command}` again"
         )
 
 
@@ -1020,7 +1020,7 @@ def up(
     from booley.harness.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session up"):
-        _recover_before_lifecycle(workspace, "up")
+        _recover_before_lifecycle(workspace, "booley session up")
         return _up_unlocked(
             workspace,
             rebuild=rebuild,
@@ -1090,7 +1090,7 @@ def prepare(workspace: Path) -> str:
     from booley.harness.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session prepare"):
-        _recover_before_lifecycle(workspace, "prepare")
+        _recover_before_lifecycle(workspace, "booley session prepare")
         return _prepare_unlocked(workspace)
 
 
@@ -1900,12 +1900,18 @@ def _matching_running_project_runtime(workspace: Path, request: _UpRequest) -> s
     return candidates[0][0] if candidates else None
 
 
-def _select_or_start_project_runtime(workspace: Path) -> str:
+def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, str]]:
     """Select the one current runtime, or create/resume the headless runtime."""
     request = _validate_up_request(workspace, None)
+    remote_env = request.spec["remoteEnv"]
+    command_env = {
+        name: value
+        for name, value in remote_env.items()
+        if auth_token.credential_for_env_var(name) is None
+    }
     running = _matching_running_project_runtime(workspace, request)
     if running is not None:
-        return running
+        return running, command_env
     _run_up_transaction(
         workspace,
         request,
@@ -1914,7 +1920,7 @@ def _select_or_start_project_runtime(workspace: Path) -> str:
         expected_payload_fingerprint=None,
     )
     _warn_on_stale_session_containers(request.spec, workspace)
-    return request.name
+    return request.name, command_env
 
 
 def run_project_command(workspace: Path, command: list[str], *, tty: bool = True) -> int:
@@ -1922,12 +1928,19 @@ def run_project_command(workspace: Path, command: list[str], *, tty: bool = True
     from booley.harness.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session command"):
-        name = _select_or_start_project_runtime(workspace)
+        _recover_before_lifecycle(workspace, "booley auth")
+        name, command_env = _select_or_start_project_runtime(workspace)
     _warn_on_mangled_args(command)
     from booley.harness.runtime_attachment import run_command
 
     try:
-        return run_command(workspace, name, list(command), tty=tty).exit_code
+        return run_command(
+            workspace,
+            name,
+            list(command),
+            tty=tty,
+            env=command_env,
+        ).exit_code
     except (OSError, subprocess.SubprocessError) as exc:
         raise SessionError(f"could not attach to Session Runtime {name!r}: {exc}") from exc
 
@@ -2000,7 +2013,7 @@ def down(workspace: Path, *, remove: bool = True) -> bool:
     from booley.harness.lifecycle_lock import host_lifecycle_lock
 
     with host_lifecycle_lock("session down"):
-        _recover_before_lifecycle(workspace, "down")
+        _recover_before_lifecycle(workspace, "booley session down")
         return _down_unlocked(workspace, remove=remove)
 
 

@@ -12,6 +12,7 @@ import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -2530,10 +2531,27 @@ class TestMangledArgWarning:
 
 
 class TestRunProjectCommand:
+    COMMAND_ENV: ClassVar[dict[str, str]] = {
+        "HTTP_PROXY": dc.PROXY_URL,
+        "HTTPS_PROXY": dc.PROXY_URL,
+        "http_proxy": dc.PROXY_URL,
+        "https_proxy": dc.PROXY_URL,
+        "NO_PROXY": "localhost,127.0.0.1",
+        "BOOLEY_MCP_MODE": "interactive",
+        "BOOLEY_PROJECT_DIR": "/booley-project",
+        "BOOLEY_AGENT_APP": "claude",
+    }
+
     @staticmethod
     def _request(workspace: Path):
         return SimpleNamespace(
-            spec={"image": "booley-sandbox"},
+            spec={
+                "image": "booley-sandbox",
+                "remoteEnv": {
+                    **TestRunProjectCommand.COMMAND_ENV,
+                    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+                },
+            },
             issuance=object(),
             profile=None,
             name=sr.session_container_name(workspace),
@@ -2564,7 +2582,13 @@ class TestRunProjectCommand:
             assert sr.run_project_command(workspace, command, tty=True) == 0
 
         start.assert_not_called()
-        run.assert_called_once_with(workspace, "vscode-runtime", command, tty=True)
+        run.assert_called_once_with(
+            workspace,
+            "vscode-runtime",
+            command,
+            tty=True,
+            env=self.COMMAND_ENV,
+        )
 
     def test_starts_headless_runtime_when_none_is_running(self, workspace: Path):
         request = self._request(workspace)
@@ -2587,7 +2611,52 @@ class TestRunProjectCommand:
             expected_image_id=None,
             expected_payload_fingerprint=None,
         )
-        run.assert_called_once_with(workspace, request.name, command, tty=False)
+        run.assert_called_once_with(
+            workspace,
+            request.name,
+            command,
+            tty=False,
+            env=self.COMMAND_ENV,
+        )
+
+    def test_ignores_running_runtime_for_another_project(self, workspace: Path):
+        request = self._request(workspace)
+        other = workspace.parent / "other-project"
+        running = [
+            ("other-runtime", self._vscode_state(other)),
+            ("vscode-runtime", self._vscode_state(workspace)),
+        ]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(sr, "_strict_running_interactive_states", return_value=running),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.harness.runtime_attachment.run_command") as run,
+        ):
+            run.return_value = SimpleNamespace(exit_code=0)
+            assert sr.run_project_command(workspace, ["claude", "setup-token"]) == 0
+
+        start.assert_not_called()
+        run.assert_called_once()
+        assert run.call_args.args[1] == "vscode-runtime"
+
+    def test_recovers_interrupted_refresh_before_selecting_runtime(self, workspace: Path):
+        select = Mock()
+        with (
+            patch.object(
+                sr,
+                "_recover_before_lifecycle",
+                side_effect=sr.SessionError("recovered interrupted refresh"),
+            ) as recover,
+            patch.object(sr, "_select_or_start_project_runtime", select),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            pytest.raises(sr.SessionError, match="recovered interrupted refresh"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+        recover.assert_called_once_with(workspace, "booley auth")
+        select.assert_not_called()
 
     def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
         request = self._request(workspace)
@@ -2628,7 +2697,12 @@ class TestRunProjectCommand:
 
     def test_attachment_failure_is_reported_as_session_error(self, workspace: Path):
         with (
-            patch.object(sr, "_select_or_start_project_runtime", return_value="runtime"),
+            patch.object(
+                sr,
+                "_select_or_start_project_runtime",
+                return_value=("runtime", self.COMMAND_ENV),
+            ),
+            patch.object(sr, "_recover_before_lifecycle"),
             patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
             patch(
                 "booley.harness.runtime_attachment.run_command",
