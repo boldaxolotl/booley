@@ -269,6 +269,39 @@ def test_audit_finds_blob_deleted_later_in_history(tmp_path: Path) -> None:
     assert SENTINEL not in result.stderr
 
 
+def test_audit_accepts_glob_escaped_mergify_bot_identity(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    (repo / "bot.txt").write_text("clean bot-authored content\n", encoding="utf-8")
+    head = _commit(
+        repo,
+        "add bot-authored fixture",
+        name="mergify[bot]",
+        email="37929162+mergify[bot]@users.noreply.github.com",
+    )
+    env = os.environ | {
+        "BOOLEY_LEAK_GUARD_CONFIG_B64": _encoded_config(),
+        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": "mergify[[]bot[]]",
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCANNER),
+            "--repo",
+            str(repo),
+            "audit",
+            "--rev",
+            head,
+        ],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_merge_introduced_blob_deleted_later_is_blocked(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _git(repo, "checkout", "-b", "side")
@@ -437,4 +470,4 @@ def test_workflow_trusts_mergify_identity_only_for_main_history() -> None:
         "- name: Publish scan status", 1
     )[0]
 
-    assert 'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[bot]"' in main_scan
+    assert 'BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"' in main_scan
