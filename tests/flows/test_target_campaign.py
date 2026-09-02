@@ -1,6 +1,5 @@
 """Direct tests for the shared Target campaign domain."""
 
-import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +12,7 @@ from booley.flows.target_campaign import (
 )
 from booley.flows.target_criteria import CampaignScopeError
 from booley.flows.target_test_suite import NoRunnableTestsError
+from tests.architecture.production import assert_no_dependencies
 
 
 def _entry(**params: object) -> SimpleNamespace:
@@ -120,17 +120,11 @@ def test_campaign_aggregation_cannot_pass_vacuously() -> None:
 
 def test_campaign_domain_does_not_import_presentation_layers() -> None:
     flows_dir = Path(__file__).parents[2] / "src" / "booley" / "flows"
-    forbidden = ("booley.harness", "booley.mcp", "booley.ticket_board")
-    for filename in ("target_campaign.py", "target_criteria.py", "target_test_suite.py"):
-        source = flows_dir / filename
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        imports = {
-            node.module or ""
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.level == 0
-        }
-        assert not {
-            module
-            for module in imports
-            if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
-        }
+    paths = tuple(
+        flows_dir / filename
+        for filename in ("target_campaign.py", "target_criteria.py", "target_test_suite.py")
+    )
+    assert_no_dependencies(
+        paths=paths,
+        target_prefixes=("booley.harness", "booley.mcp", "booley.ticket_board"),
+    )

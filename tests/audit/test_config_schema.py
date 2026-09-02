@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from tests.architecture.production import assert_no_dependencies
 
 from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
 from booley.config.host_config import host_config_path
@@ -334,27 +335,17 @@ def test_doctor_does_not_reimplement_config_schema_mechanisms() -> None:
 
 
 def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
-    forbidden = ("booley.harness", "booley.mcp", "booley.specialists")
-    for name in (
-        "agent_schema.py",
-        "config_common.py",
-        "configs_schema.py",
-        "flow_schema.py",
-        "project_schema.py",
-    ):
-        module_path = _ROOT / "src" / "booley" / "audit" / name
-        tree = ast.parse(module_path.read_text(encoding="utf-8"))
-        imports = {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        }
-        imports.update(
-            node.module or ""
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.level == 0
+    paths = tuple(
+        _ROOT / "src" / "booley" / "audit" / name
+        for name in (
+            "agent_schema.py",
+            "config_common.py",
+            "configs_schema.py",
+            "flow_schema.py",
+            "project_schema.py",
         )
-        assert not {
-            module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
-        }
+    )
+    assert_no_dependencies(
+        paths=paths,
+        target_prefixes=("booley.harness", "booley.mcp", "booley.specialists"),
+    )

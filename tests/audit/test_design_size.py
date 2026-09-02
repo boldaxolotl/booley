@@ -3,6 +3,8 @@
 import ast
 from pathlib import Path
 
+from tests.architecture.production import assert_no_dependencies
+
 from booley.audit import design_size
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -105,20 +107,7 @@ def test_doctor_does_not_reimplement_extracted_mechanisms() -> None:
 
 def test_design_size_domain_does_not_depend_on_presentation_layers() -> None:
     module_path = _ROOT / "src" / "booley" / "audit" / "design_size.py"
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    imports = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    imports.update(
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.level == 0
+    assert_no_dependencies(
+        paths=(module_path,),
+        target_prefixes=("booley.harness", "booley.mcp", "booley.specialists"),
     )
-
-    forbidden = ("booley.harness", "booley.mcp", "booley.specialists")
-    assert not {
-        module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
-    }

@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from tests.architecture.production import assert_no_dependencies
 
 from booley.audit import resource_policy
 
@@ -136,20 +137,7 @@ def test_doctor_does_not_reimplement_extracted_resource_mechanisms() -> None:
 
 def test_resource_policy_does_not_depend_on_presentation_layers() -> None:
     module_path = _ROOT / "src" / "booley" / "audit" / "resource_policy.py"
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
-    imports = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    imports.update(
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.level == 0
+    assert_no_dependencies(
+        paths=(module_path,),
+        target_prefixes=("booley.harness", "booley.mcp", "booley.specialists"),
     )
-
-    forbidden = ("booley.harness", "booley.mcp", "booley.specialists")
-    assert not {
-        module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
-    }
