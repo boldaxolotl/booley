@@ -72,7 +72,6 @@ from booley.ticket_board.io import TicketFileSpec, TicketIO
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
     # of the import path of every `booley` invocation.
-    from booley.harness.image_lifecycle import LifecycleResult
     from booley.mcp.registry import McpToolInfo
 
 # --- Constants ---
@@ -1272,50 +1271,14 @@ def _report_upgrade_before_session(project_root: Path) -> None:
     print(f"warning: {upgrade_cli.render_status(status)}", file=sys.stderr)
 
 
-def _replace_refreshed_session(
-    project_root: Path, result: LifecycleResult, *, verbose: bool
-) -> None:
-    """Reissue host state and replace the runtime as one recoverable transaction."""
-    from booley.harness import session_runtime as sr
-    from booley.harness.init_cmd import (
-        capture_session_spec,
-        reissue_session_spec,
-        restore_session_spec,
-    )
-
-    assert result.selected_id is not None
-    snapshot = capture_session_spec(project_root)
-    try:
-        reissue_session_spec(project_root, result.selected_id, verbose=verbose)
-        sr.up(
-            project_root,
-            rebuild=True,
-            expected_image_id=result.selected_id,
-            expected_payload_fingerprint=result.payload_fingerprint,
-        )
-    except BaseException:
-        restore_session_spec(project_root, snapshot)
-        raise
-
-
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Session Image and replace its Session Runtime."""
     configure_progress_output()
     from booley.harness import auto_doctor
-    from booley.harness import session_runtime as sr
-    from booley.harness.init_cmd import refresh_session_image
+    from booley.harness.session_refresh import refresh
 
-    vscode = sr.conflicting_vscode_session(project_root)
-    if vscode:
-        raise sr.SessionError(
-            f"VS Code owns the active Session Runtime {vscode!r}; use "
-            "'Dev Containers: Rebuild Container' so the editor can replace it safely"
-        )
     verbose = getattr(args, "verbose", False)
-    result = refresh_session_image(project_root, verbose=verbose)
-    if result.selected_id is None:
-        raise sr.SessionError("image refresh did not return an immutable Session Image ID")
-    _replace_refreshed_session(project_root, result, verbose=verbose)
+    result = refresh(project_root, verbose=verbose)
     _report_session_health(
         project_root,
         startup_due_reason=auto_doctor.due_reason(project_root),

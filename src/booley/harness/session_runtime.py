@@ -20,6 +20,7 @@ init``'s to create; this module only refuses to start without them.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -436,48 +437,274 @@ def _run(argv: list[str], *, capture: bool = True) -> subprocess.CompletedProces
 
 
 @dataclass(frozen=True)
-class _ParkedSession:
+class ParkedSession:
+    """One retained Session container that can be restored or discarded."""
+
     name: str
     backup: str
     was_running: bool
+    project_id: str | None = None
+    reconnect_egress: bool = False
 
 
-def _park_session_for_rebuild(name: str) -> _ParkedSession:
+def _strict_refresh_container(name: str) -> dict[str, Any] | None:
+    """Inspect one refresh-owned container without collapsing Docker errors."""
+    result = _run(["docker", "container", "inspect", name, "--format", "{{json .}}"])
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        if "no such" in detail.casefold():
+            return None
+        raise SessionError(f"cannot inspect Session Runtime {name!r}: {detail or 'docker failed'}")
+    try:
+        state = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SessionError(
+            f"Docker returned invalid inspection for Session Runtime {name!r}"
+        ) from exc
+    if not isinstance(state, dict):
+        raise SessionError(f"Docker returned invalid inspection for Session Runtime {name!r}")
+    config = state.get("Config")
+    runtime_state = state.get("State")
+    network_settings = state.get("NetworkSettings")
+    if not all(isinstance(item, dict) for item in (config, runtime_state, network_settings)):
+        raise SessionError(f"Docker returned incomplete inspection for Session Runtime {name!r}")
+    labels = config.get("Labels")
+    networks = network_settings.get("Networks")
+    if (
+        not isinstance(labels, dict)
+        or not isinstance(networks, dict)
+        or not isinstance(runtime_state.get("Running"), bool)
+    ):
+        raise SessionError(f"Docker returned incomplete inspection for Session Runtime {name!r}")
+    return state
+
+
+def _refresh_container_labels(state: dict[str, Any]) -> dict[str, str]:
+    raw = state["Config"]["Labels"]
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in raw.items()):
+        raise SessionError("Session Runtime inspection contains invalid labels")
+    return raw
+
+
+def _assert_refresh_container_owned(name: str, state: dict[str, Any], project_id: str) -> None:
+    labels = _refresh_container_labels(state)
+    if labels.get("booley.role") != "interactive" or labels.get("booley.project-id") != project_id:
+        raise SessionError(
+            f"container {name!r} is not the issued Session Runtime for this Project; "
+            "it was not modified"
+        )
+
+
+def _refresh_project_id(issuance: Issuance) -> str:
+    from booley.eda.provisioning import runtime_spec
+
+    values = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+    return values["booley.project-id"]
+
+
+def _ensure_unlicensed_refresh(
+    workspace: Path, issuance: Issuance, labels: dict[str, str]
+) -> None:
+    licensed = (
+        issuance.license_profile is not None
+        or issuance.relay_image_id is not None
+        or labels.get("booley.license-profile") != "none"
+        or _relay_objects_exist(_relay_resources(workspace))
+    )
+    if licensed:
+        raise SessionError(
+            "transactional refresh cannot yet preserve a licensed relay topology; "
+            "run `booley session down` before `booley session refresh`"
+        )
+
+
+def _park_session_container(parked: ParkedSession) -> None:
+    """Stop and rename one Session using its deterministic recovery name."""
+    if parked.was_running:
+        stopped = _run(["docker", "stop", parked.name])
+        if stopped.returncode:
+            raise SessionError(
+                f"could not stop existing Session Runtime: {stopped.stderr.strip()}"
+            )
+    renamed = _run(["docker", "rename", parked.name, parked.backup])
+    if renamed.returncode:
+        restart_detail = ""
+        if parked.was_running:
+            restarted = _run(["docker", "start", parked.name])
+            if restarted.returncode:
+                restart_detail = f"; recovery restart also failed: {restarted.stderr.strip()}"
+        raise SessionError(
+            f"could not park existing Session Runtime: {renamed.stderr.strip()}{restart_detail}"
+        )
+
+
+def _restore_parked_name(parked: ParkedSession) -> None:
+    """Restore a retained container's original name and running state."""
+    renamed = _run(["docker", "rename", parked.backup, parked.name])
+    if renamed.returncode:
+        raise SessionError(
+            f"could not restore recovery Session name {parked.name!r}: {renamed.stderr.strip()}"
+        )
+    if parked.was_running:
+        _start_session_container(parked.name)
+
+
+def _remove_session_candidate(name: str) -> None:
+    removed = _run(["docker", "rm", "-f", name])
+    if removed.returncode:
+        raise SessionError(
+            f"could not remove failed Session candidate {name!r}: {removed.stderr.strip()}"
+        )
+
+
+def _park_refresh_container(parked: ParkedSession) -> None:
+    _park_session_container(parked)
+    if not parked.reconnect_egress:
+        return
+    detached = _run(["docker", "network", "disconnect", dc.EGRESS_NETWORK, parked.backup])
+    if detached.returncode:
+        raise SessionError(
+            f"could not detach recovery Session {parked.backup!r}: {detached.stderr.strip()}"
+        )
+
+
+def _verify_refresh_park(parked: ParkedSession) -> None:
+    assert parked.project_id is not None
+    state = _strict_refresh_container(parked.backup)
+    if state is None:
+        raise SessionError(f"parked Session Runtime {parked.backup!r} disappeared")
+    _assert_refresh_container_owned(parked.backup, state, parked.project_id)
+    if state["State"]["Running"]:
+        raise SessionError(f"parked Session Runtime {parked.backup!r} is still running")
+    if dc.EGRESS_NETWORK in state["NetworkSettings"]["Networks"]:
+        raise SessionError(f"parked Session Runtime {parked.backup!r} is still attached to egress")
+
+
+def _restore_incomplete_park(parked: ParkedSession) -> None:
+    """Best-effort compensation while parking has not yet crossed bootstrap."""
+    assert parked.project_id is not None
+    state = _strict_refresh_container(parked.backup)
+    if state is None:
+        original = _strict_refresh_container(parked.name)
+        if original is None:
+            raise SessionError(
+                f"neither Session Runtime {parked.name!r} nor recovery container "
+                f"{parked.backup!r} exists"
+            )
+        _assert_refresh_container_owned(parked.name, original, parked.project_id)
+        if parked.was_running and not original["State"]["Running"]:
+            _start_session_container(parked.name)
+        return
+    _assert_refresh_container_owned(parked.backup, state, parked.project_id)
+    networks = state["NetworkSettings"]["Networks"]
+    if parked.reconnect_egress and dc.EGRESS_NETWORK not in networks:
+        connected = _run(["docker", "network", "connect", dc.EGRESS_NETWORK, parked.backup])
+        if connected.returncode:
+            raise SessionError(
+                f"could not reconnect recovery Session {parked.backup!r}: "
+                f"{connected.stderr.strip()}"
+            )
+    _restore_parked_name(parked)
+
+
+def park_session_for_refresh(workspace: Path, issuance: Issuance) -> ParkedSession | None:
+    """Stop, retain, and detach this Project's unlicensed headless Session."""
+    name = session_container_name(workspace)
+    state = _strict_refresh_container(name)
+    if state is None:
+        return None
+    project_id = _refresh_project_id(issuance)
+    _assert_refresh_container_owned(name, state, project_id)
+    labels = _refresh_container_labels(state)
+    _ensure_unlicensed_refresh(workspace, issuance, labels)
+    backup = f"{name}-pre-refresh"
+    if _strict_refresh_container(backup) is not None:
+        raise SessionError(
+            f"cannot refresh while recovery container {backup!r} exists; inspect it first"
+        )
+    was_running = state["State"]["Running"]
+    networks = state["NetworkSettings"]["Networks"]
+    parked = ParkedSession(
+        name=name,
+        backup=backup,
+        was_running=was_running,
+        project_id=project_id,
+        reconnect_egress=dc.EGRESS_NETWORK in networks,
+    )
+    try:
+        _park_refresh_container(parked)
+        _verify_refresh_park(parked)
+    except BaseException as park_error:
+        try:
+            _restore_incomplete_park(parked)
+        except BaseException as recovery_error:  # noqa: BLE001 -- report failed compensation
+            raise SessionError(
+                f"Session parking failed ({park_error}); rollback was incomplete: "
+                f"{recovery_error}; inspect containers {parked.name!r} and "
+                f"{parked.backup!r}"
+            ) from park_error
+        raise
+    return parked
+
+
+def restore_refresh_session(parked: ParkedSession) -> None:
+    """Restore the exact pre-refresh container after a failed replacement."""
+    assert parked.project_id is not None
+    candidate = _strict_refresh_container(parked.name)
+    if candidate is not None:
+        _assert_refresh_container_owned(parked.name, candidate, parked.project_id)
+        _remove_session_candidate(parked.name)
+    _restore_incomplete_park(parked)
+
+
+def discard_refresh_session(parked: ParkedSession) -> None:
+    """Discard a verified replacement's exact, detached predecessor."""
+    assert parked.project_id is not None
+    state = _strict_refresh_container(parked.backup)
+    if state is None:
+        return
+    _assert_refresh_container_owned(parked.backup, state, parked.project_id)
+    _discard_parked_session(parked)
+
+
+def discard_refresh_candidate(workspace: Path, issuance: Issuance) -> None:
+    """Remove a newly verified candidate after a late refresh conflict."""
+    name = session_container_name(workspace)
+    state = _strict_refresh_container(name)
+    if state is None:
+        return
+    _assert_refresh_container_owned(name, state, _refresh_project_id(issuance))
+    labels = _refresh_container_labels(state)
+    _remove_session_candidate(name)
+    licensed = (
+        issuance.license_profile is not None
+        or issuance.relay_image_id is not None
+        or labels.get("booley.license-profile") != "none"
+    )
+    if licensed:
+        _remove_license_relay(_relay_resources(workspace))
+
+
+def _park_session_for_rebuild(name: str) -> ParkedSession:
     """Stop and rename an unlicensed Session so refresh can roll it back."""
     backup = f"{name}-pre-refresh"
     if idk.container_exists(backup):
         raise SessionError(
             f"cannot refresh while recovery container {backup!r} exists; inspect it first"
         )
-    was_running = idk.container_running(name)
-    if was_running:
-        stopped = _run(["docker", "stop", name])
-        if stopped.returncode != 0:
-            raise SessionError(
-                f"could not stop existing Session Runtime: {stopped.stderr.strip()}"
-            )
-    renamed = _run(["docker", "rename", name, backup])
-    if renamed.returncode != 0:
-        if was_running:
-            _run(["docker", "start", name])
-        raise SessionError(f"could not park existing Session Runtime: {renamed.stderr.strip()}")
-    return _ParkedSession(name, backup, was_running)
+    parked = ParkedSession(name, backup, idk.container_running(name))
+    _park_session_container(parked)
+    return parked
 
 
-def _restore_parked_session(parked: _ParkedSession) -> None:
+def _restore_parked_session(parked: ParkedSession) -> None:
     """Restore the pre-refresh Session after replacement failed."""
     if idk.container_exists(parked.name):
         _run(["docker", "rm", "-f", parked.name])
-    renamed = _run(["docker", "rename", parked.backup, parked.name])
-    if renamed.returncode != 0:
-        raise SessionError(
-            f"refresh failed and recovery container {parked.backup!r} could not be restored"
-        )
-    if parked.was_running:
-        _start_session_container(parked.name)
+    _restore_parked_name(parked)
 
 
-def _discard_parked_session(parked: _ParkedSession) -> None:
+def _discard_parked_session(parked: ParkedSession) -> None:
     result = _run(["docker", "rm", "-f", parked.backup])
     if result.returncode != 0:
         logger.warning(
@@ -490,12 +717,7 @@ def _discard_parked_session(parked: _ParkedSession) -> None:
 def _remove_failed_candidate(request: _UpRequest, *, remove_relay: bool) -> None:
     """Remove an unverified candidate and any topology created only for it."""
     if idk.container_exists(request.name):
-        removed = _run(["docker", "rm", "-f", request.name])
-        if removed.returncode != 0:
-            raise SessionError(
-                f"could not remove failed Session candidate {request.name!r}: "
-                f"{removed.stderr.strip()}"
-            )
+        _remove_session_candidate(request.name)
     if remove_relay:
         _remove_license_relay(request.relay)
 
@@ -622,7 +844,7 @@ def _run_up_transaction(
         _discard_parked_session(parked)
 
 
-def up(
+def _up_unlocked(
     workspace: Path,
     *,
     rebuild: bool = False,
@@ -652,6 +874,27 @@ def up(
     return request.name
 
 
+def up(
+    workspace: Path,
+    *,
+    rebuild: bool = False,
+    image_override: str | None = None,
+    expected_image_id: str | None = None,
+    expected_payload_fingerprint: str | None = None,
+) -> str:
+    """Create or start one Session while excluding other host mutations."""
+    from booley.harness.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("session up"):
+        return _up_unlocked(
+            workspace,
+            rebuild=rebuild,
+            image_override=image_override,
+            expected_image_id=expected_image_id,
+            expected_payload_fingerprint=expected_payload_fingerprint,
+        )
+
+
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
     from booley.eda.provisioning import runtime_spec
@@ -661,7 +904,7 @@ def validate(workspace: Path) -> str:
     return issuance.spec_sha256
 
 
-def prepare(workspace: Path) -> str:
+def _prepare_unlocked(workspace: Path) -> str:
     """Validate the issued spec and prepare licensed topology for VS Code.
 
     Dev Containers runs this fixed host command before container creation.  The
@@ -706,6 +949,14 @@ def prepare(workspace: Path) -> str:
             issuance.relay_image_id,
         )
     return issuance.spec_sha256
+
+
+def prepare(workspace: Path) -> str:
+    """Prepare VS Code topology while excluding other host mutations."""
+    from booley.harness.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("session prepare"):
+        return _prepare_unlocked(workspace)
 
 
 def _reject_legacy_project_data_visibility(workspace: Path, pending_project_data: Path) -> None:
@@ -769,6 +1020,25 @@ def _strict_interactive_states(
             raise SessionError(f"cannot inspect Session Runtime {name!r}")
         states.append((name, raw))
     return states
+
+
+def strict_conflicting_vscode_session(workspace: Path) -> str | None:
+    """Find a conflicting VS Code Session or fail if Docker cannot prove absence."""
+    ours = session_container_name(workspace)
+    expected_folder = str(workspace).casefold()
+    for name, raw in _strict_running_interactive_states():
+        if name == ours:
+            continue
+        state = _decode_container_inspect(raw)
+        assert state is not None
+        config = state.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            raise SessionError(f"Docker returned incomplete inspection for {name!r}")
+        folder = labels.get(_DEVCONTAINER_FOLDER_LABEL)
+        if isinstance(folder, str) and folder.casefold() == expected_folder:
+            return name
+    return None
 
 
 def _reconcile_stopped_vscode_containers(workspace: Path, issuance: object) -> None:
@@ -1376,7 +1646,7 @@ def verify_refreshed_session(
         )
 
 
-def down(workspace: Path, *, remove: bool = True) -> bool:
+def _down_unlocked(workspace: Path, *, remove: bool = True) -> bool:
     """Stop (and by default remove) the session container. False if absent."""
     name = session_container_name(workspace)
     relay = _relay_resources(workspace)
@@ -1389,6 +1659,14 @@ def down(workspace: Path, *, remove: bool = True) -> bool:
     if remove and relay_exists:
         _remove_license_relay(relay)
     return session_exists or relay_exists
+
+
+def down(workspace: Path, *, remove: bool = True) -> bool:
+    """Stop one Session while excluding other host mutations."""
+    from booley.harness.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("session down"):
+        return _down_unlocked(workspace, remove=remove)
 
 
 def status(workspace: Path) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from booley.harness.bootstrap import BootstrapState, reconcile_bootstrap
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import Intent
+from booley.harness.lifecycle_lock import host_lifecycle_lock
 
 
 def run_bootstrap(args: object) -> int:
@@ -16,7 +17,11 @@ def run_bootstrap(args: object) -> int:
         if getattr(args, "force", False)
         else Intent.ENSURE
     )
-    result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
+    if intent is Intent.CHECK:
+        result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
+    else:
+        with host_lifecycle_lock("host bootstrap"):
+            result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
     print(bold_chrome("Host Bootstrap"))
     glyphs = {
         BootstrapState.CURRENT: (accent, "[--]"),
