@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -117,7 +118,7 @@ COMMAND_LOCATIONS = {
     "session": CommandLocation.HOST,
     "projects": CommandLocation.HOST,
     "upgrade": CommandLocation.EITHER,
-    "targets": CommandLocation.EITHER,
+    "targets": CommandLocation.MIXED,
     "flow": CommandLocation.MIXED,
     "feedback": CommandLocation.MIXED,
 }
@@ -1585,13 +1586,30 @@ def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     return endpoint_cls().main(argv)
 
 
+def _target_detail_payload(
+    project_root: Path, selector: str, *, as_json: bool
+) -> dict[str, object]:
+    """Resolve Target detail in-runtime, or return actionable host metadata."""
+    from booley.targets import target_surface
+
+    inside_runtime = runtime_context.inside_session_runtime()
+    payload = target_surface.detail_payload(project_root, selector, resolve=inside_runtime)
+    if inside_runtime:
+        return payload
+    command = ["booley", "session", "enter", "--", "booley", "targets", selector]
+    if as_json:
+        command.append("--json")
+    payload["resolved_error"] = "detailed Target resolution requires the Session Runtime"
+    payload["resolution_command"] = shlex.join(command)
+    return payload
+
+
 def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
     """List the project's ``.core`` Targets, or detail one: `booley targets`.
 
-    Pure ``.core``-YAML enumeration (works on either side of the container
-    boundary, like doctor); only the single-Target detail view shells out to
-    ``fusesoc run --setup`` — and degrades to the cheap half with a hint when
-    fusesoc is unavailable on the host.
+    Pure ``.core``-YAML enumeration works on either side of the Session Runtime
+    boundary. Single-Target resolution runs only inside the Session Runtime;
+    host detail degrades to the cheap half with an entry command.
     """
     import json as _json
 
@@ -1617,7 +1635,7 @@ def _cmd_targets(args: argparse.Namespace, project_root: Path) -> int:
             )
             return 2
         try:
-            payload = target_surface.detail_payload(project_root, selector)
+            payload = _target_detail_payload(project_root, selector, as_json=as_json)
         except fusesoc_registry.FuseSocError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2

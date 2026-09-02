@@ -170,7 +170,8 @@ class TestContainerOnlyError:
         msg = runtime_context.container_only_error("bwave")
         assert "`bwave`" in msg
         assert "Reopen in Container" in msg
-        assert "docker exec" in msg
+        assert "booley session enter -- bwave" in msg
+        assert "docker exec" not in msg
 
 
 # ===========================================================================
