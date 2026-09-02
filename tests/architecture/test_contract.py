@@ -144,6 +144,46 @@ def test_prefix_shaped_waiver_is_invalid() -> None:
     assert "W1 source is not an exact module" in format_problems(evaluate_contract((), contract))
 
 
+def test_rule_metadata_requires_valid_selectors_and_a_design_reason() -> None:
+    contract = ArchitectureContract(
+        rules=(
+            DirectionRule(
+                identifier="D1",
+                sources=(ModuleSelector.prefix("booley.policy.*"),),
+                targets=(ModuleSelector.prefix("booley.presentation"),),
+                reason="",
+            ),
+        )
+    )
+
+    rendered = format_problems(evaluate_contract((), contract))
+
+    assert "D1 has no design reason" in rendered
+    assert "D1 selector is not a module: booley.policy.*" in rendered
+
+
+def test_permission_metadata_requires_a_known_rule_exact_edge_and_reason() -> None:
+    contract = ArchitectureContract(
+        rules=(_rule("D1", "booley.policy", "booley.presentation"),),
+        permissions=(
+            CompositionPermission(
+                identifier="C1",
+                rule="D404",
+                source="booley.policy.*",
+                target="booley.presentation.*",
+                reason="",
+            ),
+        ),
+    )
+
+    rendered = format_problems(evaluate_contract((), contract))
+
+    assert "C1 refers to unknown rule D404" in rendered
+    assert "C1 source is not an exact module: booley.policy.*" in rendered
+    assert "C1 target is not an exact module: booley.presentation.*" in rendered
+    assert "C1 has no design reason" in rendered
+
+
 def test_scc_subset_gate_allows_splits_and_rejects_joining_or_merging() -> None:
     approved = (
         frozenset(("booley.alpha", "booley.beta", "booley.gamma")),

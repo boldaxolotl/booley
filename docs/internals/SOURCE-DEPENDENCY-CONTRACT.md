@@ -73,6 +73,13 @@ tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
 
+The approved D9 selector resolves PR 1's ambiguous phrase "direct module
+children" in favor of its Flow-neutral design reason. It includes the root package
+module and direct file modules such as `booley.flows.target_campaign`. It excludes
+child package initializers such as `booley.flows.sim`, because those initializers
+belong to the selected concrete Flow rather than to Flow-neutral policy. This is an
+explicit selector decision, not a blanket exception from other direction rules.
+
 The D10 adapter selector sets are exhaustive for this rule:
 
 - S1, Cocotb: exact modules `booley.flows.sim.backends.cocotb` and
@@ -138,10 +145,16 @@ it must not attempt speculative evaluation of arbitrary Python expressions.
 
 ## Reproducible baseline
 
-Run from the repository root at commit `094d1c5d` (current `main` when PR 1 began):
+The baseline measures production source at `094d1c5d` (current `main` when PR 1
+began) with the analyzer introduced by PR 1 at `4725cd09`. Reproduce that historical
+two-tree combination from any checkout containing both commits:
 
 ```console
-python3 tests/architecture/report.py --source-root src/booley --top 30
+baseline_dir="$(mktemp -d)"
+git archive 4725cd09 tests/architecture | tar -x -C "${baseline_dir}"
+git archive 094d1c5d src/booley | tar -x -C "${baseline_dir}"
+python3 "${baseline_dir}/tests/architecture/report.py" \
+  --source-root "${baseline_dir}/src/booley" --top 30
 ```
 
 The analyzer parses 370 Python modules and emits 1,761 located dependency facts
