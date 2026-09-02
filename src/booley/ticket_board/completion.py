@@ -308,32 +308,39 @@ def _ref_commit(repository: Path, ref: str) -> str | None:
     raise CompletionError(f"could not inspect {ref} in {repository}: {detail}")
 
 
-def _direct_ref_commit(repository: Path, ref: str) -> str | None:
+def _direct_ref_identity(repository: Path, ref: str) -> str | None:
+    """Return the object ID stored in a direct ref without peeling it."""
     symbolic = _git(repository, "symbolic-ref", "--quiet", ref)
     if symbolic.returncode == 0:
         raise CompletionError(f"acceptance ref {ref} is symbolic; expected an exact direct ref")
     if symbolic.returncode != 1:
         detail = (symbolic.stderr or symbolic.stdout).strip()
         raise CompletionError(f"could not inspect ref type for {ref}: {detail}")
-    return _ref_commit(repository, ref)
+    exists = _git(repository, "show-ref", "--verify", "--quiet", ref)
+    if exists.returncode == 1:
+        return None
+    if exists.returncode != 0:
+        detail = (exists.stderr or exists.stdout).strip()
+        raise CompletionError(f"could not inspect {ref} in {repository}: {detail}")
+    return _require_git(repository, "rev-parse", "--verify", ref)
 
 
 def _delete_ref_at(repository: Path, ref: str, expected: str) -> None:
     """Delete one ref only while it points at its journaled identity."""
-    current = _direct_ref_commit(repository, ref)
+    current = _direct_ref_identity(repository, ref)
     if current is None:
         return
     if current != expected:
         raise CompletionError(f"refusing to delete {ref}: expected {expected}, found {current}")
     result = _git(repository, "update-ref", "--no-deref", "-d", ref, expected)
-    if result.returncode == 0 or _direct_ref_commit(repository, ref) is None:
+    if result.returncode == 0 or _direct_ref_identity(repository, ref) is None:
         return
     detail = (result.stderr or result.stdout).strip()
     raise CompletionError(f"could not delete {ref} at {expected}: {detail}")
 
 
 def _validate_ref_at(repository: Path, ref: str, expected: str) -> None:
-    current = _direct_ref_commit(repository, ref)
+    current = _direct_ref_identity(repository, ref)
     if current is not None and current != expected:
         raise CompletionError(f"refusing to delete {ref}: expected {expected}, found {current}")
 
@@ -404,8 +411,15 @@ def _publish_candidate(
     candidate: Mapping[str, Any],
     allowed_board_rename: tuple[Path, Path],
 ) -> None:
-    current = _commit(repository, participant.destination_ref)
     desired = _required_finalized_sha(candidate)
+    staging_ref = str(candidate["staging_ref"])
+    staging = _direct_ref_identity(repository, staging_ref)
+    if staging != desired:
+        raise CompletionError(
+            f"acceptance staging ref {staging_ref} has identity {staging or 'absent'}; "
+            f"expected finalized {desired}"
+        )
+    current = _commit(repository, participant.destination_ref)
     if current == desired or _is_ancestor(repository, desired, current):
         return
     expected = candidate["expected_destination_sha"]
@@ -507,7 +521,7 @@ def _required_finalized_sha(candidate: Mapping[str, Any]) -> str:
 
 
 def _cas_ref(repository: Path, ref: str, desired: str, expected: str | None) -> None:
-    current = _direct_ref_commit(repository, ref)
+    current = _direct_ref_identity(repository, ref)
     if current == desired:
         return
     if current != expected:
@@ -517,9 +531,9 @@ def _cas_ref(repository: Path, ref: str, desired: str, expected: str | None) -> 
         )
     old = expected if expected is not None else "0" * len(desired)
     result = _git(repository, "update-ref", "--no-deref", ref, desired, old)
-    if result.returncode == 0 or _direct_ref_commit(repository, ref) == desired:
+    if result.returncode == 0 or _direct_ref_identity(repository, ref) == desired:
         return
-    current = _direct_ref_commit(repository, ref)
+    current = _direct_ref_identity(repository, ref)
     detail = (result.stderr or result.stdout).strip()
     raise CompletionError(
         f"acceptance ref {ref} changed during reconciliation: "
@@ -531,27 +545,51 @@ def _finalized_keepalive_ref(journal: Mapping[str, Any], role: str) -> str:
     return f"refs/booley/acceptance/{journal['transaction']}/finalized-{role}"
 
 
+@dataclass(frozen=True)
+class _RefReconciliation:
+    repository: Path
+    ref: str
+    desired: str
+    allowed: frozenset[str | None]
+    expectation: str
+
+
+def _reconcile_refs(plans: list[_RefReconciliation]) -> None:
+    """Validate every ref identity before applying any compare-and-swap update."""
+    states: list[tuple[_RefReconciliation, str | None]] = []
+    for plan in plans:
+        current = _direct_ref_identity(plan.repository, plan.ref)
+        if current not in plan.allowed:
+            raise CompletionError(
+                f"acceptance ref {plan.ref} has unknown identity {current}; {plan.expectation}"
+            )
+        states.append((plan, current))
+    for plan, current in states:
+        if current != plan.desired:
+            _cas_ref(plan.repository, plan.ref, plan.desired, current)
+
+
 def _protect_finalized_candidates(
     root: Path,
     project_repository: Path | None,
     participants: Mapping[str, ContractParticipant],
     journal: Mapping[str, Any],
 ) -> None:
-    states: list[tuple[Path, str, str, str | None]] = []
+    plans: list[_RefReconciliation] = []
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, participants[role])
         finalized = _required_finalized_sha(candidate)
         ref = _finalized_keepalive_ref(journal, role)
-        current = _direct_ref_commit(repository, ref)
-        if current not in {None, finalized}:
-            raise CompletionError(
-                f"acceptance keepalive {ref} has unknown identity {current}; "
-                f"expected absent or finalized {finalized}"
+        plans.append(
+            _RefReconciliation(
+                repository,
+                ref,
+                finalized,
+                frozenset({None, finalized}),
+                f"expected absent or finalized {finalized}",
             )
-        states.append((repository, ref, finalized, current))
-    for repository, ref, finalized, current in states:
-        if current is None:
-            _cas_ref(repository, ref, finalized, None)
+        )
+    _reconcile_refs(plans)
 
 
 def _reject_unjournaled_keepalives(
@@ -563,7 +601,7 @@ def _reject_unjournaled_keepalives(
     for role, participant in participants.items():
         repository = _repository_for(root, project_repository, participant)
         ref = _finalized_keepalive_ref(journal, role)
-        current = _direct_ref_commit(repository, ref)
+        current = _direct_ref_identity(repository, ref)
         if current is not None:
             raise CompletionError(
                 f"acceptance keepalive {ref} records unjournaled identity {current}"
@@ -577,21 +615,21 @@ def _reconcile_prepared_refs(
     journal: Mapping[str, Any],
 ) -> None:
     by_role = {item.role: item for item in contract.participants}
-    states: list[tuple[Path, str, str, str | None]] = []
+    plans: list[_RefReconciliation] = []
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, by_role[role])
         prepared = _required_prepared_sha(candidate)
         ref = str(candidate["staging_ref"])
-        current = _direct_ref_commit(repository, ref)
-        if current not in {None, prepared}:
-            raise CompletionError(
-                f"acceptance staging ref {ref} has unknown identity {current}; "
-                f"expected absent or prepared {prepared}"
+        plans.append(
+            _RefReconciliation(
+                repository,
+                ref,
+                prepared,
+                frozenset({None, prepared}),
+                f"expected absent or prepared {prepared}",
             )
-        states.append((repository, ref, prepared, current))
-    for repository, ref, prepared, current in states:
-        if current is None:
-            _cas_ref(repository, ref, prepared, None)
+        )
+    _reconcile_refs(plans)
 
 
 def _reconcile_finalized_refs(
@@ -600,26 +638,26 @@ def _reconcile_finalized_refs(
     participants: Mapping[str, ContractParticipant],
     journal: Mapping[str, Any],
 ) -> None:
-    states: list[tuple[Path, str, str, str | None, str | None]] = []
+    plans: list[_RefReconciliation] = []
     for role, candidate in journal["candidates"].items():
         repository = _repository_for(root, project_repository, participants[role])
         finalized = _required_finalized_sha(candidate)
         prepared = candidate.get("prepared_sha")
         ref = str(candidate["staging_ref"])
         _commit(repository, finalized)
-        current = _direct_ref_commit(repository, ref)
         allowed = {None, finalized}
         if isinstance(prepared, str):
             allowed.add(prepared)
-        if current not in allowed:
-            raise CompletionError(
-                f"acceptance staging ref {ref} has unknown identity {current}; "
-                "expected absent, its exact prepared candidate, or its finalized candidate"
+        plans.append(
+            _RefReconciliation(
+                repository,
+                ref,
+                finalized,
+                frozenset(allowed),
+                "expected absent, its exact prepared candidate, or its finalized candidate",
             )
-        states.append((repository, ref, finalized, prepared, current))
-    for repository, ref, finalized, prepared, current in states:
-        if current != finalized:
-            _cas_ref(repository, ref, finalized, current if current == prepared else None)
+        )
+    _reconcile_refs(plans)
 
 
 def _validate_ticket_refs(
@@ -631,7 +669,7 @@ def _validate_ticket_refs(
     for participant in contract.participants:
         repository = _repository_for(root, project_repository, participant)
         expected = journal["sources"][participant.role]
-        current = _direct_ref_commit(repository, participant.ticket_ref)
+        current = _direct_ref_identity(repository, participant.ticket_ref)
         if current == expected:
             continue
         raise CompletionError(
@@ -983,7 +1021,7 @@ def _retire_finalized_keepalives(
                 f"{participant.destination_ref}"
             )
         ref = _finalized_keepalive_ref(journal, role)
-        current = _direct_ref_commit(repository, ref)
+        current = _direct_ref_identity(repository, ref)
         if current not in {None, finalized}:
             raise CompletionError(
                 f"acceptance keepalive {ref} has unknown identity {current}; "
@@ -1043,6 +1081,65 @@ def _cleanup_all(
     _write_journal(path, journal)
 
 
+def _prepare_pending_publication(
+    root: Path,
+    project_repository: Path | None,
+    slug: str,
+    destination_branch: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    path: Path,
+    *,
+    cleanup: bool,
+) -> None:
+    _ensure_sources(
+        root,
+        project_repository,
+        slug,
+        destination_branch,
+        contract,
+        journal,
+        path,
+    )
+    _validate_source_surface(root, project_repository, contract, journal["sources"])
+    _prepare_all(root, project_repository, slug, contract, journal, path)
+    _finalize_all(root, project_repository, slug, contract, journal, path)
+    participants = {item.role: item for item in contract.participants}
+    _update_finalized_refs(root, project_repository, participants, journal)
+    if not cleanup:
+        _validate_ticket_refs(root, project_repository, contract, journal)
+
+
+def _publish_pending_candidates(
+    root: Path,
+    project_repository: Path | None,
+    tio: Any,
+    slug: str,
+    contract: TargetContract,
+    journal: dict[str, Any],
+    path: Path,
+    allowed_board_rename: tuple[Path, Path],
+) -> None:
+    _publish_all(
+        root,
+        project_repository,
+        contract,
+        journal,
+        path,
+        allowed_board_rename,
+    )
+    participants = {item.role: item for item in contract.participants}
+    _update_finalized_refs(root, project_repository, participants, journal)
+    _finish_approval(tio, slug, contract, journal, path)
+
+
+def _destination_branch(entry: Mapping[str, Any]) -> str:
+    branch = entry.get("branch")
+    if not isinstance(branch, str) or not branch:
+        raise CompletionError("Ticket has no destination branch")
+    return branch
+
+
 def _execute_completion(
     tio: Any,
     slug: str,
@@ -1050,7 +1147,6 @@ def _execute_completion(
     contract: TargetContract,
     path: Path,
     allowed_board_rename: tuple[Path, Path],
-    *,
     cleanup: bool,
     removal_targets: tuple[str, ...],
 ) -> None:
@@ -1069,11 +1165,9 @@ def _execute_completion(
         raise CompletionError("acceptance journal is done but the Ticket is not")
     root = Path(tio._project_root).resolve()
     project_repository = resolve_inner_project_repo(root)
-    destination_branch = entry.get("branch")
-    if not isinstance(destination_branch, str) or not destination_branch:
-        raise CompletionError("Ticket has no destination branch")
+    destination_branch = _destination_branch(entry)
     if state.publication_pending:
-        _ensure_sources(
+        _prepare_pending_publication(
             root,
             project_repository,
             slug,
@@ -1081,38 +1175,18 @@ def _execute_completion(
             contract,
             journal,
             path,
+            cleanup=cleanup,
         )
-        _validate_source_surface(root, project_repository, contract, journal["sources"])
-        _prepare_all(root, project_repository, slug, contract, journal, path)
-        _finalize_all(root, project_repository, slug, contract, journal, path)
-        _update_finalized_refs(
+        _publish_pending_candidates(
             root,
             project_repository,
-            {item.role: item for item in contract.participants},
-            journal,
-        )
-        if not cleanup:
-            _validate_ticket_refs(
-                root,
-                project_repository,
-                contract,
-                journal,
-            )
-        _publish_all(
-            root,
-            project_repository,
+            tio,
+            slug,
             contract,
             journal,
             path,
             allowed_board_rename,
         )
-        _update_finalized_refs(
-            root,
-            project_repository,
-            {item.role: item for item in contract.participants},
-            journal,
-        )
-        _finish_approval(tio, slug, contract, journal, path)
     if JournalState(journal["state"]) is not JournalState.DONE:
         _retire_finalized_keepalives(root, project_repository, contract, journal)
         _cleanup_all(root, project_repository, contract, journal, path)

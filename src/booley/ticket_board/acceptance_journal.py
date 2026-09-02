@@ -8,7 +8,7 @@ import re
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 
@@ -45,7 +45,12 @@ _JOURNAL_FIELDS = (
     }
 )
 
-_Candidate = dict[str, str | None]
+
+class _Candidate(TypedDict):
+    prepared_sha: str | None
+    finalized_sha: str | None
+    staging_ref: str
+    expected_destination_sha: str
 
 
 def _removal_digest(removal_targets: tuple[str, ...]) -> str:
@@ -181,8 +186,8 @@ def _validated_candidates(value: Any, roles: set[str], transaction: str) -> dict
         if set(candidate) != expected:
             raise BoundaryError(f"acceptance journal candidate {role!r} has invalid fields")
         result[role] = {
-            "prepared_sha": _optional_sha(candidate.get("prepared_sha"), role, "prepared_sha"),
-            "finalized_sha": _optional_sha(candidate.get("finalized_sha"), role, "finalized_sha"),
+            "prepared_sha": _optional_sha(candidate, role, "prepared_sha"),
+            "finalized_sha": _optional_sha(candidate, role, "finalized_sha"),
             "staging_ref": require_str(candidate, "staging_ref"),
             "expected_destination_sha": require_str(candidate, "expected_destination_sha"),
         }
@@ -190,10 +195,11 @@ def _validated_candidates(value: Any, roles: set[str], transaction: str) -> dict
     return result
 
 
-def _optional_sha(value: Any, role: str, key: str) -> str | None:
-    if value is None:
+def _optional_sha(candidate: dict[str, Any], role: str, key: str) -> str | None:
+    if candidate.get(key) is None:
         return None
-    if not isinstance(value, str) or not _SHA_RE.fullmatch(value):
+    value = require_str(candidate, key)
+    if not _SHA_RE.fullmatch(value):
         raise BoundaryError(f"acceptance journal candidates.{role}.{key} is invalid")
     return value
 
@@ -202,7 +208,7 @@ def _validate_candidate(candidate: _Candidate, role: str, transaction: str) -> N
     if candidate["prepared_sha"] is None and candidate["finalized_sha"] is None:
         raise BoundaryError(f"acceptance journal candidate {role!r} has no recorded identity")
     expected_destination = candidate["expected_destination_sha"]
-    if not isinstance(expected_destination, str) or not _SHA_RE.fullmatch(expected_destination):
+    if not _SHA_RE.fullmatch(expected_destination):
         raise BoundaryError(
             f"acceptance journal candidates.{role}.expected_destination_sha is invalid"
         )
