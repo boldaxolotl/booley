@@ -8,7 +8,15 @@ import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from booley.core.boundary import (
+    as_dict,
+    as_int,
+    require_dict,
+    require_int,
+    require_list,
+    require_str,
+)
 
 
 @dataclass(frozen=True)
@@ -18,18 +26,13 @@ class ImageMeasurement:
     layers: dict[str, int] | None
 
 
-def _require_mapping(value: object, label: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be a JSON object")
-    return value
-
-
-def _manifest_entry(document: object, os_name: str, architecture: str) -> dict[str, Any]:
-    entries = document if isinstance(document, list) else [document]
+def _manifest_entry(document: object, os_name: str, architecture: str) -> dict:
+    mapping = as_dict(document)
+    entries = [mapping] if mapping is not None else require_list(document, field="manifest")
     for raw in entries:
-        entry = _require_mapping(raw, "manifest entry")
-        descriptor = _require_mapping(entry.get("Descriptor", {}), "manifest descriptor")
-        platform = _require_mapping(descriptor.get("platform", {}), "manifest platform")
+        entry = require_dict(raw, field="manifest entry")
+        descriptor = require_dict(entry.get("Descriptor", {}), field="manifest descriptor")
+        platform = require_dict(descriptor.get("platform", {}), field="manifest platform")
         if not platform or (
             platform.get("os") == os_name and platform.get("architecture") == architecture
         ):
@@ -43,20 +46,15 @@ def compressed_layers(
     """Return unique compressed layer sizes from verbose manifest JSON."""
     entry = _manifest_entry(document, os_name, architecture)
     manifest = entry.get("SchemaV2Manifest", entry)
-    layers = _require_mapping(manifest, "image manifest").get("layers")
-    if not isinstance(layers, list):
-        raise ValueError("image manifest layers must be a list")
+    layers = require_list(
+        require_dict(manifest, field="image manifest").get("layers"),
+        field="image manifest layers",
+    )
     result: dict[str, int] = {}
     for raw in layers:
-        layer = _require_mapping(raw, "image layer")
-        digest, size = layer.get("digest"), layer.get("size")
-        if (
-            not isinstance(digest, str)
-            or not digest
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-        ):
-            raise ValueError("image layer needs a digest and integer byte size")
+        layer = require_dict(raw, field="image layer")
+        digest = require_str(layer, "digest")
+        size = require_int(layer.get("size"), field=f"image layer {digest} size")
         if digest in result and result[digest] != size:
             raise ValueError(f"layer {digest} has conflicting sizes")
         result[digest] = size
@@ -74,7 +72,10 @@ def _docker_output(argv: list[str]) -> str:
 
 
 def measure(reference: str, *, registry_manifest: bool) -> ImageMeasurement:
-    virtual = int(_docker_output(["image", "inspect", "--format", "{{.Size}}", reference]))
+    raw_virtual = _docker_output(["image", "inspect", "--format", "{{.Size}}", reference])
+    virtual = as_int(raw_virtual)
+    if virtual is None:
+        raise ValueError(f"Docker returned an invalid image size for {reference!r}")
     layers = None
     if registry_manifest:
         raw = _docker_output(["manifest", "inspect", "--verbose", reference])
@@ -135,7 +136,7 @@ def _size_text(size: int | None) -> str:
 
 
 def markdown(payload: dict[str, object]) -> str:
-    images = _require_mapping(payload.get("images"), "report images")
+    images = require_dict(payload.get("images"), field="report images")
     lines = [
         "## Release image sizes",
         "",
@@ -143,12 +144,12 @@ def markdown(payload: dict[str, object]) -> str:
         "| --- | ---: | ---: |",
     ]
     for name, raw in images.items():
-        image = _require_mapping(raw, f"image {name}")
+        image = require_dict(raw, field=f"image {name}")
         lines.append(
             f"| {name} | {_size_text(image.get('compressed_layer_bytes'))} | "
             f"{_size_text(image.get('virtual_bytes'))} |"
         )
-    registry = _require_mapping(payload.get("registry_set"), "registry set")
+    registry = require_dict(payload.get("registry_set"), field="registry set")
     lines.extend(
         [
             "",

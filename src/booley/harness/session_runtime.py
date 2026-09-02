@@ -672,22 +672,7 @@ def prepare(workspace: Path) -> str:
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
 
     spec = _load_spec(workspace)
-    quiesced: _LegacyVscodeContainer | None = None
-    try:
-        authenticated = runtime_spec.authenticate(workspace, spec, dc.devcontainer_path(workspace))
-        assert authenticated.project_data_source is not None
-        quiesced = _quiesce_legacy_vscode_container(
-            Path(authenticated.project_root),
-            Path(authenticated.project_data_source),
-            authenticated,
-        )
-        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
-    except runtime_spec.RuntimeSpecError as exc:
-        recovery = _quiesced_validation_recovery(quiesced)
-        raise SessionError(
-            f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
-            f"{recovery}"
-        ) from exc
+    issuance, quiesced = _authenticate_quiesce_validate(workspace, spec)
     if quiesced is not None:
         _remove_quiesced_legacy_container(quiesced)
     _reconcile_stopped_vscode_containers(workspace, issuance)
@@ -722,6 +707,31 @@ def prepare(workspace: Path) -> str:
 class _LegacyVscodeContainer:
     name: str
     container_id: str
+
+
+def _authenticate_quiesce_validate(
+    workspace: Path, spec: dict[str, Any]
+) -> tuple[Issuance, _LegacyVscodeContainer | None]:
+    """Authenticate issuance, quiesce one legacy runtime, then fully validate."""
+    from booley.eda.provisioning import runtime_spec
+
+    quiesced: _LegacyVscodeContainer | None = None
+    try:
+        authenticated = runtime_spec.authenticate(workspace, spec, dc.devcontainer_path(workspace))
+        assert authenticated.project_data_source is not None
+        quiesced = _quiesce_legacy_vscode_container(
+            Path(authenticated.project_root),
+            Path(authenticated.project_data_source),
+            authenticated,
+        )
+        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+    except runtime_spec.RuntimeSpecError as exc:
+        recovery = _quiesced_validation_recovery(quiesced)
+        raise SessionError(
+            f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
+            f"{recovery}"
+        ) from exc
+    return issuance, quiesced
 
 
 def _same_host_path(actual: str, expected: Path) -> bool:

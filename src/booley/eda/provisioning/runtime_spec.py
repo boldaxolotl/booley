@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import sys
 import sysconfig
@@ -886,27 +885,47 @@ def _validator_script_directories() -> tuple[Path, ...]:
     return tuple(dict.fromkeys(directory.resolve() for directory in directories))
 
 
-def _validator_candidates() -> tuple[Path, ...]:
-    """Ordered host executable candidates without making any trust decision."""
-    name = "booley.exe" if os.name == "nt" else "booley"
-    candidates: list[Path] = []
+def _invoked_validator_candidate() -> Path | None:
+    """Return the absolute ``booley`` entry point used for this process."""
     invoked = Path(sys.argv[0])
     if invoked.is_absolute() and invoked.name.casefold() in {"booley", "booley.exe"}:
-        candidates.append(invoked)
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory:
-            continue
-        candidates.append(Path(directory) / name)
-    fallback = shutil.which("booley")
-    if fallback:
-        candidates.append(Path(fallback))
-    candidates.extend(directory / name for directory in _validator_script_directories())
-    return tuple(dict.fromkeys(candidates))
+        return invoked
+    return None
+
+
+def _path_validator_candidates() -> tuple[Path, ...]:
+    """Return every ``booley`` location represented by ``PATH`` in order."""
+    name = "booley.exe" if os.name == "nt" else "booley"
+    return tuple(
+        dict.fromkeys(
+            Path(directory) / name
+            for directory in os.environ.get("PATH", "").split(os.pathsep)
+            if directory
+        )
+    )
+
+
+def _is_executable_file(candidate: Path) -> bool:
+    """Return whether a candidate exists and could win command resolution."""
+    try:
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        return False
 
 
 def _find_trusted_validator(project: Path) -> Path | None:
     """Select the first trusted installed ``booley``, including off-PATH installs."""
-    for candidate in _validator_candidates():
+    invoked = _invoked_validator_candidate()
+    if invoked is not None:
+        return invoked.resolve(strict=True) if _trusted_validator(invoked, project) else None
+    path_candidates = _path_validator_candidates()
+    for candidate in path_candidates:
+        if _trusted_validator(candidate, project):
+            return candidate.resolve(strict=True)
+    if any(_is_executable_file(candidate) for candidate in path_candidates):
+        return None
+    for directory in _validator_script_directories():
+        candidate = directory / ("booley.exe" if os.name == "nt" else "booley")
         if _trusted_validator(candidate, project):
             return candidate.resolve(strict=True)
     return None
