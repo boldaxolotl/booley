@@ -1,0 +1,1 @@
+"""Domain fixture module."""
