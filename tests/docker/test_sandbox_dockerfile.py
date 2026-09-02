@@ -124,11 +124,14 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     assert "docker-build-evidence" in workflow
 
 
-def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
+def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     evidence_script = Path(".github/scripts/sidecar-build-evidence.sh").read_text(encoding="utf-8")
+    archive_path = Path(".github/scripts/archive/sidecar-python313-comparison.sh")
+    archive_script = archive_path.read_text(encoding="utf-8")
 
     assert "bash .github/scripts/sidecar-build-evidence.sh" in workflow
+    assert str(archive_path) not in workflow
     assert "docker build --pull --no-cache" in evidence_script
     for dockerfile in (
         "Dockerfile.egress-proxy",
@@ -136,9 +139,9 @@ def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
         "Dockerfile.reaper",
     ):
         assert dockerfile in evidence_script
-    for tag in ("py313", "py314"):
-        assert evidence_script.count(f":{tag}") >= 3
-    assert '"Python 3.13.15"' in evidence_script
+    assert evidence_script.count(":py314") >= 3
+    assert ":py313" not in evidence_script
+    assert '"Python 3.13.15"' not in evidence_script
     assert '"Python 3.14.7"' in evidence_script
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
@@ -155,7 +158,9 @@ def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
         'readonly DOCKER_CLI="docker:29.7.2-cli@sha256:'
         '3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"' in evidence_script
     )
-    assert evidence_script.count("src/booley/eda/provisioning/licensing") == 2
+    assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
+    assert archive_script.count(":py313") >= 3
+    assert '"Python 3.13.15"' in archive_script
     assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314" in workflow
     assert "BOOLEY_REAPER_IMAGE: booley-reaper:py314" in workflow
     assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow
