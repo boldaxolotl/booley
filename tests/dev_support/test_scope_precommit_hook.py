@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +15,31 @@ from booley.dev_support.scope_precommit_hook import (
     _staged_files,
     main,
 )
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        timeout=10,
+    )
+
+
+def _vendor_scope_hook(hook_dir: Path) -> Path:
+    hook_dir.mkdir()
+    package = Path(__file__).resolve().parents[2] / "src" / "booley"
+    sources = {
+        "scope_precommit_hook.py": package / "dev_support" / "scope_precommit_hook.py",
+        "commit_msg_utils.py": package / "dev_support" / "commit_msg_utils.py",
+        "checkout_role.py": package / "runtime" / "checkout_role.py",
+        "boundary.py": package / "core" / "boundary.py",
+        "contract_path_policy.py": package / "ticket_board" / "contract_path_policy.py",
+    }
+    for destination, source in sources.items():
+        shutil.copy2(source, hook_dir / destination)
+    return hook_dir / "scope_precommit_hook.py"
+
 
 # ---------------------------------------------------------------------------
 # _load_scope
@@ -144,6 +172,63 @@ class TestStagedFiles:
 
 
 class TestMain:
+    def test_stale_hook_allows_source_checkout_commit(self, tmp_path: Path):
+        """A linked source worktree never inherits old Project scope policy."""
+        (tmp_path / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".scope.json").write_text(json.dumps({"scope": ["rtl/allowed.sv"]}))
+
+        with (
+            patch("booley.dev_support.scope_precommit_hook.Path.cwd", return_value=tmp_path),
+            patch(
+                "booley.dev_support.scope_precommit_hook._staged_files",
+                return_value=["rtl/outside.sv"],
+            ) as staged_files,
+        ):
+            assert main() == 0
+        staged_files.assert_not_called()
+
+    def test_standalone_stale_hook_allows_source_linked_worktree_commit(self, tmp_path: Path):
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+        _git(tmp_path, "init", "-q", "-b", "main", str(source))
+        _git(source, "add", "pyproject.toml")
+        _git(
+            source,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        )
+        linked = tmp_path / "linked"
+        _git(source, "worktree", "add", "-q", "-b", "ticket", str(linked))
+        (linked / ".scope.json").write_text(json.dumps({"scope": ["rtl/allowed.sv"]}))
+        outside = linked / "rtl" / "outside.sv"
+        outside.parent.mkdir()
+        outside.write_text("module outside; endmodule\n", encoding="utf-8")
+        _git(linked, "add", "rtl/outside.sv")
+        hook = _vendor_scope_hook(tmp_path / "stale-hooks")
+
+        result = subprocess.run(
+            [sys.executable, "-S", str(hook)],
+            cwd=linked,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+
+        assert result.returncode == 0, result.stderr
+
     def test_no_scope_file_allows_commit(self, tmp_path: Path):
         with (
             patch("booley.dev_support.scope_precommit_hook.Path.cwd", return_value=tmp_path),

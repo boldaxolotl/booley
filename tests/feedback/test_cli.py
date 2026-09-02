@@ -15,6 +15,7 @@ import pytest
 from booley.feedback import cli
 from booley.feedback import submit as submit_mod
 from booley.feedback.findings import read_log
+from booley.feedback.storage import feedback_storage_dir
 from booley.harness.init_cmd import PROJECT_GITIGNORE
 from booley.runtime import project_dir as project_dir_mod
 
@@ -92,7 +93,7 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "init", "-q", str(source)], check=True, timeout=10)
     parser = argparse.ArgumentParser()
     cli.add_subparser(parser.add_subparsers(dest="command"))
 
@@ -110,7 +111,7 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True, timeout=10)
     subprocess.run(
         [
             "git",
@@ -124,6 +125,7 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "pyproject.toml",
         ],
         check=True,
+        timeout=10,
     )
     subprocess.run(
         [
@@ -139,15 +141,17 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
             "fixture",
         ],
         check=True,
+        timeout=10,
     )
     linked = tmp_path / "linked"
     subprocess.run(
         ["git", "-C", str(source), "worktree", "add", "-q", "-b", "linked", str(linked)],
         check=True,
+        timeout=10,
     )
 
-    assert cli._project_dir(source) == cli._project_dir(linked)
-    assert cli._project_dir(linked) == source / ".git" / "booley-feedback"
+    assert feedback_storage_dir(source) == feedback_storage_dir(linked)
+    assert feedback_storage_dir(linked) == source / ".git" / "booley-feedback"
 
 
 class TestLogging:

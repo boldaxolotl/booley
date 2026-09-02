@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import is_str_list
+from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.core.config_paths import resolve_toml
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
@@ -182,9 +182,8 @@ def project_name(work_dir: Path | None = None) -> str:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         _logger.warning("could not read Project name for checkout %s: %s", work_dir, exc)
         return "rtl_project"
-    project = document.get("project", {})
-    name = project.get("name", "rtl_project") if isinstance(project, dict) else "rtl_project"
-    return name if isinstance(name, str) and name else "rtl_project"
+    project = as_dict(document.get("project"), default={}) or {}
+    return as_str(project.get("name"), "rtl_project") or "rtl_project"
 
 
 def is_human_in_loop(work_dir: Path | None = None) -> bool:

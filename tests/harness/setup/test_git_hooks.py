@@ -135,12 +135,12 @@ class TestWorktreePruneGuardStep:
 
 class TestProjectCommitMsgHookVendoring:
     """Step 10b vendors the commit-msg sanitizer into .booley_project/hooks/.
-    The SETUP-9 regression: it copied only the three hook scripts, so
-    validate_commit_msg's `core.run_command` import crashed every host commit. The
-    fix vendors the stdlib-only run_command.py flat beside them."""
+    Its dependency-free runtime helpers live flat beside the hook scripts so
+    standalone imports work without the installed Booley package."""
 
-    def test_vendors_run_tool_alongside_scripts(self, tmp_path: Path):
+    def test_vendors_runtime_helpers_alongside_scripts(self, tmp_path: Path):
         from booley.harness.setup.git_hooks import (
+            _PROJECT_HOOK_HELPERS,
             _PROJECT_HOOK_SCRIPTS,
             _step_project_git_hooks,
         )
@@ -154,7 +154,8 @@ class TestProjectCommitMsgHookVendoring:
         hooks = resolve_project_dir(tmp_path) / "hooks"
         for name in _PROJECT_HOOK_SCRIPTS:
             assert (hooks / name).is_file(), f"{name} not vendored"
-        assert (hooks / "run_command.py").is_file(), "run_command.py not vendored (SETUP-9)"
+        for name in _PROJECT_HOOK_HELPERS:
+            assert (hooks / name).is_file(), f"{name} helper not vendored"
         assert ctx.results[-1].name == "project_git_hooks"
         assert ctx.results[-1].status == "ok"
 

@@ -216,6 +216,8 @@ class TestStealthEnabled:
         assert banned_phrases(root) == []
 
     def test_source_checkout_fallback_works_without_package_import(self, tmp_path):
+        from booley.runtime import checkout_role
+
         root = tmp_path / "source"
         root.mkdir()
         (root / "pyproject.toml").write_text(
@@ -223,9 +225,12 @@ class TestStealthEnabled:
             encoding="utf-8",
         )
 
-        with patch(
-            "builtins.__import__",
-            side_effect=_selective_import_error("booley.runtime.checkout_role"),
+        with (
+            patch.dict("sys.modules", {"checkout_role": checkout_role}),
+            patch(
+                "builtins.__import__",
+                side_effect=_selective_import_error("booley.runtime.checkout_role"),
+            ),
         ):
             assert source_checkout_policy_owner(root)
 

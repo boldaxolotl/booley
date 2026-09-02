@@ -26,6 +26,11 @@ try:
 except ModuleNotFoundError:
     from contract_path_policy import is_static_contract_path, normalize_contract_path
 
+try:
+    from booley.dev_support.commit_msg_utils import source_checkout_policy_owner
+except ModuleNotFoundError:
+    from commit_msg_utils import source_checkout_policy_owner
+
 # Intentional duplication of harness.scope_policy._FORBIDDEN_* -- this hook must
 # run standalone inside a worktree, without Booley on sys.path.  Keep in sync.
 _FORBIDDEN_PREFIXES = (".booley_project/", ".booley/", ".git/")
@@ -164,6 +169,8 @@ def _reject_out_of_scope(out_of_scope: list[str], scope: list[str]) -> int:
 
 def main() -> int:
     wt = Path.cwd()
+    if source_checkout_policy_owner(wt):
+        return 0
     scope = _load_scope(wt)
     contract_controls = _load_contract_controls(wt)
 
