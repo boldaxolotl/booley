@@ -146,6 +146,19 @@ class TestCodex:
         features = tomllib.loads(path.read_text(encoding="utf-8"))["features"]
         assert features == {"other_feature": True, "mcp_2026_07_28": True}
 
+    def test_replaces_disabled_codex_feature(self, tmp_path):
+        path = reg.codex_config_path(tmp_path)
+        path.parent.mkdir(parents=True)
+        path.write_text("[features]\nmcp_2026_07_28 = false\n", encoding="utf-8")
+
+        assert reg.upsert_codex(path) is True
+
+        import tomllib
+
+        assert tomllib.loads(path.read_text(encoding="utf-8"))["features"] == {
+            "mcp_2026_07_28": True
+        }
+
     def test_preserves_existing_content(self, tmp_path):
         path = reg.codex_config_path(tmp_path)
         path.parent.mkdir(parents=True)

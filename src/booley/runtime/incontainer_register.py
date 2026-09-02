@@ -334,16 +334,21 @@ def _strip_codex_table(existing: str) -> str:
     return "".join(out)
 
 
-def _upsert_codex_modern_mcp_feature(existing: str) -> str:
-    """Enable MCP 2026-07-28 while preserving the user's other feature flags."""
+def _upsert_existing_codex_table_setting(
+    existing: str,
+    *,
+    table: str,
+    key: str,
+    value: str,
+) -> str | None:
+    """Set one scalar in an existing table, or return None when absent."""
     lines = existing.splitlines(keepends=True)
     header_index = next(
-        (index for index, line in enumerate(lines) if line.strip() == "[features]"),
+        (index for index, line in enumerate(lines) if line.strip() == f"[{table}]"),
         None,
     )
     if header_index is None:
-        sep = "" if not existing or existing.endswith("\n\n") else "\n"
-        return existing + sep + "[features]\nmcp_2026_07_28 = true\n"
+        return None
     section_end = next(
         (
             index
@@ -352,12 +357,27 @@ def _upsert_codex_modern_mcp_feature(existing: str) -> str:
         ),
         len(lines),
     )
+    replacement = f"{key} = {value}\n"
     for index in range(header_index + 1, section_end):
-        if lines[index].partition("=")[0].strip() == "mcp_2026_07_28":
-            lines[index] = "mcp_2026_07_28 = true\n"
+        if lines[index].partition("=")[0].strip() == key:
+            lines[index] = replacement
             return "".join(lines)
-    lines.insert(header_index + 1, "mcp_2026_07_28 = true\n")
+    lines.insert(header_index + 1, replacement)
     return "".join(lines)
+
+
+def _upsert_codex_modern_mcp_feature(existing: str) -> str:
+    """Enable MCP 2026-07-28 while preserving the user's other feature flags."""
+    updated = _upsert_existing_codex_table_setting(
+        existing,
+        table="features",
+        key="mcp_2026_07_28",
+        value="true",
+    )
+    if updated is not None:
+        return updated
+    sep = "" if not existing or existing.endswith("\n\n") else "\n"
+    return existing + sep + "[features]\nmcp_2026_07_28 = true\n"
 
 
 def upsert_codex(path: Path) -> bool:
@@ -402,28 +422,17 @@ def _upsert_codex_root_setting(existing: str, key: str, value: str) -> str:
 
 def _upsert_codex_full_access_notice(existing: str) -> str:
     """Acknowledge Codex's one-time full-access warning in existing TOML."""
-    lines = existing.splitlines(keepends=True)
-    header_index = next(
-        (index for index, line in enumerate(lines) if line.strip() == "[notice]"),
-        None,
+    updated = _upsert_existing_codex_table_setting(
+        existing,
+        table="notice",
+        key="hide_full_access_warning",
+        value="true",
     )
-    if header_index is None:
-        return _upsert_codex_root_setting(existing, "notice.hide_full_access_warning", "true")
-
-    section_end = next(
-        (
-            index
-            for index in range(header_index + 1, len(lines))
-            if lines[index].strip().startswith("[")
-        ),
-        len(lines),
+    return (
+        updated
+        if updated is not None
+        else _upsert_codex_root_setting(existing, "notice.hide_full_access_warning", "true")
     )
-    for index in range(header_index + 1, section_end):
-        if lines[index].partition("=")[0].strip() == "hide_full_access_warning":
-            lines[index] = "hide_full_access_warning = true\n"
-            return "".join(lines)
-    lines.insert(header_index + 1, "hide_full_access_warning = true\n")
-    return "".join(lines)
 
 
 def _apply_codex_permission_mode(home: Path | None = None) -> str:

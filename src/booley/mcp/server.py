@@ -3259,18 +3259,40 @@ async def _dispatch_special_mcp_tool(
     return None
 
 
-def _build_server(
-    lifetime: _McpLifetime | None = None,
-) -> tuple[Server, list[dict[str, Any]]]:
-    """Build the MCP v2 adapter around the Booley MCP application."""
+async def _dispatch_application_tool(
+    name: str,
+    arguments: dict[str, Any],
+    mcp_tool_def: Mapping[str, Any],
+    *,
+    jobs: _JobManager,
+    status_mcp_tool_names: list[str],
+    mcp_tool_call_counts: dict[str, int],
+) -> McpToolContent:
+    """Dispatch one validated application call to its concrete endpoint."""
+    special_result = await _dispatch_special_mcp_tool(name, arguments, jobs, status_mcp_tool_names)
+    if special_result is not None:
+        return special_result
+    bwave_result = await _dispatch_bwave(name, arguments)
+    if bwave_result is not None:
+        return _prepend_changed_health_alert(bwave_result)
+    result = await _dispatch_booley_mcp_tool(
+        name,
+        arguments,
+        dict(mcp_tool_def),
+        mcp_tool_call_counts,
+        jobs,
+    )
+    return _prepend_changed_health_alert(result)
+
+
+def _build_mcp_application(
+    mcp_tools: list[dict[str, Any]],
+    discovery_errors: list[str],
+    lifetime: _McpLifetime,
+) -> McpApplication:
+    """Build the SDK-independent catalog and endpoint dispatcher."""
     from booley.targets.flow_names import canonical
 
-    _reconcile_orphaned_locks()
-    _reconcile_orphaned_jobs()
-    lifetime = lifetime or _McpLifetime(None, None)
-
-    mcp_tools, discovery_errors = _discover_booley_mcp_tools()
-    logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
     mcp_tool_index = _build_mcp_tool_index(mcp_tools)
     status_mcp_tool_names: list[str] = []
     jobs = _JobManager(lifetime)
@@ -3281,24 +3303,13 @@ def _build_server(
         arguments: dict[str, Any],
         mcp_tool_def: Mapping[str, Any],
     ) -> McpToolContent:
-        special_result = await _dispatch_special_mcp_tool(
-            name, arguments, jobs, status_mcp_tool_names
-        )
-        if special_result is not None:
-            return special_result
-
-        bwave_result = await _dispatch_bwave(name, arguments)
-        if bwave_result is not None:
-            return _prepend_changed_health_alert(bwave_result)
-
-        return _prepend_changed_health_alert(
-            await _dispatch_booley_mcp_tool(
-                name,
-                arguments,
-                dict(mcp_tool_def),
-                mcp_tool_call_counts,
-                jobs,
-            )
+        return await _dispatch_application_tool(
+            name,
+            arguments,
+            mcp_tool_def,
+            jobs=jobs,
+            status_mcp_tool_names=status_mcp_tool_names,
+            mcp_tool_call_counts=mcp_tool_call_counts,
         )
 
     application = McpApplication(
@@ -3310,8 +3321,36 @@ def _build_server(
     status_mcp_tool_names.extend(
         tool.name for tool in application.list_tools() if tool.name in mcp_tool_index
     )
-    if discovery_errors:
-        _log_discovery_errors(mcp_tools, discovery_errors)
+    return application
+
+
+async def _call_application_tool(
+    application: McpApplication,
+    params: CallToolRequestParams,
+) -> CallToolResult:
+    """Translate one application result or failure into MCP SDK types."""
+    try:
+        payload = await application.call_tool(params.name, params.arguments or {})
+        return CallToolResult(
+            content=[TextContent(type="text", text=block.text) for block in payload.content],
+            structuredContent=payload.structured_content,
+            isError=payload.is_error,
+        )
+    except UnknownMcpToolError as exc:
+        hidden = _interactive_hidden_note(exc.name)
+        raise MCPError(
+            INVALID_PARAMS,
+            hidden or f"Unknown MCP tool: {exc.name}",
+        ) from None
+    except MCPError:
+        raise
+    except Exception as exc:
+        logger.exception("Unexpected MCP tool failure for %s", params.name)
+        raise MCPError(INTERNAL_ERROR, "Internal server error") from exc
+
+
+def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Server:
+    """Adapt the Booley MCP application to the MCP SDK server callbacks."""
 
     async def handle_list_tools(
         _ctx: ServerRequestContext,
@@ -3326,32 +3365,31 @@ def _build_server(
     ) -> CallToolResult:
         lifetime.mark_mcp_endpoint_start()
         try:
-            payload = await application.call_tool(params.name, params.arguments or {})
-            return CallToolResult(
-                content=[TextContent(type="text", text=block.text) for block in payload.content],
-                structuredContent=payload.structured_content,
-                isError=payload.is_error,
-            )
-        except UnknownMcpToolError as exc:
-            hidden = _interactive_hidden_note(exc.name)
-            raise MCPError(
-                INVALID_PARAMS,
-                hidden or f"Unknown MCP tool: {exc.name}",
-            ) from None
-        except MCPError:
-            raise
-        except Exception as exc:
-            logger.exception("Unexpected MCP tool failure for %s", params.name)
-            raise MCPError(INTERNAL_ERROR, "Internal server error") from exc
+            return await _call_application_tool(application, params)
         finally:
             lifetime.mark_mcp_endpoint_end()
 
-    server = Server(
+    return Server(
         "booley",
         version=__version__,
         on_list_tools=handle_list_tools,
         on_call_tool=handle_call_tool,
     )
+
+
+def _build_server(
+    lifetime: _McpLifetime | None = None,
+) -> tuple[Server, list[dict[str, Any]]]:
+    """Build the MCP v2 adapter around the Booley MCP application."""
+    _reconcile_orphaned_locks()
+    _reconcile_orphaned_jobs()
+    lifetime = lifetime or _McpLifetime(None, None)
+    mcp_tools, discovery_errors = _discover_booley_mcp_tools()
+    logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
+    application = _build_mcp_application(mcp_tools, discovery_errors, lifetime)
+    if discovery_errors:
+        _log_discovery_errors(mcp_tools, discovery_errors)
+    server = _build_sdk_server(application, lifetime)
     return server, mcp_tools
 
 

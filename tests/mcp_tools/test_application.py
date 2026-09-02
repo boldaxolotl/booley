@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from jsonschema.exceptions import SchemaError
 
-from booley.mcp.application import McpApplication, UnknownMcpToolError
+from booley.mcp.application import McpApplication, UnknownMcpToolError, _normalize_payload
 
 
 def _definition(name: str = "echo", **extra):
@@ -91,6 +91,58 @@ def test_invalid_custom_schema_is_excluded_with_actionable_error() -> None:
 
     assert [tool.name for tool in application.list_tools()] == ["valid"]
     assert errors and errors[0].startswith("INVALID CUSTOM MCP SCHEMA: echo:")
+
+
+@pytest.mark.parametrize("schema", [None, "not-a-schema", 7])
+def test_non_mapping_custom_input_schema_is_excluded(schema: object) -> None:
+    errors: list[str] = []
+    broken = _definition(is_custom=True)
+    broken["schema"] = schema
+
+    application = _application([broken, _definition("valid")], errors=errors)
+
+    assert [tool.name for tool in application.list_tools()] == ["valid"]
+    assert errors == [
+        f"INVALID CUSTOM MCP SCHEMA: echo: MCP tool 'echo' input schema "
+        f"must be a mapping, got {type(schema).__name__}"
+    ]
+
+
+def test_non_mapping_custom_output_schema_is_excluded() -> None:
+    errors: list[str] = []
+    broken = _definition(is_custom=True, output_schema="not-a-schema")
+
+    application = _application([broken, _definition("valid")], errors=errors)
+
+    assert [tool.name for tool in application.list_tools()] == ["valid"]
+    assert errors == [
+        "INVALID CUSTOM MCP SCHEMA: echo: MCP tool 'echo' output schema must be a mapping, got str"
+    ]
+
+
+def test_non_mapping_builtin_schema_fails_startup() -> None:
+    broken = _definition()
+    broken["schema"] = None
+
+    with pytest.raises(ValueError, match="input schema must be a mapping"):
+        _application([broken])
+
+
+def test_valid_output_schema_is_advertised() -> None:
+    output_schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+
+    application = _application([_definition(output_schema=output_schema)])
+
+    assert application.list_tools()[0].output_schema == output_schema
+
+
+def test_structured_result_normalization_validates_tuple_shape() -> None:
+    with pytest.raises(TypeError, match="invalid structured result"):
+        _normalize_payload(([], None))
+
+    payload = _normalize_payload(([], {"answer": "ok"}))
+
+    assert payload.structured_content == {"answer": "ok"}
 
 
 def test_explicit_older_schema_dialect_is_respected() -> None:

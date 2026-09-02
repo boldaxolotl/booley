@@ -16,6 +16,8 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
+from booley.core.boundary import BoundaryError, require_dict
+
 
 @dataclass(frozen=True, slots=True)
 class McpToolDefinition:
@@ -80,11 +82,12 @@ class McpApplication:
         for source in definitions:
             try:
                 self._register(source)
-            except SchemaError as exc:
+            except (BoundaryError, SchemaError) as exc:
                 if not source.get("is_custom"):
                     raise
                 name = str(source.get("name") or "<unnamed>")
-                on_discovery_error(f"INVALID CUSTOM MCP SCHEMA: {name}: {exc.message}")
+                detail = exc.message if isinstance(exc, SchemaError) else str(exc)
+                on_discovery_error(f"INVALID CUSTOM MCP SCHEMA: {name}: {detail}")
 
     def list_tools(self) -> list[McpToolDefinition]:
         """Return the advertised catalog in deterministic wire-name order."""
@@ -114,12 +117,18 @@ class McpApplication:
             )
         if canonical_name in self._definitions:
             raise ValueError(f"Duplicate MCP wire name or canonical alias: {canonical_name!r}")
-        schema = dict(source["schema"])
+        schema = require_dict(
+            source.get("schema"),
+            field=f"MCP tool {name!r} input schema",
+        )
         validator_type = validator_for(schema, default=Draft202012Validator)
         validator_type.check_schema(schema)
         output_schema = source.get("output_schema")
         if output_schema is not None:
-            output_schema = dict(output_schema)
+            output_schema = require_dict(
+                output_schema,
+                field=f"MCP tool {name!r} output schema",
+            )
             output_validator = validator_for(output_schema, default=Draft202012Validator)
             output_validator.check_schema(output_schema)
         self._definitions[canonical_name] = McpToolDefinition(
