@@ -901,6 +901,224 @@ def _argv_of(call) -> list[str]:
     return call.args[0]
 
 
+def _refresh_state(
+    *,
+    running: bool = False,
+    networks: dict | None = None,
+    labels: dict | None = None,
+) -> dict:
+    return {
+        "Config": {
+            "Labels": labels
+            or {
+                "booley.role": "interactive",
+                "booley.project-id": "project-id",
+                "booley.license-profile": "none",
+            }
+        },
+        "State": {"Running": running},
+        "NetworkSettings": {"Networks": networks or {}},
+    }
+
+
+class TestRefreshContainerTransactions:
+    def test_strict_inspect_accepts_complete_state_and_absence(self, monkeypatch):
+        state = _refresh_state()
+        responses = iter(
+            [
+                subprocess.CompletedProcess([], 0, json.dumps(state), ""),
+                subprocess.CompletedProcess([], 1, "", "No such container"),
+            ]
+        )
+        monkeypatch.setattr(sr, "_run", lambda *_args, **_kwargs: next(responses))
+
+        assert sr._strict_refresh_container("session") == state
+        assert sr._strict_refresh_container("missing") is None
+
+    @pytest.mark.parametrize(
+        ("result", "message"),
+        [
+            (subprocess.CompletedProcess([], 1, "", "permission denied"), "permission denied"),
+            (subprocess.CompletedProcess([], 0, "not-json", ""), "invalid inspection"),
+            (subprocess.CompletedProcess([], 0, "[]", ""), "invalid inspection"),
+            (
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    json.dumps(
+                        {
+                            "Config": {},
+                            "State": {"Running": False},
+                            "NetworkSettings": {"Networks": {}},
+                        }
+                    ),
+                    "",
+                ),
+                "incomplete inspection",
+            ),
+        ],
+    )
+    def test_strict_inspect_rejects_untrusted_docker_output(self, monkeypatch, result, message):
+        monkeypatch.setattr(sr, "_run", lambda *_args, **_kwargs: result)
+
+        with pytest.raises(sr.SessionError, match=message):
+            sr._strict_refresh_container("session")
+
+    def test_refresh_labels_reject_non_string_values(self):
+        state = _refresh_state(labels={"booley.role": 7})
+
+        with pytest.raises(sr.SessionError, match="invalid labels"):
+            sr._refresh_container_labels(state)
+
+    def test_shared_parking_reports_rename_and_restart_failures(self, monkeypatch):
+        parked = sr.ParkedSession("session", "session-pre-refresh", True)
+
+        def fail_rename_and_restart(argv, **_kwargs):
+            if argv[:2] == ["docker", "stop"]:
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return subprocess.CompletedProcess(argv, 1, "", f"{argv[1]} failed")
+
+        monkeypatch.setattr(sr, "_run", fail_rename_and_restart)
+
+        with pytest.raises(sr.SessionError, match=r"rename failed.*restart.*start failed"):
+            sr._park_session_container(parked)
+
+    def test_refresh_parking_without_egress_only_uses_shared_primitive(self):
+        parked = sr.ParkedSession("session", "backup", False)
+        with patch.object(sr, "_park_session_container") as park:
+            sr._park_refresh_container(parked)
+
+        park.assert_called_once_with(parked)
+
+    def test_refresh_parking_reports_egress_detach_failure(self):
+        parked = sr.ParkedSession("session", "backup", False, reconnect_egress=True)
+        failed = subprocess.CompletedProcess([], 1, "", "network busy")
+        with (
+            patch.object(sr, "_park_session_container"),
+            patch.object(sr, "_run", return_value=failed),
+            pytest.raises(sr.SessionError, match="network busy"),
+        ):
+            sr._park_refresh_container(parked)
+
+    @pytest.mark.parametrize(
+        ("state", "message"),
+        [
+            (None, "disappeared"),
+            (_refresh_state(running=True), "still running"),
+            (
+                _refresh_state(networks={dc.EGRESS_NETWORK: {}}),
+                "still attached to egress",
+            ),
+        ],
+    )
+    def test_refresh_park_verification_rejects_incomplete_park(self, state, message):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
+        )
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            pytest.raises(sr.SessionError, match=message),
+        ):
+            sr._verify_refresh_park(parked)
+
+    def test_incomplete_park_restores_original_when_rename_never_landed(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            True,
+            project_id="project-id",
+        )
+        with (
+            patch.object(
+                sr,
+                "_strict_refresh_container",
+                side_effect=[None, _refresh_state(running=False)],
+            ),
+            patch.object(sr, "_start_session_container") as start,
+        ):
+            sr._restore_incomplete_park(parked)
+
+        start.assert_called_once_with("session")
+
+    def test_incomplete_park_reports_reconnect_failure(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
+        )
+        failed = subprocess.CompletedProcess([], 1, "", "network missing")
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_run", return_value=failed),
+            pytest.raises(sr.SessionError, match="network missing"),
+        ):
+            sr._restore_incomplete_park(parked)
+
+    def test_refresh_parking_returns_none_when_session_is_absent(self, tmp_path: Path):
+        with patch.object(sr, "_strict_refresh_container", return_value=None):
+            assert sr.park_session_for_refresh(tmp_path, SimpleNamespace()) is None
+
+    def test_restore_refresh_removes_candidate_before_restoring_backup(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            True,
+            project_id="project-id",
+        )
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            patch.object(sr, "_restore_incomplete_park") as restore,
+        ):
+            sr.restore_refresh_session(parked)
+
+        remove.assert_called_once_with("session")
+        restore.assert_called_once_with(parked)
+
+    def test_discard_refresh_session_validates_and_removes_backup(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+        )
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_discard_parked_session") as discard,
+        ):
+            sr.discard_refresh_session(parked)
+
+        discard.assert_called_once_with(parked)
+
+    def test_discard_refresh_candidate_removes_licensed_relay(self, tmp_path: Path):
+        issuance = SimpleNamespace(license_profile="vivado", relay_image_id=None)
+        relay = object()
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            patch.object(sr, "_relay_resources", return_value=relay),
+            patch.object(sr, "_remove_license_relay") as remove_relay,
+        ):
+            sr.discard_refresh_candidate(tmp_path, issuance)
+
+        remove.assert_called_once_with(sr.session_container_name(tmp_path))
+        remove_relay.assert_called_once_with(relay)
+
+    def test_rebuild_rejects_existing_recovery_container(self):
+        with (
+            patch.object(sr.idk, "container_exists", return_value=True),
+            pytest.raises(sr.SessionError, match="recovery container"),
+        ):
+            sr._park_session_for_rebuild("session")
+
+
 class TestUp:
     @pytest.mark.parametrize(
         "wired",
@@ -1101,6 +1319,153 @@ class TestUp:
             sr.up(workspace, rebuild=True)
 
         assert not any(_argv_of(call)[:2] == ["docker", "rename"] for call in run.call_args_list)
+
+    def test_refresh_parking_detaches_running_session_from_egress(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        backup = f"{name}-pre-refresh"
+        initial = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                    "booley.license-profile": "none",
+                }
+            },
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
+        parked_state = {
+            "Config": initial["Config"],
+            "State": {"Running": False},
+            "NetworkSettings": {"Networks": {}},
+        }
+        with (
+            patch.object(
+                sr,
+                "_strict_refresh_container",
+                side_effect=[initial, None, parked_state],
+            ),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+        ):
+            parked = sr.park_session_for_refresh(
+                workspace,
+                SimpleNamespace(license_profile=None, relay_image_id=None),
+            )
+
+        assert parked == sr.ParkedSession(
+            name,
+            backup,
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
+        )
+        argvs = [_argv_of(call) for call in run.call_args_list]
+        assert ["docker", "stop", name] in argvs
+        assert ["docker", "rename", name, backup] in argvs
+        assert ["docker", "network", "disconnect", dc.EGRESS_NETWORK, backup] in argvs
+
+    def test_refresh_restore_reconnects_exact_parked_session(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        parked = sr.ParkedSession(
+            name,
+            f"{name}-pre-refresh",
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
+        )
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                }
+            },
+            "State": {"Running": False},
+            "NetworkSettings": {"Networks": {}},
+        }
+        with patch.object(
+            sr,
+            "_strict_refresh_container",
+            side_effect=[None, state],
+        ):
+            sr.restore_refresh_session(parked)
+
+        argvs = [_argv_of(call) for call in run.call_args_list]
+        assert [
+            "docker",
+            "network",
+            "connect",
+            dc.EGRESS_NETWORK,
+            parked.backup,
+        ] in argvs
+        assert ["docker", "rename", parked.backup, name] in argvs
+        assert ["docker", "start", name] in argvs
+
+    def test_refresh_licensed_snapshot_refuses_before_docker_mutation(self, wired):
+        workspace, run = wired
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                    "booley.license-profile": "vivado",
+                }
+            },
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
+        run.reset_mock()
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            pytest.raises(sr.SessionError, match="licensed relay topology"),
+        ):
+            sr.park_session_for_refresh(
+                workspace,
+                SimpleNamespace(license_profile="vivado", relay_image_id="sha256:relay"),
+            )
+
+        run.assert_not_called()
+
+    def test_refresh_parking_reports_trigger_and_failed_compensation(self, wired):
+        workspace, _run = wired
+        name = sr.session_container_name(workspace)
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                    "booley.license-profile": "none",
+                }
+            },
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
+        parking_error = sr.SessionError("egress detach failed")
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[state, None]),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+            patch.object(sr, "_park_refresh_container", side_effect=parking_error),
+            patch.object(
+                sr,
+                "_restore_incomplete_park",
+                side_effect=sr.SessionError("restore rename failed"),
+            ),
+            pytest.raises(sr.SessionError, match="rollback was incomplete") as raised,
+        ):
+            sr.park_session_for_refresh(
+                workspace,
+                SimpleNamespace(license_profile=None, relay_image_id=None),
+            )
+
+        assert "egress detach failed" in str(raised.value)
+        assert "restore rename failed" in str(raised.value)
+        assert name in str(raised.value)
+        assert raised.value.__cause__ is parking_error
 
     def test_image_override_cannot_bypass_host_issued_spec(self, wired):
         workspace, _run = wired
@@ -1677,6 +2042,56 @@ class TestConflictingVscodeSession:
         )
         assert sr.conflicting_vscode_session(workspace) is None
 
+    def test_strict_probe_fails_closed_when_docker_inventory_fails(
+        self, workspace: Path, monkeypatch
+    ):
+        monkeypatch.setattr(sr, "_docker_stdout", lambda *_args: None)
+
+        with pytest.raises(sr.SessionError, match="cannot inventory"):
+            sr.strict_conflicting_vscode_session(workspace)
+
+    def test_strict_probe_detects_vscode_container(self, workspace: Path, monkeypatch):
+        raw = json.dumps(
+            [
+                {
+                    "Config": {
+                        "Labels": {
+                            "booley.role": "interactive",
+                            "devcontainer.local_folder": str(workspace),
+                        }
+                    }
+                }
+            ]
+        )
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [("vscode-owned", raw)],
+        )
+
+        assert sr.strict_conflicting_vscode_session(workspace) == "vscode-owned"
+
+    def test_strict_probe_ignores_our_container(self, workspace: Path, monkeypatch):
+        ours = sr.session_container_name(workspace)
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [(ours, json.dumps([_refresh_state()]))],
+        )
+
+        assert sr.strict_conflicting_vscode_session(workspace) is None
+
+    def test_strict_probe_rejects_incomplete_container_labels(self, workspace: Path, monkeypatch):
+        raw = json.dumps([{"Config": {"Labels": None}}])
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [("unknown", raw)],
+        )
+
+        with pytest.raises(sr.SessionError, match="incomplete inspection"):
+            sr.strict_conflicting_vscode_session(workspace)
+
 
 class TestSessionsOnStaleImage:
     """F-9: `booley init` rebuilds the tag, but a container born from the old
@@ -1892,7 +2307,7 @@ class TestSessionRefresh:
         assert args.session_command == "refresh"
 
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import auto_doctor, booley, init_cmd
+        from booley.harness import auto_doctor, booley, session_refresh
         from booley.harness.booley import _build_parser
         from booley.harness.image_lifecycle import LifecycleResult, Status
 
@@ -1906,13 +2321,11 @@ class TestSessionRefresh:
                 side_effect=lambda: events.append("configure"),
                 create=True,
             ),
-            patch.object(sr, "conflicting_vscode_session", return_value=None),
             patch.object(
-                init_cmd,
-                "refresh_session_image",
+                session_refresh,
+                "refresh",
                 side_effect=lambda *_args, **_kwargs: events.append("reconcile") or result,
             ),
-            patch.object(booley, "_replace_refreshed_session"),
             patch.object(booley, "_report_session_health"),
             patch.object(auto_doctor, "due_reason", return_value=None),
         ):
@@ -1955,13 +2368,17 @@ class TestSessionRefresh:
         ]
 
     def test_refresh_refuses_active_vscode_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import booley, init_cmd
+        from booley.harness import booley, session_refresh
         from booley.harness.booley import _build_parser
 
         args = _build_parser().parse_args(["session", "refresh"])
         with (
-            patch.object(sr, "conflicting_vscode_session", return_value="vscode-owned"),
-            patch.object(init_cmd, "refresh_session_image") as refresh,
+            patch.object(
+                sr,
+                "strict_conflicting_vscode_session",
+                return_value="vscode-owned",
+            ),
+            patch.object(session_refresh, "inspect_refreshable_session_image") as refresh,
         ):
             assert booley._cmd_session(args, tmp_path) == 2
 
@@ -2059,89 +2476,6 @@ class TestSessionRefresh:
         with pytest.raises(RuntimeError, match="user-managed"):
             init_cmd.refresh_session_image(tmp_path)
 
-    def test_refresh_reissues_spec_before_rebuild_start(self, tmp_path: Path):
-        from booley.harness import booley, init_cmd
-        from booley.harness.booley import _build_parser
-        from booley.harness.image_lifecycle import LifecycleResult, Status
-
-        args = _build_parser().parse_args(["session", "refresh"])
-        events: list[str] = []
-        with (
-            patch.object(
-                init_cmd,
-                "refresh_session_image",
-                side_effect=lambda *_args, **_kwargs: (
-                    events.append("image")
-                    or LifecycleResult(
-                        "booley-sandbox",
-                        "sha256:fresh",
-                        Status.CHANGED,
-                        payload_fingerprint="payload-123",
-                    )
-                ),
-            ),
-            patch.object(
-                init_cmd,
-                "reissue_session_spec",
-                side_effect=lambda *_args, **_kwargs: events.append("reissue"),
-            ),
-            patch.object(sr, "conflicting_vscode_session", return_value=None),
-            patch.object(
-                sr,
-                "up",
-                side_effect=lambda *_args, **kwargs: (
-                    events.append(
-                        "up:"
-                        f"{kwargs.get('rebuild')}:"
-                        f"{kwargs.get('expected_image_id')}:"
-                        f"{kwargs.get('expected_payload_fingerprint')}"
-                    )
-                    or "session"
-                ),
-            ),
-            patch.object(booley, "_report_session_health"),
-        ):
-            assert booley._cmd_session(args, tmp_path) == 0
-
-        assert events == ["image", "reissue", "up:True:sha256:fresh:payload-123"]
-
-    def test_refresh_failure_restores_prior_host_spec(self, tmp_path: Path):
-        from booley.harness import booley, init_cmd
-        from booley.harness.booley import _build_parser
-        from booley.harness.image_lifecycle import LifecycleResult, Status
-
-        args = _build_parser().parse_args(["session", "refresh"])
-        snapshot = object()
-        events: list[str] = []
-        result = LifecycleResult(
-            "booley-sandbox",
-            "sha256:fresh",
-            Status.CHANGED,
-            payload_fingerprint="payload-123",
-        )
-        with (
-            patch.object(init_cmd, "refresh_session_image", return_value=result),
-            patch.object(init_cmd, "capture_session_spec", return_value=snapshot),
-            patch.object(
-                init_cmd,
-                "reissue_session_spec",
-                side_effect=lambda *_args, **_kwargs: events.append("reissue"),
-            ),
-            patch.object(
-                init_cmd,
-                "restore_session_spec",
-                side_effect=lambda root, saved: events.append(
-                    f"restore:{root == tmp_path}:{saved is snapshot}"
-                ),
-            ),
-            patch.object(sr, "conflicting_vscode_session", return_value=None),
-            patch.object(sr, "up", side_effect=sr.SessionError("payload mismatch")),
-            patch.object(booley, "_report_session_health"),
-        ):
-            assert booley._cmd_session(args, tmp_path) == 2
-
-        assert events == ["reissue", "restore:True:True"]
-
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
         from booley.eda.provisioning import runtime_spec
         from booley.harness import init_cmd
@@ -2171,6 +2505,81 @@ class TestSessionRefresh:
         assert spec_path.read_bytes() == old_spec
         assert stamp_path.read_bytes() == b"old stamp\n"
         assert calls == [["docker", "tag", old_id, runtime_spec.keeper_image(tmp_path)]]
+
+    def test_keeper_failure_still_restores_spec_and_stamp(self, tmp_path: Path, monkeypatch):
+        from booley.eda.provisioning import runtime_spec
+        from booley.harness import init_cmd
+
+        spec_path = dc.devcontainer_path(tmp_path)
+        spec_path.parent.mkdir(parents=True)
+        old_id = "sha256:" + "a" * 64
+        old_spec = json.dumps({"image": old_id}).encode()
+        spec_path.write_bytes(old_spec)
+        stamp_path = tmp_path / "host-stamp.json"
+        stamp_path.write_bytes(b"old stamp\n")
+        monkeypatch.setattr(runtime_spec, "stamp_path", lambda _root: stamp_path)
+        monkeypatch.setattr(
+            init_cmd.subprocess,
+            "run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="tag failed"
+            ),
+        )
+        snapshot = init_cmd.capture_session_spec(tmp_path)
+        spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
+        stamp_path.write_text("new stamp\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Session Image keeper: tag failed"):
+            init_cmd.restore_session_spec(tmp_path, snapshot)
+
+        assert spec_path.read_bytes() == old_spec
+        assert stamp_path.read_bytes() == b"old stamp\n"
+
+    def test_keeper_process_error_still_restores_snapshot_files(self, tmp_path: Path, monkeypatch):
+        from booley.harness import init_cmd
+
+        spec_path = tmp_path / "devcontainer.json"
+        stamp_path = tmp_path / "stamp.json"
+        snapshot = init_cmd.SessionSpecSnapshot(
+            spec_path,
+            b"old spec",
+            0o644,
+            stamp_path,
+            b"old stamp",
+            0o600,
+            "sha256:old",
+        )
+
+        def missing_docker(*_args, **_kwargs):
+            raise OSError("docker missing")
+
+        monkeypatch.setattr(init_cmd.subprocess, "run", missing_docker)
+
+        with pytest.raises(RuntimeError, match="Session Image keeper: docker missing"):
+            init_cmd.restore_session_spec(tmp_path, snapshot)
+
+        assert spec_path.read_bytes() == b"old spec"
+        assert stamp_path.read_bytes() == b"old stamp"
+
+    def test_snapshot_file_failures_are_aggregated(self, tmp_path: Path, monkeypatch):
+        from booley.harness import init_cmd
+
+        snapshot = init_cmd.SessionSpecSnapshot(
+            tmp_path / "devcontainer.json",
+            b"old spec",
+            0o644,
+            tmp_path / "stamp.json",
+            b"old stamp",
+            0o600,
+            None,
+        )
+        restore = Mock(side_effect=[OSError("spec busy"), None])
+        monkeypatch.setattr(init_cmd, "_restore_snapshot_file", restore)
+
+        with pytest.raises(RuntimeError, match="Session spec: spec busy"):
+            init_cmd.restore_session_spec(tmp_path, snapshot)
+
+        assert restore.call_count == 2
 
     def test_runtime_probe_uses_isolated_import_and_exact_payload(self, tmp_path: Path):
         image_id = "sha256:" + "a" * 64

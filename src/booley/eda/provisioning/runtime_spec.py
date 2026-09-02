@@ -99,6 +99,23 @@ def stamp_path_for_identity(project_root: str) -> Path:
     return config_dir() / "eda" / "session-specs" / f"{identity}.json"
 
 
+def load_issued_snapshot(project_root: Path) -> Issuance:
+    """Load structurally valid prior issuance without consulting current authority.
+
+    Session refresh uses this recovery view before replacing an existing
+    container.  The current grant may legitimately have changed — healing that
+    drift is the point of refresh — while the sealed prior licence decision and
+    Project identity still have to be trusted before Docker mutation.
+    """
+    project = project_root.resolve(strict=True)
+    issuance = _load_stamp(stamp_path(project))
+    if issuance.project_root != str(project):
+        raise RuntimeSpecError("host-issued spec stamp belongs to a different Project")
+    if issuance.keeper_image != keeper_image(project):
+        raise RuntimeSpecError("host-issued spec image keeper differs from this Project")
+    return issuance
+
+
 def keeper_image(project_root: Path) -> str:
     """Private Docker tag retaining the image bytes for one Project issuance."""
     identity = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()
