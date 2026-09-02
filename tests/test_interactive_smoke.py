@@ -19,8 +19,10 @@ from unittest.mock import patch
 
 import pytest
 
+from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
+from booley.targets.target import select_target
 
 _BOOLEY_ENV_VARS = (
     "BOOLEY_SLUG",
@@ -271,6 +273,19 @@ class TestAsicSynthesizeBaselineInteractive:
         git("config", "user.name", "Test")
         marker = repo / "rtl.v"
         marker.write_text("// baseline version\n", encoding="utf-8")
+        cores_dir = repo / ".booley_project" / "cores"
+        cores_dir.mkdir(parents=True)
+        (cores_dir / "interactive.core").write_text(
+            """CAPI=2:
+name: ::interactive:0
+targets:
+  synth_default:
+    flow: generic
+    flow_options: {tool: yosys}
+    toplevel: dut
+""",
+            encoding="utf-8",
+        )
         git("add", "-A")
         git("commit", "-qm", "baseline")
         marker.write_text("// current version\n", encoding="utf-8")
@@ -286,7 +301,7 @@ class TestAsicSynthesizeBaselineInteractive:
                 "--work-dir",
                 str(repo),
                 "--target",
-                "default",
+                "synth_default",
                 "--baseline",
                 "HEAD~1",
             ]
@@ -301,11 +316,13 @@ class TestAsicSynthesizeBaselineInteractive:
             return SynthMetrics(returncode=0), "baseline output"
 
         with patch.object(tool, "_run_single_config", side_effect=fake_single):
-            results, short_sha = tool._run_baseline_configs(["default"])
+            handle = select_target(repo, "synth_default", for_flow="synth")
+            plans = target_pair_plans_for_handles({}, "synthesis_ok_", (handle,), flow="synth")
+            results, short_sha = tool._run_baseline_configs(plans)
 
         # It succeeded (no McpToolResult error) and resolved the baseline ref.
         assert not isinstance(results, McpToolResult)
-        assert "default" in results
+        assert "synth_default" in results
         assert short_sha  # HEAD~1 resolved to a short sha
 
         # The baseline ran inside a throwaway worktree, not the project root.

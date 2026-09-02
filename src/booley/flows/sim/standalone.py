@@ -163,7 +163,7 @@ class StandaloneMixin:
         """
         seen: dict[str, None] = {}
         for tgt in targets:
-            for rel in inspect_target(self.args.work_dir, tgt).rtl_files:
+            for rel in inspect_target(self.args.work_dir, self._target_handle(tgt)).rtl_files:
                 seen.setdefault(rel, None)
         return [rel for rel in seen if Path(rel).suffix.lower() in _HDL_SUFFIXES]
 
