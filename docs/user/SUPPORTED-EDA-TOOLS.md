@@ -160,7 +160,7 @@ may override the Python rows (see
 | Yosys | v0.68, built with its bundled `read_slang` frontend (povik/sv-elab on MikePopoloski/slang — a Yosys submodule, so it has no version of its own) |
 | sv2v | v0.0.13 |
 | OpenROAD | 26Q3 source commit `a9147cf3aebe65e058bb3fa89c1f9e524488dbb8` (the exact upstream OCI binary reports `26Q2-2580-ga9147cf3ae`) |
-| Verible | v0.0-4157-gfdbac312 |
+| Verible | v0.0-4163-g6cce8f19 |
 | FuseSoC / Edalize | 2.4.6 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.2 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley bootstrap`, mounted read-only at `/opt/pdk/cell/lib` |
