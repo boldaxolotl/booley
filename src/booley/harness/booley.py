@@ -2132,7 +2132,11 @@ def _run_automatic_doctor(project_root: Path) -> None:
         emit = logger.warning if any(auto_doctor.issue_counts(report)) else logger.info
         emit(health_summary)
     elif auto_doctor.load_report(project_root) is None:
-        doctor_stamp.warn_if_stale(project_root, logger.warning)
+        doctor_stamp.warn_if_stale(
+            project_root,
+            logger.warning,
+            emphasize_action=bold_amber,
+        )
 
 
 def _ticket_loop(

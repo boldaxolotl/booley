@@ -96,6 +96,10 @@ class TestCodex:
         assert reg.http_url() in body
         assert "tool_timeout_sec = 7200" in body
 
+        import tomllib
+
+        assert tomllib.loads(body)["features"]["mcp_2026_07_28"] is True
+
     def test_idempotent(self, tmp_path):
         path = reg.codex_config_path(tmp_path)
         assert reg.upsert_codex(path) is True
@@ -127,6 +131,32 @@ class TestCodex:
         assert parsed["mcp_servers"]["booley"] == {
             "url": reg.http_url(),
             "tool_timeout_sec": 7200,
+        }
+        assert parsed["features"]["mcp_2026_07_28"] is True
+
+    def test_preserves_other_codex_features(self, tmp_path):
+        path = reg.codex_config_path(tmp_path)
+        path.parent.mkdir(parents=True)
+        path.write_text("[features]\nother_feature = true\n", encoding="utf-8")
+
+        assert reg.upsert_codex(path) is True
+
+        import tomllib
+
+        features = tomllib.loads(path.read_text(encoding="utf-8"))["features"]
+        assert features == {"other_feature": True, "mcp_2026_07_28": True}
+
+    def test_replaces_disabled_codex_feature(self, tmp_path):
+        path = reg.codex_config_path(tmp_path)
+        path.parent.mkdir(parents=True)
+        path.write_text("[features]\nmcp_2026_07_28 = false\n", encoding="utf-8")
+
+        assert reg.upsert_codex(path) is True
+
+        import tomllib
+
+        assert tomllib.loads(path.read_text(encoding="utf-8"))["features"] == {
+            "mcp_2026_07_28": True
         }
 
     def test_preserves_existing_content(self, tmp_path):
