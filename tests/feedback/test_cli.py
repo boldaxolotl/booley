@@ -85,6 +85,71 @@ def _project_data_status(state):
     return result.stdout
 
 
+def test_source_feedback_uses_shared_git_metadata(tmp_path):
+    source = tmp_path / "booley-source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    parser = argparse.ArgumentParser()
+    cli.add_subparser(parser.add_subparsers(dest="command"))
+
+    assert cli.run(parser.parse_args(["feedback", "add", "--title", "boom"]), source) == 0
+
+    state = source / ".git" / "booley-feedback"
+    assert read_log(state).entries[0].title == "boom"
+    assert not (source / ".booley_project").exists()
+
+
+def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
+    source = tmp_path / "booley-source"
+    source.mkdir()
+    (source / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "add",
+            "pyproject.toml",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(source),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(source), "worktree", "add", "-q", "-b", "linked", str(linked)],
+        check=True,
+    )
+
+    assert cli._project_dir(source) == cli._project_dir(linked)
+    assert cli._project_dir(linked) == source / ".git" / "booley-feedback"
+
+
 class TestLogging:
     def test_add_records_origin_and_attachments(self, run, project):
         assert run("add", "--title", "boom", "--origin", "bug", "--attach", "run.log") == 0

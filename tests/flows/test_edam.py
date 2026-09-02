@@ -313,6 +313,18 @@ class TestRelativePaths:
         traced = work_root_for(ws, "sim", "cfg", variant="trace")
         assert traced.name == "cfg-trace"
 
+    def test_work_root_refuses_booley_source_checkout(self, tmp_path: Path):
+        source = tmp_path / "source"
+        source.mkdir()
+        (source / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="cannot be initialized or used as a Project"):
+            work_root_for(source, "lint", "cfg")
+        assert not (source / ".booley_project").exists()
+
     def test_relpath_for_make(self, ws: Path):
         wr = work_root_for(ws, "lint", "cfg")
         assert relpath_for_make(wr, ws) == ".booley_project/.runtime/edalize/lint/cfg"

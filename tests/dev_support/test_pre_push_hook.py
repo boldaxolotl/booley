@@ -187,6 +187,20 @@ class TestCommitOffenses:
 
         assert any("tracked path has banned terms" in offense for offense in offenses)
 
+    def test_booley_source_paths_are_outside_project_stealth(self, repo, monkeypatch):
+        monkeypatch.chdir(repo)
+        (repo / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+        package = repo / "src" / "booley" / "feature.py"
+        package.parent.mkdir(parents=True)
+        package.write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-q", "--no-verify", "-m", "docs: explain Booley architecture")
+
+        assert _commit_offenses(_head(repo), [], repository_root=repo) == []
+
     def test_symlink_target_is_read_from_committed_blob(self, repo, monkeypatch):
         monkeypatch.chdir(repo)
         (repo / ".booley_project").mkdir()

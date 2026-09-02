@@ -152,8 +152,12 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
             RELAY_IMAGE,
             "-c",
             (
-                f"while true; do (nc -l -p {first} -e printf 'manager-reply') || true; done & "
-                f"while true; do (nc -l -p {second} -e printf 'vendor-reply') || true; done; wait"
+                # Consume the request before replying so the synthetic server
+                # closes cleanly instead of resetting a socket with unread data.
+                f"while true; do (nc -l -p {first} -e sh -c "
+                "'cat >/dev/null; printf manager-reply') || true; done & "
+                f"while true; do (nc -l -p {second} -e sh -c "
+                "'cat >/dev/null; printf vendor-reply') || true; done; wait"
             ),
         )
         _assert_ok(upstream_run)

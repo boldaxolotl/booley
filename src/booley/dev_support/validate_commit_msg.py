@@ -21,7 +21,13 @@ from pathlib import Path
 
 try:
     from ..core.run_command import run_command
-    from .commit_msg_utils import enforce_convention, find_banned, max_body_lines, stealth_enabled
+    from .commit_msg_utils import (
+        enforce_convention,
+        find_banned,
+        max_body_lines,
+        source_checkout_policy_owner,
+        stealth_enabled,
+    )
 except ImportError:
     # When run as a standalone script (e.g. inside Docker), the package-relative
     # import fails.  Ensure this file's dir and the package root are on sys.path
@@ -37,7 +43,13 @@ except ImportError:
     # resolved via the hook dir already on sys.path.
     import importlib
 
-    from commit_msg_utils import enforce_convention, find_banned, max_body_lines, stealth_enabled
+    from commit_msg_utils import (
+        enforce_convention,
+        find_banned,
+        max_body_lines,
+        source_checkout_policy_owner,
+        stealth_enabled,
+    )
 
     run_command = None
     for _mod in ("core.run_command", "run_command"):
@@ -108,6 +120,9 @@ _PROJECT_CONFIG_NAMES = ("booley.toml", "pipeline.toml")
 
 def _has_project_config(repo_root: Path) -> bool:
     """Whether *repo_root* is a configured design or project-state repository."""
+    if source_checkout_policy_owner(repo_root):
+        return False
+
     nested = (
         repo_root / subdir / name
         for subdir in _PROJECT_CONFIG_DIRS
@@ -208,13 +223,13 @@ def validate_message(msg: str, *, project_root: Path | None = None) -> list[str]
 
     # --- banned words (checked only while stealth mode is enabled) ---
     if stealth_enabled(project_root):
-        for phrase in _find_banned(msg):
+        for phrase in _find_banned(msg, project_root):
             errors.append(f"Banned phrase in commit message: '{phrase}'")
 
     return errors
 
 
-def validate_diff() -> list[str]:
+def validate_diff(project_root: Path | None = None) -> list[str]:
     """Scan staged diff for banned words. Return list of errors."""
     run = run_command(["git", "diff", "--cached", "-U0"])
     if not run.ok:
@@ -232,7 +247,7 @@ def validate_diff() -> list[str]:
         if not line.startswith("+") or line.startswith("+++"):
             continue
         added_text = line[1:]  # strip the leading "+"
-        for phrase in _find_banned(added_text):
+        for phrase in _find_banned(added_text, project_root):
             # Truncate long lines for readability
             display = added_text.strip()
             if len(display) > 80:
@@ -274,7 +289,7 @@ def main() -> int:
     errors = validate_message(msg, project_root=project_root)
 
     if check_diff:
-        errors.extend(validate_diff())
+        errors.extend(validate_diff(project_root))
 
     if errors:
         print("Commit message validation FAILED:", file=sys.stderr)

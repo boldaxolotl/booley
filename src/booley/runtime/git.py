@@ -128,6 +128,14 @@ def _git_common_dir(wt: Path) -> Path | None:
     return _git_common_dir_fs(wt)
 
 
+def git_common_dir(wt: Path) -> Path:
+    """Return the shared Git metadata directory for a checkout or worktree."""
+    common = _git_common_dir(Path(wt).resolve())
+    if common is None:
+        raise RuntimeError(f"cannot resolve Git's shared metadata directory for {wt}")
+    return common
+
+
 def _git_common_dir_fs(wt: Path) -> Path | None:  # noqa: PLR0911 — ordered resolution ladder; each early return is a distinct .git layout case
     """Filesystem-only resolution of the shared git dir (no ``git`` invocation)."""
     git = wt / ".git"
@@ -457,7 +465,7 @@ def commit_scope(
     _stage_scope_files(wt, scope, literal=literal)
     _isolate_scope_staging(wt, scope, literal=literal)
 
-    errors = validate_message(message)
+    errors = validate_message(message, project_root=wt)
     if errors:
         raise BlockingError(
             f"Commit message validation failed: {'; '.join(errors)} — message={message!r}"
