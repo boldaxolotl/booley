@@ -206,6 +206,7 @@ def _test_issuance(workspace: Path) -> SimpleNamespace:
         policy_revision=1,
         installation=None,
         license_profile=None,
+        project_data_source=str(workspace / ".booley_project"),
     )
 
 
@@ -260,6 +261,7 @@ def _stub_prepare(
         lambda _path: workspace / ".booley_project",
     )
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
+    monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: issuance)
     monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
     monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
 
@@ -275,6 +277,12 @@ def _record_successful_removals(monkeypatch: pytest.MonkeyPatch, removed: list[l
 
 
 class TestPrepareMigration:
+    @pytest.fixture(autouse=True)
+    def _authenticated_issuance(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from booley.eda.provisioning import runtime_spec
+
+        monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: _test_issuance(workspace))
+
     def test_malformed_mount_inventory_fails_loudly(self) -> None:
         with pytest.raises(sr.SessionError, match=r"cannot inspect bind mounts.*current-vscode"):
             sr._container_has_unavailable_bind("current-vscode", {"Mounts": None})
@@ -284,6 +292,23 @@ class TestPrepareMigration:
         state = {"Mounts": [{"Type": "bind", "Source": "/run/desktop/mnt/host/wsl/x"}]}
 
         assert not sr._container_has_unavailable_bind("current-vscode", state)
+
+    def test_missing_legacy_inspection_is_fail_closed_and_idempotent(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        container = sr._LegacyVscodeContainer("legacy-vscode", "container-id")
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: None)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
+        )
+
+        assert sr._inspected_running({}) is None
+        assert sr._legacy_vscode_identity({}, workspace, {}) is None
+        sr._stop_legacy_vscode_container(container)
+        assert "no longer present" in sr._quiesced_validation_recovery(container)
+        sr._remove_quiesced_legacy_container(container)
 
     @pytest.mark.parametrize("config_label", ["current", "missing", "different"])
     def test_stopped_vscode_container_from_old_issuance_is_removed_before_create(
@@ -368,7 +393,6 @@ class TestPrepareMigration:
             return None
 
         monkeypatch.setattr(sr, "_docker_stdout", docker_stdout)
-        monkeypatch.setattr(sr, "_reject_legacy_project_data_visibility", lambda *_args: None)
         monkeypatch.setattr(
             runtime_spec,
             "authorized_project_data_source",
@@ -534,7 +558,6 @@ class TestPrepareMigration:
         _write_spec(workspace, _spec())
         source = "/host/skills/renamed-skill"
         target = f"{dc.HOST_SKILLS_SIDECAR}/example-skill"
-        monkeypatch.setattr(sr, "_reject_legacy_project_data_visibility", lambda *_args: None)
         monkeypatch.setattr(
             runtime_spec,
             "authorized_project_data_source",
@@ -549,6 +572,7 @@ class TestPrepareMigration:
                 )
             ),
         )
+        monkeypatch.setattr(sr, "_strict_running_interactive_states", lambda: [])
 
         with pytest.raises(sr.SessionError) as caught:
             sr.prepare(workspace)
@@ -558,7 +582,7 @@ class TestPrepareMigration:
         assert target in message
         assert "booley init --seed" in message
 
-    def test_running_legacy_container_blocks_before_stamp_validation(
+    def test_ambiguous_running_legacy_container_refuses_without_mutation(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_spec(workspace, _spec())
@@ -578,7 +602,7 @@ class TestPrepareMigration:
         )
         monkeypatch.setattr("booley.eda.provisioning.runtime_spec.validate", validate)
 
-        with pytest.raises(sr.SessionError, match="predates the protected Project-data"):
+        with pytest.raises(sr.SessionError, match="cannot safely migrate"):
             sr.prepare(workspace)
 
         validate.assert_not_called()
@@ -681,8 +705,138 @@ class TestPrepareMigration:
             lambda _path: workspace / ".booley_project",
         )
 
-        with pytest.raises(sr.SessionError, match="predates the protected Project-data"):
+        with pytest.raises(sr.SessionError, match="cannot safely migrate"):
             sr.prepare(workspace)
+
+    def test_authenticated_legacy_vscode_container_is_stopped_validated_then_removed(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.eda.provisioning import runtime_spec
+
+        _write_spec(workspace, _spec())
+        issuance = _test_issuance(workspace)
+        container_id = "a" * 64
+        running = {
+            "Id": container_id,
+            "State": {"Running": True},
+            "Config": {"Labels": _vscode_labels(workspace, issuance)},
+            "Mounts": [{"Destination": "/work", "Type": "bind", "RW": True}],
+        }
+        stopped = {**running, "State": {"Running": False}}
+        events: list[str] = []
+        monkeypatch.setattr(
+            runtime_spec,
+            "authenticate",
+            lambda *_args: events.append("authenticate") or issuance,
+        )
+        monkeypatch.setattr(
+            runtime_spec,
+            "validate",
+            lambda *_args: events.append("validate") or issuance,
+        )
+        monkeypatch.setattr(runtime_spec, "requested_license", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [("nifty_wright", json.dumps([running]))],
+        )
+        monkeypatch.setattr(sr, "_strict_all_interactive_states", lambda *_args: [])
+        monkeypatch.setattr(
+            sr,
+            "_docker_stdout",
+            lambda argv: (
+                json.dumps([stopped]) if argv == ["docker", "inspect", container_id] else None
+            ),
+        )
+
+        def run(argv: list[str], **_kwargs):
+            events.append(argv[1])
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(sr, "_run", run)
+        monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
+
+        assert sr.prepare(workspace) == "current-spec"
+        assert events == ["authenticate", "stop", "validate", "rm"]
+
+    def test_post_stop_validation_failure_names_recovery_command(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.eda.provisioning import runtime_spec
+
+        _write_spec(workspace, _spec())
+        issuance = _test_issuance(workspace)
+        container_id = "b" * 64
+        running = {
+            "Id": container_id,
+            "State": {"Running": True},
+            "Config": {"Labels": _vscode_labels(workspace, issuance)},
+            "Mounts": [{"Destination": "/work", "Type": "bind", "RW": True}],
+        }
+        stopped = {**running, "State": {"Running": False}}
+        monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: issuance)
+        monkeypatch.setattr(
+            runtime_spec,
+            "validate",
+            Mock(side_effect=runtime_spec.RuntimeSpecError("spec changed after stop")),
+        )
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [("nifty_wright", json.dumps([running]))],
+        )
+        monkeypatch.setattr(
+            sr,
+            "_docker_stdout",
+            lambda argv: (
+                json.dumps([stopped]) if argv == ["docker", "inspect", container_id] else None
+            ),
+        )
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+        monkeypatch.setattr(sr, "_run", run)
+
+        with pytest.raises(sr.SessionError) as caught:
+            sr.prepare(workspace)
+
+        assert "spec changed after stop" in str(caught.value)
+        assert f"docker start {container_id}" in str(caught.value)
+        assert [call.args[0] for call in run.call_args_list] == [["docker", "stop", container_id]]
+
+    def test_multiple_authenticated_legacy_containers_are_not_stopped(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        issuance = _test_issuance(workspace)
+
+        def state(container_id: str) -> str:
+            return json.dumps(
+                [
+                    {
+                        "Id": container_id,
+                        "State": {"Running": True},
+                        "Config": {"Labels": _vscode_labels(workspace, issuance)},
+                        "Mounts": [{"Destination": "/work", "Type": "bind", "RW": True}],
+                    }
+                ]
+            )
+
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [("first", state("c" * 64)), ("second", state("d" * 64))],
+        )
+        run = Mock()
+        monkeypatch.setattr(sr, "_run", run)
+
+        with pytest.raises(sr.SessionError, match="multiple or ambiguous"):
+            sr._quiesce_legacy_vscode_container(workspace, workspace / ".booley_project", issuance)
+
+        run.assert_not_called()
+
+    def test_windows_host_paths_normalize_slashes_and_drive_case(self) -> None:
+        assert sr._same_host_path(
+            "c:/workplace/picorv32/.devcontainer/devcontainer.json",
+            Path(r"C:\workplace\picorv32\.devcontainer\devcontainer.json"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -713,21 +867,24 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
             ),
         )
     )
+    issuance = SimpleNamespace(
+        project_root=str(workspace),
+        spec_sha256="abc",
+        policy_revision=1,
+        installation=None,
+        license_profile=None,
+        relay_image_id="sha256:" + "a" * 64,
+        project_data_source=str(workspace / ".booley_project"),
+    )
     with (
         patch.object(sr.idk, "network_exists", return_value=True),
         patch.object(sr.idk, "image_exists", return_value=True),
         lifecycle_reconcile,
         patch(
             "booley.eda.provisioning.runtime_spec.validate",
-            return_value=SimpleNamespace(
-                project_root=str(workspace),
-                spec_sha256="abc",
-                policy_revision=1,
-                installation=None,
-                license_profile=None,
-                relay_image_id="sha256:" + "a" * 64,
-            ),
+            return_value=issuance,
         ),
+        patch("booley.eda.provisioning.runtime_spec.authenticate", return_value=issuance),
         patch(
             "booley.eda.provisioning.runtime_spec.authorized_project_data_source",
             return_value=workspace / ".booley_project",

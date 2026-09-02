@@ -806,6 +806,86 @@ def test_seal_skips_tmp_path_poisoned_booley(
     assert Path(spec["initializeCommand"][0]) == trusted
 
 
+def test_finder_uses_current_absolute_entry_point_before_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    invoked = _install_trusted_validator(tmp_path, monkeypatch)
+    fallback = tmp_path / "other-prefix" / "bin" / invoked.name
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fallback.chmod(0o755)
+    anchors = {
+        invoked.parent.resolve(): invoked.parent.parent.resolve(),
+        fallback.parent.resolve(): fallback.parent.parent.resolve(),
+    }
+    monkeypatch.setattr(runtime_spec, "_validator_prefix_anchors", lambda: anchors)
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    monkeypatch.setenv("PATH", str(fallback.parent))
+
+    assert runtime_spec._find_trusted_validator(project) == invoked
+
+
+def test_finder_uses_trusted_interpreter_scripts_directory_off_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    scripts = tmp_path / "Python313" / ("Scripts" if os.name == "nt" else "bin")
+    executable = scripts / ("booley.exe" if os.name == "nt" else "booley")
+    scripts.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_script_directories",
+        lambda: (scripts,),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {scripts.resolve(): scripts.parent.resolve()},
+    )
+
+    assert runtime_spec._find_trusted_validator(project) == executable
+
+
+def test_finder_preserves_path_precedence_over_interpreter_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    name = "booley.exe" if os.name == "nt" else "booley"
+    selected = tmp_path / "selected" / "bin" / name
+    fallback = tmp_path / "fallback" / "bin" / name
+    for executable in (selected, fallback):
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+    monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
+    monkeypatch.setenv("PATH", str(selected.parent))
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_script_directories",
+        lambda: (fallback.parent,),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {
+            selected.parent.resolve(): selected.parent.parent.resolve(),
+            fallback.parent.resolve(): fallback.parent.parent.resolve(),
+        },
+    )
+
+    assert runtime_spec._find_trusted_validator(project) == selected
+
+
 @pytest.mark.skipif(os.name == "nt", reason="uv uses a launcher executable on Windows")
 def test_find_trusted_validator_resolves_managed_cli_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -820,6 +900,45 @@ def test_find_trusted_validator_resolves_managed_cli_symlink(
 
     assert runtime_spec._find_trusted_validator(project) == trusted.resolve()
     assert not runtime_spec._trusted_validator(launcher, project)
+
+
+def test_validator_script_directories_ignore_unavailable_user_scheme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts = tmp_path / "scripts"
+
+    def unavailable_user_scheme(_name: str) -> str:
+        raise KeyError("user")
+
+    monkeypatch.setattr(runtime_spec.sysconfig, "get_path", lambda *_args, **_kwargs: scripts)
+    monkeypatch.setattr(
+        runtime_spec.sysconfig,
+        "get_preferred_scheme",
+        unavailable_user_scheme,
+    )
+
+    assert runtime_spec._validator_script_directories() == (scripts.resolve(),)
+
+
+def test_is_executable_file_accepts_an_executable(tmp_path: Path) -> None:
+    executable = tmp_path / "booley"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    assert runtime_spec._is_executable_file(executable)
+
+
+def test_find_trusted_validator_returns_none_without_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
+    monkeypatch.setattr(runtime_spec.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(runtime_spec, "_validator_script_directories", tuple)
+    monkeypatch.setenv("PATH", "")
+
+    assert runtime_spec._find_trusted_validator(project) is None
 
 
 def test_trusted_validator_rejects_group_writable_executable_for_shared_group(
