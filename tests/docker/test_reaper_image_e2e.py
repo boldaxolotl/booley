@@ -7,18 +7,21 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from tests.sidecar_image_helpers import (
+    DockerClient,
     assert_ok,
     assert_python_version,
     candidate_image,
     docker,
+    isolated_docker_daemon,
 )
 
 
-def _exists(kind: str, name: str) -> bool:
-    return docker(kind, "inspect", name).returncode == 0
+def _exists(client: DockerClient, kind: str, name: str) -> bool:
+    return client.run(kind, "inspect", name).returncode == 0
 
 
 @dataclass(frozen=True)
@@ -45,11 +48,11 @@ class _Topology:
         )
 
 
-def _start_relay(image: str, topology: _Topology) -> None:
-    assert_ok(docker("network", "create", topology.private))
-    assert_ok(docker("network", "create", topology.outbound))
+def _start_relay(client: DockerClient, image: str, topology: _Topology) -> None:
+    assert_ok(client.run("network", "create", topology.private))
+    assert_ok(client.run("network", "create", topology.outbound))
     assert_ok(
-        docker(
+        client.run(
             "run",
             "-d",
             "--name",
@@ -61,17 +64,18 @@ def _start_relay(image: str, topology: _Topology) -> None:
             "--network",
             topology.outbound,
             "--entrypoint",
-            "sleep",
+            "python3",
             image,
-            "60",
+            "-c",
+            "import time; time.sleep(60)",
         )
     )
-    assert_ok(docker("network", "connect", topology.private, topology.relay))
+    assert_ok(client.run("network", "connect", topology.private, topology.relay))
 
 
-def _start_session(image: str, topology: _Topology) -> None:
+def _start_session(client: DockerClient, image: str, topology: _Topology) -> None:
     assert_ok(
-        docker(
+        client.run(
             "run",
             "-d",
             "--name",
@@ -85,16 +89,17 @@ def _start_session(image: str, topology: _Topology) -> None:
             "--network",
             topology.private,
             "--entrypoint",
-            "sleep",
+            "python3",
             image,
-            "60",
+            "-c",
+            "import time; time.sleep(60)",
         )
     )
 
 
-def _start_reaper(image: str, topology: _Topology) -> None:
+def _start_reaper(client: DockerClient, image: str, topology: _Topology) -> None:
     assert_ok(
-        docker(
+        client.run(
             "run",
             "-d",
             "--name",
@@ -112,7 +117,7 @@ def _start_reaper(image: str, topology: _Topology) -> None:
     )
 
 
-def _wait_for_cleanup(topology: _Topology) -> None:
+def _wait_for_cleanup(client: DockerClient, topology: _Topology) -> None:
     owned = (
         ("container", topology.session),
         ("container", topology.relay),
@@ -121,15 +126,28 @@ def _wait_for_cleanup(topology: _Topology) -> None:
     )
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        if not any(_exists(kind, name) for kind, name in owned):
+        if not any(_exists(client, kind, name) for kind, name in owned):
             return
         time.sleep(0.25)
     pytest.fail("candidate reaper did not remove its owned topology")
 
 
-def _cleanup(topology: _Topology) -> None:
-    docker("rm", "-f", topology.reaper, topology.session, topology.relay)
-    docker("network", "rm", topology.private, topology.outbound)
+def _wait_for_log(client: DockerClient, container: str, expected: str) -> str:
+    deadline = time.monotonic() + 3
+    captured = ""
+    while time.monotonic() < deadline:
+        logs = client.run("logs", container)
+        assert_ok(logs)
+        captured = logs.stdout + logs.stderr
+        if expected in captured:
+            return captured
+        time.sleep(0.1)
+    pytest.fail(f"candidate reaper did not log {expected!r}; captured logs:\n{captured}")
+
+
+def _cleanup(client: DockerClient, topology: _Topology) -> None:
+    client.run("rm", "-f", topology.reaper, topology.session, topology.relay)
+    client.run("network", "rm", topology.private, topology.outbound)
 
 
 @pytest.mark.slow()
@@ -144,20 +162,24 @@ def test_candidate_image_contract() -> None:
 
 
 @pytest.mark.slow()
-def test_candidate_entrypoint_reaps_owned_topology() -> None:
-    """Run the image entrypoint against a real mounted Docker socket."""
+def test_candidate_entrypoint_reaps_owned_topology(tmp_path: Path) -> None:
+    """Run the image entrypoint against an isolated mounted Docker socket."""
     image = candidate_image("BOOLEY_REAPER_IMAGE", "packaged reaper proof")
-    topology = _Topology.create()
-    try:
-        _start_relay(image, topology)
-        _start_session(image, topology)
-        _start_reaper(image, topology)
-        _wait_for_cleanup(topology)
-        logs = docker("logs", topology.reaper)
-        assert_ok(logs)
-        assert "reaped 1 session container" in logs.stdout + logs.stderr
-    finally:
-        _cleanup(topology)
+    with isolated_docker_daemon(image, tmp_path) as daemon:
+        topology = _Topology.create()
+        try:
+            _start_relay(daemon.client, daemon.image_id, topology)
+            _start_session(daemon.client, daemon.image_id, topology)
+            _start_reaper(daemon.client, daemon.image_id, topology)
+            _wait_for_cleanup(daemon.client, topology)
+            logs = _wait_for_log(
+                daemon.client,
+                topology.reaper,
+                "reaped 1 session container(s)",
+            )
+            assert logs.count("reaped 1 session container(s)") == 1
+        finally:
+            _cleanup(daemon.client, topology)
 
 
 @pytest.mark.slow()

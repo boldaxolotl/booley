@@ -21,8 +21,8 @@ import booley
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness import init_cmd
-from booley.harness import init_docker_image as idi
-from booley.harness.init_common import InitContext
+from booley.harness.setup import docker_image as idi
+from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
 
 FLAVOR = "booley-sandbox-riscv"

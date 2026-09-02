@@ -69,7 +69,7 @@ def test_unknown_synthesis_ok_param_rejected_at_enqueue():
         "scope": ["rtl/foo.sv"],
         "criteria": {
             "mandatory": {
-                "synthesis_ok": {"configs": ["synth_div"], "area_increase_at_most": 100},
+                "synthesis_ok": {"configs": ["synth_div"], "area_increase_at_most": "100%"},
             },
         },
     }
@@ -103,12 +103,33 @@ def test_synthesis_ok_targets_scoping_accepted():
         "scope": ["rtl/foo.sv"],
         "criteria": {
             "mandatory": {
-                "synthesis_ok": {"targets": ["synth_div"], "area_increase_at_most": 100},
+                "synthesis_ok": {"targets": ["synth_div"], "area_increase_at_most": "100%"},
             },
         },
     }
     errors = validate_ticket_fields(fields, "## Description\ntest")
     assert errors == [], f"Expected no errors, got: {errors}"
+
+
+def test_percentage_threshold_requires_explicit_symbol_at_enqueue():
+    fields = {
+        "summary": "test",
+        "type": "feature",
+        "branch": "main",
+        "scope": ["rtl/foo.sv"],
+        "criteria": {
+            "mandatory": {
+                "synthesis_ok": {
+                    "targets": ["synth_div"],
+                    "area_increase_at_most": 8,
+                },
+            },
+        },
+    }
+
+    errors = validate_ticket_fields(fields, "## Description\ntest")
+
+    assert any("must end in '%'" in error for error in errors)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from booley.dev_support.cycle_count import PROVENANCE_LIMITATION, workload_changes
+from booley.criteria.cycle_count import PROVENANCE_LIMITATION, workload_changes
 from booley.flows.sim.flow import SimulateFlow, TargetResult
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.flows.sim.workload import build_workload_snapshot

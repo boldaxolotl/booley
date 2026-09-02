@@ -40,16 +40,25 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import quote
 
+from booley.agent_workspace.isolation import hide_opposite_sources
 from booley.config import project_config
 from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
 from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
-from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import artifacts as _artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
-from booley.flows.sim.flow import _SIM_RUN_HALVES, _resolve_sim_sentinels
+from booley.flows.sim.backends.cocotb_results import (
+    STATE_OK,
+    VERDICT_FAIL,
+    VERDICT_PASS,
+    CocotbResults,
+    parse_results_line,
+)
+from booley.flows.sim.config import resolve_run_cwd
+from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
+from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.target_campaign import (
     CampaignUnit,
     TargetCampaign,
@@ -67,18 +76,12 @@ from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
-from booley.sim.cocotb_results import (
-    STATE_OK,
-    VERDICT_FAIL,
-    VERDICT_PASS,
-    CocotbResults,
-    parse_results_line,
-)
-from booley.sim.config import resolve_run_cwd
-from booley.sim.sim_result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.targets.target import inspect_target
 
 from .specialist import Specialist
+
+_SIM_RUN_HALVES = SIM_RUN_HALVES
+_resolve_sim_sentinels = resolve_sim_sentinels
 
 logger = logging.getLogger(__name__)
 #: Per-mutant sim-log cap. Deliberately small: this file is written once per
@@ -1753,7 +1756,7 @@ replacement must differ, and every proposal must remain a single source edit.
         timeout: int,
         test_names: tuple[str, ...],
     ) -> list[str]:
-        """Build the :mod:`booley.sim.cocotb_run` invocation for one mutant.
+        """Build the :mod:`booley.flows.sim.backends.cocotb` invocation for one mutant.
 
         A Cocotb Target's binary is driven from Python over VPI, so the run
         needs cocotb's ``COCOTB_TEST_MODULES``/filter environment — which only
@@ -1766,7 +1769,7 @@ replacement must differ, and every proposal must remain a single source edit.
         cmd = [
             sys.executable,
             "-m",
-            "booley.sim.cocotb_run",
+            "booley.flows.sim.backends.cocotb",
             "--build-dir",
             rel,
             "--eda-tool",
@@ -1802,7 +1805,7 @@ replacement must differ, and every proposal must remain a single source edit.
         cmd = [
             sys.executable,
             "-m",
-            "booley.sim.verilator_run",
+            "booley.flows.sim.backends.verilator",
             "--bin-dir",
             rel,
             "--top",
@@ -1875,7 +1878,7 @@ replacement must differ, and every proposal must remain a single source edit.
         """Run the simulation image built in *build_path*.
 
         Which run-half drives it depends on the Target: a Cocotb Target goes
-        through :mod:`booley.sim.cocotb_run`
+        through :mod:`booley.flows.sim.backends.cocotb`
         (it needs cocotb's VPI environment); classic Targets use the run-half
         matching the resolved toolchain (``iverilog_run`` for Icarus,
         ``verilator_run`` for Verilator). Both exit non-zero on a FAIL verdict,
@@ -2109,12 +2112,12 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _persist_capped_log(self, path: Path, output: str, label: str) -> str:
         """Best-effort capped transcript persistence shared by all variants."""
-        from booley.sim.sim_result import _cap_log_bytes
+        from booley.flows.run_log import cap_log_bytes
 
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(
-                _cap_log_bytes(
+                cap_log_bytes(
                     output.encode("utf-8", errors="replace"),
                     _MUTANT_LOG_MAX_BYTES,
                 )

@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from booley.dev_support.criteria import TargetPair
+from booley.criteria.templates import TargetPair
+from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.implementation_report import build_fpga_implementation_report
-from booley.flows.fpga.metrics import FpgaMetrics
 from booley.flows.implementation_publication import (
     ImplementationProgress,
     ImplementationPublisher,

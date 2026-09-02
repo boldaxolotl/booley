@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.ticket_board.acceptance_ledger import (
     AcceptanceLedgerError,
     bind_review_package,

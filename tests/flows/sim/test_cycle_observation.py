@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from booley.dev_support.criteria import CriteriaTemplate
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import CriteriaTemplate
 from booley.flows.sim.flow import (
     SimulateFlow,
     TargetResult,
@@ -53,7 +53,7 @@ def test_legacy_wrapper_remains_observationally_compatible() -> None:
 
 
 def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
-    threshold = {"cycle_count_reduce_at_least": 5} if relative else {"cycle_count_max": 100}
+    threshold = {"cycle_count_reduce_at_least": "5%"} if relative else {"cycle_count_max": 100}
     template = CriteriaTemplate.from_yaml(
         {"mandatory": {"cycle_count": [{"target": "sim_core", "test": "coremark", **threshold}]}}
     )

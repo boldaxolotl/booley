@@ -411,6 +411,26 @@ class TestStealthCores:
         assert roots == [str(isolated_registry_root(tmp_path))]
         assert discover_cores(tmp_path) == [canonical]
 
+    def test_setup_command_refuses_foreign_expected_projection(self, tmp_path: Path):
+        from booley.fusesoc.core_projection import projected_core_path
+        from booley.fusesoc.fusesoc_registry import setup_command
+
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        canonical = _write_core(state_cores_dir(tmp_path), create_sources=False)
+        projected = projected_core_path(tmp_path, canonical)
+        foreign_content = "CAPI=2:\nname: foreign::core:0\n"
+        projected.write_text(foreign_content, encoding="utf-8")
+
+        with pytest.raises(TargetResolutionError, match="refusing to overwrite non-Booley file"):
+            setup_command("sim", project_root=tmp_path, build_root=tmp_path / "b")
+
+        assert projected.read_text(encoding="utf-8") == foreign_content
+
 
 # ---------------------------------------------------------------------------
 # enumerate_targets
@@ -577,7 +597,6 @@ class TestDoctorTargetMetadata:
         [
             ("booley: sim", "booley must be a mapping"),
             ("booley: {doctor: sim}", "doctor must be an array"),
-            ("booley: {doctor: [fpga]}", "invalid Flow values"),
             ("booley: {doctor: [sim, sim]}", "must not contain duplicates"),
             ("booley: {doctor_selftest: bad}", "doctor_selftest must be a boolean"),
             ("booley: {doctor: [sim], mystery: true}", "mystery is not a supported"),
@@ -592,6 +611,25 @@ class TestDoctorTargetMetadata:
             encoding="utf-8",
         )
         assert any(needle in error for error in core_schema_errors(core))
+
+    def test_fpga_doctor_metadata_selects_target(self, tmp_path: Path):
+        core = tmp_path / "fpga.core"
+        core.write_text(
+            "CAPI=2:\nname: ::fpga:0\ntargets:\n"
+            "  fpga_board:\n"
+            "    flow: generic\n"
+            "    flow_options:\n"
+            "      tool: verilator\n"
+            "      part: xc7a35tcsg324-1\n"
+            "      booley: {doctor: [fpga]}\n",
+            encoding="utf-8",
+        )
+
+        doc = read_core(core)
+        assert core_schema_errors(core) == []
+        assert core_target_doctor_flows(doc, "fpga_board") == ("fpga",)
+        assert doctor_target_selectors(tmp_path, "fpga") == ["fpga_board"]
+        assert "fpga_board" in doctor_target_seed(tmp_path)
 
 
 class TestResolveConfigSelection:

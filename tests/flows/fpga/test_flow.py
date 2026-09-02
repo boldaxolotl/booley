@@ -14,12 +14,13 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.dev_support.criteria import TargetPair
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import TargetPair
+from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
+from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
-from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.recipe_evidence import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
@@ -29,6 +30,8 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
+
+_REAL_RESOLVE_TARGET_SELECTION = fusesoc_registry.resolve_target_selection
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +47,7 @@ def _adr0039_lenient_selection(monkeypatch):
     """
     from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root):
+    def _lenient(target_arg, project_root, *, for_flow=None):
         return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
 
     monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
@@ -232,26 +235,6 @@ def _collect_flow(work_dir: Path) -> FpgaImplFlow:
     return flow
 
 
-def _patch_fpga_resolve(tmp_path: Path):
-    """Patch the design-description resolver the builtin path now uses.
-
-    ADR 0022 (decision 4) replaced ``FpgaImplFlow._resolve_sources`` (configs.toml
-    + source globbing) with ``fusesoc_registry.try_resolve_target``: the builtin
-    dry-run ``_resolve_fpga_summary`` resolves the ``.core`` Target and splits its
-    sources via ``_split_resolved_sources``. These dry-run tests therefore mock
-    ``try_resolve_target`` (a non-fusesoc fake EDAM) instead of the deleted
-    ``_resolve_sources``; part and XDC come from the Target.
-    """
-    return patch.object(
-        fusesoc_registry,
-        "try_resolve_target",
-        side_effect=lambda config="default", **k: _fake_fpga_resolved(
-            tmp_path,
-            config=config,
-        ),
-    )
-
-
 # ---------------------------------------------------------------------------
 # FuseSoC resolution stub (ADR 0022 Phase 2)
 # ---------------------------------------------------------------------------
@@ -330,8 +313,7 @@ def test_dry_run_uses_project_fpga_config(tmp_path: Path, state_file: Path) -> N
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file, "--dry-run")
 
-    with _patch_fpga_resolve(tmp_path):
-        result = flow._run()
+    result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
     assert "part=xc7a200tfbg484-1" in result.report_text
@@ -345,14 +327,123 @@ def test_dry_run_resolves_sources_from_work_dir(
     _write_project_config(tmp_path)
     flow = _flow(tmp_path, state_file, "--dry-run")
 
-    # The dry-run sources its source counts from the resolved .core Target
-    # (_resolve_fpga_summary → try_resolve_target → _split_resolved_sources): one .sv
-    # (rtl/top.sv) and one .v (rtl/legacy.v), excluding the include header & TB.
-    with _patch_fpga_resolve(tmp_path):
-        result = flow._run()
+    # The dry-run sources its source counts from the resolved .core Target: one
+    # .sv and one .v, excluding the include header and TB.
+    result = flow._run()
 
     assert result.exit_code == EXIT_SUCCESS
     assert "sv_files=1 v_files=1" in result.report_text
+
+
+def test_run_rejects_non_fpga_axis_before_setup(
+    tmp_path: Path,
+    state_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FPGA endpoint must enforce the compatibility shown by target discovery."""
+    _write_project_config(tmp_path)
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\n"
+        "filesets:\n"
+        "  rtl:\n"
+        "    files:\n"
+        "      - rtl/top.sv: {file_type: systemVerilogSource}\n"
+        "targets:\n"
+        "  synth_core:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: yosys}\n"
+        "    filesets: [rtl]\n"
+        "    toplevel: dut_top\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fusesoc_registry,
+        "resolve_target_selection",
+        _REAL_RESOLVE_TARGET_SELECTION,
+    )
+    flow = _flow(tmp_path, state_file, "--target", "synth_core", "--dry-run")
+
+    with pytest.raises(
+        fusesoc_registry.IncompatibleTargetError,
+        match=r"booley targets --for-flow fpga",
+    ):
+        flow._run()
+
+
+def test_dry_run_fails_before_reporting_uninspected_target(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    """Dry-run must cross the source-inspection gate used before dispatch."""
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    with patch.object(
+        run_evidence,
+        "capture_flow_source_evidence",
+        side_effect=fusesoc_registry.FuseSocError("projected core identity mismatch"),
+    ):
+        result = flow._run()
+
+    assert result.exit_code == EXIT_ERROR
+    assert "projected core identity mismatch" in result.report_text
+    assert "target=default" not in result.report_text
+    assert "part=" not in result.report_text
+    assert "top=" not in result.report_text
+    assert "xdc=" not in result.report_text
+    assert "sv_files=" not in result.report_text
+    assert "v_files=" not in result.report_text
+
+
+def test_dry_run_reports_no_target_metadata_when_later_target_setup_fails(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    def resolve(target="default", **_kwargs):
+        if target == "bad":
+            raise fusesoc_registry.FuseSocError("setup rejected bad")
+        return _fake_fpga_resolved(tmp_path, config=target)
+
+    with (
+        patch.object(fusesoc_registry, "resolve_target", side_effect=resolve),
+        patch.object(
+            run_evidence,
+            "capture_flow_source_evidence",
+            return_value=run_evidence.FlowSourceEvidence("unversioned", "source-digest"),
+        ),
+    ):
+        result = flow._dry_run(["good", "bad"])
+
+    assert result.exit_code == EXIT_ERROR
+    assert "setup rejected bad" in result.report_text
+    assert "target=good" not in result.report_text
+    assert "part=" not in result.report_text
+
+
+def test_dry_run_and_real_setup_reject_same_source_inspection_fault(
+    tmp_path: Path,
+    state_file: Path,
+) -> None:
+    """Dry-run and dispatch must cross the same source-inspection boundary."""
+    _write_project_config(tmp_path)
+    flow = _flow(tmp_path, state_file, "--dry-run")
+
+    with patch.object(
+        run_evidence,
+        "capture_flow_source_evidence",
+        side_effect=fusesoc_registry.FuseSocError("source inspection rejected"),
+    ):
+        dry_run = flow._dry_run(["default"])
+        real_run = flow._run_single_target("default")
+
+    assert dry_run.exit_code == EXIT_ERROR
+    assert "source inspection rejected" in dry_run.report_text
+    assert "target=default" not in dry_run.report_text
+    assert real_run.returncode == EXIT_ERROR
+    assert "source inspection rejected" in (real_run.infra_error or "")
 
 
 def test_negative_wns_fails_fpga_criterion(
@@ -382,7 +473,7 @@ def test_negative_wns_fails_fpga_criterion(
             "_prepare_fpga_command",
             return_value=(["make", "-C", "x"], tmp_path),
         ),
-        patch("booley.flows.fpga.edam.parse_fpga_reports", return_value=parsed),
+        patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
         patch.object(
             flow,
             "_execute_boundary",
@@ -401,7 +492,7 @@ def test_negative_wns_fails_fpga_criterion(
 def test_enable_out_of_context_appends_synth_property(tmp_path: Path) -> None:
     """The OOC patch lands the -mode out_of_context property in the project tcl
     exactly once, even when applied to an already-patched materialization."""
-    from booley.flows.fpga import edam as fpga_edam
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
 
     tcl = tmp_path / "fpga_t.tcl"
     tcl.write_text("create_project fpga_t -force\n", encoding="utf-8")
@@ -416,7 +507,7 @@ def test_enable_out_of_context_appends_synth_property(tmp_path: Path) -> None:
 
 def test_enable_out_of_context_missing_tcl_raises(tmp_path: Path) -> None:
     """A missing project tcl is a hard setup error (surfaces as infra_error)."""
-    from booley.flows.fpga import edam as fpga_edam
+    from booley.flows.fpga.backends.vivado import edam as fpga_edam
 
     with pytest.raises(FileNotFoundError, match="out_of_context"):
         fpga_edam.enable_out_of_context(tmp_path, "fpga_missing")
@@ -451,9 +542,15 @@ def _patch_edam_build(captured: dict):
         )
 
     return (
-        patch("booley.flows.fpga.edam.build_fpga_edam", side_effect=fake_build_fpga_edam),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.build_fpga_edam",
+            side_effect=fake_build_fpga_edam,
+        ),
         patch("booley.flows.edam.configure", side_effect=fake_configure),
-        patch("booley.flows.fpga.edam.fpga_run_command", return_value=["make", "-C", "x"]),
+        patch(
+            "booley.flows.fpga.backends.vivado.edam.fpga_run_command",
+            return_value=["make", "-C", "x"],
+        ),
     )
 
 
@@ -1082,7 +1179,7 @@ class TestFailureCapture:
             ),
             # No status:pass => route not completed => the exit code (1) fails it.
             patch(
-                "booley.flows.fpga.edam.parse_fpga_reports",
+                "booley.flows.fpga.backends.vivado.edam.parse_fpga_reports",
                 return_value={"lut_count": 10, "ff_count": 5},
             ),
         ):
@@ -1130,7 +1227,7 @@ class TestArtifactPointers:
         run's report files. Silently wrong, not merely dangling: a
         baseline-vs-current comparison would read the same numbers twice.
         """
-        from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
+        from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 
         metrics = FpgaMetrics(
             lut_count=10,
@@ -1151,7 +1248,7 @@ class TestArtifactPointers:
         """fpga_impl returned no ``detail`` at all, so its pointers reached
         state.json and the per-target JSON but never the MCP structuredContent
         an agent actually reads."""
-        from booley.flows.fpga.metrics import FpgaMetrics, _metrics_detail
+        from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 
         metrics = FpgaMetrics(log_path="build/run.log", dirs={"impl": "build/impl_1"})
         detail = _metrics_detail(metrics)

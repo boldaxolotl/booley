@@ -194,7 +194,7 @@ def _headeronly_store_note(directory: Path) -> str:
     registration path already explains header-only stores; the directory path
     must not hide the same story.
     """
-    from booley.sim.trace_session import _bwave_valid  # lazy: sim dep
+    from booley.flows.sim.trace_session import _bwave_valid  # lazy: sim dep
 
     try:
         skipped = sorted(f for f in directory.glob("*.fst") if not _bwave_valid(f))
@@ -254,7 +254,7 @@ def _resolve_raw_vcd(trace: Path, build: bool, diagnostics: str = "") -> Path:
             f"Or rebuild it deliberately, then register:\n"
             f"  bwave build {trace} -o {out}"
         )
-    from booley.sim.bwave_fifo import postprocess_vcd_to_bwave  # lazy: sim dep
+    from booley.flows.sim.bwave_fifo import postprocess_vcd_to_bwave  # lazy: sim dep
 
     print(f"[bwave] building {out.name} from {trace.name} (--build) ...", file=sys.stderr)
     if not postprocess_vcd_to_bwave(trace, out, None):
@@ -276,7 +276,7 @@ def cmd_register(args: argparse.Namespace) -> None:
         # Gate on the same store validation the directory search applies
         # (find_trace filters through _bwave_valid).
         if target.suffix == ".fst":
-            from booley.sim.trace_session import _bwave_valid  # lazy: sim dep
+            from booley.flows.sim.trace_session import _bwave_valid  # lazy: sim dep
 
             if not _bwave_valid(target):
                 _exit_usage(

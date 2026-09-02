@@ -34,13 +34,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.agent_workspace.isolation import hide_opposite_sources
 from booley.bwave.contract import EXIT_USAGE, NO_MATCH_MARKER
 from booley.config.project_config import lookup_target_section
 from booley.core.boundary import as_int
 from booley.core.models import AgentCallParams
-from booley.dev_support.workspace_isolation import hide_opposite_sources
 from booley.flows import edam as edam_layer
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
+from booley.flows.sim.trace_recipe import TraceMode
+from booley.flows.sim.trace_session import TraceSession, trace_cache_key
 from booley.flows.target_campaign import (
     TargetCampaign,
     describe_target_campaign,
@@ -59,9 +62,6 @@ from booley.mcp.base import (
 from booley.runtime.paths import native_bwave_binary
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.shared_infra import derive_work_dir
-from booley.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
-from booley.sim.trace_recipe import TraceMode
-from booley.sim.trace_session import TraceSession, trace_cache_key
 
 from .coverage_verilog_utils import (
     _build_rtl_name_map,  # noqa: F401  # re-exported for backward compatibility
@@ -2865,7 +2865,7 @@ abort path". Omit this field or leave empty if all criteria are already met.
         run_cmd = [
             "python3",
             "-m",
-            "booley.sim.cocotb_run",
+            "booley.flows.sim.backends.cocotb",
             "--build-dir",
             context.build_dir,
             "--eda-tool",
@@ -2887,7 +2887,11 @@ abort path". Omit this field or leave empty if all criteria are already met.
     ) -> tuple[list[str], str]:
         """Build one traced native-HDL simulator invocation."""
         is_icarus = context.eda_tool == "icarus"
-        module = "booley.sim.iverilog_run" if is_icarus else "booley.sim.verilator_run"
+        module = (
+            "booley.flows.sim.backends.icarus"
+            if is_icarus
+            else "booley.flows.sim.backends.verilator"
+        )
         build_option = "--build-dir" if is_icarus else "--bin-dir"
         run_cmd = [
             "python3",

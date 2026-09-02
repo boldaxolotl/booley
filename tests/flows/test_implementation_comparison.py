@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
+from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.flows.implementation_comparison import (
     ImplementationComparisonError,
     target_pairs_for_candidates,

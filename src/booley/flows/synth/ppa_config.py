@@ -13,13 +13,13 @@ from booley.core.boundary import (
     require_finite_number,
     require_opt_str,
 )
-from booley.synthesis.mode import SynthMode
-from booley.synthesis.profiles import (
+from booley.flows.synth.backends.yosys.ppa import validate_abc_recipe, validate_abc_script
+from booley.flows.synth.mode import SynthMode
+from booley.flows.synth.profiles import (
     DEFAULT_PPA_PROFILE,
     PPA_PROFILE_CHOICES,
     validate_ppa_profile,
 )
-from booley.yosys.ppa import validate_abc_recipe, validate_abc_script
 
 _YOSYS_KEYS = {
     "abc_recipe",

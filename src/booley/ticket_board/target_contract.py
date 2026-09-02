@@ -25,7 +25,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.dev_support.thresholds import has_relative_threshold
+from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
@@ -45,12 +45,7 @@ _FLOW_BY_CRITERION = {
     "synthesis_ok": "synth",
     "fpga_impl_ok": "fpga",
     "mutation_score": "sim",
-    "coverage_toggle": "sim",
-    "coverage_fsm": "sim",
-    "coverage_value": "sim",
-    "coverage_branch": "sim",
-    "coverage_expression": "sim",
-    "coverage_mean": "sim",
+    "coverage": "sim",
 }
 
 
@@ -607,7 +602,7 @@ def _relative_params(value: Any) -> bool:
 
 def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
     if isinstance(value, Mapping):
-        from booley.dev_support.criteria import parse_target_pair
+        from booley.criteria.templates import parse_target_pair
 
         targets = value.get("targets")
         if isinstance(targets, list):
@@ -626,11 +621,13 @@ def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
 
 
 def _targets_from_list(key: str, value: list[Any]) -> list[tuple[str, str, bool]]:
-    from booley.dev_support.criteria import parse_sim_criterion
+    from booley.criteria.templates import parse_sim_criterion
 
     targets: list[tuple[str, str, bool]] = []
     for item in value:
-        if isinstance(item, Mapping) and isinstance(item.get("target"), str):
+        if key == "coverage" and isinstance(item, Mapping) and is_str_list(item.get("targets")):
+            targets.extend((target, target, False) for target in item["targets"])
+        elif isinstance(item, Mapping) and isinstance(item.get("target"), str):
             targets.append((item["target"], item["target"], _relative_params(item)))
         elif isinstance(item, str) and "->" in item:
             try:
@@ -668,6 +665,54 @@ def criterion_targets(criteria: Any) -> tuple[CriterionTarget, ...]:
                     )
                 )
     return tuple(bindings)
+
+
+def _coverage_suite_selections(
+    criteria: Any,
+) -> Iterator[tuple[str, str, tuple[str, ...]]]:
+    if not isinstance(criteria, Mapping):
+        return
+    for section_name in ("mandatory", "optional"):
+        section = criteria.get(section_name)
+        if not isinstance(section, Mapping):
+            continue
+        records = section.get("coverage")
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            targets = record.get("targets")
+            tests = record.get("tests")
+            if not is_str_list(targets) or not is_str_list(tests):
+                continue
+            for target in targets:
+                yield f"criteria.{section_name}.coverage", target, tuple(tests)
+
+
+def _validate_coverage_suites(criteria: Any, root: Path) -> list[str]:
+    selections = tuple(_coverage_suite_selections(criteria))
+    if not selections:
+        return []
+    from booley.config.project_config import lookup_target_section, normalize_tests_toml
+
+    try:
+        tests_path = resolve_checkout_project_dir(root) / "tests.toml"
+        with tests_path.open("rb") as stream:
+            registry = normalize_tests_toml(tomllib.load(stream))
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        return [f"criteria.coverage: cannot validate registered tests: {exc}"]
+
+    errors: list[str] = []
+    for label, target, selected in selections:
+        target_registry = lookup_target_section(registry, target)
+        declared = target_registry.get("tests", []) if isinstance(target_registry, Mapping) else []
+        missing = sorted(set(selected) - set(declared))
+        if missing:
+            errors.append(
+                f"{label}: target {target!r} has unregistered tests: {', '.join(missing)}"
+            )
+    return errors
 
 
 def _new_scope_matches(scope: Any, path: str) -> bool:
@@ -727,6 +772,7 @@ def validate_criterion_targets(fields: Mapping[str, Any], project_root: Path | s
     errors: list[str] = []
     for binding in criterion_targets(fields.get("criteria")):
         errors.extend(_validate_binding(binding, fields, root, schema=schema))
+    errors.extend(_validate_coverage_suites(fields.get("criteria"), root))
     return errors
 
 

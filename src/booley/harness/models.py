@@ -98,14 +98,14 @@ class TicketContext:
     @property
     def sim_targets(self) -> list[str]:
         """Derive unique targets from structured sim criteria entries."""
-        from booley.dev_support.criteria import extract_sim_targets
+        from booley.criteria.templates import extract_sim_targets
 
         return extract_sim_targets(self.criteria)
 
     @property
     def has_synth(self) -> bool:
         """Whether criteria include any synthesis-related entries."""
-        from booley.dev_support.criteria import has_synth_criteria
+        from booley.criteria.templates import has_synth_criteria
 
         return has_synth_criteria(self.criteria)
 

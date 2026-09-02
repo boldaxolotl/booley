@@ -239,13 +239,18 @@ class TestTicketHeader:
                         "stale": True,
                         "params": {},
                     },
-                    "coverage_toggle": {
+                    "coverage_sim_small": {
                         "met": False,
                         "mandatory": True,
                         "detail": {},
                         "params": {},
                     },
-                    "coverage_fsm": {"met": False, "mandatory": True, "detail": {}, "params": {}},
+                    "coverage_sim_large": {
+                        "met": False,
+                        "mandatory": True,
+                        "detail": {},
+                        "params": {},
+                    },
                 }
             )
             await pilot.pause()
@@ -261,7 +266,7 @@ class TestTicketHeader:
             assert "press c" in content
             # No criterion names in compact view.
             assert "review_rtl" not in content
-            assert "coverage_toggle" not in content
+            assert "coverage_sim_small" not in content
 
     @pytest.mark.asyncio
     async def test_expanded_order_and_icons_for_all_statuses(self):
@@ -364,7 +369,7 @@ class TestTicketHeader:
                         "detail": {"warnings": 3},
                         "params": {},
                     },
-                    "coverage_toggle": {
+                    "coverage_sim": {
                         "met": False,
                         "mandatory": True,
                         "detail": {},

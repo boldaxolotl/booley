@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.flows.base import SubprocessResult
 from booley.flows.sim.build import (
     BuildOutcome,

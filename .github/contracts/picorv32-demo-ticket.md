@@ -37,7 +37,7 @@ target_contract:
 - **sim_pass**: `testbench.v @ sim_core @ main @ pass -> pass`, `testbench.v @ sim_core @ axi @ pass -> pass`, `testbench_wb.v @ sim_wb @ wb @ pass -> pass`
 - **review_rtl_bugs**
 - **review_tb_quality**
-- **synthesis_ok**: `json:{"targets":[{"baseline":"synth_core","candidate":"synth_core"}],"cell_count_increase_at_most":11,"critical_path_ps_increase_at_most":3}`
+- **synthesis_ok**: `json:{"targets":[{"baseline":"synth_core","candidate":"synth_core"}],"cell_count_increase_at_most":"11%","critical_path_ps_increase_at_most":"3%"}`
 
 ### Optional
 

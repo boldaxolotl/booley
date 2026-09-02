@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from booley.agent_workspace.isolation import get_category_dirs
 from booley.audit import (
     agent_schema,
     config_common,
@@ -44,7 +45,6 @@ from booley.config.guidance_links import (
 )
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import is_str_list
-from booley.dev_support.workspace_isolation import get_category_dirs
 from booley.flows import execution
 from booley.fusesoc import (
     core_projection,
@@ -92,7 +92,7 @@ from booley.harness.init_cmd import (
     skip,
     warn,
 )
-from booley.harness.init_common import note
+from booley.harness.setup.common import note
 from booley.runtime import auth_token, runtime_context
 from booley.runtime import project_image as pi
 from booley.runtime.git import _git_common_dir
@@ -108,7 +108,7 @@ from booley.targets.target import inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 if TYPE_CHECKING:
-    from booley.harness.init_git_hooks import AutocrlfSetting, LineEndingRepository
+    from booley.harness.setup.git_hooks import AutocrlfSetting, LineEndingRepository
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
 _DRY_RUN_TIMEOUT_S = 60
@@ -123,9 +123,12 @@ _DEEP_TIMEOUTS_S = {
 # that inner boundary expires.
 _SYNTH_DEEP_FINALIZE_MARGIN_S = 180
 
-# The Booley Flows the audit loop dry-runs or deep-smokes. The EDA tool comes
-# from the resolved Target; every command executes in the Session Runtime.
-_AUDITED_FLOWS = ("sim", "lint", "synth")
+# The three core Flow tables remain required project configuration. FPGA is an
+# optional axis: plain Doctor covers it when configured or selected by Target
+# metadata, while deep Doctor deliberately stops short of implementation.
+_REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
+_PLAIN_DOCTOR_FLOWS = (*_REQUIRED_FLOW_TABLES, "fpga")
+_DEEP_DOCTOR_FLOWS = _REQUIRED_FLOW_TABLES
 # --deep fail-path self-test conventions. Simulation runs its normal smoke test
 # against a project-owned bad overlay; lint uses a conventional known-bad
 # ``.core`` Target. See _run_selftest_checks (QA-4/QA-5).
@@ -1066,7 +1069,7 @@ def _validate_booley_toml(
     valid &= _render_config_audit(project_schema.audit_feedback_table(data), _pass, _warn, _fail)
     valid &= _render_config_audit(project_schema.audit_stealth_table(data), _pass, _warn, _fail)
     valid &= _render_config_audit(
-        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS), _pass, _warn, _fail
+        flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), _pass, _warn, _fail
     )
     valid &= _render_config_audit(project_schema.audit_sandbox_table(data), _pass, _warn, _fail)
     valid &= _render_config_audit(
@@ -1119,7 +1122,7 @@ def _validate_models_table(data: dict[str, Any], _pass: Check, _warn: Check, _fa
 def _validate_flow_tables(data: dict[str, Any], _warn: Check, _fail: Fail) -> bool:
     """Compatibility facade for the extracted Flow configuration audit."""
     return _render_config_audit(
-        flow_schema.audit_flow_tables(data, _AUDITED_FLOWS),
+        flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES),
         lambda _message: None,
         _warn,
         _fail,
@@ -1251,7 +1254,7 @@ def _check_worktree_prune_guard(
     ``booley init`` sets the knob; this check catches repos initialized
     before ADR 0028 (or a user resetting their git config).
     """
-    from booley.harness.init_git_hooks import (
+    from booley.harness.setup.git_hooks import (
         WORKTREE_PRUNE_KEY,
         WORKTREE_PRUNE_VALUE,
     )
@@ -1303,7 +1306,7 @@ def _check_line_endings(
     project_dir: Path | None = None,
 ) -> None:
     """Catch unsafe line endings in every Git worktree that supplies Project files."""
-    from booley.harness.init_git_hooks import (
+    from booley.harness.setup.git_hooks import (
         discover_line_ending_repositories,
         line_ending_repository_display,
     )
@@ -1329,7 +1332,7 @@ def _read_repository_line_ending_state(
     unreadable: Check,
 ) -> tuple[AutocrlfSetting, AutocrlfSetting, int] | None:
     """Read a repository's effective policy, local policy, and CRLF count."""
-    from booley.harness.init_git_hooks import (
+    from booley.harness.setup.git_hooks import (
         _count_crlf_worktree_files,
         line_ending_repository_display,
         read_autocrlf_setting,
@@ -1377,7 +1380,7 @@ def _check_repository_line_endings(
     _fail: Fail,
 ) -> None:
     """Apply Doctor's line-ending verdicts to one resolved Git worktree."""
-    from booley.harness.init_git_hooks import line_ending_repository_display
+    from booley.harness.setup.git_hooks import line_ending_repository_display
 
     identity = line_ending_repository_display(repository.role, repository.root)
     unreadable = _warning_sink(
@@ -1422,7 +1425,7 @@ def _report_line_ending_index_metadata(
     _fail: Fail,
 ) -> None:
     """Report status-only dirtiness left by an earlier in-place LF repair."""
-    from booley.harness.init_git_hooks import _tracked_status_is_phantom
+    from booley.harness.setup.git_hooks import _tracked_status_is_phantom
 
     phantom_status, comparison_error = _tracked_status_is_phantom(repository.root)
     if phantom_status is None:
@@ -2796,7 +2799,7 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-close
             _pass("Session Runtime has no active host-mounted commercial EDA request")
         return
 
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     path = devcontainer_path(project.project_root)
     try:
@@ -2976,8 +2979,8 @@ def _check_issued_license_relay(
     _fail: Fail,
 ) -> None:
     """Validate exact live relay bytes, endpoints, aliases, and hardening."""
-    from booley.eda import runtime_spec
-    from booley.eda.flexnet_docker import (
+    from booley.eda.provisioning import runtime_spec
+    from booley.eda.provisioning.licensing.flexnet_docker import (
         RelayDockerError,
         RelayProfile,
         resources_for_session,
@@ -3029,7 +3032,11 @@ def _check_mounted_vivado_runtime(  # noqa: PLR0911 - ordered fail-closed runtim
     _pass: Check, _fail: Fail
 ) -> None:
     """Prove wrapper, release mount, architecture support, and runtime identity."""
-    from booley.eda.vivado import CONTAINER_TARGET, SUPPORTED_VERSION, wrapper_sha256
+    from booley.eda.provisioning.policies.vivado import (
+        CONTAINER_TARGET,
+        SUPPORTED_VERSION,
+        wrapper_sha256,
+    )
 
     wrapper = Path("/usr/local/bin/vivado")
     executable = Path(CONTAINER_TARGET) / "Vivado" / "bin" / "vivado"
@@ -3650,7 +3657,7 @@ def _check_issued_image_keepers(
         _pass("no retained Session Runtime image keepers")
         return
 
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     mine = runtime_spec.keeper_image(project.project_root)
     others = [tag for tag in tags if tag != mine]
@@ -3787,9 +3794,11 @@ def _check_mcp_tool_payload(
 
 def _required_mcp_tools(project: ProjectAudit) -> set[str]:
     required = set(_BASE_REQUIRED_MCP_TOOLS)
-    for flow_name in _AUDITED_FLOWS:
+    for flow_name in _REQUIRED_FLOW_TABLES:
         if _flow_enabled(project, flow_name):
             required.add(flow_name)
+    if _fpga_doctor_applicable(project) and _flow_enabled(project, "fpga"):
+        required.add("fpga")
     return required
 
 
@@ -4078,9 +4087,12 @@ def _run_flow_audit(
 ) -> None:
     """Validate enabled Flows and run Session Runtime dry-run smoke checks."""
     _check_design_size(project, _pass, _note)
-    for flow_name in _AUDITED_FLOWS:
+    for flow_name in _PLAIN_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} disabled in booley.toml")
+            continue
+        if flow_name == "fpga" and not _fpga_doctor_applicable(project):
+            _skip("fpga not applicable - no [flows.fpga] table or marked Doctor Target")
             continue
         _pass(f"{flow_name} executes in the Session Runtime")
         # Pre-Run Commands (ADR 0039): a true observation about healthy config —
@@ -4136,7 +4148,7 @@ def _check_flow_runtime_reality(
     _fail: Fail,
 ) -> None:
     """Probe every selected Target's EDA binary in the Session Runtime."""
-    for binary in _runtime_probe_binaries(project, targets):
+    for binary in _runtime_probe_binaries(project, targets, flow_name=flow_name):
         _check_session_binary(
             flow_name,
             binary,
@@ -4156,8 +4168,15 @@ _EDA_TOOL_BINARIES = {
 }
 
 
-def _runtime_probe_binaries(project: ProjectAudit, targets: list[str]) -> list[str]:
+def _runtime_probe_binaries(
+    project: ProjectAudit,
+    targets: list[str],
+    *,
+    flow_name: str | None = None,
+) -> list[str]:
     """Return the distinct runtime executables required by selected Targets."""
+    if flow_name == "fpga":
+        return ["vivado"]
     binaries: list[str] = []
     for target in targets:
         try:
@@ -6045,7 +6064,7 @@ def _run_deep_checks(
     _fail: Fail,
 ) -> None:
     """Run the real EDA smoke matrix selected by ``.core`` metadata."""
-    for flow_name in _AUDITED_FLOWS:
+    for flow_name in _DEEP_DOCTOR_FLOWS:
         if not _flow_enabled(project, flow_name):
             _skip(f"{flow_name} deep check skipped - disabled")
             continue
@@ -6074,23 +6093,20 @@ def _run_deep_checks(
 def _run_fpga_impl_deep_notice(project: ProjectAudit, _skip: Check) -> None:
     """Disclose that ``fpga_impl`` gets no deep smoke (F-15).
 
-    fpga_impl is deliberately excluded from :data:`_AUDITED_FLOWS` — a full FPGA
+    FPGA is deliberately excluded from :data:`_DEEP_DOCTOR_FLOWS` — a full FPGA
     implementation is far too slow for ``--deep`` — but it was *silently*
     absent: ``--deep`` produced no line for it at all. Nothing ever smokes it
     end-to-end, and nothing said so. Emit an
     explicit SKIP naming the manual command, so the gap is loud, not invisible.
     """
-    flows = project.booley_toml.get("flows", {})
-    section = flows.get("fpga") if isinstance(flows, dict) else None
-    if not isinstance(section, dict):
-        return
     if not _flow_enabled(project, "fpga"):
         return
-    _skip(
-        "fpga deep smoke skipped - a full FPGA implementation is too slow "
-        "for --deep (binary presence is probed separately); smoke "
-        "it manually end-to-end: booley flow fpga --target <fpga_target>"
-    )
+    for target in _doctor_targets(project, "fpga"):
+        _skip(
+            f"fpga deep smoke [{target}] skipped - a full FPGA implementation is too "
+            "slow for --deep; smoke it manually end-to-end: "
+            f"booley flow fpga --target {target}"
+        )
 
 
 @dataclass(frozen=True)
@@ -6363,6 +6379,13 @@ def _run_one_selftest(
 def _flow_enabled(project: ProjectAudit, flow_name: str) -> bool:
     """Return *flow_name*'s enablement from parsed booley.toml."""
     return execution.flow_enabled_from_config(flow_name, project.booley_toml)
+
+
+def _fpga_doctor_applicable(project: ProjectAudit) -> bool:
+    """Whether this project asks plain Doctor to cover the optional FPGA axis."""
+    flows = project.booley_toml.get("flows")
+    has_flow_table = isinstance(flows, dict) and "fpga" in flows
+    return has_flow_table or bool(_doctor_targets(project, "fpga"))
 
 
 def _deep_timeout_s(project: ProjectAudit, flow_name: str) -> int:

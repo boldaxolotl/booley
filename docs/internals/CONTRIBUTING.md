@@ -115,12 +115,15 @@ question for any EDA tool is: does Edalize already have a backend for it?**
 - **Yes** (VCS, Genus, DC, Questa, … many are already in Edalize) → you get
   much of the invocation layer. Point the EDA-tool selector at it: a `.core` Target's
   `default_tool` field (or a per-flow `flow_options.tool`) chooses which EDA tool
-  builds that Target. Then wire it through the built-in Booley Flow path. There
-  is one builder (Booley's FuseSoC/Edalize flow) and no `backend` or execution-
-  location knob: every Flow executes inside the Session Runtime. For commercial
-  EDA, an Edalize backend is necessary but not sufficient—the contribution also
-  needs a built-in installation, licensing, security, Doctor, and end-to-end
-  validation policy comparable to Vivado's. See
+  normally builds that Target. FPGA implementation is the fixed-backend exception:
+  the Target's `fpga` name axis selects the Flow, its EDA-selection field controls
+  FuseSoC resolution inputs, and Booley always rebuilds those inputs into a Vivado
+  EDAM. Then wire the tool through the built-in Booley Flow path. There is one
+  builder (Booley's FuseSoC/Edalize flow) and no `backend` or execution-location
+  knob: every Flow executes inside the Session Runtime. For commercial EDA, an
+  Edalize backend is necessary but not sufficient—the contribution also needs a
+  built-in installation, licensing, security, Doctor, and end-to-end validation
+  policy comparable to Vivado's. See
   [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 - **No** → contribute the backend upstream to Edalize, then integrate that
   flow node with the same Session Runtime and commercial-policy requirements.
@@ -134,11 +137,12 @@ raw EDA-tool output into a **normalized structured verdict** (`pass` / `fail` /
 logs. That parsing lives in Booley and has to be written per EDA tool:
 
 - **Simulators** parse raw output into the structured sim result (shared
-  helpers in `sim_result.py`). See the existing parsers in
-  [src/booley/sim/](../../src/booley/sim/): `xcelium_run.py`, `vcs_run.py`,
-  `verilator_run.py`, `iverilog_run.py`. Xcelium and VCS parsing code is
-  internal incubation material only: those EDA tools are not selectable or
-  supported Booley simulators. A new simulator parser can start as a sibling
+  helpers in `result.py`). See the existing adapters in
+  [src/booley/flows/sim/backends/](../../src/booley/flows/sim/backends/):
+  `cocotb.py`, `icarus.py`, and `verilator.py`. Xcelium and VCS parsing code is
+  isolated under `backends/experimental/` as internal incubation material only:
+  those EDA tools are not selectable or
+  supported Booley simulators. A new simulator adapter can start as a sibling
   module, but it does not become public eligibility until the complete runtime
   policy and real licensed end-to-end evidence land with it.
 - **Synthesis / timing / impl** parse vendor report files into QoR

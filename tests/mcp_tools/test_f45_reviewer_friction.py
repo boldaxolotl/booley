@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.specialists.reviewer import ReviewerSpecialist
 

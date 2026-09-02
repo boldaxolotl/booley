@@ -138,7 +138,7 @@ def test_contract_with_bindings_round_trips_as_nested_frontmatter(tmp_path: Path
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -458,7 +458,7 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -481,6 +481,54 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
     assert contract.bindings[0].candidate_selector == "synth_after"
 
 
+def test_coverage_criteria_bind_every_authored_target() -> None:
+    criteria = {
+        "mandatory": {
+            "coverage": [
+                {
+                    "targets": ["sim_small", "sim_large"],
+                    "metrics": {"line": {"min_pct": 90}},
+                    "tests": "all",
+                }
+            ]
+        }
+    }
+
+    bindings = criterion_targets(criteria)
+
+    assert [(binding.key, binding.target, binding.flow) for binding in bindings] == [
+        ("coverage", "sim_small", "sim"),
+        ("coverage", "sim_large", "sim"),
+    ]
+
+
+def test_coverage_suite_rejects_unregistered_test_names(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    (project / ".booley_project" / "tests.toml").write_text(
+        "[sim_toy]\ntests = ['smoke', 'reset']\n",
+        encoding="utf-8",
+    )
+    fields = {
+        "criteria": {
+            "mandatory": {
+                "coverage": [
+                    {
+                        "targets": ["sim_toy"],
+                        "metrics": {"line": {"min_pct": 90}},
+                        "tests": ["smkoe"],
+                    }
+                ]
+            }
+        }
+    }
+
+    errors = validate_criterion_targets(fields, project)
+
+    assert errors == [
+        "criteria.mandatory.coverage: target 'sim_toy' has unregistered tests: smkoe"
+    ]
+
+
 def test_materialized_contract_validates_directed_targets_in_sealed_view(
     tmp_path: Path,
 ) -> None:
@@ -489,7 +537,7 @@ def test_materialized_contract_validates_directed_targets_in_sealed_view(
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -584,7 +632,7 @@ def test_directed_target_validation_reports_missing_role(
         "mandatory": {
             "synthesis_ok": {
                 "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                "area_reduce_at_least": 10,
+                "area_reduce_at_least": "10%",
             }
         }
     }
@@ -646,7 +694,7 @@ def test_legacy_contract_schema_is_rejected() -> None:
             "mandatory": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                    "area_reduce_at_least": 10,
+                    "area_reduce_at_least": "10%",
                 }
             }
         },
@@ -815,6 +863,39 @@ def test_optional_and_mandatory_targets_use_same_flow_rules(tmp_path: Path) -> N
     assert any("cannot satisfy synthesis_ok" in error for error in errors)
 
 
+def test_fpga_axis_target_satisfies_contract_with_resolution_tool(tmp_path: Path) -> None:
+    (tmp_path / "rtl").mkdir()
+    (tmp_path / "rtl" / "core.sv").write_text("module core; endmodule\n")
+    (tmp_path / "fpga.core").write_text(
+        textwrap.dedent(
+            """\
+            CAPI=2:
+            name: acme:ip:core:1.0
+            filesets:
+              rtl:
+                files: [rtl/core.sv]
+                file_type: systemVerilogSource
+            targets:
+              fpga_core:
+                flow: generic
+                flow_options: {tool: yosys, part: xc7a35tcpg236-1}
+                filesets: [rtl]
+                toplevel: core
+            """
+        )
+    )
+    fields = {
+        "scope": [],
+        "criteria": {"mandatory": {"fpga_impl_ok": {"targets": ["fpga_core"]}}},
+    }
+
+    assert validate_criterion_targets(fields, tmp_path) == []
+
+    fields["criteria"] = {"mandatory": {"synthesis_ok": {"targets": ["fpga_core"]}}}
+    errors = validate_criterion_targets(fields, tmp_path)
+    assert any("cannot satisfy synthesis_ok" in error for error in errors)
+
+
 def test_future_nonrelative_target_accepts_only_scope_new_sources(tmp_path: Path) -> None:
     project = _project(tmp_path)
     fields = {
@@ -887,7 +968,7 @@ def test_future_relative_target_requires_executable_baseline(tmp_path: Path) -> 
             "optional": {
                 "synthesis_ok": {
                     "targets": ["synth_future"],
-                    "area_um2_increase_at_most": 5,
+                    "area_um2_increase_at_most": "5%",
                 }
             }
         },
@@ -908,7 +989,7 @@ def test_paired_relative_candidate_accepts_scope_new_source(tmp_path: Path) -> N
             "optional": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_future"}],
-                    "area_reduce_at_least": 5,
+                    "area_reduce_at_least": "5%",
                 }
             }
         },
@@ -925,7 +1006,7 @@ def test_paired_relative_candidate_rejects_undeclared_missing_source(tmp_path: P
             "optional": {
                 "synthesis_ok": {
                     "targets": [{"baseline": "synth_before", "candidate": "synth_future"}],
-                    "area_reduce_at_least": 5,
+                    "area_reduce_at_least": "5%",
                 }
             }
         },

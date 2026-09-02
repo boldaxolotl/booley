@@ -76,7 +76,7 @@ from booley.harness.image_lifecycle import (
 from booley.harness.image_lifecycle import Intent as ImageLifecycleIntent
 from booley.harness.image_lifecycle import Status as ImageLifecycleStatus
 from booley.harness.image_lifecycle import reconcile as reconcile_images
-from booley.harness.init_common import (
+from booley.harness.setup.common import (
     InitContext,
     StepResult,
     WriteOutcome,
@@ -89,7 +89,7 @@ from booley.harness.init_common import (
     skip,
     warn,
 )
-from booley.harness.init_docker_image import (
+from booley.harness.setup.docker_image import (
     DOCKER_IMAGE,
     FLAVOR_IMAGES,
     GHCR_IMAGE,
@@ -110,7 +110,7 @@ from booley.harness.init_docker_image import (
     ensure_flavor_image,
     source_fingerprint_mismatch,
 )
-from booley.harness.init_git_hooks import (
+from booley.harness.setup.git_hooks import (
     _PROJECT_HOOK_SCRIPTS,
     _build_commit_msg_hook_body,
     _step_git_hooks,
@@ -118,9 +118,10 @@ from booley.harness.init_git_hooks import (
     _step_project_git_hooks,
     _step_worktree_prune_guard,
 )
-from booley.harness.init_plan import InitPlan, InitPreconditionError
-from booley.harness.init_scaffold import step_scaffold
-from booley.harness.init_skills import _deploy_skills
+from booley.harness.setup.plan import InitPlan, InitPreconditionError
+from booley.harness.setup.scaffold import step_scaffold
+from booley.harness.setup.skills import _deploy_skills
+from booley.projects.inventory import ProjectInventoryError, remember_project
 from booley.runtime import auth_token
 from booley.runtime import project_image as pi
 from booley.runtime.git import add_git_excludes
@@ -147,9 +148,9 @@ BOARD_STATES = REQUIRED_BOARD_DIRS
 MIN_PY = (3, 11)
 
 # Output helpers (info/ok/skip/warn/err/banner), StepResult and InitContext now
-# live in booley.harness.init_common and are re-exported at the top of this
+# live in booley.harness.setup.common and are re-exported at the top of this
 # module. DOCKER_IMAGE / GHCR_IMAGE / LABEL_FINGERPRINT moved to
-# booley.harness.init_docker_image (likewise re-exported).
+# booley.harness.setup.docker_image (likewise re-exported).
 
 
 # ---------------------------------------------------------------------------
@@ -1159,7 +1160,7 @@ class SessionSpecSnapshot:
 
 def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
     """Capture the spec, issuance stamp, and prior immutable image identity."""
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     spec_path = dc.devcontainer_path(project_root)
     stamp_path = runtime_spec.stamp_path(project_root)
@@ -1195,7 +1196,7 @@ def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None
 
 def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> None:
     """Restore the prior host issuance after Session replacement rolled back."""
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     if snapshot.image_id is not None:
         result = subprocess.run(
@@ -1441,7 +1442,10 @@ def _devcontainer_is_tracked(project_root: Path) -> bool:
 
 def _cleanup_unlicensed_relay(project_root: Path) -> bool:
     """Remove deterministic relay leftovers when a reseed no longer has a profile."""
-    from booley.eda.flexnet_docker import remove_relay, resources_for_session
+    from booley.eda.provisioning.licensing.flexnet_docker import (
+        remove_relay,
+        resources_for_session,
+    )
 
     resources = resources_for_session(str(project_root.resolve()))
     exists = (
@@ -1489,11 +1493,11 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
         return
 
     app = agent_app or _select_interactive_app(ctx.project_root)
-    from booley.eda import authority as eda_authority
-    from booley.eda import runtime_spec as eda_runtime_spec
     from booley.eda.config import EdaConfigError
-    from booley.eda.flexnet_docker import RelayDockerError
-    from booley.eda.vivado import CONTAINER_TARGET
+    from booley.eda.provisioning import authority as eda_authority
+    from booley.eda.provisioning import runtime_spec as eda_runtime_spec
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
+    from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
 
     try:
         project_data_source = eda_runtime_spec.authorized_project_data_source(ctx.project_root)
@@ -1605,7 +1609,7 @@ def _step_interactive(  # noqa: PLR0911,PLR0912 - ordered setup boundary
 
     relay_image_built = False
     if license_profile is not None:
-        from booley.eda.flexnet_docker import ensure_relay_image
+        from booley.eda.provisioning.licensing.flexnet_docker import ensure_relay_image
 
         try:
             relay_image_built = ensure_relay_image(force=ctx.force)
@@ -1889,6 +1893,25 @@ def _step_advisories(ctx: InitContext) -> None:
     info("Optional:")
     info("  * Notifications: set [notifications] ntfy_topic in booley.toml")
     ctx.record("advisories", "ok", detail)
+
+
+def _step_project_inventory(ctx: InitContext) -> None:
+    """Remember a Project only after its ordinary initialization succeeded."""
+    if ctx.check_only or any(result.status == "err" for result in ctx.results):
+        return
+    ctx.step_banner("Project Inventory")
+    try:
+        project_root = remember_project(ctx.project_root)
+    except ProjectInventoryError as exc:
+        err(f"could not remember Project root: {exc}")
+        ctx.record(
+            "project_inventory",
+            "err",
+            f"retry with `booley projects discover {ctx.project_root}`",
+        )
+        return
+    ok(f"remembered Project root {project_root}")
+    ctx.record("project_inventory", "ok", str(project_root))
 
 
 # ---------------------------------------------------------------------------
@@ -2203,6 +2226,7 @@ def _run_project_init_steps(
         agent_app=selection.provider,
         session_image_id=session_image_id,
     )
+    _step_project_inventory(ctx)
     _step_advisories(ctx)
 
     return _print_summary(ctx)

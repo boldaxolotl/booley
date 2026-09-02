@@ -103,9 +103,14 @@ targets:
 ```
 
 Doctor dry-runs and deep-smokes every compatible Target whose `doctor` list
-contains that Flow. Omit `booley.doctor` to keep a Target available only for
-explicit calls. The allowed Doctor names are `sim`, `lint`, `synth`, and
-FPGA remains an explicit-only implementation Flow. The former
+contains `sim`, `lint`, or `synth`. For `fpga`, plain Doctor performs the same
+Target setup and source inspection as `fpga --dry-run` and probes `vivado` in
+the Session Runtime; deep Doctor reports the full implementation as skipped and
+prints the target-specific manual command. Omit `booley.doctor` to keep a Target
+available only for explicit calls. The allowed Doctor names are `sim`, `lint`,
+`synth`, and `fpga`. A `[flows.fpga]` table makes that optional axis applicable,
+so an enabled table without a marked compatible Target is a Doctor failure;
+`enabled = false` is the explicit opt-out. The former
 `target`, `default_target`, and `calibration_target` Flow keys are retired.
 
 ### Commercial EDA provisioning
@@ -124,6 +129,18 @@ Registration before a runtime can be created. That Grant is the sole source of
 the installation name and host path; Project configuration cannot select
 either. The host administrator manages registrations and grants using
 `booley eda installation register` and `booley eda grant add`.
+
+Successful ordinary `booley init` runs remember their canonical Project root
+in the host-owned Project Inventory. `booley projects` joins those roots with
+their Grants and reports each root as `present`, `missing`, or `uninitialized`.
+Use `booley projects discover <root>...` to import existing initialized
+Projects; discovery scans only the roots named on the command line and does not
+follow directory symlinks. `booley projects forget <project>` removes an
+obsolete remembered root only after its live Grants have been revoked.
+
+EDA administration prints human-readable confirmations by default. Add
+`--json` to a public leaf operation when a script needs the stable structured
+record.
 
 License Profiles are host-owned and never appear in Project configuration. A
 licensed runtime receives only a fixed FlexNet relay pointer; it cannot choose
@@ -367,6 +384,14 @@ the host.
 `[flows.fpga]` contains execution policy. Build inputs and target selection
 belong to the invocation and `.core` Target: put `part` and `out_of_context`
 under its `flow_options`, and XDC constraints in a `file_type: xdc` fileset.
+
+Name Booley-authored implementation Targets `fpga` or `fpga_<subject>`; that
+axis declares that the FPGA Flow can drive them. `flow_options.tool` still
+controls FuseSoC resolution, including `tool_<name>` conditional files, but it
+does not choose the implementation backend: the FPGA Flow always builds its
+own Vivado EDAM. Use `tool: vivado` normally; another runtime-available tool is
+valid when a project deliberately needs its resolution conditions. Unprefixed
+vendored Targets fall back to `tool: vivado` because their names are immutable.
 
 ```toml
 [flows.fpga]

@@ -9,12 +9,12 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.dev_support.criteria import cycle_count_criterion_key
-from booley.dev_support.development_state import (
+from booley.criteria.state import (
     SOURCE_FINGERPRINT_DETAIL_KEY,
     DevelopmentState,
     compute_source_fingerprint,
 )
+from booley.criteria.templates import cycle_count_criterion_key
 from booley.ticket_board.criteria_acceptance import (
     CriteriaVerdict,
     build_criteria_summary_lines,
@@ -87,7 +87,7 @@ class TestCheckCriteriaAcceptance:
         # Write a dummy file so exists() check passes
         state_path.write_text("{}", encoding="utf-8")
 
-        with patch("booley.dev_support.development_state.DevelopmentState") as mock_cls:
+        with patch("booley.criteria.state.DevelopmentState") as mock_cls:
             mock_cls.load.return_value = fake_state
             return check_criteria_acceptance(state_path)
 
@@ -529,9 +529,9 @@ class TestCheckCriteriaAcceptance:
         state = DevelopmentState.load(state_path)
         state.slug = "removed-target"
         state.work_dir = str(work_dir)
-        state.init_criteria({"coverage_toggle_sim": True, "_report_submitted": True})
+        state.init_criteria({"coverage_sim": True, "_report_submitted": True})
         state.set_criterion(
-            "coverage_toggle_sim",
+            "coverage_sim",
             True,
             detail={
                 SOURCE_FINGERPRINT_DETAIL_KEY: {
@@ -548,9 +548,9 @@ class TestCheckCriteriaAcceptance:
         verdict = check_criteria_acceptance(state_path, work_dir=work_dir)
 
         assert verdict.disposition == "failed"
-        assert verdict.unmet_mandatory == ["coverage_toggle_sim"]
+        assert verdict.unmet_mandatory == ["coverage_sim"]
         state = DevelopmentState.load(state_path)
-        entry = state.criteria["coverage_toggle_sim"]
+        entry = state.criteria["coverage_sim"]
         assert entry.stale is True
         assert "can no longer be resolved" in entry.detail["stale_reason"]
         assert entry.detail["stale_source_categories"] == ["campaign", "rtl", "tb"]
@@ -795,7 +795,7 @@ class TestBuildCriteriaSummaryLines:
         state_path = tmp_path / "booley_state.json"
         state_path.write_text("{}", encoding="utf-8")
         state = _FakeState(criteria=criteria)
-        with patch("booley.dev_support.development_state.DevelopmentState") as mock_cls:
+        with patch("booley.criteria.state.DevelopmentState") as mock_cls:
             mock_cls.load.return_value = state
             lines, _ = build_criteria_summary_lines(state_path)
         return lines
@@ -855,37 +855,31 @@ class TestBuildCriteriaSummaryLines:
         raw = self._strip(lines[0])
         assert raw.startswith("↻ ")
 
-    def test_coverage_group_collapses_when_all_pending(self, tmp_path: Path):
+    def test_target_bound_coverage_criteria_remain_independent(self, tmp_path: Path):
         lines = self._build(
             tmp_path,
             {
-                "coverage_toggle": _FakeCriterion(met=False, mandatory=True),
-                "coverage_branch": _FakeCriterion(met=False, mandatory=True),
-                "coverage_fsm": _FakeCriterion(met=False, mandatory=True),
+                "coverage_sim_small": _FakeCriterion(met=False, mandatory=True),
+                "coverage_sim_large": _FakeCriterion(met=False, mandatory=True),
             },
         )
-        assert len(lines) == 1
-        raw = self._strip(lines[0])
-        assert "coverage" in raw
-        assert "not yet run" in raw
+        raw = [self._strip(line) for line in lines if line]
+        assert any("coverage_sim_small" in line for line in raw)
+        assert any("coverage_sim_large" in line for line in raw)
 
-    def test_coverage_group_expands_when_any_evaluated(self, tmp_path: Path):
+    def test_coverage_campaign_status_is_rendered(self, tmp_path: Path):
         lines = self._build(
             tmp_path,
             {
-                "coverage_toggle": _FakeCriterion(
+                "coverage_sim": _FakeCriterion(
                     met=False,
                     mandatory=True,
-                    detail={"toggle": {"pct": 42}},
-                    params={"min_pct": 80},
+                    detail={"status": "fail"},
                 ),
-                "coverage_branch": _FakeCriterion(met=False, mandatory=True),
-                "coverage_fsm": _FakeCriterion(met=True, mandatory=True),
             },
         )
-        raw_all = [self._strip(ln) for ln in lines if ln]
-        names = [r for r in raw_all if "coverage_" in r]
-        assert len(names) == 3
+        raw = [self._strip(line) for line in lines if line]
+        assert any("coverage_sim" in line and "fail" in line for line in raw)
 
     def test_met_after_not_met_with_separator(self, tmp_path: Path):
         lines = self._build(

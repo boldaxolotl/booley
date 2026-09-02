@@ -73,8 +73,8 @@ INITIAL_CRITERIA = {
         "params": {},
     },
     "synthesis_ok": {"met": False, "mandatory": True, "detail": {}, "params": {}},
-    "coverage_line": {"met": False, "mandatory": False, "detail": {}, "params": {}},
-    "coverage_toggle": {"met": False, "mandatory": False, "detail": {}, "params": {}},
+    "coverage_sim_small": {"met": False, "mandatory": False, "detail": {}, "params": {}},
+    "coverage_sim_large": {"met": False, "mandatory": False, "detail": {}, "params": {}},
     "rtl_plan_done": {"met": True, "mandatory": True, "detail": {}, "params": {}},
     "_internal": {"met": False, "mandatory": True, "detail": {}, "params": {}},
 }

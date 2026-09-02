@@ -42,7 +42,7 @@ def test_platform_lock_apis_stay_in_runtime_lock_module_or_fifo_domain() -> None
     allowed = {
         _SOURCE_ROOT / "runtime" / "file_lock.py",
         # FIFO flag manipulation is not a file-lock policy.
-        _SOURCE_ROOT / "sim" / "bwave_fifo.py",
+        _SOURCE_ROOT / "flows" / "sim" / "bwave_fifo.py",
     }
     offenders = []
     for path in _SOURCE_ROOT.rglob("*.py"):

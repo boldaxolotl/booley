@@ -17,8 +17,9 @@ from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.librarymanager import Library, LibraryManager
 from fusesoc.vlnv import Vlnv
 
-from booley.fusesoc import core_projection, fusesoc_registry
+from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
+from booley.targets import target_naming
 
 TARGET_AWARE_FLOWS: tuple[str, ...] = ("synth", "fpga", "lint", "sim")
 
@@ -27,7 +28,12 @@ _LINT_EDA_TOOLS = frozenset({"verilator", "verible"})
 
 
 def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
-    """Return whether a Booley Flow can drive a declared Target."""
+    """Return whether a Booley Flow can drive a declared Target.
+
+    FPGA intent comes from the Target axis when present because that Flow
+    rebuilds the resolved inputs into a Vivado EDAM. The declared EDA tool
+    remains a FuseSoC resolution input, not the FPGA execution backend.
+    """
     from booley.targets.flow_names import canonical
 
     flow = canonical(flow)
@@ -36,13 +42,15 @@ def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
             f"{flow!r} is not a target-aware Booley Flow; "
             f"choose one of: {', '.join(TARGET_AWARE_FLOWS)}"
         )
+    if target_naming.fpga_intent(ref.name, ref.eda_tool):
+        return flow == "fpga"
     if flow == "sim":
         return ref.eda_tool in _SIM_EDA_TOOLS and (ref.flow == "sim" or ref.flow is None)
     if flow == "lint":
         return ref.flow == "lint" or (ref.flow is None and ref.eda_tool in _LINT_EDA_TOOLS)
     if flow == "synth":
         return ref.eda_tool == "yosys"
-    return ref.eda_tool == "vivado"
+    return False
 
 
 @dataclass(frozen=True)
@@ -174,19 +182,22 @@ def _inspection_flags(handle: TargetHandle) -> dict[str, Any]:
 
 
 def _inspection_cores(root: Path, handle: TargetHandle, flags: Mapping[str, Any]) -> list[Any]:
-    library_root = root
-    selected_core = handle.core_file
-    if core_projection.native_cores_ignored(root):
-        core_projection.reconcile_isolated_registry(root)
-        library_root = core_projection.isolated_registry_root(root)
-        selected_core = core_projection.isolated_core_path(root, handle.core_file)
+    plan = fusesoc_registry.prepare_core_library_plan(root)
+    selected_core = plan.operational_core(handle.core_file)
     manager = CoreManager(_InspectionConfig(), library_manager=LibraryManager(""))
-    manager.add_library(Library("project", str(library_root)), ignored_dirs=set())
+    for index, (library_root, ignored_dirs) in enumerate(
+        zip(plan.roots, plan.ignored_dirs, strict=True)
+    ):
+        manager.add_library(
+            Library(f"project-{index}", str(library_root)),
+            ignored_dirs=set(ignored_dirs),
+        )
     top = manager.get_core(Vlnv(handle.vlnv))
-    if Path(top.core_file).resolve() != selected_core.resolve():
+    actual_core = Path(top.core_file).resolve()
+    if actual_core != selected_core.resolve():
         raise fusesoc_registry.FuseSocError(
-            f"FuseSoC selected {top.core_file} for {handle.vlnv}, "
-            f"but Booley selected {selected_core}"
+            f"FuseSoC selected {actual_core} for {handle.vlnv}; "
+            f"Booley authored {handle.core_file} and expected operational view {selected_core}"
         )
     return manager.get_depends(top.name, dict(flags))
 

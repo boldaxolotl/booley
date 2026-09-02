@@ -57,8 +57,10 @@ Flows, Specialists, Criteria, Targets, skills, artifacts, and runtime commands.
 Print the whole sheet or use `booley cheat --list` and combine section flags,
 such as `booley cheat --board` or `booley cheat --commands --project`.
 
-`booley doctor --deep` goes further and runs real smoke sims/lints/synthesis, but
-that one needs the Session Runtime; both it and the full command set are in the
+Plain Doctor also setup-checks marked FPGA Targets and probes Vivado.
+`booley doctor --deep` goes further and runs real smoke sims/lints/synthesis,
+while reporting FPGA implementation as a target-specific manual check; it needs
+the Session Runtime. Both it and the full command set are in the
 [CLI reference](#cli-reference) below.
 
 Credential-free release automation can use
@@ -586,6 +588,8 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 | `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
 | `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
 
+Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
+
 Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
 
 For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
@@ -640,7 +644,7 @@ Use a list of mappings. Every item names one `target` and registered `test`, plu
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.
+Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}]`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 
@@ -866,14 +870,26 @@ setup cost on our project" is as useful as praise, and a lot rarer.
 
 ## CLI reference
 
-The whole `booley` command set. A few are general (`cheat`, `doctor`, `targets`
-from the [orientation block](#first-verify-your-setup) above); the rest drive
-Ticket Mode. Run these from a terminal **inside the Session Runtime**: open the repo in VS
-Code and accept **Reopen in Container** first, or, with no VS Code, enter it
-headlessly with `booley session enter` (see
-[Entering the Session Runtime without VS Code](#entering-the-session-runtime-without-vs-code)). (`booley
-cheat` works anywhere; `booley doctor` works on either side; `booley bootstrap`,
-`booley init`, and `booley session` are host-side.)
+`booley --help` labels every top-level command as `[host]`,
+`[Session Runtime]`, `[either]`, or `[mixed]`. Session Runtime commands run after
+VS Code accepts **Reopen in Container**, or through `booley session enter` in a
+headless environment. Mixed commands enforce location at their nested
+operation.
+
+The host-owned Project Inventory records roots initialized by successful
+`booley init` runs. Existing Projects can be imported with an explicit,
+bounded discovery scan:
+
+```bash
+booley projects                         # roots, status, and grants
+booley projects discover ~/workplace    # scan only this directory tree
+booley projects --json                  # stable machine-readable listing
+booley projects forget /old/project     # only after all grants are revoked
+```
+
+Missing and uninitialized roots remain visible so their host administration can
+be cleaned up. Use the exact absolute path printed by `booley projects` to
+revoke a grant even after its directory has been deleted.
 
 ```bash
 # Execute a single ticket end-to-end
@@ -900,7 +916,8 @@ booley cheat --commands --project
 # Run diagnostics
 booley doctor
 
-# Run real smoke checks against the first applicable sim/lint/synthesis Targets
+# Run real smoke checks against marked sim/lint/synthesis Targets
+# (marked FPGA Targets get explicit manual implementation commands)
 booley doctor --deep
 
 # Release smoke only: omit credentials and the live Developer probe

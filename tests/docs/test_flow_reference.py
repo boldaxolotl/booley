@@ -10,8 +10,8 @@ from typing import Any, TypeVar
 import pytest
 
 from booley.flows.base import BooleyFlow
+from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics
 from booley.flows.fpga.flow import FpgaImplFlow
-from booley.flows.fpga.metrics import FpgaMetrics
 from booley.flows.lint.flow import LintConfigResult, LintFlow, LintWarning
 from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.flow import (

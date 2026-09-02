@@ -5,22 +5,35 @@
 Every public top-level command; run `booley <command> --help` for its options
 and nested actions.
 
+#### Host-only commands
+
 | Command | Purpose |
 |---------|---------|
 | `booley bootstrap` | Check or reconcile reusable host resources |
 | `booley init` | Initialize, scaffold, or reseed project integration |
-| `booley doctor` | Check project, runtime, and toolchain health |
-| `booley upgrade` | Inspect or acknowledge a pending Booley release review |
+| `booley projects` | List remembered Project roots and their Grants |
 | `booley auth` | Configure or inspect agent credentials |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley session` | Start, enter, inspect, refresh, or stop the Session Runtime |
+
+#### Session Runtime-only commands
+
+| Command | Purpose |
+|---------|---------|
 | `booley` | Open the Project's configured Claude Code or Codex CLI |
 | `booley chat` | Explicit spelling of the default `booley` command |
-| `booley targets` | List or filter Targets and show resolved details |
-| `booley flow` | List or directly run deterministic Booley Flows |
 | `booley run` | Execute queued or named tickets |
 | `booley board` | Create, inspect, move, reset, or archive tickets |
-| `booley cheat` | Show this reference, whole or by section |
+
+#### Either-location and mixed commands
+
+| Command | Location | Purpose |
+|---------|----------|---------|
+| `booley doctor` | either | Check project, runtime, and toolchain health |
+| `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
+| `booley targets` | either | List or filter Targets and show resolved details |
+| `booley flow` | mixed | List or directly run deterministic Booley Flows |
+| `booley cheat` | either | Show this reference, whole or by section |
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
 `--force` refreshes Booley-managed resources while preserving caches and
@@ -184,6 +197,8 @@ Per-target `synthesis_ok` / `fpga_impl_ok` criteria accept optional threshold **
 | `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
 | `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
 
+Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
+
 Syntax (ticket criteria): `synthesis_ok: {targets: [<target>], cell_count_max: 500, fmax_mhz_min: 400}`.
 
 For a relative threshold, a Target entry may instead be a directed frozen pair: `{baseline: <baseline-target>, candidate: <candidate-target>}`. A plain Target name is backward-compatible shorthand for using that Target on both sides.
@@ -238,7 +253,7 @@ Use a list of mappings. Every item names one `target` and registered `test`, plu
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5}]`.
+Syntax (ticket criteria): `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}]`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, legacy unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 
@@ -270,6 +285,8 @@ Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400, clk_2x.cr
 `--json` composes with all of the above; agents get the same listing via the `booley_targets` MCP tool.
 
 Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
+
+For FPGA Targets the `fpga` axis, not `flow_options.tool`, determines drivability. The declared tool still controls FuseSoC resolution conditions; the FPGA Flow always rebuilds those resolved inputs into a Vivado EDAM. Unprefixed vendored Targets retain a `tool: vivado` fallback.
 
 ### Project Files
 

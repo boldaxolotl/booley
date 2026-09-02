@@ -406,7 +406,7 @@ class TestInitInteractive:
     @pytest.fixture(autouse=True)
     def _pin_runtime_image(self, monkeypatch):
         """Unit tests pin deterministically without requiring a local image."""
-        from booley.eda import runtime_spec
+        from booley.eda.provisioning import runtime_spec
 
         def pin_image(spec):
             spec["image"] = "sha256:" + "a" * 64

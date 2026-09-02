@@ -10,6 +10,7 @@ readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:416f0db2a2b56194
 readonly ALPINE_CONTROL="python:3.13.15-alpine3.24@sha256:540c7d91f98ff6880174c40e99067bf5941eb54d818a7a5e094d188b196a934d"
 readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc"
 readonly DOCKER_CLI="docker:29.7.2-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d5371eb8a497fe"
+readonly DOCKER_DIND="docker:29.7.2-dind@sha256:3ef33f2e220b79ed3ef3b99d81746f06f306cd6340e2cb7331d17ae996e74cb6"
 
 mkdir -p "${EVIDENCE_DIR}" "${CONTROL_DIR}"
 : > "${EVIDENCE_DIR}/build-commands.txt"
@@ -114,9 +115,9 @@ build_image egress-proxy-control "${CONTROL_DIR}/Dockerfile.egress-proxy" \
 build_image egress-proxy-candidate src/booley/data/docker/Dockerfile.egress-proxy \
   booley-egress-proxy:py314 src/booley/docker
 build_image flexnet-relay-control "${CONTROL_DIR}/Dockerfile.flexnet-relay" \
-  booley-flexnet-relay:py313 src/booley/eda
+  booley-flexnet-relay:py313 src/booley/eda/provisioning/licensing
 build_image flexnet-relay-candidate src/booley/data/docker/Dockerfile.flexnet-relay \
-  booley-flexnet-relay:py314 src/booley/eda
+  booley-flexnet-relay:py314 src/booley/eda/provisioning/licensing
 build_image reaper-control "${CONTROL_DIR}/Dockerfile.reaper" \
   booley-reaper:py313 src/booley/docker
 build_image reaper-candidate src/booley/data/docker/Dockerfile.reaper \
@@ -136,5 +137,6 @@ capture_source python-bookworm-candidate "${BOOKWORM_CANDIDATE}"
 capture_source python-alpine-control "${ALPINE_CONTROL}"
 capture_source python-alpine-candidate "${ALPINE_CANDIDATE}"
 capture_source docker-cli "${DOCKER_CLI}"
+capture_source docker-dind "${DOCKER_DIND}"
 
 docker tag booley-flexnet-relay:py314 booley-flexnet-relay:1

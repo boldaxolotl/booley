@@ -20,7 +20,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.paths import ticket_runtime_dir
 

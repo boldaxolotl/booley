@@ -26,6 +26,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -54,11 +55,12 @@ from booley.harness.colors import (
 )
 from booley.harness.doctor import run_doctor
 from booley.harness.init_cmd import run_init
-from booley.harness.init_common import configure_progress_output
 from booley.harness.orphan_handler import handle_post_run_orphans, handle_startup_orphans
 from booley.harness.render_md import render
+from booley.harness.setup.common import configure_progress_output
 from booley.harness.subscription_limit import detect_subscription_limit
 from booley.harness.terminal import status, status_indent
+from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
 from booley.runtime.paths import cheatsheet_path
 from booley.runtime.project_dir import PROJECT_DIR_NAME
@@ -87,6 +89,38 @@ _shutdown_event = None  # threading.Event, created in main()
 # overnight batch does not leave a live process behind; long enough to ride out
 # a board that is momentarily empty between tickets. 0 disables (daemon mode).
 DEFAULT_IDLE_TIMEOUT_S = 300
+
+
+class CommandLocation(Enum):
+    """Where one advertised top-level command is valid."""
+
+    HOST = "host"
+    SESSION_RUNTIME = "Session Runtime"
+    EITHER = "either"
+    MIXED = "mixed"
+
+    @property
+    def label(self) -> str:
+        return f"[{self.value}]"
+
+
+COMMAND_LOCATIONS = {
+    "run": CommandLocation.SESSION_RUNTIME,
+    "chat": CommandLocation.SESSION_RUNTIME,
+    "board": CommandLocation.SESSION_RUNTIME,
+    "cheat": CommandLocation.EITHER,
+    "doctor": CommandLocation.EITHER,
+    "bootstrap": CommandLocation.HOST,
+    "init": CommandLocation.HOST,
+    "eda": CommandLocation.HOST,
+    "auth": CommandLocation.HOST,
+    "session": CommandLocation.HOST,
+    "projects": CommandLocation.HOST,
+    "upgrade": CommandLocation.EITHER,
+    "targets": CommandLocation.EITHER,
+    "flow": CommandLocation.MIXED,
+    "feedback": CommandLocation.MIXED,
+}
 
 
 class _RetiredEdaToolOptionAction(argparse.Action):
@@ -337,7 +371,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="booley",
         description="Booley — RTL development harness.",
-        epilog="Run bare `booley` to open this Project's configured agent CLI.",
+        epilog=(
+            "Run bare `booley` to open this Project's configured agent CLI. "
+            "Locations: [host] host terminal only; [Session Runtime] container only; "
+            "[either] either location; [mixed] depends on the nested operation."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -351,7 +389,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="command",
         metavar=(
-            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,upgrade,targets,flow,feedback}"
+            "{run,chat,board,cheat,doctor,bootstrap,init,eda,auth,session,projects,upgrade,targets,flow,feedback}"
         ),
     )
 
@@ -411,7 +449,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
 
+    _decorate_command_help(sub)
+
     return parser
+
+
+def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
+    """Prefix advertised command summaries from the location catalog."""
+    for action in subparsers._choices_actions:
+        location = COMMAND_LOCATIONS.get(action.dest)
+        if location is not None and action.help != argparse.SUPPRESS:
+            action.help = f"{location.label} {action.help}"
 
 
 def _project_root_parent() -> argparse.ArgumentParser:
@@ -787,6 +835,7 @@ def _add_utility_subparsers(sub) -> None:
 
     # Feedback spans runtime contexts: logging is in-container, submission host-only.
     feedback_cli.add_subparser(sub)
+    project_inventory_cli.add_subparser(sub)
     upgrade_cli.add_subparser(sub)
     _add_session_subparser(sub)
     _add_shell_subparser(sub)
@@ -967,10 +1016,10 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     # Splice the criteria table live from the single source of truth
     # (criteria.toml + MCP tool registry), including any project-defined criteria.
     try:
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             render_criteria_reference,
         )
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             splice_generated as splice_criteria,
         )
 
@@ -986,10 +1035,10 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path) -> int:
     # Splice the synthesis_ok / fpga_impl_ok threshold-flavour table live from the
     # param registry so documented flavours never drift from the validator.
     try:
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             render_criteria_params_reference,
         )
-        from booley.dev_support.criteria_reference import (
+        from booley.criteria.reference import (
             splice_generated as splice_criteria,
         )
 
@@ -1034,7 +1083,7 @@ def _cmd_board(args: argparse.Namespace, project_root: Path) -> int:
         # The stub must spell out what queueing requires (A-4): a draft with
         # no scope/criteria and no '## Description' fails validation on the
         # first `board move <slug> queue`, and the schema was otherwise only
-        # discoverable by reading booley.dev_support.criteria.
+        # discoverable by reading booley.criteria.templates.
         stub_body = (
             "\n## Description\n"
             "\nTODO: describe the change.\n"
@@ -1119,7 +1168,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
     """Generate or refresh the agent-prepared HTML explanation."""
     import asyncio
 
-    from booley.harness.review_prep import prepare_review_command
+    from booley.review.preparation import prepare_review_command
 
     outcome = asyncio.run(
         prepare_review_command(project_root, args.slug, force=getattr(args, "force", False))
@@ -1138,7 +1187,7 @@ def _cmd_board_prepare_review(args: argparse.Namespace, project_root: Path) -> i
 
 def _cmd_board_review_briefing(args: argparse.Namespace, project_root: Path) -> int:
     """Print and open an already prepared review package without agent work."""
-    from booley.harness.review_prep import review_briefing_command
+    from booley.review.preparation import review_briefing_command
 
     outcome = review_briefing_command(
         project_root,
@@ -2158,10 +2207,16 @@ def _show_dry_run(venv_py: str) -> None:
 # `doctor` is dual (context-aware checks inside); `cheat` runs anywhere.
 # `shell` needs host Docker too, but keeps its own tailored refusal in
 # _cmd_shell ("you are already inside a sandbox — just use this shell").
-_CONTAINER_ONLY_COMMANDS = frozenset({"run", "chat", "board"})
+_CONTAINER_ONLY_COMMANDS = frozenset(
+    command
+    for command, location in COMMAND_LOCATIONS.items()
+    if location is CommandLocation.SESSION_RUNTIME
+)
 # `session` drives the Session Runtime from outside it: like `init` it needs host
 # Docker, and the sandbox has none (ADR 0016).
-_HOST_ONLY_COMMANDS = frozenset({"bootstrap", "init", "session", "auth", "eda"})
+_HOST_ONLY_COMMANDS = frozenset(
+    command for command, location in COMMAND_LOCATIONS.items() if location is CommandLocation.HOST
+)
 
 
 def _effective_command(args: argparse.Namespace) -> str | None:
@@ -2206,6 +2261,8 @@ def main() -> int:
     _enforce_runtime_location(command)
     if command == "bootstrap":
         return run_bootstrap(args)
+    if command == "projects":
+        return project_inventory_cli.run(args)
 
     project_root = (
         Path(args.project_root).resolve()

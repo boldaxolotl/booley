@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from booley.dev_support.criteria import CriterionDef
+    from booley.criteria.templates import CriterionDef
     from booley.mcp.registry import McpToolInfo
 
 logger = logging.getLogger(__name__)
@@ -351,7 +351,7 @@ def _get_criterion_endpoint_map(
     Falls back to legacy hardcoded map if loading fails.
     """
     try:
-        from booley.dev_support.criteria import (
+        from booley.criteria.templates import (
             expand_criteria_defs,
             load_base_criteria,
             load_project_criteria,

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from booley.dev_support.mutation_variants import MutationVariantPlan
-from booley.sim.cocotb_results import COCOTB_RESULTS_PREFIX
+from booley.flows.sim.backends.cocotb_results import COCOTB_RESULTS_PREFIX
 from booley.specialists.mutation_tester import (
     MutationRunPlan,
     MutationSpec,

@@ -16,7 +16,7 @@ from booley.config.guidance_links import (
     plan_guidance_links,
 )
 from booley.harness import init_cmd
-from booley.harness.init_common import InitContext
+from booley.harness.setup.common import InitContext
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:

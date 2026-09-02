@@ -35,8 +35,8 @@ from booley.runtime import auth_token
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 
 if TYPE_CHECKING:
-    from booley.eda.authority import LicenseProfile
-    from booley.eda.runtime_spec import Issuance
+    from booley.eda.provisioning.authority import LicenseProfile
+    from booley.eda.provisioning.runtime_spec import Issuance
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class SessionError(RuntimeError):
 
 def _requested_issued_license(workspace: Path, issuance: Issuance) -> LicenseProfile | None:
     """Resolve exactly the licence named by a validated runtime issuance."""
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     return runtime_spec.requested_license(
         workspace,
@@ -329,7 +329,7 @@ def _preflight(spec: dict, *, license_required: bool = False) -> None:
             "(or `booley init --force` to rebuild it)"
         )
     if license_required:
-        from booley.eda.flexnet_docker import RELAY_IMAGE
+        from booley.eda.provisioning.licensing.flexnet_docker import RELAY_IMAGE
 
         if not idk.image_exists(RELAY_IMAGE):
             raise SessionError(
@@ -391,9 +391,9 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
 
 def _warn_on_stale_booley_bake(workspace: Path) -> None:
     """Warn when the managed Session Image is stale by authoritative provenance."""
-    from booley.harness.image_lifecycle import Intent, Status, reconcile
+    from booley.harness.image_lifecycle import Intent, ProjectImageScope, Status, reconcile
 
-    result = reconcile(workspace, Intent.CHECK)
+    result = reconcile(ProjectImageScope(workspace), Intent.CHECK)
     if result.status is Status.STALE:
         logger.warning(
             "sandbox image '%s' was built from Booley sources that no longer "
@@ -511,7 +511,7 @@ class _UpRequest:
 
 
 def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequest:
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     spec = _load_spec(workspace)
     try:
@@ -654,7 +654,7 @@ def up(
 
 def validate(workspace: Path) -> str:
     """Validate the host-issued spec used by VS Code and the headless CLI."""
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     spec = _load_spec(workspace)
     issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
@@ -668,8 +668,8 @@ def prepare(workspace: Path) -> str:
     private network named in the sealed spec must therefore already exist, and
     the relay must be healthy before Docker consumes the spec.
     """
-    from booley.eda import runtime_spec
-    from booley.eda.flexnet_docker import RelayDockerError, validate_relay
+    from booley.eda.provisioning import runtime_spec
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
 
     spec = _load_spec(workspace)
     try:
@@ -773,7 +773,7 @@ def _strict_interactive_states(
 
 def _reconcile_stopped_vscode_containers(workspace: Path, issuance: object) -> None:
     """Discard stopped VS Code containers that predate the current issuance."""
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     expected_config = str(dc.devcontainer_path(workspace))
@@ -923,7 +923,7 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-close
     """
     import json
 
-    from booley.eda import runtime_spec
+    from booley.eda.provisioning import runtime_spec
 
     expected = set(runtime_spec.labels(issuance))
     output = _docker_stdout(["docker", "inspect", name, "--format", "{{json .Config.Labels}}"])
@@ -1110,7 +1110,7 @@ def _is_vscode_managed_mount(item: dict) -> bool:
 
 def _relay_resources(workspace: Path):
     """Return deterministic relay resources without reading current authority."""
-    from booley.eda.flexnet_docker import resources_for_session
+    from booley.eda.provisioning.licensing.flexnet_docker import resources_for_session
 
     return resources_for_session(str(workspace.resolve()))
 
@@ -1189,7 +1189,7 @@ def _start_session_container(name: str) -> None:
 
 def _relay_profile(profile: Any):
     """Translate the authority record into the relay module's validated type."""
-    from booley.eda.flexnet_docker import RelayProfile
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayProfile
 
     return RelayProfile(
         profile.server_ipv4,
@@ -1206,7 +1206,7 @@ def _provision_license_relay(
     relay_image_id: str | None,
 ):
     """Create and health-gate the relay before creating a licensed Session."""
-    from booley.eda.flexnet_docker import (
+    from booley.eda.provisioning.licensing.flexnet_docker import (
         RelayDockerError,
         recreate_relay,
     )
@@ -1232,7 +1232,7 @@ def _connect_and_validate_license_relay(
     relay_image_id: str,
 ) -> None:
     """Attach only the private network and verify the resulting exact topology."""
-    from booley.eda.flexnet_docker import RelayDockerError, validate_relay
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
 
     try:
         validate_relay(
@@ -1254,7 +1254,7 @@ def _validate_license_relay(
     relay_image_id: str,
 ) -> None:
     """Fail closed when a resumed licensed Session's relay has drifted."""
-    from booley.eda.flexnet_docker import RelayDockerError, validate_relay
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
 
     try:
         validate_relay(
@@ -1270,7 +1270,7 @@ def _validate_license_relay(
 
 def _remove_license_relay(relay) -> None:
     """Remove exact relay objects, preserving an actionable residual error."""
-    from booley.eda.flexnet_docker import RelayDockerError, remove_relay
+    from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, remove_relay
 
     try:
         remove_relay(relay)

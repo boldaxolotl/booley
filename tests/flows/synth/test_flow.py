@@ -17,10 +17,11 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.boundary import BoundaryError
-from booley.dev_support.criteria import BASELINE_TARGET_PARAM, TargetPair
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
+from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming, make_clock_timing
+from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
     KGE_DIVISOR,
     AsicSynthesizeFlow,
@@ -45,10 +46,9 @@ from booley.flows.synth.flow import (
     synth_target_report_slug,
 )
 from booley.flows.synth.recipe import BASELINE_REF_PARAM
+from booley.flows.synth.timing import StaTimingConfig
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.yosys import syn_make
-from booley.yosys.syn_core import StaTimingConfig
 
 
 def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
@@ -406,7 +406,7 @@ def _stub_configure_synth():
     never exist on disk. The spec argv (``_build_synth_cmd``) still runs for
     real — only the render step is stubbed. Tests that exercise rendering
     itself call ``run_yosys_syn.resolve_spec`` / ``syn_make`` directly (see
-    tests/yosys/test_syn_make.py and the golden Makefile snapshots).
+    tests/flows/synth/backends/yosys/test_pipeline.py and the golden Makefile snapshots).
     """
 
     def fake_configure(self, target, cmd):
@@ -544,7 +544,7 @@ class TestParsePerClockRaw:
     """Raw marker parsing (syn_core.parse_perclock) as consumed by the Flow."""
 
     def test_na_becomes_none(self):
-        from booley.yosys.syn_core import parse_perclock
+        from booley.flows.synth.timing import parse_perclock
 
         row = parse_perclock(_perclock_marker("clk", 2.0, None, 0.3))["clk"]
         assert row["period_ns"] == pytest.approx(2.0)
@@ -552,7 +552,7 @@ class TestParsePerClockRaw:
         assert row["whs_ns"] == pytest.approx(0.3)
 
     def test_duplicate_clock_keeps_min_slack(self):
-        from booley.yosys.syn_core import parse_perclock
+        from booley.flows.synth.timing import parse_perclock
 
         # Same clock reported twice (raw + re-emitted): the most pessimistic
         # (minimum) slack wins for both setup and hold.
@@ -1149,11 +1149,58 @@ class TestDryRun:
         ):
             result = flow._run()
         assert "--flatten" in result.report_text
-        # Boolean ``sdc = true`` must NOT emit a bare "--sdc" (it takes a path
-        # argument in run_yosys_syn and would crash argparse); SDC is already
-        # run_yosys_syn's default, so no flag is expected.
+        # Boolean ``sdc = true`` must not revive the retired ABC-only ``--sdc`` flag.
         assert "--sdc" not in result.report_text
         assert "--synth-mode logical" in result.report_text
+
+    def test_dry_run_records_evidence_for_projected_stealth_core(
+        self, state_file: Path, tmp_path: Path
+    ):
+        import shutil
+        import sys
+
+        work_dir = tmp_path / "proj"
+        _write_syn_demo_project(work_dir)
+        project_dir = work_dir / ".booley_project"
+        cores = project_dir / "cores"
+        cores.mkdir(parents=True)
+        (work_dir / "syn_demo.core").replace(cores / "syn_demo.core")
+        (project_dir / "booley.toml").write_text(
+            "[stealth]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        flow = AsicSynthesizeFlow()
+        flow.parse_args(
+            [
+                "--target",
+                "syn",
+                "--work-dir",
+                str(work_dir),
+                "--dry-run",
+            ]
+        )
+        flow.read_state()
+        fusesoc_cmd = (
+            list(fusesoc_registry.DEFAULT_FUSESOC_CMD)
+            if shutil.which("fusesoc")
+            else [sys.executable, "-c", "from fusesoc.main import main; main()"]
+        )
+
+        with patch.object(
+            fusesoc_registry,
+            "resolve_target",
+            side_effect=lambda *args, **kwargs: _REAL_RESOLVE(
+                *args,
+                **{**kwargs, "fusesoc_cmd": fusesoc_cmd},
+            ),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_SUCCESS
+        assert "dry-run (syn)" in result.report_text
+        run_evidence = flow._recipe_evidence["syn"][2]
+        assert run_evidence["source_sha256"]
 
 
 # ===========================================================================
@@ -2288,8 +2335,7 @@ class TestBuildSynthCmd:
         ):
             cmd = flow._build_synth_cmd("lite")
         assert "--flatten" in cmd
-        # Boolean ``sdc = true``: no flag emitted (run_yosys_syn's --sdc takes
-        # a path and defaults to abc_simple.sdc; bare "--sdc" would crash).
+        # Boolean ``sdc = true`` must not revive the retired ABC-only ``--sdc`` flag.
         assert "--sdc" not in cmd
 
     def test_stale_stage_cleared_before_resolve(self, flow_and_state, tmp_path: Path):
@@ -3077,7 +3123,7 @@ class TestSynthResolution:
 
         joined = " ".join(cmd)
         # Configuration over the resolved sources (no legacy config selector).
-        assert cmd[:4] == ["python3", "-m", "booley.yosys.run_yosys_syn", "configure"]
+        assert cmd[:4] == ["python3", "-m", "booley.flows.synth.backends.configure", "configure"]
         assert "-c" not in cmd
         assert cmd[cmd.index("-t") + 1] == "dut"
         # Resolved RTL sources are forwarded as relative (sandbox-safe) paths.

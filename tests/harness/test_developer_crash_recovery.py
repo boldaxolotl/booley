@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import CriterionEntry
+from booley.criteria.state import CriterionEntry
 from booley.harness.developer import _invoke_developer_agent, _recover_if_criteria_met
 from booley.harness.models import TicketContext
 from booley.ticket_board.paths import ticket_runtime_file

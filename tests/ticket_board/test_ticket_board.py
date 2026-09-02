@@ -749,14 +749,23 @@ class TestValidateTicketFields:
             "type": "verification",
             "branch": "m",
             "scope": ["docs/coverage.md"],
-            "criteria": {"mandatory": {"coverage_toggle": 90}},
+            "criteria": {
+                "mandatory": {
+                    "coverage": [
+                        {
+                            "targets": ["sim"],
+                            "metrics": {"line": {"min_pct": 90}},
+                            "tests": "all",
+                        }
+                    ]
+                }
+            },
         }
 
         errors = validate_ticket_fields(fields, "## Description\ntext")
 
         assert any(
-            "coverage_toggle" in error and "no enabled Flow or Specialist" in error
-            for error in errors
+            "coverage" in error and "no enabled Flow or Specialist" in error for error in errors
         )
 
     def test_rtl_scope_without_mandatory_sim_rejected(self, tmp_path: Path):
@@ -814,7 +823,17 @@ class TestValidateTicketFields:
             "type": "verification",
             "branch": "m",
             "scope": ["tb/foo_tb.sv"],
-            "criteria": {"mandatory": {"coverage_toggle": 80}},
+            "criteria": {
+                "mandatory": {
+                    "coverage": [
+                        {
+                            "targets": ["sim"],
+                            "metrics": {"line": {"min_pct": 80}},
+                            "tests": "all",
+                        }
+                    ]
+                }
+            },
         }
         errors = validate_ticket_fields(
             fields,
@@ -1214,7 +1233,7 @@ class TestScanAllTickets:
         assert t["file"] == "board/queue/t1.md"
 
     def test_done_ticket_criteria_come_from_accepted_snapshot(self, tmp_path):
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import freeze_acceptance
 
         tio = make_tio(tmp_path)
@@ -1434,7 +1453,7 @@ class TestOpHandoff:
     def test_freezes_live_acceptance_before_review(self, tmp_path):
         import json
 
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import read_acceptance
 
         tio = make_tio(tmp_path)
@@ -2950,7 +2969,7 @@ class TestValidateCriteriaField:
                 "mandatory": {
                     "synthesis_ok": {
                         "targets": [{"baseline": "synth_before", "candidate": "synth_after"}],
-                        "area_reduce_at_least": 10,
+                        "area_reduce_at_least": "10%",
                     }
                 }
             },
@@ -2990,7 +3009,7 @@ class TestValidateCriteriaField:
                 "mandatory": {
                     "synthesis_ok": {
                         "targets": [{"baseline": "synth_before"}],
-                        "area_reduce_at_least": 10,
+                        "area_reduce_at_least": "10%",
                     }
                 }
             },
@@ -4101,7 +4120,7 @@ class TestOpReturnValues:
         assert op_approve(tio, "t1") is True
 
     def test_complete_rejects_corrupt_accepted_snapshot(self, tmp_path, capsys):
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import freeze_acceptance
         from booley.ticket_board.operations import op_complete
 
@@ -4128,7 +4147,7 @@ class TestOpReturnValues:
     def test_complete_rejects_review_package_changed_after_binding(self, tmp_path, capsys):
         import json
 
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
         from booley.ticket_board.acceptance_ledger import bind_review_package, freeze_acceptance
         from booley.ticket_board.operations import op_complete
 

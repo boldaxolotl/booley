@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from booley.dev_support.development_state import DevelopmentState
+from booley.criteria.state import DevelopmentState
 from booley.harness.models import AgentResult
 
 from .conftest import make_setup_bypass
@@ -143,7 +143,7 @@ def _stamp_verification_fingerprints(state_path: Path, work_dir: Path) -> None:
     check_criteria_acceptance() marks unstamped passing criteria stale-unmet.
     The mock agent bypasses tools, so it must stamp explicitly.
     """
-    from booley.dev_support.development_state import (
+    from booley.criteria.state import (
         SOURCE_FINGERPRINT_DETAIL_KEY,
         compute_source_fingerprint,
     )

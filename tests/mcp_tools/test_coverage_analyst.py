@@ -61,7 +61,7 @@ def _sig(name="sig", transitions=5, value_hist=None, width=1):
 
 def _make_endpoint_with_args(**kwargs):
     """Build a CoverageAnalystSpecialist with just enough state for unit tests."""
-    from booley.dev_support.development_state import DevelopmentState
+    from booley.criteria.state import DevelopmentState
 
     endpoint = object.__new__(CoverageAnalystSpecialist)
     defaults = {
@@ -1506,7 +1506,7 @@ class TestDeriveHierarchyGlob:
 
     @staticmethod
     def _make_endpoint(scope: str = "rtl/alu.sv"):
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         endpoint = object.__new__(CoverageAnalystSpecialist)
         endpoint._args = types.SimpleNamespace(scope=scope)
@@ -1616,7 +1616,7 @@ class TestPickDutScope:
 class TestDiscoverDutScope:
     @staticmethod
     def _make_endpoint(scope: str):
-        from booley.dev_support.development_state import DevelopmentState
+        from booley.criteria.state import DevelopmentState
 
         endpoint = object.__new__(CoverageAnalystSpecialist)
         endpoint._args = types.SimpleNamespace(
@@ -1804,10 +1804,12 @@ class TestFindTraceFile:
 
 class TestInvalidateTraceCache:
     def test_deletes_cached_bwave(self, tmp_path):
-        from booley.sim.trace_session import TraceSession
+        from booley.flows.sim.trace_session import TraceSession
 
         work_dir = Path("sim_default")
-        with patch("booley.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"):
+        with patch(
+            "booley.flows.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"
+        ):
             # The bucket name is derived (work-dir name + path digest), so ask
             # TraceSession for it instead of hardcoding the old bare name.
             stale = TraceSession(work_dir).cache_dir / "trace.fst"
@@ -1816,7 +1818,9 @@ class TestInvalidateTraceCache:
         assert not stale.exists()
 
     def test_noop_when_no_cache_dir(self, tmp_path):
-        with patch("booley.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"):
+        with patch(
+            "booley.flows.sim.trace_session._bwave_cache_root", return_value=tmp_path / "bwave"
+        ):
             CoverageAnalystSpecialist._invalidate_trace_cache(Path("nonexistent"))
 
 
@@ -2818,7 +2822,7 @@ class TestBuildEdalizeTraceCmd:
         script = cmd[2]
         # build half: make -C <rel build_root>, run half: verilator_run --trace
         assert "make -C" in script
-        assert "booley.sim.verilator_run" in script
+        assert "booley.flows.sim.backends.verilator" in script
         assert "--trace" in script
         assert "--trace-mode native_fst" in script
         assert "--trace-arg=--trace={file}" in script
@@ -2886,7 +2890,7 @@ class TestBuildEdalizeTraceCmd:
             cmd = endpoint._build_edalize_trace_cmd(tmp_path, trace_dir, "", 600)
 
         script = cmd[2]
-        assert "booley.sim.cocotb_run" in script
+        assert "booley.flows.sim.backends.cocotb" in script
         assert "--cocotb-module test_dut" in script
         assert "--test=smoke" in script
         assert "--test=corner" in script
