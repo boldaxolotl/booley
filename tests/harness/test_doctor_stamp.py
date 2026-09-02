@@ -82,12 +82,17 @@ class TestCheckStamp:
         monkeypatch.setattr("booley.__version__", "1.0.0")
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
         monkeypatch.setattr("booley.__version__", "2.0.0")
+        advisory = doctor_stamp.check_stamp_advisory(project_dir, tmp_path)
 
-        msg = doctor_stamp.check_stamp(project_dir, tmp_path)
-
-        assert msg is not None
-        assert "Booley version changed from 1.0.0 to 2.0.0" in msg
-        assert "invoke /booley-heal" in msg
+        assert advisory is not None
+        assert advisory.requires_action is True
+        lines = advisory.message.splitlines()
+        assert lines == [
+            "=" * 72,
+            "WARNING: Booley version changed from 1.0.0 to 2.0.0.",
+            "ACTION REQUIRED: Invoke /booley-heal",
+            "=" * 72,
+        ]
 
     def test_stale_stamp_nags_with_age(self, tmp_path):
         project_dir = _write_project(tmp_path)
@@ -176,6 +181,24 @@ class TestWarnIfStale:
         doctor_stamp.warn_if_stale(tmp_path, emitted.append)
 
         assert emitted == []
+
+    def test_emphasizes_version_drift_at_emission_boundary(self, tmp_path, monkeypatch):
+        project_dir = _write_project(tmp_path)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        reset_cache()
+        monkeypatch.setattr("booley.__version__", "1.0.0")
+        doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        monkeypatch.setattr("booley.__version__", "2.0.0")
+        emitted: list[str] = []
+
+        doctor_stamp.warn_if_stale(
+            tmp_path,
+            emitted.append,
+            emphasize_action=lambda text: f"<bright-amber>{text}</bright-amber>",
+        )
+
+        assert emitted[0].startswith("<bright-amber>")
+        assert emitted[0].endswith("</bright-amber>")
 
     def test_never_raises_when_project_dir_unresolvable(self, tmp_path, monkeypatch):
         def boom(_start=None):
