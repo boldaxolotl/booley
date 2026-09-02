@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -48,6 +50,41 @@ def test_fetch_verifies_and_installs_complete_cache(tmp_path: Path, monkeypatch)
     assert manifest["revision"] == nangate_pdk.REVISION
     assert manifest["license"] == nangate_pdk.LICENSE_ID
     assert requested == [item.url for item in files]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows mode bits do not describe ACLs")
+def test_fetch_secures_shared_config_root_for_authority_store(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(nangate_pdk, "FILES", ())
+    config_root = tmp_path / "booley"
+    config_root.mkdir(mode=0o755)
+
+    nangate_pdk.fetch(nangate_pdk.cache_root())
+
+    assert stat.S_IMODE(config_root.stat().st_mode) == 0o700
+
+
+def test_default_cache_rejects_symlinked_config_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    (tmp_path / "booley").symlink_to(redirected, target_is_directory=True)
+
+    with pytest.raises(nangate_pdk.NangatePdkError, match="must not be a symlink"):
+        nangate_pdk.secure_config_dir_for_cache(nangate_pdk.cache_root())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows ownership is ACL-based")
+def test_default_cache_rejects_config_root_owned_by_another_user(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_root = tmp_path / "booley"
+    config_root.mkdir(mode=0o700)
+    monkeypatch.setattr(nangate_pdk.os, "getuid", lambda: config_root.stat().st_uid + 1)
+
+    with pytest.raises(nangate_pdk.NangatePdkError, match="is not user-owned"):
+        nangate_pdk.secure_config_dir_for_cache(nangate_pdk.cache_root())
 
 
 def test_checksum_failure_never_installs_download(tmp_path: Path, monkeypatch) -> None:

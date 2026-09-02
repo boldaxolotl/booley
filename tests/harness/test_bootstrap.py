@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from types import SimpleNamespace
 
@@ -434,6 +436,7 @@ def test_nangate_reconciliation_covers_current_check_fetch_and_failure(
     tmp_path,
 ) -> None:
     monkeypatch.setattr(bootstrap.nangate_pdk, "cache_root", lambda: tmp_path)
+    monkeypatch.setattr(bootstrap.nangate_pdk, "secure_config_dir_for_cache", lambda _root: False)
     monkeypatch.setattr(bootstrap.nangate_pdk, "validation_errors", lambda _root: ())
     assert bootstrap._reconcile_nangate(Intent.CHECK).state is bootstrap.BootstrapState.CURRENT
 
@@ -452,6 +455,37 @@ def test_nangate_reconciliation_covers_current_check_fetch_and_failure(
 
     monkeypatch.setattr(bootstrap.nangate_pdk, "fetch", fail)
     assert bootstrap._reconcile_nangate(Intent.ENSURE).state is bootstrap.BootstrapState.ERROR
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows mode bits do not describe ACLs")
+def test_nangate_reconciliation_hardens_config_for_existing_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_root = tmp_path / "booley"
+    config_root.mkdir(mode=0o755)
+    monkeypatch.setattr(bootstrap.nangate_pdk, "validation_errors", lambda _root: ())
+
+    finding = bootstrap._reconcile_nangate(Intent.ENSURE)
+
+    assert finding.state is bootstrap.BootstrapState.CHANGED
+    assert stat.S_IMODE(config_root.stat().st_mode) == 0o700
+
+
+def test_nangate_reconciliation_reports_config_security_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.setattr(bootstrap.nangate_pdk, "cache_root", lambda: tmp_path)
+
+    def fail(_root):
+        raise bootstrap.nangate_pdk.NangatePdkError("unsafe config root")
+
+    monkeypatch.setattr(bootstrap.nangate_pdk, "secure_config_dir_for_cache", fail)
+
+    finding = bootstrap._reconcile_nangate(Intent.ENSURE)
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert finding.detail == "unsafe config root"
 
 
 @pytest.mark.parametrize(
