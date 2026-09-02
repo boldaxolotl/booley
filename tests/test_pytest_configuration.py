@@ -164,6 +164,38 @@ def test_primary_pytest_commands_emit_timing_and_junit_data() -> None:
         assert all("--junitxml=" in command for command in pytest_commands), job_name
 
 
+def test_windows_scheduler_experiment_preserves_linux_and_names_evidence() -> None:
+    """Windows compares three schedulers while Linux stays on loadscope."""
+    workflow = _test_workflow()
+    test_job = workflow["jobs"]["test"]
+    matrix = test_job["strategy"]["matrix"]
+
+    assert matrix["scheduler"] == ["loadscope", "load", "worksteal"]
+    assert matrix["exclude"] == [
+        {"os": "ubuntu-latest", "scheduler": "load"},
+        {"os": "ubuntu-latest", "scheduler": "worksteal"},
+    ]
+
+    test_steps = test_job["steps"]
+    pytest_steps = [
+        step for step in test_steps if str(step.get("name", "")).startswith("Run tests")
+    ]
+    assert pytest_steps
+    assert all("--dist=${{ matrix.scheduler }}" in step["run"] for step in pytest_steps)
+
+    summary = next(
+        step for step in test_steps if step.get("name") == "Summarize pytest execution and skips"
+    )
+    assert "${{ matrix.scheduler }}" in summary["run"]
+
+    artifact = next(
+        step for step in test_steps if step.get("name") == "Upload test timing data"
+    )
+    assert artifact["with"]["name"] == (
+        "junit-${{ matrix.os }}-py${{ matrix.python }}-${{ matrix.scheduler }}"
+    )
+
+
 def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     """The coverage leg is parallel without dropping child-process data."""
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -181,7 +213,7 @@ def test_coverage_leg_combines_xdist_and_subprocess_coverage() -> None:
     assert coverage_config["patch"] == ["subprocess"]
     assert "coverage run" not in command
     assert "pytest tests/" in command
-    assert "-n 4 --dist=loadscope" in command
+    assert "-n 4 --dist=${{ matrix.scheduler }}" in command
     assert '-m "not native_bwave"' in command
     assert "--cov=booley" in command
     assert "--cov-report=" in command
