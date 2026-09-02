@@ -67,7 +67,7 @@ from booley.harness import devcontainer as dc
 from booley.harness import doctor_stamp, nangate_pdk
 from booley.harness import interactive_docker as idk
 from booley.harness.bootstrap import BootstrapResult, BootstrapState, reconcile_bootstrap
-from booley.harness.colors import accent, bold_chrome, green, red, yellow
+from booley.harness.colors import accent, bold_amber, bold_chrome, green, red, yellow
 from booley.harness.image_lifecycle import (
     ImageLifecycleError,
     LifecycleResult,
@@ -1752,10 +1752,13 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     )
     print()
     try:
-        nag = doctor_stamp.check_stamp(resolve_project_dir(ctx.project_root), ctx.project_root)
+        advisory = doctor_stamp.check_stamp_advisory(
+            resolve_project_dir(ctx.project_root), ctx.project_root
+        )
     except (FileNotFoundError, OSError):
-        nag = None  # advisory by contract — never let the stamp break init
-    if nag:
+        advisory = None  # advisory by contract — never let the stamp break init
+    if advisory:
+        nag = bold_amber(advisory.message) if advisory.requires_action else advisory.message
         info(f"  * {nag}")
     else:
         info("  * `booley doctor` last ran clean against this config — you're good to go")
@@ -2232,11 +2235,23 @@ def _run_project_init_steps(
     return _print_summary(ctx)
 
 
-def run_init(args: argparse.Namespace, project_root: Path) -> int:
+def run_init(  # noqa: PLR0911 -- fail-fast coordinator; each return is a distinct lifecycle refusal
+    args: argparse.Namespace,
+    project_root: Path,
+) -> int:
     """Run the project initialization wizard."""
     configure_progress_output()
     ctx = _init_context(args, project_root)
     _print_init_banner(ctx)
+
+    from booley.runtime.checkout_role import SourceCheckoutProjectError, require_project_checkout
+
+    try:
+        require_project_checkout(ctx.project_root)
+    except SourceCheckoutProjectError as exc:
+        err(str(exc))
+        ctx.record("checkout_role", "err", "Booley source is not a Project")
+        return _print_summary(ctx)
 
     bootstrap_intent = (
         ImageLifecycleIntent.CHECK

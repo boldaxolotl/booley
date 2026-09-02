@@ -1672,6 +1672,20 @@ def _handle_early_exits(args: argparse.Namespace, project_root: Path) -> int | N
     return None
 
 
+def _reject_source_project_command(command: str | None, project_root: Path) -> int | None:
+    """Reject Project commands in Booley source while allowing dogfood feedback."""
+    if command in {None, "feedback"}:
+        return None
+    from booley.runtime.checkout_role import SourceCheckoutProjectError, require_project_checkout
+
+    try:
+        require_project_checkout(project_root)
+    except SourceCheckoutProjectError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    return None
+
+
 def _setup_runtime(args: argparse.Namespace, project_root: Path) -> str:
     """Set up venv, logging, PID stamp, signal handlers, and clear screen."""
     venv_py = find_venv_python(project_root)
@@ -2118,7 +2132,11 @@ def _run_automatic_doctor(project_root: Path) -> None:
         emit = logger.warning if any(auto_doctor.issue_counts(report)) else logger.info
         emit(health_summary)
     elif auto_doctor.load_report(project_root) is None:
-        doctor_stamp.warn_if_stale(project_root, logger.warning)
+        doctor_stamp.warn_if_stale(
+            project_root,
+            logger.warning,
+            emphasize_action=bold_amber,
+        )
 
 
 def _ticket_loop(
@@ -2251,7 +2269,7 @@ def _enforce_runtime_location(command: str | None) -> None:
         sys.exit(2)
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0911 -- CLI coordinator; returns preserve each command's exit code
     """Entry point: parse CLI, handle early exits, set up runtime, run ticket loop."""
     args = _parse_cli()
     command = _effective_command(args)
@@ -2269,6 +2287,9 @@ def main() -> int:
         if hasattr(args, "project_root") and args.project_root
         else find_project_root()
     )
+    source_rejection = _reject_source_project_command(command, project_root)
+    if source_rejection is not None:
+        return source_rejection
 
     # Runtime-location guard: one chokepoint after argparse, before anything
     # touches the filesystem or clears the screen.

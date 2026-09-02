@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.dev_support.commit_msg_hook import main, sanitize_message
+
+
+@pytest.fixture(autouse=True)
+def _project_hook_has_no_ambient_source_policy():
+    """Unit-test the vendored Project hook, not this source checkout's role."""
+    with patch("validate_commit_msg._current_repo_root", return_value=None):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # sanitize_message
@@ -209,6 +222,34 @@ class TestMain:
         written = msg_file.read_text(encoding="utf-8")
         assert "docker" not in written
         assert written == "Upstream style summary\n\nrebuilt the redacted image\n"
+
+    def test_standalone_hook_leaves_source_checkout_message_unchanged(self, tmp_path: Path):
+        """A vendored hook cannot depend on the installed ``booley`` package."""
+        root = tmp_path / "source"
+        hooks = root / "stale-hooks"
+        hooks.mkdir(parents=True)
+        (root / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
+        for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
+            shutil.copy2(support / name, hooks / name)
+        message = root / "COMMIT_EDITMSG"
+        original = "docs: explain Booley architecture\n"
+        message.write_text(original, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert message.read_text(encoding="utf-8") == original
 
 
 # ---------------------------------------------------------------------------

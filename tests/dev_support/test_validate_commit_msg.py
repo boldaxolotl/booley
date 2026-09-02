@@ -495,6 +495,19 @@ def test_project_config_detection(tmp_path):
     assert _has_project_config(tmp_path)
 
 
+def test_source_checkout_ignores_stale_project_config(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / ".booley_project" / "booley.toml"
+    config.parent.mkdir()
+    config.write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+
+    assert not _has_project_config(tmp_path)
+    assert validate_message("docs: explain Booley architecture", project_root=tmp_path) == []
+
+
 def test_project_state_repository_config_detection(tmp_path):
     state_repo = tmp_path / ".booley_project"
     state_repo.mkdir()

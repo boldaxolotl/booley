@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import subprocess
-import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+
+from booley.runtime.checkout_role import is_booley_source_checkout
 
 _GIT_TIMEOUT_SECONDS = 5
 
@@ -75,14 +76,7 @@ def _source_root(package_file: Path) -> Path | None:
     if resolved.parent.parent.name != "src":
         return None
     root = resolved.parents[2]
-    pyproject = root / "pyproject.toml"
-    if not pyproject.is_file():
-        return None
-    try:
-        project = tomllib.loads(pyproject.read_text(encoding="utf-8")).get("project", {})
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise RuntimeError(f"cannot read Booley project metadata from {pyproject}: {exc}") from exc
-    return root if project.get("name") == "booley-rtl" else None
+    return root if is_booley_source_checkout(root) else None
 
 
 def _read_source_version(root: Path) -> str:

@@ -91,6 +91,7 @@ def _set_project_dir(tmp_path, monkeypatch):
     from booley.runtime.project_dir import reset_cache
 
     reset_cache()
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley" / "project"))
 
 

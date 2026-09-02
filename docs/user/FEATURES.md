@@ -178,6 +178,10 @@ For designs with embedded processors, the debug loop naturally extends to firmwa
 
 ## Stealth Mode
 
+Stealth Mode is Project policy for protecting a downstream design's private
+identifiers. It never applies to a Booley Source Checkout, which is not a
+Project and must not contain `.booley_project/` or receive Project Git hooks.
+
 Stealth mode is opt-in during setup: setup asks specifically whether you want to enable the commit-message scrub and writes `[stealth] enabled = false` unless you say yes. For compatibility with existing projects, an omitted `enabled` key still uses the older on-by-default runtime fallback.
 
 When enabled, a commit-msg hook sanitizes AI-related history, and authored

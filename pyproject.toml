@@ -108,6 +108,12 @@ bwave = "booley.bwave.cli:main"
 Homepage = "https://github.com/boldaxolotl/Booley"
 Issues = "https://github.com/boldaxolotl/Booley/issues"
 
+[tool.booley]
+# This checkout develops Booley itself; Project Initialization and Project-owned
+# Stealth Mode state must never be applied here. Forks and linked worktrees keep
+# the marker without depending on a particular Git remote.
+source_checkout = true
+
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}
 
