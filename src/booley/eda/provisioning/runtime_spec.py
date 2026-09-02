@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import sys
+import sysconfig
 import tempfile
 import tomllib
 from contextlib import AbstractContextManager, nullcontext
@@ -314,13 +315,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
     """Validate every authority-bearing field against the current host issuance."""
     project = project_root.resolve(strict=True)
-    stamp = _load_stamp(stamp_path(project))
-    if (
-        stamp.project_root != str(project)
-        or stamp.file_sha256 != _file_sha256(spec_path)
-        or stamp.spec_sha256 != _spec_digest(spec)
-    ):
-        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    stamp = authenticate(project, spec, spec_path)
     config = load_eda_config(project).get("vivado")
     host_provisioning = _host_vivado_requested(project, config)
     try:
@@ -363,12 +358,26 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 raise RuntimeSpecError("FlexNet relay image has drifted since spec issuance")
             if installation and stamp.wrapper_sha256 != wrapper_sha256():
                 raise RuntimeSpecError("Booley Vivado wrapper has changed since spec issuance")
-            validator = _initialize_executable(spec)
-            if stamp.validator_sha256 != _file_sha256(validator):
-                raise RuntimeSpecError("host Booley validator has changed since spec issuance")
             return stamp
     except authority.AuthorityError as exc:
         raise _runtime_authority_error(spec, host_provisioning, exc) from exc
+
+
+def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
+    """Authenticate immutable host issuance fields without trusting bind sources."""
+    project = project_root.resolve(strict=True)
+    stamp = _load_stamp(stamp_path(project))
+    if (
+        stamp.project_root != str(project)
+        or stamp.file_sha256 != _file_sha256(spec_path)
+        or stamp.spec_sha256 != _spec_digest(spec)
+    ):
+        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    _validate_initialize_command(project, spec.get("initializeCommand"))
+    validator = _initialize_executable(spec)
+    if stamp.validator_sha256 != _file_sha256(validator):
+        raise RuntimeSpecError("host Booley validator has changed since spec issuance")
+    return stamp
 
 
 def labels(issuance: Issuance) -> tuple[str, ...]:
@@ -866,17 +875,41 @@ def _initialize_executable(spec: dict[str, Any]) -> Path:
     return Path(raw[0])
 
 
-def _find_trusted_validator(project: Path) -> Path | None:
-    """Select the first trusted ``booley`` on PATH, skipping poison entries."""
+def _validator_script_directories() -> tuple[Path, ...]:
+    """Supported interpreter-owned script directories outside ``PATH``."""
+    directories = [Path(sysconfig.get_path("scripts"))]
+    try:
+        user_scheme = sysconfig.get_preferred_scheme("user")
+        directories.append(Path(sysconfig.get_path("scripts", scheme=user_scheme)))
+    except (KeyError, TypeError, ValueError):
+        pass
+    return tuple(dict.fromkeys(directory.resolve() for directory in directories))
+
+
+def _validator_candidates() -> tuple[Path, ...]:
+    """Ordered host executable candidates without making any trust decision."""
+    name = "booley.exe" if os.name == "nt" else "booley"
+    candidates: list[Path] = []
+    invoked = Path(sys.argv[0])
+    if invoked.is_absolute() and invoked.name.casefold() in {"booley", "booley.exe"}:
+        candidates.append(invoked)
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not directory:
             continue
-        candidate = Path(directory) / ("booley.exe" if os.name == "nt" else "booley")
+        candidates.append(Path(directory) / name)
+    fallback = shutil.which("booley")
+    if fallback:
+        candidates.append(Path(fallback))
+    candidates.extend(directory / name for directory in _validator_script_directories())
+    return tuple(dict.fromkeys(candidates))
+
+
+def _find_trusted_validator(project: Path) -> Path | None:
+    """Select the first trusted installed ``booley``, including off-PATH installs."""
+    for candidate in _validator_candidates():
         if _trusted_validator(candidate, project):
             return candidate.resolve(strict=True)
-    fallback = shutil.which("booley")
-    candidate = Path(fallback) if fallback else Path()
-    return candidate.resolve(strict=True) if _trusted_validator(candidate, project) else None
+    return None
 
 
 def _trusted_validator(executable: Path, project: Path) -> bool:
@@ -916,13 +949,17 @@ def _validator_prefix_anchors() -> dict[Path, Path]:
     environment_anchor = (
         home if environment == home or home in environment.parents else environment
     )
-    return {
+    anchors = {
         (home / ".local" / "bin").resolve(): home,
         Path("/usr/local/bin").resolve(): Path("/usr").resolve(),
         Path("/usr/bin").resolve(): Path("/usr").resolve(),
         Path("/bin").resolve(): Path("/usr").resolve(),
         (environment / ("Scripts" if os.name == "nt" else "bin")).resolve(): environment_anchor,
     }
+    for directory in _validator_script_directories():
+        if directory == home or home in directory.parents:
+            anchors[directory] = home
+    return anchors
 
 
 def _secure_validator_ancestry(executable: Path, anchor: Path) -> bool:

@@ -672,14 +672,24 @@ def prepare(workspace: Path) -> str:
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
 
     spec = _load_spec(workspace)
+    quiesced: _LegacyVscodeContainer | None = None
     try:
-        pending_project_data = runtime_spec.authorized_project_data_source(workspace)
-        _reject_legacy_project_data_visibility(workspace, pending_project_data)
+        authenticated = runtime_spec.authenticate(workspace, spec, dc.devcontainer_path(workspace))
+        assert authenticated.project_data_source is not None
+        quiesced = _quiesce_legacy_vscode_container(
+            Path(authenticated.project_root),
+            Path(authenticated.project_data_source),
+            authenticated,
+        )
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
+        recovery = _quiesced_validation_recovery(quiesced)
         raise SessionError(
             f"refusing Session Runtime preparation: {exc}; run `booley init --seed` on the host"
+            f"{recovery}"
         ) from exc
+    if quiesced is not None:
+        _remove_quiesced_legacy_container(quiesced)
     _reconcile_stopped_vscode_containers(workspace, issuance)
     profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
@@ -708,17 +718,131 @@ def prepare(workspace: Path) -> str:
     return issuance.spec_sha256
 
 
-def _reject_legacy_project_data_visibility(workspace: Path, pending_project_data: Path) -> None:
-    """Block creation while an old runtime can rename the next bind source."""
+@dataclass(frozen=True)
+class _LegacyVscodeContainer:
+    name: str
+    container_id: str
+
+
+def _same_host_path(actual: str, expected: Path) -> bool:
+    actual_key = os.path.normpath(actual.replace("\\", "/")).replace("\\", "/")
+    expected_key = os.path.normpath(str(expected).replace("\\", "/")).replace("\\", "/")
+    windows_path = any(len(value) >= 2 and value[1] == ":" for value in (actual_key, expected_key))
+    return (
+        actual_key.casefold() == expected_key.casefold()
+        if windows_path
+        else actual_key == expected_key
+    )
+
+
+def _inspected_running(state: dict) -> bool | None:
+    status = state.get("State")
+    if not isinstance(status, dict) or not isinstance(status.get("Running"), bool):
+        return None
+    return status["Running"]
+
+
+def _legacy_vscode_identity(state: dict, workspace: Path, expected: dict[str, str]) -> str | None:
+    config = state.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if not isinstance(labels, dict):
+        return None
+    local_folder = labels.get(_DEVCONTAINER_FOLDER_LABEL)
+    config_file = labels.get("devcontainer.config_file")
+    if (
+        labels.get("booley.role") != "interactive"
+        or labels.get("booley.project-id") != expected["booley.project-id"]
+        or not isinstance(local_folder, str)
+        or not _same_host_path(local_folder, workspace)
+        or not isinstance(config_file, str)
+        or not _same_host_path(config_file, dc.devcontainer_path(workspace))
+    ):
+        return None
+    container_id = state.get("Id")
+    return container_id if isinstance(container_id, str) and container_id else None
+
+
+def _quiesce_legacy_vscode_container(
+    workspace: Path, pending_project_data: Path, issuance: Issuance
+) -> _LegacyVscodeContainer | None:
+    """Stop one authenticated legacy VS Code container before full validation."""
+    from booley.eda.provisioning import runtime_spec
+
+    expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+    candidates: list[_LegacyVscodeContainer] = []
+    ambiguous: list[str] = []
     for name, raw in _strict_running_interactive_states():
         if not _inspected_container_serves_workspace(name, raw, workspace):
             continue
         if _project_data_mount_root_is_pinned(raw, workspace, pending_project_data):
             continue
+        state = _decode_container_inspect(raw)
+        assert state is not None
+        container_id = _legacy_vscode_identity(state, workspace, expected)
+        if container_id is None or _inspected_running(state) is not True:
+            ambiguous.append(name)
+        else:
+            candidates.append(_LegacyVscodeContainer(name, container_id))
+    if ambiguous or len(candidates) > 1:
+        names = ", ".join(repr(name) for name in ambiguous + [row.name for row in candidates])
         raise SessionError(
-            f"running Session Runtime {name!r} predates the protected Project-data "
-            "mount contract; stop and remove it before preparing the replacement"
+            f"cannot safely migrate multiple or ambiguous legacy Session Runtimes: {names}; "
+            "close VS Code and stop/remove those containers before retrying"
         )
+    if not candidates:
+        return None
+    _stop_legacy_vscode_container(candidates[0])
+    return candidates[0]
+
+
+def _stop_legacy_vscode_container(container: _LegacyVscodeContainer) -> None:
+    result = _run(["docker", "stop", container.container_id])
+    raw = _docker_stdout(["docker", "inspect", container.container_id])
+    if raw is None:
+        return
+    state = _decode_container_inspect(raw)
+    if result.returncode != 0 or state is None or state.get("Id") != container.container_id:
+        detail = result.stderr.strip() or result.stdout.strip() or "container identity changed"
+        raise SessionError(f"cannot stop legacy Session Runtime {container.name!r}: {detail}")
+    if _inspected_running(state) is not False:
+        raise SessionError(
+            f"legacy Session Runtime {container.name!r} is still running after stop"
+        )
+
+
+def _quiesced_validation_recovery(container: _LegacyVscodeContainer | None) -> str:
+    if container is None:
+        return ""
+    raw = _docker_stdout(["docker", "inspect", container.container_id])
+    if raw is None:
+        return f"; legacy container {container.name!r} is no longer present"
+    return (
+        f"; legacy container {container.name!r} was stopped; recover it with "
+        f"`docker start {container.container_id}` if needed"
+    )
+
+
+def _remove_quiesced_legacy_container(container: _LegacyVscodeContainer) -> None:
+    """Remove only the immutable container ID authenticated and stopped above."""
+    raw = _docker_stdout(["docker", "inspect", container.container_id])
+    if raw is None:
+        return
+    state = _decode_container_inspect(raw)
+    if state is None or state.get("Id") != container.container_id:
+        raise SessionError(f"cannot re-inspect legacy Session Runtime {container.name!r}")
+    if _inspected_running(state) is not False:
+        raise SessionError(f"legacy Session Runtime {container.name!r} restarted during migration")
+    result = _run(["docker", "rm", container.container_id])
+    if (
+        result.returncode == 0
+        or _docker_stdout(["docker", "inspect", container.container_id]) is None
+    ):
+        return
+    detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
+    raise SessionError(
+        f"cannot remove legacy Session Runtime {container.name!r}: {detail}; its container-local "
+        "data remains available while the container exists"
+    )
 
 
 def _strict_running_interactive_states() -> list[tuple[str, str]]:
@@ -861,7 +985,7 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
     config = state.get("Config")
     labels = config.get("Labels") if isinstance(config, dict) else None
     folder = labels.get(_DEVCONTAINER_FOLDER_LABEL) if isinstance(labels, dict) else None
-    return isinstance(folder, str) and folder.casefold() == str(workspace).casefold()
+    return isinstance(folder, str) and _same_host_path(folder, workspace)
 
 
 def _project_data_mount_root_is_pinned(
