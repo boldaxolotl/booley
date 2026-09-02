@@ -104,7 +104,7 @@ from booley.runtime.project_dir import (
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.flow_names import config_section
-from booley.targets.target import inspect_target
+from booley.targets.target import inspect_target_selector as inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 if TYPE_CHECKING:

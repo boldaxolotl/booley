@@ -46,6 +46,8 @@ class ImplementationContext:
     eda_tool: str | None = None
     invocation_run_id: str = ""
     baseline_target: str | None = None
+    baseline_target_identity: str | None = None
+    candidate_target_identity: str | None = None
     requested_baseline_ref: str | None = None
     resolved_baseline_ref: str | None = None
     timestamp: str = field(default_factory=utc_now_rfc3339)
@@ -263,6 +265,8 @@ def _comparison(
         "resolved_ref": context.resolved_baseline_ref,
         "baseline_target": context.baseline_target or context.target,
         "candidate_target": context.target,
+        "baseline_target_identity": context.baseline_target_identity,
+        "candidate_target_identity": context.candidate_target_identity,
         "basis_valid": not errors,
         "basis_errors": errors,
         "baseline": _baseline_payload(baseline, context.invocation_run_id),
@@ -290,6 +294,7 @@ def build_implementation_report(
         "identity": {
             "flow": context.flow,
             "target": context.target,
+            "target_identity": context.candidate_target_identity,
             "eda_tool": context.eda_tool,
             "invocation_run_id": context.invocation_run_id or None,
             "timestamp": context.timestamp,
@@ -313,7 +318,7 @@ def build_implementation_aggregate(
 ) -> ImplementationAggregate:
     """Build a cross-Flow run summary from policy-resolved target reports."""
     ordered = {target: reports[target].mcp_entry() for target in reports}
-    grades = [report.grade for report in reports.values()]
+    grades: list[Grade] = [report.grade for report in reports.values()]
     grade = max(grades, key=_GRADE_SEVERITY.__getitem__) if grades else "error"
     exit_code = 2 if grade == "error" else 1 if grade == "fail" else 0
     detail = {

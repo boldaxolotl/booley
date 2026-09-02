@@ -22,7 +22,7 @@ from booley.targets.parameter_integrity import (
     ParameterIntegrityError,
     validate_top_parameter_intent,
 )
-from booley.targets.target import inspect_target, select_target
+from booley.targets.target import TargetHandle, inspect_target
 
 from .. import edam as edam_layer
 from ..base import SubprocessResult
@@ -102,20 +102,18 @@ def new_attempt_token() -> str:
 
 
 def prepare_simulation_build(
-    project_root: Path | str,
-    target: str,
+    handle: TargetHandle,
     *,
     variant: str = "",
-    vlnv: str | None = None,
+    resolution_vlnv: str | None = None,
     environment: Mapping[str, str] | None = None,
 ) -> PreparedSimulationBuild:
     """Resolve and prepare the simulator image used by normal Simulation."""
     try:
         return _prepare_simulation_build(
-            project_root,
-            target,
+            handle,
             variant=variant,
-            vlnv=vlnv,
+            resolution_vlnv=resolution_vlnv,
             environment=environment,
         )
     except (
@@ -128,22 +126,20 @@ def prepare_simulation_build(
 
 
 def _prepare_simulation_build(
-    project_root: Path | str,
-    target: str,
+    handle: TargetHandle,
     *,
     variant: str,
-    vlnv: str | None,
+    resolution_vlnv: str | None,
     environment: Mapping[str, str] | None,
 ) -> PreparedSimulationBuild:
     """Prepare one supported simulator Target after boundary normalization."""
-    root = Path(project_root)
-    handle = select_target(root, target, for_flow="sim")
+    root = handle.project_root
+    target = handle.selector
     work_root = edam_layer.work_root_for(root, "sim", target, variant=variant)
-    resolved = fusesoc_registry.resolve_target(
-        target,
-        project_root=root,
+    resolved = fusesoc_registry.resolve_target_handle(
+        handle,
         build_root=work_root,
-        vlnv=vlnv,
+        resolution_vlnv=resolution_vlnv,
     )
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = sim_edam.normalize_eda_tool(resolved.eda_tool)
@@ -154,7 +150,7 @@ def _prepare_simulation_build(
         )
     _stage_doctor_overlay(root, resolved.build_root)
     try:
-        inspection = inspect_target(root, target)
+        inspection = inspect_target(root, handle)
         fileset = {
             "rtl": tuple(inspection.rtl_files),
             "tb": tuple(inspection.tb_files),

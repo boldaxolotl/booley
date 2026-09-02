@@ -9,18 +9,23 @@ import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import TargetPair
+from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
-from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
+from booley.flows.fpga.flow import FpgaImplFlow, _PreparedFpgaCommand, _vlogdefine_args
+from booley.flows.implementation_comparison import (
+    TargetExecutionRef,
+    target_pair_plans_for_handles,
+)
 from booley.flows.recipe_evidence import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
@@ -30,8 +35,28 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
+from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
+from booley.targets.target import select_target as canonical_select_target
+from booley.targets.target import select_targets as canonical_select_targets
 
 _REAL_RESOLVE_TARGET_SELECTION = fusesoc_registry.resolve_target_selection
+
+
+def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
+    root = Path(project_root).resolve()
+    return TargetHandle(
+        identity=f"::test:0#{selector}",
+        selector=selector,
+        name=selector,
+        vlnv="::test:0",
+        core_file=root / "test.core",
+        flow="generic",
+        eda_tool="vivado",
+        drivable_by=("fpga",),
+        project_root=root,
+        doctor_private=False,
+        _factory_key=_HANDLE_FACTORY_KEY,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -45,12 +70,25 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root, *, for_flow=None):
-        return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
+    def _select(project_root, token, *, for_flow=None):
+        try:
+            return canonical_select_target(project_root, token, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
+            return _layer_target_handle(project_root, token)
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
+    def _select_many(project_root, target_arg, *, for_flow=None):
+        try:
+            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
+            return tuple(
+                _layer_target_handle(project_root, token.strip())
+                for token in (target_arg or "").split(",")
+                if token.strip()
+            )
+
+    monkeypatch.setattr("booley.flows.fpga.flow.select_targets", _select_many)
+    monkeypatch.setattr("booley.flows.implementation_comparison.select_target", _select)
 
 
 @pytest.fixture()
@@ -134,7 +172,7 @@ def test_relative_ticket_criterion_auto_applies_pinned_baseline(
         criterion_params={"fpga_impl_ok_default": {BASELINE_REF_PARAM: base_sha}},
     )
 
-    assert flow._apply_ticket_baseline(["default"]) is None
+    assert flow._apply_ticket_baseline((_layer_target_handle(tmp_path, "default"),)) is None
     assert flow.args.baseline == base_sha
 
 
@@ -161,7 +199,19 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
             side_effect=lambda target: calls.append(target) or metrics,
         ),
     ):
-        results, short_sha = flow._run_baseline_configs((TargetPair("fpga_before", "fpga_after"),))
+        candidate = _layer_target_handle(tmp_path, "fpga_after")
+        plans = target_pair_plans_for_handles(
+            {
+                "fpga_impl_ok_fpga_after": SimpleNamespace(
+                    params={BASELINE_TARGET_PARAM: "fpga_before"}
+                )
+            },
+            "fpga_impl_ok_",
+            (candidate,),
+            flow="fpga",
+        )
+        flow._target_handles = {candidate.selector: candidate}
+        results, short_sha = flow._run_baseline_configs(plans)
 
     assert calls == ["fpga_before"]
     assert short_sha == "abc1234"
@@ -471,7 +521,7 @@ def test_negative_wns_fails_fpga_criterion(
         patch.object(
             FpgaImplFlow,
             "_prepare_fpga_command",
-            return_value=(["make", "-C", "x"], tmp_path),
+            return_value=_PreparedFpgaCommand(["make", "-C", "x"], tmp_path, "", False),
         ),
         patch("booley.flows.fpga.backends.vivado.edam.parse_fpga_reports", return_value=parsed),
         patch.object(
@@ -609,13 +659,27 @@ class TestFpgaResolution:
         per-variant build dir distinct from the vivado configure() work_root."""
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
+        handle = _layer_target_handle(tmp_path, "default")
+        flow._target_handles = {"default": handle}
+        flow._target_execution_refs = {
+            "default": TargetExecutionRef(
+                handle.identity,
+                "::test:0#default",
+                handle.vlnv,
+            )
+        }
         captured: dict = {}
         build_p, cfg_p, run_p = _patch_edam_build(captured)
         seen: dict = {}
 
         def fake_resolve(target, *, project_root, build_root, **kw):
-            seen.update(target=target, project_root=project_root, build_root=build_root)
-            return _fake_fpga_resolved(tmp_path, config=target)
+            seen.update(
+                target=target,
+                project_root=project_root,
+                build_root=build_root,
+                vlnv=kw.get("vlnv"),
+            )
+            return _fake_fpga_resolved(tmp_path, config="default")
 
         with (
             build_p,
@@ -629,7 +693,8 @@ class TestFpgaResolution:
         ):
             flow._prepare_fpga_command("default")
 
-        assert seen["target"] == "default"
+        assert seen["target"] == "::test:0#default"
+        assert seen["vlnv"] == "::test:0"
         assert seen["project_root"] == tmp_path
         # FuseSoC build dir is keyed distinctly so it can't clobber the vivado dir.
         # Compare build_root in POSIX form so the assertion is portable.
@@ -1166,7 +1231,7 @@ class TestFailureCapture:
             patch.object(
                 FpgaImplFlow,
                 "_prepare_fpga_command",
-                return_value=(["make", "-C", "wr"], work_root),
+                return_value=_PreparedFpgaCommand(["make", "-C", "wr"], work_root, "", False),
             ),
             patch.object(
                 FpgaImplFlow,
