@@ -115,6 +115,14 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         tempfile.tempdir = None
 
 
+@pytest.fixture(autouse=True)
+def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep host-global mutation locks local to each test process."""
+    from booley.harness import lifecycle_lock
+
+    monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path / "host-config")
+
+
 # --- Minimal FST fixtures ---------------------------------------------------
 # ``_bwave_valid`` requires a well-formed header block AND at least one
 # value-change block: a header-only file is the exact shape a simulator writes
