@@ -12,6 +12,19 @@ from import_graph import (
     top_level_package_sccs,
 )
 
+_NAMED_HOTSPOTS = (
+    "booley.harness.doctor",
+    "booley.harness.booley",
+    "booley.harness.init_cmd",
+    "booley.harness.developer",
+    "booley.flows.sim.flow",
+    "booley.flows.synth.flow",
+    "booley.mcp.server",
+    "booley.flows.fpga.flow",
+    "booley.specialists.mutation_tester",
+    "booley.specialists.coverage_analyst",
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -37,6 +50,10 @@ def main() -> None:
     print(f"\nTop {args.top} file fan-out:")
     for item in fan_out[: args.top]:
         print(f"- {item.source}: {item.count}")
+    fan_out_by_source = {item.source: item.count for item in fan_out}
+    print("\nNamed composition hotspot fan-out (diagnostic only):")
+    for source in _NAMED_HOTSPOTS:
+        print(f"- {source}: {fan_out_by_source.get(source, 0)}")
 
 
 def _positive_int(value: str) -> int:
