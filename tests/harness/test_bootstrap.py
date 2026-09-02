@@ -202,6 +202,7 @@ def test_bootstrap_stops_after_each_failed_dependency(
 def test_prerequisites_replace_a_valid_docker_probe_with_daemon_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(bootstrap, "_git_finding", lambda: _current("git"))
     monkeypatch.setattr(bootstrap, "_tool_finding", lambda name, _arg: _current(name))
     monkeypatch.setattr(bootstrap, "_docker_daemon_error", lambda: "daemon unavailable")
     monkeypatch.setattr(bootstrap, "_vscode_finding", lambda: _current("vscode"))
@@ -211,6 +212,103 @@ def test_prerequisites_replace_a_valid_docker_probe_with_daemon_failure(
     assert findings[1] == bootstrap.BootstrapFinding(
         "docker", bootstrap.BootstrapState.ERROR, "daemon unavailable"
     )
+
+
+@pytest.mark.parametrize(
+    "version_line",
+    [
+        "git version 2.37.2",
+        "git version 2.37.2.windows.1",
+        "git version 2.46.0 (Apple Git-152)",
+    ],
+)
+def test_git_probe_accepts_supported_stable_versions(
+    monkeypatch: pytest.MonkeyPatch,
+    version_line: str,
+) -> None:
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, version_line, ""),
+    )
+
+    finding = bootstrap._git_finding()
+
+    assert finding.state is bootstrap.BootstrapState.CURRENT
+    assert finding.detail == version_line
+
+
+@pytest.mark.parametrize(
+    "version_line",
+    [
+        "git version 2.37.0.windows.1",
+        "git version 2.36.9",
+    ],
+)
+def test_git_probe_rejects_older_versions(
+    monkeypatch: pytest.MonkeyPatch,
+    version_line: str,
+) -> None:
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, version_line, ""),
+    )
+
+    finding = bootstrap._git_finding()
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert "Git 2.37.2 or newer" in finding.detail
+    assert "Upgrade Git" in finding.detail
+
+
+@pytest.mark.parametrize(
+    "version_line",
+    [
+        "git version 2.37.2.rc0",
+        "git version 2.40.0-beta1",
+        "git version unknown",
+        "not git version 2.46.0",
+    ],
+)
+def test_git_probe_rejects_prerelease_and_unparseable_versions(
+    monkeypatch: pytest.MonkeyPatch,
+    version_line: str,
+) -> None:
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, version_line, ""),
+    )
+
+    finding = bootstrap._git_finding()
+
+    assert finding.state is bootstrap.BootstrapState.ERROR
+    assert "Git 2.37.2 or newer" in finding.detail
+
+
+def test_git_probe_reports_missing_and_execution_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: None)
+    assert "Git 2.37.2 or newer" in bootstrap._git_finding().detail
+
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "bad"),
+    )
+    assert "probe failed" in bootstrap._git_finding().detail
+
+    def fail(*_args, **_kwargs):
+        raise OSError("denied")
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", fail)
+    assert "cannot run Git" in bootstrap._git_finding().detail
 
 
 def test_tool_probe_reports_missing_failure_and_version(
@@ -309,7 +407,8 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
     changed_event = SimpleNamespace(changed=True, failed=False, detail="", name="linked")
     report = SimpleNamespace(events=(changed_event,), diagnostics=(), fatal=None)
-    reconciliation = SimpleNamespace(report=report)
+    target = tmp_path / ".agents" / "skills"
+    reconciliation = SimpleNamespace(target=target, report=report)
     monkeypatch.setattr(
         bootstrap, "reconcile_host_skills", lambda *_args, **_kwargs: (reconciliation,)
     )
@@ -323,11 +422,11 @@ def test_skill_reconciliation_reports_missing_pending_changed_and_errors(
     monkeypatch.setattr(
         bootstrap,
         "reconcile_host_skills",
-        lambda *_args, **_kwargs: (SimpleNamespace(report=failed_report),),
+        lambda *_args, **_kwargs: (SimpleNamespace(target=target, report=failed_report),),
     )
     finding = bootstrap._reconcile_skills(Intent.ENSURE)
     assert finding.state is bootstrap.BootstrapState.ERROR
-    assert finding.detail == "broken; diagnostic; fatal"
+    assert finding.detail == f"{target}: broken; diagnostic; fatal"
 
 
 def test_nangate_reconciliation_covers_current_check_fetch_and_failure(

@@ -873,7 +873,10 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = _find_trusted_validator(project)
     if executable is None:
-        raise RuntimeSpecError("cannot resolve the trusted host Booley executable")
+        raise RuntimeSpecError(
+            "cannot resolve the trusted host Booley executable; reinstall Booley with "
+            "pipx or add its Python scripts directory to PATH"
+        )
     spec["initializeCommand"] = initialize_command(str(executable))
 
 

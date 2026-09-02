@@ -763,6 +763,7 @@ def test_seal_rejects_project_controlled_mount_source(
 def test_seal_rejects_workspace_path_poisoned_booley(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    trusted = _install_trusted_validator(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley_project").mkdir()
@@ -780,6 +781,7 @@ def test_seal_rejects_workspace_path_poisoned_booley(
     runtime_spec.pin_image(spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="trusted host Booley"):
         runtime_spec.seal(project, spec)
+    assert trusted.is_file()
 
 
 def test_seal_skips_tmp_path_poisoned_booley(

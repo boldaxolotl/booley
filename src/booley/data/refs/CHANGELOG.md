@@ -8,6 +8,19 @@ Packaged release history starts with the first release that replaces the
 Unreleased section with a dated stable-version entry. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## Unreleased
+
+### Bug fixes
+
+- Host bootstrap now requires Git 2.37.2 or newer, avoiding a Git for Windows
+  temporary-name exhaustion failure during large line-ending repairs.
+- Session Runtime issuance now finds trusted Booley executables installed in
+  Python's per-user scripts directory even when that directory is absent from
+  `PATH`.
+- Skill reconciliation now always deploys packaged skills to `.agents/skills`
+  for Codex, while continuing to deploy to a distinct existing `.claude/skills`
+  directory.
+
 ## 0.2.10 - 01 SEP 2026
 
 ### New features

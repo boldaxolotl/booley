@@ -39,6 +39,7 @@ Booley supports Windows and Linux (Ubuntu 24.04 tested); macOS is not
 supported. You need:
 
 - Python 3.11+
+- [Git 2.37.2+](https://git-scm.com/downloads)
 - [Docker](https://www.docker.com/)
 - [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - Credentials for Claude (the default) or Codex

@@ -23,16 +23,12 @@ def _find_skill_targets() -> list[Path]:
     agents_dir = home / ".agents"
     claude_dir = home / ".claude"
 
-    targets: list[Path] = []
-    if agents_dir.is_dir():
-        targets.append(agents_dir / "skills")
+    targets = [agents_dir / "skills"]
     if claude_dir.is_dir():
         resolved_claude = claude_dir.resolve()
-        resolved_agents = agents_dir.resolve() if agents_dir.exists() else None
+        resolved_agents = agents_dir.resolve()
         if resolved_claude != resolved_agents:
             targets.append(claude_dir / "skills")
-    if not targets:
-        targets.append(agents_dir / "skills")
     return targets
 
 
