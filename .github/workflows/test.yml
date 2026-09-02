@@ -441,7 +441,8 @@ jobs:
             exit 0
           fi
           python .github/scripts/docker_base_contract.py --repo . \
-            --resolve-image "${PUBLISHED_BASE}" --github-output "${GITHUB_OUTPUT}"
+            --resolver shadow --resolve-image "${PUBLISHED_BASE}" \
+            --github-output "${GITHUB_OUTPUT}"
           echo "build=false" >> "${GITHUB_OUTPUT}"
 
       # A PR that changes a stable-base input must test that candidate without
