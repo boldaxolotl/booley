@@ -77,6 +77,17 @@ def test_doctor_parser_accepts_explicit_project_root(tmp_path):
     assert args.project_root == str(tmp_path)
 
 
+def test_project_command_rejects_source_but_feedback_is_allowed(tmp_path, capsys):
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n",
+        encoding="utf-8",
+    )
+
+    assert tlr._reject_source_project_command("doctor", tmp_path) == 2
+    assert "cannot be initialized or used as a Project" in capsys.readouterr().err
+    assert tlr._reject_source_project_command("feedback", tmp_path) is None
+
+
 @pytest.mark.parametrize("command", ["mcp-tool", "link-guidance", "tool"])
 def test_removed_top_level_commands_are_rejected(command):
     parser = tlr._build_parser()

@@ -1010,6 +1010,8 @@ def _resolve_transcript_dir(
         # reviewer failure could not be inspected at all). Persist under the
         # project's own .runtime tree so the transcript survives and is
         # discoverable. Fall back to a tempdir only when no project exists.
+        from booley.runtime.checkout_role import SourceCheckoutProjectError
+
         try:
             from booley.runtime.project_dir import runtime_dir as _project_runtime_dir
 
@@ -1019,7 +1021,7 @@ def _resolve_transcript_dir(
                 "the project runtime dir %s",
                 runtime_dir,
             )
-        except (FileNotFoundError, ImportError):
+        except (FileNotFoundError, ImportError, SourceCheckoutProjectError):
             import tempfile
 
             runtime_dir = Path(tempfile.mkdtemp(prefix="booley_logs_"))

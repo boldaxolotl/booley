@@ -51,6 +51,25 @@ def test_bootstrap_failure_precedes_every_project_write(
     assert not (tmp_path / ".devcontainer").exists()
 
 
+def test_source_checkout_refusal_precedes_bootstrap_and_project_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.booley]\nsource_checkout = true\n",
+        encoding="utf-8",
+    )
+
+    def unexpected_bootstrap(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("source refusal must precede Host Bootstrap")
+
+    monkeypatch.setattr(init_cmd, "reconcile_bootstrap", unexpected_bootstrap)
+
+    assert init_cmd.run_init(_args(), tmp_path) == 2
+    assert "cannot be initialized or used as a Project" in capsys.readouterr().out
+    assert not (tmp_path / ".booley_project").exists()
+    assert not (tmp_path / ".devcontainer").exists()
+
+
 def test_seed_only_checks_bootstrap_and_names_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

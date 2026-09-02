@@ -17,6 +17,8 @@ import os
 import tomllib
 from pathlib import Path
 
+from booley.runtime.checkout_role import require_project_checkout
+
 logger = logging.getLogger(__name__)
 
 # The project data directory's name inside the RTL repo. On the host the project
@@ -58,13 +60,20 @@ def resolve_project_dir(start: Path | None = None) -> Path:
         start: Directory to start walking up from. Defaults to cwd.
     """
     global _cache
+    # An explicit start selects a checkout and must never reinterpret Booley's
+    # own source as a Project.  With the implicit cwd, however, an explicit
+    # environment override may select a separate Project (CI, Docker, tests,
+    # and source-checkout development all rely on that supported boundary).
+    current = Path(start or Path.cwd()).resolve()
+    if start is not None:
+        current = require_project_checkout(current)
     if _cache is not None:
         return _cache
 
     # 1. Env var override (trusted — CI/Docker/tests set this explicitly)
     env = os.environ.get("BOOLEY_PROJECT_DIR")
     if env:
-        p = Path(env).resolve()
+        p = require_project_checkout(Path(env))
         if not p.is_dir():
             import warnings
 
@@ -75,7 +84,7 @@ def resolve_project_dir(start: Path | None = None) -> Path:
         _cache = p
         return _cache
 
-    current = (start or Path.cwd()).resolve()
+    current = require_project_checkout(current)
 
     # 2. Walk up to find booley.toml [project] dir override
     toml_result = _resolve_from_toml(current)
@@ -101,7 +110,7 @@ def resolve_checkout_project_dir(project_root: Path) -> Path:
     cache so config and design sources come from the same checkout. Projects
     without a local snapshot retain the normal resolution chain.
     """
-    root = project_root.resolve()
+    root = require_project_checkout(project_root)
     toml_result = _resolve_from_toml(root)
     if toml_result is not None:
         return toml_result

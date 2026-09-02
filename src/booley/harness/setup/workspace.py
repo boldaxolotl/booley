@@ -73,6 +73,10 @@ def _install_scope_hook(
 ) -> None:
     """Write .scope.json and install the scope pre-commit hook (always) plus the
     stealth commit-msg hook (unless ``[stealth] enabled = false``)."""
+    if project_root is not None:
+        from booley.runtime.checkout_role import require_project_checkout
+
+        require_project_checkout(project_root)
     scope_file = worktree_path / ".scope.json"
     controls = _hook_contract_controls(worktree_path, contract_surface_root)
     scope_file.write_text(

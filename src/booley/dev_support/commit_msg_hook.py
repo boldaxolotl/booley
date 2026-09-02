@@ -82,7 +82,7 @@ def _trim_blank_edges(body: str) -> str:
     return "\n".join(lines)
 
 
-def sanitize_body(body: str) -> str:
+def sanitize_body(body: str, project_root: Path | None = None) -> str:
     """Redact a commit body in place, dropping only attribution trailers.
 
     Returns the body with no leading/trailing blank lines, so the caller can
@@ -90,10 +90,10 @@ def sanitize_body(body: str) -> str:
     regardless of how the author spaced the original.
     """
     kept = [ln for ln in body.split("\n") if not _ATTRIBUTION_LINE_RE.match(ln)]
-    return _trim_blank_edges("\n".join(redact_banned(ln) for ln in kept))
+    return _trim_blank_edges("\n".join(redact_banned(ln, project_root) for ln in kept))
 
 
-def sanitize_message(msg: str) -> str:
+def sanitize_message(msg: str, project_root: Path | None = None) -> str:
     """Sanitize a commit message: redact banned content, drop comment lines.
 
     Both subject and body are redacted in place. This is the real leak surface:
@@ -101,14 +101,18 @@ def sanitize_message(msg: str) -> str:
     only reject the commit rather than scrub it.
     """
     raw_subject, body = split_subject_body(msg)
-    subject = redact_banned(raw_subject)
-    clean_body = sanitize_body(body)
+    subject = redact_banned(raw_subject, project_root)
+    clean_body = sanitize_body(body, project_root)
     if clean_body:
         return f"{subject}\n\n{clean_body}\n"
     return subject + "\n"
 
 
-def _notify_if_redacted(raw: str, sanitized: str) -> None:
+def _notify_if_redacted(
+    raw: str,
+    sanitized: str,
+    project_root: Path | None = None,
+) -> None:
     """Tell the committer when sanitization rewrote their message (F-8/F-15).
 
     Redaction is stealth-by-design but was also stealth-from-the-author: a
@@ -134,7 +138,7 @@ def _notify_if_redacted(raw: str, sanitized: str) -> None:
     # with only its blank edges trimmed: that is what sanitize_body() would
     # return if it had nothing to redact, so any difference is a real edit and
     # re-spacing alone never trips the notice.
-    if _trim_blank_edges(raw_body) != sanitize_body(raw_body):
+    if _trim_blank_edges(raw_body) != sanitize_body(raw_body, project_root):
         print(
             "commit-msg: stealth-mode redaction rewrote the commit body "
             "(banned phrases substituted, attribution trailers removed); "
@@ -158,11 +162,15 @@ def main() -> int:
         print("commit-msg hook: no message file", file=sys.stderr)
         return 1
 
+    from validate_commit_msg import _current_repo_root
+
+    project_root = _current_repo_root()
+
     # Stealth mode is opt-out ([stealth] enabled = false). When off, this hook —
     # sanitizer and convention validator both — is a no-op, even if a prior
     # setup left it installed. Ticket worktrees are set up fresh so the install
     # is already gated; this makes the flag authoritative at runtime too.
-    if not stealth_enabled():
+    if not stealth_enabled(project_root):
         return 0
 
     msg_file = Path(sys.argv[1])
@@ -171,14 +179,14 @@ def main() -> int:
         return 1
 
     raw = msg_file.read_text(encoding="utf-8", errors="replace")
-    sanitized = sanitize_message(raw)
+    sanitized = sanitize_message(raw, project_root)
     msg_file.write_text(sanitized, encoding="utf-8")
-    _notify_if_redacted(raw, sanitized)
+    _notify_if_redacted(raw, sanitized, project_root)
 
     # Validate the sanitized message
     from validate_commit_msg import validate_message
 
-    errors = validate_message(sanitized)
+    errors = validate_message(sanitized, project_root=project_root)
     if errors:
         # Opt-out for human/upstream-style commits on non-Booley IP (SETUP-10):
         # skip only the type(scope): summary CONVENTION check. Sanitization

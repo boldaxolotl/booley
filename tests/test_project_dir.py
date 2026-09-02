@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.project_dir import (
     checkout_project_dir_relative_to,
     reset_cache,
@@ -18,9 +19,10 @@ from booley.ticket_board.helpers import detect_project_root
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
+def _clear_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Reset the module-level cache before and after each test."""
     reset_cache()
+    monkeypatch.chdir(tmp_path)
     yield
     reset_cache()
 
@@ -176,6 +178,48 @@ class TestNotFound:
         # Empty tmp_path — no toml, no .booley_project/
         with pytest.raises(FileNotFoundError, match="booley init"):
             resolve_project_dir(start=tmp_path)
+
+
+class TestSourceCheckoutRefusal:
+    def _source(self, tmp_path: Path) -> Path:
+        root = tmp_path / "booley-source"
+        root.mkdir()
+        (root / "pyproject.toml").write_text(
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
+        )
+        return root
+
+    def test_stale_state_does_not_turn_source_into_project(self, tmp_path, monkeypatch):
+        root = self._source(tmp_path)
+        (root / ".booley_project").mkdir()
+        external = tmp_path / "external-state"
+        external.mkdir()
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+
+        with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
+            resolve_project_dir(start=root)
+        with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
+            resolve_checkout_project_dir(root)
+
+    def test_implicit_cwd_can_select_an_external_project(self, tmp_path, monkeypatch):
+        root = self._source(tmp_path)
+        external = tmp_path / "external-state"
+        external.mkdir()
+        monkeypatch.chdir(root)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+
+        assert resolve_project_dir() == external.resolve()
+
+    def test_env_cannot_select_state_inside_source(self, tmp_path, monkeypatch):
+        root = self._source(tmp_path)
+        stale = root / ".booley_project"
+        stale.mkdir()
+        monkeypatch.chdir(root)
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(stale))
+
+        with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
+            resolve_project_dir()
 
 
 # ---------------------------------------------------------------------------

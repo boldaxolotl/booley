@@ -18,7 +18,8 @@ from typing import Any
 
 from booley.core.boundary import is_str_list
 from booley.core.config_paths import resolve_toml
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.checkout_role import SourceCheckoutProjectError
+from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 
 _logger = _logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ def _load_config() -> dict[str, Any]:
         if migration:
             raise EdaConfigError(migration)
         parse_eda_config(toml.get("eda"))
-    except (FileNotFoundError, OSError) as exc:
+    except (FileNotFoundError, OSError, SourceCheckoutProjectError) as exc:
         _logger.debug("booley.toml not found -- using empty config: %s", exc)
         project_dir = None
 
@@ -165,6 +166,25 @@ def __getattr__(name: str) -> Any:
     if name in _LAZY_NAMES:
         return _get(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def project_name(work_dir: Path | None = None) -> str:
+    """Return the Project name for an explicit checkout, or the active Project."""
+    if work_dir is None:
+        return str(_get("PROJECT_NAME"))
+    try:
+        project_dir = resolve_checkout_project_dir(work_dir)
+        path = resolve_toml(project_dir)
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+    except FileNotFoundError:
+        return "rtl_project"
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        _logger.warning("could not read Project name for checkout %s: %s", work_dir, exc)
+        return "rtl_project"
+    project = document.get("project", {})
+    name = project.get("name", "rtl_project") if isinstance(project, dict) else "rtl_project"
+    return name if isinstance(name, str) and name else "rtl_project"
 
 
 def is_human_in_loop(work_dir: Path | None = None) -> bool:

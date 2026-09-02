@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from booley.config.project_config import (
     is_human_in_loop,
     normalize_configs_toml,
     normalize_tests_toml,
+    project_name,
     render_test_selector,
 )
 
@@ -19,6 +21,21 @@ def _write_toml(work_dir: Path, body: str) -> None:
     project = work_dir / ".booley_project"
     project.mkdir(parents=True, exist_ok=True)
     (project / "booley.toml").write_text(body, encoding="utf-8")
+
+
+class TestProjectName:
+    def test_missing_toml_uses_default_without_warning(self, tmp_path: Path, caplog):
+        assert project_name(tmp_path) == "rtl_project"
+        assert not caplog.records
+
+    def test_malformed_toml_logs_checkout_context(self, tmp_path: Path, caplog):
+        _write_toml(tmp_path, "[project\nname = 'broken'")
+
+        with caplog.at_level(logging.WARNING, logger="booley.config.project_config"):
+            assert project_name(tmp_path) == "rtl_project"
+
+        assert str(tmp_path) in caplog.text
+        assert "could not read Project name" in caplog.text
 
 
 class TestIsHumanInLoop:
