@@ -897,7 +897,7 @@ class TestDetail:
         assert "no fusesoc" in payload["resolved_error"]
         text = render_detail(payload)
         assert "Resolved view unavailable" in text
-        assert "booley session enter -- booley targets sim" in text
+        assert "booley session enter" not in text
 
     def test_resolved_half_reads_edam(self, project: Path):
         from booley.flows import edam as edam_layer

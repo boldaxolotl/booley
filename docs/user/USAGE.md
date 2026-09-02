@@ -949,9 +949,10 @@ the loop runs as a daemon and tickets are queued from another terminal.
 The CLI is headless: no interactive agent runtime (the Claude Code or Codex app) is required to drive it. It drives the agent through the SDK (Claude Agent SDK / Codex SDK) instead. It picks up tickets from the queue, runs them, and moves completed tickets to review.
 
 > **`booley run` is container-only.** Launched on a host terminal it fails fast
-> and points you to **Reopen in Container** (or `docker exec` into the running
-> session). `booley init` is the host-side counterpart and refuses inside the
-> container, where Docker is deliberately unavailable.
+> and points you to **Reopen in Container** (or
+> `booley session enter -- booley run`). `booley init` is the host-side
+> counterpart and refuses inside the container, where Docker is deliberately
+> unavailable.
 
 ### Concurrent tickets
 

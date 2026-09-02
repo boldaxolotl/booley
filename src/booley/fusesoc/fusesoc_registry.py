@@ -2321,9 +2321,11 @@ def resolve_target(
     except OSError as exc:
         raise TargetResolutionError(f"could not invoke fusesoc ({fusesoc_cmd[0]}): {exc}") from exc
     if proc.returncode != 0:
+        diagnostic = proc.stderr.strip() or proc.stdout.strip()
+        detail = f":\n{diagnostic}" if diagnostic else " with no diagnostic output"
         raise TargetResolutionError(
             f"fusesoc run --setup --target {bare_target} {vlnv} failed "
-            f"(exit {proc.returncode}):\n{proc.stderr or proc.stdout}"
+            f"(exit {proc.returncode}){detail}"
         )
 
     edam_path = _find_edam(build_root, bare_target)

@@ -216,10 +216,9 @@ def detail_payload(
 ) -> dict[str, Any]:
     """Everything ``booley targets <name>`` shows for one Target.
 
-    The cheap half always fills in (enumeration + Doctor metadata); the resolved half
-    runs ``fusesoc run --setup`` and lands under ``"resolved"``, or —
-    resolution being genuinely unavailable outside the Session Runtime — its
-    failure lands under ``"resolved_error"`` instead of raising. Unknown and
+    The cheap half always fills in (enumeration + Doctor metadata); when enabled,
+    the resolved half runs ``fusesoc run --setup`` and lands under ``"resolved"``.
+    A resolution failure lands under ``"resolved_error"`` instead of raising. Unknown and
     ambiguous *token*\\ s DO raise (:class:`fusesoc_registry.UnknownTargetError`
     / :class:`fusesoc_registry.AmbiguousTargetError`) — their messages already
     name the candidates. *resolve_kwargs* forward to
@@ -254,7 +253,8 @@ def detail_payload(
             token, project_root=root, build_root=build_root, **resolve_kwargs
         )
     except fusesoc_registry.FuseSocError as exc:
-        payload["resolved_error"] = str(exc).strip().splitlines()[0]
+        message = str(exc).strip()
+        payload["resolved_error"] = message.splitlines()[0] if message else type(exc).__name__
     else:
         payload["resolved"] = {
             "toplevel": resolved.toplevel,
@@ -364,10 +364,8 @@ def render_detail(payload: dict[str, Any]) -> str:
     elif payload.get("resolved_error"):
         lines.append("")
         lines.append(f"Resolved view unavailable: {payload['resolved_error']}")
-        lines.append(
-            "  (resolution needs `fusesoc` — run inside the Session Runtime, "
-            f"e.g. `booley session enter -- booley targets {payload['selector']}`)"
-        )
+        if payload.get("resolution_command"):
+            lines.append(f"  Run `{payload['resolution_command']}`.")
 
     for warning in payload.get("warnings", []):
         lines.append(f"WARNING: {warning}")
