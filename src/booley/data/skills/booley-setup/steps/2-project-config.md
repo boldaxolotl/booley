@@ -592,9 +592,10 @@ Restate (don't re-derive) the three artifacts, the first-run Flow and Specialist
 and why those capabilities start disabled, then cover the project-specific bits:
 
 - **What the standard Session Runtime image likely provides:** common open-source RTL
-  tooling — FuseSoC, Verilator, Icarus Verilog, Yosys/ABC, sv2v, bwave, make,
-  GCC, Python, Node.js, Rust. Project extras (RISC-V GCC toolchains,
-  `srec_cat`, firmware SDKs) still need evidence or user confirmation;
+  tooling — FuseSoC, Verilator, Icarus Verilog, Yosys/ABC, sv2v, bwave, Make,
+  GCC/G++, Python, Node.js, and npm. Rust is not included; projects that compile
+  Rust need a reviewed project image with a pinned toolchain. Project extras
+  (RISC-V GCC toolchains, `srec_cat`, firmware SDKs) still need evidence or user confirmation;
   `booley doctor` can verify the actual image. Licensed EDA support exists only
   through a built-in provisioning policy (currently Vivado 2025.2), not an
   environment module or arbitrary Project extension.

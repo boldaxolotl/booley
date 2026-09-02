@@ -43,8 +43,18 @@ supported. You need:
 - [Docker](https://www.docker.com/)
 - [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - Credentials for Claude (the default) or Codex
-- About **15 GB of Docker storage** for the standard Booley image or **21 GB**
-  for the complete RISC-V demo stack, plus space for project build artifacts
+- About **15 GB of Docker storage** for the standard Booley image or at least
+  **21 GB** for the complete RISC-V demo stack, plus space for project build
+  artifacts.
+  The measured 0.2.10 Linux/AMD64 manifests contain 4.33 GB of compressed
+  standard-image layers and 5.53 GB for RISC-V in total; RISC-V shares the
+  standard layers and adds 1.21 GB rather than requiring both totals. On the
+  measured containerd image store, Docker displayed about 14.7 GB for the
+  standard image and 19.4 GB for RISC-V; their runtime-user-visible filesystems were
+  9.66 GB and 13.17 GB. Docker metadata, temporary retention during upgrades,
+  build cache, writable layers, and project artifacts need additional headroom.
+  See the
+  [exact baseline evidence and metric definitions](docs/internals/SESSION-RUNTIME-CONTRACT.md#evidence-and-size-policy).
 
 Install and verify the CLI on the host:
 
