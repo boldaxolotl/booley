@@ -896,12 +896,13 @@ def _invoked_validator_candidate() -> Path | None:
 
 def _path_validator_candidates() -> tuple[Path, ...]:
     """Return every ``booley`` location represented by ``PATH`` in order."""
-    name = "booley.exe" if os.name == "nt" else "booley"
+    names = ("booley.exe", "booley") if os.name == "nt" else ("booley",)
     return tuple(
         dict.fromkeys(
             Path(directory) / name
             for directory in os.environ.get("PATH", "").split(os.pathsep)
             if directory
+            for name in names
         )
     )
 
