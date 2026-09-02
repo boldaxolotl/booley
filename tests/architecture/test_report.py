@@ -21,6 +21,7 @@ def test_report_prints_deterministic_graph_diagnostics(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
@@ -45,6 +46,7 @@ def test_report_rejects_non_positive_top_count(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=10,
     )
 
     assert result.returncode == 2
