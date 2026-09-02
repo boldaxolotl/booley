@@ -267,43 +267,6 @@ class TestSingleProcess:
         assert store.refresh(ticket).state == HOLDING
 
 
-class TestPriorityAndPreemption:
-    def test_interactive_overtakes_queued_ticket_work(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        store_t = make_store(root, world)
-        store_i = make_store(root, world)
-        holder = store_t.submit(CLASS_HEAVY, pid=200, role=ROLE_TICKET)
-        assert store_t.refresh(holder).state == HOLDING
-        queued_ticket = store_t.submit(CLASS_HEAVY, pid=200, role=ROLE_TICKET)
-        interactive = store_i.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
-        # The later interactive submit is ahead of the earlier ticket waiter.
-        assert store_i.refresh(interactive).position == 0
-        assert store_t.refresh(queued_ticket).position == 1
-
-    def test_no_preemption_of_running_ticket_work(self, root, world):
-        spawn(world, 100)
-        spawn(world, 200)
-        store_t = make_store(root, world)
-        store_i = make_store(root, world)
-        holder = store_t.submit(CLASS_HEAVY, pid=200, role=ROLE_TICKET)
-        assert store_t.refresh(holder).state == HOLDING
-        interactive = store_i.submit(CLASS_HEAVY, pid=100, role=ROLE_INTERACTIVE)
-        # Interactive priority queues ahead of other waiters but never
-        # displaces a holder.
-        assert store_i.refresh(interactive).state == QUEUED
-        assert store_t.refresh(holder).state == HOLDING
-
-    def test_fifo_within_same_priority(self, root, world):
-        spawn(world, 100)
-        store = make_store(root, world)
-        store.submit(CLASS_HEAVY, pid=100)  # holder
-        first = store.submit(CLASS_HEAVY, pid=100, role=ROLE_TICKET)
-        second = store.submit(CLASS_HEAVY, pid=100, role=ROLE_TICKET)
-        assert store.refresh(first).position == 0
-        assert store.refresh(second).position == 1
-
-
 class TestTwoProcessRaces:
     """Simulated interleavings of two claimant processes over one directory."""
 

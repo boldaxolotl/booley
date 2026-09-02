@@ -437,6 +437,9 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     assert workflow.index(contract_check) < workflow.index(initialize)
     assert workflow.index(initialize) < workflow.index(surface_smoke)
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
+    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
+    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
+    assert "set -o pipefail" in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
     assert 'booley doctor --deep --skip-agent-checks | tee "${doctor_log}"' in workflow
@@ -451,14 +454,15 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     contract_section = workflow[workflow.index(contract_check) : workflow.index(initialize)]
     assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in contract_section
     assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
+    assert '--mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work' in workflow
     assert "add-rv32-zbb-pcpi-co-processor" not in workflow
     assert "python -m booley.ticket_board parse-ticket" not in workflow
     assert (
         """      - name: Restore demo checkout ownership
         if: always()
         run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
+          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
+            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
           fi
 """
         in workflow
