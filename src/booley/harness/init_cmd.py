@@ -40,6 +40,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -1203,12 +1204,38 @@ def capture_session_spec(project_root: Path) -> SessionSpecSnapshot:
 
 
 def _restore_snapshot_file(path: Path, content: bytes | None, mode: int) -> None:
+    if path.is_symlink() or path.parent.is_symlink():
+        raise OSError(f"recovery path must not be a symlink: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
     if content is None:
         path.unlink(missing_ok=True)
+        _fsync_snapshot_directory(path.parent)
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    path.chmod(mode)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temporary)
+    try:
+        if os.name != "nt":
+            os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+        if os.name == "nt":
+            path.chmod(mode)
+        _fsync_snapshot_directory(path.parent)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _fsync_snapshot_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> None:
@@ -2328,8 +2355,17 @@ def _run_init_unlocked(  # noqa: PLR0911 -- each return is a distinct lifecycle 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run Project initialization without racing host Docker mutations."""
     if getattr(args, "check_only", False):
+        from booley.harness.session_refresh import shared_recovery_blocks_command
+
+        if shared_recovery_blocks_command(read_only=True):
+            err("an interrupted Session refresh requires recovery")
+            return 2
         return _run_init_unlocked(args, project_root)
     from booley.harness.lifecycle_lock import host_lifecycle_lock
+    from booley.harness.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("project init"):
+        if shared_recovery_blocks_command(read_only=False):
+            err("recovered an interrupted Session refresh; run `booley init` again")
+            return 2
         return _run_init_unlocked(args, project_root)
