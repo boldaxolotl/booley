@@ -197,6 +197,18 @@ def test_project_participant_requires_project_repository(tmp_path: Path) -> None
         completion._repository_for(tmp_path, None, participant)
 
 
+def test_complete_rejects_ticket_without_destination_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _root, _project, tio, _participants = _paired_completion(tmp_path, monkeypatch)
+    tio.entry.pop("branch")
+
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert "Ticket has no destination branch" in capsys.readouterr().err
+
+
 def test_candidate_clone_copies_repository_commit_identity(tmp_path: Path) -> None:
     repository = tmp_path / "repository"
     commit = _repository(repository)
