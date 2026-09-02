@@ -121,6 +121,56 @@ jobs:
             exit 1
           fi
           grep -Fq "_pyright_scope_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
+          rm -f "${probe}"
+          trap - EXIT
+          test ! -e "${probe}"
+
+      - name: Prove Target package is strict
+        shell: bash
+        run: |
+          probe=src/booley/targets/_pyright_strict_probe.py
+          trap 'rm -f "${probe}"' EXIT
+          echo 'def strict_probe(value): return value' > "${probe}"
+          if pyright --outputjson > "${RUNNER_TEMP}/pyright-target-strict-probe.json"; then
+            echo "Pyright accepted the deliberate Target strictness error" >&2
+            exit 1
+          fi
+          grep -Fq "_pyright_strict_probe.py" "${RUNNER_TEMP}/pyright-target-strict-probe.json"
+          rm -f "${probe}"
+          trap - EXIT
+          test ! -e "${probe}"
+
+      - name: Prove exact Flow modules are included
+        shell: bash
+        run: |
+          probe_file() (
+            target=$1
+            label=$(echo "${target}" | tr '/.' '__')
+            backup=$(mktemp "${RUNNER_TEMP}/pyright-probe.XXXXXX")
+            cp "${target}" "${backup}"
+            trap 'cp "${backup}" "${target}"' EXIT
+            echo '__pyright_include_probe: int = "must fail"' >> "${target}"
+            if pyright --outputjson > "${RUNNER_TEMP}/pyright-${label}-include-probe.json"; then
+              echo "Pyright accepted the deliberate include error in ${target}" >&2
+              exit 1
+            fi
+            grep -Fq "${target}" "${RUNNER_TEMP}/pyright-${label}-include-probe.json"
+            cp "${backup}" "${target}"
+            trap - EXIT
+            git diff --exit-code -- "${target}"
+          )
+          for target in \
+            src/booley/flows/lint/flow.py \
+            src/booley/flows/sim/build.py \
+            src/booley/flows/sim/flow.py \
+            src/booley/flows/synth/flow.py \
+            src/booley/flows/fpga/flow.py \
+            src/booley/flows/implementation_comparison.py \
+            src/booley/flows/implementation_report.py \
+            src/booley/flows/synth/implementation_report.py \
+            src/booley/flows/fpga/implementation_report.py; do
+            probe_file "${target}"
+          done
 
       - name: Pyright strict boundary checks
         run: pyright

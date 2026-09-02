@@ -77,6 +77,7 @@ def _stub_sources(
     *,
     tb: list[str] | None = None,
 ) -> None:
+    monkeypatch.setattr(SimulateFlow, "_target_handle", lambda *_args: MagicMock())
     monkeypatch.setattr(
         standalone_mod,
         "inspect_target",

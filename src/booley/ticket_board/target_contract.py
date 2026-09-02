@@ -29,7 +29,7 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import flow_can_drive, inspect_target, select_target
+from booley.targets.target import flow_can_drive, inspect_target_selector, select_target
 
 WORKSPACE_SCHEMA_VERSION = 3
 SCHEMA_VERSION = 4
@@ -508,7 +508,7 @@ def _semantic_surface(project_root: Path | str, targets: Iterable[str]) -> dict[
     projected: list[dict[str, Any]] = []
     auxiliary: set[Path] = set()
     for token in _inspection_tokens(root, targets):
-        inspection = inspect_target(root, token)
+        inspection = inspect_target_selector(root, token)
         inputs = [
             {
                 "path": item.path,
@@ -747,7 +747,7 @@ def _missing_target_sources(
         )
         selected = (*sources.rtl_source_files, *sources.tb_files)
     else:
-        selected = tuple(item.path for item in inspect_target(root, target).inputs)
+        selected = tuple(item.path for item in inspect_target_selector(root, target).inputs)
     missing: list[str] = []
     for path in selected:
         candidate = Path(path)

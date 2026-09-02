@@ -5,25 +5,25 @@ from __future__ import annotations
 import shlex
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import cast
 
 _PROGRAM_SUFFIXES = frozenset({".py", ".sh", ".tcl", ".pl", ".rb"})
 _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 
 
-def _walk_strings(value: Any) -> Iterator[str]:
+def _walk_strings(value: object) -> Iterator[str]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, Mapping):
-        for child in value.values():
+        for child in cast(Mapping[object, object], value).values():
             yield from _walk_strings(child)
     elif isinstance(value, list):
-        for child in value:
+        for child in cast(list[object], value):
             yield from _walk_strings(child)
 
 
 def referenced_program_paths(
-    value: Any,
+    value: object,
     *,
     search_roots: Iterable[Path],
     project_root: Path,

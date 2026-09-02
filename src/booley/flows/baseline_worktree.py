@@ -26,17 +26,19 @@ import logging
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from booley.core.boundary import as_dict, as_str
 from booley.fusesoc.fusesoc_registry import state_cores_dir
 from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_submodules,
 )
 from booley.runtime.ticket_repositories import paired_project_repository
+from booley.targets.target import TargetHandle
 
 from .recipe_evidence import BASELINE_REF_PARAM
 
@@ -74,20 +76,33 @@ def git_full_sha(ref: str, cwd: Path) -> str | None:
 def resolve_ticket_baseline(
     criteria: Mapping[str, Any],
     criterion_prefix: str,
-    targets: list[str],
+    targets: Sequence[TargetHandle],
     requested: str | None,
     project_root: Path,
     flow_name: str,
 ) -> tuple[str | None, str | None, str | None]:
     """Resolve and enforce one immutable ticket baseline across selected Targets."""
-    refs = {
-        params[BASELINE_REF_PARAM]
-        for target in targets
-        if (entry := criteria.get(f"{criterion_prefix}{target}")) is not None
-        and isinstance((params := getattr(entry, "params", None)), dict)
-        and isinstance(params.get(BASELINE_REF_PARAM), str)
-        and params[BASELINE_REF_PARAM]
-    }
+    matched_params: list[dict[Any, Any]] = []
+    for target in targets:
+        names = {
+            f"{criterion_prefix}{target.selector}",
+            f"{criterion_prefix}{target.identity}",
+            f"{criterion_prefix}{target.name}",
+        }
+        matches = []
+        for key, entry in criteria.items():
+            params = as_dict(getattr(entry, "params", None)) or {}
+            belongs_to_family = key.startswith(criterion_prefix)
+            if key in names or (belongs_to_family and params.get("target") == target.identity):
+                matches.append(params)
+        if len(matches) > 1:
+            return (
+                requested,
+                None,
+                (f"{flow_name}: no unique persisted criterion for {target.identity!r}"),
+            )
+        matched_params.extend(matches)
+    refs = {ref for params in matched_params if (ref := as_str(params.get(BASELINE_REF_PARAM)))}
     if not refs:
         return requested, None, None
     if len(refs) != 1:

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Protocol, cast
 
 
 class ParameterIntegrityError(ValueError):
@@ -17,6 +17,45 @@ _DEFINE_INT_RE = re.compile(
 )
 _MODULE_RE = re.compile(r"\bmodule\s+(?:(?:automatic|static)\s+)?(?P<name>\\\S+|[A-Za-z_$][\w$]*)")
 _AMBIGUOUS_CONDITIONAL = "__BOOLEY_UNPROVEN_PREPROCESSOR_BRANCH__"
+
+
+class _ResolvedFile(Protocol):
+    @property
+    def is_hdl(self) -> bool: ...
+
+    @property
+    def is_include(self) -> bool: ...
+
+    def absolute(self, build_root: Path) -> Path: ...
+
+
+class ResolvedTargetLike(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def parameters(self) -> Mapping[str, object]: ...
+
+    @property
+    def toplevel(self) -> str: ...
+
+    @property
+    def eda_tool(self) -> str | None: ...
+
+    @property
+    def build_root(self) -> Path: ...
+
+    @property
+    def files(self) -> Sequence[_ResolvedFile]: ...
+
+
+def _string_mapping(value: object) -> Mapping[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    raw = cast(Mapping[object, object], value)
+    if not all(isinstance(key, str) for key in raw):
+        return None
+    return cast(Mapping[str, object], raw)
 
 
 def _define_value_is_nonzero(value: str) -> bool:
@@ -47,13 +86,14 @@ def enabled_define_names(defines: list[str] | tuple[str, ...]) -> tuple[str, ...
     return tuple(names)
 
 
-def enabled_vlogdefine_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:
+def enabled_vlogdefine_names(parameters: Mapping[str, object]) -> tuple[str, ...]:
     """Enabled ``vlogdefine`` names from a resolved CAPI2 parameter mapping."""
     defines: list[str] = []
     for name, spec in parameters.items():
-        if not isinstance(spec, Mapping) or spec.get("paramtype") != "vlogdefine":
+        item = _string_mapping(spec)
+        if item is None or item.get("paramtype") != "vlogdefine":
             continue
-        default = spec.get("default")
+        default = item.get("default")
         if default is True:
             defines.append(str(name))
         elif default not in (False, None, ""):
@@ -61,34 +101,35 @@ def enabled_vlogdefine_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     return enabled_define_names(defines)
 
 
-def defined_vlogdefine_names(parameters: Mapping[str, Any]) -> set[str]:
+def defined_vlogdefine_names(parameters: Mapping[str, object]) -> set[str]:
     """Names of every resolved ``vlogdefine`` the backend will emit."""
     names: set[str] = set()
     for name, spec in parameters.items():
-        if not isinstance(spec, Mapping) or spec.get("paramtype") != "vlogdefine":
+        item = _string_mapping(spec)
+        if item is None or item.get("paramtype") != "vlogdefine":
             continue
-        if spec.get("default") not in (False, None, ""):
+        if item.get("default") not in (False, None, ""):
             names.add(str(name))
     return names
 
 
-def vlogdefine_names(parameters: Mapping[str, Any]) -> set[str]:
+def vlogdefine_names(parameters: Mapping[str, object]) -> set[str]:
     """Names whose defined/undefined state is fixed by resolved parameters."""
     return {
         str(name)
         for name, spec in parameters.items()
-        if isinstance(spec, Mapping) and spec.get("paramtype") == "vlogdefine"
+        if (item := _string_mapping(spec)) is not None and item.get("paramtype") == "vlogdefine"
     }
 
 
-def vlogparam_values(parameters: Mapping[str, Any]) -> dict[str, Any]:
+def vlogparam_values(parameters: Mapping[str, object]) -> dict[str, object]:
     """Concrete resolved ``vlogparam`` defaults, ready for an EDAM builder."""
     return {
-        str(name): spec["default"]
+        str(name): item["default"]
         for name, spec in parameters.items()
-        if isinstance(spec, Mapping)
-        and spec.get("paramtype") == "vlogparam"
-        and spec.get("default") is not None
+        if (item := _string_mapping(spec)) is not None
+        and item.get("paramtype") == "vlogparam"
+        and item.get("default") is not None
     }
 
 
@@ -280,18 +321,16 @@ def _mismatched_modules(modules: Mapping[str, str], top: str, name: str) -> list
     return list(dict.fromkeys(mismatches))
 
 
-def validate_top_parameter_intent(resolved: Any, *, flow: str) -> None:
+def validate_top_parameter_intent(resolved: ResolvedTargetLike, *, flow: str) -> None:
     """Reject enabled macros that leave a reachable same-named parameter at zero.
 
     This is deliberately a high-confidence source guard, not a general HDL
     evaluator. Macro-driven defaults and explicit named overrides are allowed;
     positional overrides and complex expressions are left to the EDA backend.
     """
-    parameters = getattr(resolved, "parameters", {})
-    if not isinstance(parameters, Mapping):
-        return
+    parameters = resolved.parameters
     enabled = enabled_vlogdefine_names(parameters)
-    top = str(getattr(resolved, "toplevel", ""))
+    top = resolved.toplevel
     if not enabled or not top:
         return
     sources, source_touched = _resolved_hdl_sources(resolved)
@@ -320,9 +359,9 @@ def validate_top_parameter_intent(resolved: Any, *, flow: str) -> None:
     )
 
 
-def _tool_builtin_defines(resolved: Any, flow: str) -> set[str]:
+def _tool_builtin_defines(resolved: ResolvedTargetLike, flow: str) -> set[str]:
     """Preprocessor names the selected backend defines without Target input."""
-    eda_tool = str(getattr(resolved, "eda_tool", "")).lower()
+    eda_tool = str(resolved.eda_tool or "").lower()
     builtins = {
         "icarus": {"__ICARUS__"},
         "verilator": {"VERILATOR"},
@@ -337,13 +376,13 @@ def _tool_known_macros() -> set[str]:
     return {"VERILATOR", "__ICARUS__", "SYNTHESIS"}
 
 
-def _resolved_hdl_sources(resolved: Any) -> tuple[list[str], set[str]]:
+def _resolved_hdl_sources(resolved: ResolvedTargetLike) -> tuple[list[str], set[str]]:
     """Read compiled HDL and find macros whose source state is mutable."""
     build_root = Path(resolved.build_root)
     sources: list[str] = []
     source_touched: set[str] = set()
-    for resolved_file in getattr(resolved, "files", ()):
-        if not getattr(resolved_file, "is_hdl", False):
+    for resolved_file in resolved.files:
+        if not resolved_file.is_hdl:
             continue
         path = resolved_file.absolute(build_root)
         try:
@@ -354,6 +393,6 @@ def _resolved_hdl_sources(resolved: Any) -> tuple[list[str], set[str]]:
         source_touched.update(
             re.findall(r"(?m)^\s*`(?:define|undef)\s+([A-Za-z_$][\w$]*)\b", structural)
         )
-        if not getattr(resolved_file, "is_include", False):
+        if not resolved_file.is_include:
             sources.append(source)
     return sources, source_touched

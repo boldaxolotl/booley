@@ -22,28 +22,33 @@ from booley.flows.lint.flow import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.targets.target import TargetHandle
+from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
 from booley.targets.target import select_targets as canonical_select_targets
 
 
 def _target_handle(
     selector: str,
     *,
+    project_root: Path | str | None = None,
     vlnv: str | None = None,
     flow: str | None = "lint",
     eda_tool: str | None = "verilator",
 ) -> TargetHandle:
     """Build a selected Target value for layer-focused Lint tests."""
+    root = Path.cwd() if project_root is None else Path(project_root)
     target_vlnv = vlnv or f"::{selector}:0"
     return TargetHandle(
         identity=f"{target_vlnv}#{selector}",
         selector=selector,
         name=selector,
         vlnv=target_vlnv,
-        core_file=Path(f"{selector}.core"),
+        core_file=root.resolve() / f"{selector}.core",
         flow=flow,
         eda_tool=eda_tool,
         drivable_by=("lint",),
+        project_root=root.resolve(),
+        doctor_private=False,
+        _factory_key=_HANDLE_FACTORY_KEY,
     )
 
 
@@ -59,12 +64,12 @@ def _adr0039_lenient_selection(monkeypatch):
     the .core-authoring integration tests.
     """
 
-    def _lenient(project_root, target_arg):
+    def _lenient(project_root, target_arg, *, for_flow=None):
         try:
-            return canonical_select_targets(project_root, target_arg)
-        except fusesoc_registry.FuseSocError:
+            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
             return tuple(
-                _target_handle(token.strip())
+                _target_handle(token.strip(), project_root=project_root)
                 for token in (target_arg or "").split(",")
                 if token.strip()
             )
@@ -99,6 +104,7 @@ def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     st.save()
     monkeypatch.setenv("BOOLEY_SLUG", "test-lint")
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
+    monkeypatch.chdir(tmp_path)
     return sf
 
 
@@ -218,7 +224,7 @@ class TestLintResolution:
             side_effect=fake_resolve,
         ):
             cmd, resolved = flow._prepare_lint_command(
-                _target_handle("lite", vlnv="::lint_demo:0")
+                _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
             )
 
         # The ResolvedTarget rides along for EDA-tool/coverage reporting.
@@ -251,7 +257,9 @@ class TestLintResolution:
             ),
             pytest.raises(fusesoc_registry.TargetResolutionError, match="boom"),
         ):
-            flow._prepare_lint_command(_target_handle("lite", vlnv="::lint_demo:0"))
+            flow._prepare_lint_command(
+                _target_handle("lite", project_root=tmp_path, vlnv="::lint_demo:0")
+            )
 
     def test_real_fusesoc_lint_setup(self, tmp_path: Path, state_file: Path):
         """End-to-end: a real `fusesoc run --setup` leaves a makeable lint dir.
@@ -296,7 +304,7 @@ class TestLintResolution:
             ),
         ):
             cmd, _resolved = flow._prepare_lint_command(
-                _target_handle("lite", vlnv="::lint_demo:0")
+                _target_handle("lite", project_root=work_dir, vlnv="::lint_demo:0")
             )
 
         assert cmd[0] == "make" and cmd[1] == "-C"
@@ -340,9 +348,11 @@ class TestDoctorTargetAuthority:
         def select_for_doctor(
             project_root: Path,
             target_arg: str,
+            *,
+            for_flow: str | None = None,
         ) -> tuple[TargetHandle, ...]:
             monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-            selected = canonical_select_targets(project_root, target_arg)
+            selected = canonical_select_targets(project_root, target_arg, for_flow=for_flow)
             monkeypatch.delenv(selftest_overlay.INTERNAL_KIND_ENV)
             rejected = MagicMock(side_effect=AssertionError("Target authority was re-requested"))
             monkeypatch.setattr(target_selection, "select_target", rejected)
@@ -959,7 +969,11 @@ class TestErrorVsFailTaxonomy:
         exit_code, _summary = _errored_verdict([design, broken])
         assert exit_code == EXIT_ERROR
 
-    def test_timeout_is_an_eda_tool_error_not_a_design_failure(self, tmp_path: Path):
+    def test_timeout_is_an_eda_tool_error_not_a_design_failure(
+        self,
+        tmp_path: Path,
+        state_file: Path,
+    ):
         """A timeout reached no verdict about the RTL at all."""
         with (
             patch.object(LintFlow, "_execute") as mock_exec,
@@ -973,7 +987,7 @@ class TestErrorVsFailTaxonomy:
                 returncode=-1, stdout="", stderr="", timed_out=True, duration_s=99.0
             )
             flow = LintFlow()
-            flow.parse_args(["--target", "lite"])
+            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             flow.read_state()
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
@@ -1888,15 +1902,14 @@ class TestLintObservability:
     @patch.object(
         LintFlow, "_prepare_lint_command", return_value=(["make", "-C", "x"], _stub_resolved())
     )
-    def test_non_lint_flow_target_warns(
+    def test_non_lint_flow_target_is_rejected_before_setup(
         self,
         mock_cmd,
         mock_exec,
         state_file: Path,
         tmp_path: Path,
-        capsys,
     ):
-        """An explicit sim Target passed to lint must not lint silently."""
+        """An explicit sim Target passed to lint fails before setup."""
         (tmp_path / "sim_demo.core").write_text(
             "CAPI=2:\n"
             "name: ::sim_demo:0\n"
@@ -1919,9 +1932,10 @@ class TestLintObservability:
         flow = LintFlow()
         flow.parse_args(["--work-dir", str(tmp_path), "--target", "smoke_sim"])
         flow.read_state()
-        flow._run()
-        out = capsys.readouterr().out
-        assert "declares flow 'sim', not" in out
+        with pytest.raises(fusesoc_registry.IncompatibleTargetError, match="cannot be driven"):
+            flow._run()
+        mock_cmd.assert_not_called()
+        mock_exec.assert_not_called()
 
     def test_summary_warnings_not_errors_exits_zero(self):
         """[flows.lint].warnings_as_errors=false: WARN text, exit 0."""
