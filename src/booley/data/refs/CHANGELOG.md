@@ -26,6 +26,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Host bootstrap now requires Git 2.37.2 or newer, avoiding a Git for Windows
   temporary-name exhaustion failure during large line-ending repairs.
+- Host bootstrap now secures the shared Booley configuration directory before
+  preparing the PDK cache, so existing caches cannot block Session Runtime
+  issuance during an upgrade.
 - Session Runtime issuance now finds trusted Booley executables installed in
   Python's per-user scripts directory even when that directory is absent from
   `PATH`.
