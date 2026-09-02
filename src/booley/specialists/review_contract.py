@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import TargetInspection, inspect_target, select_targets
+from booley.targets.target import (
+    TargetInspection,
+    inspect_target,
+    inspect_target_selector,
+    select_targets,
+)
 
 
 class ReviewContractError(ValueError):
@@ -61,11 +66,9 @@ def _candidate_refs(
         selected = select_targets(project_root, target_hint)
         if category == "tb" and len(selected) != 1:
             raise ReviewContractError("TB review requires exactly one --target selector")
-        return [
-            (handle.selector, inspect_target(project_root, handle.identity)) for handle in selected
-        ]
+        return [(handle.selector, inspect_target(project_root, handle)) for handle in selected]
     candidates = [
-        inspect_target(project_root, f"{ref.vlnv}#{ref.name}")
+        inspect_target_selector(project_root, f"{ref.vlnv}#{ref.name}")
         for bucket in declarations.values()
         for ref in bucket
         if not ref.doctor_selftest

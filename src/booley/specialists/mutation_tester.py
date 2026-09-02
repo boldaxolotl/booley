@@ -76,7 +76,7 @@ from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.paths import refs_dir
 from booley.runtime.platform_paths import posix_relpath
-from booley.targets.target import inspect_target
+from booley.targets.target import inspect_target_selector
 
 from .specialist import Specialist
 
@@ -891,7 +891,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if not target:
             return None
         try:
-            resolved = list(inspect_target(self.args.work_dir, target).rtl_files)
+            resolved = list(inspect_target_selector(self.args.work_dir, target).rtl_files)
         except Exception:  # noqa: BLE001 — unresolvable target: fail open, let downstream report
             return None
         if not resolved:
@@ -943,7 +943,7 @@ replacement must differ, and every proposal must remain a single source edit.
         if not target:
             return []
         try:
-            return list(inspect_target(self.args.work_dir, target).rtl_files)
+            return list(inspect_target_selector(self.args.work_dir, target).rtl_files)
         except Exception:  # noqa: BLE001 — best-effort source-file lookup; degrades to an empty list
             return []
 

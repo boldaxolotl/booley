@@ -3,11 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.criteria.templates import BASELINE_TARGET_PARAM, TargetPair
+from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.flows.implementation_comparison import (
     ImplementationComparisonError,
+    TargetPairPlan,
+    target_pair_for_candidate,
+    target_pair_plans_for_handles,
     target_pairs_for_candidates,
 )
+from booley.targets.target import select_target
 from booley.ticket_board.target_contract import (
     ContractParticipant,
     ContractTargetBinding,
@@ -16,9 +20,10 @@ from booley.ticket_board.target_contract import (
 
 
 def test_missing_metadata_preserves_equal_target_behavior() -> None:
-    assert target_pairs_for_candidates({}, "synthesis_ok_", ["synth_default"]) == (
-        TargetPair("synth_default", "synth_default"),
-    )
+    (plan,) = target_pairs_for_candidates({}, "synthesis_ok_", ["synth_default"])
+    assert plan.baseline.selector == "synth_default"
+    assert plan.candidate.selector == "synth_default"
+    assert not plan.sealed
 
 
 def test_reads_paired_baseline_from_candidate_criterion() -> None:
@@ -26,9 +31,9 @@ def test_reads_paired_baseline_from_candidate_criterion() -> None:
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
     }
 
-    assert target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"]) == (
-        TargetPair("synth_before", "synth_after"),
-    )
+    (plan,) = target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
+    assert plan.baseline.selector == "synth_before"
+    assert plan.candidate.selector == "synth_after"
 
 
 def test_invalid_persisted_baseline_fails_closed() -> None:
@@ -43,9 +48,9 @@ def _sealed_project(tmp_path: Path, *, schema: int = 3) -> TargetContract:
         """CAPI=2:
 name: acme:lib:toy:1.0
 targets:
-  synth_before: {flow: generic}
-  synth_after: {flow: generic}
-  synth_other: {flow: generic}
+  synth_before: {flow: generic, flow_options: {tool: yosys}}
+  synth_after: {flow: generic, flow_options: {tool: yosys}}
+  synth_other: {flow: generic, flow_options: {tool: yosys}}
 """,
         encoding="utf-8",
     )
@@ -92,7 +97,9 @@ def test_schema_three_executes_selector_verified_against_sealed_pair(tmp_path: P
         flow="synth",
     )
 
-    assert pairs == (TargetPair("synth_before", "synth_after"),)
+    assert pairs[0].baseline.selector == "synth_before"
+    assert pairs[0].candidate.selector == "synth_after"
+    assert pairs[0].sealed
 
 
 def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
@@ -110,7 +117,102 @@ def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
         flow="synth",
     )
 
-    assert pairs == (TargetPair("synth_before", "synth_after"),)
+    assert pairs[0].baseline.selector == "synth_before"
+    assert pairs[0].candidate.selector == "synth_after"
+    assert pairs[0].sealed
+
+
+def test_plan_has_no_public_authority_constructor() -> None:
+    with pytest.raises(TypeError):
+        TargetPairPlan()
+
+
+def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
+    contract = _sealed_project(tmp_path, schema=4)
+    empty_selector_binding = ContractTargetBinding(
+        flow="synth",
+        criterion="synthesis_ok",
+        baseline="acme:lib:toy:1.0#synth_before",
+        candidate="acme:lib:toy:1.0#synth_after",
+        baseline_selector="",
+        candidate_selector="synth_after",
+    )
+    contract = TargetContract(
+        outer_sha=contract.outer_sha,
+        project_sha=contract.project_sha,
+        surface_digest=contract.surface_digest,
+        targets=contract.targets,
+        bindings=(empty_selector_binding,),
+        participants=contract.participants,
+        schema=contract.schema,
+    )
+    criteria = {
+        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
+    }
+
+    with pytest.raises(ImplementationComparisonError, match="empty callable selector"):
+        target_pairs_for_candidates(
+            criteria,
+            "synthesis_ok_",
+            ["synth_after"],
+            contract=contract,
+            project_root=tmp_path,
+            flow="synth",
+        )
+
+
+def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
+    contract = _sealed_project(tmp_path, schema=4)
+    contract = TargetContract(
+        outer_sha=contract.outer_sha,
+        project_sha=contract.project_sha,
+        surface_digest=contract.surface_digest,
+        targets=contract.targets,
+        bindings=(*contract.bindings, *contract.bindings),
+        participants=contract.participants,
+        schema=contract.schema,
+    )
+    criteria = {
+        "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
+    }
+
+    with pytest.raises(ImplementationComparisonError, match="no unique"):
+        target_pairs_for_candidates(
+            criteria,
+            "synthesis_ok_",
+            ["synth_after"],
+            contract=contract,
+            project_root=tmp_path,
+            flow="synth",
+        )
+
+
+def test_batch_rejects_duplicate_canonical_candidates(tmp_path: Path) -> None:
+    _sealed_project(tmp_path)
+    first = select_target(tmp_path, "synth_after", for_flow="synth")
+    second = select_target(tmp_path, "acme:lib:toy:1.0#synth_after", for_flow="synth")
+
+    with pytest.raises(ImplementationComparisonError, match="duplicates canonical identity"):
+        target_pair_plans_for_handles(
+            {},
+            "synthesis_ok_",
+            (first, second),
+            flow="synth",
+        )
+
+
+def test_pair_lookup_has_no_equal_target_fallback(tmp_path: Path) -> None:
+    _sealed_project(tmp_path)
+    handle = select_target(tmp_path, "synth_after", for_flow="synth")
+    plans = target_pair_plans_for_handles(
+        {},
+        "synthesis_ok_",
+        (handle,),
+        flow="synth",
+    )
+
+    with pytest.raises(ImplementationComparisonError, match="no unique"):
+        target_pair_for_candidate(plans, "acme:lib:toy:1.0#synth_other")
 
 
 @pytest.mark.parametrize("baseline", [None, "synth_other"])

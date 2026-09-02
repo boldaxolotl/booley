@@ -9,18 +9,20 @@ import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from booley.core.boundary import BoundaryError
 from booley.criteria.state import DevelopmentState
-from booley.criteria.templates import TargetPair
+from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.flows import run_evidence
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming
 from booley.flows.fpga.backends.vivado.metrics import FpgaMetrics, _metrics_detail
 from booley.flows.fpga.flow import FpgaImplFlow, _vlogdefine_args
+from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.recipe_evidence import (
     BASELINE_REF_PARAM,
     RECIPE_FINGERPRINT_PARAM,
@@ -30,8 +32,31 @@ from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 from booley.runtime import job_slots
+from booley.targets.target import TargetHandle
+from booley.targets.target import select_target as canonical_select_target
+from booley.targets.target import select_targets as canonical_select_targets
 
 _REAL_RESOLVE_TARGET_SELECTION = fusesoc_registry.resolve_target_selection
+
+
+def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
+    handle = object.__new__(TargetHandle)
+    root = Path(project_root).resolve()
+    values = {
+        "identity": f"::test:0#{selector}",
+        "selector": selector,
+        "name": selector,
+        "vlnv": "::test:0",
+        "core_file": root / "test.core",
+        "flow": "generic",
+        "eda_tool": "vivado",
+        "drivable_by": ("fpga",),
+        "project_root": root,
+        "doctor_private": False,
+    }
+    for name, value in values.items():
+        object.__setattr__(handle, name, value)
+    return handle
 
 
 @pytest.fixture(autouse=True)
@@ -45,12 +70,26 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root, *, for_flow=None):
-        return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
+    def _select(project_root, token, *, for_flow=None):
+        try:
+            return canonical_select_target(project_root, token, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
+            return _layer_target_handle(project_root, token)
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
+    def _select_many(project_root, target_arg, *, for_flow=None):
+        try:
+            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
+            return tuple(
+                _layer_target_handle(project_root, token.strip())
+                for token in (target_arg or "").split(",")
+                if token.strip()
+            )
+
+    monkeypatch.setattr("booley.flows.fpga.flow.select_target", _select)
+    monkeypatch.setattr("booley.flows.fpga.flow.select_targets", _select_many)
+    monkeypatch.setattr("booley.flows.implementation_comparison.select_target", _select)
 
 
 @pytest.fixture()
@@ -161,7 +200,19 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
             side_effect=lambda target: calls.append(target) or metrics,
         ),
     ):
-        results, short_sha = flow._run_baseline_configs((TargetPair("fpga_before", "fpga_after"),))
+        candidate = _layer_target_handle(tmp_path, "fpga_after")
+        plans = target_pair_plans_for_handles(
+            {
+                "fpga_impl_ok_fpga_after": SimpleNamespace(
+                    params={BASELINE_TARGET_PARAM: "fpga_before"}
+                )
+            },
+            "fpga_impl_ok_",
+            (candidate,),
+            flow="fpga",
+        )
+        flow._target_handles = {candidate.selector: candidate}
+        results, short_sha = flow._run_baseline_configs(plans)
 
     assert calls == ["fpga_before"]
     assert short_sha == "abc1234"

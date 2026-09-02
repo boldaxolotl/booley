@@ -313,6 +313,7 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
         fileset={"rtl": ("rtl/dut.sv",), "tb": ("tb/tb_dut.sv",)},
     )
     monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", lambda *a, **k: prepared)
+    monkeypatch.setattr(flow, "_target_handle", lambda _target: MagicMock())
     monkeypatch.setattr(flow, "_target_sim_env", lambda target: {})
     monkeypatch.setattr(flow, "_effective_timeout_ms", lambda: 7000)
     captured: list[list[str]] = []
@@ -355,6 +356,7 @@ def test_setup_failure_archives_current_error_without_reusing_old_log(
         raise SimulationBuildPreparationError("current setup exploded")
 
     monkeypatch.setattr("booley.flows.sim.flow.prepare_simulation_build", fail_setup)
+    monkeypatch.setattr(flow, "_target_handle", lambda _target: MagicMock())
 
     result = flow._run_one_elab_only("sim_dut")
 
