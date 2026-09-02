@@ -6,9 +6,9 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import sys
+import sysconfig
 import tempfile
 import tomllib
 from contextlib import AbstractContextManager, nullcontext
@@ -847,7 +847,10 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = _find_trusted_validator(project)
     if executable is None:
-        raise RuntimeSpecError("cannot resolve the trusted host Booley executable")
+        raise RuntimeSpecError(
+            "cannot resolve the trusted host Booley executable; reinstall Booley with "
+            "pipx or add its Python scripts directory to PATH"
+        )
     spec["initializeCommand"] = initialize_command(str(executable))
 
 
@@ -867,17 +870,27 @@ def _initialize_executable(spec: dict[str, Any]) -> Path:
 
 
 def _find_trusted_validator(project: Path) -> Path | None:
-    """Select the first trusted ``booley`` on PATH, skipping poison entries."""
+    """Select the first trusted installed ``booley``, skipping poison entries."""
+    executable_name = "booley.exe" if os.name == "nt" else "booley"
+    candidates: list[Path] = []
+    running = Path(sys.argv[0]) if sys.argv else Path()
+    if running.name.casefold() in {"booley", "booley.exe"}:
+        candidates.append(running)
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not directory:
             continue
-        candidate = Path(directory) / ("booley.exe" if os.name == "nt" else "booley")
+        candidates.append(Path(directory) / executable_name)
+    candidates.extend(prefix / executable_name for prefix in _validator_prefix_anchors())
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         canonical = _resolve_trusted_validator(candidate, project)
         if canonical is not None:
             return canonical
-    fallback = shutil.which("booley")
-    candidate = Path(fallback) if fallback else Path()
-    return _resolve_trusted_validator(candidate, project)
+    return None
 
 
 def _resolve_trusted_validator(executable: Path, project: Path) -> Path | None:
@@ -926,13 +939,40 @@ def _validator_prefix_anchors() -> dict[Path, Path]:
     environment_anchor = (
         home if environment == home or home in environment.parents else environment
     )
-    return {
+    anchors = {
         (home / ".local" / "bin").resolve(): home,
         Path("/usr/local/bin").resolve(): Path("/usr").resolve(),
         Path("/usr/bin").resolve(): Path("/usr").resolve(),
         Path("/bin").resolve(): Path("/usr").resolve(),
         (environment / ("Scripts" if os.name == "nt" else "bin")).resolve(): environment_anchor,
     }
+    anchors.update(_python_script_prefix_anchors())
+    return anchors
+
+
+def _python_script_prefix_anchors() -> dict[Path, Path]:
+    """Return contained active- and user-Python script installation prefixes."""
+    home = Path.home().resolve()
+    environment = Path(sys.prefix).resolve()
+    environment_anchor = (
+        home if environment == home or home in environment.parents else environment
+    )
+    locations = (
+        (sysconfig.get_path("scripts"), environment, environment_anchor),
+        (
+            sysconfig.get_path("scripts", scheme=sysconfig.get_preferred_scheme("user")),
+            home,
+            home,
+        ),
+    )
+    anchors: dict[Path, Path] = {}
+    for raw_scripts, boundary, anchor in locations:
+        if not raw_scripts:
+            continue
+        scripts = Path(raw_scripts).resolve()
+        if scripts == boundary or boundary in scripts.parents:
+            anchors[scripts] = anchor
+    return anchors
 
 
 def _secure_validator_ancestry(executable: Path, anchor: Path) -> bool:

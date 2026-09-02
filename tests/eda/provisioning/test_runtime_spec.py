@@ -769,6 +769,75 @@ def test_seal_skips_tmp_path_poisoned_booley(
     assert Path(spec["initializeCommand"][0]) == trusted
 
 
+def test_find_trusted_validator_discovers_user_python_scripts_outside_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    home = tmp_path / "home"
+    scripts = home / "python-user" / "Scripts"
+    executable = scripts / ("booley.exe" if os.name == "nt" else "booley")
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(runtime_spec.Path, "home", lambda: home)
+    monkeypatch.setattr(runtime_spec.sys, "prefix", str(tmp_path / "python"))
+    monkeypatch.setattr(
+        runtime_spec,
+        "_python_script_prefix_anchors",
+        lambda: {scripts.resolve(): home.resolve()},
+    )
+
+    assert runtime_spec._find_trusted_validator(project) == executable.resolve()
+
+
+def test_python_script_prefixes_accept_only_contained_install_locations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    environment = tmp_path / "python"
+    environment_scripts = environment / "Scripts"
+    user_scripts = home / "AppData" / "Python" / "Scripts"
+    outside = tmp_path / "outside"
+    monkeypatch.setattr(runtime_spec.Path, "home", lambda: home)
+    monkeypatch.setattr(runtime_spec.sys, "prefix", str(environment))
+    monkeypatch.setattr(runtime_spec.sysconfig, "get_preferred_scheme", lambda _name: "user")
+
+    def scripts_path(_name: str, *, scheme: str | None = None) -> str:
+        return str(user_scripts if scheme == "user" else environment_scripts)
+
+    monkeypatch.setattr(runtime_spec.sysconfig, "get_path", scripts_path)
+
+    assert runtime_spec._python_script_prefix_anchors() == {
+        environment_scripts.resolve(): environment.resolve(),
+        user_scripts.resolve(): home.resolve(),
+    }
+
+    monkeypatch.setattr(
+        runtime_spec.sysconfig,
+        "get_path",
+        lambda _name, *, scheme=None: str(outside),
+    )
+    assert runtime_spec._python_script_prefix_anchors() == {}
+
+
+def test_find_trusted_validator_considers_running_booley_before_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    poisoned = tmp_path / "poisoned" / trusted.name
+    poisoned.parent.mkdir()
+    poisoned.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    poisoned.chmod(0o755)
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(trusted)])
+    monkeypatch.setenv("PATH", str(poisoned.parent))
+
+    assert runtime_spec._find_trusted_validator(project) == trusted.resolve()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="uv uses a launcher executable on Windows")
 def test_find_trusted_validator_resolves_managed_cli_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
