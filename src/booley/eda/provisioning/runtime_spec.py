@@ -116,6 +116,28 @@ def load_issued_snapshot(project_root: Path) -> Issuance:
     return issuance
 
 
+def load_recovery_snapshot(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
+    """Authenticate the exact prior issuance without consulting current grants."""
+    project = project_root.resolve(strict=True)
+    issuance = _load_stamp(stamp_path(project))
+    if (
+        issuance.project_root != str(project)
+        or issuance.file_sha256 != _file_sha256(spec_path)
+        or issuance.spec_sha256 != _spec_digest(spec)
+    ):
+        raise RuntimeSpecError("prior Session Runtime spec differs from its issuance stamp")
+    expected_keeper = keeper_image(project)
+    if issuance.keeper_image != expected_keeper:
+        raise RuntimeSpecError("prior Session Runtime keeper belongs to a different Project")
+    try:
+        retained_id = _resolve_image_id(expected_keeper)
+    except RuntimeSpecError as exc:
+        raise RuntimeSpecError("prior Session Runtime image keeper is missing") from exc
+    if retained_id != issuance.image_id:
+        raise RuntimeSpecError("prior Session Runtime image keeper points at different bytes")
+    return issuance
+
+
 def keeper_image(project_root: Path) -> str:
     """Private Docker tag retaining the image bytes for one Project issuance."""
     identity = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()

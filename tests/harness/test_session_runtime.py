@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.eda.provisioning import runtime_spec
 from booley.harness import devcontainer as dc
 from booley.harness import session_runtime as sr
 
@@ -922,6 +923,94 @@ def _refresh_state(
 
 
 class TestRefreshContainerTransactions:
+    def test_recovery_preserves_predecessor_when_rename_did_not_land(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
+            container_id="prior-id",
+            image_id="sha256:prior",
+            egress_network_id="egress-id",
+        )
+        predecessor = {
+            "Id": "prior-id",
+            "Image": "sha256:prior",
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                }
+            },
+            "State": {"Running": False},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {"NetworkID": "egress-id"}}},
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[predecessor, None]),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            patch.object(sr, "_start_session_container") as start,
+        ):
+            sr.restore_refresh_session(parked)
+
+        remove.assert_not_called()
+        start.assert_called_once_with("session")
+
+    def test_recovery_rejects_reused_egress_network_name(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+            reconnect_egress=True,
+            container_id="prior-id",
+            image_id="sha256:prior",
+            egress_network_id="expected-egress-id",
+        )
+        predecessor = {
+            "Id": "prior-id",
+            "Image": "sha256:prior",
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                }
+            },
+            "State": {"Running": False},
+            "NetworkSettings": {
+                "Networks": {dc.EGRESS_NETWORK: {"NetworkID": "reused-network-id"}}
+            },
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[predecessor, None]),
+            pytest.raises(sr.SessionError, match="network identity"),
+        ):
+            sr.restore_refresh_session(parked)
+
+    def test_recovery_preserves_unproven_canonical_container(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+            container_id="prior-id",
+            image_id="sha256:prior",
+        )
+        candidate = _refresh_state()
+        candidate["Id"] = "unknown-id"
+        candidate["Image"] = "sha256:unknown"
+        predecessor = _refresh_state()
+        predecessor["Id"] = "prior-id"
+        predecessor["Image"] = "sha256:prior"
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[candidate, predecessor]),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            pytest.raises(sr.SessionError, match=r"cannot prove.*replacement"),
+        ):
+            sr.restore_refresh_session(parked)
+
+        remove.assert_not_called()
+
     def test_strict_inspect_accepts_complete_state_and_absence(self, monkeypatch):
         state = _refresh_state()
         responses = iter(
@@ -1073,10 +1162,11 @@ class TestRefreshContainerTransactions:
         )
         with (
             patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_refresh_candidate_matches", return_value=True),
             patch.object(sr, "_remove_session_candidate") as remove,
             patch.object(sr, "_restore_incomplete_park") as restore,
         ):
-            sr.restore_refresh_session(parked)
+            sr.restore_refresh_session(parked, candidate_issuance=SimpleNamespace())
 
         remove.assert_called_once_with("session")
         restore.assert_called_once_with(parked)
@@ -1090,11 +1180,31 @@ class TestRefreshContainerTransactions:
         )
         with (
             patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
-            patch.object(sr, "_discard_parked_session") as discard,
+            patch.object(sr, "_remove_refresh_predecessor") as discard,
         ):
             sr.discard_refresh_session(parked)
 
-        discard.assert_called_once_with(parked)
+        discard.assert_called_once_with(parked.backup)
+
+    def test_durable_refresh_cleanup_reports_predecessor_removal_failure(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+            container_id="prior-id",
+            image_id="sha256:prior",
+        )
+        state = _refresh_state()
+        state["Id"] = "prior-id"
+        state["Image"] = "sha256:prior"
+        failed = subprocess.CompletedProcess([], 1, "", "container busy")
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_run", return_value=failed),
+            pytest.raises(sr.SessionError, match="container busy"),
+        ):
+            sr.discard_refresh_session(parked)
 
     def test_discard_refresh_candidate_removes_licensed_relay(self, tmp_path: Path):
         issuance = SimpleNamespace(license_profile="vivado", relay_image_id=None)
@@ -1347,6 +1457,14 @@ class TestUp:
                 side_effect=[initial, None, parked_state],
             ),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=(
+                    "booley.project-id=project-id",
+                    "booley.license-profile=none",
+                ),
+            ),
             patch.object(sr, "_relay_objects_exist", return_value=False),
         ):
             parked = sr.park_session_for_refresh(
@@ -1386,10 +1504,14 @@ class TestUp:
             "State": {"Running": False},
             "NetworkSettings": {"Networks": {}},
         }
+        reconnected = {
+            **state,
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
         with patch.object(
             sr,
             "_strict_refresh_container",
-            side_effect=[None, state],
+            side_effect=[None, state, reconnected],
         ):
             sr.restore_refresh_session(parked)
 
@@ -1421,6 +1543,14 @@ class TestUp:
         with (
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=(
+                    "booley.project-id=project-id",
+                    "booley.license-profile=vivado",
+                ),
+            ),
             pytest.raises(sr.SessionError, match="licensed relay topology"),
         ):
             sr.park_session_for_refresh(
@@ -1448,6 +1578,14 @@ class TestUp:
         with (
             patch.object(sr, "_strict_refresh_container", side_effect=[state, None]),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=(
+                    "booley.project-id=project-id",
+                    "booley.license-profile=none",
+                ),
+            ),
             patch.object(sr, "_relay_objects_exist", return_value=False),
             patch.object(sr, "_park_refresh_container", side_effect=parking_error),
             patch.object(

@@ -18,9 +18,24 @@ def run_bootstrap(args: object) -> int:
         else Intent.ENSURE
     )
     if intent is Intent.CHECK:
+        from booley.harness.session_refresh import pending_refresh_projects
+
+        if pending_refresh_projects():
+            print(yellow("An interrupted Session refresh requires recovery."))
+            return 2
         result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
     else:
+        from booley.harness.session_refresh import recover_all_locked
+
         with host_lifecycle_lock("host bootstrap"):
+            recovered = recover_all_locked()
+            if recovered:
+                print(
+                    yellow(
+                        "Recovered an interrupted Session refresh; run `booley bootstrap` again."
+                    )
+                )
+                return 2
             result = reconcile_bootstrap(intent, verbose=getattr(args, "verbose", False))
     print(bold_chrome("Host Bootstrap"))
     glyphs = {
