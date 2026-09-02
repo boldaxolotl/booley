@@ -22,9 +22,15 @@ def _result() -> LifecycleResult:
     )
 
 
-def _parked(root: Path) -> sr.ParkedRefreshSession:
+def _parked(root: Path) -> sr.ParkedSession:
     name = sr.session_container_name(root)
-    return sr.ParkedRefreshSession(name, f"{name}-pre-refresh", "project-id", True, True)
+    return sr.ParkedSession(
+        name,
+        f"{name}-pre-refresh",
+        True,
+        project_id="project-id",
+        reconnect_egress=True,
+    )
 
 
 def test_running_target_is_parked_before_host_bootstrap_refresh(tmp_path: Path) -> None:
@@ -33,7 +39,7 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(tmp_path: Path) 
     parked = _parked(tmp_path)
     events: list[str] = []
 
-    def park(*_args) -> sr.ParkedRefreshSession:
+    def park(*_args) -> sr.ParkedSession:
         nonlocal active
         active = False
         events.append("park")
@@ -48,7 +54,7 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(tmp_path: Path) 
         return result
 
     with (
-        patch.object(sr, "conflicting_vscode_session", return_value=None),
+        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
         patch.object(session_refresh, "inspect_refreshable_session_image"),
         patch.object(session_refresh, "capture_session_spec", return_value=object()),
         patch.object(
@@ -84,7 +90,7 @@ def test_bootstrap_failure_restores_exact_parked_session_and_spec(tmp_path: Path
     snapshot = object()
     events: list[str] = []
     with (
-        patch.object(sr, "conflicting_vscode_session", return_value=None),
+        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
         patch.object(session_refresh, "inspect_refreshable_session_image"),
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
         patch.object(
@@ -120,7 +126,7 @@ def test_bootstrap_failure_restores_exact_parked_session_and_spec(tmp_path: Path
 def test_incomplete_rollback_reports_recovery_container(tmp_path: Path) -> None:
     parked = _parked(tmp_path)
     with (
-        patch.object(sr, "conflicting_vscode_session", return_value=None),
+        patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
         patch.object(session_refresh, "inspect_refreshable_session_image"),
         patch.object(session_refresh, "capture_session_spec", return_value=object()),
         patch.object(
@@ -154,10 +160,56 @@ def test_incomplete_rollback_reports_recovery_container(tmp_path: Path) -> None:
 
 def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> None:
     with (
-        patch.object(sr, "conflicting_vscode_session", return_value="vscode-owned"),
+        patch.object(sr, "strict_conflicting_vscode_session", return_value="vscode-owned"),
         patch.object(session_refresh, "inspect_refreshable_session_image") as inspect_image,
         pytest.raises(sr.SessionError, match="VS Code owns"),
     ):
         session_refresh.refresh(tmp_path)
 
     inspect_image.assert_not_called()
+
+
+def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path) -> None:
+    result = _result()
+    snapshot = object()
+    prior_issuance = SimpleNamespace()
+    candidate_issuance = SimpleNamespace()
+    events: list[str] = []
+    with (
+        patch.object(
+            sr,
+            "strict_conflicting_vscode_session",
+            side_effect=[None, None, "vscode-owned"],
+        ),
+        patch.object(session_refresh, "inspect_refreshable_session_image"),
+        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
+        patch.object(
+            session_refresh.runtime_spec,
+            "load_issued_snapshot",
+            side_effect=[prior_issuance, candidate_issuance],
+        ),
+        patch.object(sr, "park_session_for_refresh", return_value=None),
+        patch.object(session_refresh, "refresh_session_image", return_value=result),
+        patch.object(session_refresh, "reissue_session_spec"),
+        patch.object(
+            sr,
+            "_up_unlocked",
+            side_effect=lambda *_args, **_kwargs: events.append("up"),
+        ),
+        patch.object(
+            session_refresh,
+            "restore_session_spec",
+            side_effect=lambda *_args: events.append("restore-spec"),
+        ),
+        patch.object(
+            sr,
+            "discard_refresh_candidate",
+            side_effect=lambda root, issuance: events.append(
+                f"discard:{root == tmp_path}:{issuance is candidate_issuance}"
+            ),
+        ),
+        pytest.raises(sr.SessionError, match="new headless Session is being rolled back"),
+    ):
+        session_refresh.refresh(tmp_path)
+
+    assert events == ["up", "restore-spec", "discard:True:True"]

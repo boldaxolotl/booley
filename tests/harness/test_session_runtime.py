@@ -979,8 +979,12 @@ class TestUp:
                 SimpleNamespace(license_profile=None, relay_image_id=None),
             )
 
-        assert parked == sr.ParkedRefreshSession(
-            name, backup, "project-id", True, True
+        assert parked == sr.ParkedSession(
+            name,
+            backup,
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
         )
         argvs = [_argv_of(call) for call in run.call_args_list]
         assert ["docker", "stop", name] in argvs
@@ -990,12 +994,12 @@ class TestUp:
     def test_refresh_restore_reconnects_exact_parked_session(self, wired):
         workspace, run = wired
         name = sr.session_container_name(workspace)
-        parked = sr.ParkedRefreshSession(
+        parked = sr.ParkedSession(
             name,
             f"{name}-pre-refresh",
-            "project-id",
             True,
-            True,
+            project_id="project-id",
+            reconnect_egress=True,
         )
         state = {
             "Config": {
@@ -1050,6 +1054,43 @@ class TestUp:
             )
 
         run.assert_not_called()
+
+    def test_refresh_parking_reports_trigger_and_failed_compensation(self, wired):
+        workspace, _run = wired
+        name = sr.session_container_name(workspace)
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                    "booley.license-profile": "none",
+                }
+            },
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
+        parking_error = sr.SessionError("egress detach failed")
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[state, None]),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+            patch.object(sr, "_park_refresh_container", side_effect=parking_error),
+            patch.object(
+                sr,
+                "_restore_incomplete_park",
+                side_effect=sr.SessionError("restore rename failed"),
+            ),
+            pytest.raises(sr.SessionError, match="rollback was incomplete") as raised,
+        ):
+            sr.park_session_for_refresh(
+                workspace,
+                SimpleNamespace(license_profile=None, relay_image_id=None),
+            )
+
+        assert "egress detach failed" in str(raised.value)
+        assert "restore rename failed" in str(raised.value)
+        assert name in str(raised.value)
+        assert raised.value.__cause__ is parking_error
 
     def test_image_override_cannot_bypass_host_issued_spec(self, wired):
         workspace, _run = wired
@@ -1626,6 +1667,35 @@ class TestConflictingVscodeSession:
         )
         assert sr.conflicting_vscode_session(workspace) is None
 
+    def test_strict_probe_fails_closed_when_docker_inventory_fails(
+        self, workspace: Path, monkeypatch
+    ):
+        monkeypatch.setattr(sr, "_docker_stdout", lambda *_args: None)
+
+        with pytest.raises(sr.SessionError, match="cannot inventory"):
+            sr.strict_conflicting_vscode_session(workspace)
+
+    def test_strict_probe_detects_vscode_container(self, workspace: Path, monkeypatch):
+        raw = json.dumps(
+            [
+                {
+                    "Config": {
+                        "Labels": {
+                            "booley.role": "interactive",
+                            "devcontainer.local_folder": str(workspace),
+                        }
+                    }
+                }
+            ]
+        )
+        monkeypatch.setattr(
+            sr,
+            "_strict_running_interactive_states",
+            lambda: [("vscode-owned", raw)],
+        )
+
+        assert sr.strict_conflicting_vscode_session(workspace) == "vscode-owned"
+
 
 class TestSessionsOnStaleImage:
     """F-9: `booley init` rebuilds the tag, but a container born from the old
@@ -1907,7 +1977,11 @@ class TestSessionRefresh:
 
         args = _build_parser().parse_args(["session", "refresh"])
         with (
-            patch.object(sr, "conflicting_vscode_session", return_value="vscode-owned"),
+            patch.object(
+                sr,
+                "strict_conflicting_vscode_session",
+                return_value="vscode-owned",
+            ),
             patch.object(session_refresh, "inspect_refreshable_session_image") as refresh,
         ):
             assert booley._cmd_session(args, tmp_path) == 2
@@ -2035,6 +2109,35 @@ class TestSessionRefresh:
         assert spec_path.read_bytes() == old_spec
         assert stamp_path.read_bytes() == b"old stamp\n"
         assert calls == [["docker", "tag", old_id, runtime_spec.keeper_image(tmp_path)]]
+
+    def test_keeper_failure_still_restores_spec_and_stamp(self, tmp_path: Path, monkeypatch):
+        from booley.eda.provisioning import runtime_spec
+        from booley.harness import init_cmd
+
+        spec_path = dc.devcontainer_path(tmp_path)
+        spec_path.parent.mkdir(parents=True)
+        old_id = "sha256:" + "a" * 64
+        old_spec = json.dumps({"image": old_id}).encode()
+        spec_path.write_bytes(old_spec)
+        stamp_path = tmp_path / "host-stamp.json"
+        stamp_path.write_bytes(b"old stamp\n")
+        monkeypatch.setattr(runtime_spec, "stamp_path", lambda _root: stamp_path)
+        monkeypatch.setattr(
+            init_cmd.subprocess,
+            "run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="tag failed"
+            ),
+        )
+        snapshot = init_cmd.capture_session_spec(tmp_path)
+        spec_path.write_text('{"image": "sha256:new"}', encoding="utf-8")
+        stamp_path.write_text("new stamp\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="Session Image keeper: tag failed"):
+            init_cmd.restore_session_spec(tmp_path, snapshot)
+
+        assert spec_path.read_bytes() == old_spec
+        assert stamp_path.read_bytes() == b"old stamp\n"
 
     def test_runtime_probe_uses_isolated_import_and_exact_payload(self, tmp_path: Path):
         image_id = "sha256:" + "a" * 64

@@ -7,7 +7,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from booley.runtime.auth_token import config_dir
-from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
+from booley.runtime.file_lock import (
+    LockContentionError,
+    acquire_file_lock,
+    release_file_lock,
+)
 
 _LOCK_DIR = "locks"
 _LOCK_NAME = "docker-lifecycle.lock"
@@ -27,15 +31,18 @@ def host_lifecycle_lock(operation: str) -> Iterator[None]:
         if os.name != "nt":
             path.chmod(0o600)
         try:
-            with nonblocking_file_lock(handle):
-                handle.seek(0)
-                handle.truncate()
-                handle.write(f"pid={os.getpid()} operation={operation}\n")
-                handle.flush()
-                yield
+            acquire_file_lock(handle)
         except LockContentionError as exc:
             handle.seek(0)
             owner = handle.read().strip() or "another Booley command"
             raise LifecycleLockError(
                 f"host Docker lifecycle is busy ({owner}); retry after it finishes"
             ) from exc
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"pid={os.getpid()} operation={operation}\n")
+            handle.flush()
+            yield
+        finally:
+            release_file_lock(handle)

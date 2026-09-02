@@ -1215,19 +1215,33 @@ def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> N
     """Restore the prior host issuance after Session replacement rolled back."""
     from booley.eda.provisioning import runtime_spec
 
+    errors: list[str] = []
     if snapshot.image_id is not None:
-        result = subprocess.run(
-            ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or "docker tag failed"
-            raise RuntimeError(f"could not restore prior Session Image keeper: {detail}")
-    _restore_snapshot_file(snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode)
-    _restore_snapshot_file(snapshot.stamp_path, snapshot.stamp_content, snapshot.stamp_mode)
+        try:
+            result = subprocess.run(
+                ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"Session Image keeper: {exc}")
+        else:
+            if result.returncode != 0:
+                errors.append(
+                    "Session Image keeper: " + (result.stderr.strip() or "docker tag failed")
+                )
+    for label, path, content, mode in (
+        ("Session spec", snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode),
+        ("issuance stamp", snapshot.stamp_path, snapshot.stamp_content, snapshot.stamp_mode),
+    ):
+        try:
+            _restore_snapshot_file(path, content, mode)
+        except OSError as exc:
+            errors.append(f"{label}: {exc}")
+    if errors:
+        raise RuntimeError("could not fully restore prior host issuance: " + "; ".join(errors))
 
 
 def _project_sandbox_memory(project_root: Path) -> str:
