@@ -1872,6 +1872,66 @@ def _warn_on_mangled_args(command: list[str]) -> None:
     )
 
 
+def _matching_running_project_runtime(workspace: Path, request: _UpRequest) -> str | None:
+    """Return one current running runtime, failing closed on conflicts or drift."""
+    candidates: list[tuple[str, bool]] = []
+    for name, raw in _strict_running_interactive_states():
+        if not _inspected_container_serves_workspace(name, raw, workspace):
+            continue
+        current = _container_matches_issuance(
+            name,
+            request.issuance,
+            spec=request.spec,
+            workspace=workspace,
+        )
+        candidates.append((name, current))
+
+    if len(candidates) > 1:
+        names = ", ".join(repr(name) for name, _current in candidates)
+        raise SessionError(
+            f"multiple running Session Runtimes serve this Project: {names}; "
+            "stop all but the current issued runtime"
+        )
+    if candidates and not candidates[0][1]:
+        raise SessionError(
+            f"running Session Runtime {candidates[0][0]!r} does not match the current host "
+            "issuance; rebuild or stop it before retrying"
+        )
+    return candidates[0][0] if candidates else None
+
+
+def _select_or_start_project_runtime(workspace: Path) -> str:
+    """Select the one current runtime, or create/resume the headless runtime."""
+    request = _validate_up_request(workspace, None)
+    running = _matching_running_project_runtime(workspace, request)
+    if running is not None:
+        return running
+    _run_up_transaction(
+        workspace,
+        request,
+        rebuild=False,
+        expected_image_id=None,
+        expected_payload_fingerprint=None,
+    )
+    _warn_on_stale_session_containers(request.spec, workspace)
+    return request.name
+
+
+def run_project_command(workspace: Path, command: list[str], *, tty: bool = True) -> int:
+    """Run one command in this Project's validated Session Runtime."""
+    from booley.harness.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("session command"):
+        name = _select_or_start_project_runtime(workspace)
+    _warn_on_mangled_args(command)
+    from booley.harness.runtime_attachment import run_command
+
+    try:
+        return run_command(workspace, name, list(command), tty=tty).exit_code
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SessionError(f"could not attach to Session Runtime {name!r}: {exc}") from exc
+
+
 def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True) -> int:
     """``docker exec`` into the running session; return the command's exit code.
 

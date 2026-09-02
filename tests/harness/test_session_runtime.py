@@ -2529,6 +2529,116 @@ class TestMangledArgWarning:
         assert run.call_args.kwargs == {"tty": False}
 
 
+class TestRunProjectCommand:
+    @staticmethod
+    def _request(workspace: Path):
+        return SimpleNamespace(
+            spec={"image": "booley-sandbox"},
+            issuance=object(),
+            profile=None,
+            name=sr.session_container_name(workspace),
+            labels=(),
+            relay=None,
+        )
+
+    @staticmethod
+    def _vscode_state(workspace: Path) -> str:
+        return json.dumps([{"Config": {"Labels": {"devcontainer.local_folder": str(workspace)}}}])
+
+    def test_reuses_valid_running_vscode_runtime(self, workspace: Path):
+        request = self._request(workspace)
+        command = ["claude", "setup-token"]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(
+                sr,
+                "_strict_running_interactive_states",
+                return_value=[("vscode-runtime", self._vscode_state(workspace))],
+            ),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.harness.runtime_attachment.run_command") as run,
+        ):
+            run.return_value = SimpleNamespace(exit_code=0)
+            assert sr.run_project_command(workspace, command, tty=True) == 0
+
+        start.assert_not_called()
+        run.assert_called_once_with(workspace, "vscode-runtime", command, tty=True)
+
+    def test_starts_headless_runtime_when_none_is_running(self, workspace: Path):
+        request = self._request(workspace)
+        command = ["claude", "setup-token"]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch.object(sr, "_warn_on_stale_session_containers"),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.harness.runtime_attachment.run_command") as run,
+        ):
+            run.return_value = SimpleNamespace(exit_code=0)
+            assert sr.run_project_command(workspace, command, tty=False) == 0
+
+        start.assert_called_once_with(
+            workspace,
+            request,
+            rebuild=False,
+            expected_image_id=None,
+            expected_payload_fingerprint=None,
+        )
+        run.assert_called_once_with(workspace, request.name, command, tty=False)
+
+    def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
+        request = self._request(workspace)
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(
+                sr,
+                "_strict_running_interactive_states",
+                return_value=[("stale-runtime", self._vscode_state(workspace))],
+            ),
+            patch.object(sr, "_container_matches_issuance", return_value=False),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            pytest.raises(sr.SessionError, match="does not match the current host issuance"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+        start.assert_not_called()
+
+    def test_multiple_running_runtimes_are_refused(self, workspace: Path):
+        request = self._request(workspace)
+        ours = request.name
+        running = [
+            (ours, json.dumps([{"Config": {"Labels": {}}}])),
+            ("vscode-runtime", self._vscode_state(workspace)),
+        ]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(sr, "_strict_running_interactive_states", return_value=running),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            pytest.raises(sr.SessionError, match="multiple running Session Runtimes"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+        start.assert_not_called()
+
+    def test_attachment_failure_is_reported_as_session_error(self, workspace: Path):
+        with (
+            patch.object(sr, "_select_or_start_project_runtime", return_value="runtime"),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch(
+                "booley.harness.runtime_attachment.run_command",
+                side_effect=OSError("docker disappeared"),
+            ),
+            pytest.raises(sr.SessionError, match=r"could not attach.*docker disappeared"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+
 class TestEnterAlwaysSetsTERM:
     """F-43a: every agent-driven exec answered "TERM environment variable not set."
 

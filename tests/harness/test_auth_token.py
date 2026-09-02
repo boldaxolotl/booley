@@ -10,11 +10,13 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.harness import auth_cmd, session_runtime
 from booley.harness import booley as tlr
-from booley.harness import session_runtime
 from booley.runtime import auth_token
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
@@ -52,9 +54,9 @@ class TestStorage:
         assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         assert auth_token.stored_token_is_private()
 
-    def test_lives_outside_any_repo_or_mount(self, home):
+    def test_lives_outside_any_repo(self, home):
         # A one-year credential inside the project dir is one `git add -f` from
-        # being published, so it must not land under the workspace.
+        # being published, so its host-side source must not land under the workspace.
         assert "booley" in auth_token.token_path().parts[-2]
         assert auth_token.token_path().name == "claude-oauth-token"
 
@@ -609,3 +611,145 @@ class TestCli:
         from booley.harness.auth_cmd import run_auth
 
         assert tlr._EARLY_COMMANDS["auth"] is run_auth
+
+
+class TestClaudeMintLocation:
+    def test_project_mint_uses_runtime_without_host_cli(self, tmp_path, monkeypatch):
+        project = tmp_path / "rtl"
+        project.mkdir()
+        runtime = Mock(return_value=0)
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
+        monkeypatch.setattr(session_runtime, "run_project_command", runtime)
+        monkeypatch.setattr(
+            auth_cmd.shutil,
+            "which",
+            Mock(side_effect=AssertionError("host PATH must not decide Project auth")),
+        )
+        monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: _TOKEN)
+
+        with (
+            patch.object(auth_cmd.sys.stdin, "isatty", return_value=True),
+            patch.object(auth_cmd.sys.stdout, "isatty", return_value=True),
+        ):
+            token = auth_cmd._mint_claude_token(
+                auth_token.CREDENTIALS[auth_token.APP_CLAUDE], project
+            )
+
+        assert token == _TOKEN
+        runtime.assert_called_once_with(project, ["claude", "setup-token"], tty=True)
+
+    def test_runtime_failure_is_actionable_and_does_not_prompt(self, tmp_path, monkeypatch):
+        project = tmp_path / "rtl"
+        project.mkdir()
+        prompt = Mock()
+        errors: list[str] = []
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: True)
+        monkeypatch.setattr(
+            session_runtime,
+            "run_project_command",
+            Mock(side_effect=session_runtime.SessionError("cannot inventory runtimes")),
+        )
+        monkeypatch.setattr(auth_cmd, "_prompt_secret", prompt)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+
+        token = auth_cmd._mint_claude_token(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], project)
+
+        assert token is None
+        prompt.assert_not_called()
+        assert errors == [
+            "could not run `claude setup-token` in the Session Runtime: cannot inventory runtimes"
+        ]
+
+    def test_non_project_mint_keeps_host_cli_fallback(self, tmp_path, monkeypatch):
+        run = Mock(return_value=SimpleNamespace(returncode=0))
+        runtime = Mock()
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
+        monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: "/host/bin/claude")
+        monkeypatch.setattr(auth_cmd.subprocess, "run", run)
+        monkeypatch.setattr(session_runtime, "run_project_command", runtime)
+        monkeypatch.setattr(auth_cmd, "_prompt_secret", lambda: _TOKEN)
+
+        token = auth_cmd._mint_claude_token(
+            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+        )
+
+        assert token == _TOKEN
+        run.assert_called_once_with(("claude", "setup-token"), check=False)
+        runtime.assert_not_called()
+
+    def test_missing_host_cli_names_project_runtime_option(self, tmp_path, monkeypatch):
+        errors: list[str] = []
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", lambda _root: False)
+        monkeypatch.setattr(auth_cmd.shutil, "which", lambda _command: None)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+
+        token = auth_cmd._mint_claude_token(
+            auth_token.CREDENTIALS[auth_token.APP_CLAUDE], tmp_path
+        )
+
+        assert token is None
+        assert "initialized Booley Project" in errors[0]
+        assert "Session Runtime" in errors[0]
+
+    def test_external_project_directory_counts_as_initialized(self, tmp_path, monkeypatch):
+        project = tmp_path / "rtl"
+        project_data = tmp_path / "private-state"
+        project.mkdir()
+        project_data.mkdir()
+        (project / "booley.toml").write_text(
+            '[project]\ndir = "../private-state"\n', encoding="utf-8"
+        )
+        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+
+        assert auth_cmd._project_is_initialized(project)
+
+    def test_token_stdin_never_inspects_or_starts_a_runtime(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(auth_cmd.sys, "stdin", SimpleNamespace(read=lambda: f"{_TOKEN}\n"))
+        project_probe = Mock(side_effect=AssertionError("runtime must not be inspected"))
+        monkeypatch.setattr(auth_cmd, "_project_is_initialized", project_probe)
+
+        token = auth_cmd._acquire(auth_token.CREDENTIALS[auth_token.APP_CLAUDE], True, tmp_path)
+
+        assert token == _TOKEN
+        project_probe.assert_not_called()
+
+    def test_reseed_failure_keeps_stored_token_but_returns_failure(self, tmp_path, monkeypatch):
+        stored = tmp_path / "config" / "booley" / "claude-oauth-token"
+        errors: list[str] = []
+        monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "ok", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "info", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+        monkeypatch.setattr(auth_cmd, "_acquire", lambda *_args: _TOKEN)
+        monkeypatch.setattr(auth_token, "store_token", Mock(return_value=stored))
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=False))
+        args = SimpleNamespace(
+            status=False,
+            clear=False,
+            app=auth_token.APP_CLAUDE,
+            token_stdin=False,
+        )
+
+        rc = auth_cmd.run_auth(args, tmp_path)
+
+        assert rc == 1
+        auth_token.store_token.assert_called_once_with(_TOKEN, auth_token.APP_CLAUDE)
+        assert errors == [
+            "credential was stored, but the Project Session Runtime spec could not be re-seeded; "
+            "run `booley init --seed` and retry"
+        ]
+
+    def test_clear_reseed_failure_returns_failure(self, tmp_path, monkeypatch):
+        errors: list[str] = []
+        monkeypatch.setattr(auth_token, "clear_stored_token", lambda _app: True)
+        monkeypatch.setattr(auth_token, "token_path", lambda _app: tmp_path / "stored-token")
+        monkeypatch.setattr(auth_cmd, "banner", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "ok", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "info", lambda *_args: None)
+        monkeypatch.setattr(auth_cmd, "err", errors.append)
+        monkeypatch.setattr(auth_cmd, "_reseed_spec", Mock(return_value=False))
+
+        rc = auth_cmd._clear(auth_token.APP_CLAUDE, tmp_path)
+
+        assert rc == 1
+        assert "credential was removed" in errors[0]
