@@ -43,6 +43,21 @@ def test_compressed_layers_rejects_conflicting_duplicate_digest() -> None:
         )
 
 
+def test_compressed_layers_reads_verbose_oci_manifest() -> None:
+    document = [
+        {
+            "Descriptor": {"platform": {"os": "linux", "architecture": "amd64"}},
+            "OCIManifest": {"layers": [{"digest": "sha256:runtime", "size": 42}]},
+        },
+        {
+            "Descriptor": {"platform": {"os": "unknown", "architecture": "unknown"}},
+            "OCIManifest": {"layers": [{"digest": "sha256:attestation", "size": 7}]},
+        },
+    ]
+
+    assert image_size_report.compressed_layers(document) == {"sha256:runtime": 42}
+
+
 def test_measure_resolves_linux_amd64_child_from_oci_index(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

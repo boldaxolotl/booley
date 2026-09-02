@@ -16,10 +16,11 @@ this module only describes, it never judges.
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Iterator, Mapping
+import subprocess
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import NotRequired, TypedDict, cast
 
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import TargetRef
@@ -77,12 +78,74 @@ class TargetSurface:
             yield from group.entries
 
 
+class TargetRow(TypedDict):
+    """JSON row for one listed Target."""
+
+    name: str
+    selector: str
+    flow: str | None
+    eda_tool: str | None
+    cocotb_module: str | None
+    toplevel: str | None
+    doctor_flows: list[str]
+    drivable_by: list[str]
+
+
+class CoreRow(TypedDict):
+    """JSON row for one core and its public Targets."""
+
+    vlnv: str
+    core_file: str
+    targets: list[TargetRow]
+
+
+class SurfacePayload(TypedDict):
+    """JSON payload for a Target listing."""
+
+    cores: list[CoreRow]
+    warnings: list[str]
+
+
+class ResolvedDetail(TypedDict):
+    """Resolved half of one Target detail payload."""
+
+    toplevel: str
+    eda_tool: str | None
+    cocotb_module: str | None
+    parameters: Mapping[str, object]
+    rtl_hdl_sources: int
+    rtl_include_dirs: int
+    tb_files: int
+    sdc_files: list[str]
+    xdc_files: list[str]
+    build_root: str
+
+
+class TargetDetailPayload(TypedDict):
+    """JSON payload for one selected Target."""
+
+    name: str
+    selector: str
+    vlnv: str
+    core_file: str
+    flow: str | None
+    eda_tool: str | None
+    cocotb_module: str | None
+    toplevel: str | None
+    doctor_flows: list[str]
+    drivable_by: list[str]
+    warnings: list[str]
+    resolved: NotRequired[ResolvedDetail]
+    resolved_error: NotRequired[str]
+    resolution_command: NotRequired[str]
+
+
 def collect_surface(project_root: Path | str) -> TargetSurface:
     """Build the public Target surface for *project_root* — YAML reads only."""
     root = Path(project_root)
     declarations = fusesoc_registry.target_declarations(root)
 
-    core_docs: dict[Path, Mapping[str, Any]] = {}
+    core_docs: dict[Path, Mapping[str, object]] = {}
 
     def declared_toplevel(ref: TargetRef) -> str:
         doc = core_docs.get(ref.core_file)
@@ -152,7 +215,7 @@ def filter_surface(
             f"{for_flow!r} is not a target-aware Booley Flow; "
             f"choose one of: {', '.join(TARGET_AWARE_FLOWS)}"
         )
-    groups = []
+    groups: list[CoreGroup] = []
     for group in surface.groups:
         kept = tuple(e for e in group.entries if keep(e))
         if kept:
@@ -179,7 +242,7 @@ def _rel_to(path: Path, root: Path) -> str:
 # ---------------------------------------------------------------------------
 
 
-def surface_payload(surface: TargetSurface, project_root: Path | str) -> dict[str, Any]:
+def surface_payload(surface: TargetSurface, project_root: Path | str) -> SurfacePayload:
     """JSON-ready view of a (possibly filtered) surface."""
     root = Path(project_root)
     return {
@@ -212,8 +275,10 @@ def detail_payload(
     token: str,
     *,
     resolve: bool = True,
-    **resolve_kwargs: Any,
-) -> dict[str, Any]:
+    fusesoc_cmd: Sequence[str] = fusesoc_registry.DEFAULT_FUSESOC_CMD,
+    env: Mapping[str, str] | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> TargetDetailPayload:
     """Everything ``booley targets <name>`` shows for one Target.
 
     The cheap half always fills in (enumeration + Doctor metadata); when enabled,
@@ -221,15 +286,15 @@ def detail_payload(
     A resolution failure lands under ``"resolved_error"`` instead of raising. Unknown and
     ambiguous *token*\\ s DO raise (:class:`fusesoc_registry.UnknownTargetError`
     / :class:`fusesoc_registry.AmbiguousTargetError`) — their messages already
-    name the candidates. *resolve_kwargs* forward to
-    :func:`fusesoc_registry.resolve_target` (e.g. ``runner`` for tests).
+    name the candidates. The remaining keyword arguments mirror
+    :func:`fusesoc_registry.resolve_target`.
     """
     root = Path(project_root)
     ref = fusesoc_registry.resolve_public_ref(root, token)
     surface = collect_surface(root)
     entry = next(e for e in surface.entries() if e.ref == ref)
 
-    payload: dict[str, Any] = {
+    payload: TargetDetailPayload = {
         "name": ref.name,
         "selector": entry.selector,
         "vlnv": ref.vlnv,
@@ -250,7 +315,12 @@ def detail_payload(
     build_root = edam_layer.work_root_for(root, "targets", ref.name)
     try:
         resolved = fusesoc_registry.resolve_target(
-            token, project_root=root, build_root=build_root, **resolve_kwargs
+            token,
+            project_root=root,
+            build_root=build_root,
+            fusesoc_cmd=fusesoc_cmd,
+            env=env,
+            runner=runner,
         )
     except fusesoc_registry.FuseSocError as exc:
         message = str(exc).strip()
@@ -326,7 +396,7 @@ def render_listing(surface: TargetSurface, project_root: Path | str) -> str:
     return "\n".join(lines)
 
 
-def render_detail(payload: dict[str, Any]) -> str:
+def render_detail(payload: TargetDetailPayload) -> str:
     """The single-Target detail view."""
 
     def row(label: str, value: str) -> str:
@@ -361,26 +431,27 @@ def render_detail(payload: dict[str, Any]) -> str:
         lines.append(row("SDC", ", ".join(resolved["sdc_files"]) or "(none)"))
         lines.append(row("XDC", ", ".join(resolved["xdc_files"]) or "(none)"))
         lines.append(row("build dir", resolved["build_root"]))
-    elif payload.get("resolved_error"):
+    elif resolved_error := payload.get("resolved_error"):
         lines.append("")
-        lines.append(f"Resolved view unavailable: {payload['resolved_error']}")
-        if payload.get("resolution_command"):
-            lines.append(f"  Run `{payload['resolution_command']}`.")
+        lines.append(f"Resolved view unavailable: {resolved_error}")
+        if resolution_command := payload.get("resolution_command"):
+            lines.append(f"  Run `{resolution_command}`.")
 
     for warning in payload.get("warnings", []):
         lines.append(f"WARNING: {warning}")
     return "\n".join(lines)
 
 
-def _render_parameters(params: Mapping[str, Any]) -> str:
+def _render_parameters(params: Mapping[str, object]) -> str:
     """One-line EDAM ``parameters`` summary: ``NAME (datatype) = default``."""
     if not params:
         return "(none)"
-    parts = []
+    parts: list[str] = []
     for name, spec in params.items():
         if isinstance(spec, Mapping):
-            datatype = spec.get("datatype")
-            default = spec.get("default")
+            item = cast(Mapping[object, object], spec)
+            datatype = item.get("datatype")
+            default = item.get("default")
             piece = name + (f" ({datatype})" if datatype else "")
             if default is not None:
                 piece += f" = {default}"

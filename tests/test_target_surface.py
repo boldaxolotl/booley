@@ -19,7 +19,7 @@ from booley.fusesoc.core_projection import (
 )
 from booley.fusesoc.fusesoc_registry import TargetRef, minimal_selector
 from booley.targets import target_surface
-from booley.targets.target import inspect_target, select_target, select_targets
+from booley.targets.target import TargetHandle, inspect_target, select_target, select_targets
 from booley.targets.target_surface import (
     TARGET_AWARE_FLOWS,
     collect_surface,
@@ -130,6 +130,31 @@ def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surfa
 
 
 class TestTargetInterface:
+    def test_all_target_aware_flows_share_canonical_selection_contract(
+        self,
+        project: Path,
+    ) -> None:
+        cases = {
+            "lint": ("acme:ip:alpha:1.0#lint", "alpha#lint"),
+            "sim": ("acme:ip:alpha:1.0#sim", "sim"),
+            "synth": ("acme:ip:alpha:1.0#synth", "synth"),
+            "fpga": ("acme:ip:beta:1.0#fpga", "fpga"),
+        }
+
+        selected = {
+            flow: select_target(project, authored, for_flow=flow)
+            for flow, (authored, _expected) in cases.items()
+        }
+
+        assert {flow: handle.selector for flow, handle in selected.items()} == {
+            flow: expected for flow, (_authored, expected) in cases.items()
+        }
+        assert all(handle.project_root == project.resolve() for handle in selected.values())
+        with pytest.raises(fusesoc_registry.AmbiguousTargetError):
+            select_target(project, "lint", for_flow="lint")
+        with pytest.raises(fusesoc_registry.IncompatibleTargetError):
+            select_target(project, "sim", for_flow="lint")
+
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
         cores = project_dir / "cores"
@@ -163,7 +188,7 @@ class TestTargetInterface:
             ),
             encoding="utf-8",
         )
-        inspection = inspect_target(tmp_path, "synth")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
 
         assert inspection.handle.core_file == authored
         assert [item.path for item in inspection.inputs] == ["rtl/demo.sv"]
@@ -206,7 +231,7 @@ class TestTargetInterface:
         reconcile_projected_cores(tmp_path)
         authored.write_text(core_template.format(module="fresh"), encoding="utf-8")
 
-        inspection = inspect_target(tmp_path, "synth")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
 
         assert inspection.toplevel == "fresh"
         assert [item.path for item in inspection.inputs] == ["rtl/fresh.sv"]
@@ -238,7 +263,7 @@ class TestTargetInterface:
             encoding="utf-8",
         )
 
-        inspection = inspect_target(tmp_path, "lint")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
         assert inspection.handle.core_file == authored
         assert inspection.toplevel == "demo"
@@ -272,7 +297,7 @@ class TestTargetInterface:
             encoding="utf-8",
         )
 
-        inspection = inspect_target(tmp_path, "lint")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
         assert inspection.handle.core_file == authored
         assert inspection.toplevel == "authored"
@@ -311,7 +336,7 @@ class TestTargetInterface:
                 encoding="utf-8",
             )
 
-        inspection = inspect_target(tmp_path, "lint")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
         assert inspection.handle.core_file == authored
         assert inspection.toplevel == "authored"
@@ -351,7 +376,7 @@ class TestTargetInterface:
         symlink_or_skip(tmp_path / "shadow-alias", hidden_root, target_is_directory=True)
 
         with pytest.raises(fusesoc_registry.FuseSocError, match="could not inspect Target"):
-            inspect_target(tmp_path, "lint")
+            inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
     def test_inspection_refuses_foreign_expected_projection(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
@@ -384,7 +409,7 @@ class TestTargetInterface:
             fusesoc_registry.FuseSocError,
             match="refusing to overwrite non-Booley file",
         ) as failure:
-            inspect_target(tmp_path, "lint")
+            inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
         assert isinstance(failure.value.__cause__, CoreProjectionError)
         assert projected.read_text(encoding="utf-8") == foreign_content
@@ -422,7 +447,7 @@ class TestTargetInterface:
         (tmp_path / "native.core").write_text("not valid CAPI2\n", encoding="utf-8")
         reconcile_projected_cores(tmp_path)
 
-        inspection = inspect_target(tmp_path, "synth")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "synth"))
 
         assert inspection.handle.core_file == authored
         assert [item.path for item in inspection.inputs] == ["rtl/demo.sv"]
@@ -449,7 +474,7 @@ class TestTargetInterface:
             encoding="utf-8",
         )
 
-        inspection = inspect_target(tmp_path, "sim")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "sim"))
 
         assert inspection.handle.identity == "acme:ip:conditional:1.0#sim"
         assert inspection.handle.selector == "sim"
@@ -463,6 +488,29 @@ class TestTargetInterface:
         assert selected.identity == "acme:ip:alpha:1.0#lint"
         assert selected.selector == "alpha#lint"
         assert selected.name == "lint"
+
+    def test_handle_carries_canonical_project_provenance(self, project: Path, tmp_path: Path):
+        link = tmp_path / "linked-project"
+        symlink_or_skip(link, project, target_is_directory=True)
+
+        selected = select_target(link, "sim", for_flow="sim")
+
+        assert selected.project_root == project.resolve()
+        assert inspect_target(project, selected).handle is selected
+
+    def test_inspection_rejects_handle_selected_for_another_project(
+        self, project: Path, tmp_path: Path
+    ) -> None:
+        selected = select_target(project, "sim", for_flow="sim")
+        other = tmp_path / "other"
+        other.mkdir()
+
+        with pytest.raises(fusesoc_registry.FuseSocError, match="selected for Project"):
+            inspect_target(other, selected)
+
+    def test_handle_has_no_public_dataclass_constructor(self) -> None:
+        with pytest.raises(TypeError):
+            TargetHandle()
 
     def test_endpoint_selection_returns_exact_callable_selectors(self, project: Path):
         selected = select_targets(
@@ -513,7 +561,7 @@ class TestTargetInterface:
             encoding="utf-8",
         )
 
-        inspection = inspect_target(tmp_path, "sim")
+        inspection = inspect_target(tmp_path, select_target(tmp_path, "sim"))
 
         assert [(item.core, item.path) for item in inspection.inputs] == [
             ("acme:lib:dep:1.0", "dep/rtl/dep.sv"),
@@ -649,6 +697,7 @@ class TestCollectSurface:
         handle = select_target(project, "lint_selftest_bad", for_flow="lint")
         assert handle.name == "lint_selftest_bad"
         assert handle.selector == "lint_selftest_bad"
+        assert handle.doctor_private
 
     def test_doctor_authority_is_preserved_by_multi_target_selection(
         self,

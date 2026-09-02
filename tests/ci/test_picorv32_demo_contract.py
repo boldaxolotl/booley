@@ -151,6 +151,9 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
 def test_release_validation_skips_credentials_and_cannot_promote() -> None:
     workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
+    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
+    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
+    assert "set -o pipefail" in workflow
     assert "booley init --skip-credentials | tee" in workflow
     assert "OPENAI_API_KEY: ci-presence-check-only" not in workflow
     assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow

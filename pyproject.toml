@@ -56,6 +56,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+    "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-xdist>=3.8",
@@ -75,6 +76,7 @@ dev = [
     # (init_docker_image._docker_build_wheel); without it a fresh dev venv fails
     # Step 9 with "No module named build" (SETUP/F-4).
     "build>=1.0",
+    "hypothesis>=6.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     # Run independent test modules concurrently in CI. loadscope scheduling
@@ -304,6 +306,17 @@ include = [
     # Analyze the complete core package so new boundary modules cannot
     # silently fall out of the checked surface.
     "src/booley/core",
+    # Target selection is the architectural seam shared by every built-in Flow.
+    "src/booley/targets",
+    "src/booley/flows/lint/flow.py",
+    "src/booley/flows/sim/build.py",
+    "src/booley/flows/sim/flow.py",
+    "src/booley/flows/synth/flow.py",
+    "src/booley/flows/fpga/flow.py",
+    "src/booley/flows/implementation_comparison.py",
+    "src/booley/flows/implementation_report.py",
+    "src/booley/flows/synth/implementation_report.py",
+    "src/booley/flows/fpga/implementation_report.py",
     "src/booley/runtime/project_dir.py",
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
@@ -311,6 +324,7 @@ include = [
 strict = [
     # External-input coercion and the project-directory trust boundary.
     "src/booley/core/boundary.py",
+    "src/booley/targets",
     "src/booley/runtime/project_dir.py",
     # Persisted simulator-result structures and verdict parsing.
     "src/booley/flows/sim/backends/cocotb_results.py",

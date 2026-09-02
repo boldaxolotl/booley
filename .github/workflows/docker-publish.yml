@@ -275,6 +275,12 @@ jobs:
       - name: Restore demo checkout ownership for initialization
         run: sudo chown -R "$(id -u):$(id -g)" demo
 
+      # `booley init` rejects Booley's own Source Checkout and every directory
+      # nested beneath it. Preserve the reviewed checkout above, then stage the
+      # user-facing quick-start exercise at the external location a user has.
+      - name: Stage demo outside Booley source checkout
+        run: cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"
+
       - name: Bootstrap reusable host resources as documented
         run: booley bootstrap
 
@@ -282,8 +288,9 @@ jobs:
       # Credentials are deliberately absent: this validation never contacts an
       # agent provider, but still records the demo's configured agent policy.
       - name: Initialize demo cleanly as documented
-        working-directory: demo
+        working-directory: ${{ runner.temp }}/booley-picorv32-demo
         run: |
+          set -o pipefail
           init_log="$(mktemp)"
           booley init --skip-credentials | tee "${init_log}"
           if grep -Fq "[!!]" "${init_log}" || grep -Fq "[XX]" "${init_log}"; then
@@ -317,7 +324,7 @@ jobs:
       # writes generated firmware and Flow reports, so make its checkout match
       # the same ownership a normal Linux user's bind mount has.
       - name: Prepare demo checkout ownership
-        run: sudo chown -R 1000:1000 demo
+        run: sudo chown -R 1000:1000 "${RUNNER_TEMP}/booley-picorv32-demo"
 
       - name: Run demo Doctor and ticket-authoring surface smoke
         env:
@@ -327,8 +334,8 @@ jobs:
         run: |
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
-            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work \
+            --mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo/.booley_project",dst=/booley-project \
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             -w /work \
             -e BOOLEY_PROJECT_DIR=/booley-project \
@@ -365,8 +372,8 @@ jobs:
       - name: Restore demo checkout ownership
         if: always()
         run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
+          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
+            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
           fi
 
   # Retag the already-tested manifests by digest. No Dockerfile or source

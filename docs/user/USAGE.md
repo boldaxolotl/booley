@@ -781,7 +781,16 @@ booley session down                     # stop and remove
 `session refresh` is transactional for the headless runtime. It keeps the old
 container recoverable until the replacement is running on the reconciled
 immutable image ID and an isolated in-container probe confirms the expected
-Booley payload. It refuses to replace a runtime currently owned by VS Code;
+Booley payload. Its host-side journal survives interruption: the next mutating
+host lifecycle command either restores the exact prior spec and container or,
+after the replacement was durably committed, finishes deleting that exact
+predecessor. The recovery command stops after doing so and asks you to rerun the
+requested operation; `session status` reports `recovery-pending` without
+changing state. A Docker build that outlives a killed CLI process is outside
+this transaction—it may leave an unused image, but recovery never adopts that
+image without completing the normal issuance and runtime verification steps.
+
+Refresh refuses to replace a runtime currently owned by VS Code;
 use the editor's **Dev Containers: Rebuild Container** command in that case.
 For a licensed headless runtime, run `booley session down` first so refresh does
 not risk replacing the deterministic license-relay topology beneath a recoverable

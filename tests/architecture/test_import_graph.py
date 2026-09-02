@@ -114,6 +114,31 @@ def test_read_failure_is_not_silenced(monkeypatch: pytest.MonkeyPatch) -> None:
         analyze_imports(_FIXTURE_ROOT)
 
 
+def test_source_root_must_be_a_python_package(tmp_path: Path) -> None:
+    source_root = tmp_path / "booley"
+    source_root.mkdir()
+    (source_root / "module.py").write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source root is not a Python package"):
+        analyze_imports(source_root)
+
+
+def test_module_file_and_package_name_collision_fails(tmp_path: Path) -> None:
+    source_root = tmp_path / "booley"
+    source_root.mkdir()
+    (source_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_root / "duplicate.py").write_text("", encoding="utf-8")
+    duplicate_package = source_root / "duplicate"
+    duplicate_package.mkdir()
+    (duplicate_package / "__init__.py").write_text("", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match=r"multiple source files resolve to module booley\.duplicate",
+    ):
+        analyze_imports(source_root)
+
+
 def test_every_selected_python_file_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
     original = Path.read_text
     read_paths: list[Path] = []

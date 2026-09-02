@@ -38,7 +38,7 @@ import subprocess
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from fusesoc.capi2.exprs import Exprs
@@ -56,6 +56,9 @@ from booley.fusesoc.core_projection import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from booley.targets.target import TargetHandle
 
 # The default fusesoc invocation. In the Sandbox the ``fusesoc`` console script
 # is on PATH (pinned in the image, Phase 0); callers may override for tests or
@@ -2273,7 +2276,7 @@ def resolve_target(
     vlnv: str | None = None,
     fusesoc_cmd: Sequence[str] = DEFAULT_FUSESOC_CMD,
     env: Mapping[str, str] | None = None,
-    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> ResolvedTarget:
     """Resolve *target* through ``fusesoc run --setup`` and read its EDAM.
 
@@ -2334,6 +2337,21 @@ def resolve_target(
 
     edam_path = _find_edam(build_root, bare_target)
     return parse_edam(edam_path, target=bare_target, vlnv=vlnv)
+
+
+def resolve_target_handle(
+    handle: TargetHandle,
+    *,
+    build_root: Path | str,
+    resolution_vlnv: str | None = None,
+) -> ResolvedTarget:
+    """Resolve a complete, selection-authorized Target handle through FuseSoC."""
+    return resolve_target(
+        handle.selector,
+        project_root=handle.project_root,
+        build_root=build_root,
+        vlnv=resolution_vlnv or handle.vlnv,
+    )
 
 
 def try_resolve_target(
