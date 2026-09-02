@@ -25,7 +25,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from booley.core.boundary import (
     as_float,
@@ -33,7 +33,6 @@ from booley.core.boundary import (
     as_str,
     require_bool,
 )
-from booley.criteria.templates import TargetPair
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.runtime import job_slots
@@ -41,6 +40,7 @@ from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent, vlogparam_values
+from booley.targets.target import TargetHandle, select_target, select_targets
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
@@ -55,8 +55,10 @@ from ..baseline_worktree import (
 from ..clock_timing import per_clock_from_json, worst_clock
 from ..implementation_comparison import (
     ImplementationComparisonError,
+    TargetPairPlan,
     target_pair_for_candidate,
-    target_pairs_for_candidates,
+    target_pair_plans_for_candidates,
+    target_pair_plans_for_handles,
 )
 from ..implementation_publication import (
     ImplementationProgress,
@@ -180,7 +182,8 @@ def _resolve_fpga_timeout_ms(work_dir: Path | None, requested: Any = None) -> in
             return 7_200_000
     if work_dir is None:
         return 7_200_000
-    return max(1, as_int(_load_flow_config(work_dir).get("timeout_ms"), 7_200_000))
+    configured = as_int(_load_flow_config(work_dir).get("timeout_ms"), 7_200_000)
+    return max(1, configured if configured is not None else 7_200_000)
 
 
 def _float_metric(data: dict[str, Any], key: str) -> float | None:
@@ -264,11 +267,9 @@ class FpgaImplFlow(BooleyFlow):
         # primary-run artifacts from temporary baseline artifacts.
         self._project_root = Path(self.args.work_dir)
         self._baseline_full_sha: str | None = None
-        targets = fusesoc_registry.resolve_target_selection(
-            self.args.target,
-            self.args.work_dir,
-            for_flow="fpga",
-        )
+        handles = select_targets(self.args.work_dir, self.args.target, for_flow="fpga")
+        self._target_handles = {handle.selector: handle for handle in handles}
+        targets = [handle.selector for handle in handles]
         if not targets:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -278,7 +279,7 @@ class FpgaImplFlow(BooleyFlow):
                 ),
             )
 
-        comparison_error = self._prepare_target_pairs(targets)
+        comparison_error = self._prepare_target_pairs(handles)
         if comparison_error is not None:
             return comparison_error
         if not self._flow_enabled():
@@ -336,16 +337,16 @@ class FpgaImplFlow(BooleyFlow):
                 )
         return current_results
 
-    def _prepare_target_pairs(self, targets: list[str]) -> McpToolResult | None:
+    def _prepare_target_pairs(self, handles: tuple[TargetHandle, ...]) -> McpToolResult | None:
+        targets = [handle.selector for handle in handles]
         baseline_error = self._apply_ticket_baseline(targets)
         comparison_error: str | None = None
         try:
-            self._target_pairs = target_pairs_for_candidates(
+            self._target_pairs = target_pair_plans_for_handles(
                 self.state.criteria,
                 "fpga_impl_ok_",
-                targets,
+                handles,
                 contract=getattr(self, "_target_contract", None),
-                project_root=self.args.work_dir,
                 flow="fpga",
             )
         except ImplementationComparisonError as exc:
@@ -396,9 +397,8 @@ class FpgaImplFlow(BooleyFlow):
         """Resolve and validate every Target input shared with a real dispatch."""
         work_dir = Path(self.args.work_dir)
         build_root = edam_layer.work_root_for(work_dir, self.name, target, variant="fusesoc")
-        resolved = fusesoc_registry.resolve_target(
-            target,
-            project_root=work_dir,
+        resolved = fusesoc_registry.resolve_target_handle(
+            self._target_handle(target),
             build_root=build_root,
         )
         validate_top_parameter_intent(resolved, flow="fpga")
@@ -435,6 +435,26 @@ class FpgaImplFlow(BooleyFlow):
             source_evidence=source,
         )
 
+    def _target_handle(self, target: str) -> TargetHandle:
+        """Return the selected handle, reselecting only in a baseline checkout."""
+        root = Path(self.args.work_dir).resolve()
+        selected = getattr(self, "_target_handles", {}).get(target)
+        if selected is not None and selected.project_root == root:
+            return selected
+        return select_target(root, target, for_flow="fpga")
+
+    def _target_plan(self, target: str) -> TargetPairPlan:
+        """Look up the total pair plan by canonical candidate identity."""
+        plans = getattr(self, "_target_pairs", ())
+        if plans and all(isinstance(plan, TargetPairPlan) for plan in plans):
+            handle = self._target_handle(target)
+            return target_pair_for_candidate(plans, handle.identity)
+        if getattr(self, "_target_contract", None) is not None:
+            raise ImplementationComparisonError(
+                f"sealed FPGA execution has no Target pair plan for {target!r}"
+            )
+        return target_pair_plans_for_candidates({}, "fpga_impl_ok_", (target,), flow="fpga")[0]
+
     def _prepare_fpga_command(
         self,
         target: str,
@@ -469,11 +489,11 @@ class FpgaImplFlow(BooleyFlow):
             name=f"fpga_{target}",
             toplevel=recipe.top,
             part=recipe.part,
-            sv_files=recipe.sv_files,
-            v_files=recipe.v_files,
-            include_dirs=recipe.include_dirs,
-            xdc_files=recipe.xdc_files,
-            defines=recipe.defines,
+            sv_files=list(recipe.sv_files),
+            v_files=list(recipe.v_files),
+            include_dirs=list(recipe.include_dirs),
+            xdc_files=list(recipe.xdc_files),
+            defines=list(recipe.defines),
             vlogparams=recipe.vlogparams,
             workspace_root=self.args.work_dir,
             work_root=work_root,
@@ -553,7 +573,11 @@ class FpgaImplFlow(BooleyFlow):
         """Configure, run, and interpret Vivado inside the Session Runtime."""
         try:
             prepared = self._prepare_fpga_command(target)
-            run_cmd, work_root = prepared
+            if isinstance(prepared, tuple):
+                run_cmd, work_root = cast(tuple[list[str], Path], prepared)
+            else:
+                run_cmd = prepared.run_cmd
+                work_root = prepared.work_root
         except Exception as exc:  # isolate arbitrary adapter/configure failures
             logger.debug("fpga_impl EDAM/configure failed for %s", target, exc_info=True)
             return FpgaMetrics(returncode=2, infra_error=f"fpga setup failed: {exc}")
@@ -835,7 +859,7 @@ class FpgaImplFlow(BooleyFlow):
 
     def _run_baseline_configs(
         self,
-        pairs: tuple[TargetPair, ...],
+        pairs: tuple[TargetPairPlan, ...],
     ) -> tuple[dict[str, FpgaMetrics] | McpToolResult, str | None]:
         """Implement *configs* at ``--baseline`` in a throwaway worktree.
 
@@ -861,11 +885,14 @@ class FpgaImplFlow(BooleyFlow):
         try:
             with baseline_worktree(project_root, baseline_ref) as wt:
                 self.args.work_dir = wt
+                current_handles = self._target_handles
+                self._target_handles = self._baseline_handles(pairs, wt)
                 try:
                     baseline_results = self._execute_baseline_pairs(pairs, short_sha)
                 finally:
+                    self._target_handles = current_handles
                     self.args.work_dir = project_root
-        except BaselineWorktreeError as exc:
+        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"fpga: {exc}",
@@ -875,20 +902,37 @@ class FpgaImplFlow(BooleyFlow):
 
     def _execute_baseline_pairs(
         self,
-        pairs: tuple[TargetPair, ...],
+        pairs: tuple[TargetPairPlan, ...],
         short_sha: str,
     ) -> dict[str, FpgaMetrics]:
         results: dict[str, FpgaMetrics] = {}
         executed: dict[str, FpgaMetrics] = {}
-        targets = [pair.candidate for pair in pairs]
-        for pair in pairs:
-            if pair.baseline not in executed:
-                executed[pair.baseline] = self._run_single_target(pair.baseline)
-            results[pair.candidate] = copy.deepcopy(executed[pair.baseline])
+        targets = [plan.candidate.selector for plan in pairs]
+        for plan in pairs:
+            baseline = plan.baseline.selector
+            candidate = plan.candidate.selector
+            if baseline not in executed:
+                executed[baseline] = self._run_single_target(baseline)
+            results[candidate] = copy.deepcopy(executed[baseline])
             self._write_progress_report(
                 targets, {}, results, phase="baseline", baseline_ref=short_sha
             )
         return results
+
+    @staticmethod
+    def _baseline_handles(
+        plans: tuple[TargetPairPlan, ...], root: Path
+    ) -> dict[str, TargetHandle]:
+        handles: dict[str, TargetHandle] = {}
+        for plan in plans:
+            handle = select_target(root, plan.baseline.selector, for_flow=plan.flow)
+            if handle.identity != plan.baseline.identity:
+                raise ImplementationComparisonError(
+                    f"baseline Target {plan.baseline.selector!r} resolves to "
+                    f"{handle.identity!r}, expected {plan.baseline.identity!r}"
+                )
+            handles[plan.baseline.selector] = handle
+        return handles
 
     def _implementation_report(
         self,
@@ -898,10 +942,10 @@ class FpgaImplFlow(BooleyFlow):
         baseline_ref: str | None,
     ) -> ImplementationReport:
         """Adapt native FPGA evidence to the shared canonical schema."""
-        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), target)
+        plan = self._target_plan(target)
         return build_fpga_implementation_report(
             target=target,
-            pair=pair,
+            pair=plan.evidence_pair(),
             current=current,
             baseline=baseline,
             baseline_ref=self.args.baseline if baseline is not None else None,
@@ -911,6 +955,8 @@ class FpgaImplFlow(BooleyFlow):
                 else None
             ),
             eda_tool=self._eda_tool,
+            baseline_target_identity=plan.baseline.identity,
+            candidate_target_identity=plan.candidate.identity,
         )
 
     def _publisher(self) -> ImplementationPublisher:
@@ -1178,7 +1224,7 @@ class FpgaImplFlow(BooleyFlow):
         baseline_ref: str | None,
         report_path: Path,
     ) -> dict[str, Any]:
-        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), cfg)
+        plan = self._target_plan(cfg)
         report = {
             "flow": self.name,
             "target": cfg,
@@ -1200,8 +1246,10 @@ class FpgaImplFlow(BooleyFlow):
             "baseline_recipe_fingerprint": base.recipe_fingerprint if base else None,
             "baseline_recipe_snapshot": base.recipe_snapshot if base else None,
             "baseline_run_evidence": base.run_evidence if base else None,
-            "baseline_target": pair.baseline,
-            "candidate_target": pair.candidate,
+            "baseline_target": plan.baseline.selector,
+            "candidate_target": plan.candidate.selector,
+            "baseline_target_identity": plan.baseline.identity,
+            "candidate_target_identity": plan.candidate.identity,
         }
         # Top-level ``artifacts`` mirrors the block inside ``metrics`` and adds
         # this file's own path, matching what the other Booley Flows emit — a
@@ -1222,9 +1270,9 @@ class FpgaImplFlow(BooleyFlow):
         *,
         implementation: ImplementationReport | None = None,
     ) -> None:
-        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), cfg)
+        plan = self._target_plan(cfg)
         detail = {
-            **_metrics_detail(cur),
+            **(_metrics_detail(cur) or {}),
             "has_primary_metrics": cur.has_primary_metrics,
             "timing_met": cur.timing_met,
             "has_critical": cur.has_critical,
@@ -1234,8 +1282,10 @@ class FpgaImplFlow(BooleyFlow):
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
             RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            BASELINE_TARGET_DETAIL: pair.baseline,
-            CANDIDATE_TARGET_DETAIL: pair.candidate,
+            BASELINE_TARGET_DETAIL: plan.baseline.selector,
+            CANDIDATE_TARGET_DETAIL: plan.candidate.selector,
+            "_baseline_target_identity": plan.baseline.identity,
+            "_candidate_target_identity": plan.candidate.identity,
             "_cache_consumer_run_id": cur.cache_consumer_run_id or None,
             "_metric_map": dict(_FPGA_METRIC_MAP),
             "_min_allowed": ["fmax_mhz", "wns_ns", "whs_ns"],

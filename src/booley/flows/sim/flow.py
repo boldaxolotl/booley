@@ -21,7 +21,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
@@ -41,7 +41,7 @@ from booley.runtime import job_slots
 from booley.runtime.platform_paths import bash_bin, posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
-from booley.targets.target import inspect_target, select_target, select_targets
+from booley.targets.target import TargetHandle, inspect_target, select_target, select_targets
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
@@ -532,7 +532,7 @@ def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("pre_run_commands")
-            if val:
+            if isinstance(val, list):
                 return [str(cmd) for cmd in val]
     except ImportError:
         pass
@@ -557,7 +557,7 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("max_rundir_bytes")
-            if val is not None:
+            if isinstance(val, (str, int, float)):
                 return int(val)
     except (ImportError, TypeError, ValueError):
         pass
@@ -580,7 +580,7 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("timeout_ms")
-            if val is not None:
+            if isinstance(val, (str, int, float)):
                 return max(1, int(val))
     except (ImportError, TypeError, ValueError):
         pass
@@ -604,7 +604,7 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("sim_time_grace_s")
-            if val is not None:
+            if isinstance(val, (str, int, float)):
                 return max(0.0, float(val))
     except (ImportError, TypeError, ValueError):
         pass
@@ -1302,7 +1302,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         Verilator.
         """
         try:
-            eda_tool = select_target(self.args.work_dir, target, for_flow="sim").eda_tool
+            eda_tool = self._target_handle(target).eda_tool
         except Exception:  # noqa: BLE001 — best-effort Target-EDA-tool read; degrades to default (Verilator)
             eda_tool = None
         normalized = sim_edam.normalize_eda_tool(eda_tool)
@@ -1325,7 +1325,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         non-cocotb Target or when the read fails (degrades to the SV path).
         """
         try:
-            options = inspect_target(self.args.work_dir, target).flow_options
+            handle = self._target_handle(target)
+            options = inspect_target(self.args.work_dir, handle).flow_options
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return None
         module = options.get("cocotb_module")
@@ -1691,10 +1692,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             if cocotb:
                 fusesoc_registry.validate_cocotb_trace_mode(target, trace_mode)
             prepared = prepare_simulation_build(
-                self.args.work_dir,
-                target,
+                self._target_handle(target),
                 variant=self._build_variant(),
-                vlnv=overlay.vlnv if overlay is not None else None,
+                resolution_vlnv=overlay.vlnv if overlay is not None else None,
                 environment=self._target_sim_env(target),
             )
             resolved = prepared.resolved
@@ -2037,10 +2037,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             variant=variant,
         )
         try:
+            handle = self._target_handle(target)
             setup_cmd = fusesoc_registry.setup_command(
-                target,
-                project_root=self.args.work_dir,
+                handle.selector,
+                project_root=handle.project_root,
                 build_root=build_root,
+                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim dry-run: {exc}"]
@@ -2110,10 +2112,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             variant=variant,
         )
         try:
+            handle = self._target_handle(target)
             setup_cmd = fusesoc_registry.setup_command(
-                target,
-                project_root=self.args.work_dir,
+                handle.selector,
+                project_root=handle.project_root,
                 build_root=build_root,
+                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim dry-run: {exc}"]
@@ -2751,8 +2755,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """Prepare one Target or return its expected setup-error result."""
         try:
             return prepare_simulation_build(
-                self.args.work_dir,
-                target,
+                self._target_handle(target),
                 environment=self._target_sim_env(target),
             )
         except SimulationBuildPreparationError as exc:
@@ -2942,10 +2945,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def _elab_only_dry_command(self, target: str) -> list[str]:
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
         try:
+            handle = self._target_handle(target)
             setup = fusesoc_registry.setup_command(
-                target,
-                project_root=self.args.work_dir,
+                handle.selector,
+                project_root=handle.project_root,
                 build_root=build_root,
+                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
@@ -3094,10 +3099,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        targets = [
-            target.selector
-            for target in select_targets(self.args.work_dir, self.args.target, for_flow="sim")
-        ]
+        handles = select_targets(self.args.work_dir, self.args.target, for_flow="sim")
+        self._target_handles = {handle.selector: handle for handle in handles}
+        targets = [handle.selector for handle in handles]
         if targets:
             return targets
         return McpToolResult(
@@ -3108,7 +3112,24 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             ),
         )
 
+    def _target_handle(self, target: str) -> TargetHandle:
+        """Return the selected handle for the active checkout.
+
+        Cycle-count baselines intentionally materialize another checkout, so
+        they reselect and verify the planned selector in that checkout.
+        """
+        root = Path(self.args.work_dir).resolve()
+        selected = getattr(self, "_target_handles", {}).get(target)
+        if selected is not None and selected.project_root == root:
+            return selected
+        return select_target(root, target, for_flow="sim")
+
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
+        if resolved is None:
+            return inspect_target(
+                self.args.work_dir,
+                self._target_handle(target),
+            ).toplevel
         return tb_top_for_target(
             target,
             self.args.work_dir,
@@ -3180,7 +3201,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             test_name = params.get("test")
             current = tests.get(test_name) if isinstance(test_name, str) else None
             relative = has_relative_threshold(params)
-            baseline = baseline_tests.get(test_name) if relative else None
+            baseline = (
+                baseline_tests.get(test_name) if relative and isinstance(test_name, str) else None
+            )
             met, reason = _admissible_cycle_evidence(current, "current")
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
@@ -3310,7 +3333,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return None
         return posix_relpath(log_dir / RUN_LOG_NAME, self.args.work_dir)
 
-    def _artifacts_for(self, target: str, result: TargetResult | None = None) -> dict[str, str]:
+    def _artifacts_for(self, target: str, result: TargetResult | None = None) -> dict[str, object]:
         """Durable files this run left for *target*, as project-relative paths.
 
         Everything the run-half writes lands in the resolved build root: it is
@@ -3456,7 +3479,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            inspection = inspect_target(self.args.work_dir, target)
+            inspection = inspect_target(self.args.work_dir, self._target_handle(target))
             fileset = {
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
@@ -4047,14 +4070,16 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             # target declares no test list — a raw passthrough the TB owns.
             if not matched:
                 return [self.args.test]
-            kept = [t for t in matched if t not in skips]
+            kept: list[str | None] = [t for t in matched if t not in skips]
             # Explicit --test naming only skipped tests overrides the skip list.
-            return kept or matched
+            return kept or cast(list[str | None], matched)
         if self.args.skip:
             available_tests = lookup_target_section(test_names_map, target) or []
             if not available_tests:
                 return [None]
-            kept = [test for test in available_tests if test not in self._effective_skips(target)]
+            kept: list[str | None] = [
+                test for test in available_tests if test not in self._effective_skips(target)
+            ]
             return kept
         suite = resolve_target_test_suite(
             target,

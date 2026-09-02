@@ -49,6 +49,29 @@ from booley.flows.synth.recipe import BASELINE_REF_PARAM
 from booley.flows.synth.timing import StaTimingConfig
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.targets.target import TargetHandle
+from booley.targets.target import select_target as canonical_select_target
+from booley.targets.target import select_targets as canonical_select_targets
+
+
+def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
+    handle = object.__new__(TargetHandle)
+    root = Path(project_root).resolve()
+    values = {
+        "identity": f"::test:0#{selector}",
+        "selector": selector,
+        "name": selector,
+        "vlnv": "::test:0",
+        "core_file": root / "test.core",
+        "flow": "generic",
+        "eda_tool": "yosys",
+        "drivable_by": ("synth",),
+        "project_root": root,
+        "doctor_private": False,
+    }
+    for name, value in values.items():
+        object.__setattr__(handle, name, value)
+    return handle
 
 
 def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
@@ -82,12 +105,26 @@ def _adr0039_lenient_selection(monkeypatch):
     pinned in test_fusesoc_registry.py (test_no_core_rejects_any_token) and
     the .core-authoring integration tests.
     """
-    from booley.fusesoc import fusesoc_registry
 
-    def _lenient(target_arg, project_root):
-        return [c.strip() for c in (target_arg or "").split(",") if c.strip()]
+    def _select(project_root, token, *, for_flow=None):
+        try:
+            return canonical_select_target(project_root, token, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
+            return _layer_target_handle(project_root, token)
 
-    monkeypatch.setattr(fusesoc_registry, "resolve_target_selection", _lenient)
+    def _select_many(project_root, target_arg, *, for_flow=None):
+        try:
+            return canonical_select_targets(project_root, target_arg, for_flow=for_flow)
+        except fusesoc_registry.UnknownTargetError:
+            return tuple(
+                _layer_target_handle(project_root, token.strip())
+                for token in (target_arg or "").split(",")
+                if token.strip()
+            )
+
+    monkeypatch.setattr("booley.flows.synth.flow.select_target", _select)
+    monkeypatch.setattr("booley.flows.synth.flow.select_targets", _select_many)
+    monkeypatch.setattr("booley.flows.implementation_comparison.select_target", _select)
 
 
 # ---------------------------------------------------------------------------

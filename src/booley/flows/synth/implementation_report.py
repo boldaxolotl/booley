@@ -95,6 +95,8 @@ def build_synth_implementation_report(
     resolved_baseline_ref: str | None,
     eda_tool: str | None,
     fatal_timing: bool,
+    baseline_target_identity: str | None = None,
+    candidate_target_identity: str | None = None,
 ) -> ImplementationReport:
     """Normalize synthesis evidence and build its canonical v1 report."""
     context = ImplementationContext(
@@ -103,6 +105,8 @@ def build_synth_implementation_report(
         eda_tool=eda_tool,
         invocation_run_id=os.environ.get("BOOLEY_RUN_ID", ""),
         baseline_target=pair.baseline,
+        baseline_target_identity=baseline_target_identity,
+        candidate_target_identity=candidate_target_identity,
         requested_baseline_ref=baseline_ref,
         resolved_baseline_ref=resolved_baseline_ref,
     )

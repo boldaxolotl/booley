@@ -429,7 +429,7 @@ class LintFlow(BooleyFlow):
         (``--target a,b``). An empty ``--target`` returns no selection rather
         than linting every core.
         """
-        return select_targets(self.args.work_dir, self.args.target)
+        return select_targets(self.args.work_dir, self.args.target, for_flow="lint")
 
     def _prepare_lint_command(
         self,
@@ -459,11 +459,9 @@ class LintFlow(BooleyFlow):
         so the caller records it as a Flow error.
         """
         build_root = edam_layer.work_root_for(self.args.work_dir, "lint", target.selector)
-        resolved = fusesoc_registry.resolve_target(
-            target.selector,
-            project_root=self.args.work_dir,
+        resolved = fusesoc_registry.resolve_target_handle(
+            target,
             build_root=build_root,
-            vlnv=target.vlnv,
         )
         rel = edam_layer.relpath_for_make(resolved.build_root, self.args.work_dir)
         return edam_layer.make_command(rel), resolved
@@ -506,22 +504,6 @@ class LintFlow(BooleyFlow):
         output = json.dumps(commands, indent=2)
         print(output)
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="Dry run complete")
-
-    def _warn_non_lint_flow(self, targets: tuple[TargetHandle, ...]) -> None:
-        """Warn when a selected Target isn't a lint-flow Target.
-
-        Lint inherits the EDA tool from whatever Target it resolves; when
-        ``--target`` names e.g. a sim Target, the
-        run silently lints with that Target's eda_tool. Best-effort — a Target
-        with no declared flow (legacy authoring) stays silent.
-        """
-        for target in targets:
-            if target.flow and target.flow != "lint":
-                print(
-                    f"[lint] WARN: Target '{target.selector}' declares flow '{target.flow}', not "
-                    f"'lint' — linting anyway with its eda_tool "
-                    f"({target.eda_tool or 'verilator'}). Check --target."
-                )
 
     def _run_lint_target(
         self,
@@ -799,9 +781,6 @@ class LintFlow(BooleyFlow):
                 exit_code=EXIT_ERROR,
                 report_text="lint is disabled ([flows.lint].enabled = false).",
             )
-        # Dry-run output is machine-parsed JSON — keep advisory prints out of it.
-        if not self.args.dry_run:
-            self._warn_non_lint_flow(targets)
         # Builtin (FuseSoC) dry-run: a cheap side-effect-free preview that never
         # resolves — short-circuits before the per-Target make loop below.
         if self.args.dry_run:
@@ -841,14 +820,14 @@ class LintFlow(BooleyFlow):
         display, detail = _lint_result_parts(selectors, unique, elapsed, target_results)
         # The copy that reaches the agent as MCP structuredContent: the stdout
         # "See <report> ..." line is tail-truncatable, ``detail`` is not.
-        artifacts.merge_artifacts(
-            detail,
-            artifacts.artifacts_block(
-                self.args.work_dir,
-                report=report_path,
-                **{f"log_{cr.target}": cr.log_path for cr in target_results if cr.log_path},
-            ),
-        )
+        artifact_block = artifacts.artifacts_block(self.args.work_dir, report=report_path)
+        for config_result in target_results:
+            if not config_result.log_path:
+                continue
+            relative_log = artifacts.relative(config_result.log_path, self.args.work_dir)
+            if relative_log is not None:
+                artifact_block[f"log_{config_result.target}"] = relative_log
+        artifacts.merge_artifacts(detail, artifact_block)
         self._eda_tool = ", ".join(sorted({cr.eda_tool for cr in target_results if cr.eda_tool}))
 
         if errored:
