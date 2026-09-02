@@ -174,6 +174,17 @@ Then ask plainly. Three answers, all fine:
    an error message** — if you did not just show the user the preview, you have no
    business submitting.
 
+   For the GitHub route, this command is the submission mechanism. It uses the
+   authenticated GitHub CLI (`gh issue create`) when available. If `gh` is
+   missing or not authenticated, the command prints a prefilled GitHub issue
+   URL instead. Open that URL with the host's normal external-link launcher
+   (`Start-Process` on Windows or `xdg-open` on Linux), stop at the filled issue
+   form, and ask the user to review it and click **Submit new issue**. If no
+   external-link launcher is available, give the user the clickable URL.
+
+   The browser fallback is a human hand-off. Do not use ChatGPT browser tools,
+   web search, or browser automation to navigate GitHub or submit the issue.
+
    Under `mode = "email"` this prints a `mailto:` link and stops — **you** cannot
    send it and must not pretend it went anywhere. Give the user the link, and the
    `booley feedback filed … --url email` command it prints, for after they send.
