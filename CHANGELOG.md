@@ -4,8 +4,7 @@ All notable user-visible changes to Booley are recorded here. Release entries
 use stable `MAJOR.MINOR.PATCH` headings so Booley can review an exact upgrade
 range from the packaged copy of this file.
 
-Packaged release history starts with the first release that replaces the
-Unreleased section with a dated stable-version entry. For older changes, see
+Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
 ## 0.2.10 - 01 SEP 2026
@@ -59,3 +58,215 @@ Unreleased section with a dated stable-version entry. For older changes, see
   host policy file named by `booley init` or `booley doctor`.
 - When Booley reports a version change, invoke `/booley-heal` to review these
   notes, repair drift, and acknowledge the upgrade.
+
+## 0.2.9 - 31 AUG 2026
+
+Booley 0.2.9 moves elaboration checks into `sim`, gives synthesis and FPGA
+implementation a shared report format, fixes setup, ticket, image, and
+diagnostic failures, and updates the runtime toolchain.
+
+### New features
+
+- `synth` and `fpga` write the same versioned `implementation` object with the
+  policy-resolved grade, Target identity, quality-of-results metrics, recipe,
+  provenance, baseline comparison, cache state, and immutable report and log
+  pointers. Both Flows also write atomic stable aliases, numbered reports, and
+  live multi-Target progress. [PR #187](https://github.com/boldaxolotl/booley/pull/187)
+- `booley flow sim --elab-only` compiles, elaborates, and links an ordinary
+  untraced Simulation Target without running tests. `--build-only` is a
+  permanent alias, `--standalone` adds the reusable-module sweep, and successful
+  builds record `elab_pass_<target>` before simulation. See Upgrade notes for
+  migration steps. [PR #185](https://github.com/boldaxolotl/booley/pull/185)
+- `booley init` accepts links into another live checkout when the packaged skill
+  trees match. Retargeting a managed or equivalent link requires
+  `booley init --force`, displays both targets, and preserves unrelated files,
+  directories, links, and junctions. [Issue #178](https://github.com/boldaxolotl/booley/issues/178)
+
+### Quality of life
+
+- The ticket-creation approval gate shows each new Target's name, destination,
+  and full definition with the Ticket. If validation changes a Target, the gate
+  asks for approval again. [PR #170](https://github.com/boldaxolotl/booley/pull/170)
+- `booley session refresh` and Session and Project Image builds stream
+  redirected output and emit heartbeats during silent stages. Bounded failure
+  diagnostics remain available. [Issue #176](https://github.com/boldaxolotl/booley/issues/176)
+- Booley keeps user guides under `docs/user/` and implementation material under
+  `docs/internals/`, with separate Flow reference and troubleshooting guides.
+  Setup directs new Tickets to `booley run` and labels the host check
+  `host_prerequisites`. [PR #162](https://github.com/boldaxolotl/booley/pull/162),
+  [PR #171](https://github.com/boldaxolotl/booley/pull/171)
+- The Session Runtime ships Verible v0.0-4157-gfdbac312, Claude Code 2.1.251,
+  and Codex CLI 0.151.0. [PR #189](https://github.com/boldaxolotl/booley/pull/189)
+
+### Bug fixes
+
+- Pulled GHCR sandbox flavors verify parent ancestry by registry digest, retain
+  their short tags, and pass an immutable local image ID into Interactive Mode.
+  Locally built images still reject stale ancestry.
+  [Issue #172](https://github.com/boldaxolotl/booley/issues/172)
+- Sealed Tickets resolve criterion Targets in the contract worktree after
+  creating it. Contract-only Targets work during fresh setup and resume, while
+  destination-only Targets cannot replace the reviewed contract.
+  [Issue #173](https://github.com/boldaxolotl/booley/issues/173)
+- On Windows, `booley init` applies guarded LF normalization to the project
+  checkout and a separately cloned project-data repository. Doctor identifies
+  the repository that remains unsafe.
+  [Issue #174](https://github.com/boldaxolotl/booley/issues/174)
+- Deep Doctor carries its internal Target authority into Lint. The deliberate
+  bad-case Target receives a design-failure grade without becoming visible on
+  public Target surfaces. [Issue #175](https://github.com/boldaxolotl/booley/issues/175)
+- Live checkouts read their own `VERSION` instead of combining stale
+  distribution metadata with the checkout's commit identity. Wheels still
+  report their owning distribution metadata.
+  [Issue #177](https://github.com/boldaxolotl/booley/issues/177)
+
+### Upgrade notes
+
+- Replace `booley flow elab` with `booley flow sim --elab-only`. Move
+  `standalone_frontend` from `[flows.elab]` to `[flows.sim]`, remove `elab` from
+  Target Doctor lists, and read `sim_<target>.json` with `mode: "elab_only"`
+  instead of `elab_<target>.json`. Remove `keep_build_dir`; Simulation now
+  retains its untraced build cache after success and failure.
+
+[Full changes from v0.2.8](https://github.com/boldaxolotl/booley/compare/v0.2.8...v0.2.9)
+
+## 0.2.8 - 29 AUG 2026
+
+Booley 0.2.8 makes project setup safer for automation, expands ticket
+acceptance-criteria guidance, and corrects Claude runtime and deep Doctor
+behavior. Release preflight now catches Docker/demo failures before tagging.
+
+### New features
+
+- [`booley init --skip-credentials`](https://github.com/boldaxolotl/booley/pull/164)
+  configures a project's provider and authentication policy without entering or
+  storing placeholder credentials. Normal policy validation still applies.
+- [Ticket acceptance-criteria guidance](https://github.com/boldaxolotl/booley/pull/163)
+  now explains how projects can use area and cycle-count criteria to enforce PPA
+  budgets, and coverage and mutation-testing criteria to strengthen
+  testbenches.
+
+### Bug fixes
+
+- [Claude agents now use the supported Claude Agent SDK launcher and command construction](https://github.com/boldaxolotl/booley/pull/160),
+  including Windows launchers. Authentication and traffic overrides stay scoped
+  to the child process.
+- [Deep Doctor checks now use the same isolated FuseSoC registry and build context as execution](https://github.com/boldaxolotl/booley/pull/167).
+  This prevents generated projections or good firmware from masking bad
+  simulation and lint fixtures.
+- [The release Docker/demo preflight is now credential-free and candidate-only](https://github.com/boldaxolotl/booley/pull/164).
+  It validates the exact release commit before tagging without promoting
+  version or `latest` images, using a reviewed, pristine, Doctor-clean PicoRV32
+  demo ([#166](https://github.com/boldaxolotl/booley/pull/166),
+  [#167](https://github.com/boldaxolotl/booley/pull/167)).
+
+[Full commit history](https://github.com/boldaxolotl/booley/compare/v0.2.7...v0.2.8)
+
+## 0.2.7 - 28 AUG 2026
+
+Booley 0.2.7 adds per-test cycle criteria, directed Target comparisons,
+reusable ticket guidance, CLI-readable review packages, and optional Target
+cleanup. It fixes image refresh, cancellation, Target resolution, tracing,
+completion recovery, and acceptance evidence.
+
+### New features
+
+- Cycle Count criteria can grade each Target and test with absolute limits or
+  relative percentage and cycle-delta thresholds. Directed Target pairs run the
+  frozen baseline and candidate on different Targets for synthesis, FPGA, and
+  cycle comparisons. Existing single-Target syntax still compares the same
+  Target on both sides.
+  ([Cycle Count criteria](https://github.com/boldaxolotl/booley/pull/105),
+  [directed Target pairs](https://github.com/boldaxolotl/booley/pull/113))
+- Project-owned Ticket Creation Guidance can describe defaults and policy as
+  free-form Markdown. Booley applies the relevant guidance, validates the
+  resolved Ticket, records its `on_success` policy, and keeps
+  `ticket_defaults.md` as a fallback.
+  ([guidance](https://github.com/boldaxolotl/booley/pull/135),
+  [defaults and policy](https://github.com/boldaxolotl/booley/pull/125))
+
+### Quality of life
+
+- Ticket Mode now writes a versioned JSON review package for every Ticket that
+  reaches review, including runs without a triage agent. CLI agents receive the
+  package path through `BOOLEY_RUN_RESULT`, and `booley board prepare-review`
+  reports it directly.
+  ([review packages](https://github.com/boldaxolotl/booley/pull/112))
+- Ticket branches can carry prepared Target contracts for the outer repository
+  and an optional paired Project repository. Contracts bind the selected
+  branches and source commits before validation or candidate preparation.
+  ([prepared Ticket workspaces](https://github.com/boldaxolotl/booley/pull/126))
+- `on_success.remove_targets` can remove criterion-bound `.core` Targets and
+  owned `tests.toml` tables from an accepted candidate. The sealed contract
+  fixes the exact removal set before completion.
+  ([Target cleanup](https://github.com/boldaxolotl/booley/pull/137))
+- Setup documentation now explains ownership of the stealth Project repository
+  and where project-specific state belongs. The README and PyPI description
+  describe Booley as an integrated RTL IDE built around agent workflows.
+  ([Project repository guidance](https://github.com/boldaxolotl/booley/pull/122),
+  [README](https://github.com/boldaxolotl/booley/pull/115))
+
+### Bug fixes
+
+- Normal-use fixes cover Ticket control-artifact round trips, compiler-isolated
+  mutation variants, staged Reviewer contracts, focused Cocotb trace
+  diagnostics, Doctor fail-path fixtures, clean Developer handoffs, and
+  release-matched sandbox images. Mutation evidence names the exact source
+  variant, trace requests validate real B-Wave content, and expected Codex
+  recovery is no longer a warning.
+  ([issue #88](https://github.com/boldaxolotl/booley/issues/88))
+- Fixes from the Ibex port require provider and authentication selection before
+  init seeds runtime state, allow no-EDA sessions with a read-only authority
+  store, keep elaboration on simulation Targets, refresh stale Doctor output,
+  use the project root for an unset simulation `run_cwd`, support Ticket-less
+  Interactive Reviewer receipts, parse legacy Cycle Count mappings, and prevent
+  paired-contract archive collisions.
+  ([issue #127](https://github.com/boldaxolotl/booley/issues/127))
+- Session Image refresh now uses one provenance lifecycle for pulled, locally
+  built, flavored, and Project-derived images. Same-version images from another
+  source revision are stale; managed parents rebuild in order; custom external
+  images remain unmanaged; and refresh verifies the recreated runtime.
+  ([issue #128](https://github.com/boldaxolotl/booley/issues/128))
+- Interrupting `booley session enter -- <command>` now cancels and reaps the
+  complete container process tree. Renewable job leases, zombie detection, PID
+  identity checks, and bounded recovery prevent an abandoned HEAVY slot from
+  blocking later work.
+  ([issue #129](https://github.com/boldaxolotl/booley/issues/129))
+- Verilator tracing now resolves one VCD or native FST recipe across compiler
+  flags, runtime objects, harness behavior, transport, and validation. Authored
+  FST Targets are no longer partially rewritten into VCD builds.
+  ([issue #130](https://github.com/boldaxolotl/booley/issues/130))
+- Contracts, prompts, Doctor, and Flows now share one canonical resolved Target
+  interface. It separates durable identity from the exact callable selector,
+  resolves conditional FuseSoC inputs once, omits fabricated bindings for
+  Target-independent criteria, and preserves schema 3 contracts while writing
+  schema 4. ([issue #131](https://github.com/boldaxolotl/booley/issues/131))
+- Paired-repository completion now validates an immutable plan before mutation
+  and records each publication and cleanup step in a durable journal. Retries
+  resume from verified commit identities, and cleanup cannot delete a
+  destination branch. ([issue #132](https://github.com/boldaxolotl/booley/issues/132))
+- Ticket acceptance evidence is now separate from Doctor diagnostics and other
+  live runtime state. Completion freezes an accepted snapshot, so cleanup and
+  self-tests cannot erase red-green evidence or make completed Tickets display
+  `0/N`. ([issue #133](https://github.com/boldaxolotl/booley/issues/133))
+- Isolated worktrees can materialize configured submodules from an already
+  initialized Project without remotes, SSH, global Git configuration, or shared
+  `.git` pointers. The destination gitlinks remain authoritative, and unsafe or
+  incomplete local sources fail with actionable errors.
+  ([offline submodule setup](https://github.com/boldaxolotl/booley/pull/118))
+- CRLF repair now refreshes only normalized tracked index entries, heals stale
+  index metadata, and never stages content. Doctor detects status-only failures
+  and points Windows users to a fresh-clone repair path.
+  ([issue #107](https://github.com/boldaxolotl/booley/issues/107))
+
+### Upgrade notes
+
+- `booley init` no longer selects a default agent provider. Choose the provider
+  and authentication method explicitly before init creates or refreshes
+  provider-dependent runtime state.
+- Recreate Ticket contracts older than schema 3. Schema 3 contracts remain
+  readable after the schema 4 Target-interface update.
+- New projects use `ticket_creation.md`. Existing `ticket_defaults.md` files
+  remain supported as a legacy fallback and do not require immediate migration.
+
+[Full commit history](https://github.com/boldaxolotl/booley/compare/v0.2.6...v0.2.7)
