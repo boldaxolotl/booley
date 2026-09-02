@@ -28,10 +28,14 @@ A rebuild may otherwise select a stopped VS Code container whose old bind list
 still mentions a deleted skill, credential file, tool installation, mask
 directory, or editor-injected socket. During `booley session prepare`, Booley
 now removes such a stopped container (without deleting named volumes) so Dev
-Containers creates one from the current spec. It never removes a running
-container, a headless `booley session` container, or a container belonging to a
-different Project. If one is running with an older issuance, stop it and retry
-the rebuild.
+Containers creates one from the current spec. When exactly one running legacy
+VS Code container is authenticated to this Project, Booley stops it by immutable
+container ID, validates the current spec again, and removes that same stopped
+container. Bind mounts and named volumes remain; unpersisted data in the old
+container's writable layer is discarded. Booley refuses without mutation when
+the container is headless, foreign, ambiguous, or one of multiple matches. If
+validation fails after the stop, the error includes the exact `docker start`
+recovery command.
 
 ## `booley` is missing from `/mcp` in Claude Code or Codex
 
@@ -159,9 +163,14 @@ the normal isolated CLI entry point.
 ## Windows first-run problems
 
 The CLI runs **natively on Windows** (repo on `C:\...`, Windows Python), not
-from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Four
+from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Six
 first-run traps:
 
+- **Git is older than 2.37.2.** Upgrade Git for Windows from
+  [git-scm.com](https://git-scm.com/downloads/win), open a new terminal, and
+  rerun `booley init`. Older releases can exhaust their small pool of temporary
+  names when Booley stages a large checkout for line-ending repair; bootstrap
+  now stops early with the installed and required versions instead.
 - **`python`/`py` open the Microsoft Store instead of running.** A fresh
   Windows has no real interpreter, only Store aliases. Install one first:
   `winget install Python.Python.3.13`.
@@ -203,6 +212,13 @@ first-run traps:
   match the index, so Git decides nothing needs rewriting and leaves the CRLF on
   disk. Init materializes filtered replacements separately and applies them only
   after all safety checks pass; it never deletes the originals.)
+
+- **Init cannot resolve the trusted host Booley executable.** A per-user Python
+  install normally places `booley.exe` under the user scripts directory rather
+  than the interpreter's system `Scripts` directory. Current Booley releases
+  inspect both trusted locations even when the user scripts directory is not on
+  `PATH`. If the error remains, reinstall with `pipx` or add the scripts
+  directory reported by Python to `PATH`, open a new terminal, and rerun init.
 
 - **The first sandbox image build takes over an hour.** First builds compile
   EDA tools from source and can take well over an hour on a WSL2-backed Docker;

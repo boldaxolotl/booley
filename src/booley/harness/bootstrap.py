@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -25,6 +26,13 @@ from booley.harness.image_lifecycle import (
 from booley.harness.setup.skills import reconcile_host_skills
 from booley.runtime.paths import skills_dir
 from booley.runtime.skill_links import SkillLinkReport
+
+MIN_GIT_VERSION = (2, 37, 2)
+_GIT_VERSION_LINE = re.compile(
+    r"^git version (?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+    r"(?P<suffix>[^\s]*)(?:\s.*)?$"
+)
+_GIT_PRERELEASE_SUFFIX = re.compile(r"(?:^|[.-])(?:alpha|beta|pre|rc)\d*", re.IGNORECASE)
 
 
 class BootstrapState(StrEnum):
@@ -107,13 +115,59 @@ def reconcile_bootstrap(intent: Intent, *, verbose: bool = False) -> BootstrapRe
 
 
 def _prerequisite_findings() -> tuple[BootstrapFinding, ...]:
-    git = _tool_finding("git", "--version")
+    git = _git_finding()
     docker = _tool_finding("docker", "--version")
     if docker.state is BootstrapState.CURRENT:
         daemon_error = _docker_daemon_error()
         if daemon_error:
             docker = BootstrapFinding("docker", BootstrapState.ERROR, daemon_error)
     return git, docker, _vscode_finding()
+
+
+def _git_finding() -> BootstrapFinding:
+    """Require a stable Git release that avoids the Windows temp-name limit."""
+    minimum = ".".join(str(part) for part in MIN_GIT_VERSION)
+    finding = _tool_finding("git", "--version")
+    if finding.state is BootstrapState.ERROR:
+        if finding.detail == "git is required but not on PATH":
+            detail = f"Git {minimum} or newer is required but git is not on PATH"
+        else:
+            detail = finding.detail.replace("git", "Git", 1)
+        return BootstrapFinding(
+            "git",
+            BootstrapState.ERROR,
+            detail,
+        )
+    return _git_version_finding(finding.detail)
+
+
+def _git_version_finding(line: str) -> BootstrapFinding:
+    """Parse and enforce the supported stable Git version boundary."""
+    minimum = ".".join(str(part) for part in MIN_GIT_VERSION)
+    match = _GIT_VERSION_LINE.fullmatch(line)
+    if match is None:
+        return BootstrapFinding(
+            "git",
+            BootstrapState.ERROR,
+            f"cannot determine a supported Git version; Git {minimum} or newer is required",
+        )
+    version = tuple(int(match.group(name)) for name in ("major", "minor", "patch"))
+    suffix = match.group("suffix")
+    if _GIT_PRERELEASE_SUFFIX.search(suffix):
+        return BootstrapFinding(
+            "git",
+            BootstrapState.ERROR,
+            f"pre-release Git builds are not supported; install Git {minimum} or newer",
+        )
+    if version < MIN_GIT_VERSION:
+        detected = ".".join(str(part) for part in version)
+        return BootstrapFinding(
+            "git",
+            BootstrapState.ERROR,
+            f"Git {detected} is too old; Git {minimum} or newer is required. "
+            "Upgrade Git and rerun booley bootstrap.",
+        )
+    return BootstrapFinding("git", BootstrapState.CURRENT, line[:80])
 
 
 def _tool_finding(name: str, version_arg: str) -> BootstrapFinding:
@@ -184,18 +238,28 @@ def _reconcile_skills(intent: Intent) -> BootstrapFinding:
         dry_run=intent is Intent.CHECK,
         allow_retarget=True,
     )
-    reports = tuple(item.report for item in reconciliations)
-    failures = tuple(_skill_report_error(report) for report in reports)
-    errors = tuple(error for error in failures if error)
+    failures = tuple((item.target, _skill_report_error(item.report)) for item in reconciliations)
+    errors = tuple(f"{target}: {error}" for target, error in failures if error)
     if errors:
         return BootstrapFinding("skills", BootstrapState.ERROR, "; ".join(errors))
-    changed = sum(event.changed for report in reports for event in report.events)
+    changes = tuple(
+        (item.target, sum(event.changed for event in item.report.events))
+        for item in reconciliations
+    )
+    changed = sum(count for _target, count in changes)
     if intent is Intent.CHECK and changed:
-        return BootstrapFinding(
-            "skills", BootstrapState.PENDING, f"{changed} skill link change(s) pending"
+        pending = "; ".join(
+            f"{target}: {count} skill link change(s) pending" for target, count in changes if count
         )
+        return BootstrapFinding("skills", BootstrapState.PENDING, pending)
     state = BootstrapState.CHANGED if changed else BootstrapState.CURRENT
-    return BootstrapFinding("skills", state, f"checked {len(reconciliations)} skill target(s)")
+    targets = ", ".join(str(item.target) for item in reconciliations)
+    action = f"applied {changed} skill link change(s) across" if changed else "checked"
+    return BootstrapFinding(
+        "skills",
+        state,
+        f"{action} {len(reconciliations)} skill target(s): {targets}",
+    )
 
 
 def _skill_report_error(report: SkillLinkReport) -> str:

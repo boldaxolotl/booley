@@ -4,6 +4,9 @@
 
 This is the big-picture view of Booley and how its parts fit together. It assumes familiarity with the terms **Booley Flow**, **Target**, **Specialist**, **Session Runtime**, and FuseSoC `.core`; all are defined in the [CONTEXT.md glossary](../CONTEXT.md). Operational commands and capability details belong in [USAGE.md](../user/USAGE.md), while each section below links to deeper technical documentation.
 
+The executable package-direction design and its legacy cycle baseline live in the
+[Source Dependency Contract](SOURCE-DEPENDENCY-CONTRACT.md).
+
 ## Overview
 
 Booley makes EDA workflows drivable by LLM agents without trusting the agents' claims. It wraps heterogeneous toolchains as **Booley Flows** with structured inputs and machine-checkable results, then exposes those Flows and LLM-backed **Specialists** through MCP.

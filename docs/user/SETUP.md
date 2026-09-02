@@ -60,6 +60,13 @@ host resources while preserving caches and user-owned files.
 Skipping the explicit command is supported: ordinary `booley init` performs
 the same reconciliation before it changes a Project.
 
+The compressed registry transfer and the resulting Docker storage are different
+budgets. The standard sandbox is about 15 GB after extraction; the RISC-V demo
+image is about 20 GB, and the full demo stack needs at least 21 GB of free Docker
+storage. Its download is roughly 6 GB because registry layers are compressed.
+Allow additional room for Docker metadata, build cache, containers, and Project
+artifacts. Multiple tags that resolve to the same image ID share their layers.
+
 ## Initialize the Project · host
 
 Run Project Initialization on the host before the skill takes over. The host versus

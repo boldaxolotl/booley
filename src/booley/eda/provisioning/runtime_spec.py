@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import sys
+import sysconfig
 import tempfile
 import tomllib
 from contextlib import AbstractContextManager, nullcontext
@@ -96,6 +97,23 @@ def stamp_path_for_identity(project_root: str) -> Path:
     """Private host path for an already-canonical persisted Project identity."""
     identity = hashlib.sha256(project_root.encode()).hexdigest()
     return config_dir() / "eda" / "session-specs" / f"{identity}.json"
+
+
+def load_issued_snapshot(project_root: Path) -> Issuance:
+    """Load structurally valid prior issuance without consulting current authority.
+
+    Session refresh uses this recovery view before replacing an existing
+    container.  The current grant may legitimately have changed — healing that
+    drift is the point of refresh — while the sealed prior licence decision and
+    Project identity still have to be trusted before Docker mutation.
+    """
+    project = project_root.resolve(strict=True)
+    issuance = _load_stamp(stamp_path(project))
+    if issuance.project_root != str(project):
+        raise RuntimeSpecError("host-issued spec stamp belongs to a different Project")
+    if issuance.keeper_image != keeper_image(project):
+        raise RuntimeSpecError("host-issued spec image keeper differs from this Project")
+    return issuance
 
 
 def keeper_image(project_root: Path) -> str:
@@ -314,13 +332,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
     """Validate every authority-bearing field against the current host issuance."""
     project = project_root.resolve(strict=True)
-    stamp = _load_stamp(stamp_path(project))
-    if (
-        stamp.project_root != str(project)
-        or stamp.file_sha256 != _file_sha256(spec_path)
-        or stamp.spec_sha256 != _spec_digest(spec)
-    ):
-        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    stamp = authenticate(project, spec, spec_path)
     config = load_eda_config(project).get("vivado")
     host_provisioning = _host_vivado_requested(project, config)
     try:
@@ -363,12 +375,26 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 raise RuntimeSpecError("FlexNet relay image has drifted since spec issuance")
             if installation and stamp.wrapper_sha256 != wrapper_sha256():
                 raise RuntimeSpecError("Booley Vivado wrapper has changed since spec issuance")
-            validator = _initialize_executable(spec)
-            if stamp.validator_sha256 != _file_sha256(validator):
-                raise RuntimeSpecError("host Booley validator has changed since spec issuance")
             return stamp
     except authority.AuthorityError as exc:
         raise _runtime_authority_error(spec, host_provisioning, exc) from exc
+
+
+def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
+    """Authenticate immutable host issuance fields without trusting bind sources."""
+    project = project_root.resolve(strict=True)
+    stamp = _load_stamp(stamp_path(project))
+    if (
+        stamp.project_root != str(project)
+        or stamp.file_sha256 != _file_sha256(spec_path)
+        or stamp.spec_sha256 != _spec_digest(spec)
+    ):
+        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    _validate_initialize_command(project, spec.get("initializeCommand"))
+    validator = _initialize_executable(spec)
+    if stamp.validator_sha256 != _file_sha256(validator):
+        raise RuntimeSpecError("host Booley validator has changed since spec issuance")
+    return stamp
 
 
 def labels(issuance: Issuance) -> tuple[str, ...]:
@@ -847,7 +873,10 @@ def _pin_initialize_command(project: Path, spec: dict[str, Any]) -> None:
         raise RuntimeSpecError("devcontainer.json has no fixed host validation command")
     executable = _find_trusted_validator(project)
     if executable is None:
-        raise RuntimeSpecError("cannot resolve the trusted host Booley executable")
+        raise RuntimeSpecError(
+            "cannot resolve the trusted host Booley executable; reinstall Booley with "
+            "pipx or add its Python scripts directory to PATH"
+        )
     spec["initializeCommand"] = initialize_command(str(executable))
 
 
@@ -866,18 +895,69 @@ def _initialize_executable(spec: dict[str, Any]) -> Path:
     return Path(raw[0])
 
 
+def _validator_script_directories() -> tuple[Path, ...]:
+    """Supported interpreter-owned script directories outside ``PATH``."""
+    directories = [Path(sysconfig.get_path("scripts"))]
+    try:
+        user_scheme = sysconfig.get_preferred_scheme("user")
+        directories.append(Path(sysconfig.get_path("scripts", scheme=user_scheme)))
+    except (KeyError, TypeError, ValueError):
+        pass
+    return tuple(dict.fromkeys(directory.resolve() for directory in directories))
+
+
+def _invoked_validator_candidate() -> Path | None:
+    """Return the absolute ``booley`` entry point used for this process."""
+    invoked = Path(sys.argv[0])
+    if invoked.is_absolute() and invoked.name.casefold() in {"booley", "booley.exe"}:
+        return invoked
+    return None
+
+
+def _path_validator_candidates() -> tuple[Path, ...]:
+    """Return every ``booley`` location represented by ``PATH`` in order."""
+    names = ("booley.exe", "booley") if os.name == "nt" else ("booley",)
+    return tuple(
+        dict.fromkeys(
+            Path(directory) / name
+            for directory in os.environ.get("PATH", "").split(os.pathsep)
+            if directory
+            for name in names
+        )
+    )
+
+
+def _is_executable_file(candidate: Path) -> bool:
+    """Return whether a candidate exists and could win command resolution."""
+    try:
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        return False
+
+
 def _find_trusted_validator(project: Path) -> Path | None:
-    """Select the first trusted ``booley`` on PATH, skipping poison entries."""
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory:
-            continue
-        candidate = Path(directory) / ("booley.exe" if os.name == "nt" else "booley")
+    """Select the first trusted installed ``booley``, including off-PATH installs."""
+    invoked = _invoked_validator_candidate()
+    if invoked is not None:
+        return _resolve_trusted_validator(invoked, project)
+    path_candidates = _path_validator_candidates()
+    for candidate in path_candidates:
         canonical = _resolve_trusted_validator(candidate, project)
         if canonical is not None:
             return canonical
-    fallback = shutil.which("booley")
-    candidate = Path(fallback) if fallback else Path()
-    return _resolve_trusted_validator(candidate, project)
+    shell_candidate = shutil.which("booley")
+    if shell_candidate:
+        canonical = _resolve_trusted_validator(Path(shell_candidate), project)
+        if canonical is not None:
+            return canonical
+    if shell_candidate or any(_is_executable_file(candidate) for candidate in path_candidates):
+        return None
+    for directory in _validator_script_directories():
+        candidate = directory / ("booley.exe" if os.name == "nt" else "booley")
+        canonical = _resolve_trusted_validator(candidate, project)
+        if canonical is not None:
+            return canonical
+    return None
 
 
 def _resolve_trusted_validator(executable: Path, project: Path) -> Path | None:
@@ -926,13 +1006,17 @@ def _validator_prefix_anchors() -> dict[Path, Path]:
     environment_anchor = (
         home if environment == home or home in environment.parents else environment
     )
-    return {
+    anchors = {
         (home / ".local" / "bin").resolve(): home,
         Path("/usr/local/bin").resolve(): Path("/usr").resolve(),
         Path("/usr/bin").resolve(): Path("/usr").resolve(),
         Path("/bin").resolve(): Path("/usr").resolve(),
         (environment / ("Scripts" if os.name == "nt" else "bin")).resolve(): environment_anchor,
     }
+    for directory in _validator_script_directories():
+        if directory == home or home in directory.parents:
+            anchors[directory] = home
+    return anchors
 
 
 def _secure_validator_ancestry(executable: Path, anchor: Path) -> bool:
