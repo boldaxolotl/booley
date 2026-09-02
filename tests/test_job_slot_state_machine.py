@@ -295,9 +295,7 @@ class JobSlotStateMachine(RuleBasedStateMachine):
         expected_holders = [lease for lease in expected if lease.state == job_slots.HOLDING]
         expected_waiters = [lease for lease in expected if lease.state == job_slots.QUEUED]
         assert len(holders) <= _CAPS.cap_for(job_class)
-        assert len({token.lease_id for token in [*holders, *waiters]}) == len(
-            [*holders, *waiters]
-        )
+        assert len({token.lease_id for token in [*holders, *waiters]}) == len([*holders, *waiters])
         assert self._projection(holders) == self._model_projection(expected_holders)
         assert self._projection(waiters) == self._model_projection(expected_waiters)
         return {token.lease_id for token in [*holders, *waiters]}
