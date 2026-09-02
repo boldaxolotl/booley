@@ -917,18 +917,29 @@ def _find_trusted_validator(project: Path) -> Path | None:
     """Select the first trusted installed ``booley``, including off-PATH installs."""
     invoked = _invoked_validator_candidate()
     if invoked is not None:
-        return invoked.resolve(strict=True) if _trusted_validator(invoked, project) else None
+        return _resolve_trusted_validator(invoked, project)
     path_candidates = _path_validator_candidates()
     for candidate in path_candidates:
-        if _trusted_validator(candidate, project):
-            return candidate.resolve(strict=True)
+        canonical = _resolve_trusted_validator(candidate, project)
+        if canonical is not None:
+            return canonical
     if any(_is_executable_file(candidate) for candidate in path_candidates):
         return None
     for directory in _validator_script_directories():
         candidate = directory / ("booley.exe" if os.name == "nt" else "booley")
-        if _trusted_validator(candidate, project):
-            return candidate.resolve(strict=True)
+        canonical = _resolve_trusted_validator(candidate, project)
+        if canonical is not None:
+            return canonical
     return None
+
+
+def _resolve_trusted_validator(executable: Path, project: Path) -> Path | None:
+    """Canonicalize a discovered launcher, then validate the executable it names."""
+    try:
+        canonical = executable.resolve(strict=True)
+    except OSError:
+        return None
+    return canonical if _trusted_validator(canonical, project) else None
 
 
 def _trusted_validator(executable: Path, project: Path) -> bool:

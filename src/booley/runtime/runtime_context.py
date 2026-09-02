@@ -57,9 +57,9 @@ def container_only_error(what: str) -> str | None:
         f"(the project's devcontainer), not on the host.\n\n"
         f'  Open the project in VS Code and accept "Reopen in Container", '
         f"then run this\n"
-        f"  command in the integrated terminal. Or exec into the running "
-        f"container:\n"
-        f"      docker exec -it <container> {what}\n\n"
+        f"  command in the integrated terminal. Or enter the Session Runtime "
+        f"from the host:\n"
+        f"      booley session enter -- {what}\n\n"
         f"  Only `booley init` and Session Runtime administration run on the "
         f"host (ADR 0049)."
     )
