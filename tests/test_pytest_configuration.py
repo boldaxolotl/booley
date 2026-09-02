@@ -65,8 +65,8 @@ def test_sidecar_proofs_have_cancellation_cleanup() -> None:
     workflow = _test_workflow()
     step = next(
         candidate
-        for candidate in workflow["jobs"]["bwave-smoke"]["steps"]
-        if candidate.get("name") == "Run Python 3.14.7 sidecar behavior and hardening proofs"
+        for candidate in workflow["jobs"]["sidecar-smoke"]["steps"]
+        if candidate.get("name") == "Run sidecar behavior and hardening proofs"
     )
 
     assert step["env"]["BOOLEY_DOCKER_NAME_PREFIX"] == (
