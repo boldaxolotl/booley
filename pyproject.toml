@@ -77,9 +77,10 @@ dev = [
     "build>=1.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    # Run independent test modules concurrently in CI. loadscope scheduling
-    # keeps each module/class together while tests/conftest.py gives every
-    # worker its own temp root for subprocess-visible caches.
+    # Run independent tests concurrently in CI. Linux keeps module/class
+    # affinity; Windows uses work stealing to balance slower real-Git tests.
+    # tests/conftest.py gives every worker its own temp root for
+    # subprocess-visible caches.
     "pytest-xdist>=3.8",
     # Bounds every test's wall-clock so a wedged subprocess/stall test fails
     # loudly instead of hanging the whole suite (default applied in tests/conftest.py).

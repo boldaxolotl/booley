@@ -61,6 +61,23 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     assert '--basetemp "${{ runner.temp }}/pytest"' in parallel_step["run"]
 
 
+def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
+    """A large Windows-only module tail must not serialize one xdist worker."""
+    workflow = _test_workflow()
+
+    test_steps = workflow["jobs"]["test"]["steps"]
+    parallel_step = next(step for step in test_steps if step.get("name") == "Run tests (parallel)")
+
+    assert (
+        parallel_step["run"]
+        .replace("\n", " ")
+        .startswith(
+            "pytest tests/ -q --tb=short -n 4 "
+            "--dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}"
+        )
+    )
+
+
 def test_sidecar_proofs_have_cancellation_cleanup() -> None:
     workflow = _test_workflow()
     step = next(
