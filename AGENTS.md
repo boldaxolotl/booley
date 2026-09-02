@@ -9,9 +9,11 @@ simulation, synthesis, linting, and ticket-based workflows.
   new branch based on `main`. Always isolate the work this way, especially when
   the existing checkout has dirty files.
 - `main` is protected; submit every change through a pull request from its
-  worktree branch.
-- After merging a pull request, delete its local branch and worktree, and delete
-  its branch on GitHub.
+  worktree branch. When a PR is ready to merge, use the Mergify queue workflow;
+  read `docs/internals/agents/merge-queue.md` before queueing, dequeueing,
+  retrying, monitoring, or cleaning up that PR.
+- After Mergify reports a pull request merged, delete its local branch and
+  worktree, and delete its branch on GitHub.
 - Read `docs/internals/CODING_PRINCIPLES.md` before writing Python code.
 - Run `ruff check src/ tests/` before committing Python changes.
 - Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
