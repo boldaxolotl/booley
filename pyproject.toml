@@ -41,7 +41,7 @@ dependencies = [
     "libcst>=1.9.0",
     "markdown-it-py>=4.0",
     # MCP 2.x removes Server.list_tools(), which mcp_server._build_server() uses.
-    "mcp>=1.8,<2",  # streamable-HTTP session manager (Interactive Mode transport)
+    "mcp>=1.8,<3",  # streamable-HTTP session manager (Interactive Mode transport)
     "mdit-py-plugins>=0.5",
     "pydantic>=2.0",
     "pydantic-settings>=2.15.0",
