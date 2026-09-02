@@ -290,6 +290,27 @@ jobs:
             exit 1
           fi
 
+      - name: Measure release image storage contract
+        env:
+          BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
+        run: |
+          python .github/scripts/image_size_report.py \
+            --registry-image "sandbox=${BASE_IMAGE}" \
+            --registry-image "riscv=${RISCV_IMAGE}" \
+            --local-image "proxy=booley-egress-proxy" \
+            --local-image "reaper=booley-reaper" \
+            --json "${RUNNER_TEMP}/booley-image-sizes.json" \
+            --markdown "${RUNNER_TEMP}/booley-image-sizes.md"
+          cat "${RUNNER_TEMP}/booley-image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Retain release image storage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: booley-image-sizes-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/booley-image-sizes.json
+          if-no-files-found: error
+
       # actions/checkout files belong to the runner user (uid 1001), while the
       # production image deliberately runs as `agent` (uid 1000). The demo
       # writes generated firmware and Flow reports, so make its checkout match
