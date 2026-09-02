@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import shutil
 import subprocess
 import sys
@@ -172,6 +173,29 @@ class TestStagedFiles:
 
 
 class TestMain:
+    def test_module_imports_vendored_commit_helper(self, monkeypatch):
+        """The standalone scope hook resolves its flat vendored dependency."""
+        module_path = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "booley"
+            / "dev_support"
+            / "scope_precommit_hook.py"
+        )
+        helper_dir = str(module_path.parent)
+        monkeypatch.syspath_prepend(helper_dir)
+        real_import = __import__
+
+        def block_package_helper(name, *args, **kwargs):
+            if name == "booley.dev_support.commit_msg_utils":
+                raise ModuleNotFoundError(name)
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=block_package_helper):
+            namespace = runpy.run_path(str(module_path))
+
+        assert callable(namespace["source_checkout_policy_owner"])
+
     def test_stale_hook_allows_source_checkout_commit(self, tmp_path: Path):
         """A linked source worktree never inherits old Project scope policy."""
         (tmp_path / "pyproject.toml").write_text(
