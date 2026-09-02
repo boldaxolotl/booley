@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import sysconfig
@@ -96,6 +97,23 @@ def stamp_path_for_identity(project_root: str) -> Path:
     """Private host path for an already-canonical persisted Project identity."""
     identity = hashlib.sha256(project_root.encode()).hexdigest()
     return config_dir() / "eda" / "session-specs" / f"{identity}.json"
+
+
+def load_issued_snapshot(project_root: Path) -> Issuance:
+    """Load structurally valid prior issuance without consulting current authority.
+
+    Session refresh uses this recovery view before replacing an existing
+    container.  The current grant may legitimately have changed — healing that
+    drift is the point of refresh — while the sealed prior licence decision and
+    Project identity still have to be trusted before Docker mutation.
+    """
+    project = project_root.resolve(strict=True)
+    issuance = _load_stamp(stamp_path(project))
+    if issuance.project_root != str(project):
+        raise RuntimeSpecError("host-issued spec stamp belongs to a different Project")
+    if issuance.keeper_image != keeper_image(project):
+        raise RuntimeSpecError("host-issued spec image keeper differs from this Project")
+    return issuance
 
 
 def keeper_image(project_root: Path) -> str:
@@ -314,13 +332,7 @@ def issue(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance
 def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
     """Validate every authority-bearing field against the current host issuance."""
     project = project_root.resolve(strict=True)
-    stamp = _load_stamp(stamp_path(project))
-    if (
-        stamp.project_root != str(project)
-        or stamp.file_sha256 != _file_sha256(spec_path)
-        or stamp.spec_sha256 != _spec_digest(spec)
-    ):
-        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    stamp = authenticate(project, spec, spec_path)
     config = load_eda_config(project).get("vivado")
     host_provisioning = _host_vivado_requested(project, config)
     try:
@@ -363,12 +375,26 @@ def validate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issua
                 raise RuntimeSpecError("FlexNet relay image has drifted since spec issuance")
             if installation and stamp.wrapper_sha256 != wrapper_sha256():
                 raise RuntimeSpecError("Booley Vivado wrapper has changed since spec issuance")
-            validator = _initialize_executable(spec)
-            if stamp.validator_sha256 != _file_sha256(validator):
-                raise RuntimeSpecError("host Booley validator has changed since spec issuance")
             return stamp
     except authority.AuthorityError as exc:
         raise _runtime_authority_error(spec, host_provisioning, exc) from exc
+
+
+def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> Issuance:
+    """Authenticate immutable host issuance fields without trusting bind sources."""
+    project = project_root.resolve(strict=True)
+    stamp = _load_stamp(stamp_path(project))
+    if (
+        stamp.project_root != str(project)
+        or stamp.file_sha256 != _file_sha256(spec_path)
+        or stamp.spec_sha256 != _spec_digest(spec)
+    ):
+        raise RuntimeSpecError("devcontainer.json differs from its host-issued specification")
+    _validate_initialize_command(project, spec.get("initializeCommand"))
+    validator = _initialize_executable(spec)
+    if stamp.validator_sha256 != _file_sha256(validator):
+        raise RuntimeSpecError("host Booley validator has changed since spec issuance")
+    return stamp
 
 
 def labels(issuance: Issuance) -> tuple[str, ...]:
@@ -869,41 +895,69 @@ def _initialize_executable(spec: dict[str, Any]) -> Path:
     return Path(raw[0])
 
 
-def _find_trusted_validator(project: Path) -> Path | None:
-    """Select the first trusted installed ``booley``, skipping poison entries."""
-    executable_name = "booley.exe" if os.name == "nt" else "booley"
-    candidates: list[Path] = []
-    running = Path(sys.argv[0]) if sys.argv else Path()
-    if running.name.casefold() in {"booley", "booley.exe"}:
-        candidates.append(running)
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory:
-            continue
-        candidates.append(Path(directory) / executable_name)
-    candidates.extend(prefix / executable_name for prefix in _validator_prefix_anchors())
+def _validator_script_directories() -> tuple[Path, ...]:
+    """Supported interpreter-owned script directories outside ``PATH``."""
+    directories = [Path(sysconfig.get_path("scripts"))]
+    try:
+        user_scheme = sysconfig.get_preferred_scheme("user")
+        directories.append(Path(sysconfig.get_path("scripts", scheme=user_scheme)))
+    except (KeyError, TypeError, ValueError):
+        pass
+    return tuple(dict.fromkeys(directory.resolve() for directory in directories))
 
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        if _project_controls_validator_candidate(candidate, project):
-            return None
+
+def _invoked_validator_candidate() -> Path | None:
+    """Return the absolute ``booley`` entry point used for this process."""
+    invoked = Path(sys.argv[0])
+    if invoked.is_absolute() and invoked.name.casefold() in {"booley", "booley.exe"}:
+        return invoked
+    return None
+
+
+def _path_validator_candidates() -> tuple[Path, ...]:
+    """Return every ``booley`` location represented by ``PATH`` in order."""
+    names = ("booley.exe", "booley") if os.name == "nt" else ("booley",)
+    return tuple(
+        dict.fromkeys(
+            Path(directory) / name
+            for directory in os.environ.get("PATH", "").split(os.pathsep)
+            if directory
+            for name in names
+        )
+    )
+
+
+def _is_executable_file(candidate: Path) -> bool:
+    """Return whether a candidate exists and could win command resolution."""
+    try:
+        return candidate.is_file() and os.access(candidate, os.X_OK)
+    except OSError:
+        return False
+
+
+def _find_trusted_validator(project: Path) -> Path | None:
+    """Select the first trusted installed ``booley``, including off-PATH installs."""
+    invoked = _invoked_validator_candidate()
+    if invoked is not None:
+        return _resolve_trusted_validator(invoked, project)
+    path_candidates = _path_validator_candidates()
+    for candidate in path_candidates:
+        canonical = _resolve_trusted_validator(candidate, project)
+        if canonical is not None:
+            return canonical
+    shell_candidate = shutil.which("booley")
+    if shell_candidate:
+        canonical = _resolve_trusted_validator(Path(shell_candidate), project)
+        if canonical is not None:
+            return canonical
+    if shell_candidate or any(_is_executable_file(candidate) for candidate in path_candidates):
+        return None
+    for directory in _validator_script_directories():
+        candidate = directory / ("booley.exe" if os.name == "nt" else "booley")
         canonical = _resolve_trusted_validator(candidate, project)
         if canonical is not None:
             return canonical
     return None
-
-
-def _project_controls_validator_candidate(executable: Path, project: Path) -> bool:
-    """Reject an existing launcher reached through the Project checkout."""
-    try:
-        candidate = executable.absolute()
-        canonical_project = project.resolve(strict=True)
-        exists = executable.exists() or executable.is_symlink()
-    except OSError:
-        return False
-    return exists and (candidate == canonical_project or canonical_project in candidate.parents)
 
 
 def _resolve_trusted_validator(executable: Path, project: Path) -> Path | None:
@@ -959,32 +1013,9 @@ def _validator_prefix_anchors() -> dict[Path, Path]:
         Path("/bin").resolve(): Path("/usr").resolve(),
         (environment / ("Scripts" if os.name == "nt" else "bin")).resolve(): environment_anchor,
     }
-    anchors.update(_python_script_prefix_anchors())
-    return anchors
-
-
-def _python_script_prefix_anchors() -> dict[Path, Path]:
-    """Return contained active- and user-Python script installation prefixes."""
-    home = Path.home().resolve()
-    environment = Path(sys.prefix).resolve()
-    environment_anchor = (
-        home if environment == home or home in environment.parents else environment
-    )
-    locations = (
-        (sysconfig.get_path("scripts"), environment, environment_anchor),
-        (
-            sysconfig.get_path("scripts", scheme=sysconfig.get_preferred_scheme("user")),
-            home,
-            home,
-        ),
-    )
-    anchors: dict[Path, Path] = {}
-    for raw_scripts, boundary, anchor in locations:
-        if not raw_scripts:
-            continue
-        scripts = Path(raw_scripts).resolve()
-        if scripts == boundary or boundary in scripts.parents:
-            anchors[scripts] = anchor
+    for directory in _validator_script_directories():
+        if directory == home or home in directory.parents:
+            anchors[directory] = home
     return anchors
 
 

@@ -1100,7 +1100,30 @@ def project_sandbox_image(project_root: Path) -> str:
     return DOCKER_IMAGE
 
 
-def refresh_session_image(project_root: Path, *, verbose: bool = False) -> LifecycleResult:
+def inspect_refreshable_session_image(
+    project_root: Path, *, verbose: bool = False
+) -> LifecycleResult:
+    """Reject a user-managed Session Image before refresh causes downtime."""
+    inspection = reconcile_images(
+        ProjectImageScope(project_root),
+        ImageLifecycleIntent.CHECK,
+        verbose=verbose,
+    )
+    if inspection.status is ImageLifecycleStatus.EXTERNAL:
+        raise RuntimeError(
+            f"[sandbox].image={inspection.selected_reference!r} is user-managed, so Booley has no "
+            "build recipe to refresh. Rebuild that image yourself, then run "
+            "`booley session up --rebuild`."
+        )
+    return inspection
+
+
+def refresh_session_image(
+    project_root: Path,
+    *,
+    verbose: bool = False,
+    inspection: LifecycleResult | None = None,
+) -> LifecycleResult:
     """Rebuild the configured Session Runtime image from current Booley sources.
 
     This is the implementation behind ``booley session refresh``. It reuses
@@ -1109,14 +1132,8 @@ def refresh_session_image(project_root: Path, *, verbose: bool = False) -> Lifec
     project image are reproducible here; an arbitrary explicit image remains
     user-managed and is rejected with an actionable error.
     """
-    project_scope = ProjectImageScope(project_root)
-    inspection = reconcile_images(project_scope, ImageLifecycleIntent.CHECK, verbose=verbose)
-    if inspection.status is ImageLifecycleStatus.EXTERNAL:
-        raise RuntimeError(
-            f"[sandbox].image={inspection.selected_reference!r} is user-managed, so Booley has no "
-            "build recipe to refresh. Rebuild that image yourself, then run "
-            "`booley session up --rebuild`."
-        )
+    if inspection is None:
+        inspect_refreshable_session_image(project_root, verbose=verbose)
     bootstrap = reconcile_bootstrap(ImageLifecycleIntent.REFRESH, verbose=verbose)
     base = _usable_bootstrap_base(bootstrap)
     if not bootstrap.ready or base is None:
@@ -1198,19 +1215,33 @@ def restore_session_spec(project_root: Path, snapshot: SessionSpecSnapshot) -> N
     """Restore the prior host issuance after Session replacement rolled back."""
     from booley.eda.provisioning import runtime_spec
 
+    errors: list[str] = []
     if snapshot.image_id is not None:
-        result = subprocess.run(
-            ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = result.stderr.strip() or "docker tag failed"
-            raise RuntimeError(f"could not restore prior Session Image keeper: {detail}")
-    _restore_snapshot_file(snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode)
-    _restore_snapshot_file(snapshot.stamp_path, snapshot.stamp_content, snapshot.stamp_mode)
+        try:
+            result = subprocess.run(
+                ["docker", "tag", snapshot.image_id, runtime_spec.keeper_image(project_root)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"Session Image keeper: {exc}")
+        else:
+            if result.returncode != 0:
+                errors.append(
+                    "Session Image keeper: " + (result.stderr.strip() or "docker tag failed")
+                )
+    for label, path, content, mode in (
+        ("Session spec", snapshot.spec_path, snapshot.spec_content, snapshot.spec_mode),
+        ("issuance stamp", snapshot.stamp_path, snapshot.stamp_content, snapshot.stamp_mode),
+    ):
+        try:
+            _restore_snapshot_file(path, content, mode)
+        except OSError as exc:
+            errors.append(f"{label}: {exc}")
+    if errors:
+        raise RuntimeError("could not fully restore prior host issuance: " + "; ".join(errors))
 
 
 def _project_sandbox_memory(project_root: Path) -> str:
@@ -2235,7 +2266,7 @@ def _run_project_init_steps(
     return _print_summary(ctx)
 
 
-def run_init(  # noqa: PLR0911 -- fail-fast coordinator; each return is a distinct lifecycle refusal
+def _run_init_unlocked(  # noqa: PLR0911 -- each return is a distinct lifecycle refusal
     args: argparse.Namespace,
     project_root: Path,
 ) -> int:
@@ -2292,3 +2323,13 @@ def run_init(  # noqa: PLR0911 -- fail-fast coordinator; each return is a distin
         guidance_plan,
         bootstrap_result,
     )
+
+
+def run_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Run Project initialization without racing host Docker mutations."""
+    if getattr(args, "check_only", False):
+        return _run_init_unlocked(args, project_root)
+    from booley.harness.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("project init"):
+        return _run_init_unlocked(args, project_root)

@@ -28,10 +28,14 @@ A rebuild may otherwise select a stopped VS Code container whose old bind list
 still mentions a deleted skill, credential file, tool installation, mask
 directory, or editor-injected socket. During `booley session prepare`, Booley
 now removes such a stopped container (without deleting named volumes) so Dev
-Containers creates one from the current spec. It never removes a running
-container, a headless `booley session` container, or a container belonging to a
-different Project. If one is running with an older issuance, stop it and retry
-the rebuild.
+Containers creates one from the current spec. When exactly one running legacy
+VS Code container is authenticated to this Project, Booley stops it by immutable
+container ID, validates the current spec again, and removes that same stopped
+container. Bind mounts and named volumes remain; unpersisted data in the old
+container's writable layer is discarded. Booley refuses without mutation when
+the container is headless, foreign, ambiguous, or one of multiple matches. If
+validation fails after the stop, the error includes the exact `docker start`
+recovery command.
 
 ## `booley` is missing from `/mcp` in Claude Code or Codex
 

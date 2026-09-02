@@ -1702,6 +1702,13 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   manual, the external debug spec, and the ELF psABI; **`pdftotext`** is
   included for shell/agent text extraction.
 
+The published image is roughly 5.5 GB of compressed registry layers but about
+20 GB after Docker extracts it. Together with the proxy and reaper, reserve at
+least 21 GB of Docker storage before running the public RISC-V demo, plus room
+for Docker metadata, build cache, containers, and Project artifacts. The base
+and RISC-V images share layers, so their displayed virtual sizes are not
+additive.
+
 Point a project at it with the normal image selector:
 
 ```toml

@@ -43,8 +43,10 @@ supported. You need:
 - [Docker](https://www.docker.com/)
 - [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - Credentials for Claude (the default) or Codex
-- Roughly **6 GB of Docker storage** for the standard sandbox, proxy, and
-  reaper images, plus additional disk space for project build artifacts
+- At least **21 GB of free Docker storage** for the complete RISC-V demo stack.
+  Its registry download is roughly 6 GB compressed; Docker expands the standard
+  sandbox to about 15 GB and the RISC-V image to about 20 GB. Docker metadata,
+  build cache, containers, and project build artifacts need additional space.
 
 Install and verify the CLI on the host:
 
