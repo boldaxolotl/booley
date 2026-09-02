@@ -1,0 +1,37 @@
+# Keep queue validation in-place: one PR per batch, one check slot, and no
+# automatic retries. Changing any of those constraints requires a draft-PR
+# compatibility canary for Booley's required checks first.
+merge_queue:
+  mode: serial
+  max_parallel_checks: 1
+  queued_label: queued
+  checking_label: merge-queue-checking
+  dequeued_label: dequeued
+  reset_on_external_merge: always
+
+queue_rules:
+  - name: default
+    batch_size: 1
+    max_checks_retries: 0
+    branch_protection_injection_mode: queue
+    merge_method: merge
+    queue_conditions:
+      - base = main
+      - check-success = @github-actions/ci-required
+      - check-success = @github-actions/confidential-content
+    # Keep these identical to queue_conditions so Mergify can check the
+    # original PR instead of creating a temporary batch PR.
+    merge_conditions:
+      - base = main
+      - check-success = @github-actions/ci-required
+      - check-success = @github-actions/confidential-content
+
+# Agents act through an authenticated repository writer. External contributors
+# submit ready PRs; a maintainer or repository agent queues them.
+commands_restrictions:
+  queue:
+    conditions:
+      - sender-permission >= write
+  dequeue:
+    conditions:
+      - sender-permission >= write

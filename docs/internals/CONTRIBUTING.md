@@ -213,8 +213,11 @@ Porting EDA tools is #1, but not the only way to help:
 Booley uses a mainline workflow; there is no permanent development integration
 branch. Start each feature, fix, refactor, or documentation branch from the
 latest `main`, and open its pull request directly into `main`. Keep the branch
-focused on one concern, make sure the required checks pass, and delete it after
-merge.
+focused on one concern and make sure the required checks pass. A repository
+maintainer or agent then adds the ready PR to the Mergify queue; external
+contributors do not need write access to request review. Mergify updates and
+validates queued PRs one at a time before merging them. Delete the branch only
+after Mergify reports the PR merged.
 
 `main` is kept releasable, but merging a pull request does not publish a new
 Booley version. Releases are deliberate: a versioned commit on `main` is tagged
