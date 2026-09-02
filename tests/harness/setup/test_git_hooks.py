@@ -423,7 +423,13 @@ class TestLineEndingsStep:
         assert "[ii] detected core.autocrlf=true" in output
 
     def test_failed_autocrlf_update_remains_a_warning(self, tmp_path: Path, capsys):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
+        from booley.harness.setup.git_hooks import _step_line_endings
+        from booley.harness.setup.line_endings import (
+            LineEndingActionKind,
+            LineEndingActionResult,
+            LineEndingActionState,
+        )
 
         _git_init(tmp_path)
         subprocess.run(
@@ -433,8 +439,13 @@ class TestLineEndingsStep:
         )
         ctx = _ctx(tmp_path)
 
-        with patch.object(init_git_hooks, "_disable_autocrlf", return_value=False):
-            init_git_hooks._step_line_endings(ctx)
+        failure = LineEndingActionResult(
+            LineEndingActionKind.PIN_AUTOCRLF,
+            LineEndingActionState.FAILED,
+            detail="simulated config failure",
+        )
+        with patch.object(init_git_hooks, "_pin_autocrlf", return_value=failure):
+            _step_line_endings(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert ctx.results[-1].detail == "autocrlf update failed"
@@ -582,10 +593,13 @@ class TestLineEndingsStep:
         local: bool | None,
         detail: str,
     ):
-        from booley.harness.setup import git_hooks as init_git_hooks
-        from booley.harness.setup.git_hooks import (
+        from booley.harness.setup import line_endings as init_git_hooks
+        from booley.harness.setup.line_endings import (
             AutocrlfSetting,
-            LineEndingRepository,
+            LineEndingMode,
+            LineEndingObservationCode,
+            LineEndingStatus,
+            reconcile_project_line_endings,
         )
 
         def read_setting(_root: Path, *, local: bool = False):
@@ -594,18 +608,23 @@ class TestLineEndingsStep:
 
         effective_value = effective
         local_value = local
-        repository = LineEndingRepository("project-checkout", tmp_path)
+        _git_init(tmp_path)
         with patch.object(init_git_hooks, "read_autocrlf_setting", side_effect=read_setting):
-            outcome = init_git_hooks._repair_repository_line_endings(
-                repository,
-                check_only=False,
+            outcome = reconcile_project_line_endings(
+                tmp_path,
+                None,
+                mode=LineEndingMode.INSPECT,
             )
 
-        assert outcome.status == "warn"
-        assert outcome.detail == detail
+        assert outcome.status is LineEndingStatus.UNSAFE
+        expected = {
+            "autocrlf unreadable": LineEndingObservationCode.AUTOCRLF_UNREADABLE,
+            "local autocrlf unreadable": LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE,
+        }[detail]
+        assert expected in {item.code for item in outcome.repositories[0].observations}
 
     def test_invalid_autocrlf_boolean_is_unreadable(self, tmp_path: Path):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
 
         probe = subprocess.CompletedProcess(
             args=["git", "config"],
@@ -621,7 +640,7 @@ class TestLineEndingsStep:
 
 class TestLineEndingRepositoryDiscovery:
     def test_project_data_inside_outer_repository_is_deduplicated(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import discover_line_ending_repositories
+        from booley.harness.setup.line_endings import discover_line_ending_repositories
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -635,7 +654,7 @@ class TestLineEndingRepositoryDiscovery:
         ]
 
     def test_separate_project_data_repository_is_discovered(self, tmp_path: Path):
-        from booley.harness.setup.git_hooks import discover_line_ending_repositories
+        from booley.harness.setup.line_endings import discover_line_ending_repositories
 
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
@@ -910,7 +929,8 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].detail == "index refreshed"
 
     def test_partial_rewrite_refreshes_successful_paths(self, tmp_path: Path):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, "b.v", b"module b;\nendmodule\n")
@@ -923,14 +943,14 @@ class TestLineEndingsAutoFix:
         )
         real_rewrite = init_git_hooks._rewrite_from_stage
 
-        def fail_second(path: Path, replacement: Path, expected: bytes) -> str | None:
-            if path.name == "b.v":
+        def fail_second(root: Path, name: str, replacement: Path, expected) -> str | None:
+            if name == "b.v":
                 return "simulated second-file failure"
-            return real_rewrite(path, replacement, expected)
+            return real_rewrite(root, name, replacement, expected)
 
         with patch.object(init_git_hooks, "_rewrite_from_stage", side_effect=fail_second):
             ctx = _ctx(tmp_path)
-            init_git_hooks._step_line_endings(ctx)
+            _step_line_endings(ctx)
 
         assert (tmp_path / "a.v").read_bytes() == b"module a;\nendmodule\n"
         assert (tmp_path / "b.v").read_bytes() == b"module b;\r\nendmodule\r\n"
@@ -944,13 +964,13 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "warn"
 
         retry = _ctx(tmp_path)
-        init_git_hooks._step_line_endings(retry)
+        _step_line_endings(retry)
 
         assert (tmp_path / "b.v").read_bytes() == b"module b;\nendmodule\n"
         assert retry.results[-1].status == "ok"
 
     def test_phantom_status_failure_includes_git_context(self, tmp_path: Path):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
 
         with patch.object(
             init_git_hooks.subprocess,
@@ -1192,7 +1212,8 @@ class TestLineEndingsAutoFix:
         assert _autocrlf(tmp_path) == "false"
 
     def test_unreadable_eol_scan_never_reports_container_safe(self, tmp_path: Path):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1203,30 +1224,27 @@ class TestLineEndingsAutoFix:
         ctx = _ctx(tmp_path)
 
         with patch.object(init_git_hooks, "_crlf_worktree_files", return_value=None):
-            init_git_hooks._step_line_endings(ctx)
+            _step_line_endings(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert ctx.results[-1].detail == "EOL scan unreadable"
 
     def test_unreadable_post_normalization_scan_never_reports_success(self, tmp_path: Path):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
-        real_count = init_git_hooks._count_crlf_worktree_files
+        real_scan = init_git_hooks._crlf_worktree_files
         calls = 0
 
-        def lose_verification(root: Path) -> int | None:
+        def lose_verification(root: Path) -> list[str] | None:
             nonlocal calls
             calls += 1
-            return None if calls == 1 else real_count(root)
+            return None if calls == 2 else real_scan(root)
 
-        # _step_line_endings gets candidates through _crlf_worktree_files;
-        # this wrapper targets its sole post-normalization count.
-        with patch.object(
-            init_git_hooks, "_count_crlf_worktree_files", side_effect=lose_verification
-        ):
+        with patch.object(init_git_hooks, "_crlf_worktree_files", side_effect=lose_verification):
             ctx = _ctx(tmp_path)
-            init_git_hooks._step_line_endings(ctx)
+            _step_line_endings(ctx)
 
         assert ctx.results[-1].status == "warn"
         assert ctx.results[-1].detail == "EOL verification unreadable"
@@ -1294,7 +1312,8 @@ class TestLineEndingsAutoFix:
         assert ctx.results[-1].status == "warn"
 
     def test_edit_after_cleanliness_probe_is_not_overwritten(self, tmp_path: Path):
-        from booley.harness.setup import git_hooks as init_git_hooks
+        from booley.harness.setup import line_endings as init_git_hooks
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         local_edit = b"module a;\r\n  localparam int KEEP = 1;\r\nendmodule\r\n"
@@ -1305,7 +1324,7 @@ class TestLineEndingsAutoFix:
 
         ctx = _ctx(tmp_path)
         with patch.object(init_git_hooks, "_protected_index_paths", side_effect=edit_during_guard):
-            init_git_hooks._step_line_endings(ctx)
+            _step_line_endings(ctx)
 
         assert (tmp_path / "a.v").read_bytes() == local_edit
         assert ctx.results[-1].status == "warn"
