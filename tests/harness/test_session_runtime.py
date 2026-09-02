@@ -293,6 +293,23 @@ class TestPrepareMigration:
 
         assert not sr._container_has_unavailable_bind("current-vscode", state)
 
+    def test_missing_legacy_inspection_is_fail_closed_and_idempotent(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        container = sr._LegacyVscodeContainer("legacy-vscode", "container-id")
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: None)
+        monkeypatch.setattr(
+            sr,
+            "_run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, "", ""),
+        )
+
+        assert sr._inspected_running({}) is None
+        assert sr._legacy_vscode_identity({}, workspace, {}) is None
+        sr._stop_legacy_vscode_container(container)
+        assert "no longer present" in sr._quiesced_validation_recovery(container)
+        sr._remove_quiesced_legacy_container(container)
+
     @pytest.mark.parametrize("config_label", ["current", "missing", "different"])
     def test_stopped_vscode_container_from_old_issuance_is_removed_before_create(
         self,

@@ -865,6 +865,45 @@ def test_find_trusted_validator_resolves_managed_cli_symlink(
     assert not runtime_spec._trusted_validator(launcher, project)
 
 
+def test_validator_script_directories_ignore_unavailable_user_scheme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripts = tmp_path / "scripts"
+
+    def unavailable_user_scheme(_name: str) -> str:
+        raise KeyError("user")
+
+    monkeypatch.setattr(runtime_spec.sysconfig, "get_path", lambda *_args, **_kwargs: scripts)
+    monkeypatch.setattr(
+        runtime_spec.sysconfig,
+        "get_preferred_scheme",
+        unavailable_user_scheme,
+    )
+
+    assert runtime_spec._validator_script_directories() == (scripts.resolve(),)
+
+
+def test_is_executable_file_accepts_an_executable(tmp_path: Path) -> None:
+    executable = tmp_path / "booley"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    assert runtime_spec._is_executable_file(executable)
+
+
+def test_find_trusted_validator_returns_none_without_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
+    monkeypatch.setattr(runtime_spec.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(runtime_spec, "_validator_script_directories", tuple)
+    monkeypatch.setenv("PATH", "")
+
+    assert runtime_spec._find_trusted_validator(project) is None
+
+
 def test_trusted_validator_rejects_group_writable_executable_for_shared_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
