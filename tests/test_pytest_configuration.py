@@ -188,9 +188,7 @@ def test_windows_scheduler_experiment_preserves_linux_and_names_evidence() -> No
     )
     assert "${{ matrix.scheduler }}" in summary["run"]
 
-    artifact = next(
-        step for step in test_steps if step.get("name") == "Upload test timing data"
-    )
+    artifact = next(step for step in test_steps if step.get("name") == "Upload test timing data")
     assert artifact["with"]["name"] == (
         "junit-${{ matrix.os }}-py${{ matrix.python }}-${{ matrix.scheduler }}"
     )
