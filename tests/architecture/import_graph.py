@@ -178,7 +178,8 @@ def _dependency_key(dependency: Dependency) -> tuple[str, str, str, int, int]:
     )
 
 
-def _top_level_package(module: str) -> str | None:
+def top_level_package(module: str) -> str | None:
+    """Return the immediate ``booley.<package>`` owner of a module."""
     parts = module.split(".")
     return ".".join(parts[:2]) if len(parts) >= 2 else None
 
@@ -186,8 +187,8 @@ def _top_level_package(module: str) -> str | None:
 def _package_adjacency(dependencies: tuple[Dependency, ...]) -> dict[str, set[str]]:
     adjacency: dict[str, set[str]] = defaultdict(set)
     for dependency in dependencies:
-        source = _top_level_package(dependency.source)
-        target = _top_level_package(dependency.target)
+        source = top_level_package(dependency.source)
+        target = top_level_package(dependency.target)
         if source is None or target is None:
             continue
         adjacency[source]

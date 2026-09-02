@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from tests.architecture.import_graph import Dependency, top_level_package_sccs
+from tests.architecture.import_graph import (
+    Dependency,
+    top_level_package,
+    top_level_package_sccs,
+)
 
 _MODULE_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
 _ISSUE_PATTERN = re.compile(r"(?:#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)")
@@ -285,8 +289,8 @@ def _format_scc_witnesses(
     unexpected_sources = members - baseline
     witnesses = []
     for dependency in dependencies:
-        source_owner = _top_level_package(dependency.source)
-        target_owner = _top_level_package(dependency.target)
+        source_owner = top_level_package(dependency.source)
+        target_owner = top_level_package(dependency.target)
         if (
             source_owner == target_owner
             or source_owner not in unexpected_sources
@@ -299,11 +303,6 @@ def _format_scc_witnesses(
         location = f"{dependency.path}:{dependency.line}:{dependency.column + 1}"
         witnesses.append(f"- {location}: {dependency.source} -> {dependency.target}")
     return "\n".join(sorted(witnesses))
-
-
-def _top_level_package(module: str) -> str | None:
-    parts = module.split(".")
-    return ".".join(parts[:2]) if len(parts) >= 2 else None
 
 
 def _rules_by_identifier(
