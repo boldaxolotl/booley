@@ -61,6 +61,25 @@ def compressed_layers(
     return result
 
 
+def _index_child_reference(
+    reference: str, document: object, *, os_name: str, architecture: str
+) -> str | None:
+    mapping = as_dict(document)
+    if mapping is None or "manifests" not in mapping:
+        return None
+    descriptors = require_list(mapping.get("manifests"), field="image index manifests")
+    for raw in descriptors:
+        descriptor = require_dict(raw, field="image index manifest descriptor")
+        platform = require_dict(
+            descriptor.get("platform", {}), field="image index manifest platform"
+        )
+        if platform.get("os") == os_name and platform.get("architecture") == architecture:
+            digest = require_str(descriptor, "digest")
+            repository, separator, _ = reference.rpartition("@")
+            return f"{repository if separator else reference}@{digest}"
+    raise ValueError(f"image index has no {os_name}/{architecture} manifest")
+
+
 def _docker_output(argv: list[str]) -> str:
     result = subprocess.run(
         ["docker", *argv], capture_output=True, text=True, check=False, timeout=120
@@ -79,7 +98,14 @@ def measure(reference: str, *, registry_manifest: bool) -> ImageMeasurement:
     layers = None
     if registry_manifest:
         raw = _docker_output(["manifest", "inspect", "--verbose", reference])
-        layers = compressed_layers(json.loads(raw))
+        document = json.loads(raw)
+        child_reference = _index_child_reference(
+            reference, document, os_name="linux", architecture="amd64"
+        )
+        if child_reference is not None:
+            raw = _docker_output(["manifest", "inspect", "--verbose", child_reference])
+            document = json.loads(raw)
+        layers = compressed_layers(document)
     return ImageMeasurement(reference, virtual, layers)
 
 
