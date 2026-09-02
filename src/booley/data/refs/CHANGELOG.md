@@ -32,9 +32,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Skill reconciliation now always deploys packaged skills to `.agents/skills`
   for Codex, while continuing to deploy to a distinct existing `.claude/skills`
   directory.
-- `booley session refresh` now parks the target Session Runtime, reconciles its
-  dependencies, and restores it in order instead of refreshing around a live
-  or partially stopped session.
+- `booley session refresh` now journals replacement checkpoints and recovers
+  safely after interruption. It parks the target Session Runtime, reconciles
+  dependencies, commits forward only after verifying the replacement, and
+  retains recoverable state when cleanup cannot finish.
 - Source checkouts no longer acquire Project or Stealth policy accidentally;
   repository classification, hook installation, and managed-state placement
   now preserve the source-checkout boundary.
