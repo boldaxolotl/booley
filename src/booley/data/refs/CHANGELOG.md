@@ -29,6 +29,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Host bootstrap now secures the shared Booley configuration directory before
   preparing the PDK cache, so existing caches cannot block Session Runtime
   issuance during an upgrade.
+- Flow entry points now validate Target compatibility and identity before EDA
+  setup, and implementation comparison evidence retains durable Target
+  identities instead of relying on checkout-local objects.
 - Session Runtime issuance now finds trusted Booley executables installed in
   Python's per-user scripts directory even when that directory is absent from
   `PATH`.
