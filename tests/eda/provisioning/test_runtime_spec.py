@@ -769,6 +769,22 @@ def test_seal_skips_tmp_path_poisoned_booley(
     assert Path(spec["initializeCommand"][0]) == trusted
 
 
+@pytest.mark.skipif(os.name == "nt", reason="uv uses a launcher executable on Windows")
+def test_find_trusted_validator_resolves_managed_cli_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    launcher = tmp_path / ".local" / "bin" / "booley"
+    launcher.parent.mkdir(parents=True)
+    launcher.symlink_to(trusted)
+    monkeypatch.setenv("PATH", str(launcher.parent))
+
+    assert runtime_spec._find_trusted_validator(project) == trusted.resolve()
+    assert not runtime_spec._trusted_validator(launcher, project)
+
+
 def test_trusted_validator_rejects_group_writable_executable_for_shared_group(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

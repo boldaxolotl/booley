@@ -124,22 +124,53 @@ class TestTargetsDetail:
         def failing_resolve(*args, **kwargs):
             raise fusesoc_registry.TargetResolutionError("could not invoke fusesoc")
 
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
         monkeypatch.setattr(fusesoc_registry, "resolve_target", failing_resolve)
         assert _run(project, "sim") == 0
         out = capsys.readouterr().out
         assert "Target sim" in out
         assert "Doctor        sim" in out
         assert "Resolved view unavailable: could not invoke fusesoc" in out
+        assert "booley session enter" not in out
 
     def test_detail_json(self, project: Path, capsys, monkeypatch):
         def failing_resolve(*args, **kwargs):
             raise fusesoc_registry.TargetResolutionError("no fusesoc")
 
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
         monkeypatch.setattr(fusesoc_registry, "resolve_target", failing_resolve)
         assert _run(project, "sim", "--json") == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["name"] == "sim"
         assert payload["resolved_error"] == "no fusesoc"
+        assert "resolution_command" not in payload
+
+    def test_host_detail_json_points_to_runtime_without_resolving(
+        self, project: Path, capsys, monkeypatch
+    ):
+        def unexpected_resolve(*args, **kwargs):
+            raise AssertionError("host detail must not invoke fusesoc")
+
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+        monkeypatch.setattr(fusesoc_registry, "resolve_target", unexpected_resolve)
+
+        assert _run(project, "sim", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["name"] == "sim"
+        assert payload["resolved_error"] == (
+            "detailed Target resolution requires the Session Runtime"
+        )
+        assert payload["resolution_command"] == (
+            "booley session enter -- booley targets sim --json"
+        )
+
+    def test_host_detail_text_points_to_runtime(self, project: Path, capsys, monkeypatch):
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+
+        assert _run(project, "sim") == 0
+        out = capsys.readouterr().out
+        assert "Resolved view unavailable" in out
+        assert "booley session enter -- booley targets sim" in out
 
     def test_help_advertises_targets(self):
         parser = tlr._build_parser()
