@@ -114,6 +114,17 @@ def _record_replacement_before_commit(path: Path, project: Path) -> Issuance:
     return replacement
 
 
+def _rewrite_journal_value(path: Path, keys: tuple[str, ...], value: object) -> None:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    target = document
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o600)
+
+
 _INTERRUPTION_MATRIX = (
     *((f"{side} stop", "prepared") for side in ("before", "after")),
     *((f"{side} rename", "prepared") for side in ("before", "after")),
@@ -495,6 +506,150 @@ def test_journal_rejects_every_invalid_issuance_field_before_recovery(
         session_refresh.recover_project_locked(project)
 
     assert path.is_file()
+
+
+def test_issuance_boundary_rejects_non_object_extra_fields_and_old_version(tmp_path: Path) -> None:
+    document = asdict(_issuance(tmp_path.resolve()))
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="must be a mapping"):
+        runtime_spec.issuance_from_document([])
+
+    document["extra"] = True
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="unexpected or missing"):
+        runtime_spec.issuance_from_document(document)
+
+    document.pop("extra")
+    document["version"] = 3
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="unsupported version"):
+        runtime_spec.issuance_from_document(document)
+
+
+@pytest.mark.parametrize(
+    ("keys", "invalid", "message"),
+    [
+        (("snapshot", "spec_present"), "yes", "snapshot is invalid"),
+        (("snapshot", "spec_content"), 7, "content must be a string"),
+        (("snapshot", "spec_content"), "not-base64!", "encoding is invalid"),
+        (("snapshot", "spec_mode"), "644", "snapshot is invalid"),
+        (("snapshot", "spec_mode"), 0o1000, "outside mode bits"),
+        (("snapshot", "image_id"), 7, "snapshot is invalid"),
+        (("prior_runtime", "was_running"), "yes", "prior runtime is invalid"),
+        (("prior_runtime", "name"), "wrong", "invalid Session Runtime names"),
+        (("prior_runtime", "egress_network_id"), None, "egress identity is incomplete"),
+        (("phase",), "future", "replay metadata is invalid"),
+        (("version",), 2, "identity or version is invalid"),
+    ],
+)
+def test_journal_rejects_invalid_nested_boundary_values(
+    tmp_path: Path,
+    monkeypatch,
+    keys: tuple[str, ...],
+    invalid: object,
+    message: str,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    _rewrite_journal_value(path, keys, invalid)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    with pytest.raises(sr.SessionError, match=message):
+        session_refresh.recover_project_locked(project)
+
+    assert path.is_file()
+
+
+def test_journal_rejects_non_object_and_oversized_snapshot(tmp_path: Path, monkeypatch) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    _rewrite_journal_value(path, ("snapshot",), [])
+    with pytest.raises(sr.SessionError, match="snapshot must be a mapping"):
+        session_refresh.recover_project_locked(project)
+
+    config = tmp_path / "oversized-config"
+    path = _write_restore_journal(config, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    content = b"x" * (session_refresh._MAX_SNAPSHOT_BYTES + 1)
+    _rewrite_journal_value(path, ("snapshot", "spec_content"), base64.b64encode(content).decode())
+    with pytest.raises(sr.SessionError, match="snapshot is too large"):
+        session_refresh.recover_project_locked(project)
+
+
+@pytest.mark.parametrize(
+    ("keys", "invalid", "message"),
+    [
+        (("prior_issuance", "project_root"), "different-root", "another Project"),
+        (("snapshot", "image_id"), "sha256:different", "predecessor identities"),
+        (("prior_runtime", "image_id"), "sha256:different", "predecessor image identities"),
+    ],
+)
+def test_journal_rejects_mismatched_predecessor_identities(
+    tmp_path: Path,
+    monkeypatch,
+    keys: tuple[str, ...],
+    invalid: object,
+    message: str,
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    if invalid == "different-root":
+        invalid = str((tmp_path / "different").resolve())
+    _rewrite_journal_value(path, keys, invalid)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    with pytest.raises(sr.SessionError, match=message):
+        session_refresh.recover_project_locked(project)
+
+
+def test_journal_rejects_mismatched_or_incomplete_replacement(tmp_path: Path, monkeypatch) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    _record_replacement_before_commit(path, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    _rewrite_journal_value(path, ("replacement_issuance", "image_id"), "sha256:different")
+    with pytest.raises(sr.SessionError, match="replacement identities disagree"):
+        session_refresh.recover_project_locked(project)
+
+    config = tmp_path / "incomplete-config"
+    path = _write_restore_journal(config, project)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    _rewrite_journal_value(path, ("direction",), "committed_forward")
+    with pytest.raises(sr.SessionError, match="committed Session refresh journal is incomplete"):
+        session_refresh.recover_project_locked(project)
+
+
+def test_journal_reports_malformed_json_without_deleting_it(tmp_path: Path, monkeypatch) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    path.write_text("{", encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    with pytest.raises(sr.SessionError, match="cannot read Session refresh journal"):
+        session_refresh.recover_project_locked(project)
+
+    assert path.is_file()
+
+
+def test_new_journal_requires_complete_runtime_identity(tmp_path: Path) -> None:
+    project = tmp_path.resolve()
+    snapshot = SessionSpecSnapshot(
+        project / "devcontainer.json", b"{}\n", 0o644, project / "stamp.json", None, 0o600, None
+    )
+    parked = sr.ParkedSession("session", "backup", False, project_id="project-id")
+
+    with pytest.raises(sr.SessionError, match="cannot durably identify"):
+        session_refresh._new_journal(project, snapshot, _issuance(project), parked)
 
 
 def test_restore_keeps_journal_when_final_issuance_verification_fails(
