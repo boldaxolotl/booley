@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import sysconfig
@@ -923,7 +924,12 @@ def _find_trusted_validator(project: Path) -> Path | None:
         canonical = _resolve_trusted_validator(candidate, project)
         if canonical is not None:
             return canonical
-    if any(_is_executable_file(candidate) for candidate in path_candidates):
+    shell_candidate = shutil.which("booley")
+    if shell_candidate:
+        canonical = _resolve_trusted_validator(Path(shell_candidate), project)
+        if canonical is not None:
+            return canonical
+    if shell_candidate or any(_is_executable_file(candidate) for candidate in path_candidates):
         return None
     for directory in _validator_script_directories():
         candidate = directory / ("booley.exe" if os.name == "nt" else "booley")
