@@ -17,6 +17,7 @@ CATEGORIES = (
     "python_source",
     "python_tests",
     "image_tests",
+    "sidecar",
     "native_bwave",
     "rust",
     "docker_toolchain",
@@ -33,6 +34,7 @@ CONDITIONAL_JOBS = (
     "rust-test",
     "bwave-integration",
     "package-artifacts",
+    "sidecar-smoke",
     "bwave-smoke",
 )
 ALL_JOBS = ("changes", *CONDITIONAL_JOBS)
@@ -53,6 +55,28 @@ _PACKAGING_FILES = {
 _IMAGE_TEST_PREFIXES = ("tests/docker/", "tests/smoke/")
 _IMAGE_TEST_FILES = {"tests/flows/sim/backends/test_bwave_fifo_pipeline.py"}
 _NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
+_SIDECAR_PREFIXES = (
+    "src/booley/docker/",
+    "src/booley/eda/provisioning/licensing/",
+)
+_SIDECAR_FILES = {
+    "src/booley/data/docker/Dockerfile.egress-proxy",
+    "src/booley/data/docker/Dockerfile.flexnet-relay",
+    "src/booley/data/docker/Dockerfile.reaper",
+    "tests/docker/test_egress_proxy.py",
+    "tests/docker/test_egress_proxy_image_e2e.py",
+    "tests/docker/test_flexnet_relay_e2e.py",
+    "tests/docker/test_proxy_entry.py",
+    "tests/docker/test_reaper.py",
+    "tests/docker/test_reaper_image_e2e.py",
+    "tests/docker/test_sidecar_image_helpers.py",
+}
+
+
+def _sidecar_categories(path: str) -> tuple[str, ...]:
+    if path.startswith(_SIDECAR_PREFIXES) or path in _SIDECAR_FILES:
+        return ("sidecar",)
+    return ()
 
 
 def _boolean(value: str) -> bool:
@@ -98,6 +122,7 @@ def _path_categories(path: str) -> set[str]:
         categories.add("image_tests")
     if path.startswith(_NATIVE_BWAVE_PREFIXES):
         categories.add("native_bwave")
+    categories.update(_sidecar_categories(path))
     if path.startswith("crates/") or path in {"Cargo.lock", "Cargo.toml"}:
         categories.add("rust")
     if (
@@ -154,6 +179,8 @@ def required_jobs(categories: set[str]) -> set[str]:
         jobs.update({"package-artifacts", "bwave-smoke"})
     if categories & {"docker_toolchain", "image_tests"}:
         jobs.update({"package-artifacts", "bwave-smoke"})
+    if "sidecar" in categories:
+        jobs.add("sidecar-smoke")
     return jobs
 
 

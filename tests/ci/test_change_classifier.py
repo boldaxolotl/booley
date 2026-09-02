@@ -201,6 +201,47 @@ def test_image_related_test_requires_image_smoke(tmp_path: Path) -> None:
     assert {"test", "package-artifacts", "bwave-smoke"} <= _required(outputs)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/booley/data/docker/Dockerfile.egress-proxy",
+        "src/booley/data/docker/Dockerfile.flexnet-relay",
+        "src/booley/data/docker/Dockerfile.reaper",
+        "src/booley/docker/egress_proxy.py",
+        "src/booley/eda/provisioning/licensing/relay.py",
+        "tests/docker/test_sidecar_image_helpers.py",
+        "tests/docker/test_egress_proxy.py",
+        "tests/docker/test_proxy_entry.py",
+        "tests/docker/test_reaper.py",
+        "tests/docker/test_egress_proxy_image_e2e.py",
+        "tests/docker/test_reaper_image_e2e.py",
+        "tests/docker/test_flexnet_relay_e2e.py",
+    ],
+)
+def test_sidecar_input_requires_its_smoke_job(tmp_path: Path, path: str) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "sidecar input")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["sidecar"] == "true"
+    assert _jobs(outputs)["sidecar-smoke"] is True
+    assert "sidecar-smoke" in _required(outputs)
+
+
+def test_unrelated_path_does_not_require_sidecar_smoke(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "docs/image-architecture.md")
+    head = _commit(repo, "unrelated documentation")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["sidecar"] == "false"
+    assert _jobs(outputs)["sidecar-smoke"] is False
+    assert "sidecar-smoke" not in _required(outputs)
+
+
 def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> None:
     repo, base = _repository(tmp_path)
     _write(repo, "README.md")
@@ -217,6 +258,7 @@ def test_readme_and_version_are_packaging_and_release_inputs(tmp_path: Path) -> 
         "rust-test",
         "bwave-integration",
         "package-artifacts",
+        "sidecar-smoke",
         "bwave-smoke",
     }
 
@@ -249,6 +291,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "rust-test",
         "bwave-integration",
         "package-artifacts",
+        "sidecar-smoke",
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"
