@@ -458,6 +458,21 @@ def test_release_promotes_stable_tags_only_after_demo_smoke() -> None:
     assert ":latest" in promote_section
 
 
+def test_release_reports_registry_and_sidecar_image_sizes_after_initialization() -> None:
+    workflow = Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+
+    initialize = "      - name: Initialize demo cleanly as documented\n"
+    measure = "      - name: Measure release image storage contract\n"
+    assert workflow.index(initialize) < workflow.index(measure)
+    assert ".github/scripts/image_size_report.py" in workflow
+    assert '--registry-image "sandbox=${BASE_IMAGE}"' in workflow
+    assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
+    assert '--local-image "proxy=booley-egress-proxy"' in workflow
+    assert '--local-image "reaper=booley-reaper"' in workflow
+    assert 'cat "${RUNNER_TEMP}/booley-image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"' in workflow
+    assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
+
+
 def test_picorv32_demo_contract_runs_on_pr_main_merge_queue_and_nightly() -> None:
     workflow = Path(".github/workflows/picorv32-demo.yml").read_text(encoding="utf-8")
 
