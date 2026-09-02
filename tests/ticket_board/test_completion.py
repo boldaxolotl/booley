@@ -208,6 +208,22 @@ def test_candidate_clone_copies_repository_commit_identity(tmp_path: Path) -> No
     assert _git(clone, "config", "--local", "--get", "user.email") == "test@example.invalid"
 
 
+def test_acceptance_ref_cas_rejects_symbolic_ref_without_moving_referent(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    base = _repository(repository)
+    desired = _ticket_commit(repository, "change-target", "implemented\n")
+    staging_ref = "refs/booley/acceptance/transaction/outer"
+    _git(repository, "symbolic-ref", staging_ref, "refs/heads/main")
+
+    with pytest.raises(completion.CompletionError, match="is symbolic"):
+        completion._cas_ref(repository, staging_ref, desired, base)
+
+    assert completion._ref_commit(repository, "refs/heads/main") == base
+    assert _git(repository, "symbolic-ref", staging_ref) == "refs/heads/main"
+
+
 @pytest.mark.parametrize(
     ("content", "message"),
     [
@@ -244,7 +260,8 @@ def test_acceptance_journal_rejects_corrupt_or_mismatched_state(
             {
                 "candidates": {
                     "outer": {
-                        "sha": "d" * 40,
+                        "prepared_sha": "d" * 40,
+                        "finalized_sha": "d" * 40,
                         "staging_ref": "refs/booley/acceptance/{transaction}/outer",
                         "expected_destination_sha": "e" * 40,
                     }
@@ -296,13 +313,12 @@ def test_schema_one_done_journal_resumes_cleanup_as_accepted(tmp_path: Path) -> 
     data.pop("cleaned")
     data.pop("removal_targets")
     data.pop("removal_digest")
-    data.pop("finalized")
     journal = tmp_path / "acceptance.json"
     journal.write_text(json.dumps(data), encoding="utf-8")
 
     loaded = completion._load_journal(journal, "change-target", contract, cleanup=True)
 
-    assert loaded["schema"] == 3
+    assert loaded["schema"] == 4
     assert loaded["state"] == "accepted"
     assert loaded["policy"] == {"merge": True, "cleanup": True}
     assert loaded["cleaned"] == []
@@ -314,14 +330,55 @@ def test_finalization_schema_two_journal_upgrades_to_combined_schema(tmp_path: P
     data["schema"] = 2
     data.pop("policy")
     data.pop("cleaned")
+    data["finalized"] = True
     journal = tmp_path / "acceptance.json"
     journal.write_text(json.dumps(data), encoding="utf-8")
 
     loaded = completion._load_journal(journal, "change-target", contract)
 
-    assert loaded["schema"] == 3
+    assert loaded["schema"] == 4
     assert loaded["policy"] == {"merge": True, "cleanup": False}
     assert loaded["cleaned"] == []
+
+
+def test_schema_three_finalized_removal_does_not_invent_prepared_identity(
+    tmp_path: Path,
+) -> None:
+    contract = _boundary_contract()
+    removal = "acme:lib:toy:1.0#baseline"
+    data = completion._initial_journal("change-target", contract, removal_targets=(removal,))
+    transaction = data["transaction"]
+    finalized = "d" * 40
+    data.update(
+        schema=3,
+        state="prepared",
+        sources={"outer": "a" * 40},
+        candidates={
+            "outer": {
+                "sha": finalized,
+                "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
+                "expected_destination_sha": "e" * 40,
+            }
+        },
+        finalized=True,
+    )
+    journal = tmp_path / "acceptance.json"
+    journal.write_text(json.dumps(data), encoding="utf-8")
+
+    loaded = completion._load_journal(
+        journal,
+        "change-target",
+        contract,
+        removal_targets=(removal,),
+    )
+
+    assert loaded["schema"] == 4
+    assert loaded["candidates"]["outer"] == {
+        "prepared_sha": None,
+        "finalized_sha": finalized,
+        "staging_ref": f"refs/booley/acceptance/{transaction}/outer",
+        "expected_destination_sha": "e" * 40,
+    }
 
 
 def test_complete_requires_merge_policy() -> None:
@@ -696,7 +753,8 @@ def test_unfinished_publication_blocks_another_ticket(tmp_path: Path, capsys) ->
     data["sources"] = {"outer": ticket_sha}
     data["candidates"] = {
         "outer": {
-            "sha": ticket_sha,
+            "prepared_sha": ticket_sha,
+            "finalized_sha": ticket_sha,
             "staging_ref": f"refs/booley/acceptance/{data['transaction']}/outer",
             "expected_destination_sha": base,
         }
@@ -847,7 +905,8 @@ def test_complete_removes_target_only_from_final_merge_candidate(tmp_path: Path)
     journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     assert journal["removal_targets"] == [canonical]
-    assert journal["finalized"] is True
+    candidate = journal["candidates"]["outer"]
+    assert candidate["finalized_sha"] != candidate["prepared_sha"]
 
 
 def test_complete_finalizes_target_in_project_repository_before_outer(
@@ -922,6 +981,451 @@ def test_complete_finalizes_target_in_project_repository_before_outer(
     assert "[baseline]" not in merged_tests
     assert "[candidate]" in merged_tests
     assert _git(root, "show", "main:design.txt") == "outer implementation"
+
+
+def _paired_target_removal_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[
+    Path,
+    Path,
+    _TicketIO,
+    tuple[ContractParticipant, ...],
+    str,
+]:
+    root = tmp_path / "rtl"
+    _repository(root)
+    (root / "toy.core").write_text(
+        "CAPI=2:\n"
+        "name: acme:lib:toy:1.0\n"
+        "targets:\n"
+        "  baseline: {flow: lint, toplevel: toy}\n"
+        "  candidate: {flow: lint, toplevel: toy}\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "toy.core")
+    _git(root, "commit", "-m", "add target pair")
+    outer_base = _git(root, "rev-parse", "HEAD")
+    outer_ticket = _ticket_commit(root, "change-target", "outer implementation\n")
+
+    project = root / ".booley_project"
+    _repository(project)
+    (project / "tests.toml").write_text(
+        '[baseline]\ntests = ["old"]\n\n[candidate]\ntests = ["new"]\n',
+        encoding="utf-8",
+    )
+    _git(project, "add", "tests.toml")
+    _git(project, "commit", "-m", "add target tests")
+    project_base = _git(project, "rev-parse", "HEAD")
+    project_ticket = _ticket_commit(
+        project, "booley-ticket/change-target", "project implementation\n"
+    )
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    participants = (
+        ContractParticipant(
+            "outer", outer_ticket, "refs/heads/change-target", "refs/heads/main", outer_base
+        ),
+        ContractParticipant(
+            "project",
+            project_ticket,
+            "refs/heads/booley-ticket/change-target",
+            "refs/heads/main",
+            project_base,
+        ),
+    )
+    canonical = "acme:lib:toy:1.0#baseline"
+    contract = TargetContract(
+        outer_sha=outer_ticket,
+        project_sha=project_ticket,
+        surface_digest=surface_digest(root),
+        targets=("baseline", "candidate"),
+        removal_targets=(canonical,),
+        bindings=(
+            ContractTargetBinding(
+                "lint",
+                "lint_clean",
+                canonical,
+                "acme:lib:toy:1.0#candidate",
+                "baseline",
+                "candidate",
+            ),
+        ),
+        participants=participants,
+        surface_entries=surface_entries(root),
+    )
+    return root, project, _TicketIO(root, contract), participants, canonical
+
+
+def test_retry_rejects_unknown_finalization_identity_before_any_ref_moves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    update_finalized_refs = completion._update_finalized_refs
+
+    def interrupt_before_ref_updates(*_args: Any, **_kwargs: Any) -> None:
+        raise completion.CompletionError("interrupted after finalized journal write")
+
+    monkeypatch.setattr(completion, "_update_finalized_refs", interrupt_before_ref_updates)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    outer_staging = journal["candidates"]["outer"]["staging_ref"]
+    project_staging = journal["candidates"]["project"]["staging_ref"]
+    outer_prepared = completion._ref_commit(root, outer_staging)
+    project_prepared = completion._ref_commit(project, project_staging)
+    assert outer_prepared is not None
+    assert project_prepared is not None
+    for role, repository in (("outer", root), ("project", project)):
+        candidate = journal["candidates"][role]
+        assert candidate["prepared_sha"] != candidate["finalized_sha"]
+        finalized_ref = f"refs/booley/acceptance/{journal['transaction']}/finalized-{role}"
+        assert completion._ref_commit(repository, finalized_ref) == candidate["finalized_sha"]
+    _git(
+        project,
+        "update-ref",
+        project_staging,
+        participants[1].destination_sha,
+        project_prepared,
+    )
+    monkeypatch.setattr(completion, "_update_finalized_refs", update_finalized_refs)
+
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    assert completion._ref_commit(root, outer_staging) == outer_prepared
+    assert completion._ref_commit(project, project_staging) == participants[1].destination_sha
+    assert (
+        completion._ref_commit(root, participants[0].destination_ref)
+        == participants[0].destination_sha
+    )
+    assert (
+        completion._ref_commit(project, participants[1].destination_ref)
+        == participants[1].destination_sha
+    )
+    assert tio.entry["status"] == "review"
+
+
+@pytest.mark.parametrize("role", ["outer", "project"])
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_retry_converges_each_finalization_ref_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    timing: str,
+) -> None:
+    root, project, tio, participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    cas_ref = completion._cas_ref
+    interrupted = False
+
+    def interrupt(
+        repository: Path,
+        ref: str,
+        desired: str,
+        expected: str | None,
+    ) -> None:
+        nonlocal interrupted
+        if not ref.endswith(f"/{role}") or interrupted:
+            cas_ref(repository, ref, desired, expected)
+            return
+        interrupted = True
+        if timing == "before":
+            raise completion.CompletionError(f"before {role} finalization ref update")
+        cas_ref(repository, ref, desired, expected)
+        raise completion.CompletionError(f"after {role} finalization ref update")
+
+    monkeypatch.setattr(completion, "_cas_ref", interrupt)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    assert interrupted is True
+
+    monkeypatch.setattr(completion, "_cas_ref", cas_ref)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "done"
+    repositories = {"outer": root, "project": project}
+    for participant in participants:
+        repository = repositories[participant.role]
+        candidate = journal["candidates"][participant.role]
+        finalized = candidate["finalized_sha"]
+        assert candidate["prepared_sha"] != finalized
+        assert completion._ref_commit(repository, candidate["staging_ref"]) == finalized
+        assert completion._is_ancestor(
+            repository,
+            finalized,
+            completion._ref_commit(repository, participant.destination_ref),
+        )
+        keepalive = f"refs/booley/acceptance/{journal['transaction']}/finalized-{participant.role}"
+        assert completion._ref_commit(repository, keepalive) is None
+    assert "  baseline:" not in _git(root, "show", "main:toy.core")
+    assert "[baseline]" not in _git(project, "show", "main:tests.toml")
+    assert tio.entry["status"] == "done"
+
+
+def test_retry_recreates_absent_staging_ref_at_finalized_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    update_finalized_refs = completion._update_finalized_refs
+
+    def interrupt_before_ref_updates(*_args: Any, **_kwargs: Any) -> None:
+        raise completion.CompletionError("before finalization ref updates")
+
+    monkeypatch.setattr(completion, "_update_finalized_refs", interrupt_before_ref_updates)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    project_candidate = journal["candidates"]["project"]
+    _git(
+        project,
+        "update-ref",
+        "--no-deref",
+        "-d",
+        project_candidate["staging_ref"],
+        project_candidate["prepared_sha"],
+    )
+
+    monkeypatch.setattr(completion, "_update_finalized_refs", update_finalized_refs)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+    assert (
+        completion._ref_commit(project, project_candidate["staging_ref"])
+        == project_candidate["finalized_sha"]
+    )
+
+
+def test_target_finalization_cleanup_removes_all_journal_owned_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+
+    assert (
+        complete_review_ticket(
+            tio,
+            "change-target",
+            _Policy(cleanup=True, remove_targets=(canonical,)),
+        )
+        is True
+    )
+
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    repositories = {"outer": root, "project": project}
+    assert journal["state"] == "done"
+    assert journal["cleaned"] == ["project", "outer"]
+    for participant in participants:
+        repository = repositories[participant.role]
+        candidate = journal["candidates"][participant.role]
+        keepalive = f"refs/booley/acceptance/{journal['transaction']}/finalized-{participant.role}"
+        assert completion._ref_commit(repository, participant.ticket_ref) is None
+        assert completion._ref_commit(repository, candidate["staging_ref"]) is None
+        assert completion._ref_commit(repository, keepalive) is None
+
+
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_retry_converges_finalized_identity_journal_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timing: str,
+) -> None:
+    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    write_journal = completion._write_journal
+    interrupted = False
+
+    def interrupt_finalized_write(path: Path, journal: dict[str, Any]) -> None:
+        nonlocal interrupted
+        finalized = journal["candidates"] and all(
+            candidate["finalized_sha"] is not None for candidate in journal["candidates"].values()
+        )
+        if finalized and not interrupted and timing == "before":
+            interrupted = True
+            raise OSError("before finalized identity journal write")
+        write_journal(path, journal)
+        if finalized and not interrupted and timing == "after":
+            interrupted = True
+            raise OSError("after finalized identity journal write")
+
+    monkeypatch.setattr(completion, "_write_journal", interrupt_finalized_write)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    assert interrupted is True
+
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    if timing == "after":
+        for role, repository in (("outer", root), ("project", project)):
+            finalized = journal["candidates"][role]["finalized_sha"]
+            unreachable = _git(repository, "fsck", "--unreachable", "--no-reflogs")
+            assert f"unreachable commit {finalized}" not in unreachable
+
+    monkeypatch.setattr(completion, "_write_journal", write_journal)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+
+@pytest.mark.parametrize("role", ["outer", "project"])
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_retry_converges_each_finalized_keepalive_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    timing: str,
+) -> None:
+    root, project, tio, _participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    cas_ref = completion._cas_ref
+    interrupted = False
+
+    def interrupt(
+        repository: Path,
+        ref: str,
+        desired: str,
+        expected: str | None,
+    ) -> None:
+        nonlocal interrupted
+        if not ref.endswith(f"/finalized-{role}") or interrupted:
+            cas_ref(repository, ref, desired, expected)
+            return
+        interrupted = True
+        if timing == "before":
+            raise completion.CompletionError(f"before {role} finalized keepalive")
+        cas_ref(repository, ref, desired, expected)
+        raise completion.CompletionError(f"after {role} finalized keepalive")
+
+    monkeypatch.setattr(completion, "_cas_ref", interrupt)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    assert interrupted is True
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    for participant_role, repository in (("outer", root), ("project", project)):
+        finalized = journal["candidates"][participant_role]["finalized_sha"]
+        unreachable = _git(repository, "fsck", "--unreachable", "--no-reflogs")
+        assert f"unreachable commit {finalized}" not in unreachable
+
+    monkeypatch.setattr(completion, "_cas_ref", cas_ref)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+
+
+@pytest.mark.parametrize("timing", ["before", "after"])
+def test_retry_converges_finalization_worktree_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    timing: str,
+) -> None:
+    root, _project, tio, _participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    remove_worktrees = completion._remove_finalization_worktrees
+    calls = 0
+
+    def interrupt(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls != 2:
+            remove_worktrees(*args, **kwargs)
+            return
+        if timing == "before":
+            raise completion.CompletionError("before finalization worktree removal")
+        remove_worktrees(*args, **kwargs)
+        raise completion.CompletionError("after finalization worktree removal")
+
+    monkeypatch.setattr(completion, "_remove_finalization_worktrees", interrupt)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    assert calls == 2
+
+    monkeypatch.setattr(completion, "_remove_finalization_worktrees", remove_worktrees)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is True
+    )
+    acceptance_worktrees = root / ".booley_project" / ".runtime" / "acceptance-worktrees"
+    assert not any(acceptance_worktrees.iterdir())
+
+
+def test_staging_move_during_publication_prevents_done_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, project, tio, participants, canonical = _paired_target_removal_completion(
+        tmp_path, monkeypatch
+    )
+    publish_candidate = completion._publish_candidate
+    moved = False
+
+    def move_outer_staging_before_publish(
+        repository: Path,
+        participant: ContractParticipant,
+        candidate: dict[str, Any],
+        allowed_board_rename: tuple[Path, Path],
+    ) -> None:
+        nonlocal moved
+        if participant.role == "outer" and not moved:
+            moved = True
+            _git(
+                repository,
+                "update-ref",
+                candidate["staging_ref"],
+                participant.destination_sha,
+                candidate["finalized_sha"],
+            )
+        publish_candidate(repository, participant, candidate, allowed_board_rename)
+
+    monkeypatch.setattr(completion, "_publish_candidate", move_outer_staging_before_publish)
+    assert (
+        complete_review_ticket(tio, "change-target", _Policy(remove_targets=(canonical,))) is False
+    )
+    assert moved is True
+    assert tio.entry["status"] == "review"
+
+    journal_path = root / ".booley_project" / ".runtime" / "acceptance" / "change-target.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert journal["state"] == "published-outer"
+    assert set(journal["published"]) == {"outer", "project"}
+    outer_candidate = journal["candidates"]["outer"]
+    assert completion._is_ancestor(
+        root,
+        outer_candidate["finalized_sha"],
+        completion._ref_commit(root, participants[0].destination_ref),
+    )
+    assert (
+        completion._ref_commit(root, outer_candidate["staging_ref"])
+        == participants[0].destination_sha
+    )
+    project_candidate = journal["candidates"]["project"]
+    assert (
+        completion._ref_commit(project, project_candidate["staging_ref"])
+        == project_candidate["finalized_sha"]
+    )
 
 
 def test_retry_rejects_changed_target_removal_policy(tmp_path: Path) -> None:
@@ -1064,7 +1568,7 @@ def test_retry_finishes_journal_after_board_approval_write_failure(
     assert json.loads(journal_path.read_text(encoding="utf-8"))["state"] == "done"
 
 
-def test_ticket_ref_move_after_pinning_does_not_change_candidate(
+def test_ticket_ref_move_after_pinning_prevents_retained_ref_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "rtl"
@@ -1093,8 +1597,9 @@ def test_ticket_ref_move_after_pinning_does_not_change_candidate(
 
     monkeypatch.setattr(completion, "_validate_source_surface", move_ref)
 
-    assert complete_review_ticket(tio, "change-target", _Policy()) is True
-    assert _git(root, "show", "main:design.txt") == "implemented"
+    assert complete_review_ticket(tio, "change-target", _Policy()) is False
+    assert _git(root, "show", "main:design.txt") == "base"
+    assert tio.entry["status"] == "review"
 
 
 def test_schema_3_complete_rejects_target_control_drift_after_sealing(tmp_path: Path) -> None:
