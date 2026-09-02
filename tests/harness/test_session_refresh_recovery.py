@@ -114,6 +114,82 @@ def _record_replacement_before_commit(path: Path, project: Path) -> Issuance:
     return replacement
 
 
+_INTERRUPTION_MATRIX = (
+    *((f"{side} stop", "prepared") for side in ("before", "after")),
+    *((f"{side} rename", "prepared") for side in ("before", "after")),
+    *((f"{side} egress detach", "prepared") for side in ("before", "after")),
+    *((f"{side} spec write", "publishing") for side in ("before", "after")),
+    *((f"{side} keeper retag", "publishing") for side in ("before", "after")),
+    *((f"{side} stamp publication", "publishing") for side in ("before", "after")),
+    *((f"{side} replacement create", "issued") for side in ("before", "after")),
+    *((f"{side} replacement start", "issued") for side in ("before", "after")),
+    *((f"{side} payload verification", "issued") for side in ("before", "after")),
+    *((f"{side} predecessor deletion", "committed") for side in ("before", "after")),
+    ("before journal deletion", "committed"),
+    ("after journal deletion", "deleted"),
+)
+
+
+def _configure_interrupted_journal(path: Path, project: Path, state: str) -> Issuance | None:
+    if state == "deleted":
+        path.unlink()
+        return None
+    if state == "committed":
+        _commit_forward(path, project)
+        return _issuance(project, "sha256:fresh")
+    if state == "issued":
+        spec = project / ".devcontainer" / "devcontainer.json"
+        spec.parent.mkdir()
+        spec.write_text('{"image":"sha256:fresh"}\n', encoding="utf-8")
+        return _record_replacement_before_commit(path, project)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["phase"] = "prepared" if state == "prepared" else "image_selected"
+    if state == "publishing":
+        document["target_image_id"] = "sha256:fresh"
+        document["target_payload_fingerprint"] = "payload-fresh"
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o600)
+    return None
+
+
+@pytest.mark.parametrize(("boundary", "journal_state"), _INTERRUPTION_MATRIX)
+def test_fresh_orchestration_recovers_each_abrupt_mutation_boundary(
+    tmp_path: Path, monkeypatch, boundary: str, journal_state: str
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    replacement = _configure_interrupted_journal(path, project, journal_state)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    with (
+        patch.object(session_refresh, "restore_session_spec") as restore_spec,
+        patch.object(sr, "restore_refresh_session") as restore_runtime,
+        patch.object(session_refresh, "_verify_restored_journal"),
+        patch.object(runtime_spec, "validate", return_value=replacement),
+        patch.object(sr, "_up_unlocked") as resume,
+        patch.object(sr, "discard_refresh_session"),
+    ):
+        result = session_refresh.recover_project_locked(project)
+
+    expected = {
+        "prepared": session_refresh.RecoveryOutcome.RESTORED,
+        "publishing": session_refresh.RecoveryOutcome.RESTORED,
+        "issued": session_refresh.RecoveryOutcome.RESUMED,
+        "committed": session_refresh.RecoveryOutcome.RESUMED,
+        "deleted": session_refresh.RecoveryOutcome.NONE,
+    }[journal_state]
+    assert boundary and result.outcome is expected
+    if expected is session_refresh.RecoveryOutcome.RESTORED:
+        restore_spec.assert_called_once()
+        restore_runtime.assert_called_once()
+        resume.assert_not_called()
+    elif expected is session_refresh.RecoveryOutcome.RESUMED:
+        restore_spec.assert_not_called()
+        resume.assert_called_once()
+
+
 def test_fresh_recovery_restores_interrupted_park(tmp_path: Path, monkeypatch) -> None:
     project = (tmp_path / "project").resolve()
     project.mkdir()
@@ -377,6 +453,45 @@ def test_journal_rejects_unknown_schema_fields(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
 
     with pytest.raises(sr.SessionError, match=r"unexpected.*fields"):
+        session_refresh.recover_project_locked(project)
+
+    assert path.is_file()
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("version", True),
+        ("project_root", "relative/project"),
+        ("spec_sha256", "bad-digest"),
+        ("image", ""),
+        ("image_id", 7),
+        ("keeper_image", "unowned:tag"),
+        ("policy_revision", False),
+        ("installation", []),
+        ("license_profile", 4),
+        ("wrapper_sha256", "bad-digest"),
+        ("relay_image_id", "mutable:tag"),
+        ("validator_sha256", "bad-digest"),
+        ("file_sha256", None),
+        ("project_data_source", None),
+    ],
+)
+def test_journal_rejects_every_invalid_issuance_field_before_recovery(
+    tmp_path: Path, monkeypatch, field: str, invalid: object
+) -> None:
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    config = tmp_path / "config"
+    path = _write_restore_journal(config, project)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["prior_issuance"][field] = invalid
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o600)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+
+    with pytest.raises(sr.SessionError, match="prior issuance is invalid"):
         session_refresh.recover_project_locked(project)
 
     assert path.is_file()

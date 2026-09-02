@@ -1212,6 +1212,7 @@ class TestRefreshContainerTransactions:
         with (
             patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=True),
             patch.object(sr, "_remove_session_candidate") as remove,
             patch.object(sr, "_relay_resources", return_value=relay),
             patch.object(sr, "_remove_license_relay") as remove_relay,
@@ -1220,6 +1221,19 @@ class TestRefreshContainerTransactions:
 
         remove.assert_called_once_with(sr.session_container_name(tmp_path))
         remove_relay.assert_called_once_with(relay)
+
+    def test_discard_refresh_candidate_preserves_unproven_identity(self, tmp_path: Path):
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            pytest.raises(sr.SessionError, match=r"cannot prove.*replacement"),
+        ):
+            sr.discard_refresh_candidate(tmp_path, issuance)
+
+        remove.assert_not_called()
 
     def test_rebuild_rejects_existing_recovery_container(self):
         with (
@@ -1398,6 +1412,21 @@ class TestUp:
 
         assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
 
+    def test_fresh_refresh_rejects_unverified_labels_or_networks(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        exists = iter([False, False, True])
+        with (
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(sr, "_container_matches_issuance", return_value=False),
+            patch.object(sr, "verify_refreshed_session") as verify_payload,
+            pytest.raises(sr.SessionError, match="labels or network topology"),
+        ):
+            sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh")
+
+        verify_payload.assert_not_called()
+        assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
+
     def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
         workspace, run = wired
         name = sr.session_container_name(workspace)
@@ -1434,22 +1463,8 @@ class TestUp:
         workspace, run = wired
         name = sr.session_container_name(workspace)
         backup = f"{name}-pre-refresh"
-        initial = {
-            "Config": {
-                "Labels": {
-                    "booley.role": "interactive",
-                    "booley.project-id": "project-id",
-                    "booley.license-profile": "none",
-                }
-            },
-            "State": {"Running": True},
-            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
-        }
-        parked_state = {
-            "Config": initial["Config"],
-            "State": {"Running": False},
-            "NetworkSettings": {"Networks": {}},
-        }
+        initial = _refresh_state(running=True, networks={dc.EGRESS_NETWORK: {}})
+        parked_state = _refresh_state(labels=initial["Config"]["Labels"])
         with (
             patch.object(
                 sr,

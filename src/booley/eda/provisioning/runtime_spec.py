@@ -13,11 +13,17 @@ import sysconfig
 import tempfile
 import tomllib
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from booley.core.boundary import BoundaryError, require_dict
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_int,
+    require_opt_str,
+    require_str,
+)
 from booley.harness.devcontainer import EGRESS_NETWORK
 from booley.runtime.auth_token import config_dir
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
@@ -86,6 +92,63 @@ class Issuance:
     validator_sha256: str
     file_sha256: str | None = None
     project_data_source: str | None = None
+
+
+def issuance_from_document(raw: object) -> Issuance:
+    """Decode one complete persisted issuance using the stamp schema."""
+    try:
+        values = require_dict(raw, field="host-issued spec stamp")
+    except BoundaryError as exc:
+        raise RuntimeSpecError(str(exc)) from exc
+    expected = {field.name for field in fields(Issuance)}
+    if set(values) != expected:
+        raise RuntimeSpecError("host-issued spec stamp has unexpected or missing fields")
+    try:
+        issuance = Issuance(
+            version=require_int(values.get("version"), field="issuance version"),
+            project_root=require_str(values, "project_root"),
+            spec_sha256=require_str(values, "spec_sha256"),
+            image=require_str(values, "image"),
+            image_id=require_str(values, "image_id"),
+            keeper_image=require_str(values, "keeper_image"),
+            policy_revision=require_int(
+                values.get("policy_revision"), field="issuance policy_revision"
+            ),
+            installation=require_opt_str(values, "installation"),
+            license_profile=require_opt_str(values, "license_profile"),
+            wrapper_sha256=require_opt_str(values, "wrapper_sha256"),
+            relay_image_id=require_opt_str(values, "relay_image_id"),
+            validator_sha256=require_str(values, "validator_sha256"),
+            file_sha256=require_opt_str(values, "file_sha256"),
+            project_data_source=require_opt_str(values, "project_data_source"),
+        )
+    except BoundaryError as exc:
+        raise RuntimeSpecError(f"host-issued spec stamp is invalid: {exc}") from exc
+    _validate_issuance_fields(issuance)
+    return issuance
+
+
+def _validate_issuance_fields(issuance: Issuance) -> None:
+    digests = (issuance.spec_sha256, issuance.validator_sha256, issuance.file_sha256)
+    if issuance.version != STAMP_VERSION:
+        raise RuntimeSpecError("host-issued spec stamp has an unsupported version")
+    if (
+        not Path(issuance.project_root).is_absolute()
+        or issuance.policy_revision < 0
+        or any(value is None or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in digests)
+        or not issuance.image_id.startswith("sha256:")
+        or re.fullmatch(r"booley-issued-[0-9a-f]{64}:session", issuance.keeper_image) is None
+        or (
+            issuance.wrapper_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", issuance.wrapper_sha256) is None
+        )
+        or (
+            issuance.relay_image_id is not None
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", issuance.relay_image_id) is None
+        )
+        or issuance.project_data_source is None
+    ):
+        raise RuntimeSpecError("host-issued spec stamp contains invalid field types or values")
 
 
 def stamp_path(project_root: Path) -> Path:
@@ -1329,8 +1392,8 @@ def _load_stamp(path: Path) -> Issuance:
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
-        stamp = Issuance(**raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as exc:
+        stamp = issuance_from_document(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeSpecError) as exc:
         raise RuntimeSpecError(f"host-issued spec stamp is missing or corrupt: {exc}") from exc
     if os.name != "nt" and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
         raise RuntimeSpecError(f"host-issued spec stamp has insecure ownership/mode: {path}")
@@ -1340,43 +1403,6 @@ def _load_stamp(path: Path) -> Issuance:
             raise RuntimeSpecError(
                 f"host-issued spec directory has insecure ownership/mode: {parent}"
             )
-    if stamp.version != STAMP_VERSION:
-        raise RuntimeSpecError("host-issued spec stamp has an unsupported version")
-    if (
-        not isinstance(stamp.version, int)
-        or isinstance(stamp.version, bool)
-        or not isinstance(stamp.project_root, str)
-        or not Path(stamp.project_root).is_absolute()
-        or not isinstance(stamp.spec_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", stamp.spec_sha256) is None
-        or not isinstance(stamp.file_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", stamp.file_sha256) is None
-        or not isinstance(stamp.project_data_source, str)
-        or not stamp.project_data_source
-        or not isinstance(stamp.image, str)
-        or not stamp.image
-        or not isinstance(stamp.image_id, str)
-        or not stamp.image_id.startswith("sha256:")
-        or not isinstance(stamp.keeper_image, str)
-        or re.fullmatch(r"booley-issued-[0-9a-f]{64}:session", stamp.keeper_image) is None
-        or not isinstance(stamp.policy_revision, int)
-        or isinstance(stamp.policy_revision, bool)
-        or (stamp.installation is not None and not isinstance(stamp.installation, str))
-        or (stamp.license_profile is not None and not isinstance(stamp.license_profile, str))
-        or (stamp.wrapper_sha256 is not None and not isinstance(stamp.wrapper_sha256, str))
-        or (
-            isinstance(stamp.wrapper_sha256, str)
-            and re.fullmatch(r"[0-9a-f]{64}", stamp.wrapper_sha256) is None
-        )
-        or not isinstance(stamp.validator_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", stamp.validator_sha256) is None
-        or (stamp.relay_image_id is not None and not isinstance(stamp.relay_image_id, str))
-        or (
-            isinstance(stamp.relay_image_id, str)
-            and re.fullmatch(r"sha256:[0-9a-f]{64}", stamp.relay_image_id) is None
-        )
-    ):
-        raise RuntimeSpecError("host-issued spec stamp contains invalid field types or values")
     return stamp
 
 

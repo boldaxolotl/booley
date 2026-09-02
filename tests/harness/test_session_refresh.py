@@ -77,8 +77,7 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     active = True
-    result = _result()
-    parked = _parked(tmp_path)
+    result, parked = _result(), _parked(tmp_path)
     prior = _issuance(tmp_path)
     candidate = _issuance(tmp_path, "sha256:fresh")
     events: list[str] = []
@@ -91,9 +90,7 @@ def test_running_target_is_parked_before_host_bootstrap_refresh(
 
     def refresh_image(*_args, **_kwargs) -> LifecycleResult:
         if active:
-            raise RuntimeError(
-                "cannot replace stale booley-proxy while active Booley Sessions exist"
-            )
+            raise RuntimeError("cannot refresh bootstrap while Session Runtimes are active")
         events.append("bootstrap")
         return result
 

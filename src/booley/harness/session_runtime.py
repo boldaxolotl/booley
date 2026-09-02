@@ -783,6 +783,11 @@ def discard_refresh_candidate(workspace: Path, issuance: Issuance) -> None:
     if state is None:
         return
     _assert_refresh_container_owned(name, state, _refresh_project_id(issuance))
+    if not _refresh_candidate_matches(state, issuance):
+        raise SessionError(
+            f"cannot prove canonical container {name!r} is the recorded refresh replacement; "
+            "it was preserved"
+        )
     labels = _refresh_container_labels(state)
     _remove_session_candidate(name)
     licensed = (
@@ -938,6 +943,16 @@ def _run_up_transaction(
         )
         candidate_ready = True
         if expected_image_id is not None:
+            if not _container_matches_issuance(
+                request.name,
+                request.issuance,
+                spec=request.spec,
+                workspace=workspace,
+            ):
+                raise SessionError(
+                    "refreshed Session Runtime labels or network topology do not match "
+                    "the replacement issuance"
+                )
             verify_refreshed_session(
                 workspace,
                 expected_image_id,

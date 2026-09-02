@@ -2355,18 +2355,17 @@ def _run_init_unlocked(  # noqa: PLR0911 -- each return is a distinct lifecycle 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
     """Run Project initialization without racing host Docker mutations."""
     if getattr(args, "check_only", False):
-        from booley.harness.session_refresh import pending_refresh_projects
+        from booley.harness.session_refresh import shared_recovery_blocks_command
 
-        if pending_refresh_projects():
+        if shared_recovery_blocks_command(read_only=True):
             err("an interrupted Session refresh requires recovery")
             return 2
         return _run_init_unlocked(args, project_root)
     from booley.harness.lifecycle_lock import host_lifecycle_lock
-    from booley.harness.session_refresh import recover_all_locked
+    from booley.harness.session_refresh import shared_recovery_blocks_command
 
     with host_lifecycle_lock("project init"):
-        recovered = recover_all_locked()
-        if recovered:
+        if shared_recovery_blocks_command(read_only=False):
             err("recovered an interrupted Session refresh; run `booley init` again")
             return 2
         return _run_init_unlocked(args, project_root)
