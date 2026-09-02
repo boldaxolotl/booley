@@ -15,8 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import Client, StdioServerParameters
 
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
@@ -183,7 +182,7 @@ def _exit_code(text: str) -> int | None:
 class McpDriver:
     """One real stdio MCP session with bounded detached-Job polling."""
 
-    def __init__(self, session: ClientSession) -> None:
+    def __init__(self, session: Client) -> None:
         self.session = session
         self.calls: list[str] = []
 
@@ -283,12 +282,10 @@ async def _run_mcp_script(
         env=dict(os.environ),
     )
     observations["worktree"] = str(params.cwd)
-    async with (
-        stdio_client(server) as (read, write),
-        ClientSession(read, write) as session,
-    ):
-        await session.initialize()
-        driver = McpDriver(session)
+    async with Client(server, mode="2026-07-28") as client:
+        assert client.protocol_version == "2026-07-28"
+        observations["mcp_protocol_version"] = client.protocol_version
+        driver = McpDriver(client)
         await script(driver, observations)
         observations["calls"] = list(driver.calls)
     return AgentResult(output="scripted Developer Agent completed")

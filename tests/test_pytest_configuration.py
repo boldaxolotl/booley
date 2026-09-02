@@ -33,7 +33,7 @@ def _suite_config(pytestconfig: pytest.Config):
 def test_claude_sdk_floor_owns_windows_launcher_safety() -> None:
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "claude-agent-sdk>=0.2.124" in project["project"]["dependencies"]
+    assert "claude-agent-sdk>=0.2.140" in project["project"]["dependencies"]
 
 
 def test_windows_worker_temp_shares_workspace_drive(monkeypatch, pytestconfig) -> None:

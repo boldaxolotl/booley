@@ -44,6 +44,7 @@ _BASELINE_ENV: dict[str, str] = {
     "HOME": "/home/agent",
     "PYTHONUSERBASE": "/home/agent/.local",
     "BOOLEY_MCP_NESTED": "1",
+    "CODEX_MCP_PROTOCOL_VERSION": "2026-07-28",
 }
 
 # Env vars forwarded from this process into the Codex-spawned MCP server when
@@ -61,6 +62,26 @@ _FORWARDED_ENV_VARS = (
     "NO_PROXY",
     "no_proxy",
 )
+
+
+def _codex_server_env(
+    enabled_mcp_tools: list[str] | None,
+    extra_env: dict[str, str] | None,
+) -> dict[str, str]:
+    """Build the complete environment for Codex's Booley MCP child."""
+    merged_env = dict(_BASELINE_ENV)
+    parent_path = os.environ.get("PATH")
+    if parent_path:
+        merged_env["PATH"] = parent_path
+    for var in _FORWARDED_ENV_VARS:
+        val = os.environ.get(var)
+        if val:
+            merged_env[var] = val
+    if extra_env:
+        merged_env.update(extra_env)
+    if enabled_mcp_tools is not None:
+        merged_env["BOOLEY_MCP_TOOLS"] = ",".join(enabled_mcp_tools)
+    return merged_env
 
 
 def generate_codex_config(
@@ -83,6 +104,9 @@ def generate_codex_config(
     lines = [
         'web_search = "disabled"',
         "",
+        "[features]",
+        "mcp_2026_07_28 = true",
+        "",
         "[mcp_servers.booley]",
         'command = "python"',
         'args = ["-m", "booley.mcp.server"]',
@@ -92,19 +116,7 @@ def generate_codex_config(
         "tool_timeout_sec = 3600",
     ]
 
-    merged_env = dict(_BASELINE_ENV)
-    parent_path = os.environ.get("PATH")
-    if parent_path:
-        merged_env["PATH"] = parent_path
-    for var in _FORWARDED_ENV_VARS:
-        val = os.environ.get(var)
-        if val:
-            merged_env[var] = val
-    if extra_env:
-        merged_env.update(extra_env)
-    if enabled_mcp_tools is not None:
-        merged_env["BOOLEY_MCP_TOOLS"] = ",".join(enabled_mcp_tools)
-
+    merged_env = _codex_server_env(enabled_mcp_tools, extra_env)
     lines.append("")
     lines.append("[mcp_servers.booley.env]")
     for key, val in sorted(merged_env.items()):
