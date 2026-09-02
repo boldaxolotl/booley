@@ -159,7 +159,7 @@ the normal isolated CLI entry point.
 ## Windows first-run problems
 
 The CLI runs **natively on Windows** (repo on `C:\...`, Windows Python), not
-from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Five
+from inside WSL. Docker Desktop's WSL2 backend only hosts the containers. Six
 first-run traps:
 
 - **Git is older than 2.37.2.** Upgrade Git for Windows from

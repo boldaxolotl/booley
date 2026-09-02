@@ -887,10 +887,23 @@ def _find_trusted_validator(project: Path) -> Path | None:
         if candidate in seen:
             continue
         seen.add(candidate)
+        if _project_controls_validator_candidate(candidate, project):
+            return None
         canonical = _resolve_trusted_validator(candidate, project)
         if canonical is not None:
             return canonical
     return None
+
+
+def _project_controls_validator_candidate(executable: Path, project: Path) -> bool:
+    """Reject an existing launcher reached through the Project checkout."""
+    try:
+        candidate = executable.absolute()
+        canonical_project = project.resolve(strict=True)
+        exists = executable.exists() or executable.is_symlink()
+    except OSError:
+        return False
+    return exists and (candidate == canonical_project or canonical_project in candidate.parents)
 
 
 def _resolve_trusted_validator(executable: Path, project: Path) -> Path | None:

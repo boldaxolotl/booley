@@ -127,28 +127,18 @@ def _prerequisite_findings() -> tuple[BootstrapFinding, ...]:
 def _git_finding() -> BootstrapFinding:
     """Require a stable Git release that avoids the Windows temp-name limit."""
     minimum = ".".join(str(part) for part in MIN_GIT_VERSION)
-    executable = shutil.which("git")
-    if executable is None:
+    finding = _tool_finding("git", "--version")
+    if finding.state is BootstrapState.ERROR:
+        if finding.detail == "git is required but not on PATH":
+            detail = f"Git {minimum} or newer is required but git is not on PATH"
+        else:
+            detail = finding.detail.replace("git", "Git", 1)
         return BootstrapFinding(
             "git",
             BootstrapState.ERROR,
-            f"Git {minimum} or newer is required but git is not on PATH",
+            detail,
         )
-    try:
-        result = subprocess.run(
-            [executable, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return BootstrapFinding("git", BootstrapState.ERROR, f"cannot run Git: {exc}")
-    if result.returncode:
-        return BootstrapFinding("git", BootstrapState.ERROR, "Git version probe failed")
-    lines = (result.stdout or result.stderr).strip().splitlines()
-    line = lines[0] if lines else ""
-    return _git_version_finding(line)
+    return _git_version_finding(finding.detail)
 
 
 def _git_version_finding(line: str) -> BootstrapFinding:
