@@ -872,11 +872,21 @@ def _find_trusted_validator(project: Path) -> Path | None:
         if not directory:
             continue
         candidate = Path(directory) / ("booley.exe" if os.name == "nt" else "booley")
-        if _trusted_validator(candidate, project):
-            return candidate.resolve(strict=True)
+        canonical = _resolve_trusted_validator(candidate, project)
+        if canonical is not None:
+            return canonical
     fallback = shutil.which("booley")
     candidate = Path(fallback) if fallback else Path()
-    return candidate.resolve(strict=True) if _trusted_validator(candidate, project) else None
+    return _resolve_trusted_validator(candidate, project)
+
+
+def _resolve_trusted_validator(executable: Path, project: Path) -> Path | None:
+    """Canonicalize a discovered launcher, then validate the executable it names."""
+    try:
+        canonical = executable.resolve(strict=True)
+    except OSError:
+        return None
+    return canonical if _trusted_validator(canonical, project) else None
 
 
 def _trusted_validator(executable: Path, project: Path) -> bool:

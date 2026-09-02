@@ -1208,6 +1208,22 @@ class TestTryResolveTarget:
         assert try_resolve_target("sim", project_root=project, runner=missing) is None
 
 
+def test_resolve_target_reports_silent_setup_failure(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    _write_core(project / "ip")
+
+    def failing(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    with pytest.raises(TargetResolutionError, match="no diagnostic output"):
+        resolve_target(
+            "sim",
+            project_root=project,
+            build_root=tmp_path / "build",
+            runner=failing,
+        )
+
+
 # ---------------------------------------------------------------------------
 # resolve_target — real fusesoc end-to-end (gated on fusesoc being importable)
 # ---------------------------------------------------------------------------

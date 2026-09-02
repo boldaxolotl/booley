@@ -897,7 +897,21 @@ class TestDetail:
         assert "no fusesoc" in payload["resolved_error"]
         text = render_detail(payload)
         assert "Resolved view unavailable" in text
-        assert "booley session enter -- booley targets sim" in text
+        assert "booley session enter" not in text
+
+    def test_silent_invocation_failure_has_actionable_error(self, project: Path):
+        def failing_runner(*args, **kwargs):
+            raise OSError()
+
+        for rel in ("alpha/rtl/alpha.sv", "alpha/tb/tb_alpha.sv"):
+            (project / rel).parent.mkdir(parents=True, exist_ok=True)
+            (project / rel).touch()
+
+        payload = detail_payload(project, "sim", runner=failing_runner)
+
+        assert payload["resolved_error"] == (
+            "could not invoke fusesoc (fusesoc) with no diagnostic output"
+        )
 
     def test_resolved_half_reads_edam(self, project: Path):
         from booley.flows import edam as edam_layer
