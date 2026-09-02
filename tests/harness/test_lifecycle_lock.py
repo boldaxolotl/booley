@@ -14,8 +14,9 @@ def test_host_lifecycle_lock_records_owner(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(lifecycle_lock, "config_dir", lambda: tmp_path)
 
     with lifecycle_lock.host_lifecycle_lock("session refresh"):
-        owner = (tmp_path / "locks" / "docker-lifecycle.lock").read_text(encoding="utf-8")
+        pass
 
+    owner = (tmp_path / "locks" / "docker-lifecycle.lock").read_text(encoding="utf-8")
     assert owner == f"pid={os.getpid()} operation=session refresh\n"
 
 
