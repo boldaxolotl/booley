@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -40,6 +41,52 @@ def test_compressed_layers_rejects_conflicting_duplicate_digest() -> None:
         image_size_report.compressed_layers(
             _entry("amd64", [("sha256:same", 10), ("sha256:same", 11)])
         )
+
+
+def test_measure_resolves_linux_amd64_child_from_oci_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_reference = "ghcr.io/example/image@sha256:index"
+    child_reference = "ghcr.io/example/image@sha256:runtime"
+    documents = {
+        index_reference: {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [
+                {
+                    "digest": "sha256:runtime",
+                    "platform": {"os": "linux", "architecture": "amd64"},
+                },
+                {
+                    "digest": "sha256:attestation",
+                    "platform": {"os": "unknown", "architecture": "unknown"},
+                },
+            ],
+        },
+        child_reference: {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "layers": [{"digest": "sha256:layer", "size": 42}],
+        },
+    }
+    calls: list[list[str]] = []
+
+    def docker_output(argv: list[str]) -> str:
+        calls.append(argv)
+        if argv[:2] == ["image", "inspect"]:
+            return "123\n"
+        return json.dumps(documents[argv[-1]])
+
+    monkeypatch.setattr(image_size_report, "_docker_output", docker_output)
+
+    assert image_size_report.measure(index_reference, registry_manifest=True) == (
+        image_size_report.ImageMeasurement(index_reference, 123, {"sha256:layer": 42})
+    )
+    assert calls == [
+        ["image", "inspect", "--format", "{{.Size}}", index_reference],
+        ["manifest", "inspect", "--verbose", index_reference],
+        ["manifest", "inspect", "--verbose", child_reference],
+    ]
 
 
 def test_report_deduplicates_shared_registry_layers_and_keeps_sidecars_separate() -> None:
