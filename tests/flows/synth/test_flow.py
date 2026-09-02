@@ -6,11 +6,14 @@ import dataclasses
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,6 +24,7 @@ from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.flows.base import SubprocessResult
 from booley.flows.clock_timing import ClockTiming, make_clock_timing
+from booley.flows.edam import work_root_for, work_root_lease
 from booley.flows.implementation_comparison import TargetExecutionRef
 from booley.flows.synth.backends import pipeline as syn_make
 from booley.flows.synth.flow import (
@@ -70,6 +74,13 @@ def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandl
         doctor_private=False,
         _factory_key=_HANDLE_FACTORY_KEY,
     )
+
+
+def _dry_run_flow(work_dir: Path, target: str = "lite") -> AsicSynthesizeFlow:
+    flow = AsicSynthesizeFlow()
+    flow.parse_args(["--target", target, "--work-dir", str(work_dir), "--dry-run"])
+    flow.read_state()
+    return flow
 
 
 def test_report_artifact_snapshot_is_immutable(tmp_path: Path) -> None:
@@ -1296,6 +1307,150 @@ class TestSingleConfigRun:
         # Verify criterion was set
         st = DevelopmentState.load(state_file)
         assert st.is_met("synthesis_ok_lite")
+
+    def test_concurrent_dry_run_cannot_delete_live_target_workspace(
+        self,
+        flow_and_state,
+        tmp_path: Path,
+    ):
+        flow, _ = flow_and_state
+        started = Event()
+        release = Event()
+        build_root = work_root_for(tmp_path, "synth", "lite")
+        marker = build_root / "synth" / "owner.marker"
+
+        def held_eda_run(*_args, **_kwargs):
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("live\n", encoding="utf-8")
+            started.set()
+            if not release.wait(5.0):
+                raise TimeoutError("test did not release held synthesis")
+            return SubprocessResult(
+                returncode=0,
+                stdout="Chip area for top module '\\design_top': 6400.0\n",
+                stderr="",
+                duration_s=1.0,
+            )
+
+        dry_run = _dry_run_flow(tmp_path)
+
+        with (
+            patch.object(flow, "_execute", side_effect=held_eda_run),
+            patch.object(
+                fusesoc_registry,
+                "setup_command",
+                return_value=["fusesoc", "run", "--setup", "--target", "lite"],
+            ),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            running = pool.submit(flow._run)
+            assert started.wait(5.0)
+            try:
+                preview = dry_run._run()
+                assert marker.read_text(encoding="utf-8") == "live\n"
+                assert "workspace busy" in preview.report_text
+            finally:
+                release.set()
+            result = running.result(timeout=10.0)
+
+        assert result.exit_code == EXIT_SUCCESS
+
+    def test_workspace_is_owned_through_artifact_snapshot(
+        self,
+        flow_and_state,
+        tmp_path: Path,
+    ):
+        flow, _ = flow_and_state
+        copy_started = Event()
+        release_copy = Event()
+        build_root = work_root_for(tmp_path, "synth", "lite")
+        real_copy2 = shutil.copy2
+
+        def held_copy(source, destination, *args, **kwargs):
+            if Path(source).is_relative_to(build_root):
+                copy_started.set()
+                if not release_copy.wait(5.0):
+                    raise TimeoutError("test did not release artifact snapshot")
+            return real_copy2(source, destination, *args, **kwargs)
+
+        dry_run = _dry_run_flow(tmp_path)
+        synth_output = "Chip area for top module '\\design_top': 6400.0\n"
+
+        with (
+            patch.object(
+                flow,
+                "_execute",
+                return_value=SubprocessResult(
+                    returncode=0,
+                    stdout=synth_output,
+                    stderr="",
+                    duration_s=1.0,
+                ),
+            ),
+            patch.object(shutil, "copy2", side_effect=held_copy),
+            patch.object(
+                fusesoc_registry,
+                "setup_command",
+                return_value=["fusesoc", "run", "--setup", "--target", "lite"],
+            ),
+            ThreadPoolExecutor(max_workers=1) as pool,
+        ):
+            running = pool.submit(flow._run)
+            assert copy_started.wait(5.0)
+            try:
+                preview = dry_run._run()
+                assert build_root.is_dir()
+                assert "workspace busy" in preview.report_text
+            finally:
+                release_copy.set()
+            result = running.result(timeout=10.0)
+
+        assert result.exit_code == EXIT_SUCCESS
+
+    def test_workspace_lease_timeout_is_an_infrastructure_error(
+        self,
+        flow_and_state,
+        tmp_path: Path,
+    ):
+        flow, _ = flow_and_state
+        flow.args.timeout = 1
+        build_root = work_root_for(tmp_path, "synth", "lite")
+
+        with work_root_lease(build_root, timeout_s=1.0):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        error = result.detail["lite"]["infra_error"]
+        assert "cannot lease" in error
+        assert str(build_root) in error
+
+    def test_workspace_lease_release_failure_is_an_infrastructure_error(
+        self,
+        flow_and_state,
+    ):
+        flow, _ = flow_and_state
+        synth_output = "Chip area for top module '\\design_top': 6400.0\n"
+
+        with (
+            patch.object(
+                flow,
+                "_execute",
+                return_value=SubprocessResult(
+                    returncode=0,
+                    stdout=synth_output,
+                    stderr="",
+                    duration_s=1.0,
+                ),
+            ),
+            patch(
+                "booley.flows.edam.release_file_lock",
+                side_effect=OSError("unlock failed"),
+            ),
+        ):
+            result = flow._run()
+
+        assert result.exit_code == EXIT_ERROR
+        assert "unlock failed" in result.detail["lite"]["infra_error"]
 
     def test_physical_mode_without_timing_fails(self, flow_and_state):
         flow, _ = flow_and_state
