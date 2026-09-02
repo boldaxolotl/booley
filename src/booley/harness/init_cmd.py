@@ -1100,7 +1100,30 @@ def project_sandbox_image(project_root: Path) -> str:
     return DOCKER_IMAGE
 
 
-def refresh_session_image(project_root: Path, *, verbose: bool = False) -> LifecycleResult:
+def inspect_refreshable_session_image(
+    project_root: Path, *, verbose: bool = False
+) -> LifecycleResult:
+    """Reject a user-managed Session Image before refresh causes downtime."""
+    inspection = reconcile_images(
+        ProjectImageScope(project_root),
+        ImageLifecycleIntent.CHECK,
+        verbose=verbose,
+    )
+    if inspection.status is ImageLifecycleStatus.EXTERNAL:
+        raise RuntimeError(
+            f"[sandbox].image={inspection.selected_reference!r} is user-managed, so Booley has no "
+            "build recipe to refresh. Rebuild that image yourself, then run "
+            "`booley session up --rebuild`."
+        )
+    return inspection
+
+
+def refresh_session_image(
+    project_root: Path,
+    *,
+    verbose: bool = False,
+    inspection: LifecycleResult | None = None,
+) -> LifecycleResult:
     """Rebuild the configured Session Runtime image from current Booley sources.
 
     This is the implementation behind ``booley session refresh``. It reuses
@@ -1109,14 +1132,8 @@ def refresh_session_image(project_root: Path, *, verbose: bool = False) -> Lifec
     project image are reproducible here; an arbitrary explicit image remains
     user-managed and is rejected with an actionable error.
     """
-    project_scope = ProjectImageScope(project_root)
-    inspection = reconcile_images(project_scope, ImageLifecycleIntent.CHECK, verbose=verbose)
-    if inspection.status is ImageLifecycleStatus.EXTERNAL:
-        raise RuntimeError(
-            f"[sandbox].image={inspection.selected_reference!r} is user-managed, so Booley has no "
-            "build recipe to refresh. Rebuild that image yourself, then run "
-            "`booley session up --rebuild`."
-        )
+    if inspection is None:
+        inspect_refreshable_session_image(project_root, verbose=verbose)
     bootstrap = reconcile_bootstrap(ImageLifecycleIntent.REFRESH, verbose=verbose)
     base = _usable_bootstrap_base(bootstrap)
     if not bootstrap.ready or base is None:
@@ -2235,7 +2252,7 @@ def _run_project_init_steps(
     return _print_summary(ctx)
 
 
-def run_init(  # noqa: PLR0911 -- fail-fast coordinator; each return is a distinct lifecycle refusal
+def _run_init_unlocked(  # noqa: PLR0911 -- each return is a distinct lifecycle refusal
     args: argparse.Namespace,
     project_root: Path,
 ) -> int:
@@ -2292,3 +2309,13 @@ def run_init(  # noqa: PLR0911 -- fail-fast coordinator; each return is a distin
         guidance_plan,
         bootstrap_result,
     )
+
+
+def run_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Run Project initialization without racing host Docker mutations."""
+    if getattr(args, "check_only", False):
+        return _run_init_unlocked(args, project_root)
+    from booley.harness.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("project init"):
+        return _run_init_unlocked(args, project_root)

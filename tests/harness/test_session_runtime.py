@@ -945,6 +945,112 @@ class TestUp:
 
         assert not any(_argv_of(call)[:2] == ["docker", "rename"] for call in run.call_args_list)
 
+    def test_refresh_parking_detaches_running_session_from_egress(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        backup = f"{name}-pre-refresh"
+        initial = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                    "booley.license-profile": "none",
+                }
+            },
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
+        parked_state = {
+            "Config": initial["Config"],
+            "State": {"Running": False},
+            "NetworkSettings": {"Networks": {}},
+        }
+        with (
+            patch.object(
+                sr,
+                "_strict_refresh_container",
+                side_effect=[initial, None, parked_state],
+            ),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_relay_objects_exist", return_value=False),
+        ):
+            parked = sr.park_session_for_refresh(
+                workspace,
+                SimpleNamespace(license_profile=None, relay_image_id=None),
+            )
+
+        assert parked == sr.ParkedRefreshSession(
+            name, backup, "project-id", True, True
+        )
+        argvs = [_argv_of(call) for call in run.call_args_list]
+        assert ["docker", "stop", name] in argvs
+        assert ["docker", "rename", name, backup] in argvs
+        assert ["docker", "network", "disconnect", dc.EGRESS_NETWORK, backup] in argvs
+
+    def test_refresh_restore_reconnects_exact_parked_session(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        parked = sr.ParkedRefreshSession(
+            name,
+            f"{name}-pre-refresh",
+            "project-id",
+            True,
+            True,
+        )
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                }
+            },
+            "State": {"Running": False},
+            "NetworkSettings": {"Networks": {}},
+        }
+        with patch.object(
+            sr,
+            "_strict_refresh_container",
+            side_effect=[None, state],
+        ):
+            sr.restore_refresh_session(parked)
+
+        argvs = [_argv_of(call) for call in run.call_args_list]
+        assert [
+            "docker",
+            "network",
+            "connect",
+            dc.EGRESS_NETWORK,
+            parked.backup,
+        ] in argvs
+        assert ["docker", "rename", parked.backup, name] in argvs
+        assert ["docker", "start", name] in argvs
+
+    def test_refresh_licensed_snapshot_refuses_before_docker_mutation(self, wired):
+        workspace, run = wired
+        state = {
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                    "booley.license-profile": "vivado",
+                }
+            },
+            "State": {"Running": True},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
+        run.reset_mock()
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            pytest.raises(sr.SessionError, match="licensed relay topology"),
+        ):
+            sr.park_session_for_refresh(
+                workspace,
+                SimpleNamespace(license_profile="vivado", relay_image_id="sha256:relay"),
+            )
+
+        run.assert_not_called()
+
     def test_image_override_cannot_bypass_host_issued_spec(self, wired):
         workspace, _run = wired
         with pytest.raises(sr.SessionError, match="cannot bypass"):
@@ -1735,7 +1841,7 @@ class TestSessionRefresh:
         assert args.session_command == "refresh"
 
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import auto_doctor, booley, init_cmd
+        from booley.harness import auto_doctor, booley, session_refresh
         from booley.harness.booley import _build_parser
         from booley.harness.image_lifecycle import LifecycleResult, Status
 
@@ -1749,13 +1855,11 @@ class TestSessionRefresh:
                 side_effect=lambda: events.append("configure"),
                 create=True,
             ),
-            patch.object(sr, "conflicting_vscode_session", return_value=None),
             patch.object(
-                init_cmd,
-                "refresh_session_image",
+                session_refresh,
+                "refresh",
                 side_effect=lambda *_args, **_kwargs: events.append("reconcile") or result,
             ),
-            patch.object(booley, "_replace_refreshed_session"),
             patch.object(booley, "_report_session_health"),
             patch.object(auto_doctor, "due_reason", return_value=None),
         ):
@@ -1798,13 +1902,13 @@ class TestSessionRefresh:
         ]
 
     def test_refresh_refuses_active_vscode_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import booley, init_cmd
+        from booley.harness import booley, session_refresh
         from booley.harness.booley import _build_parser
 
         args = _build_parser().parse_args(["session", "refresh"])
         with (
             patch.object(sr, "conflicting_vscode_session", return_value="vscode-owned"),
-            patch.object(init_cmd, "refresh_session_image") as refresh,
+            patch.object(session_refresh, "inspect_refreshable_session_image") as refresh,
         ):
             assert booley._cmd_session(args, tmp_path) == 2
 
@@ -1901,89 +2005,6 @@ class TestSessionRefresh:
         )
         with pytest.raises(RuntimeError, match="user-managed"):
             init_cmd.refresh_session_image(tmp_path)
-
-    def test_refresh_reissues_spec_before_rebuild_start(self, tmp_path: Path):
-        from booley.harness import booley, init_cmd
-        from booley.harness.booley import _build_parser
-        from booley.harness.image_lifecycle import LifecycleResult, Status
-
-        args = _build_parser().parse_args(["session", "refresh"])
-        events: list[str] = []
-        with (
-            patch.object(
-                init_cmd,
-                "refresh_session_image",
-                side_effect=lambda *_args, **_kwargs: (
-                    events.append("image")
-                    or LifecycleResult(
-                        "booley-sandbox",
-                        "sha256:fresh",
-                        Status.CHANGED,
-                        payload_fingerprint="payload-123",
-                    )
-                ),
-            ),
-            patch.object(
-                init_cmd,
-                "reissue_session_spec",
-                side_effect=lambda *_args, **_kwargs: events.append("reissue"),
-            ),
-            patch.object(sr, "conflicting_vscode_session", return_value=None),
-            patch.object(
-                sr,
-                "up",
-                side_effect=lambda *_args, **kwargs: (
-                    events.append(
-                        "up:"
-                        f"{kwargs.get('rebuild')}:"
-                        f"{kwargs.get('expected_image_id')}:"
-                        f"{kwargs.get('expected_payload_fingerprint')}"
-                    )
-                    or "session"
-                ),
-            ),
-            patch.object(booley, "_report_session_health"),
-        ):
-            assert booley._cmd_session(args, tmp_path) == 0
-
-        assert events == ["image", "reissue", "up:True:sha256:fresh:payload-123"]
-
-    def test_refresh_failure_restores_prior_host_spec(self, tmp_path: Path):
-        from booley.harness import booley, init_cmd
-        from booley.harness.booley import _build_parser
-        from booley.harness.image_lifecycle import LifecycleResult, Status
-
-        args = _build_parser().parse_args(["session", "refresh"])
-        snapshot = object()
-        events: list[str] = []
-        result = LifecycleResult(
-            "booley-sandbox",
-            "sha256:fresh",
-            Status.CHANGED,
-            payload_fingerprint="payload-123",
-        )
-        with (
-            patch.object(init_cmd, "refresh_session_image", return_value=result),
-            patch.object(init_cmd, "capture_session_spec", return_value=snapshot),
-            patch.object(
-                init_cmd,
-                "reissue_session_spec",
-                side_effect=lambda *_args, **_kwargs: events.append("reissue"),
-            ),
-            patch.object(
-                init_cmd,
-                "restore_session_spec",
-                side_effect=lambda root, saved: events.append(
-                    f"restore:{root == tmp_path}:{saved is snapshot}"
-                ),
-            ),
-            patch.object(sr, "conflicting_vscode_session", return_value=None),
-            patch.object(sr, "up", side_effect=sr.SessionError("payload mismatch")),
-            patch.object(booley, "_report_session_health"),
-        ):
-            assert booley._cmd_session(args, tmp_path) == 2
-
-        assert events == ["reissue", "restore:True:True"]
 
     def test_spec_snapshot_restores_issuance_and_keeper(self, tmp_path: Path, monkeypatch):
         from booley.eda.provisioning import runtime_spec
