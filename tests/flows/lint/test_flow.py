@@ -22,7 +22,7 @@ from booley.flows.lint.flow import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.targets.target import TargetHandle
+from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
 from booley.targets.target import select_targets as canonical_select_targets
 
 
@@ -37,22 +37,19 @@ def _target_handle(
     """Build a selected Target value for layer-focused Lint tests."""
     root = Path.cwd() if project_root is None else Path(project_root)
     target_vlnv = vlnv or f"::{selector}:0"
-    handle = object.__new__(TargetHandle)
-    values = {
-        "identity": f"{target_vlnv}#{selector}",
-        "selector": selector,
-        "name": selector,
-        "vlnv": target_vlnv,
-        "core_file": root.resolve() / f"{selector}.core",
-        "flow": flow,
-        "eda_tool": eda_tool,
-        "drivable_by": ("lint",),
-        "project_root": root.resolve(),
-        "doctor_private": False,
-    }
-    for name, value in values.items():
-        object.__setattr__(handle, name, value)
-    return handle
+    return TargetHandle(
+        identity=f"{target_vlnv}#{selector}",
+        selector=selector,
+        name=selector,
+        vlnv=target_vlnv,
+        core_file=root.resolve() / f"{selector}.core",
+        flow=flow,
+        eda_tool=eda_tool,
+        drivable_by=("lint",),
+        project_root=root.resolve(),
+        doctor_private=False,
+        _factory_key=_HANDLE_FACTORY_KEY,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +104,7 @@ def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     st.save()
     monkeypatch.setenv("BOOLEY_SLUG", "test-lint")
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(sf))
+    monkeypatch.chdir(tmp_path)
     return sf
 
 
@@ -971,7 +969,11 @@ class TestErrorVsFailTaxonomy:
         exit_code, _summary = _errored_verdict([design, broken])
         assert exit_code == EXIT_ERROR
 
-    def test_timeout_is_an_eda_tool_error_not_a_design_failure(self, tmp_path: Path):
+    def test_timeout_is_an_eda_tool_error_not_a_design_failure(
+        self,
+        tmp_path: Path,
+        state_file: Path,
+    ):
         """A timeout reached no verdict about the RTL at all."""
         with (
             patch.object(LintFlow, "_execute") as mock_exec,
@@ -985,7 +987,7 @@ class TestErrorVsFailTaxonomy:
                 returncode=-1, stdout="", stderr="", timed_out=True, duration_s=99.0
             )
             flow = LintFlow()
-            flow.parse_args(["--target", "lite"])
+            flow.parse_args(["--target", "lite", "--work-dir", str(tmp_path)])
             flow.read_state()
             result = flow._run()
         assert result.exit_code == EXIT_ERROR

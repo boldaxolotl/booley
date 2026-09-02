@@ -40,7 +40,7 @@ from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
-from booley.targets.target import TargetHandle, select_target, select_targets
+from booley.targets.target import TargetHandle, select_targets
 
 from .. import artifacts
 from ..base import BooleyFlow, SubprocessResult
@@ -60,9 +60,12 @@ from ..clock_timing import (
 from ..implementation_comparison import (
     ImplementationComparisonError,
     TargetPairPlan,
-    target_pair_for_candidate,
-    target_pair_plans_for_candidates,
+    baseline_execution_context,
+    candidate_execution_refs,
+    resolve_target_execution_ref,
+    selected_target_handle,
     target_pair_plans_for_handles,
+    target_plan_for_handle,
 )
 from ..implementation_publication import (
     ImplementationProgress,
@@ -1135,30 +1138,29 @@ class AsicSynthesizeFlow(BooleyFlow):
 
         build_root = work_root_for(self.args.work_dir, self.name, target)
         shutil.rmtree(build_root, ignore_errors=True)
-        return fusesoc_registry.resolve_target_handle(
-            self._target_handle(target),
-            build_root=build_root,
-        )
+        handle = self._target_handle(target)
+        ref = getattr(self, "_target_execution_refs", {}).get(target)
+        if ref is not None:
+            return resolve_target_execution_ref(handle, ref, build_root=build_root)
+        return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
 
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle, reselecting only in a baseline checkout."""
-        root = Path(self.args.work_dir).resolve()
-        selected = getattr(self, "_target_handles", {}).get(target)
-        if selected is not None and selected.project_root == root:
-            return selected
-        return select_target(root, target, for_flow="synth")
+        return selected_target_handle(
+            getattr(self, "_target_handles", {}),
+            self.args.work_dir,
+            target,
+            flow="synth",
+        )
 
     def _target_plan(self, target: str) -> TargetPairPlan:
         """Look up the total pair plan by canonical candidate identity."""
-        plans = getattr(self, "_target_pairs", ())
-        if plans and all(isinstance(plan, TargetPairPlan) for plan in plans):
-            handle = self._target_handle(target)
-            return target_pair_for_candidate(plans, handle.identity)
-        if getattr(self, "_target_contract", None) is not None:
-            raise ImplementationComparisonError(
-                f"sealed synthesis has no Target pair plan for {target!r}"
-            )
-        return target_pair_plans_for_candidates({}, "synthesis_ok_", (target,), flow="synth")[0]
+        return target_plan_for_handle(
+            getattr(self, "_target_pairs", ()),
+            self._target_handle(target),
+            flow="synth",
+            sealed=getattr(self, "_target_contract", None) is not None,
+        )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
         """Freeze the normalized recipe and source evidence for one Target."""
@@ -1720,7 +1722,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             return f"synth: {exc}"
         return None
 
-    def _apply_ticket_baseline(self, targets: list[str]) -> str | None:
+    def _apply_ticket_baseline(self, targets: Sequence[TargetHandle]) -> str | None:
         """Default relative ticket criteria to their immutable baseline SHA."""
         baseline, full_sha, error = resolve_ticket_baseline(
             self.state.criteria,
@@ -1778,8 +1780,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         return result
 
     def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> McpToolResult | None:
-        targets = [handle.selector for handle in handles]
-        baseline_error = self._apply_ticket_baseline(targets)
+        baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
             self._target_pairs = target_pair_plans_for_handles(
@@ -1789,6 +1790,7 @@ class AsicSynthesizeFlow(BooleyFlow):
                 contract=getattr(self, "_target_contract", None),
                 flow="synth",
             )
+            self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
         except ImplementationComparisonError as exc:
             comparison_error = f"synth: {exc}"
         if baseline_error is not None or comparison_error is not None:
@@ -1920,7 +1922,10 @@ class AsicSynthesizeFlow(BooleyFlow):
                 self.args.work_dir = wt
                 self._project_root = project_root
                 current_handles = getattr(self, "_target_handles", {})
-                self._target_handles = self._baseline_handles(pairs, wt)
+                current_refs = getattr(self, "_target_execution_refs", {})
+                self._target_handles, self._target_execution_refs = baseline_execution_context(
+                    pairs, wt
+                )
                 if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
                     self._baseline_selfcompare_msg = _baseline_self_compare_warning(
                         project_root, wt
@@ -1929,6 +1934,7 @@ class AsicSynthesizeFlow(BooleyFlow):
                     result = self._execute_baseline_pairs(pairs, targets, project_root, short_sha)
                 finally:
                     self._target_handles = current_handles
+                    self._target_execution_refs = current_refs
                     self.args.work_dir = project_root
                     self._project_root = None
         except (BaselineWorktreeError, ImplementationComparisonError) as exc:
@@ -1937,19 +1943,6 @@ class AsicSynthesizeFlow(BooleyFlow):
                 report_text=f"synth: {exc}",
             ), None
         return result, short_sha
-
-    @staticmethod
-    def _baseline_handles(plans: Sequence[TargetPairPlan], root: Path) -> dict[str, TargetHandle]:
-        handles: dict[str, TargetHandle] = {}
-        for plan in plans:
-            handle = select_target(root, plan.baseline.selector, for_flow=plan.flow)
-            if handle.identity != plan.baseline.identity:
-                raise ImplementationComparisonError(
-                    f"baseline Target {plan.baseline.selector!r} resolves to "
-                    f"{handle.identity!r}, expected {plan.baseline.identity!r}"
-                )
-            handles[plan.baseline.selector] = handle
-        return handles
 
     def _execute_baseline_pairs(
         self,

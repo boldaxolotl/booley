@@ -9,7 +9,7 @@ produces EDAM after FuseSoC setup.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from pathlib import Path
 
 from booley.fusesoc import fusesoc_registry
@@ -48,12 +48,12 @@ def flow_can_drive(flow: str, ref: TargetRef | TargetHandle) -> bool:
     return False
 
 
-@dataclass(frozen=True, init=False)
+_HANDLE_FACTORY_KEY = object()
+
+
+@dataclass(frozen=True)
 class TargetHandle:
     """Stable Target identity plus the selector accepted by Booley Flows."""
-
-    def __new__(cls) -> TargetHandle:
-        raise TypeError("TargetHandle values are created by select_target(s)")
 
     identity: str
     selector: str
@@ -65,6 +65,11 @@ class TargetHandle:
     drivable_by: tuple[str, ...]
     project_root: Path
     doctor_private: bool
+    _factory_key: InitVar[object]
+
+    def __post_init__(self, _factory_key: object) -> None:
+        if _factory_key is not _HANDLE_FACTORY_KEY:
+            raise TypeError("TargetHandle values are created by select_target(s)")
 
 
 @dataclass(frozen=True)
@@ -126,22 +131,19 @@ def _handle_from_ref(
             f"Choose a compatible Target with `booley targets --for-flow {for_flow}`."
         )
     bucket = _selection_bucket(project_root, ref)
-    values: dict[str, object] = {
-        "identity": f"{ref.vlnv}#{ref.name}",
-        "selector": fusesoc_registry.minimal_selector(ref, bucket),
-        "name": ref.name,
-        "vlnv": ref.vlnv,
-        "core_file": ref.core_file.resolve(),
-        "flow": ref.flow,
-        "eda_tool": ref.eda_tool,
-        "drivable_by": tuple(flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, ref)),
-        "project_root": project_root.resolve(),
-        "doctor_private": ref.doctor_selftest,
-    }
-    handle = object.__new__(TargetHandle)
-    for name, value in values.items():
-        object.__setattr__(handle, name, value)
-    return handle
+    return TargetHandle(
+        identity=f"{ref.vlnv}#{ref.name}",
+        selector=fusesoc_registry.minimal_selector(ref, bucket),
+        name=ref.name,
+        vlnv=ref.vlnv,
+        core_file=ref.core_file.resolve(),
+        flow=ref.flow,
+        eda_tool=ref.eda_tool,
+        drivable_by=tuple(flow for flow in TARGET_AWARE_FLOWS if flow_can_drive(flow, ref)),
+        project_root=project_root.resolve(),
+        doctor_private=ref.doctor_selftest,
+        _factory_key=_HANDLE_FACTORY_KEY,
+    )
 
 
 def select_target(

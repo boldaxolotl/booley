@@ -25,7 +25,7 @@ from typing import Any, ClassVar, cast
 
 from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
-from booley.core.boundary import BoundaryError, as_str_list
+from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
@@ -532,8 +532,7 @@ def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("pre_run_commands")
-            if isinstance(val, list):
-                return [str(cmd) for cmd in val]
+            return as_str_list(val)
     except ImportError:
         pass
     return []
@@ -557,9 +556,9 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("max_rundir_bytes")
-            if isinstance(val, (str, int, float)):
-                return int(val)
-    except (ImportError, TypeError, ValueError):
+            configured = as_int(val, _DEFAULT_MAX_RUNDIR_BYTES)
+            return configured if configured is not None else _DEFAULT_MAX_RUNDIR_BYTES
+    except ImportError:
         pass
     return _DEFAULT_MAX_RUNDIR_BYTES
 
@@ -580,9 +579,9 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("timeout_ms")
-            if isinstance(val, (str, int, float)):
-                return max(1, int(val))
-    except (ImportError, TypeError, ValueError):
+            configured = as_int(val, _DEFAULT_TIMEOUT_MS)
+            return max(1, configured if configured is not None else _DEFAULT_TIMEOUT_MS)
+    except ImportError:
         pass
     return _DEFAULT_TIMEOUT_MS
 
@@ -604,9 +603,12 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("sim_time_grace_s")
-            if isinstance(val, (str, int, float)):
-                return max(0.0, float(val))
-    except (ImportError, TypeError, ValueError):
+            configured = as_float(val, DEFAULT_SIM_TIME_GRACE_S)
+            return max(
+                0.0,
+                configured if configured is not None else DEFAULT_SIM_TIME_GRACE_S,
+            )
+    except ImportError:
         pass
     return DEFAULT_SIM_TIME_GRACE_S
 

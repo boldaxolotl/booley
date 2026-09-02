@@ -140,57 +140,18 @@ jobs:
           trap - EXIT
           test ! -e "${probe}"
 
-      - name: Prove lint entry module is included
-        shell: bash
-        run: |
-          target=src/booley/flows/lint/flow.py
-          backup="${RUNNER_TEMP}/lint-flow.py"
-          cp "${target}" "${backup}"
-          trap 'mv "${backup}" "${target}"' EXIT
-          echo '__pyright_include_probe: int = "must fail"' >> "${target}"
-          if pyright --outputjson > "${RUNNER_TEMP}/pyright-lint-include-probe.json"; then
-            echo "Pyright accepted the deliberate lint include error" >&2
-            exit 1
-          fi
-          grep -Fq "flows/lint/flow.py" "${RUNNER_TEMP}/pyright-lint-include-probe.json"
-          cp "${backup}" "${target}"
-          trap - EXIT
-          git diff --exit-code -- "${target}"
-
-      - name: Prove Simulation entry modules are included
+      - name: Prove exact Flow modules are included
         shell: bash
         run: |
           probe_file() (
             target=$1
-            backup=$(mktemp "${RUNNER_TEMP}/pyright-probe.XXXXXX")
-            cp "${target}" "${backup}"
-            trap 'cp "${backup}" "${target}"' EXIT
-            echo '__pyright_include_probe: int = "must fail"' >> "${target}"
-            if pyright --outputjson > "${RUNNER_TEMP}/pyright-sim-include-probe.json"; then
-              echo "Pyright accepted the deliberate Simulation include error in ${target}" >&2
-              exit 1
-            fi
-            grep -Fq "${target}" "${RUNNER_TEMP}/pyright-sim-include-probe.json"
-            cp "${backup}" "${target}"
-            trap - EXIT
-            git diff --exit-code -- "${target}"
-          )
-          for target in src/booley/flows/sim/build.py src/booley/flows/sim/flow.py; do
-            probe_file "${target}"
-          done
-
-      - name: Prove implementation Flow entries are included
-        shell: bash
-        run: |
-          probe_file() (
-            target=$1
-            label=$2
+            label=$(echo "${target}" | tr '/.' '__')
             backup=$(mktemp "${RUNNER_TEMP}/pyright-probe.XXXXXX")
             cp "${target}" "${backup}"
             trap 'cp "${backup}" "${target}"' EXIT
             echo '__pyright_include_probe: int = "must fail"' >> "${target}"
             if pyright --outputjson > "${RUNNER_TEMP}/pyright-${label}-include-probe.json"; then
-              echo "Pyright accepted the deliberate ${label} include error" >&2
+              echo "Pyright accepted the deliberate include error in ${target}" >&2
               exit 1
             fi
             grep -Fq "${target}" "${RUNNER_TEMP}/pyright-${label}-include-probe.json"
@@ -199,14 +160,16 @@ jobs:
             git diff --exit-code -- "${target}"
           )
           for target in \
+            src/booley/flows/lint/flow.py \
+            src/booley/flows/sim/build.py \
+            src/booley/flows/sim/flow.py \
             src/booley/flows/synth/flow.py \
             src/booley/flows/fpga/flow.py \
             src/booley/flows/implementation_comparison.py \
             src/booley/flows/implementation_report.py \
             src/booley/flows/synth/implementation_report.py \
             src/booley/flows/fpga/implementation_report.py; do
-            label=$(echo "${target}" | tr '/.' '__')
-            probe_file "${target}" "${label}"
+            probe_file "${target}"
           done
 
       - name: Pyright strict boundary checks

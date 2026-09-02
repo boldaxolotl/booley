@@ -130,6 +130,31 @@ def _entry(surface: target_surface.TargetSurface, selector: str) -> target_surfa
 
 
 class TestTargetInterface:
+    def test_all_target_aware_flows_share_canonical_selection_contract(
+        self,
+        project: Path,
+    ) -> None:
+        cases = {
+            "lint": ("acme:ip:alpha:1.0#lint", "alpha#lint"),
+            "sim": ("acme:ip:alpha:1.0#sim", "sim"),
+            "synth": ("acme:ip:alpha:1.0#synth", "synth"),
+            "fpga": ("acme:ip:beta:1.0#fpga", "fpga"),
+        }
+
+        selected = {
+            flow: select_target(project, authored, for_flow=flow)
+            for flow, (authored, _expected) in cases.items()
+        }
+
+        assert {flow: handle.selector for flow, handle in selected.items()} == {
+            flow: expected for flow, (_authored, expected) in cases.items()
+        }
+        assert all(handle.project_root == project.resolve() for handle in selected.values())
+        with pytest.raises(fusesoc_registry.AmbiguousTargetError):
+            select_target(project, "lint", for_flow="lint")
+        with pytest.raises(fusesoc_registry.IncompatibleTargetError):
+            select_target(project, "sim", for_flow="lint")
+
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
         project_dir = tmp_path / ".booley_project"
         cores = project_dir / "cores"
