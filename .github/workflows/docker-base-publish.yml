@@ -74,7 +74,7 @@ jobs:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
         run: |
           python .github/scripts/docker_base_contract.py --repo . \
-            --resolver shadow --resolve-image "${BASE_IMAGE}"
+            --resolver remote --resolve-image "${BASE_IMAGE}"
           docker run --rm "${BASE_IMAGE}" python -c \
             'import importlib.util; assert importlib.util.find_spec("booley") is None'
           docker run --rm "${BASE_IMAGE}" sh -c \

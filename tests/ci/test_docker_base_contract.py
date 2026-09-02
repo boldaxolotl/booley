@@ -484,12 +484,12 @@ def test_image_resolution_shadow_returns_matching_immutable_digest(monkeypatch) 
         ".github/workflows/docker-base-publish.yml",
     ],
 )
-def test_runtime_base_callers_use_shadow_resolver(workflow_path: str) -> None:
+def test_runtime_base_callers_use_remote_resolver(workflow_path: str) -> None:
     workflow = Path(workflow_path).read_text(encoding="utf-8")
     resolver_calls = [line for line in workflow.splitlines() if "--resolve-image" in line]
 
     assert resolver_calls, workflow_path
-    assert "--resolver shadow" in workflow, workflow_path
+    assert "--resolver remote" in workflow, workflow_path
 
 
 @pytest.mark.parametrize(

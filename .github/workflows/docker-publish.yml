@@ -73,7 +73,7 @@ jobs:
           BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
         run: >-
           python .github/scripts/docker_base_contract.py --repo .
-          --resolver shadow --resolve-image "${BASE_REF}"
+          --resolver remote --resolve-image "${BASE_REF}"
           --github-output "${GITHUB_OUTPUT}"
 
       - id: build
