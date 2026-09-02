@@ -32,10 +32,10 @@ import hashlib
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from booley.harness import colors
 from booley.harness.devcontainer import devcontainer_path
 from booley.harness.doctor_waivers import WAIVER_FILENAME
 from booley.runtime import runtime_context
@@ -48,6 +48,14 @@ STAMP_FILENAME = "doctor_stamp.json"
 # the cadence at which sandbox images and agent CLIs realistically drift.
 MAX_AGE_DAYS = 7
 _VERSION_WARNING_SEPARATOR = "=" * 72
+
+
+@dataclass(frozen=True)
+class StampAdvisory:
+    """Plain stamp guidance plus its user-action semantics."""
+
+    message: str
+    requires_action: bool = False
 
 
 def stamp_path(project_dir: Path) -> Path:
@@ -126,26 +134,24 @@ def _version_drift_message(stamp: dict) -> str | None:
     if stamped_version == booley.__version__:
         return None
     previous = str(stamped_version) if stamped_version else "unknown"
-    return colors.bold_amber(
-        "\n".join(
-            (
-                _VERSION_WARNING_SEPARATOR,
-                f"WARNING: Booley version changed from {previous} to {booley.__version__}.",
-                "ACTION REQUIRED: Invoke /booley-heal",
-                _VERSION_WARNING_SEPARATOR,
-            )
+    return "\n".join(
+        (
+            _VERSION_WARNING_SEPARATOR,
+            f"WARNING: Booley version changed from {previous} to {booley.__version__}.",
+            "ACTION REQUIRED: Invoke /booley-heal",
+            _VERSION_WARNING_SEPARATOR,
         )
     )
 
 
-def check_stamp(
+def check_stamp_advisory(
     project_dir: Path,
     project_root: Path,
     *,
     max_age_days: int = MAX_AGE_DAYS,
     now: datetime | None = None,
-) -> str | None:
-    """Advisory nag, or None when doctor's blessing is current.
+) -> StampAdvisory | None:
+    """Plain advisory metadata, or None when doctor's blessing is current.
 
     Conditions are evaluated strongest first: a missing/corrupt stamp, an
     unreadable timestamp, package-version drift, config drift, then age beyond
@@ -153,7 +159,7 @@ def check_stamp(
     """
     stamp = load_stamp(project_dir)
     if stamp is None:
-        return (
+        return StampAdvisory(
             "no warning-free `booley doctor` run is stamped -- Doctor records "
             "freshness only after zero FAILs and zero active WARNs; resolve or "
             "waive the warnings, then re-run `booley doctor`"
@@ -163,28 +169,52 @@ def check_stamp(
         passed_at = parse_timestamp(str(stamp.get("passed_at")))
     except ValueError:
         # An unparsable timestamp is as good as no stamp.
-        return "the recorded `booley doctor` stamp is unreadable -- re-run `booley doctor`"
+        return StampAdvisory(
+            "the recorded `booley doctor` stamp is unreadable -- re-run `booley doctor`"
+        )
     passed_on = format_human_date(passed_at)
 
     if version_message := _version_drift_message(stamp):
-        return version_message
+        return StampAdvisory(version_message, requires_action=True)
 
     if stamp.get("fingerprint") != compute_fingerprint(project_dir, project_root):
-        return (
+        return StampAdvisory(
             f"Doctor config or devcontainer.json changed since the last clean "
             f"`booley doctor` run ({passed_on}) -- re-run `booley doctor`"
         )
 
     age_days = ((now or datetime.now(tz=UTC)) - passed_at).days
     if age_days > max_age_days:
-        return (
+        return StampAdvisory(
             f"last clean `booley doctor` run was {age_days} days ago "
             f"({passed_on}) -- re-run `booley doctor`"
         )
     return None
 
 
-def warn_if_stale(project_root: Path, emit: Callable[[str], None]) -> None:
+def check_stamp(
+    project_dir: Path,
+    project_root: Path,
+    *,
+    max_age_days: int = MAX_AGE_DAYS,
+    now: datetime | None = None,
+) -> str | None:
+    """Plain advisory message, or None when doctor's blessing is current."""
+    advisory = check_stamp_advisory(
+        project_dir,
+        project_root,
+        max_age_days=max_age_days,
+        now=now,
+    )
+    return advisory.message if advisory else None
+
+
+def warn_if_stale(
+    project_root: Path,
+    emit: Callable[[str], None],
+    *,
+    emphasize_action: Callable[[str], str] | None = None,
+) -> None:
     """Run the stamp check and hand any nag to *emit*; never raises.
 
     The one-call entry point for session start and the ticket sweep: the
@@ -192,8 +222,11 @@ def warn_if_stale(project_root: Path, emit: Callable[[str], None]) -> None:
     silently skips the check rather than blocking real work.
     """
     try:
-        message = check_stamp(resolve_project_dir(project_root), project_root)
+        advisory = check_stamp_advisory(resolve_project_dir(project_root), project_root)
     except Exception:  # noqa: BLE001 — advisory by contract; never block a session or sweep on the stamp
         return
-    if message:
+    if advisory:
+        message = advisory.message
+        if advisory.requires_action and emphasize_action:
+            message = emphasize_action(message)
         emit(message)

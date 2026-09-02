@@ -238,7 +238,7 @@ class TestAdvisorySendOff:
 
     def test_a_clean_doctor_stamp_replaces_the_nag(self, project, capsys, monkeypatch):
         _write(project, CONFIGURED_TOML)
-        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp", lambda *a, **k: None)
+        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", lambda *a, **k: None)
 
         init_cmd._step_advisories(InitContext(project_root=project))
 
@@ -251,7 +251,7 @@ class TestAdvisorySendOff:
         def _boom(*a, **k):
             raise OSError("state dir is gone")
 
-        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp", _boom)
+        monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", _boom)
         ctx = InitContext(project_root=project)
 
         init_cmd._step_advisories(ctx)
