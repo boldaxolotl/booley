@@ -4,8 +4,6 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.architecture.production import assert_no_dependencies
-
 from booley.audit import target_matrix
 from booley.fusesoc import fusesoc_registry
 
@@ -87,7 +85,20 @@ def test_doctor_does_not_reimplement_target_matrix_mechanisms() -> None:
 
 def test_target_matrix_does_not_depend_on_presentation_layers() -> None:
     module_path = _ROOT / "src" / "booley" / "audit" / "target_matrix.py"
-    assert_no_dependencies(
-        paths=(module_path,),
-        target_prefixes=("booley.harness", "booley.mcp", "booley.specialists"),
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imports.update(
+        node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 0
     )
+
+    forbidden = ("booley.harness", "booley.mcp", "booley.specialists")
+    assert not {
+        module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
+    }

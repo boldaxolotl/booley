@@ -70,8 +70,21 @@ PR 2 tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp`, `booley.ticket_board` | Forbid | Shared Target/Criteria policy is independent of presentation, agent exposure, and Ticket Board persistence. |
 | D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
 | D9 | Direct module children of `booley.flows` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
-| D10 | Each owned adapter beneath a built-in Flow's `backends` package | Sibling adapter prefixes under the same `backends` package | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
+| D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
+
+The D10 adapter selector sets are exhaustive for this rule:
+
+- S1, Cocotb: exact modules `booley.flows.sim.backends.cocotb` and
+  `booley.flows.sim.backends.cocotb_results`.
+- S2, Icarus: exact module `booley.flows.sim.backends.icarus`.
+- S3, Verilator: exact module `booley.flows.sim.backends.verilator`.
+- S4, OpenROAD: prefix `booley.flows.synth.backends.openroad`.
+- S5, Yosys: prefix `booley.flows.synth.backends.yosys`.
+
+For each S1-S3 source, D10 forbids targets selected by the other S1-S3 sets. For
+each S4-S5 source, it forbids the other S4-S5 set. Shared backend policy and the
+experimental simulator readers are unclassified, not silently included.
 
 All other source edges are unclassified pending design work. Their presence is not
 an architectural endorsement, and the checker must never generate permissions from

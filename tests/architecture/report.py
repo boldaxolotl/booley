@@ -16,7 +16,7 @@ from import_graph import (
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-root", type=Path, default=Path("src/booley"))
-    parser.add_argument("--top", type=int, default=20)
+    parser.add_argument("--top", type=_positive_int, default=20)
     args = parser.parse_args()
     dependencies = analyze_imports(args.source_root)
     unique_edges = {(item.source, item.target) for item in dependencies}
@@ -37,6 +37,13 @@ def main() -> None:
     print(f"\nTop {args.top} file fan-out:")
     for item in fan_out[: args.top]:
         print(f"- {item.source}: {item.count}")
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 if __name__ == "__main__":

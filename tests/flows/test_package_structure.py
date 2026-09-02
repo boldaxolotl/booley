@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-
-from tests.architecture.production import production_dependencies
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FLOWS_ROOT = REPO_ROOT / "src" / "booley" / "flows"
@@ -61,12 +60,24 @@ def test_flow_implementations_are_owned_by_their_flow_packages() -> None:
 
 
 def _imported_modules(source_file: Path) -> set[str]:
-    resolved = source_file.resolve()
-    return {
-        dependency.target
-        for dependency in production_dependencies()
-        if dependency.path == resolved
-    }
+    tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
+    package = source_file.relative_to(REPO_ROOT / "src").parent.parts
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                imported.add(node.module)
+            elif node.level:
+                keep = len(package) - (node.level - 1)
+                base = (*package[:keep], *(node.module or "").split("."))
+                module = ".".join(part for part in base if part)
+                if node.module:
+                    imported.add(module)
+                else:
+                    imported.update(f"{module}.{alias.name}" for alias in node.names)
+        elif isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+    return imported
 
 
 def test_flow_packages_do_not_import_one_another() -> None:

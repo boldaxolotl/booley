@@ -1,9 +1,8 @@
 """Focused regression tests for containerized EDA environment audits."""
 
+import ast
 import subprocess
 from pathlib import Path
-
-from tests.architecture.production import assert_no_dependencies
 
 from booley.audit import eda_environment, host_environment
 
@@ -59,10 +58,23 @@ def test_failed_riscv_probe_has_one_stable_rebuild_fix() -> None:
 
 def test_eda_environment_does_not_depend_on_presentation_layers() -> None:
     module_path = _ROOT / "src" / "booley" / "audit" / "eda_environment.py"
-    assert_no_dependencies(
-        paths=(module_path,),
-        target_prefixes=("booley.harness", "booley.mcp", "booley.specialists"),
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imports.update(
+        node.module or ""
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 0
     )
+
+    forbidden = ("booley.harness", "booley.mcp", "booley.specialists")
+    assert not {
+        module for module in imports if any(module.startswith(prefix) for prefix in forbidden)
+    }
 
 
 def test_doctor_does_not_reimplement_riscv_probe_inventory() -> None:
