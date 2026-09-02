@@ -45,7 +45,7 @@ def compressed_layers(
 ) -> dict[str, int]:
     """Return unique compressed layer sizes from verbose manifest JSON."""
     entry = _manifest_entry(document, os_name, architecture)
-    manifest = entry.get("SchemaV2Manifest", entry)
+    manifest = entry.get("SchemaV2Manifest", entry.get("OCIManifest", entry))
     layers = require_list(
         require_dict(manifest, field="image manifest").get("layers"),
         field="image manifest layers",
