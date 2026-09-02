@@ -55,6 +55,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
         "FROM docker.io/openroad/ubuntu24.04@sha256:"
         "c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a"
     ) in base
+    assert "ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19" in base
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
     assert "COPY crates/bwave/" not in base
@@ -68,7 +69,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.252"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.258"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -145,6 +146,18 @@ def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
+    assert (
+        'readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:'
+        '9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f"' in evidence_script
+    )
+    assert (
+        'readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:'
+        'c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"' in evidence_script
+    )
+    assert (
+        'readonly DOCKER_CLI="docker:29.7.2-cli@sha256:'
+        '3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"' in evidence_script
+    )
     assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
     assert archive_script.count(":py313") >= 3
     assert '"Python 3.13.15"' in archive_script
@@ -175,6 +188,10 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
 def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> None:
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
+    assert (
+        "FROM docker:29.7.2-cli@sha256:"
+        "3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
+    ) in reaper
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
 
@@ -186,11 +203,11 @@ def test_sidecars_pin_python_3_14_7_without_changing_distributions() -> None:
 
     assert (
         "FROM python:3.14.7-slim-bookworm@sha256:"
-        "416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63" in egress
+        "9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f" in egress
     )
     alpine = (
         "FROM python:3.14.7-alpine3.24@sha256:"
-        "05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc"
+        "c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"
     )
     assert alpine in flexnet
     assert alpine in reaper
@@ -220,8 +237,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.252"' in lock
-    assert '"@openai/codex": "0.151.0"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.258"' in lock
+    assert '"@openai/codex": "0.152.1"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -230,9 +247,9 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.252"
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.258"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.151.0-linux-x64"
+        "npm:@openai/codex@0.152.1-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]

@@ -4,9 +4,9 @@
 set -euo pipefail
 
 readonly EVIDENCE_DIR="${RUNNER_TEMP}/docker-build-evidence"
-readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63"
-readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc"
-readonly DOCKER_CLI="docker:29.7.2-cli@sha256:000bb62ff495f986c9f5578eb67cc2cb98b91138eda81d7762d5371eb8a497fe"
+readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f"
+readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"
+readonly DOCKER_CLI="docker:29.7.2-cli@sha256:3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
 readonly DOCKER_DIND="docker:29.7.2-dind@sha256:3ef33f2e220b79ed3ef3b99d81746f06f306cd6340e2cb7331d17ae996e74cb6"
 
 mkdir -p "${EVIDENCE_DIR}"

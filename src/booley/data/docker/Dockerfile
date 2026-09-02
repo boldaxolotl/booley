@@ -96,7 +96,7 @@ RUN echo '#!/bin/bash\nexec python3 -m booley.bwave.cli "$@"' \
 # discovery, its duplicate bundle remains absent, and the native system CLI
 # plus invariant integrations remain available alongside the application.
 RUN test -x "$(command -v claude)" \
-    && test "$(claude --version | awk '{print $1}')" = "2.1.252" \
+    && test "$(claude --version | awk '{print $1}')" = "2.1.258" \
     && python -c 'import booley, cocotb, edalize.tools.verible, fusesoc; print(booley.__file__)'
 
 
