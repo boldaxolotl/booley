@@ -21,3 +21,13 @@ def test_integrated_development_environment_features_lead_with_one_window():
 
 def test_install_alternative_is_not_padded():
     assert "pipx install booley-rtl # or: pip install booley-rtl" in README
+
+
+def test_try_the_demo_leads_with_the_demo_readme_link():
+    section = README.split("### Level 2: Try the demo yourself", 1)[1].split("\n### ", 1)[0]
+
+    assert section.strip() == (
+        "**[Follow the demo repository's README]"
+        "(https://github.com/boldaxolotl/booley-prj-picorv32#readme)** "
+        "to install and try the demo."
+    )

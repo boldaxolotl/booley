@@ -84,16 +84,7 @@ The project's author recorded all four videos, then replaced the original narrat
 
 ### Level 2: Try the demo yourself
 
-**The demo IP** is [picorv32](https://github.com/YosysHQ/picorv32), Claire Wolf's open-source RISC-V CPU core. It is a small, area-optimized design with a straightforward multi-cycle architecture. That makes the RTL easy to understand and keeps lint, simulation, and synthesis runs fast, while still exercising Booley on a real project rather than a toy example.
-
-First, complete the [installation](#installation) above.
-
-Then follow the [demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme) to try it yourself.
-Start in **Interactive Mode**: ask the agent to explain the design, inspect a
-Target, and run a lint or simulation Flow while you guide it. Once that feels
-familiar, try **Ticket Mode** as the optional autonomous workflow by creating a
-Ticket against the live design. The repository intentionally contains no
-pre-made Tickets.
+**[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to install and try the demo.
 
 ### Level 3: Use it on your own project
 

@@ -39,6 +39,22 @@ def test_feedback_routes_private_project_bugs_through_verified_synthetic_reprodu
         assert required in reproducer
 
 
+def test_feedback_submission_uses_cli_or_a_human_browser_handoff():
+    skill = _skill_text("booley-feedback")
+
+    for required in (
+        "GitHub CLI (`gh issue create`)",
+        "missing or not authenticated",
+        "prefilled GitHub issue",
+        "`Start-Process` on Windows or `xdg-open` on Linux",
+        "ask the user to review it and click **Submit new issue**",
+        "The browser fallback is a human hand-off",
+        "Do not use ChatGPT browser tools",
+        "browser automation",
+    ):
+        assert required in skill
+
+
 def test_triage_leads_with_explicit_blockers_and_evidence_links():
     blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
 
