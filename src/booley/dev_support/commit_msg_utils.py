@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
+import sys
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -94,42 +95,13 @@ def _stealth_section(project_root: Path | None = None) -> dict:
     return section if isinstance(section, dict) else {}
 
 
-def _source_layout(root: Path) -> bool:
-    """Return whether *root* has Booley's distinctive source-tree layout."""
-    return (root / "src" / "booley" / "__init__.py").is_file()
-
-
-def _standalone_source_checkout(root: Path) -> bool:
-    """Classify source when a self-contained vendored hook has no package."""
-    pyproject = root / "pyproject.toml"
-    if not pyproject.is_file():
-        return False
-    try:
-        import tomllib
-
-        document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except ModuleNotFoundError:
-        return False
-    except (OSError, tomllib.TOMLDecodeError):
-        return _source_layout(root)
-
-    tool = document.get("tool", {})
-    booley = tool.get("booley", {}) if isinstance(tool, dict) else {}
-    if isinstance(booley, dict) and booley.get("source_checkout") is True:
-        return True
-    project = document.get("project", {})
-    legacy_identity = isinstance(project, dict) and project.get("name") == "booley-rtl"
-    return legacy_identity and _source_layout(root)
-
-
 def source_checkout_policy_owner(project_root: Path | None) -> bool:
     """Return whether an explicit policy owner lies inside Booley source.
 
     Project hooks are deliberately runnable as self-contained vendored scripts,
-    where importing :mod:`booley` is impossible.  The fallback mirrors the
-    tracked-marker and legacy-layout contract needed to disable stale hooks in
-    source checkouts; packaged callers retain the runtime classifier as the
-    single authoritative implementation.
+    where importing :mod:`booley` is impossible. Those installations vendor the
+    same runtime classifier flat beside this module, keeping one implementation
+    of the tracked-marker and legacy-layout contract.
     """
     if project_root is None:
         return False
@@ -137,7 +109,24 @@ def source_checkout_policy_owner(project_root: Path | None) -> bool:
     try:
         from booley.runtime.checkout_role import source_checkout_root
     except ImportError:
-        return any(_standalone_source_checkout(candidate) for candidate in (root, *root.parents))
+        try:
+            from checkout_role import source_checkout_root
+        except ImportError:
+            # A source-tree hook may be launched directly before the editable
+            # package is installed. Add its src/ parent and retry the canonical
+            # package import. If no classifier exists, preserve the old hook's
+            # behavior rather than guessing that the checkout is Booley source.
+            package_parent = Path(__file__).resolve().parents[2]
+            classifier = package_parent / "booley" / "runtime" / "checkout_role.py"
+            if not classifier.is_file():
+                return False
+            source_path = str(package_parent)
+            if source_path not in sys.path:
+                sys.path.insert(0, source_path)
+            try:
+                from booley.runtime.checkout_role import source_checkout_root
+            except ImportError:
+                return False
     return source_checkout_root(root) is not None
 
 

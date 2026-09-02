@@ -13,6 +13,11 @@ depending on a Git remote. Dogfood feedback remains available but stores its
 local state under Git's shared metadata directory instead of creating
 `.booley_project/`.
 
+An explicit `BOOLEY_PROJECT_DIR` that resolves outside the Source Checkout may
+select a separate Project while running Booley from source. This does not make
+the Source Checkout a Project; explicit starts and overrides that resolve
+inside it still fail closed.
+
 ## Considered options
 
 - Removing `booley` from the Stealth denylist was rejected because downstream

@@ -232,10 +232,13 @@ class TestMain:
             "[tool.booley]\nsource_checkout = true\n",
             encoding="utf-8",
         )
-        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
         support = Path(__file__).resolve().parents[2] / "src" / "booley" / "dev_support"
         for name in ("commit_msg_hook.py", "commit_msg_utils.py", "validate_commit_msg.py"):
             shutil.copy2(support / name, hooks / name)
+        package = support.parent
+        shutil.copy2(package / "runtime" / "checkout_role.py", hooks / "checkout_role.py")
+        shutil.copy2(package / "core" / "boundary.py", hooks / "boundary.py")
         message = root / "COMMIT_EDITMSG"
         original = "docs: explain Booley architecture\n"
         message.write_text(original, encoding="utf-8")
@@ -246,6 +249,7 @@ class TestMain:
             capture_output=True,
             text=True,
             check=False,
+            timeout=10,
         )
 
         assert result.returncode == 0, result.stderr

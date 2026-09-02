@@ -47,11 +47,6 @@ from booley.feedback.findings import (
 from booley.feedback.storage import feedback_storage_dir
 
 
-def _project_dir(project_root: Path) -> Path:
-    """Return Project feedback state or source-checkout dogfood state."""
-    return feedback_storage_dir(project_root)
-
-
 def add_subparser(sub: argparse._SubParsersAction) -> None:
     """Register ``booley feedback`` and its subcommands."""
     parser = sub.add_parser(
@@ -724,4 +719,4 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
             file=sys.stderr,
         )
         return 2
-    return handler(args, project_root, _project_dir(project_root))
+    return handler(args, project_root, feedback_storage_dir(project_root))

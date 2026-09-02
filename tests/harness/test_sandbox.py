@@ -72,6 +72,20 @@ class TestDockerRunnerBuildCmd:
         assert cmd[-2:] == ["echo", "hello"]
 
     @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
+    def test_project_name_from_selected_checkout_reaches_label(self, tmp_path: Path):
+        project_dir = tmp_path / ".booley_project"
+        project_dir.mkdir()
+        (project_dir / "booley.toml").write_text(
+            '[project]\nname = "configured-project"\n',
+            encoding="utf-8",
+        )
+        runner = self._make_runner(str(tmp_path))
+
+        cmd = runner._build_docker_cmd(["true"])
+
+        assert "booley.project=configured-project" in cmd
+
+    @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
     def test_security_hardening_flags(self):
         runner = self._make_runner()
         cmd = runner._build_docker_cmd(["echo", "hello"])

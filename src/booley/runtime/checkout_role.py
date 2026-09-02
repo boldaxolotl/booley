@@ -5,6 +5,12 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+try:
+    from booley.core.boundary import as_dict
+except ModuleNotFoundError:
+    # Project hooks vendor this stdlib-only module and boundary.py side by side.
+    from boundary import as_dict
+
 
 class SourceCheckoutProjectError(RuntimeError):
     """Raised when a Project-only operation targets Booley's own source."""
@@ -32,14 +38,14 @@ def is_booley_source_checkout(root: Path) -> bool:
     except (OSError, tomllib.TOMLDecodeError):
         return _source_layout(checkout)
 
-    tool = document.get("tool", {})
-    booley = tool.get("booley", {}) if isinstance(tool, dict) else {}
-    marker = booley.get("source_checkout") if isinstance(booley, dict) else None
+    tool = as_dict(document.get("tool"), default={}) or {}
+    booley = as_dict(tool.get("booley"), default={}) or {}
+    marker = booley.get("source_checkout")
     if marker is True:
         return True
 
-    project = document.get("project", {})
-    legacy_identity = isinstance(project, dict) and project.get("name") == "booley-rtl"
+    project = as_dict(document.get("project"), default={}) or {}
+    legacy_identity = project.get("name") == "booley-rtl"
     return legacy_identity and _source_layout(checkout)
 
 

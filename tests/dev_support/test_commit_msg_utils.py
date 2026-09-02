@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import builtins
 import re
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 from booley.dev_support.commit_msg_utils import (
@@ -216,6 +219,8 @@ class TestStealthEnabled:
         assert banned_phrases(root) == []
 
     def test_source_checkout_fallback_works_without_package_import(self, tmp_path):
+        from booley.runtime import checkout_role
+
         root = tmp_path / "source"
         root.mkdir()
         (root / "pyproject.toml").write_text(
@@ -223,11 +228,54 @@ class TestStealthEnabled:
             encoding="utf-8",
         )
 
-        with patch(
-            "builtins.__import__",
-            side_effect=_selective_import_error("booley.runtime.checkout_role"),
+        with (
+            patch.dict("sys.modules", {"checkout_role": checkout_role}),
+            patch(
+                "builtins.__import__",
+                side_effect=_selective_import_error("booley.runtime.checkout_role"),
+            ),
         ):
             assert source_checkout_policy_owner(root)
+
+    def test_source_tree_fallback_adds_package_parent(self):
+        """A directly launched source hook can recover the canonical classifier."""
+        source_root = Path(__file__).resolve().parents[2]
+        real_import = builtins.__import__
+        package_attempts = 0
+
+        def import_after_path_recovery(name, *args, **kwargs):
+            nonlocal package_attempts
+            if name == "booley.runtime.checkout_role":
+                package_attempts += 1
+                if package_attempts == 1:
+                    raise ModuleNotFoundError(name)
+            if name == "checkout_role":
+                raise ModuleNotFoundError(name)
+            return real_import(name, *args, **kwargs)
+
+        path_without_source = [
+            entry for entry in sys.path if Path(entry or ".").resolve() != source_root.resolve()
+        ]
+        with (
+            patch.object(sys, "path", path_without_source),
+            patch("builtins.__import__", side_effect=import_after_path_recovery),
+        ):
+            assert source_checkout_policy_owner(source_root)
+
+        assert package_attempts == 2
+
+    def test_source_tree_fallback_is_fail_closed_when_classifier_cannot_load(self):
+        """An existing classifier that cannot import never guesses source ownership."""
+        source_root = Path(__file__).resolve().parents[2]
+        real_import = builtins.__import__
+
+        def block_classifiers(name, *args, **kwargs):
+            if name in {"booley.runtime.checkout_role", "checkout_role"}:
+                raise ModuleNotFoundError(name)
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=block_classifiers):
+            assert not source_checkout_policy_owner(source_root)
 
     def test_invalid_enabled_type_logs_and_uses_default(self, tmp_path, caplog):
         from booley.dev_support.commit_msg_utils import stealth_enabled

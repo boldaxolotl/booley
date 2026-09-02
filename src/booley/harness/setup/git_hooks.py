@@ -170,6 +170,12 @@ _PROJECT_HOOK_SCRIPTS = (
     "pre_push_hook.py",
 )
 
+_PROJECT_HOOK_HELPERS = {
+    "boundary.py": Path("core") / "boundary.py",
+    "checkout_role.py": Path("runtime") / "checkout_role.py",
+    "run_command.py": Path("core") / "run_command.py",
+}
+
 
 def _build_hook_delegator_body(
     project_root: Path,
@@ -333,15 +339,11 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     project_dir = resolve_project_dir(ctx.project_root)
     hooks_dst = project_dir / "hooks"
     src_dir = dev_support_dir()
-    # The stdlib-only subprocess runner the sanitizer imports (for its staged
-    # `git diff` scan). Vendored flat beside the hook scripts so
-    # validate_commit_msg resolves it by bare name with no core/ package present
-    # — the fix for the SETUP-9 regression that crashed every host commit.
-    runner_src = src_dir.parent / "core" / "run_command.py"
-
     missing = [s for s in _PROJECT_HOOK_SCRIPTS if not (src_dir / s).is_file()]
-    if not runner_src.is_file():
-        missing.append("run_command.py")
+    helper_sources = {
+        name: src_dir.parent / relative for name, relative in _PROJECT_HOOK_HELPERS.items()
+    }
+    missing.extend(name for name, source in helper_sources.items() if not source.is_file())
     if missing:
         skip(f"sanitizer scripts not found in developer-support dir: {', '.join(missing)}")
         ctx.record("project_git_hooks", "skip", "sanitizer scripts missing")
@@ -379,7 +381,8 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     hooks_dst.mkdir(parents=True, exist_ok=True)
     for name in _PROJECT_HOOK_SCRIPTS:
         shutil.copy2(str(src_dir / name), str(hooks_dst / name))
-    shutil.copy2(str(runner_src), str(hooks_dst / "run_command.py"))
+    for name, source in helper_sources.items():
+        shutil.copy2(str(source), str(hooks_dst / name))
 
     hooks_dir.mkdir(parents=True, exist_ok=True)
     for hook_name, script_name, hook_body in hook_installs:
