@@ -11,11 +11,12 @@ import hashlib
 import os
 import stat
 import subprocess
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import Literal
 
 LineEndingRole = Literal["project-checkout", "project-data"]
 
@@ -139,29 +140,32 @@ class LineEndingReport:
 
 
 @dataclass(frozen=True)
-class _CandidateSnapshot:
-    """Private compare-before-write state for one tracked candidate."""
+class _FileIdentity:
+    """Content and filesystem identity used by guarded file publication."""
 
     digest: bytes
     device: int
     inode: int
     mode: int
     link_count: int
+
+
+@dataclass(frozen=True)
+class _CandidateSnapshot:
+    """Private compare-before-write state for one tracked candidate."""
+
+    file: _FileIdentity
     index_entry: bytes
     attributes: bytes
     index_flags: bytes
 
 
 @dataclass(frozen=True)
-class _FileSnapshot:
-    """Private compare-before-write state for an optional regular file."""
+class _IndexPathState:
+    """Restorable content entry and extended flags for one index path."""
 
-    exists: bool
-    digest: bytes | None = None
-    device: int | None = None
-    inode: int | None = None
-    mode: int | None = None
-    link_count: int | None = None
+    entry: bytes
+    flags: bytes
 
 
 @dataclass(frozen=True)
@@ -176,7 +180,7 @@ class _RepositoryPlan:
     candidates: dict[str, _CandidateSnapshot]
     clean: bool | None
     candidate_error: str | None
-    attributes: _FileSnapshot | None
+    attributes: _FileIdentity | None
     attributes_error: str | None
     owns_attributes_policy: bool
 
@@ -186,7 +190,7 @@ class _NormalizationResult:
     """Private partial-progress result for guarded worktree replacement."""
 
     rewritten: tuple[str, ...]
-    file_snapshots: dict[str, _FileSnapshot]
+    file_snapshots: dict[str, _FileIdentity]
     error: str | None = None
 
 
@@ -299,27 +303,27 @@ def discover_line_ending_repositories(
     return RepositoryDiscovery(tuple(repositories), tuple(failures))
 
 
+def _parse_crlf_mismatches(output: str) -> list[str]:
+    """Extract tracked paths whose index and worktree line endings differ."""
+    paths: list[str] = []
+    for record in output.split("\0"):
+        metadata, separator, path = record.partition("\t")
+        fields = metadata.split()
+        if not separator or not path or len(fields) < 2:
+            continue
+        index_eol, worktree_eol = fields[0], fields[1]
+        if worktree_eol not in ("w/crlf", "w/mixed"):
+            continue
+        if index_eol[2:] == worktree_eol[2:]:
+            continue
+        if any(field.lower() == "eol=crlf" for field in fields[2:]):
+            continue
+        paths.append(path)
+    return paths
+
+
 def _crlf_worktree_files(project_root: Path) -> list[str] | None:
-    """Tracked paths that will read as modified in the container.
-
-    ``git ls-files --eol`` prints one ``i/<index-eol> w/<worktree-eol>
-    attr/<text-attr>`` line per tracked file. A CRLF worktree file is only a
-    *phantom diff* when its line endings differ from the blob in the index —
-    that mismatch is what a Linux container's git (which does no CRLF
-    conversion) reports as a modification.
-
-    A file whose ``.gitattributes`` marks it ``-text`` (or which git detected as
-    binary) is stored CRLF and checked out CRLF: ``i/crlf w/crlf``. It matches
-    the index byte for byte, in the container as much as on the host, so it
-    cannot produce a phantom diff and must not be counted. Upstream repos
-    legitimately do this for CRLF-native payloads carried as text — Windows
-    ``.bat`` scripts, vendor register dumps — and counting them made the check
-    fire on projects with nothing to fix (8 files on taxi, every one exempt).
-
-    Comparing the two eol fields (rather than sniffing ``attr/-text``) tests the
-    condition directly, so it also catches the inverse case ``-text`` never
-    covers: an ``i/lf w/crlf`` file, which IS a phantom diff.
-    """
+    """Return tracked paths that Linux sees modified due only to checkout EOLs."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(project_root), "ls-files", "--eol", "-z"],
@@ -334,29 +338,7 @@ def _crlf_worktree_files(project_root: Path) -> list[str] | None:
         return None
     if proc.returncode != 0:
         return None
-    paths: list[str] = []
-    for record in proc.stdout.split("\0"):
-        metadata, separator, path = record.partition("\t")
-        fields = metadata.split()
-        if not separator or not path:
-            continue
-        if len(fields) < 2:
-            continue
-        index_eol, worktree_eol = fields[0], fields[1]
-        if worktree_eol not in ("w/crlf", "w/mixed"):
-            continue
-        if index_eol[2:] == worktree_eol[2:]:
-            continue  # index already holds CRLF — no diff for git to see
-        if any(field.lower() == "eol=crlf" for field in fields[2:]):
-            continue  # an explicit checkout policy the Session Runtime also honors
-        paths.append(path)
-    return paths
-
-
-def _count_crlf_worktree_files(project_root: Path) -> int | None:
-    """Number of tracked files that will read as modified in the container."""
-    paths = _crlf_worktree_files(project_root)
-    return None if paths is None else len(paths)
+    return _parse_crlf_mismatches(proc.stdout)
 
 
 def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> AutocrlfSetting | None:
@@ -508,11 +490,6 @@ def _tracked_phantom_paths(project_root: Path) -> tuple[list[str] | None, str | 
     return paths, None
 
 
-def _tracked_status_is_phantom(project_root: Path) -> tuple[bool | None, str | None]:
-    paths, error = _tracked_phantom_paths(project_root)
-    return (None, error) if paths is None else (bool(paths), None)
-
-
 def _protected_index_paths(project_root: Path, paths: list[str]) -> list[str] | None:
     """Affected paths hidden from normal status by Git index flags."""
     try:
@@ -592,15 +569,13 @@ def _candidate_snapshot(
     project_root: Path, name: str
 ) -> tuple[_CandidateSnapshot | None, str | None]:
     path = project_root / name
-    try:
-        metadata = path.lstat()
-        if not stat.S_ISREG(metadata.st_mode):
-            return None, f"refusing to normalize non-regular tracked path {name!r}"
-        if metadata.st_nlink > 1:
-            return None, f"refusing to normalize hard-linked tracked path {name!r}"
-        digest = _file_digest(path)
-    except OSError as exc:
-        return None, f"could not inspect tracked path {name!r}: {exc}"
+    identity, error = _optional_file_identity(path)
+    if error is not None:
+        return None, error
+    if identity is None:
+        return None, f"tracked path disappeared during line-ending repair: {name!r}"
+    if identity.link_count > 1:
+        return None, f"refusing to normalize hard-linked tracked path {name!r}"
     git_state, error = _candidate_git_state(project_root, name)
     if error is not None:
         return None, error
@@ -608,11 +583,7 @@ def _candidate_snapshot(
     index_entry, attributes, index_flags = git_state
     return (
         _CandidateSnapshot(
-            digest=digest,
-            device=metadata.st_dev,
-            inode=metadata.st_ino,
-            mode=metadata.st_mode,
-            link_count=metadata.st_nlink,
+            file=identity,
             index_entry=index_entry,
             attributes=attributes,
             index_flags=index_flags,
@@ -634,11 +605,11 @@ def _snapshot_candidates(
     return snapshots, None
 
 
-def _optional_file_snapshot(path: Path) -> tuple[_FileSnapshot | None, str | None]:
+def _optional_file_identity(path: Path) -> tuple[_FileIdentity | None, str | None]:
     try:
         metadata = path.lstat()
     except FileNotFoundError:
-        return _FileSnapshot(False), None
+        return None, None
     except OSError as exc:
         return None, f"could not inspect {path.name!r}: {exc}"
     if not stat.S_ISREG(metadata.st_mode):
@@ -648,8 +619,7 @@ def _optional_file_snapshot(path: Path) -> tuple[_FileSnapshot | None, str | Non
     except OSError as exc:
         return None, f"could not inspect {path.name!r}: {exc}"
     return (
-        _FileSnapshot(
-            exists=True,
+        _FileIdentity(
             digest=digest,
             device=metadata.st_dev,
             inode=metadata.st_ino,
@@ -673,6 +643,31 @@ def _cleanup_staged_files(paths: dict[str, Path]) -> None:
     for path in paths.values():
         with suppress(FileNotFoundError):
             path.unlink()
+
+
+def _stage_atomic_content(
+    path: Path, content: bytes, *, mode: int
+) -> tuple[Path | None, str | None]:
+    """Write complete replacement content beside its destination."""
+    staged: Path | None = None
+    descriptor = -1
+    try:
+        descriptor, temporary = tempfile.mkstemp(prefix=".booley-eol-", dir=path.parent)
+        staged = Path(temporary)
+        with os.fdopen(descriptor, "wb") as target:
+            descriptor = -1
+            target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
+        staged.chmod(stat.S_IMODE(mode))
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if staged is not None:
+            with suppress(OSError):
+                staged.unlink()
+        return None, f"could not stage {path.name!r}: {exc}"
+    return staged, None
 
 
 def _stage_lf_files(project_root: Path, paths: list[str]) -> tuple[dict[str, Path], str | None]:
@@ -707,99 +702,65 @@ def _stage_lf_files(project_root: Path, paths: list[str]) -> tuple[dict[str, Pat
     return staged, None
 
 
-def _restore_after_write_failure(
-    target: BinaryIO, original: bytes, path: Path, cause: OSError
-) -> str:
-    try:
-        target.seek(0)
-        target.write(original)
-        target.truncate()
-        target.flush()
-    except OSError as restore_exc:
-        return (
-            f"could not normalize {path.name!r}: {cause}; restoring the original "
-            f"content also failed: {restore_exc}"
-        )
-    return f"could not normalize {path.name!r}: {cause}; original content restored"
-
-
-def _opened_candidate_matches(target: BinaryIO, expected: _CandidateSnapshot) -> bool:
-    metadata = os.fstat(target.fileno())
-    return (
-        stat.S_ISREG(metadata.st_mode)
-        and metadata.st_dev == expected.device
-        and metadata.st_ino == expected.inode
-        and metadata.st_mode == expected.mode
-        and metadata.st_nlink == expected.link_count == 1
-    )
-
-
-def _git_state_matches(
-    project_root: Path, name: str, expected: _CandidateSnapshot
-) -> tuple[bool, str | None]:
-    state, error = _candidate_git_state(project_root, name)
-    if error is not None:
-        return False, error
-    assert state is not None
-    return state == (expected.index_entry, expected.attributes, expected.index_flags), None
-
-
 def _rewrite_from_stage(  # noqa: PLR0911 -- each refusal is a pre-write safety gate
     project_root: Path,
     name: str,
     replacement: Path,
     expected: _CandidateSnapshot,
 ) -> str | None:
-    """Update one still-identical regular file in place."""
-    current, error = _candidate_snapshot(project_root, name)
-    if error is not None:
-        return error
-    if current != expected:
-        return f"tracked path changed during line-ending repair: {name!r}"
+    """Atomically publish one still-identical tracked-file replacement."""
     path = project_root / name
     try:
         replacement_bytes = replacement.read_bytes()
-        with path.open("r+b") as target:
-            if not _opened_candidate_matches(target, expected):
-                return f"tracked path changed during line-ending repair: {name!r}"
-            original = target.read()
-            if hashlib.sha256(original).digest() != expected.digest:
-                return f"tracked path changed during line-ending repair: {name!r}"
-            matches, git_error = _git_state_matches(project_root, name, expected)
-            if git_error is not None:
-                return git_error
-            if not matches:
-                return f"Git index or attributes changed during line-ending repair: {name!r}"
-            try:
-                target.seek(0)
-                target.write(replacement_bytes)
-                target.truncate()
-                target.flush()
-            except OSError as exc:
-                return _restore_after_write_failure(target, original, path, exc)
     except OSError as exc:
         return f"could not normalize {name!r}: {exc}"
-    return None
+    staged, error = _stage_atomic_content(path, replacement_bytes, mode=expected.file.mode)
+    if error is not None:
+        return error
+    assert staged is not None
+    try:
+        current, error = _candidate_snapshot(project_root, name)
+        if error is not None:
+            return error
+        if current != expected:
+            return f"tracked path changed during line-ending repair: {name!r}"
+        current_file, error = _optional_file_identity(path)
+        if error is not None:
+            return error
+        if current_file != expected.file:
+            return f"tracked path changed during line-ending repair: {name!r}"
+        staged.replace(path)
+        return None
+    except OSError as exc:
+        return f"could not atomically normalize {name!r}: {exc}"
+    finally:
+        with suppress(FileNotFoundError):
+            staged.unlink()
 
 
-def _index_entries(
+def _index_path_states(
     project_root: Path, paths: list[str]
-) -> tuple[dict[str, bytes] | None, str | None]:
-    entries: dict[str, bytes] = {}
+) -> tuple[dict[str, _IndexPathState] | None, str | None]:
+    states: dict[str, _IndexPathState] = {}
     for name in paths:
-        output, error = _path_git_bytes(project_root, ("ls-files", "--stage", "-z"), name)
+        entry, error = _path_git_bytes(project_root, ("ls-files", "--stage", "-z"), name)
         if error is not None:
             return None, error
-        assert output is not None
-        entries[name] = output
-    return entries, None
+        flags, error = _path_git_bytes(project_root, ("ls-files", "-v", "-z"), name)
+        if error is not None:
+            return None, error
+        assert entry is not None and flags is not None
+        states[name] = _IndexPathState(entry, flags)
+    return states, None
 
 
-def _restore_index_entries(project_root: Path, entries: dict[str, bytes]) -> str | None:
-    payload = b"".join(entries.values())
+def _update_index_paths(project_root: Path, option: str, paths: list[str]) -> str | None:
+    if not paths:
+        return None
+    payload = b"\0".join(os.fsencode(name) for name in paths) + b"\0"
     try:
         proc = subprocess.run(
-            ["git", "-C", str(project_root), "update-index", "-z", "--index-info"],
+            ["git", "-C", str(project_root), "update-index", option, "-z", "--stdin"],
             input=payload,
             capture_output=True,
             check=False,
@@ -812,13 +773,60 @@ def _restore_index_entries(project_root: Path, entries: dict[str, bytes]) -> str
     return proc.stderr.decode(errors="replace").strip() or "Git update-index failed"
 
 
-def _refresh_normalized_index(  # noqa: PLR0911 -- every return identifies one recovery gate
-    project_root: Path, paths: list[str]
-) -> str | None:
-    """Refresh path metadata while proving index content entries stay exact."""
-    before, error = _index_entries(project_root, paths)
+def _index_flag_groups(states: dict[str, _IndexPathState]) -> tuple[list[str], list[str]]:
+    assume_unchanged: list[str] = []
+    skip_worktree: list[str] = []
+    for name, state in states.items():
+        tag = state.flags[:1]
+        if tag.upper() == b"S":
+            skip_worktree.append(name)
+        if tag.islower():
+            assume_unchanged.append(name)
+    return assume_unchanged, skip_worktree
+
+
+def _restore_index_state(project_root: Path, before: dict[str, _IndexPathState]) -> str | None:
+    payload = b"".join(state.entry for state in before.values())
+    try:
+        restored = subprocess.run(
+            ["git", "-C", str(project_root), "update-index", "-z", "--index-info"],
+            input=payload,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return str(exc)
+    if restored.returncode != 0:
+        return restored.stderr.decode(errors="replace").strip() or "Git update-index failed"
+    names = list(before)
+    for option in ("--no-assume-unchanged", "--no-skip-worktree"):
+        if error := _update_index_paths(project_root, option, names):
+            return error
+    assume_unchanged, skip_worktree = _index_flag_groups(before)
+    if error := _update_index_paths(project_root, "--assume-unchanged", assume_unchanged):
+        return error
+    return _update_index_paths(project_root, "--skip-worktree", skip_worktree)
+
+
+def _restore_and_verify_index_state(project_root: Path, before: dict[str, _IndexPathState]) -> str:
+    error = _restore_index_state(project_root, before)
     if error is not None:
-        return f"could not snapshot normalized Git index entries: {error}"
+        return f"could not restore exact index state: {error}"
+    restored, error = _index_path_states(project_root, list(before))
+    if error is not None:
+        return f"restored index state but could not verify it: {error}"
+    if restored != before:
+        return "index restoration did not restore exact entries and flags"
+    return "restored exact index entries and flags"
+
+
+def _refresh_normalized_index(project_root: Path, paths: list[str]) -> str | None:
+    """Refresh path metadata and compensate any content or flag mutation."""
+    before, error = _index_path_states(project_root, paths)
+    if error is not None:
+        return f"could not snapshot normalized Git index state: {error}"
+    assert before is not None
     encoded_paths = b"\0".join(os.fsencode(name) for name in paths) + b"\0"
     try:
         proc = subprocess.run(
@@ -838,23 +846,21 @@ def _refresh_normalized_index(  # noqa: PLR0911 -- every return identifies one r
             timeout=300,
         )
     except (subprocess.SubprocessError, OSError) as exc:
-        return f"could not refresh normalized Git index entries: {exc}"
+        recovery = _restore_and_verify_index_state(project_root, before)
+        return f"could not refresh normalized Git index entries: {exc}; {recovery}"
+    after, error = _index_path_states(project_root, paths)
+    if error is not None:
+        recovery = _restore_and_verify_index_state(project_root, before)
+        return f"could not verify normalized Git index state: {error}; {recovery}"
+    assert after is not None
+    command_error = None
     if proc.returncode != 0:
         detail = proc.stderr.decode(errors="replace").strip() or "Git add failed"
-        return f"could not refresh normalized Git index entries: {detail}"
-    after, error = _index_entries(project_root, paths)
-    if error is not None:
-        return f"could not verify normalized Git index entries: {error}"
+        command_error = f"could not refresh normalized Git index entries: {detail}"
     if after == before:
-        return None
-    assert before is not None
-    restore_error = _restore_index_entries(project_root, before)
-    if restore_error is None:
-        return "normalization unexpectedly changed staged content; restored exact index entries"
-    return (
-        "normalization unexpectedly changed staged content and could not restore exact "
-        f"index entries: {restore_error}"
-    )
+        return command_error
+    recovery = _restore_and_verify_index_state(project_root, before)
+    return f"normalization unexpectedly changed index content or flags; {recovery}"
 
 
 def _normalization_refusal_error(project_root: Path, paths: list[str]) -> str | None:
@@ -884,14 +890,14 @@ def _normalize_as_lf(
     if error is not None:
         return _NormalizationResult((), {}, error)
     rewritten: list[str] = []
-    file_snapshots: dict[str, _FileSnapshot] = {}
+    file_snapshots: dict[str, _FileIdentity] = {}
     try:
         for name in paths:
             error = _rewrite_from_stage(project_root, name, staged[name], snapshots[name])
             if error is not None:
                 break
             rewritten.append(name)
-            current, snapshot_error = _optional_file_snapshot(project_root / name)
+            current, snapshot_error = _optional_file_identity(project_root / name)
             if snapshot_error is not None:
                 error = snapshot_error
                 break
@@ -984,10 +990,10 @@ def _plan_repository(
     clean = _worktree_is_clean(repository.root) if crlf_paths else True
     needs_policy = bool(crlf_paths) or effective.value or not local.is_set or local.value
     owns_policy = _eol_policy_is_user_owned(repository.root)
-    attributes: _FileSnapshot | None = _FileSnapshot(False)
+    attributes: _FileIdentity | None = None
     attributes_error: str | None = None
     if needs_policy and not owns_policy:
-        attributes, attributes_error = _optional_file_snapshot(repository.root / ".gitattributes")
+        attributes, attributes_error = _optional_file_identity(repository.root / ".gitattributes")
         if attributes_error is not None:
             observations.append(
                 _observation(LineEndingObservationCode.CANDIDATE_UNSAFE, detail=attributes_error)
@@ -1163,18 +1169,6 @@ def _refresh_action(plan: _RepositoryPlan) -> LineEndingActionResult:
     )
 
 
-def _opened_file_matches(target: BinaryIO, expected: _FileSnapshot) -> bool:
-    metadata = os.fstat(target.fileno())
-    return (
-        expected.exists
-        and stat.S_ISREG(metadata.st_mode)
-        and metadata.st_dev == expected.device
-        and metadata.st_ino == expected.inode
-        and metadata.st_mode == expected.mode
-        and metadata.st_nlink == expected.link_count == 1
-    )
-
-
 def _attributes_replacement(path: Path) -> bytes:
     existing = path.read_bytes() if path.exists() else b""
     if existing and not existing.endswith(b"\n"):
@@ -1183,58 +1177,48 @@ def _attributes_replacement(path: Path) -> bytes:
 
 
 def _create_attributes(path: Path, content: bytes) -> str | None:
-    created_identity: tuple[int, int] | None = None
+    staged, error = _stage_atomic_content(path, content, mode=0o644)
+    if error is not None:
+        return error
+    assert staged is not None
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("xb") as target:
-            metadata = os.fstat(target.fileno())
-            created_identity = (metadata.st_dev, metadata.st_ino)
-            target.write(content)
-            target.flush()
+        current, error = _optional_file_identity(path)
+        if error is not None or current is not None:
+            return error or ".gitattributes changed during line-ending repair"
+        os.link(staged, path)
     except FileExistsError:
         return ".gitattributes changed during line-ending repair"
     except OSError as exc:
-        try:
-            current = path.lstat()
-            if created_identity == (current.st_dev, current.st_ino):
-                path.unlink()
-        except OSError:
-            pass
-        return f"could not write .gitattributes: {exc}"
+        return f"could not atomically publish .gitattributes: {exc}"
+    finally:
+        with suppress(FileNotFoundError):
+            staged.unlink()
     return None
 
 
-def _update_attributes(path: Path, expected: _FileSnapshot, content: bytes) -> str | None:
+def _update_attributes(path: Path, expected: _FileIdentity, content: bytes) -> str | None:
+    staged, error = _stage_atomic_content(path, content, mode=expected.mode)
+    if error is not None:
+        return error
+    assert staged is not None
     try:
-        with path.open("r+b") as target:
-            if not _opened_file_matches(target, expected):
-                return ".gitattributes changed during line-ending repair"
-            original = target.read()
-            if hashlib.sha256(original).digest() != expected.digest:
-                return ".gitattributes changed during line-ending repair"
-            try:
-                target.seek(0)
-                target.write(content)
-                target.truncate()
-                target.flush()
-            except OSError as exc:
-                return _restore_after_write_failure(target, original, path, exc)
+        current, error = _optional_file_identity(path)
+        if error is not None or current != expected:
+            return error or ".gitattributes changed during line-ending repair"
+        staged.replace(path)
     except OSError as exc:
-        return f"could not write .gitattributes: {exc}"
+        return f"could not atomically publish .gitattributes: {exc}"
+    finally:
+        with suppress(FileNotFoundError):
+            staged.unlink()
     return None
 
 
 def _publish_attributes(
-    project_root: Path, expected: _FileSnapshot | None
+    project_root: Path, expected: _FileIdentity | None
 ) -> LineEndingActionResult:
-    if expected is None:
-        return _action(
-            LineEndingActionKind.PUBLISH_ATTRIBUTES,
-            LineEndingActionState.REFUSED,
-            detail="could not establish a .gitattributes precondition",
-        )
     path = project_root / ".gitattributes"
-    current, error = _optional_file_snapshot(path)
+    current, error = _optional_file_identity(path)
     if error is not None or current != expected:
         return _action(
             LineEndingActionKind.PUBLISH_ATTRIBUTES,
@@ -1254,7 +1238,7 @@ def _publish_attributes(
     else:
         error = (
             _update_attributes(path, expected, content)
-            if expected.exists
+            if expected is not None
             else _create_attributes(path, content)
         )
     state = LineEndingActionState.COMPLETED if error is None else LineEndingActionState.FAILED
@@ -1276,7 +1260,16 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
         expected = plan.attributes
         if normalization is not None and ".gitattributes" in normalization.file_snapshots:
             expected = normalization.file_snapshots[".gitattributes"]
-        actions.append(_publish_attributes(plan.repository.root, expected))
+        if plan.attributes_error is not None:
+            actions.append(
+                _action(
+                    LineEndingActionKind.PUBLISH_ATTRIBUTES,
+                    LineEndingActionState.REFUSED,
+                    detail=plan.attributes_error,
+                )
+            )
+        else:
+            actions.append(_publish_attributes(plan.repository.root, expected))
     return tuple(actions)
 
 

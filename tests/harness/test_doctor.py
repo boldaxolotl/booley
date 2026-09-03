@@ -7194,6 +7194,90 @@ class TestLineEndingsCheck:
         assert len(collector.warned) == 1
         assert "git diff timed out" in collector.warned[0]
 
+    def test_crlf_failure_precedes_candidate_warning(self, tmp_path: Path):
+        from booley.harness.setup.line_endings import (
+            LineEndingObservation,
+            LineEndingObservationCode,
+            LineEndingRepository,
+            LineEndingStatus,
+            RepositoryLineEndingReport,
+        )
+
+        collector = _Collector()
+        report = RepositoryLineEndingReport(
+            LineEndingRepository("project-checkout", tmp_path),
+            LineEndingStatus.UNSAFE,
+            (
+                LineEndingObservation(LineEndingObservationCode.CRLF_MISMATCH, count=1),
+                LineEndingObservation(
+                    LineEndingObservationCode.CANDIDATE_UNSAFE,
+                    detail="hard-linked candidate",
+                ),
+            ),
+            (),
+        )
+
+        doctor._report_repository_line_endings(
+            report,
+            collector._pass,
+            collector._warn,
+            collector._fail,
+        )
+
+        assert len(collector.failed) == 1
+        assert not collector.warned
+
+    def test_autocrlf_check_id_precedes_unreadable_status(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from booley.harness.setup.line_endings import (
+            LineEndingObservation,
+            LineEndingObservationCode,
+            LineEndingReport,
+            LineEndingRepository,
+            LineEndingStatus,
+            RepositoryLineEndingReport,
+        )
+
+        repository = LineEndingRepository("project-checkout", tmp_path)
+        report = LineEndingReport(
+            LineEndingStatus.UNSAFE,
+            (
+                RepositoryLineEndingReport(
+                    repository,
+                    LineEndingStatus.UNSAFE,
+                    (
+                        LineEndingObservation(LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE),
+                        LineEndingObservation(
+                            LineEndingObservationCode.STATUS_UNREADABLE,
+                            detail="git diff timed out",
+                        ),
+                    ),
+                    (),
+                ),
+            ),
+            (),
+        )
+        monkeypatch.setattr(
+            doctor, "reconcile_project_line_endings", lambda *_args, **_kwargs: report
+        )
+        reporter = doctor._Reporter.create()
+
+        doctor._check_line_endings(
+            tmp_path,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            reporter.fail_,
+        )
+
+        assert reporter.findings is not None
+        assert len(reporter.findings) == 1
+        assert reporter.findings[0].check_id == "git.autocrlf-risk"
+        assert reporter.findings[0].severity == "warn"
+
 
 def test_project_audit_reports_a_missing_project_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -80,6 +80,32 @@ def test_no_repository_is_not_applicable(tmp_path: Path):
     assert report.repositories == ()
 
 
+def test_repository_discovery_preserves_probe_failure_context(tmp_path: Path):
+    failures = (
+        (FileNotFoundError(), "git unavailable"),
+        (subprocess.TimeoutExpired(["git"], 10), "Git probe failed"),
+        (OSError("permission denied"), "Git probe failed"),
+    )
+
+    for failure, expected in failures:
+        with patch.object(line_endings.subprocess, "run", side_effect=failure):
+            discovery = line_endings.discover_line_ending_repositories(tmp_path)
+        assert discovery.repositories == ()
+        assert len(discovery.failures) == 1
+        assert expected in discovery.failures[0].detail
+
+
+def test_git_probe_error_helpers_preserve_binary_and_failed_output(tmp_path: Path):
+    assert line_endings._error_text(b"bad bytes\xff\n") == "bad bytes�"
+    failed = subprocess.CompletedProcess(["git"], 2, "", "failed")
+    with patch.object(line_endings.subprocess, "run", return_value=failed):
+        assert line_endings._crlf_worktree_files(tmp_path) is None
+        assert line_endings.read_autocrlf_setting(tmp_path) is None
+    with patch.object(line_endings.subprocess, "run", side_effect=OSError("unavailable")):
+        assert line_endings._crlf_worktree_files(tmp_path) is None
+        assert line_endings.read_autocrlf_setting(tmp_path) is None
+
+
 def test_inspection_is_mechanically_read_only(tmp_path: Path):
     _init(tmp_path)
     _commit_file(tmp_path, "a.v", b"module a;\nendmodule\n")
@@ -225,6 +251,190 @@ def test_failed_config_command_remains_unsafe_even_if_value_changed(tmp_path: Pa
 
     assert _git(tmp_path, "config", "--local", "--get", "core.autocrlf").stdout.strip() == b"false"
     assert report.status is LineEndingStatus.UNSAFE
+
+
+def test_atomic_replacement_failure_preserves_original_file(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    original = (tmp_path / "a.v").read_bytes()
+
+    with patch.object(Path, "replace", side_effect=OSError("simulated publication failure")):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / "a.v").read_bytes() == original
+    assert not list(tmp_path.glob(".booley-eol-*"))
+
+
+def test_atomic_staging_failure_preserves_original_file(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    original = (tmp_path / "a.v").read_bytes()
+
+    with patch.object(Path, "chmod", side_effect=OSError("simulated metadata failure")):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / "a.v").read_bytes() == original
+    assert not list(tmp_path.glob(".booley-eol-*"))
+
+
+def test_atomic_attributes_creation_failure_leaves_no_partial_file(tmp_path: Path):
+    _init(tmp_path, autocrlf="true")
+
+    with patch.object(line_endings.os, "link", side_effect=OSError("simulated link failure")):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not (tmp_path / ".gitattributes").exists()
+    assert not list(tmp_path.glob(".booley-eol-*"))
+
+
+def test_atomic_attributes_update_failure_preserves_original_file(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    _commit_file(tmp_path, ".gitattributes", b"*.bat -text\n")
+    original = (tmp_path / ".gitattributes").read_bytes()
+    real_replace = Path.replace
+
+    def fail_attributes(staged: Path, target: Path):
+        if target.name == ".gitattributes":
+            raise OSError("simulated attributes publication failure")
+        return real_replace(staged, target)
+
+    with patch.object(Path, "replace", new=fail_attributes):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (tmp_path / ".gitattributes").read_bytes() == original
+    assert not list(tmp_path.glob(".booley-eol-*"))
+
+
+def test_index_refresh_exception_restores_and_remains_unsafe(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    real_run = line_endings.subprocess.run
+
+    def fail_refresh(*args, **kwargs):
+        command = args[0]
+        if "add" in command and "-u" in command:
+            raise OSError("simulated refresh failure")
+        return real_run(*args, **kwargs)
+
+    with patch.object(line_endings.subprocess, "run", side_effect=fail_refresh):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert _git(tmp_path, "diff", "--cached", "--quiet").returncode == 0
+    assert _git(tmp_path, "ls-files", "-v", "a.v").stdout.startswith(b"H ")
+
+
+def test_index_refresh_restores_unexpected_entry_and_flag_changes(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    real_run = line_endings.subprocess.run
+
+    def mutate_then_fail(*args, **kwargs):
+        command = args[0]
+        result = real_run(*args, **kwargs)
+        if "add" not in command or "-u" not in command:
+            return result
+        blob = real_run(
+            ["git", "-C", str(tmp_path), "hash-object", "-w", "--stdin"],
+            input=b"unexpected staged content\n",
+            capture_output=True,
+            check=False,
+        )
+        oid = blob.stdout.decode().strip()
+        real_run(
+            ["git", "-C", str(tmp_path), "update-index", "--cacheinfo", "100644", oid, "a.v"],
+            capture_output=True,
+            check=False,
+        )
+        real_run(
+            ["git", "-C", str(tmp_path), "update-index", "--assume-unchanged", "a.v"],
+            capture_output=True,
+            check=False,
+        )
+        return subprocess.CompletedProcess(command, 1, result.stdout, b"simulated failure")
+
+    with patch.object(line_endings.subprocess, "run", side_effect=mutate_then_fail):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert _git(tmp_path, "diff", "--cached", "--quiet").returncode == 0
+    assert _git(tmp_path, "ls-files", "-v", "a.v").stdout.startswith(b"H ")
+
+
+def test_index_recovery_reports_restore_and_verification_failures(tmp_path: Path):
+    before = {"a.v": line_endings._IndexPathState(b"entry", b"H a.v\0")}
+
+    with patch.object(line_endings, "_restore_index_state", return_value="restore failed"):
+        assert (
+            "could not restore exact index state"
+            in line_endings._restore_and_verify_index_state(tmp_path, before)
+        )
+    with (
+        patch.object(line_endings, "_restore_index_state", return_value=None),
+        patch.object(
+            line_endings,
+            "_index_path_states",
+            return_value=(None, "verification failed"),
+        ),
+    ):
+        assert "could not verify" in line_endings._restore_and_verify_index_state(tmp_path, before)
+    with (
+        patch.object(line_endings, "_restore_index_state", return_value=None),
+        patch.object(line_endings, "_index_path_states", return_value=({}, None)),
+    ):
+        assert "did not restore exact" in line_endings._restore_and_verify_index_state(
+            tmp_path, before
+        )
+
+
+def test_index_flag_groups_preserve_combined_flags():
+    states = {
+        "plain.v": line_endings._IndexPathState(b"entry", b"H plain.v\0"),
+        "assume.v": line_endings._IndexPathState(b"entry", b"h assume.v\0"),
+        "skip.v": line_endings._IndexPathState(b"entry", b"S skip.v\0"),
+        "both.v": line_endings._IndexPathState(b"entry", b"s both.v\0"),
+    }
+
+    assume_unchanged, skip_worktree = line_endings._index_flag_groups(states)
+
+    assert assume_unchanged == ["assume.v", "both.v"]
+    assert skip_worktree == ["skip.v", "both.v"]
+
+
+def test_index_flag_update_errors_are_reported(tmp_path: Path):
+    with patch.object(line_endings.subprocess, "run", side_effect=OSError("git unavailable")):
+        assert line_endings._update_index_paths(tmp_path, "--skip-worktree", ["a.v"]) == (
+            "git unavailable"
+        )
+    failed = subprocess.CompletedProcess(["git", "update-index"], 1, b"", b"flag failed")
+    with patch.object(line_endings.subprocess, "run", return_value=failed):
+        assert line_endings._update_index_paths(tmp_path, "--skip-worktree", ["a.v"]) == (
+            "flag failed"
+        )
+
+
+def test_index_refresh_verification_failure_restores_and_remains_unsafe(tmp_path: Path):
+    _crlf_repo(tmp_path)
+    real_states = line_endings._index_path_states
+    calls = 0
+
+    def fail_first_verification(root: Path, paths: list[str]):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return None, "simulated verification failure"
+        return real_states(root, paths)
+
+    with patch.object(
+        line_endings,
+        "_index_path_states",
+        side_effect=fail_first_verification,
+    ):
+        report = reconcile_project_line_endings(tmp_path, None, mode=LineEndingMode.REPAIR)
+
+    assert report.status is LineEndingStatus.UNSAFE
+    assert _git(tmp_path, "diff", "--cached", "--quiet").returncode == 0
+    assert _git(tmp_path, "ls-files", "-v", "a.v").stdout.startswith(b"H ")
 
 
 def test_stale_index_refresh_preserves_unrelated_staged_and_unstaged_edits(tmp_path: Path):

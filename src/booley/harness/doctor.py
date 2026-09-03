@@ -1346,8 +1346,6 @@ def _report_repository_line_endings(
 ) -> None:
     repository = report.repository
     identity = line_ending_repository_display(repository.role, repository.root)
-    if _report_unreadable_line_endings(report, identity, _warn):
-        return
     crlf = _line_ending_observation(report, LineEndingObservationCode.CRLF_MISMATCH)
     if crlf is not None:
         _fail(
@@ -1372,6 +1370,8 @@ def _report_repository_line_endings(
             f"{identity}: {message}",
             f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
         )
+        return
+    if _report_unreadable_line_endings(report, identity, _warn):
         return
     stale = _line_ending_observation(report, LineEndingObservationCode.STALE_INDEX)
     if stale is not None:

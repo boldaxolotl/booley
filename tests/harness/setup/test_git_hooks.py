@@ -850,7 +850,7 @@ class TestLineEndingsAutoFix:
         assert "[!!] 1 tracked file(s) are checked out with CRLF" in output
         assert "[!!] core.autocrlf=true" in output
         assert "[ii]" not in output
-        assert "would normalize 1 tracked file(s) to LF in place" in output
+        assert "would normalize 1 tracked file(s) to LF atomically" in output
         assert "--fix-line-endings" not in output
 
     def test_clean_crlf_checkout_is_auto_fixed_in_one_run(self, tmp_path: Path, capsys):

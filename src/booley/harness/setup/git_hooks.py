@@ -366,57 +366,89 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     ctx.record("project_git_hooks", "ok", "installed")
 
 
+_OBSERVATION_MESSAGES = {
+    LineEndingObservationCode.CRLF_MISMATCH: (
+        "{count} tracked file(s) are checked out with CRLF — the Session Runtime container "
+        "will see every one as modified (phantom diffs break the dirty-tree check, scope "
+        "enforcement, and ticket worktrees)"
+    ),
+    LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE: (
+        "core.autocrlf=true (Git for Windows' installer default) re-creates CRLF checkouts "
+        "on every clone/checkout"
+    ),
+    LineEndingObservationCode.AUTOCRLF_NOT_PINNED: (
+        "core.autocrlf is not pinned false in this repository"
+    ),
+}
+
+_ACTION_LINES = {
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.PIN_AUTOCRLF): (
+        (ok, "core.autocrlf=false (repo-local; CRLF will not come back on checkout)"),
+    ),
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.NORMALIZE_FILES): (
+        (note, "detected {count} tracked file(s) are checked out with CRLF"),
+        (ok, "normalized {count} file(s) to LF atomically — tree is container-safe"),
+    ),
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.REFRESH_INDEX): (
+        (ok, "refreshed stale Git index metadata for {count} tracked file(s)"),
+    ),
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.PUBLISH_ATTRIBUTES): (
+        (ok, "added '{rule}' as the first line of .gitattributes"),
+        (info, "  commit it — the rule only travels to your team through git"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.PIN_AUTOCRLF): (
+        (info, "  would set core.autocrlf=false"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.NORMALIZE_FILES): (
+        (info, "  would normalize {count} tracked file(s) to LF atomically"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.REFRESH_INDEX): (
+        (warn, "would refresh stale Git index metadata for {count} tracked file(s)"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.PUBLISH_ATTRIBUTES): (
+        (info, "  would add '{rule}' to .gitattributes"),
+    ),
+}
+
+_FAILED_ACTION_DETAILS = {
+    LineEndingActionKind.PIN_AUTOCRLF: "autocrlf update failed",
+    LineEndingActionKind.NORMALIZE_FILES: "normalization failed",
+    LineEndingActionKind.REFRESH_INDEX: "normalization failed",
+    LineEndingActionKind.PUBLISH_ATTRIBUTES: "normalization failed",
+}
+
+_OBSERVATION_RESULT_DETAILS = (
+    (LineEndingObservationCode.CRLF_MISMATCH, "CRLF working tree"),
+    (LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE, "autocrlf policy unsafe"),
+    (LineEndingObservationCode.AUTOCRLF_NOT_PINNED, "autocrlf policy unsafe"),
+    (LineEndingObservationCode.STALE_INDEX, "stale index metadata"),
+)
+
+_COMPLETED_ACTION_DETAILS = (
+    (LineEndingActionKind.NORMALIZE_FILES, "normalized"),
+    (LineEndingActionKind.REFRESH_INDEX, "index refreshed"),
+)
+
+
 def _render_line_ending_observations(report: RepositoryLineEndingReport) -> None:
     for observation in report.observations:
-        if observation.code is LineEndingObservationCode.CRLF_MISMATCH:
-            warn(
-                f"{observation.count} tracked file(s) are checked out with CRLF — the "
-                "Session Runtime container will see every one as modified "
-                "(phantom diffs break the dirty-tree check, scope enforcement, "
-                "and ticket worktrees)"
-            )
-        elif observation.code is LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE:
-            warn(
-                "core.autocrlf=true (Git for Windows' installer default) "
-                "re-creates CRLF checkouts on every clone/checkout"
-            )
-        elif observation.code is LineEndingObservationCode.AUTOCRLF_NOT_PINNED:
-            warn("core.autocrlf is not pinned false in this repository")
-        elif observation.detail:
-            warn(observation.detail)
-
-
-def _render_completed_line_ending_action(action: LineEndingActionResult) -> None:
-    if action.kind is LineEndingActionKind.PIN_AUTOCRLF:
-        if action.detail == "effective true":
-            note("detected core.autocrlf=true (Git for Windows' installer default)")
-        ok("core.autocrlf=false (repo-local; CRLF will not come back on checkout)")
-    elif action.kind is LineEndingActionKind.NORMALIZE_FILES:
-        note(f"detected {action.count} tracked file(s) are checked out with CRLF")
-        ok(f"normalized {action.count} file(s) to LF in place — tree is container-safe")
-    elif action.kind is LineEndingActionKind.REFRESH_INDEX:
-        ok(f"refreshed stale Git index metadata for {action.count} tracked file(s)")
-    elif action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES:
-        ok(f"added '{GITATTRIBUTES_RULE}' as the first line of .gitattributes")
-        info("  commit it — the rule only travels to your team through git")
-
-
-def _render_planned_line_ending_action(action: LineEndingActionResult) -> None:
-    if action.kind is LineEndingActionKind.PIN_AUTOCRLF:
-        info("  would set core.autocrlf=false")
-    elif action.kind is LineEndingActionKind.NORMALIZE_FILES:
-        info(f"  would normalize {action.count} tracked file(s) to LF in place")
-    elif action.kind is LineEndingActionKind.REFRESH_INDEX:
-        warn(f"would refresh stale Git index metadata for {action.count} tracked file(s)")
-    elif action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES:
-        info(f"  would add '{GITATTRIBUTES_RULE}' to .gitattributes")
+        template = _OBSERVATION_MESSAGES.get(observation.code)
+        message = template.format(count=observation.count) if template else observation.detail
+        if message:
+            warn(message)
 
 
 def _render_line_ending_action(action: LineEndingActionResult) -> None:
-    if action.state is LineEndingActionState.COMPLETED:
-        _render_completed_line_ending_action(action)
-    elif action.state is LineEndingActionState.PLANNED:
-        _render_planned_line_ending_action(action)
+    lines = _ACTION_LINES.get((action.state, action.kind))
+    if lines is not None:
+        if (
+            action.kind is LineEndingActionKind.PIN_AUTOCRLF
+            and action.state is LineEndingActionState.COMPLETED
+            and action.detail == "effective true"
+        ):
+            note("detected core.autocrlf=true (Git for Windows' installer default)")
+        for emit, template in lines:
+            emit(template.format(count=action.count, rule=GITATTRIBUTES_RULE))
     elif action.detail:
         prefix = (
             "would leave tracked files untouched: "
@@ -430,10 +462,14 @@ def _unreadable_line_ending_detail(
     report: RepositoryLineEndingReport,
     codes: set[LineEndingObservationCode],
 ) -> str | None:
-    if LineEndingObservationCode.AUTOCRLF_UNREADABLE in codes:
-        return "autocrlf unreadable"
-    if LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE in codes:
-        return "local autocrlf unreadable"
+    fixed_details = (
+        (LineEndingObservationCode.AUTOCRLF_UNREADABLE, "autocrlf unreadable"),
+        (LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE, "local autocrlf unreadable"),
+        (LineEndingObservationCode.STATUS_UNREADABLE, "status comparison unreadable"),
+    )
+    for code, detail in fixed_details:
+        if code in codes:
+            return detail
     if LineEndingObservationCode.EOL_SCAN_UNREADABLE in codes:
         normalized = any(
             action.kind is LineEndingActionKind.NORMALIZE_FILES
@@ -441,8 +477,6 @@ def _unreadable_line_ending_detail(
             for action in report.actions
         )
         return "EOL verification unreadable" if normalized else "EOL scan unreadable"
-    if LineEndingObservationCode.STATUS_UNREADABLE in codes:
-        return "status comparison unreadable"
     return None
 
 
@@ -459,38 +493,35 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
     )
     if unreadable is not None:
         detail = unreadable
-    elif failed and failed.kind is LineEndingActionKind.PIN_AUTOCRLF:
-        detail = "autocrlf update failed"
     elif failed:
-        detail = "normalization failed"
+        detail = _FAILED_ACTION_DETAILS[failed.kind]
     elif refused and refused.kind is LineEndingActionKind.NORMALIZE_FILES:
         detail = refused.detail or "candidate unsafe"
         detail = "dirty tree" if detail.startswith("working tree has") else "candidate unsafe"
-    elif LineEndingObservationCode.CRLF_MISMATCH in codes:
-        detail = "CRLF working tree"
-    elif codes & {
-        LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE,
-        LineEndingObservationCode.AUTOCRLF_NOT_PINNED,
-    }:
-        detail = "autocrlf policy unsafe"
-    elif LineEndingObservationCode.STALE_INDEX in codes:
-        detail = "stale index metadata"
-    elif any(
-        action.kind is LineEndingActionKind.NORMALIZE_FILES
-        and action.state is LineEndingActionState.COMPLETED
-        for action in report.actions
-    ):
-        detail = "normalized"
-    elif any(
-        action.kind is LineEndingActionKind.REFRESH_INDEX
-        and action.state is LineEndingActionState.COMPLETED
-        for action in report.actions
-    ):
-        detail = "index refreshed"
     elif report.actions:
-        detail = "+".join(action.kind.value for action in report.actions)
+        observation_detail = next(
+            (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
+            None,
+        )
+        completed = {
+            action.kind
+            for action in report.actions
+            if action.state is LineEndingActionState.COMPLETED
+        }
+        completed_detail = next(
+            (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
+            None,
+        )
+        detail = (
+            observation_detail
+            or completed_detail
+            or "+".join(action.kind.value for action in report.actions)
+        )
     else:
-        detail = "no CRLF"
+        detail = next(
+            (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
+            "no CRLF",
+        )
     return detail
 
 
