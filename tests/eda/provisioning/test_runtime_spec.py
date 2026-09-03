@@ -859,6 +859,29 @@ def test_finder_restores_windows_console_launcher_suffix(
     assert runtime_spec._find_trusted_validator(project) == executable
 
 
+def test_finder_preserves_existing_windows_extensionless_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prefix = tmp_path / "Python313"
+    scripts = prefix / "Scripts"
+    invoked = scripts / "booley"
+    scripts.mkdir(parents=True)
+    invoked.write_text("launcher", encoding="utf-8")
+    invoked.chmod(0o755)
+    monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {scripts.resolve(): prefix.resolve()},
+    )
+
+    assert runtime_spec._resolve_trusted_validator(invoked, project) == invoked
+    assert runtime_spec._find_trusted_validator(project) == invoked
+
+
 def test_normalized_project_launcher_does_not_fall_back_to_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

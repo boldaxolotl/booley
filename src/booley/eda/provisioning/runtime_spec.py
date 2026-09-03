@@ -998,7 +998,7 @@ def _invoked_validator_candidate() -> Path | None:
     name = invoked.name.casefold()
     if not invoked.is_absolute() or name not in {"booley", "booley.exe"}:
         return None
-    if _IS_WINDOWS and name == "booley":
+    if _IS_WINDOWS and name == "booley" and not invoked.exists():
         return invoked.with_suffix(".exe")
     return invoked
 
