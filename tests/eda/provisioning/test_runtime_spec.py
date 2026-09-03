@@ -180,6 +180,11 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
         )
         monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(
+            session_runtime,
+            "_strict_all_interactive_states",
+            lambda _project_id: [],
+        )
         monkeypatch.setattr(session_runtime, "_create_session_container", lambda *_args: None)
         monkeypatch.setattr(session_runtime, "_run_hook", lambda *_args: None)
 
