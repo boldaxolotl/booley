@@ -209,6 +209,53 @@ def test_run_icarus_image_writes_run_log_end_to_end(tmp_path: Path, monkeypatch,
     assert (work_dir / "result.json").exists()  # run.log sits beside result.json
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="run-half execs a POSIX vvp stub; real sims run in-container",
+)
+def test_bad_build_fixture_keeps_runtime_asset_and_grades_design_failure(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Build isolation and runtime assets are independent self-test boundaries."""
+    runtime = tmp_path / "runtime-assets"
+    runtime.mkdir()
+    (runtime / "firmware.hex").write_text("runtime input\n")
+    runner = tmp_path / "fake_vvp"
+    runner.write_text(
+        "#!/bin/sh\n"
+        "if [ ! -f firmware.hex ]; then\n"
+        "  echo 'Cannot open firmware.hex for reading.'\n"
+        "  exit 2\n"
+        "fi\n"
+        'for image in "$@"; do :; done\n'
+        'case "$image" in\n'
+        "  */bad) echo '[SIM_RESULT] FAILED' ;;\n"
+        "  *) echo '[SIM_RESULT] PASSED' ;;\n"
+        "esac\n"
+    )
+    runner.chmod(0o755)
+    monkeypatch.setattr(ir, "_find_vvp", lambda: str(runner))
+
+    results = {}
+    for kind in ("good", "bad"):
+        build = tmp_path / f"{kind}-build"
+        build.mkdir()
+        (build / f"{kind}.scr").write_text("")
+        (build / kind).write_text("")
+        work = tmp_path / f"{kind}-result"
+        output = ir.run_icarus_image(build_dir=build, run_cwd=runtime, work_dir=work)
+        assert "missing $readmemh" not in output
+        results[kind] = json.loads((work / "result.json").read_text(encoding="utf-8"))
+
+    assert results["good"]["passed"] is True
+    assert results["bad"] == {
+        "passed": False,
+        "sva_errors": 0,
+        "returncode": 0,
+        "first_error": "[SIM_RESULT] FAILED",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Per-run safety guards: missing $readmemh (SETUP-23) + disk budget (SETUP-25)
 # ---------------------------------------------------------------------------
