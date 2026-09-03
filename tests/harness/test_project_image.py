@@ -338,6 +338,14 @@ class TestDockerfile:
         # System install (not --user) so the pip-local volume can't shadow it.
         assert "--user" not in body
 
+    def test_builds_legacy_source_distributions_in_isolation(self, tmp_path):
+        docker_dir = tmp_path / "docker"
+        pi.write_project_image_files(docker_dir, "legacy-package==1.0\n")
+
+        body = (docker_dir / "Dockerfile").read_text(encoding="utf-8")
+
+        assert "pip install --use-pep517" in body
+
     def test_write_managed_dockerfile_writes_only_the_dockerfile(self, tmp_path):
         """F-5 backfill: a hand-authored requirements.txt gets the managed
         Dockerfile beside it — and nothing else — still stamped as managed so
