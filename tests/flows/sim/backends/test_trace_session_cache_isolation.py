@@ -171,3 +171,61 @@ def test_reset_for_run_removes_every_candidate_from_an_earlier_attempt(tmp_path)
 
         assert all(not path.exists() for path in old_paths)
         assert session.find() is None
+
+
+def test_successful_postprocess_consumes_raw_vcd_outside_work_dir(tmp_path):
+    cache_root = tmp_path / "bwave"
+    work = tmp_path / "runtime" / "sim"
+    run_dir = tmp_path / "project"
+    work.mkdir(parents=True)
+    run_dir.mkdir()
+    raw_vcd = run_dir / "dump.vcd"
+    raw_vcd.write_text("$date\n$end\n", encoding="utf-8")
+
+    def _build(_vcd_path: Path, bwave_path: Path, _scope: str) -> bool:
+        bwave_path.write_bytes(MINIMAL_FST_BYTES)
+        return True
+
+    with (
+        patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root),
+        patch(
+            "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
+            side_effect=_build,
+        ),
+    ):
+        session = TraceSession(work, trace_scope="tb")
+        session.postprocess(raw_vcd)
+
+        assert not raw_vcd.exists()
+        assert not (work / "trace.vcd").exists()
+        assert session.work_bwave_path.is_file()
+
+
+def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path):
+    cache_root = tmp_path / "bwave"
+    work = tmp_path / "runtime" / "sim"
+    run_dir = tmp_path / "project"
+    work.mkdir(parents=True)
+    run_dir.mkdir()
+    raw_vcd = run_dir / "dump.vcd"
+    raw_vcd.write_text("$date\n$end\n", encoding="utf-8")
+    leaked_diagnostic = run_dir / "trace.fst.stderr"
+
+    def _fail(_vcd_path: Path, _bwave_path: Path, _scope: str) -> bool:
+        leaked_diagnostic.write_text("conversion failed\n", encoding="utf-8")
+        return False
+
+    with (
+        patch("booley.flows.sim.trace_session._bwave_cache_root", return_value=cache_root),
+        patch(
+            "booley.flows.sim.bwave_fifo.postprocess_vcd_to_bwave",
+            side_effect=_fail,
+        ),
+    ):
+        session = TraceSession(work, trace_scope="tb")
+        session.postprocess(raw_vcd)
+
+        assert not raw_vcd.exists()
+        assert (work / "trace.vcd").is_file()
+        assert not leaked_diagnostic.exists()
+        assert session.persisted_stderr_path.read_text(encoding="utf-8") == ("conversion failed\n")
