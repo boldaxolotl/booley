@@ -8,7 +8,7 @@ import re
 import uuid
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 
@@ -36,7 +36,23 @@ _FINALIZATION_FIELDS = {
     "removal_digest",
     "finalized",
 }
-_JOURNAL_FIELDS = _BASE_JOURNAL_FIELDS | _CLEANUP_FIELDS | _FINALIZATION_FIELDS
+_JOURNAL_FIELDS = (
+    _BASE_JOURNAL_FIELDS
+    | _CLEANUP_FIELDS
+    | {
+        "removal_targets",
+        "removal_digest",
+    }
+)
+
+
+class Candidate(TypedDict):
+    """One validated pair of prepared and finalized acceptance identities."""
+
+    prepared_sha: str | None
+    finalized_sha: str | None
+    staging_ref: str
+    expected_destination_sha: str
 
 
 def _removal_digest(removal_targets: tuple[str, ...]) -> str:
@@ -99,16 +115,40 @@ class JournalState(StrEnum):
         return order if cleanup else []
 
 
+class AcceptancePolicy(TypedDict):
+    """The immutable publication and cleanup choices for one acceptance."""
+
+    merge: bool
+    cleanup: bool
+
+
+class AcceptanceJournal(TypedDict):
+    """Validated mutable state for one recoverable acceptance transaction."""
+
+    schema: int
+    transaction: str
+    ticket: str
+    state: JournalState
+    policy: AcceptancePolicy
+    participants: list[dict[str, str]]
+    sources: dict[str, str]
+    candidates: dict[str, Candidate]
+    published: list[str]
+    cleaned: list[str]
+    removal_targets: list[str]
+    removal_digest: str
+
+
 def initial_journal(
     slug: str,
     participants: list[dict[str, str]],
     *,
     cleanup: bool,
     removal_targets: tuple[str, ...] = (),
-) -> dict[str, Any]:
+) -> AcceptanceJournal:
     """Return a new journal before any repository mutation."""
     return {
-        "schema": 3,
+        "schema": 4,
         "transaction": uuid.uuid4().hex,
         "ticket": slug,
         "state": JournalState.INITIALIZING,
@@ -120,7 +160,6 @@ def initial_journal(
         "cleaned": [],
         "removal_targets": list(removal_targets),
         "removal_digest": _removal_digest(removal_targets),
-        "finalized": not removal_targets,
     }
 
 
@@ -157,27 +196,48 @@ def _validated_string_map(value: Any, field: str, roles: set[str]) -> dict[str, 
     return result
 
 
-def _validated_candidates(
-    value: Any, roles: set[str], transaction: str
-) -> dict[str, dict[str, str]]:
+def _validated_candidates(value: Any, roles: set[str], transaction: str) -> dict[str, Candidate]:
     mapping = require_dict(value, field="acceptance journal candidates")
     if not set(mapping) <= roles:
         raise BoundaryError("acceptance journal candidates contains an unknown role")
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, Candidate] = {}
     for role, raw in mapping.items():
         candidate = require_dict(raw, field=f"acceptance journal candidates.{role}")
-        expected = {"sha", "staging_ref", "expected_destination_sha"}
+        expected = {
+            "prepared_sha",
+            "finalized_sha",
+            "staging_ref",
+            "expected_destination_sha",
+        }
         if set(candidate) != expected:
             raise BoundaryError(f"acceptance journal candidate {role!r} has invalid fields")
-        result[role] = {key: require_str(candidate, key) for key in expected}
+        result[role] = {
+            "prepared_sha": _optional_sha(candidate, role, "prepared_sha"),
+            "finalized_sha": _optional_sha(candidate, role, "finalized_sha"),
+            "staging_ref": require_str(candidate, "staging_ref"),
+            "expected_destination_sha": require_str(candidate, "expected_destination_sha"),
+        }
         _validate_candidate(result[role], role, transaction)
     return result
 
 
-def _validate_candidate(candidate: dict[str, str], role: str, transaction: str) -> None:
-    for key in ("sha", "expected_destination_sha"):
-        if not _SHA_RE.fullmatch(candidate[key]):
-            raise BoundaryError(f"acceptance journal candidates.{role}.{key} is invalid")
+def _optional_sha(candidate: dict[str, Any], role: str, key: str) -> str | None:
+    if candidate.get(key) is None:
+        return None
+    value = require_str(candidate, key)
+    if not _SHA_RE.fullmatch(value):
+        raise BoundaryError(f"acceptance journal candidates.{role}.{key} is invalid")
+    return value
+
+
+def _validate_candidate(candidate: Candidate, role: str, transaction: str) -> None:
+    if candidate["prepared_sha"] is None and candidate["finalized_sha"] is None:
+        raise BoundaryError(f"acceptance journal candidate {role!r} has no recorded identity")
+    expected_destination = candidate["expected_destination_sha"]
+    if not _SHA_RE.fullmatch(expected_destination):
+        raise BoundaryError(
+            f"acceptance journal candidates.{role}.expected_destination_sha is invalid"
+        )
     expected_ref = f"refs/booley/acceptance/{transaction}/{role}"
     if candidate["staging_ref"] != expected_ref:
         raise BoundaryError(
@@ -209,11 +269,10 @@ def _validate_progress(
     roles: set[str],
     cleanup: bool,
     sources: dict[str, str],
-    candidates: dict[str, dict[str, str]],
+    candidates: dict[str, Candidate],
     published: list[Any],
     cleaned: list[Any],
     *,
-    finalized: bool,
     has_removals: bool,
 ) -> None:
     order = [role for role in ("project", "outer") if role in roles]
@@ -232,9 +291,12 @@ def _validate_progress(
         raise BoundaryError(
             f"acceptance journal state {str(state)!r} conflicts with cleaned roles"
         )
+    finalized = bool(candidates) and all(
+        candidate["finalized_sha"] is not None for candidate in candidates.values()
+    )
     if published and not finalized:
         raise BoundaryError("acceptance journal cannot publish unfinalized candidates")
-    if not has_removals and not finalized:
+    if candidates and not has_removals and not finalized:
         raise BoundaryError("acceptance journal without removals must already be finalized")
 
 
@@ -243,7 +305,7 @@ def _validate_checkpoint_dependencies(
     roles: set[str],
     cleanup: bool,
     sources: dict[str, str],
-    candidates: dict[str, dict[str, str]],
+    candidates: dict[str, Candidate],
     published: list[Any],
     cleaned: list[Any],
 ) -> None:
@@ -270,7 +332,7 @@ def validate_journal(
     *,
     cleanup: bool | None,
     removal_targets: tuple[str, ...] | None = None,
-) -> dict[str, Any]:
+) -> AcceptanceJournal:
     """Validate external journal data against its immutable identity."""
     journal = require_dict(value, field="acceptance journal")
     if require_str(journal, "ticket") != slug:
@@ -279,17 +341,14 @@ def validate_journal(
         raise BoundaryError("sealed repository participants changed after acceptance began")
     if set(journal) != _JOURNAL_FIELDS:
         raise BoundaryError("acceptance journal has invalid fields")
-    if journal.get("schema") != 3:
-        raise BoundaryError("acceptance journal schema must be 3")
+    if journal.get("schema") != 4:
+        raise BoundaryError("acceptance journal schema must be 4")
     transaction = require_str(journal, "transaction")
     if not re.fullmatch(r"[0-9a-f]{32}", transaction):
         raise BoundaryError("acceptance journal transaction is invalid")
     state = _validated_state(journal)
     actual_cleanup = _validated_policy(journal.get("policy"), cleanup=cleanup)
     stored_removals = _validated_removals(journal, removal_targets)
-    finalized = journal.get("finalized")
-    if not isinstance(finalized, bool):
-        raise BoundaryError("acceptance journal finalized must be boolean")
     roles = {item["role"] for item in participants}
     sources = _validated_string_map(journal.get("sources"), "acceptance journal sources", roles)
     candidates = _validated_candidates(journal.get("candidates"), roles, transaction)
@@ -303,7 +362,6 @@ def validate_journal(
         candidates,
         published,
         cleaned,
-        finalized=finalized,
         has_removals=bool(stored_removals),
     )
     return _normalized(
@@ -315,7 +373,6 @@ def validate_journal(
         published,
         cleaned,
         stored_removals,
-        finalized,
     )
 
 
@@ -336,14 +393,13 @@ def _normalized(
     state: JournalState,
     cleanup: bool,
     sources: dict[str, str],
-    candidates: dict[str, dict[str, str]],
+    candidates: dict[str, Candidate],
     published: list[Any],
     cleaned: list[Any],
     removal_targets: tuple[str, ...],
-    finalized: bool,
-) -> dict[str, Any]:
+) -> AcceptanceJournal:
     return {
-        "schema": 3,
+        "schema": 4,
         "transaction": journal["transaction"],
         "ticket": journal["ticket"],
         "state": state,
@@ -355,22 +411,24 @@ def _normalized(
         "cleaned": cleaned,
         "removal_targets": list(removal_targets),
         "removal_digest": _removal_digest(removal_targets),
-        "finalized": finalized,
     }
 
 
 def upgrade_legacy_journal(
     value: Any, *, cleanup: bool, removal_targets: tuple[str, ...] = ()
 ) -> Any:
-    """Upgrade either historical journal shape to the combined schema."""
-    if not isinstance(value, dict) or value.get("schema") not in {1, 2}:
+    """Upgrade historical journal shapes without inventing a prepared identity."""
+    if not isinstance(value, dict) or value.get("schema") not in {1, 2, 3}:
         return value
     fields = set(value)
     schema = value["schema"]
     is_schema_one = schema == 1 and fields == _BASE_JOURNAL_FIELDS
     is_cleanup_two = schema == 2 and fields == _BASE_JOURNAL_FIELDS | _CLEANUP_FIELDS
     is_finalization_two = schema == 2 and fields == _BASE_JOURNAL_FIELDS | _FINALIZATION_FIELDS
-    if not (is_schema_one or is_cleanup_two or is_finalization_two):
+    is_schema_three = (
+        schema == 3 and fields == _BASE_JOURNAL_FIELDS | _CLEANUP_FIELDS | _FINALIZATION_FIELDS
+    )
+    if not (is_schema_one or is_cleanup_two or is_finalization_two or is_schema_three):
         return value
     upgraded = dict(value)
     if is_finalization_two:
@@ -378,7 +436,7 @@ def upgrade_legacy_journal(
         if removal_targets and stored != removal_targets:
             return value
         upgraded.update(policy={"merge": True, "cleanup": cleanup}, cleaned=[])
-    else:
+    elif is_schema_one or is_cleanup_two:
         if removal_targets:
             return value
         if is_schema_one:
@@ -388,10 +446,36 @@ def upgrade_legacy_journal(
             removal_digest=_removal_digest(()),
             finalized=True,
         )
-    upgraded["schema"] = 3
-    if upgraded["state"] == "done" and cleanup and not is_finalization_two:
+    elif removal_targets and tuple(upgraded.get("removal_targets", ())) != removal_targets:
+        return value
+    stored_removals = tuple(upgraded.get("removal_targets", ()))
+    finalized = upgraded.pop("finalized")
+    candidates = upgraded.get("candidates")
+    if isinstance(candidates, dict):
+        upgraded["candidates"] = {
+            role: _upgrade_legacy_candidate(raw, bool(stored_removals), finalized)
+            for role, raw in candidates.items()
+        }
+    upgraded["schema"] = 4
+    if upgraded["state"] == "done" and cleanup and (is_schema_one or is_cleanup_two):
         upgraded["state"] = JournalState.ACCEPTED
     return upgraded
+
+
+def _upgrade_legacy_candidate(raw: Any, has_removals: bool, finalized: Any) -> Any:
+    if not isinstance(raw, dict) or set(raw) != {
+        "sha",
+        "staging_ref",
+        "expected_destination_sha",
+    }:
+        return raw
+    sha = raw["sha"]
+    return {
+        "prepared_sha": None if has_removals and finalized is True else sha,
+        "finalized_sha": sha if finalized is True else None,
+        "staging_ref": raw["staging_ref"],
+        "expected_destination_sha": raw["expected_destination_sha"],
+    }
 
 
 def read_json(path: Path) -> Any:
@@ -409,7 +493,7 @@ def load_journal(
     *,
     cleanup: bool,
     removal_targets: tuple[str, ...] = (),
-) -> dict[str, Any]:
+) -> AcceptanceJournal:
     """Read and validate one Ticket's journal, including schema-1 recovery."""
     value = upgrade_legacy_journal(
         read_json(path), cleanup=cleanup, removal_targets=removal_targets
@@ -426,7 +510,7 @@ def load_journal(
         raise AcceptanceJournalError(f"acceptance journal is malformed: {path}: {exc}") from exc
 
 
-def load_persisted_journal(path: Path) -> dict[str, Any]:
+def load_persisted_journal(path: Path) -> AcceptanceJournal:
     """Read and fully validate a journal when its Ticket contract is unavailable."""
     value = read_json(path)
     try:
@@ -451,8 +535,8 @@ def _persisted_cleanup(journal: dict[str, Any]) -> bool:
     fields = set(journal)
     if schema == 1 or (schema == 2 and fields == _BASE_JOURNAL_FIELDS | _FINALIZATION_FIELDS):
         return False
-    if schema not in {2, 3}:
-        raise BoundaryError("acceptance journal schema must be 1, 2, or 3")
+    if schema not in {2, 3, 4}:
+        raise BoundaryError("acceptance journal schema must be 1, 2, 3, or 4")
     return _validated_policy(journal.get("policy"), cleanup=None)
 
 
