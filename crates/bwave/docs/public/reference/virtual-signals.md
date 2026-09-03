@@ -1,24 +1,24 @@
 # Virtual signals
 
-Virtual signals are user-defined boolean (or
-multi-bit) expressions over existing signals. They behave
-like any other signal in the store: you can `find` on
+Virtual signals are user-defined 1-bit boolean predicates
+over existing signals and earlier virtual definitions. They
+behave like query-scoped signals: you can `find` on
 them, `sample` on them, plot them in `wave`, snapshot
 them in `value`, measure with `distance`. They don't
 persist into the store: each invocation re-evaluates
 them, but the cost is negligible.
 
-Defined via `--virtual "name = expr"` on any consumer
-subcommand. Repeatable.
+Defined via `--virtual "name = expr"` on a supported query
+subcommand. Repeatable; definition order controls composition.
 
 ## Scope: where `--virtual` works
 
 Accepted on: `wave`, `find`, `sample`, `distance`,
-`value`, and `signal`.
+and `value`.
 
-Rejected on: `list`, `stats`, `stuck`, `diff`, `build`.
-These are introspection / store-touching commands; they
-don't consume virtual signals.
+Rejected on: `list`, `signal`, `diff`, `stats`, `stuck`,
+and `build`. These commands reject `--virtual` during
+argument parsing.
 
 ## Grammar
 
@@ -102,12 +102,13 @@ zero-extension. Slice one side to match: `*sig_a ==
 Signal-to-literal comparisons coerce the literal to the
 signal width.
 
-## Logical vs bitwise
+## Boolean operators
 
-- `&` `|` `^` `~` are **bitwise**. On multi-bit
-  operands they produce a multi-bit result.
-- `&&` `||` `!` are **logical**: non-zero is true,
-  result is 1 bit.
+- `&` `|` `^` `~` and `&&` `||` `!` combine boolean
+  atoms and always produce a 1-bit result.
+- A bare multi-bit signal atom is true when non-zero.
+- To compare multi-bit values, use a comparison or slice;
+  Virtual Signals do not produce multi-bit results.
 
 For a 1-bit handshake predicate, either works:
 
@@ -200,12 +201,11 @@ bwave find sim.fst \
 
 ## Errors
 
-Virtual definitions are validated when the query
-starts. If parsing or resolution fails (unknown signal,
-width mismatch, syntax error), B-Wave prints an error
-to stderr but continues running the query (some partial
-output may appear on stdout). The process exits with
-code 2 at the end so scripts can detect bad input.
+Every Virtual Signal definition is parsed and resolved when
+the query starts. If any definition fails (unknown signal,
+width mismatch, syntax error), B-Wave prints an error to
+stderr and exits immediately with code 2 before emitting
+query results.
 
 Common failure modes:
 

@@ -160,8 +160,8 @@ Anything text mode would print to stderr as `# WARNING:
   degraded to ticks).
 - `--limit` capped the output (`truncated: true` in
   `findData`, plus a warning in `warnings`).
-- A virtual signal failed to evaluate (binary still
-  exits non-zero).
+- A selected `-s` pattern matched no stored or Virtual
+  Signal and was dropped.
 
 A clean run has `"warnings": []`.
 

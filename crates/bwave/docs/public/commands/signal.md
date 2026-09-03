@@ -5,7 +5,7 @@
 ```bash
 bwave signal <FST_FILE> [-s PATTERN[%RADIX] ...] [-t START:END]
             [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--virtual "name = expr"] [--marker NAME CYCLE]
+            [--marker NAME CYCLE]
             [--format text|json] [--limit N]
 ```
 
@@ -34,7 +34,7 @@ VCD transition is its own row with the raw timestamp.
 - Time units: bare integers are cycles in sync mode;
   async mode requires a unit suffix (`100t`, `100ns`).
   See `reference/time-tokens`.
-- `--virtual` and `--marker` apply.
+- `--marker` applies.
 
 ## Output shape
 
@@ -107,12 +107,4 @@ glitches between clock edges:
 
 ```bash
 bwave signal sim.fst -s "*valid*" -s "*ready*" -t 0t:1000t --async
-```
-
-Use a virtual signal as a row:
-
-```bash
-bwave signal sim.fst \
-    --virtual "hsk = *valid & *ready" \
-    -s "hsk" -s "*state*" -t 0:500
 ```
