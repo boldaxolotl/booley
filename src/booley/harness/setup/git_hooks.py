@@ -16,15 +16,9 @@ it never imports back from ``init_cmd``.
 
 from __future__ import annotations
 
-import hashlib
-import os
 import shutil
-import stat
 import subprocess
-from contextlib import suppress
-from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Literal
 
 from booley.harness.setup.common import (
     InitContext,
@@ -36,59 +30,20 @@ from booley.harness.setup.common import (
     skip,
     warn,
 )
+from booley.harness.setup.line_endings import (
+    GITATTRIBUTES_RULE,
+    LineEndingActionKind,
+    LineEndingActionResult,
+    LineEndingActionState,
+    LineEndingMode,
+    LineEndingObservationCode,
+    LineEndingStatus,
+    RepositoryLineEndingReport,
+    line_ending_repository_display,
+    reconcile_project_line_endings,
+)
 from booley.runtime.paths import dev_support_dir
 from booley.runtime.project_dir import resolve_project_dir
-
-LineEndingRole = Literal["project-checkout", "project-data"]
-LineEndingStatus = Literal["ok", "skip", "warn"]
-
-
-@dataclass(frozen=True)
-class AutocrlfSetting:
-    """One resolved Git Boolean and whether that scope sets it explicitly."""
-
-    value: bool
-    is_set: bool
-
-
-@dataclass(frozen=True)
-class LineEndingRepository:
-    """One distinct Git worktree whose files enter the Session Runtime."""
-
-    role: LineEndingRole
-    root: Path
-
-
-@dataclass(frozen=True)
-class RepositoryDiscoveryFailure:
-    """An expected repository candidate whose Git root could not be resolved."""
-
-    role: LineEndingRole
-    candidate: Path
-    detail: str
-
-
-@dataclass(frozen=True)
-class RepositoryDiscovery:
-    """Ordered distinct Git roots plus candidates that could not be inspected."""
-
-    repositories: tuple[LineEndingRepository, ...]
-    failures: tuple[RepositoryDiscoveryFailure, ...]
-
-
-@dataclass(frozen=True)
-class LineEndingOutcome:
-    """Result of inspecting or repairing one repository."""
-
-    repository: LineEndingRepository
-    status: LineEndingStatus
-    detail: str
-
-
-def line_ending_repository_display(role: LineEndingRole, root: Path) -> str:
-    """Render one repository role and path consistently across init and Doctor."""
-    label = "project checkout" if role == "project-checkout" else "project data"
-    return f"{label} ({root})"
 
 
 def _step_git_hooks(ctx: InitContext) -> None:
@@ -411,902 +366,199 @@ def _step_project_git_hooks(ctx: InitContext) -> None:
     ctx.record("project_git_hooks", "ok", "installed")
 
 
-# ---------------------------------------------------------------------------
-# Line-endings advisory (record key: line_endings) — F-15
-# ---------------------------------------------------------------------------
+_OBSERVATION_MESSAGES = {
+    LineEndingObservationCode.CRLF_MISMATCH: (
+        "{count} tracked file(s) are checked out with CRLF — the Session Runtime container "
+        "will see every one as modified (phantom diffs break the dirty-tree check, scope "
+        "enforcement, and ticket worktrees)"
+    ),
+    LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE: (
+        "core.autocrlf=true (Git for Windows' installer default) re-creates CRLF checkouts "
+        "on every clone/checkout"
+    ),
+    LineEndingObservationCode.AUTOCRLF_NOT_PINNED: (
+        "core.autocrlf is not pinned false in this repository"
+    ),
+}
+
+_ACTION_LINES = {
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.PIN_AUTOCRLF): (
+        (ok, "core.autocrlf=false (repo-local; CRLF will not come back on checkout)"),
+    ),
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.NORMALIZE_FILES): (
+        (note, "detected {count} tracked file(s) are checked out with CRLF"),
+        (ok, "normalized {count} file(s) to LF atomically — tree is container-safe"),
+    ),
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.REFRESH_INDEX): (
+        (ok, "refreshed stale Git index metadata for {count} tracked file(s)"),
+    ),
+    (LineEndingActionState.COMPLETED, LineEndingActionKind.PUBLISH_ATTRIBUTES): (
+        (ok, "added '{rule}' as the first line of .gitattributes"),
+        (info, "  commit it — the rule only travels to your team through git"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.PIN_AUTOCRLF): (
+        (info, "  would set core.autocrlf=false"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.NORMALIZE_FILES): (
+        (info, "  would normalize {count} tracked file(s) to LF atomically"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.REFRESH_INDEX): (
+        (warn, "would refresh stale Git index metadata for {count} tracked file(s)"),
+    ),
+    (LineEndingActionState.PLANNED, LineEndingActionKind.PUBLISH_ATTRIBUTES): (
+        (info, "  would add '{rule}' to .gitattributes"),
+    ),
+}
+
+_FAILED_ACTION_DETAILS = {
+    LineEndingActionKind.PIN_AUTOCRLF: "autocrlf update failed",
+    LineEndingActionKind.NORMALIZE_FILES: "normalization failed",
+    LineEndingActionKind.REFRESH_INDEX: "normalization failed",
+    LineEndingActionKind.PUBLISH_ATTRIBUTES: "normalization failed",
+}
+
+_OBSERVATION_RESULT_DETAILS = (
+    (LineEndingObservationCode.CRLF_MISMATCH, "CRLF working tree"),
+    (LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE, "autocrlf policy unsafe"),
+    (LineEndingObservationCode.AUTOCRLF_NOT_PINNED, "autocrlf policy unsafe"),
+    (LineEndingObservationCode.STALE_INDEX, "stale index metadata"),
+)
+
+_COMPLETED_ACTION_DETAILS = (
+    (LineEndingActionKind.NORMALIZE_FILES, "normalized"),
+    (LineEndingActionKind.REFRESH_INDEX, "index refreshed"),
+)
 
 
-def _run_git_worktree_probe(
-    candidate: Path,
-) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
-    try:
-        probe = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(candidate),
-                "rev-parse",
-                "--path-format=absolute",
-                "--show-toplevel",
-            ],
-            capture_output=True,
-            text=True,
-            errors="surrogateescape",
-            check=False,
-            timeout=10,
+def _render_line_ending_observations(report: RepositoryLineEndingReport) -> None:
+    for observation in report.observations:
+        template = _OBSERVATION_MESSAGES.get(observation.code)
+        message = template.format(count=observation.count) if template else observation.detail
+        if message:
+            warn(message)
+
+
+def _render_line_ending_action(action: LineEndingActionResult) -> None:
+    lines = _ACTION_LINES.get((action.state, action.kind))
+    if lines is not None:
+        if (
+            action.kind is LineEndingActionKind.PIN_AUTOCRLF
+            and action.state is LineEndingActionState.COMPLETED
+            and action.detail == "effective true"
+        ):
+            note("detected core.autocrlf=true (Git for Windows' installer default)")
+        for emit, template in lines:
+            emit(template.format(count=action.count, rule=GITATTRIBUTES_RULE))
+    elif action.detail:
+        prefix = (
+            "would leave tracked files untouched: "
+            if action.state is LineEndingActionState.REFUSED
+            else ""
         )
-    except FileNotFoundError:
-        return None, "git unavailable"
-    except subprocess.SubprocessError as exc:
-        return None, f"Git probe failed: {exc}"
-    except OSError as exc:
-        return None, f"Git probe failed: {exc}"
-    return probe, None
+        warn(f"{prefix}{action.detail}")
 
 
-def _probe_git_worktree(
-    role: LineEndingRole, candidate: Path
-) -> tuple[LineEndingRepository | None, RepositoryDiscoveryFailure | None]:
-    if not candidate.is_dir():
-        return None, RepositoryDiscoveryFailure(role, candidate, "directory does not exist")
-    probe, error = _run_git_worktree_probe(candidate)
-    if error is not None:
-        return None, RepositoryDiscoveryFailure(role, candidate, error)
-    assert probe is not None
-    return _parse_git_worktree_probe(role, candidate, probe)
-
-
-def _parse_git_worktree_probe(
-    role: LineEndingRole,
-    candidate: Path,
-    probe: subprocess.CompletedProcess[str],
-) -> tuple[LineEndingRepository | None, RepositoryDiscoveryFailure | None]:
-    if probe.returncode != 0:
-        detail = probe.stderr.strip() or "not a Git repository"
-        if "not a git repository" in detail.casefold():
-            return None, None
-        return None, RepositoryDiscoveryFailure(role, candidate, detail)
-    rendered = probe.stdout.rstrip("\r\n")
-    if not rendered:
-        return None, RepositoryDiscoveryFailure(role, candidate, "Git returned an empty top-level")
-    root = Path(rendered)
-    if not root.is_absolute():
-        detail = f"Git returned a non-absolute top-level: {rendered!r}"
-        return None, RepositoryDiscoveryFailure(role, candidate, detail)
-    return LineEndingRepository(role, root.resolve()), None
-
-
-def discover_line_ending_repositories(
-    project_root: Path, project_dir: Path | None = None
-) -> RepositoryDiscovery:
-    """Resolve the distinct Git worktrees that supply one Project's files."""
-    candidates: list[tuple[LineEndingRole, Path]] = [("project-checkout", project_root)]
-    if project_dir is not None:
-        candidates.append(("project-data", project_dir))
-    repositories: list[LineEndingRepository] = []
-    failures: list[RepositoryDiscoveryFailure] = []
-    seen: set[str] = set()
-    for role, candidate in candidates:
-        repository, failure = _probe_git_worktree(role, candidate)
-        if failure is not None:
-            failures.append(failure)
-            continue
-        if repository is None:
-            continue
-        key = os.path.normcase(str(repository.root))
-        if key in seen:
-            continue
-        seen.add(key)
-        repositories.append(repository)
-    return RepositoryDiscovery(tuple(repositories), tuple(failures))
-
-
-def _crlf_worktree_files(project_root: Path) -> list[str] | None:
-    """Tracked paths that will read as modified in the container.
-
-    ``git ls-files --eol`` prints one ``i/<index-eol> w/<worktree-eol>
-    attr/<text-attr>`` line per tracked file. A CRLF worktree file is only a
-    *phantom diff* when its line endings differ from the blob in the index —
-    that mismatch is what a Linux container's git (which does no CRLF
-    conversion) reports as a modification.
-
-    A file whose ``.gitattributes`` marks it ``-text`` (or which git detected as
-    binary) is stored CRLF and checked out CRLF: ``i/crlf w/crlf``. It matches
-    the index byte for byte, in the container as much as on the host, so it
-    cannot produce a phantom diff and must not be counted. Upstream repos
-    legitimately do this for CRLF-native payloads carried as text — Windows
-    ``.bat`` scripts, vendor register dumps — and counting them made the check
-    fire on projects with nothing to fix (8 files on taxi, every one exempt).
-
-    Comparing the two eol fields (rather than sniffing ``attr/-text``) tests the
-    condition directly, so it also catches the inverse case ``-text`` never
-    covers: an ``i/lf w/crlf`` file, which IS a phantom diff.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(project_root), "ls-files", "--eol", "-z"],
-            capture_output=True,
-            text=True,
-            errors="surrogateescape",
-            check=False,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    paths: list[str] = []
-    for record in proc.stdout.split("\0"):
-        metadata, separator, path = record.partition("\t")
-        fields = metadata.split()
-        if not separator or not path:
-            continue
-        if len(fields) < 2:
-            continue
-        index_eol, worktree_eol = fields[0], fields[1]
-        if worktree_eol not in ("w/crlf", "w/mixed"):
-            continue
-        if index_eol[2:] == worktree_eol[2:]:
-            continue  # index already holds CRLF — no diff for git to see
-        if any(field.lower() == "eol=crlf" for field in fields[2:]):
-            continue  # an explicit checkout policy the Session Runtime also honors
-        paths.append(path)
-    return paths
-
-
-def _count_crlf_worktree_files(project_root: Path) -> int | None:
-    """Number of tracked files that will read as modified in the container."""
-    paths = _crlf_worktree_files(project_root)
-    return None if paths is None else len(paths)
-
-
-def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> AutocrlfSetting | None:
-    """Read effective or repo-local ``core.autocrlf`` and its presence."""
-    command = ["git", "-C", str(project_root), "config"]
-    if local:
-        command.append("--local")
-    command.extend(["--bool", "--get", "core.autocrlf"])
-    try:
-        proc = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode == 1 and not proc.stdout.strip():
-        return AutocrlfSetting(False, is_set=False)
-    if proc.returncode != 0:
-        return None
-    value = proc.stdout.strip().lower()
-    if value not in {"true", "false"}:
-        return None
-    return AutocrlfSetting(value == "true", is_set=True)
-
-
-GITATTRIBUTES_RULE = "* text=auto eol=lf"
-
-
-def _eol_policy_is_user_owned(project_root: Path) -> bool:
-    """Does the root ``.gitattributes`` already set an all-files eol policy?
-
-    A ``*``-pattern line carrying ``text``/``-text``/``eol=`` means the project
-    has stated its own whole-tree policy. Whatever it says, it is a deliberate
-    choice and init must not second-guess it — we neither add our rule nor
-    argue with theirs.
-    """
-    path = project_root / ".gitattributes"
-    try:
-        lines = path.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
-    except OSError:
-        return False
-    for line in lines:
-        fields = line.split("#", 1)[0].split()
-        if len(fields) < 2 or fields[0] != "*":
-            continue
-        if any(a in {"text", "-text"} or a.startswith(("text=", "eol=")) for a in fields[1:]):
-            return True
-    return False
-
-
-def _write_gitattributes_rule(project_root: Path) -> bool:
-    """Put ``* text=auto eol=lf`` at the TOP of root ``.gitattributes``.
-
-    ``text=auto`` keeps Git's binary detection intact while applying LF to
-    detected text. Prepended, never appended: git resolves attributes
-    last-match-wins, so the first line lets every specific rule below it —
-    including ``*.bat -text`` / vendor-dump exemptions — override this default
-    (see :func:`_count_crlf_worktree_files`).
-
-    Returns True if the file was created or changed.
-    """
-    path = project_root / ".gitattributes"
-    try:
-        existing = (
-            path.read_text(encoding="utf-8", errors="surrogateescape") if path.exists() else ""
-        )
-    except OSError:
-        return False
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    try:
-        with path.open("w", encoding="utf-8", errors="surrogateescape", newline="\n") as f:
-            f.write(f"{GITATTRIBUTES_RULE}\n{existing}")
-    except OSError:
-        return False
-    return True
-
-
-def _worktree_is_clean(project_root: Path) -> bool | None:
-    """Is the host-side working tree free of tracked uncommitted changes?
-
-    Sampled *before* init touches anything, because the CRLF fix itself moves
-    this answer: with ``core.autocrlf=true`` the clean filter hides the CRLF
-    from ``git status`` on the host, and flipping the knob can expose those
-    same files as modified. Only the pre-fix reading tells us whether the user
-    has real work in the tree. Untracked files are ignored because normalization
-    rewrites only exact paths reported by ``git ls-files``. None = git could not
-    answer.
-    """
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "status",
-                "--porcelain",
-                "--untracked-files=no",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return not proc.stdout.strip()
-
-
-def _tracked_phantom_paths(project_root: Path) -> tuple[list[str] | None, str | None]:
-    """Tracked paths reported dirty, or the contextual Git failure that blocked inspection."""
-    commands = (
-        ("status", "--porcelain", "-z", "--untracked-files=no"),
-        ("diff", "--quiet", "--ignore-submodules=none"),
-        ("diff", "--cached", "--quiet", "--ignore-submodules=none"),
+def _unreadable_line_ending_detail(
+    report: RepositoryLineEndingReport,
+    codes: set[LineEndingObservationCode],
+) -> str | None:
+    fixed_details = (
+        (LineEndingObservationCode.AUTOCRLF_UNREADABLE, "autocrlf unreadable"),
+        (LineEndingObservationCode.LOCAL_AUTOCRLF_UNREADABLE, "local autocrlf unreadable"),
+        (LineEndingObservationCode.STATUS_UNREADABLE, "status comparison unreadable"),
     )
-    results: list[subprocess.CompletedProcess[bytes]] = []
-    try:
-        for command in commands:
-            results.append(
-                subprocess.run(
-                    ["git", "-C", str(project_root), *command],
-                    capture_output=True,
-                    check=False,
-                    timeout=60,
-                )
-            )
-    except (subprocess.SubprocessError, OSError) as exc:
-        rendered = " ".join(command)
-        return None, f"`git -C {project_root} {rendered}` failed: {exc}"
-
-    status, unstaged, staged = results
-    expected_codes = ({0}, {0, 1}, {0, 1})
-    for command, result, expected in zip(commands, results, expected_codes, strict=True):
-        if result.returncode not in expected:
-            rendered = " ".join(command)
-            stderr = result.stderr.decode(errors="replace").strip() or "no stderr"
-            return (
-                None,
-                f"`git -C {project_root} {rendered}` exited {result.returncode}: {stderr}",
-            )
-    if not status.stdout.strip() or unstaged.returncode != 0 or staged.returncode != 0:
-        return [], None
-
-    paths: list[str] = []
-    for record in status.stdout.split(b"\0"):
-        if not record:
-            continue
-        if len(record) < 4 or record[:3] not in (b" M ", b"M  "):
-            return None, f"tracked status contained unsupported porcelain record {record!r}"
-        paths.append(os.fsdecode(record[3:]))
-    return paths, None
-
-
-def _tracked_status_is_phantom(project_root: Path) -> tuple[bool | None, str | None]:
-    paths, error = _tracked_phantom_paths(project_root)
-    return (None, error) if paths is None else (bool(paths), None)
-
-
-def _protected_index_paths(project_root: Path, paths: list[str]) -> list[str] | None:
-    """Affected paths hidden from normal status by Git index flags."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(project_root), "ls-files", "-v", "-z"],
-            capture_output=True,
-            text=True,
-            errors="surrogateescape",
-            check=False,
-            timeout=60,
+    for code, detail in fixed_details:
+        if code in codes:
+            return detail
+    if LineEndingObservationCode.EOL_SCAN_UNREADABLE in codes:
+        normalized = any(
+            action.kind is LineEndingActionKind.NORMALIZE_FILES
+            and action.state is LineEndingActionState.COMPLETED
+            for action in report.actions
         )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-
-    affected = set(paths)
-    protected: list[str] = []
-    for record in proc.stdout.split("\0"):
-        tag, separator, path = record.partition(" ")
-        if not separator or path not in affected:
-            continue
-        if tag == "S" or tag.islower():
-            protected.append(path)
-    return protected
-
-
-def _file_digest(path: Path) -> bytes:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.digest()
-
-
-def _candidate_digest(project_root: Path, name: str) -> tuple[bytes | None, str | None]:
-    """Snapshot one candidate without following links or disturbing metadata."""
-    path = project_root / name
-    try:
-        metadata = path.lstat()
-        if not stat.S_ISREG(metadata.st_mode):
-            return None, f"refusing to normalize non-regular tracked path {name!r}"
-        if metadata.st_nlink > 1:
-            return None, f"refusing to normalize hard-linked tracked path {name!r}"
-        return _file_digest(path), None
-    except OSError as exc:
-        return None, f"could not inspect tracked path {name!r}: {exc}"
-
-
-def _snapshot_candidates(
-    project_root: Path, paths: list[str]
-) -> tuple[dict[str, bytes], str | None]:
-    snapshots: dict[str, bytes] = {}
-    for name in paths:
-        digest, error = _candidate_digest(project_root, name)
-        if error:
-            return {}, error
-        assert digest is not None
-        snapshots[name] = digest
-    return snapshots, None
-
-
-def _staged_paths(project_root: Path, output: bytes) -> dict[str, Path]:
-    staged: dict[str, Path] = {}
-    for record in output.split(b"\0"):
-        temporary, separator, original = record.partition(b"\t")
-        if separator and temporary and original:
-            staged[os.fsdecode(original)] = project_root / os.fsdecode(temporary)
-    return staged
-
-
-def _cleanup_staged_files(paths: dict[str, Path]) -> None:
-    for path in paths.values():
-        with suppress(FileNotFoundError):
-            path.unlink()
-
-
-def _stage_lf_files(project_root: Path, paths: list[str]) -> tuple[dict[str, Path], str | None]:
-    """Materialize checkout-filtered LF replacements without touching the worktree."""
-    encoded_paths = b"\0".join(os.fsencode(name) for name in paths) + b"\0"
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "--literal-pathspecs",
-                "-c",
-                "core.autocrlf=false",
-                "-C",
-                str(project_root),
-                "checkout-index",
-                "--temp",
-                "-z",
-                "--stdin",
-            ],
-            input=encoded_paths,
-            capture_output=True,
-            check=False,
-            timeout=300,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        return {}, f"could not stage LF replacements: {exc}"
-    staged = _staged_paths(project_root, proc.stdout)
-    if proc.returncode != 0 or set(staged) != set(paths):
-        _cleanup_staged_files(staged)
-        detail = proc.stderr.decode(errors="replace").strip() or "incomplete Git output"
-        return {}, f"could not stage LF replacements: {detail}"
-    return staged, None
-
-
-def _restore_after_write_failure(
-    target: BinaryIO, original: bytes, path: Path, cause: OSError
-) -> str:
-    try:
-        target.seek(0)
-        target.write(original)
-        target.truncate()
-        target.flush()
-    except OSError as restore_exc:
-        return (
-            f"could not normalize {path.name!r}: {cause}; restoring the original "
-            f"content also failed: {restore_exc}"
-        )
-    return f"could not normalize {path.name!r}: {cause}; original content restored"
-
-
-def _rewrite_from_stage(path: Path, replacement: Path, expected: bytes) -> str | None:
-    """Update file content in place, preserving its inode and non-Git metadata."""
-    digest, error = _candidate_digest(path.parent, path.name)
-    if error:
-        return error
-    if digest != expected:
-        return f"tracked path changed during line-ending repair: {path.name!r}"
-    try:
-        replacement_bytes = replacement.read_bytes()
-        with path.open("r+b") as target:
-            original = target.read()
-            if hashlib.sha256(original).digest() != expected:
-                return f"tracked path changed during line-ending repair: {path.name!r}"
-            try:
-                target.seek(0)
-                target.write(replacement_bytes)
-                target.truncate()
-                target.flush()
-            except OSError as exc:
-                return _restore_after_write_failure(target, original, path, exc)
-    except OSError as exc:
-        return f"could not normalize {path.name!r}: {exc}"
+        return "EOL verification unreadable" if normalized else "EOL scan unreadable"
     return None
 
 
-def _refresh_normalized_index(
-    project_root: Path,
-    paths: list[str],
-    *,
-    require_clean_worktree: bool = True,
-) -> str | None:
-    """Refresh Git's stat cache for paths whose normalized content is unchanged."""
-    encoded_paths = b"\0".join(os.fsencode(name) for name in paths) + b"\0"
-    try:
-        proc = subprocess.run(
-            [
-                "git",
-                "--literal-pathspecs",
-                "-C",
-                str(project_root),
-                "add",
-                "-u",
-                "--pathspec-from-file=-",
-                "--pathspec-file-nul",
-            ],
-            input=encoded_paths,
-            capture_output=True,
-            check=False,
-            timeout=300,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        return f"could not refresh normalized Git index entries: {exc}"
-    if proc.returncode != 0:
-        detail = proc.stderr.decode(errors="replace").strip() or "Git add failed"
-        return f"could not refresh normalized Git index entries: {detail}"
-    return _verify_refreshed_index(
-        project_root,
-        encoded_paths,
-        require_clean_worktree=require_clean_worktree,
+def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
+    codes = {observation.code for observation in report.observations}
+    unreadable = _unreadable_line_ending_detail(report, codes)
+    failed = next(
+        (action for action in report.actions if action.state is LineEndingActionState.FAILED),
+        None,
     )
-
-
-def _verify_refreshed_index(
-    project_root: Path,
-    encoded_paths: bytes,
-    *,
-    require_clean_worktree: bool,
-) -> str | None:
-    """Confirm the content-aware refresh changed metadata only."""
-    try:
-        staged = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "diff",
-                "--cached",
-                "--quiet",
-                "--ignore-submodules=none",
-            ],
-            capture_output=True,
-            check=False,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        return f"could not verify the normalized Git index entries: {exc}"
-    if staged.returncode not in (0, 1):
-        detail = staged.stderr.decode(errors="replace").strip() or "Git diff failed"
-        return f"could not verify the normalized Git index entries: {detail}"
-    if staged.returncode == 1:
-        return _restore_unexpected_index_changes(project_root, encoded_paths)
-    if require_clean_worktree and _worktree_is_clean(project_root) is not True:
-        return "tracked files changed while Git index metadata was being refreshed"
-    return None
-
-
-def _restore_unexpected_index_changes(project_root: Path, encoded_paths: bytes) -> str:
-    """Restore affected index entries after a refresh produced staged content."""
-    try:
-        restored = subprocess.run(
-            [
-                "git",
-                "--literal-pathspecs",
-                "-C",
-                str(project_root),
-                "reset",
-                "-q",
-                "HEAD",
-                "--pathspec-from-file=-",
-                "--pathspec-file-nul",
-            ],
-            input=encoded_paths,
-            capture_output=True,
-            check=False,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        return (
-            "normalization unexpectedly changed staged content and could not restore "
-            f"the affected index entries: {exc}"
-        )
-    if restored.returncode == 0:
-        return (
-            "normalization unexpectedly changed staged content; "
-            "restored the affected index entries"
-        )
-    detail = restored.stderr.decode(errors="replace").strip() or "Git reset failed"
-    return (
-        "normalization unexpectedly changed staged content and could not restore "
-        f"the affected index entries: {detail}"
+    refused = next(
+        (action for action in report.actions if action.state is LineEndingActionState.REFUSED),
+        None,
     )
-
-
-def _normalize_as_lf(
-    project_root: Path, paths: list[str], snapshots: dict[str, bytes]
-) -> str | None:
-    """Stage every replacement, then rewrite only unchanged, unprotected paths."""
-    protected = _protected_index_paths(project_root, paths)
-    if protected is None:
-        return "could not inspect Git index flags — refusing to normalize files"
-    if protected:
-        names = ", ".join(repr(name) for name in protected[:3])
-        suffix = " …" if len(protected) > 3 else ""
-        return (
-            f"refusing to normalize Git-protected path(s): {names}{suffix} "
-            "(skip-worktree or assume-unchanged may hide local edits)"
+    if unreadable is not None:
+        detail = unreadable
+    elif failed:
+        detail = _FAILED_ACTION_DETAILS[failed.kind]
+    elif refused and refused.kind is LineEndingActionKind.NORMALIZE_FILES:
+        detail = refused.detail or "candidate unsafe"
+        detail = "dirty tree" if detail.startswith("working tree has") else "candidate unsafe"
+    elif report.actions:
+        observation_detail = next(
+            (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
+            None,
         )
-
-    staged, error = _stage_lf_files(project_root, paths)
-    if error:
-        return error
-    rewritten: list[str] = []
-    try:
-        for name in paths:
-            error = _rewrite_from_stage(project_root / name, staged[name], snapshots[name])
-            if error:
-                if rewritten:
-                    refresh_error = _refresh_normalized_index(
-                        project_root,
-                        rewritten,
-                        require_clean_worktree=False,
-                    )
-                    if refresh_error:
-                        return f"{error}; {refresh_error}"
-                return error
-            rewritten.append(name)
-    finally:
-        _cleanup_staged_files(staged)
-    return _refresh_normalized_index(project_root, paths)
-
-
-def _finish_safe_line_endings_step(
-    repository: LineEndingRepository, *, check_only: bool
-) -> LineEndingOutcome:
-    """Heal legacy stat-only dirtiness or report an already-safe LF checkout."""
-    phantom_paths, comparison_error = _tracked_phantom_paths(repository.root)
-    if phantom_paths is None:
-        warn(
-            "could not compare tracked status with Git diffs — "
-            f"no files changed: {comparison_error}"
+        completed = {
+            action.kind
+            for action in report.actions
+            if action.state is LineEndingActionState.COMPLETED
+        }
+        completed_detail = next(
+            (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
+            None,
         )
-        return LineEndingOutcome(repository, "warn", "status comparison unreadable")
-    if not phantom_paths:
-        ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
-        return LineEndingOutcome(repository, "ok", "no CRLF")
-    if check_only:
-        warn(f"would refresh stale Git index metadata for {len(phantom_paths)} tracked file(s)")
-        return LineEndingOutcome(repository, "warn", "stale index metadata")
-
-    error = _refresh_normalized_index(repository.root, phantom_paths)
-    if error:
-        warn(error)
-        return LineEndingOutcome(repository, "warn", "index refresh failed")
-    ok(f"refreshed stale Git index metadata for {len(phantom_paths)} tracked file(s)")
-    return LineEndingOutcome(repository, "ok", "index refreshed")
-
-
-def _repair_repository_line_endings(
-    repository: LineEndingRepository, *, check_only: bool
-) -> LineEndingOutcome:
-    """Keep one repository from reading as dirty inside the container."""
-    root = repository.root
-    effective_autocrlf = read_autocrlf_setting(root)
-    if effective_autocrlf is None:
-        warn("could not read core.autocrlf as a Git Boolean — no files changed")
-        return LineEndingOutcome(repository, "warn", "autocrlf unreadable")
-    local_autocrlf = read_autocrlf_setting(root, local=True)
-    if local_autocrlf is None:
-        warn("could not read repo-local core.autocrlf — no files changed")
-        return LineEndingOutcome(repository, "warn", "local autocrlf unreadable")
-    crlf_paths = _crlf_worktree_files(root)
-    if crlf_paths is None:
-        warn("could not read `git ls-files --eol` — no files changed")
-        return LineEndingOutcome(repository, "warn", "EOL scan unreadable")
-    autocrlf = effective_autocrlf.value
-    set_local_autocrlf = not local_autocrlf.is_set or local_autocrlf.value
-    if not crlf_paths and not autocrlf and not set_local_autocrlf:
-        return _finish_safe_line_endings_step(repository, check_only=check_only)
-
-    snapshots, safety_error = _snapshot_candidates(root, crlf_paths)
-    clean = _worktree_is_clean(root)
-    if check_only:
-        _report_line_ending_findings(
-            len(crlf_paths),
-            autocrlf,
-            crlf_repaired=False,
-            autocrlf_repaired=False,
+        detail = (
+            observation_detail
+            or completed_detail
+            or "+".join(action.kind.value for action in report.actions)
         )
-        _report_line_endings_plan(
-            root,
-            set_local_autocrlf=set_local_autocrlf,
-            crlf_count=len(crlf_paths),
-            clean=clean,
-            safety_error=safety_error,
+    else:
+        detail = next(
+            (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
+            "no CRLF",
         )
-        detail = "CRLF working tree" if crlf_paths else "autocrlf policy unsafe"
-        return LineEndingOutcome(repository, "warn", detail)
-    return _apply_line_ending_repairs(
-        repository,
-        autocrlf,
-        crlf_paths,
-        snapshots,
-        clean,
-        safety_error,
-        set_local_autocrlf=set_local_autocrlf,
-    )
-
-
-def _aggregate_line_ending_outcomes(
-    outcomes: list[LineEndingOutcome], failures: tuple[RepositoryDiscoveryFailure, ...]
-) -> tuple[LineEndingStatus, str]:
-    if failures or any(outcome.status == "warn" for outcome in outcomes):
-        details = [
-            f"{outcome.repository.role}: {outcome.detail}"
-            for outcome in outcomes
-            if outcome.status == "warn"
-        ]
-        details.extend(f"{failure.role}: {failure.detail}" for failure in failures)
-        if len(outcomes) == 1 and not failures:
-            return "warn", outcomes[0].detail
-        return "warn", "; ".join(details)
-    if not outcomes:
-        return "skip", "not a git repo"
-    if len(outcomes) == 1:
-        return outcomes[0].status, outcomes[0].detail
-    return "ok", f"{len(outcomes)} Git repositories container-safe"
+    return detail
 
 
 def _step_line_endings(ctx: InitContext, project_dir: Path | None = None) -> None:
-    """Keep all Project Git worktrees container-safe (F-15, issue 174).
-
-    Disable future auto-conversion, normalize unchanged candidates in place,
-    then install the project policy only after file content is safe.
-    """
+    """Render the shared line-ending report for Project Initialization."""
     ctx.step_banner("line endings")
-    discovery = discover_line_ending_repositories(ctx.project_root, project_dir)
-    if not discovery.repositories and not discovery.failures:
+    mode = LineEndingMode.INSPECT if ctx.check_only else LineEndingMode.REPAIR
+    report = reconcile_project_line_endings(ctx.project_root, project_dir, mode=mode)
+    if report.status is LineEndingStatus.NOT_APPLICABLE:
         skip("project root is not a git repo — line-endings check skipped")
         ctx.record("line_endings", "skip", "not a git repo")
         return
-    outcomes: list[LineEndingOutcome] = []
-    for repository in discovery.repositories:
+    details: list[str] = []
+    for repository_report in report.repositories:
+        repository = repository_report.repository
         info(line_ending_repository_display(repository.role, repository.root))
-        outcomes.append(_repair_repository_line_endings(repository, check_only=ctx.check_only))
-    for failure in discovery.failures:
+        _render_line_ending_observations(repository_report)
+        for action in repository_report.actions:
+            _render_line_ending_action(action)
+        if repository_report.status is LineEndingStatus.SAFE and not repository_report.actions:
+            ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
+        if repository_report.status is LineEndingStatus.UNSAFE:
+            details.append(f"{repository.role}: {_line_ending_result_detail(repository_report)}")
+    for failure in report.discovery_failures:
         display = line_ending_repository_display(failure.role, failure.candidate)
         warn(f"could not inspect {display}: {failure.detail}")
-    status, detail = _aggregate_line_ending_outcomes(outcomes, discovery.failures)
+        details.append(f"{failure.role}: {failure.detail}")
+    status = "ok" if report.status is LineEndingStatus.SAFE else "warn"
+    if len(report.repositories) == 1 and not report.discovery_failures:
+        detail = _line_ending_result_detail(report.repositories[0])
+    elif status == "ok":
+        detail = f"{len(report.repositories)} Git repositories container-safe"
+    else:
+        detail = "; ".join(details)
     ctx.record("line_endings", status, detail)
 
 
-def _report_line_ending_findings(
-    crlf_count: int,
-    autocrlf: bool,
-    *,
-    crlf_repaired: bool,
-    autocrlf_repaired: bool,
-) -> None:
-    """Report repaired findings as notes and unresolved findings as warnings."""
-    if crlf_count:
-        emit = note if crlf_repaired else warn
-        prefix = "detected " if crlf_repaired else ""
-        emit(
-            f"{prefix}{crlf_count} tracked file(s) are checked out with CRLF — the "
-            "Session Runtime container will see every one as modified "
-            "(phantom diffs break the dirty-tree check, scope enforcement, "
-            "and ticket worktrees)"
-        )
-    if autocrlf:
-        emit = note if autocrlf_repaired else warn
-        prefix = "detected " if autocrlf_repaired else ""
-        emit(
-            f"{prefix}core.autocrlf=true (Git for Windows' installer default) "
-            "re-creates CRLF checkouts on every clone/checkout"
-        )
-
-
-def _apply_line_ending_repairs(
-    repository: LineEndingRepository,
-    autocrlf: bool,
-    crlf_paths: list[str],
-    snapshots: dict[str, bytes],
-    clean: bool | None,
-    safety_error: str | None,
-    *,
-    set_local_autocrlf: bool,
-) -> LineEndingOutcome:
-    root = repository.root
-    fixed: list[str] = []
-    autocrlf_repaired = not set_local_autocrlf
-    if set_local_autocrlf:
-        autocrlf_repaired = _disable_autocrlf(root)
-        if autocrlf_repaired:
-            fixed.append("autocrlf")
-    status, detail = (
-        ("ok", "")
-        if not crlf_paths
-        else _maybe_normalize(root, crlf_paths, snapshots, clean, safety_error)
-    )
-    if _apply_gitattributes_rule(root):
-        fixed.append("gitattributes")
-    _report_line_ending_findings(
-        len(crlf_paths),
-        autocrlf,
-        crlf_repaired=status == "ok",
-        autocrlf_repaired=autocrlf_repaired,
-    )
-    if status == "ok":
-        if not autocrlf_repaired:
-            status, detail = "warn", "autocrlf update failed"
-        else:
-            detail = detail or "+".join(fixed)
-        if status == "ok" and not detail:
-            status, detail = "warn", "no fix applied"
-    return LineEndingOutcome(repository, status, detail)
-
-
-def _report_line_endings_plan(
-    project_root: Path,
-    *,
-    set_local_autocrlf: bool,
-    crlf_count: int,
-    clean: bool | None,
-    safety_error: str | None,
-) -> None:
-    """Name every fix ``--check-only`` is holding back from (its contract)."""
-    if set_local_autocrlf:
-        info("  would set core.autocrlf=false")
-    if not _eol_policy_is_user_owned(project_root):
-        info(f"  would add '{GITATTRIBUTES_RULE}' to .gitattributes")
-    if crlf_count:
-        if safety_error:
-            info(f"  would leave tracked files untouched: {safety_error}")
-        elif clean is True:
-            info(f"  would normalize {crlf_count} tracked file(s) to LF in place")
-        elif clean is False:
-            info("  would leave tracked files untouched until changes are committed or stashed")
-        else:
-            info("  would leave tracked files untouched because `git status` was unreadable")
-
-
-def _disable_autocrlf(project_root: Path) -> bool:
-    """Turn the CRLF checkout filter off for this repo. Returns True if set."""
-    proc = subprocess.run(
-        ["git", "-C", str(project_root), "config", "--local", "core.autocrlf", "false"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if proc.returncode != 0:
-        warn(f"could not set core.autocrlf: {proc.stderr.strip()}")
-        return False
-    ok("core.autocrlf=false (repo-local; CRLF will not come back on checkout)")
-    return True
-
-
-def _apply_gitattributes_rule(project_root: Path) -> bool:
-    """Add the LF rule unless the project already has an eol policy of its own."""
-    if _eol_policy_is_user_owned(project_root):
-        skip(".gitattributes already states a whole-tree eol policy — left as-is")
-        return False
-    if not _write_gitattributes_rule(project_root):
-        warn("could not write .gitattributes")
-        return False
-    ok(f"added '{GITATTRIBUTES_RULE}' as the first line of .gitattributes")
-    info("  commit it — the rule only travels to your team through git")
-    return True
-
-
-def _normalization_refusal(clean: bool | None, safety_error: str | None) -> tuple[str, str] | None:
-    if safety_error:
-        return safety_error, "candidate unsafe"
-    if clean is None:
-        return (
-            "could not read `git status` — refusing to normalize tracked files",
-            "status unreadable",
-        )
-    if not clean:
-        return (
-            "working tree has uncommitted changes — refusing to normalize it "
-            "(normalization rewrites the affected tracked files). Commit or stash "
-            "first, then re-run `booley init`.",
-            "dirty tree",
-        )
-    return None
-
-
-def _maybe_normalize(
-    project_root: Path,
-    crlf_paths: list[str],
-    snapshots: dict[str, bytes],
-    clean: bool | None,
-    safety_error: str | None,
-) -> tuple[str, str]:
-    """Normalize a clean CRLF tree without deleting worktree files."""
-    crlf_count = len(crlf_paths)
-    refusal = _normalization_refusal(clean, safety_error)
-    if refusal:
-        message, detail = refusal
-        warn(message)
-        return "warn", detail
-
-    error = _normalize_as_lf(project_root, crlf_paths, snapshots)
-    if error:
-        warn(error)
-        return "warn", "normalization failed"
-
-    remaining = _count_crlf_worktree_files(project_root)
-    if remaining is None:
-        warn("could not verify line endings after normalization")
-        return "warn", "EOL verification unreadable"
-    if remaining:
-        warn(f"{remaining} file(s) still read as CRLF after normalization")
-        return "warn", "CRLF survived normalization"
-    ok(f"normalized {crlf_count} file(s) to LF in place — tree is container-safe")
-    return "ok", "normalized"
-
-
-# The exact git config knob/value the guard sets; doctor checks the same pair.
 WORKTREE_PRUNE_KEY = "gc.worktreePruneExpire"
 WORKTREE_PRUNE_VALUE = "never"
 
