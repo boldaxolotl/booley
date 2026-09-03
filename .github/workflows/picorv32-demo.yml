@@ -2,6 +2,20 @@ name: PicoRV32 demo contract
 
 on:
   pull_request:
+    # The demo is informative rather than a required status. Run it for changes
+    # that can alter the public demo contract, while leaving main, merge-queue,
+    # nightly, and manual validation unconditional below.
+    paths:
+      - ".github/actions/prepare-picorv32-demo/**"
+      - ".github/contracts/picorv32-demo.toml"
+      - ".github/contracts/picorv32-demo-ticket.md"
+      - ".github/scripts/export_demo_contract.py"
+      - ".github/scripts/install_demo_ticket.py"
+      - ".github/scripts/picorv32_demo_contract.py"
+      - ".github/scripts/verify_picorv32_demo.sh"
+      - ".github/workflows/picorv32-demo.yml"
+      - "pyproject.toml"
+      - "src/booley/**"
   push:
     branches: [main]
   merge_group:
