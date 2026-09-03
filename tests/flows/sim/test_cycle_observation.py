@@ -133,7 +133,7 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         project_root=Path(),
         target_contract=_sealed_contract(),
     )
-    _apply_contract_selectors(context, expanded, params)
+    _apply_contract_selectors(context, template, expanded, params)
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
     flow = object.__new__(SimulateFlow)

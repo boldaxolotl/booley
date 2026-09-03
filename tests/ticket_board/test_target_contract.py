@@ -481,6 +481,36 @@ def test_paired_targets_bind_candidate_criterion_to_baseline(tmp_path: Path) -> 
     assert contract.bindings[0].candidate_selector == "synth_after"
 
 
+def test_explicit_tb_review_target_is_sealed_as_simulation_binding(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    criteria = {"mandatory": {"review_tb_quality": {"target": "sim_toy"}}}
+
+    bindings = criterion_targets(criteria)
+    contract = build_contract(
+        project,
+        outer_sha="a" * 40,
+        targets=["sim_toy"],
+        bindings=bindings,
+        participants=[_participant()],
+    )
+
+    assert [(binding.key, binding.target, binding.flow) for binding in bindings] == [
+        ("review_tb_quality", "sim_toy", "sim")
+    ]
+    assert contract.bindings[0].criterion == "review_tb_quality"
+    assert contract.bindings[0].candidate == "acme:lib:toy:1.0#sim_toy"
+    assert contract.bindings[0].candidate_selector == "sim_toy"
+
+
+def test_tb_review_target_must_be_simulation_capable(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fields = {"criteria": {"mandatory": {"review_tb_quality": {"target": "lint_toy"}}}}
+
+    errors = validate_criterion_targets(fields, project)
+
+    assert any("cannot satisfy review_tb_quality with Flow sim" in error for error in errors)
+
+
 def test_coverage_criteria_bind_every_authored_target() -> None:
     criteria = {
         "mandatory": {

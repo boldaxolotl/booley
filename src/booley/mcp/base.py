@@ -781,14 +781,12 @@ class McpTool(ABC):
         """Return sealed criteria this endpoint/Target invocation can update."""
         criterion_target = target
         target_identity: str | None = None
-        target_selector: str | None = None
         try:
             from booley.targets.target import select_target
 
             selected = select_target(Path(self.args.work_dir), target)
             criterion_target = selected.name
             target_identity = selected.identity
-            target_selector = selected.selector
         except FuseSocError:
             pass
         selector = getattr(self.args, "test", None)
@@ -816,7 +814,6 @@ class McpTool(ABC):
                     entry.params,
                     target,
                     target_identity,
-                    target_selector,
                 )
                 and key not in bound
             )
@@ -827,7 +824,6 @@ class McpTool(ABC):
         params: dict[str, Any],
         invoked: str,
         invoked_identity: str | None,
-        invoked_selector: str | None,
     ) -> bool:
         """Compare criterion and invocation Targets by identity when resolvable."""
         from booley.targets.target import (
@@ -840,14 +836,10 @@ class McpTool(ABC):
         if not isinstance(authored, str):
             return False
         if TARGET_SELECTOR_PARAM in params:
-            return (
-                invoked_identity is not None
-                and invoked_selector is not None
-                and criterion_matches_target(
-                    params,
-                    identity=invoked_identity,
-                    selector=invoked_selector,
-                )
+            return invoked_identity is not None and criterion_matches_target(
+                params,
+                identity=invoked_identity,
+                selector=invoked,
             )
         if authored == invoked:
             return True
