@@ -70,7 +70,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.258"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.259"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -278,8 +278,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.258"' in lock
-    assert '"@openai/codex": "0.152.1"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.259"' in lock
+    assert '"@openai/codex": "0.153.1"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -288,9 +288,9 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.258"
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.259"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.152.1-linux-x64"
+        "npm:@openai/codex@0.153.1-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
