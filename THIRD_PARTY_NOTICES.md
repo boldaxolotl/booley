@@ -111,7 +111,7 @@ THE LIBRARY.
 
 The `bwave` executable statically links Rust crates recorded in
 `crates/bwave/Cargo.lock`. The dependency versions below describe the lockfile at
-Booley 0.2.11. Where a crate offers a choice of licenses, this distribution uses
+Booley 0.2.12. Where a crate offers a choice of licenses, this distribution uses
 the license named by the group.
 
 ### BSD-3-Clause
