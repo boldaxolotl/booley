@@ -298,6 +298,17 @@ jobs:
             exit 1
           fi
 
+      # This must run on the host: in-container Doctor cannot launch the
+      # short-lived issued-image probe and therefore skips this exact seam.
+      - name: Run host Doctor issued-image probe
+        working-directory: ${{ runner.temp }}/booley-picorv32-demo
+        run: |
+          set -o pipefail
+          doctor_log="$(mktemp)"
+          booley doctor --skip-agent-checks | tee "${doctor_log}"
+          grep -Eq 'MCP server exposes [0-9]+ MCP tool\(s\)' "${doctor_log}"
+          grep -Fq "0 failed." "${doctor_log}"
+
       - name: Measure release image storage contract
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}

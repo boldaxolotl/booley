@@ -311,7 +311,7 @@ def _patch_environment(
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"{runtime_booley_version}\n", stderr=""
             )
-        if "_discover_booley_mcp_tools" in " ".join(str(part) for part in cmd):
+        if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:
             payload = mcp_payload or {
                 "tools": mcp_tools
                 or [
@@ -583,6 +583,16 @@ def test_doctor_fails_when_mcp_probe_misses_required_tool(
     output = capsys.readouterr().out
     assert rc == 1
     assert "MCP missing required endpoint(s): synth" in output
+
+
+def test_doctor_runs_supported_mcp_probe_entrypoint(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+
+    command = doctor._mcp_probe_command(project, "docker", "booley:test")
+
+    assert command[-3:] == ["python", "-m", "booley.mcp.probe"]
+    assert "-c" not in command
 
 
 def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
@@ -2065,6 +2075,7 @@ class _Rec:
 
     def __init__(self) -> None:
         self.events: list[tuple[str, str]] = []
+        self.fix_hints: list[str] = []
 
     def p(self, m: str) -> None:
         self.events.append(("pass", m))
@@ -2080,6 +2091,8 @@ class _Rec:
 
     def f(self, m: str, fix: str = "") -> None:
         self.events.append(("fail", m))
+        if fix:
+            self.fix_hints.append(fix)
 
     def fails(self) -> list[str]:
         return [m for lvl, m in self.events if lvl == "fail"]
@@ -2312,6 +2325,45 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
 
     assert any("state differs from current host issuance" in message for message in rec.fails())
+
+
+def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from booley.eda.provisioning import runtime_spec
+
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    issuance, spec, labels, state = _issued_runtime_state(tmp_path)
+    state["Image"] = "sha256:" + "d" * 64
+    labels.update(
+        {
+            "devcontainer.local_folder": str(tmp_path),
+            "devcontainer.config_file": str(tmp_path / ".devcontainer" / "devcontainer.json"),
+        }
+    )
+    state["Config"]["Labels"] = labels
+    state["State"] = {"Running": True}
+    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
+    spec_path.parent.mkdir()
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
+    monkeypatch.setattr(doctor.subprocess, "run", _runtime_probe_subprocess("runtime-1\n"))
+
+    def inspect(argv):
+        if argv[-1] == "{{json .Config.Labels}}":
+            return json.dumps(labels)
+        return json.dumps([state])
+
+    monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    rec = _Rec()
+
+    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
+
+    assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
 
 
 def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:

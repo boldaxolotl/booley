@@ -985,6 +985,7 @@ def _up_unlocked(
     resumed container needs and a fresh one gets from postCreate anyway).
     """
     request = _validate_up_request(workspace, image_override)
+    _reconcile_stopped_vscode_containers(workspace, request.issuance)
     _run_up_transaction(
         workspace,
         request,
@@ -1313,6 +1314,57 @@ def strict_conflicting_vscode_session(workspace: Path) -> str | None:
         if isinstance(folder, str) and folder.casefold() == expected_folder:
             return name
     return None
+
+
+def issued_runtime_drift_fix(
+    workspace: Path,
+    issuance: Issuance,
+    drifted: list[str],
+) -> str:
+    """Return safe, state-specific remediation for drifted runtime resources."""
+    from booley.eda.provisioning import runtime_spec
+
+    rebuild = "run `booley session down`, then `booley session up --rebuild`"
+    expected = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
+    expected_folder = str(workspace).casefold()
+    expected_config = str(dc.devcontainer_path(workspace)).casefold()
+    running_vscode: list[str] = []
+    ambiguous: list[str] = []
+    canonical = session_container_name(workspace)
+    for name in drifted:
+        if name == canonical:
+            continue
+        raw = _docker_stdout(["docker", "inspect", name])
+        state = _decode_container_inspect(raw) if raw is not None else None
+        config = state.get("Config") if state is not None else None
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        runtime_state = state.get("State") if state is not None else None
+        if (
+            not isinstance(labels, dict)
+            or not isinstance(runtime_state, dict)
+            or not isinstance(runtime_state.get("Running"), bool)
+        ):
+            ambiguous.append(name)
+            continue
+        is_ours = (
+            str(labels.get(_DEVCONTAINER_FOLDER_LABEL, "")).casefold() == expected_folder
+            and str(labels.get("devcontainer.config_file", "")).casefold() == expected_config
+            and labels.get("booley.project-id") == expected.get("booley.project-id")
+        )
+        if not is_ours:
+            ambiguous.append(name)
+        elif runtime_state["Running"]:
+            running_vscode.append(name)
+    if ambiguous:
+        names = ", ".join(repr(name) for name in ambiguous)
+        return (
+            f"inspect ambiguous Session Runtime resource(s) {names}; Booley will not "
+            "remove them automatically"
+        )
+    if running_vscode:
+        names = ", ".join(repr(name) for name in running_vscode)
+        return f"stop VS Code Session Runtime(s) {names}, then {rebuild}"
+    return rebuild
 
 
 def _reconcile_stopped_vscode_containers(workspace: Path, issuance: object) -> None:

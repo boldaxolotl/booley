@@ -192,25 +192,6 @@ _ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
     }
 )
 _MCP_PROBE_TIMEOUT_S = 60
-_MCP_PROBE_PY = """
-import json
-import os
-from booley.mcp import server as mcp_server
-
-mcp_server._maybe_configure_interactive_logs_dir()
-mcp_tools, errors = mcp_server._discover_booley_mcp_tools()
-mcp_server._build_mcp_tool_list(mcp_tools)
-names = {mcp_tool["name"] for mcp_tool in mcp_tools}
-names.update(mcp_tool["name"] for mcp_tool in mcp_server._bwave_mcp_tools_for_mode())
-logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-logs_dir_ok = "/.booley_project/.interactive_logs/" in logs_dir.replace("\\\\", "/")
-print(json.dumps({
-    "tools": sorted(names),
-    "errors": errors,
-    "logs_dir": logs_dir,
-    "logs_dir_ok": logs_dir_ok,
-}))
-""".strip()
 
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
@@ -2761,7 +2742,7 @@ def _check_devcontainer_spec(  # noqa: PLR0911,PLR0912 — ordered drift precond
     _pass("devcontainer.json present and structurally current")
 
 
-def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-closed audit gates
+def _check_issued_session_runtime(  # noqa: PLR0911,PLR0912,PLR0915 - fail-closed audit gates
     project: ProjectAudit,
     docker_exe: str | None,
     _pass: Check,
@@ -2855,10 +2836,16 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-close
             workspace=project.project_root,
         )
     ]
-    if result.returncode != 0 or drifted:
+    if result.returncode != 0:
+        _fail("could not list issued Session Runtime resources", "start Docker")
+    elif drifted:
         _fail(
             "live Session Runtime state differs from current host issuance",
-            "run `booley session down`, then `booley session up --rebuild`",
+            session_runtime.issued_runtime_drift_fix(
+                project.project_root,
+                issuance,
+                drifted,
+            ),
         )
     elif containers:
         _pass("live Session Runtime state matches the current host issuance")
@@ -3719,8 +3706,8 @@ def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> li
         "BOOLEY_MCP_MODE=interactive",
         image,
         "python",
-        "-c",
-        _MCP_PROBE_PY,
+        "-m",
+        "booley.mcp.probe",
     ]
 
 
