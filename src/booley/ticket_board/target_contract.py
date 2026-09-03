@@ -588,9 +588,12 @@ def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
 
 
 def _criterion_flow(key: str) -> str | None:
-    for prefix in sorted(_FLOW_BY_CRITERION, key=len, reverse=True):
+    from booley.criteria.templates import TARGET_BOUND_CRITERION_FLOWS
+
+    flows = {**_FLOW_BY_CRITERION, **TARGET_BOUND_CRITERION_FLOWS}
+    for prefix in sorted(flows, key=len, reverse=True):
         if key == prefix or key.startswith(prefix + "_"):
-            return _FLOW_BY_CRITERION[prefix]
+            return flows[prefix]
     return None
 
 
@@ -604,6 +607,9 @@ def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
     if isinstance(value, Mapping):
         from booley.criteria.templates import parse_target_pair
 
+        target = value.get("target")
+        if isinstance(target, str):
+            return [(target, target, _relative_params(value))]
         targets = value.get("targets")
         if isinstance(targets, list):
             pairs: list[tuple[str, str, bool]] = []

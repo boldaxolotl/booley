@@ -49,6 +49,12 @@ _RELATIVE_QOR_SUFFIXES = ("_increase_at_most", "_reduce_at_least")
 _PAIRED_TARGET_CRITERIA = frozenset({"synthesis_ok", "fpga_impl_ok"})
 BASELINE_TARGET_PARAM = "_baseline_target"
 
+# Non-expanded criteria whose behavior still belongs to one Target.  The value
+# is the Flow capability that Target must provide; it is not the endpoint which
+# records the criterion.  TB review, for example, is recorded by Reviewer but
+# its verdict contract belongs to one simulation Target.
+TARGET_BOUND_CRITERION_FLOWS: dict[str, str] = {"review_tb_quality": "sim"}
+
 
 @dataclass(frozen=True)
 class TargetPair:
@@ -820,6 +826,34 @@ def _is_review_base_key(key: str) -> bool:
     return key.startswith("review_") and not key.endswith(("_done", "_clean"))
 
 
+def _review_family(key: str) -> str:
+    """Return a review criterion's family without its verdict suffix."""
+    for suffix in ("_done", "_clean"):
+        if key.endswith(suffix):
+            return key.removesuffix(suffix)
+    return key
+
+
+def _parse_target_bound_review(
+    key: str,
+    value: dict[str, Any],
+    *,
+    mandatory: bool,
+) -> list[CriterionSpec]:
+    """Normalize and validate one explicitly Target-bound review criterion."""
+    normalized_key = f"{key}_clean" if _is_review_base_key(key) else key
+    unknown = sorted(set(value) - {"target"})
+    if unknown:
+        raise ValueError(f"Unknown {_review_family(key)} params: {unknown}. Valid: ['target']")
+    target = value.get("target")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError(f"{_review_family(key)}.target must be a non-empty Target name")
+    target = target.strip()
+    if "," in target:
+        raise ValueError(f"{_review_family(key)}.target must select exactly one Target")
+    return [CriterionSpec(normalized_key, mandatory=mandatory, params={"target": target})]
+
+
 def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion value form (list/dict/string/compound)
     key: str,
     value: Any,
@@ -843,6 +877,13 @@ def _parse_criterion_entry(  # noqa: PLR0911 — one early return per criterion 
         except BoundaryError:
             raise ValueError("coverage must be a list of authoring records") from None
         return _parse_coverage_entries(records, mandatory=mandatory)
+    family = _review_family(key)
+    if family in TARGET_BOUND_CRITERION_FLOWS and isinstance(value, dict):
+        return _parse_target_bound_review(key, value, mandatory=mandatory)
+    if family in TARGET_BOUND_CRITERION_FLOWS and isinstance(value, list):
+        raise ValueError(
+            f"{family} accepts a scalar or {{target: <sim-target>}}, not a Target list"
+        )
     if _is_review_base_key(key):
         return [CriterionSpec(f"{key}_clean", mandatory=mandatory)]
     if isinstance(value, list):

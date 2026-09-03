@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.criteria.templates import CriteriaTemplate
 from booley.harness.blocking import FatalError
 from booley.harness.models import TicketContext
 from booley.ticket_board.target_contract import (
@@ -47,7 +48,7 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         outer_sha="a" * 40,
         project_sha=None,
         surface_digest="b" * 64,
-        targets=("acme:ip:uart:1.0#lint_uart",),
+        targets=("acme:ip:uart:1.0#lint_uart", "acme:ip:uart:1.0#sim_uart"),
         bindings=(
             ContractTargetBinding(
                 flow="lint",
@@ -56,6 +57,14 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
                 candidate="acme:ip:uart:1.0#lint_uart",
                 baseline_selector="uart#lint_uart",
                 candidate_selector="uart#lint_uart",
+            ),
+            ContractTargetBinding(
+                flow="sim",
+                criterion="review_tb_quality",
+                baseline="acme:ip:uart:1.0#sim_uart",
+                candidate="acme:ip:uart:1.0#sim_uart",
+                baseline_selector="uart#sim_uart",
+                candidate_selector="uart#sim_uart",
             ),
         ),
         participants=(
@@ -77,16 +86,26 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         project_root=tmp_path,
         target_contract=contract,
     )
-    expanded = {"lint_clean_acme:ip:uart:1.0#lint_uart": True}
-    criterion_params: dict[str, dict[str, object]] = {}
+    template = CriteriaTemplate.from_yaml(
+        {"mandatory": {"review_tb_quality": {"target": "sim_uart"}}}
+    )
+    expanded = {
+        "lint_clean_acme:ip:uart:1.0#lint_uart": True,
+        **template.expand([]),
+    }
+    criterion_params: dict[str, dict[str, object]] = template.expand_params([])
 
-    _apply_contract_selectors(ctx, expanded, criterion_params)
+    _apply_contract_selectors(ctx, template, expanded, criterion_params)
 
     assert criterion_params == {
         "lint_clean_acme:ip:uart:1.0#lint_uart": {
             "target": "acme:ip:uart:1.0#lint_uart",
             "_target_selector": "uart#lint_uart",
-        }
+        },
+        "review_tb_quality_clean": {
+            "target": "acme:ip:uart:1.0#sim_uart",
+            "_target_selector": "uart#sim_uart",
+        },
     }
     entry = CriterionEntry(
         met=False,
@@ -97,6 +116,63 @@ def test_schema_four_contract_seeds_callable_selector_for_prompt_rendering(
         planned_invocation("lint_clean_acme:ip:uart:1.0#lint_uart", entry)
         == "lint --target uart#lint_uart"
     )
+
+
+def test_scalar_tb_review_derives_unique_structured_sim_owner(tmp_path: Path) -> None:
+    from booley.harness.setup.intake import _apply_contract_selectors
+
+    identity = "acme:ip:uart:1.0#sim_uart"
+    contract = TargetContract(
+        outer_sha="a" * 40,
+        project_sha=None,
+        surface_digest="b" * 64,
+        targets=(identity,),
+        bindings=(
+            ContractTargetBinding(
+                flow="sim",
+                criterion="sim_pass",
+                baseline=identity,
+                candidate=identity,
+                baseline_selector="uart#sim_uart",
+                candidate_selector="uart#sim_uart",
+            ),
+        ),
+        participants=(
+            ContractParticipant(
+                role="outer",
+                sealed_sha="a" * 40,
+                ticket_ref="refs/heads/ticket",
+                destination_ref="refs/heads/main",
+                destination_sha="c" * 40,
+            ),
+        ),
+    )
+    ctx = TicketContext(
+        slug="derived-review-target",
+        ticket_path=tmp_path / "ticket.md",
+        ticket_type="verification",
+        branch="main",
+        summary="Derived review target",
+        project_root=tmp_path,
+        target_contract=contract,
+    )
+    template = CriteriaTemplate.from_yaml(
+        {
+            "mandatory": {
+                "sim_pass": ["tb/uart_tb.sv @ sim_uart @ fail -> pass"],
+                "review_tb_quality": True,
+            }
+        }
+    )
+    expanded = template.expand(["sim_uart"])
+    params = template.expand_params(["sim_uart"])
+
+    _apply_contract_selectors(ctx, template, expanded, params)
+
+    assert params["review_tb_quality_clean"] == {
+        "target": identity,
+        "_target_selector": "uart#sim_uart",
+    }
 
 
 def _mock_cli_defaults(mock_cli, *, action="fresh", stage="", fields=None):

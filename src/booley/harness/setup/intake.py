@@ -26,7 +26,11 @@ from booley.ticket_board.paths import (
     ticket_log_dir,
     ticket_runtime_dir,
 )
-from booley.ticket_board.target_contract import TargetContract, TargetContractError
+from booley.ticket_board.target_contract import (
+    ContractTargetBinding,
+    TargetContract,
+    TargetContractError,
+)
 
 from .. import ticket_cli
 from ..blocking import FatalError
@@ -436,7 +440,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
     category_overrides = template.category_overrides(targets)
     aliases = template.flow_key_aliases()
     criterion_params = template.expand_params(targets)
-    _apply_contract_selectors(ctx, expanded, criterion_params)
+    _apply_contract_selectors(ctx, template, expanded, criterion_params)
     _pin_cycle_count_baselines(ctx, criterion_params)
     _freeze_synthesis_recipe_fingerprints(ctx, expanded, criterion_params)
     _freeze_fpga_recipe_fingerprints(ctx, expanded, criterion_params)
@@ -491,6 +495,7 @@ def _init_criteria_state(ctx: TicketContext) -> None:
 
 def _apply_contract_selectors(
     ctx: TicketContext,
+    template: CriteriaTemplate,
     expanded: dict[str, bool],
     criterion_params: dict[str, dict[str, Any]],
 ) -> None:
@@ -498,23 +503,79 @@ def _apply_contract_selectors(
     contract = ctx.target_contract
     if contract is None or contract.schema < 4:
         return
-    for binding in contract.bindings:
-        if not binding.candidate_selector:
-            continue
-        candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
-        accepted = {binding.candidate, binding.candidate_selector, candidate_name}
-        prefix = f"{binding.criterion}_"
-        for key in expanded:
+    for key in expanded:
+        matches = []
+        for binding in contract.bindings:
+            if not binding.candidate_selector:
+                continue
+            prefix = f"{binding.criterion}_"
             if key != binding.criterion and not key.startswith(prefix):
                 continue
             params = criterion_params.setdefault(key, {})
             authored = params.get("target")
             if not isinstance(authored, str) and key.startswith(prefix):
                 authored = key.removeprefix(prefix)
-            if authored not in accepted:
-                continue
+            candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
+            if authored in {binding.candidate, binding.candidate_selector, candidate_name}:
+                matches.append(binding)
+        unique = {(binding.candidate, binding.candidate_selector): binding for binding in matches}
+        if len(unique) > 1:
+            choices = ", ".join(sorted(selector for _, selector in unique))
+            raise FatalError(
+                f"Criterion {key!r} Target is ambiguous across sealed selectors: {choices}",
+                slug=ctx.slug,
+            )
+        if unique:
+            binding = next(iter(unique.values()))
+            params = criterion_params.setdefault(key, {})
             params["target"] = binding.candidate
             params["_target_selector"] = binding.candidate_selector
+
+    _derive_scalar_tb_review_binding(ctx, template, expanded, criterion_params)
+
+
+def _derive_scalar_tb_review_binding(
+    ctx: TicketContext,
+    template: CriteriaTemplate,
+    expanded: dict[str, bool],
+    criterion_params: dict[str, dict[str, Any]],
+) -> None:
+    """Bind a scalar TB review when structured simulation proves one owner."""
+    contract = ctx.target_contract
+    assert contract is not None
+    review_keys = [key for key in expanded if key.startswith("review_tb_quality_")]
+    if not review_keys or all(criterion_params.get(key, {}).get("target") for key in review_keys):
+        return
+
+    authored_targets = {
+        str(spec.params["target"])
+        for spec in template.specs
+        if spec.name.startswith("sim_pass_")
+        and isinstance(spec.params.get("tb_path"), str)
+        and isinstance(spec.params.get("target"), str)
+    }
+    owners: dict[tuple[str, str], ContractTargetBinding] = {}
+    for authored in sorted(authored_targets):
+        matches = []
+        for binding in contract.bindings:
+            if binding.criterion != "sim_pass" or not binding.candidate_selector:
+                continue
+            candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
+            if authored in {binding.candidate, binding.candidate_selector, candidate_name}:
+                matches.append(binding)
+        unique = {(binding.candidate, binding.candidate_selector): binding for binding in matches}
+        if len(unique) != 1:
+            return
+        owners.update(unique)
+    if len(owners) != 1:
+        return
+    owner = next(iter(owners.values()))
+    for key in review_keys:
+        params = criterion_params.setdefault(key, {})
+        if params.get("target"):
+            continue
+        params["target"] = owner.candidate
+        params["_target_selector"] = owner.candidate_selector
 
 
 def _freeze_synthesis_recipe_fingerprints(

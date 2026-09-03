@@ -244,6 +244,7 @@ criteria:
 | Per-test Cycle Count | `cycle_count: [{target: sim_coremark, test: coremark, cycle_count_max: 100000}]` |
 | Parameterized | `synthesis_ok: {targets: [<target>], cell_count_max: 500}` |
 | Parameterized | `fpga_impl_ok: {targets: [<target>], lut_count_max: 100000}` |
+| Target-bound TB review | `review_tb_quality: {target: <sim-target>}`; use when structured simulation criteria name multiple Targets |
 | Scalar | Use the bare review key for the corrective default; it expands to `<key>_clean`. Spell `<key>_done` only when the user explicitly wants an advisory review whose findings are reported but do not belong to this ticket's correction loop |
 
 ### Defaults by Ticket Type

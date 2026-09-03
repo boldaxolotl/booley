@@ -94,7 +94,7 @@ _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
         "exposure, and unsafe failure behavior"
     ),
     "review_tb_quality": (
-        "False-pass paths, missing checks and edge cases, coverage gaps, "
+        "False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, "
         "timing/sampling mistakes, and TB code quality"
     ),
 }
@@ -201,7 +201,8 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "`MINOR` findings. A terminal `_done` review reports findings without "
         "triggering fixes; `_clean` requires every finding to be verified fixed "
         "or explicitly waived with user-visible justification.",
-        "Call `reviewer --scope <file,...> --category <category> --focus <focus>`.",
+        "Call `reviewer --scope <file,...> --category <category> --focus <focus>`; "
+        "a TB review may add `--target <sim-target>`.",
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -219,6 +220,8 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "",
             "Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` "
             "reviews only the diff; repeatable `--steer` adds review context. "
+            "Ticket Mode defaults a TB review's sealed simulation Target; pass "
+            "`--target` to disambiguate an interactive review. "
             "The `spec` focus needs the ticket/spec text: Ticket Mode resolves it "
             "automatically, while Interactive Mode uses `--ticket <path>`.",
         ]
