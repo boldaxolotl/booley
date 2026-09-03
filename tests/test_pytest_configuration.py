@@ -61,6 +61,23 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     assert '--basetemp "${{ runner.temp }}/pytest"' in parallel_step["run"]
 
 
+def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
+    """A large Windows-only module tail must not serialize one xdist worker."""
+    workflow = _test_workflow()
+
+    test_steps = workflow["jobs"]["test"]["steps"]
+    parallel_step = next(step for step in test_steps if step.get("name") == "Run tests (parallel)")
+
+    assert (
+        parallel_step["run"]
+        .replace("\n", " ")
+        .startswith(
+            "pytest tests/ -q --tb=short -n 4 "
+            "--dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}"
+        )
+    )
+
+
 def test_sidecar_proofs_have_cancellation_cleanup() -> None:
     workflow = _test_workflow()
     step = next(
@@ -104,6 +121,9 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     assert result.returncode == 0, result.stderr
     selected = {line for line in result.stdout.splitlines() if line.startswith("tests/")}
     assert selected == {
+        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_single_root_python_decoder",
+        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
+        "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
         "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
         "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
         "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
@@ -228,11 +248,11 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Keep a stuck compatibility leg within the ten-minute CI budget."""
+    """Keep a stuck compatibility leg within the fifteen-minute CI budget."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == 10
+    assert test_job["timeout-minutes"] == 15
 
     pytest_steps = [
         step for step in test_job["steps"] if str(step.get("name", "")).startswith("Run tests")
