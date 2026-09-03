@@ -57,7 +57,7 @@ jobs:
           # Mergify is the sole actor allowed to update main outside a human PR
           # merge. Keep this exception scoped to immutable main-history audits;
           # PR candidate commits still require the configured author identities.
-          BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[bot]"
+          BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS: "mergify[[]bot[]]"
           BOOLEY_LEAK_GUARD_CONFIG_B64: ${{ secrets.BOOLEY_LEAK_GUARD_CONFIG_B64 }}
         run: >-
           python .github/scripts/confidential_content_guard.py
