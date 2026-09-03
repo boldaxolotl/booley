@@ -1387,6 +1387,24 @@ class TestEdalizeSimPath:
         for command in commands:
             assert command[command.index("--run-cwd") + 1] == "."
 
+    def test_doctor_bad_run_commands_keep_configured_runtime_cwd(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The bad build fixture must not move runtime assets into the build tree."""
+        from booley.fusesoc import selftest_overlay
+
+        flow = _make_flow(tmp_path)
+        monkeypatch.setattr("booley.flows.sim.flow.resolve_run_cwd", lambda _root: "assets")
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        commands = (
+            flow._verilator_run_cmd("build/verilator", "tb", []),
+            flow._icarus_run_cmd("build/icarus", []),
+            flow._cocotb_run_cmd("build/cocotb", "icarus", "test_tb", ["smoke"]),
+        )
+
+        for command in commands:
+            assert command[command.index("--run-cwd") + 1] == "assets"
+
     def test_icarus_run_cmd_ships_through_iverilog_run(self, tmp_path: Path):
         """Icarus runs are re-homed to booley.flows.sim.backends.icarus (the edalize
         Icarus run-half) — the mirror of the verilator_run wiring, not `make run`.
@@ -1765,6 +1783,10 @@ class TestEdalizeSimPath:
 
         flow = _make_flow(tmp_path)
         project_dir = tmp_path / ".booley_project"
+        (project_dir / "booley.toml").parent.mkdir(parents=True, exist_ok=True)
+        (project_dir / "booley.toml").write_text(
+            '[flows.sim]\nrun_cwd = "runtime-assets"\n', encoding="utf-8"
+        )
         overlay_file = (
             selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
         )
@@ -1801,8 +1823,7 @@ class TestEdalizeSimPath:
             cmd = flow._prepare_sim_command("lite", "known_bad", {})
 
         assert staged.read_text(encoding="utf-8") == "bad\n"
-        run_cwd = staged.parents[1].relative_to(tmp_path).as_posix()
-        assert f"--run-cwd {run_cwd}" in cmd[2]
+        assert "--run-cwd runtime-assets" in cmd[2]
 
     def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
         from booley.flows.sim.build import _stage_doctor_overlay
