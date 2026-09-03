@@ -1,6 +1,6 @@
 ---
 name: booley-feedback
-description: Capture and optionally submit any feedback about Booley — bugs, misleading docs, confusing experiences, gripes, praise, and feature wishes — from a normal working session or after setup. Chooses the appropriate feedback mechanism, gathers only the evidence that kind of feedback needs, checks bug claims against Booley's source, redacts project identifiers, shows the user the exact outgoing text, and sends it upstream only with explicit approval. Use when Booley crashes, misbehaves, contradicts its docs, or when the user says "report this", "file a bug", "that was confusing", "tell the maintainers", "I wish Booley could…", "this part is great", or "this was not worth the setup".
+description: Capture and optionally submit any feedback about Booley — bugs, misleading docs, confusing experiences, gripes, praise, and feature wishes — from a normal working session or after setup. For problems that block progress, finds and verifies a safe workaround where practical. Chooses the appropriate feedback mechanism, gathers only the evidence that kind of feedback needs, checks bug claims against Booley's source, redacts project identifiers, shows the user the exact outgoing text, and sends it upstream only with explicit approval. Use when Booley crashes, misbehaves, contradicts its docs, or when the user says "report this", "file a bug", "that was confusing", "tell the maintainers", "I wish Booley could…", "this part is great", or "this was not worth the setup".
 ---
 
 # Give feedback to Booley
@@ -17,9 +17,11 @@ that material with a verified synthetic reproducer before anything is offered
 upstream. Do not read or run it for friction, impressions, documentation
 contradictions, or bugs already reproducible with public Booley fixtures.
 
-**It never blocks anything.** Whatever the user was doing is still the priority;
-a report is a side effect of the failure, not a replacement for working around
-it. Get them unblocked first, report second.
+**It never blocks anything.** Capture perishable evidence immediately, then
+return to whatever the user was doing. When the problem blocks progress, give
+them a safe, concrete workaround where one exists before rendering or offering
+the report. Feedback is a side effect of the failure, not a replacement for
+getting them moving again.
 
 Use `booley feedback` (`booley feedback --help`) as the internal mechanism. Do
 not ask the user to choose or run its subcommands. Your job is the judgement the
@@ -86,7 +88,37 @@ complaint, and do not turn a passing remark into a bug report they never made.
 If they were venting rather than reporting, one line is enough: *"logged that as
 feedback — you can send it with the rest later, or not at all."*
 
-## 2. Decide whose problem it is — and check before you blame Booley
+## 2. Produce a workaround when progress is blocked
+
+This branch applies to a bug, documentation contradiction, or confusing
+behavior that prevents the user's original goal. Skip it for non-blocking
+observations and impressions.
+
+After capturing the perishable evidence, resume the original task and find the
+safest practical path around the problem. Use only the authority already
+granted for that task; invoking feedback does not expand the scope. A complete
+workaround gives the user:
+
+- the exact command, configuration change, or alternate workflow to use;
+- what it bypasses, its limitations or risks, and how to undo it;
+- verification with the original reproduction or the closest safe check, when
+  practical. Label an unverified suggestion as such.
+
+Apply the workaround when it is already within scope. If every available route
+would be destructive, weaken security or correctness, or require a meaningful
+new user choice, say that no safe workaround was found and give the concrete
+decision or external action needed next. Never invent a workaround merely to
+claim the user is unblocked.
+
+When a workaround changes a blocker into a usable but degraded path, preserve
+the underlying `booley` or `docs` bucket and update the finding with the outcome:
+
+```console
+booley feedback triage F-1 --severity workaround \
+  --notes "Workaround: use …. Verified by …. Limitation: …. Revert by …."
+```
+
+## 3. Decide whose problem it is — and check before you blame Booley
 
 | Bucket | Means |
 | --- | --- |
@@ -122,7 +154,7 @@ describe a renamed/minimized copy of project RTL as anonymous. If no safe,
 equivalent reproducer can be made, say so and keep the project-specific evidence
 local; do not fabricate a toy example merely to clear the filing bar.
 
-## 3. Render the report
+## 4. Render the report
 
 ```console
 booley feedback report
@@ -142,7 +174,7 @@ leave it: the local report is the right home for "this felt rough".
 The report and any explicit export stay out of the RTL repo's tracked tree.
 That is the footprint guardrail, and a bug report is not an exception to it.
 
-## 4. Ask — once, honestly, and take no for an answer
+## 5. Ask — once, honestly, and take no for an answer
 
 Skip this section entirely and silently when `[feedback] mode` is `off` or
 `file-only`, or when nothing is filable.
@@ -200,7 +232,7 @@ that got missed — add it to `[feedback] redact_extra` (or set
 public), and preview the same IDs again. The token changes with the text, which
 is the point.
 
-## 5. Submission is host-only
+## 6. Submission is host-only
 
 Day-to-day work happens inside the Session Runtime, whose egress proxy allowlists
 model APIs and not github.com — and holds no mail client either, so the `email`
