@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -42,7 +43,7 @@ from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
 from booley.targets.target import TargetHandle, select_targets
 
-from .. import artifacts
+from .. import artifacts, edam
 from ..base import BooleyFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
@@ -1134,9 +1135,7 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _resolve_synth_target(self, target: str) -> fusesoc_registry.ResolvedTarget:
         """Clean and resolve one FuseSoC Target into its isolated build root."""
-        from ..edam import work_root_for
-
-        build_root = work_root_for(self.args.work_dir, self.name, target)
+        build_root = self._synth_work_root(target)
         shutil.rmtree(build_root, ignore_errors=True)
         handle = self._target_handle(target)
         ref = getattr(self, "_target_execution_refs", {}).get(target)
@@ -1197,6 +1196,10 @@ class AsicSynthesizeFlow(BooleyFlow):
         cmd.extend(["-w", target])
         return cmd
 
+    def _synth_work_root(self, target: str) -> Path:
+        """Return the shared mutable work root for one synthesis Target."""
+        return edam.work_root_for(self.args.work_dir, self.name, target)
+
     def _synth_build_dir(self, target: str) -> Path:
         """The make-driven synth build dir for *target* (under its work root).
 
@@ -1205,9 +1208,14 @@ class AsicSynthesizeFlow(BooleyFlow):
         shares the root. Wiped together with the root by ``_build_synth_cmd``'s
         pre-resolution cleanup.
         """
-        from ..edam import work_root_for
+        return self._synth_work_root(target) / "synth"
 
-        return work_root_for(self.args.work_dir, self.name, target) / "synth"
+    def _report_workspace_wait(self, target: str) -> None:
+        """Surface same-Target serialization in logs, stderr, and live progress."""
+        line = f"waiting for synth target workspace [{target}]"
+        logger.info("Synth %s: waiting for target workspace", target)
+        print(f"[synth] {line}", file=sys.stderr, flush=True)
+        self.emit_progress(line)
 
     def _configure_synth(self, target: str, cmd: list[str]) -> Any:
         """Render *target*'s make-driven build dir from the spec argv (ADR 0037 §8).
@@ -1237,8 +1245,6 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _synth_boundary_cmd(self, plan: Any) -> list[str]:
         """Return the Session Runtime command for a configured synthesis plan."""
-        from .. import edam
-
         return ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
 
     # -- Single-target run ----------------------------------------------------
@@ -1303,9 +1309,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         # F-26: _persist_synth_log only lands at the END of a multi-minute
         # synth, so claim the log now — a tail during the wait must not see
         # the previous run's area/timing tail as this run's progress.
-        from ..edam import work_root_for
-
-        self._open_run_log(target, work_root_for(self.args.work_dir, self.name, target))
+        self._open_run_log(target, self._synth_work_root(target))
         start = time.monotonic()
         proc_result = self._execute_boundary(make_cmd, timeout=self._get_timeout())
         elapsed = time.monotonic() - start
@@ -1450,9 +1454,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """
         from booley.flows.run_log import write_run_log
 
-        from ..edam import work_root_for
-
-        log_dir = work_root_for(self.args.work_dir, self.name, target)
+        log_dir = self._synth_work_root(target)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, output)
@@ -1480,9 +1482,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """
         from booley.flows.run_log import write_run_log
 
-        from ..edam import work_root_for
-
-        log_dir = work_root_for(project_root, self.name, target, variant="baseline")
+        log_dir = edam.work_root_for(project_root, self.name, target, variant="baseline")
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, output)
@@ -1813,21 +1813,32 @@ class AsicSynthesizeFlow(BooleyFlow):
     ) -> dict[str, SynthMetrics]:
         current_results: dict[str, SynthMetrics] = {}
         for tgt in targets:
-            metrics, _output = self._run_single_config(tgt)
-            current_results[tgt] = metrics
-            self._persist_target_outcome(
-                tgt,
-                metrics,
-                baseline_results.get(tgt),
-                short_sha,
-            )
-            self._write_progress_report(
-                targets,
-                current_results,
-                baseline_results,
-                phase="current",
-                baseline_ref=short_sha,
-            )
+            try:
+                with edam.work_root_lease(
+                    self._synth_work_root(tgt),
+                    timeout_s=self._get_timeout(),
+                    on_wait=lambda target=tgt: self._report_workspace_wait(target),
+                ):
+                    metrics, _output = self._run_single_config(tgt)
+                    self._publish_current_target(
+                        tgt,
+                        metrics,
+                        targets,
+                        current_results,
+                        baseline_results,
+                        short_sha,
+                    )
+            except edam.WorkRootLeaseError as exc:
+                logger.error("Synth %s: %s", tgt, exc)
+                metrics = _infra_metrics(str(exc))
+                self._publish_current_target(
+                    tgt,
+                    metrics,
+                    targets,
+                    current_results,
+                    baseline_results,
+                    short_sha,
+                )
             if len(targets) > 1:
                 self.emit_completion(
                     self._format_config_line(
@@ -1837,6 +1848,31 @@ class AsicSynthesizeFlow(BooleyFlow):
                     )
                 )
         return current_results
+
+    def _publish_current_target(
+        self,
+        target: str,
+        metrics: SynthMetrics,
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+        baseline_results: dict[str, SynthMetrics],
+        baseline_ref: str | None,
+    ) -> None:
+        """Publish one Target while its mutable workspace is still owned."""
+        current_results[target] = metrics
+        self._persist_target_outcome(
+            target,
+            metrics,
+            baseline_results.get(target),
+            baseline_ref,
+        )
+        self._write_progress_report(
+            targets,
+            current_results,
+            baseline_results,
+            phase="current",
+            baseline_ref=baseline_ref,
+        )
 
     def _discard_stale_selfcompare(
         self,
@@ -1868,18 +1904,19 @@ class AsicSynthesizeFlow(BooleyFlow):
         no EDA tools — so it degrades to the cheap ``setup_command`` preview
         the make-driven built-ins use.
         """
-        from .. import edam
-        from ..edam import work_root_for
-
         lines = []
         for tgt in targets:
             try:
-                cmd = self._build_synth_cmd(tgt)
-                rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
-                lines.append(
-                    f"[synth] dry-run ({tgt}): make -C {rel}"
-                    f"  # rendered at configure time from: {' '.join(cmd)}",
-                )
+                with edam.try_work_root_lease(self._synth_work_root(tgt)) as leased:
+                    if leased is None:
+                        lines.append(self._setup_preview(tgt, "workspace busy"))
+                        continue
+                    cmd = self._build_synth_cmd(tgt)
+                    rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
+                    lines.append(
+                        f"[synth] dry-run ({tgt}): make -C {rel}"
+                        f"  # rendered at configure time from: {' '.join(cmd)}",
+                    )
             except BoundaryError as exc:
                 # A wrong-typed config knob fails the preview loudly — dry-run
                 # exists to vet the command, so hiding a config error here would
@@ -1889,19 +1926,28 @@ class AsicSynthesizeFlow(BooleyFlow):
                     report_text=f"[synth] dry-run ({tgt}): config error: {exc}",
                 )
             except fusesoc_registry.TargetResolutionError as exc:
-                handle = self._target_handle(tgt)
-                setup_cmd = fusesoc_registry.setup_command(
-                    handle.selector,
-                    project_root=handle.project_root,
-                    build_root=work_root_for(self.args.work_dir, self.name, tgt),
-                    vlnv=handle.vlnv,
-                )
-                lines.append(
-                    f"[synth] dry-run ({tgt}): {' '.join(setup_cmd)}"
-                    " && make -C <configured synth build dir>"
-                    f"  # full preview unavailable here: {exc}",
+                lines.append(self._setup_preview(tgt, str(exc)))
+            except edam.WorkRootLeaseError as exc:
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"[synth] dry-run ({tgt}): infrastructure error: {exc}",
                 )
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
+
+    def _setup_preview(self, target: str, reason: str) -> str:
+        """Return the non-mutating preview used when full resolution is unavailable."""
+        handle = self._target_handle(target)
+        setup_cmd = fusesoc_registry.setup_command(
+            handle.selector,
+            project_root=handle.project_root,
+            build_root=self._synth_work_root(target),
+            vlnv=handle.vlnv,
+        )
+        return (
+            f"[synth] dry-run ({target}): {' '.join(setup_cmd)}"
+            " && make -C <configured synth build dir>"
+            f"  # full preview unavailable here: {reason}"
+        )
 
     def _run_baseline_configs(
         self,
@@ -1957,7 +2003,17 @@ class AsicSynthesizeFlow(BooleyFlow):
             baseline = plan.baseline.selector
             candidate = plan.candidate.selector
             if baseline not in executed:
-                metrics, output = self._run_single_config(baseline)
+                try:
+                    with edam.work_root_lease(
+                        self._synth_work_root(baseline),
+                        timeout_s=self._get_timeout(),
+                        on_wait=lambda target=baseline: self._report_workspace_wait(target),
+                    ):
+                        metrics, output = self._run_single_config(baseline)
+                except edam.WorkRootLeaseError as exc:
+                    logger.error("Synth baseline %s: %s", baseline, exc)
+                    output = str(exc)
+                    metrics = _infra_metrics(output)
                 metrics.log_path = self._persist_baseline_log(baseline, output, project_root)
                 executed[baseline] = metrics
             metrics = copy.deepcopy(executed[baseline])
