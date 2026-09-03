@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "measured_at": "2026-09-02T17:17:25Z",
+  "environment": {
+    "docker_client_version": "29.7.2",
+    "docker_server_version": "29.7.2",
+    "containerd_version": "v2.3.3",
+    "buildx_version": "github.com/docker/buildx v0.36.1 1d8dde89b8aba914e05e45366770736fea1fd690",
+    "buildkit_versions": [
+      "v0.32.2"
+    ],
+    "storage_driver": "overlayfs",
+    "storage_driver_status": [
+      [
+        "driver-type",
+        "io.containerd.snapshotter.v1"
+      ]
+    ]
+  },
+  "images": {
+    "sandbox": {
+      "reference": "ghcr.io/boldaxolotl/booley-sandbox:0.2.10",
+      "image_id": "sha256:3a836cb2ca662baf704de65c56e5319ae6960b36a2a356f6a4bfe15ecbe1396d",
+      "os": "linux",
+      "architecture": "amd64",
+      "runtime_user": "agent",
+      "docker_local_size_bytes": 4327809677,
+      "unpacked_layer_history_bytes": 10344845312,
+      "history_layer_count": 100,
+      "rootfs_layer_count": 45,
+      "merged_visible_filesystem_bytes": 9663725568,
+      "largest_directories": [
+        {"path": "/OpenROAD", "bytes": 5224370176},
+        {"path": "/usr", "bytes": 3362643968},
+        {"path": "/OpenROAD/build", "bytes": 3312771072},
+        {"path": "/OpenROAD/src", "bytes": 1527439360},
+        {"path": "/usr/local", "bytes": 1218818048},
+        {"path": "/usr/lib", "bytes": 1109921792},
+        {"path": "/opt", "bytes": 1046224896},
+        {"path": "/opt/agent-clis", "bytes": 770080768},
+        {"path": "/usr/bin", "bytes": 600272896},
+        {"path": "/OpenROAD/test", "bytes": 310796288},
+        {"path": "/opt/or-tools", "bytes": 276140032},
+        {"path": "/usr/share", "bytes": 188702720},
+        {"path": "/usr/libexec", "bytes": 167899136},
+        {"path": "/usr/include", "bytes": 69267456},
+        {"path": "/OpenROAD/third-party", "bytes": 68194304},
+        {"path": "/var", "bytes": 25362432},
+        {"path": "/var/lib", "bytes": 21729280},
+        {"path": "/usr/sbin", "bytes": 7659520},
+        {"path": "/OpenROAD/docs", "bytes": 3309568},
+        {"path": "/var/cache", "bytes": 2809856},
+        {"path": "/tmp", "bytes": 2732032},
+        {"path": "/tmp/node-compile-cache", "bytes": 2691072},
+        {"path": "/etc", "bytes": 2211840},
+        {"path": "/var/log", "bytes": 794624},
+        {"path": "/etc/ssl", "bytes": 573440}
+      ],
+      "registry": {
+        "platform_manifest_digest": "sha256:bad226b87125b49fbfc9057b87f285aa87606eb80189589e7304504536ed4010",
+        "compressed_layer_bytes": 4327757023,
+        "compressed_layer_count": 45,
+        "unique_compressed_blob_bytes": 4327756927,
+        "unique_compressed_blob_count": 42
+      }
+    },
+    "riscv": {
+      "reference": "ghcr.io/boldaxolotl/booley-sandbox-riscv:0.2.10",
+      "image_id": "sha256:6eeb444e8dbb5ca4cecfd2dd79ce4adc6a19ea5b69085e168c75da10f627ebaa",
+      "os": "linux",
+      "architecture": "amd64",
+      "runtime_user": "agent",
+      "docker_local_size_bytes": 5533504981,
+      "unpacked_layer_history_bytes": 13852749824,
+      "history_layer_count": 121,
+      "rootfs_layer_count": 51,
+      "merged_visible_filesystem_bytes": 13169491968,
+      "largest_directories": [
+        {"path": "/OpenROAD", "bytes": 5224370176},
+        {"path": "/opt", "bytes": 4539928576},
+        {"path": "/opt/riscv", "bytes": 3475697664},
+        {"path": "/usr", "bytes": 3374432256},
+        {"path": "/OpenROAD/build", "bytes": 3312771072},
+        {"path": "/OpenROAD/src", "bytes": 1527439360},
+        {"path": "/usr/local", "bytes": 1218818048},
+        {"path": "/usr/lib", "bytes": 1120456704},
+        {"path": "/opt/agent-clis", "bytes": 770080768},
+        {"path": "/usr/bin", "bytes": 601292800},
+        {"path": "/OpenROAD/test", "bytes": 310796288},
+        {"path": "/opt/or-tools", "bytes": 276140032},
+        {"path": "/usr/share", "bytes": 188936192},
+        {"path": "/usr/libexec", "bytes": 167899136},
+        {"path": "/usr/include", "bytes": 69267456},
+        {"path": "/OpenROAD/third-party", "bytes": 68194304},
+        {"path": "/var", "bytes": 25632768},
+        {"path": "/var/lib", "bytes": 21991424},
+        {"path": "/opt/riscv-docs", "bytes": 18006016},
+        {"path": "/usr/sbin", "bytes": 7659520},
+        {"path": "/OpenROAD/docs", "bytes": 3309568},
+        {"path": "/var/cache", "bytes": 2813952},
+        {"path": "/tmp", "bytes": 2732032},
+        {"path": "/tmp/node-compile-cache", "bytes": 2691072},
+        {"path": "/etc", "bytes": 2215936}
+      ],
+      "registry": {
+        "platform_manifest_digest": "sha256:4da64b6a64e4e03ed6ba20479ebf8dc395bf883ec3ee59d8cc2964731322b8c4",
+        "compressed_layer_bytes": 5533441890,
+        "compressed_layer_count": 51,
+        "unique_compressed_blob_bytes": 5533441730,
+        "unique_compressed_blob_count": 46
+      }
+    }
+  },
+  "registry_set": {
+    "unique_compressed_layer_bytes": 5533441730,
+    "unique_compressed_layer_count": 46,
+    "riscv_incremental_compressed_layer_bytes": 1205684803
+  }
+}

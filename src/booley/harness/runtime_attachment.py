@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
@@ -214,6 +215,7 @@ def run_command(
     command: list[str],
     *,
     tty: bool,
+    env: Mapping[str, str] | None = None,
 ) -> ExecutionResult:
     """Run one explicit command and own it through complete scoped cleanup."""
     from booley.harness.session_runtime import exec_argv
@@ -228,7 +230,7 @@ def run_command(
         container_name,
         supervisor,
         tty=tty,
-        env={RUNTIME_EXECUTION_ENV: execution_id},
+        env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
     )
     pending = _PendingSignals()
     with _capture_host_signals(pending):

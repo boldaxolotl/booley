@@ -95,22 +95,51 @@ def _report_status() -> int:
     return 1 if at_rotation_risk == len(auth_token.CREDENTIALS) else 0
 
 
-def _mint_claude_token(credential: AppCredential) -> str | None:
+def _project_is_initialized(project_root: Path) -> bool:
+    """Whether *project_root* resolves to Project-owned state."""
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    try:
+        return resolve_checkout_project_dir(project_root).is_dir()
+    except FileNotFoundError:
+        return False
+
+
+def _mint_claude_token(credential: AppCredential, project_root: Path) -> str | None:
     """Run ``claude setup-token`` and collect the token it prints."""
     assert credential.mint_cmd is not None
-    if shutil.which(credential.mint_cmd[0]) is None:
-        err(f"{credential.mint_cmd[0]} CLI not found on PATH — install it first")
+    command = list(credential.mint_cmd)
+    in_project = _project_is_initialized(project_root)
+    if not in_project and shutil.which(command[0]) is None:
+        err(
+            f"{command[0]} CLI not found on PATH — run this from an initialized Booley "
+            "Project to use its Session Runtime, or install the CLI on the host"
+        )
         return None
 
-    info(f"Running `{' '.join(credential.mint_cmd)}` — authorize in the browser when prompted.")
+    location = " in the Project's Session Runtime" if in_project else ""
+    info(f"Running `{' '.join(command)}`{location} — authorize in the browser when prompted.")
     print()
     # stdio is inherited on purpose: the flow prints a URL, waits, then prints the
     # token. Capturing stdout would hide the URL and leave the user staring at a
     # frozen terminal.
-    result = subprocess.run(credential.mint_cmd, check=False)
+    if in_project:
+        from booley.harness import session_runtime
+
+        try:
+            returncode = session_runtime.run_project_command(
+                project_root,
+                command,
+                tty=sys.stdin.isatty() and sys.stdout.isatty(),
+            )
+        except session_runtime.SessionError as exc:
+            err(f"could not run `{' '.join(command)}` in the Session Runtime: {exc}")
+            return None
+    else:
+        returncode = subprocess.run(credential.mint_cmd, check=False).returncode
     print()
-    if result.returncode != 0:
-        err(f"`{' '.join(credential.mint_cmd)}` failed (exit {result.returncode})")
+    if returncode != 0:
+        err(f"`{' '.join(command)}` failed (exit {returncode})")
         return None
     info("Paste the token printed above (input is hidden):")
     return _prompt_secret()
@@ -138,7 +167,7 @@ def _read_token_from_stdin(credential: AppCredential) -> str | None:
     return lines[0] if len(lines) == 1 else None
 
 
-def _reseed_spec(project_root: Path) -> None:
+def _reseed_spec(project_root: Path) -> bool:
     """Refresh this folder's devcontainer spec so it references the credential.
 
     The devcontainer paths (VS Code, ``booley session``, and headless drivers) read
@@ -147,11 +176,11 @@ def _reseed_spec(project_root: Path) -> None:
     """
     from booley.harness.init_cmd import run_init
 
-    if not (project_root / ".booley_project").exists():
+    if not _project_is_initialized(project_root):
         info(f"no Booley project at {project_root} — skipping devcontainer re-seed")
         info("run `booley auth` (or `booley init --seed`) inside a project to wire it in")
-        return
-    run_init(argparse.Namespace(seed=True), project_root)
+        return True
+    return run_init(argparse.Namespace(seed=True), project_root) == 0
 
 
 def _clear(app: str, project_root: Path) -> int:
@@ -162,14 +191,19 @@ def _clear(app: str, project_root: Path) -> int:
         info(f"{app} falls back to its refreshing subscription credential")
         # Drop the token-seed mount from the spec. Deleting the file breaks the
         # bind (docker mounts the inode), so existing containers must rebuild.
-        _reseed_spec(project_root)
+        if not _reseed_spec(project_root):
+            err(
+                "credential was removed, but the Project Session Runtime spec could not be "
+                "re-seeded; run `booley init --seed` and retry"
+            )
+            return 1
         info("rebuild any existing container once so it drops the stale credential")
     else:
         info(f"no stored {app} credential to remove")
     return 0
 
 
-def _acquire(credential: AppCredential, from_stdin: bool) -> str | None:
+def _acquire(credential: AppCredential, from_stdin: bool, project_root: Path) -> str | None:
     """Get the credential: piped in, minted, or pasted."""
     if from_stdin:
         token = _read_token_from_stdin(credential)
@@ -177,7 +211,7 @@ def _acquire(credential: AppCredential, from_stdin: bool) -> str | None:
             err("could not find a credential on stdin")
         return token
     if credential.mint_cmd is not None:
-        return _mint_claude_token(credential)
+        return _mint_claude_token(credential, project_root)
     # No mint command (Codex): the user supplies the key.
     info(_ACQUIRE_HINT[credential.app])
     return _prompt_secret()
@@ -190,6 +224,25 @@ def _resolve_app(args: argparse.Namespace) -> str | None:
         err(f"unknown app '{app}' — expected one of: {', '.join(auth_token.CREDENTIALS)}")
         return None
     return app
+
+
+def _store_and_reseed(token: str, credential: AppCredential, project_root: Path) -> Path | None:
+    """Store one credential and refresh the Project's runtime specification."""
+    try:
+        path = auth_token.store_token(token, credential.app)
+    except ValueError as exc:
+        err(str(exc))
+        return None
+
+    ok(f"stored {credential.label} at {path} (mode 0600)")
+    info("kept outside every repo; Session Runtimes receive it only through a read-only mount")
+    if _reseed_spec(project_root):
+        return path
+    err(
+        "credential was stored, but the Project Session Runtime spec could not be re-seeded; "
+        "run `booley init --seed` and retry"
+    )
+    return None
 
 
 def run_auth(args: argparse.Namespace, project_root: Path) -> int:
@@ -209,7 +262,7 @@ def run_auth(args: argparse.Namespace, project_root: Path) -> int:
     credential = auth_token.CREDENTIALS[app]
     banner(f"Agent auth — {app} ({credential.label})")
 
-    token = _acquire(credential, getattr(args, "token_stdin", False))
+    token = _acquire(credential, getattr(args, "token_stdin", False), project_root)
     if token is None:
         return 1
 
@@ -218,16 +271,8 @@ def run_auth(args: argparse.Namespace, project_root: Path) -> int:
         # their own credential over a cosmetic check is worse than a bad paste.
         warn(f"that does not look like a {credential.label} — storing it anyway")
 
-    try:
-        path = auth_token.store_token(token, app)
-    except ValueError as exc:
-        err(str(exc))
+    if _store_and_reseed(token, credential, project_root) is None:
         return 1
-
-    ok(f"stored {credential.label} at {path} (mode 0600)")
-    info("kept outside every repo and bind mount, so it can't be committed")
-
-    _reseed_spec(project_root)
 
     print()
     ok(

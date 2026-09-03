@@ -122,6 +122,46 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     assert "docker history --no-trunc" in workflow
     assert "docker image inspect booley-test" in workflow
     assert "docker-build-evidence" in workflow
+    assert ".github/scripts/image_contract.py" in workflow
+    assert "runtime-contract.json" in workflow
+
+
+def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
+
+    assert "--file src/booley/data/docker/Dockerfile.riscv" in workflow
+    assert "--build-context booley-sandbox=docker-image://booley-test" in workflow
+    assert "--image booley-riscv-test" in workflow
+    assert "--base-image booley-test" in workflow
+    assert "--flavor riscv" in workflow
+    assert "--runtime-image riscv=booley-riscv-test" in workflow
+    assert "verify_picorv32_demo.sh" in workflow
+    assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in workflow
+    assert "python -m booley.flows.lint --work-dir /work --target lint_core" in verifier
+    assert "python -m booley.flows.sim --work-dir /work --target sim_core" in verifier
+    assert "riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+
+
+def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
+    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+    setup = Path("src/booley/data/skills/booley-setup/steps/2-project-config.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"/usr/local/cargo"' in contract
+    assert '"/usr/local/rustup"' in contract
+    assert "Rust is not included" in setup
+    assert "Node.js, Rust" not in setup
+
+
+def test_readme_uses_measured_registry_baseline_instead_of_rough_estimate() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "roughly 6 GB" not in readme
+    assert "4.33 GB of compressed" in readme
+    assert "5.53 GB for RISC-V" in readme
+    assert "adds 1.21 GB" in readme
 
 
 def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
@@ -495,7 +535,9 @@ def test_release_reports_registry_and_sidecar_image_sizes_after_initialization()
     assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
     assert '--local-image "proxy=booley-egress-proxy"' in workflow
     assert '--local-image "reaper=booley-reaper"' in workflow
-    assert 'cat "${RUNNER_TEMP}/booley-image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"' in workflow
+    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"' in workflow
+    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"' in workflow
+    assert 'cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"' in workflow
     assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
 
 
