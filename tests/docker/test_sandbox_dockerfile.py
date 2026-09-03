@@ -510,7 +510,7 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     assert "set -o pipefail" in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
-    assert 'booley doctor --deep --skip-agent-checks | tee "${doctor_log}"' in workflow
+    assert workflow.count('booley doctor --deep --skip-agent-checks | tee "${doctor_log}"') == 2
     assert 'grep -Fq "0 warning(s)" "${doctor_log}"' in workflow
     assert 'grep -Fq "0 failed." "${doctor_log}"' in workflow
     assert "from booley.runtime.project_dir import resolve_project_dir" in workflow
