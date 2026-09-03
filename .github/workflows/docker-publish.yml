@@ -303,20 +303,32 @@ jobs:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
-          python .github/scripts/image_size_report.py \
+          mkdir -p "${RUNNER_TEMP}/booley-image-evidence"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image "${BASE_IMAGE}" \
+            --flavor standard \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image "${RISCV_IMAGE}" \
+            --base-image "${BASE_IMAGE}" \
+            --flavor riscv \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"
+          PYTHONPATH=src python .github/scripts/image_size_report.py \
             --registry-image "sandbox=${BASE_IMAGE}" \
             --registry-image "riscv=${RISCV_IMAGE}" \
             --local-image "proxy=booley-egress-proxy" \
             --local-image "reaper=booley-reaper" \
-            --json "${RUNNER_TEMP}/booley-image-sizes.json" \
-            --markdown "${RUNNER_TEMP}/booley-image-sizes.md"
-          cat "${RUNNER_TEMP}/booley-image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
+            --json "${RUNNER_TEMP}/booley-image-evidence/image-sizes.json" \
+            --markdown "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"
+          cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain release image storage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: booley-image-sizes-${{ steps.version.outputs.version }}
-          path: ${{ runner.temp }}/booley-image-sizes.json
+          path: ${{ runner.temp }}/booley-image-evidence/
           if-no-files-found: error
 
       # actions/checkout files belong to the runner user (uid 1001), while the
