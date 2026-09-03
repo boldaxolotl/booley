@@ -235,6 +235,27 @@ def test_image_pytest_commands_install_configured_plugins() -> None:
     assert "pytest-asyncio" in host_install["run"]
 
 
+def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
+    """A cached image smoke regression fails before reaching the broad safety timeout."""
+    workflow = _test_workflow()
+    job = workflow["jobs"]["bwave-smoke"]
+    steps = job["steps"]
+
+    start = next(step for step in steps if step.get("name") == "Start duration budget clock")
+    canary = next(step for step in steps if step.get("name") == "Enforce duration budget")
+
+    assert job["timeout-minutes"] == 180
+    assert "started_at_epoch=$(date +%s)" in start["run"]
+    assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
+    assert ".github/scripts/ci_duration_budget.py" in canary["run"]
+    assert "--budget-seconds 1080" in canary["run"]
+    assert steps.index(canary) > next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Upload installed agent CLI policy evidence"
+    )
+
+
 def test_matrix_uses_test_only_dependencies() -> None:
     """Compatibility legs do not install linting or mutation-only packages."""
     workflow = _test_workflow()

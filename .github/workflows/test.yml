@@ -513,6 +513,11 @@ jobs:
     # finish in minutes; the generous ceiling is for cold-cache runs only.
     timeout-minutes: 180
     steps:
+      - name: Start duration budget clock
+        id: duration-clock
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -871,6 +876,18 @@ jobs:
           path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json
           if-no-files-found: warn
           retention-days: 14
+
+      # Normal published-base runs measured 14m56s-16m50s after the RISC-V
+      # contract lane landed. Stable-base changes deliberately exercise the
+      # documented ~57-minute cold build and retain the 180-minute safety cap.
+      - name: Enforce duration budget
+        if: always() && steps.runtime-base.outputs.build != 'true'
+        run: >-
+          PYTHONPATH=src python .github/scripts/ci_duration_budget.py
+          --label bwave-smoke
+          --started-at-epoch "${{ steps.duration-clock.outputs.started_at_epoch }}"
+          --budget-seconds 1080
+          --summary "${GITHUB_STEP_SUMMARY}"
 
   ci-required:
     name: ci-required
