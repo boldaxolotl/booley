@@ -42,7 +42,6 @@ from .validation import validate_ticket_fields
 
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _LEGACY_ARCHIVE_PREFIX = "booley-legacy-archive"
-_ZERO_OID = "0" * 40
 
 
 class ContractOperationError(RuntimeError):
@@ -196,11 +195,11 @@ def _preflight_project_repository(root: Path, requested_branch: str) -> _Project
             "paired project repository has uncommitted changes; commit or restore them "
             f"before opening a contract: {paths}"
         )
-    live_branch = _current_branch(source)
     live_sha = _full_commit(source, "HEAD")
     base_branch = _project_base_branch(source, requested_branch)
     base_sha = _full_commit(source, base_branch)
     if live_sha != base_sha:
+        live_branch = _require_git(source, "branch", "--show-current") or "detached HEAD"
         raise ContractOperationError(
             "paired project live checkout and contract destination differ: "
             f"{live_branch} at {live_sha[:12]}, {base_branch} at {base_sha[:12]}; "
@@ -235,6 +234,13 @@ def _registered_worktree(repository: Path, worktree: Path) -> bool:
     return False
 
 
+def _worktree_owns_branch(repository: Path, worktree: Path, branch: str) -> bool:
+    """Whether an existing worktree proves ownership of a legacy ticket branch."""
+    if not worktree.is_dir() or not _registered_worktree(repository, worktree):
+        return False
+    return _require_git(worktree, "branch", "--show-current") == branch
+
+
 def _create_attachment(attachment: _OpenAttachment) -> None:
     ref = f"refs/heads/{attachment.branch}"
     if _strict_branch_sha(attachment.repository, attachment.branch) is None:
@@ -244,7 +250,7 @@ def _create_attachment(attachment: _OpenAttachment) -> None:
                 "update-ref",
                 ref,
                 attachment.base_sha,
-                _ZERO_OID,
+                "0" * len(attachment.base_sha),
             )
         except ContractOperationError as exc:
             current = _strict_branch_sha(attachment.repository, attachment.branch)
@@ -506,14 +512,26 @@ def _archive_legacy_worktrees(root: Path, outer: Path, slug: str) -> None:
     outer_sha = _branch_sha(root, slug)
     project_branch = project_ticket_branch(slug)
     project_sha = _branch_sha(source, project_branch) if source is not None else ""
-    if outer_sha:
-        _archive_ref(root, _legacy_archive(slug, outer_sha), outer_sha)
+    paired = paired_project_repository(outer) if outer.is_dir() else None
+
+    # A matching name alone is not evidence that Booley owns a branch. Only
+    # recover branches still attached at the conventional legacy paths; the
+    # normal attachment planner will preserve or reject every ambiguous ref.
+    if not outer_sha or not _worktree_owns_branch(root, outer, slug):
+        return
+    if paired is not None and (
+        source is None or not _worktree_owns_branch(source, paired.worktree, project_branch)
+    ):
+        return
+    if project_sha and paired is None:
+        return
+
+    _archive_ref(root, _legacy_archive(slug, outer_sha), outer_sha)
     if source is not None and project_sha:
         _archive_ref(source, _legacy_archive(slug, project_sha), project_sha)
-    paired = paired_project_repository(outer) if outer.is_dir() else None
     _remove_contract_worktrees(root, outer, paired, source)
     _delete_branch(root, slug)
-    if source is not None:
+    if source is not None and project_sha:
         _delete_branch(source, project_branch)
 
 

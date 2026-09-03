@@ -29,9 +29,12 @@ def _git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _init_repo(repo: Path) -> None:
+def _init_repo(repo: Path, *, object_format: str = "") -> None:
     repo.mkdir(parents=True, exist_ok=True)
-    _git(repo, "init", "-b", "main")
+    args = ["init", "-b", "main"]
+    if object_format:
+        args.append(f"--object-format={object_format}")
+    _git(repo, *args)
     _git(repo, "config", "user.name", "Test")
     _git(repo, "config", "user.email", "test@example.invalid")
 
@@ -97,9 +100,9 @@ def _create_ticket(tio: TicketIO, slug: str = "change-target") -> Path:
     return ticket
 
 
-def _native_project(tmp_path: Path) -> tuple[Path, TicketIO, Path]:
+def _native_project(tmp_path: Path, *, object_format: str = "") -> tuple[Path, TicketIO, Path]:
     root = tmp_path / "rtl"
-    _init_repo(root)
+    _init_repo(root, object_format=object_format)
     _write_sources(root)
     project = root / ".booley_project"
     (project / "tickets" / "board" / "drafts").mkdir(parents=True)
@@ -127,6 +130,16 @@ def _paired_project(tmp_path: Path) -> tuple[Path, Path, TicketIO, Path]:
     _commit_all(project, "initial project data")
     tio = TicketIO(project / "tickets", project_root=root)
     return root, project, tio, _create_ticket(tio)
+
+
+def _install_failing_prepare_hook(project: Path, exit_code: int, *, stderr: str = "") -> Path:
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir(exist_ok=True)
+    message = f"echo '{stderr}' >&2\n" if stderr else ""
+    hook.write_text(f"#!/bin/sh\n{message}exit {exit_code}\n")
+    hook.chmod(0o755)
+    _commit_all(project, "add failing project preparation")
+    return hook
 
 
 def test_enqueue_refuses_unsealed_ticket_in_git_project(tmp_path: Path) -> None:
@@ -238,15 +251,32 @@ def test_contract_open_refuses_paired_project_commit_mismatch_before_creating_st
     assert not _git(project, "branch", "--list", "booley-ticket/change-target")
 
 
+def test_contract_open_accepts_matching_detached_paired_project(tmp_path: Path) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    expected_sha = _git(project, "rev-parse", "main")
+    _git(project, "checkout", "--detach", expected_sha)
+
+    opened = tio.contract_open("change-target")
+
+    assert opened["project_base_sha"] == expected_sha
+    assert Path(opened["project_worktree"]).is_dir()
+    assert _git(root, "rev-parse", "change-target") == opened["outer_base_sha"]
+
+
+def test_contract_open_creates_branch_in_sha256_repository(tmp_path: Path) -> None:
+    root, tio, _ticket = _native_project(tmp_path, object_format="sha256")
+
+    opened = tio.contract_open("change-target")
+
+    assert len(opened["outer_base_sha"]) == 64
+    assert _git(root, "rev-parse", "change-target") == opened["outer_base_sha"]
+
+
 def test_failed_contract_open_removes_created_state_and_same_slug_retry_succeeds(
     tmp_path: Path,
 ) -> None:
     root, project, tio, _ticket = _paired_project(tmp_path)
-    hook = project / "hooks" / "post-setup.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\necho broken configuration >&2\nexit 7\n")
-    hook.chmod(0o755)
-    _commit_all(project, "add failing project preparation")
+    hook = _install_failing_prepare_hook(project, 7, stderr="broken configuration")
 
     with pytest.raises(RuntimeError, match=r"post-setup hook failed.*broken configuration"):
         tio.contract_open("change-target")
@@ -269,11 +299,8 @@ def test_failed_contract_open_preserves_reused_branches_and_project_upstream(
     tmp_path: Path,
 ) -> None:
     root, project, tio, _ticket = _paired_project(tmp_path)
-    hook = project / "hooks" / "post-setup.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\nexit 9\n")
-    hook.chmod(0o755)
-    project_sha = _commit_all(project, "add failing project preparation")
+    _install_failing_prepare_hook(project, 9)
+    project_sha = _git(project, "rev-parse", "HEAD")
     outer_sha = _git(root, "rev-parse", "main")
     _git(root, "branch", "change-target", outer_sha)
     _git(project, "branch", "alternate", project_sha)
@@ -304,11 +331,8 @@ def test_failed_contract_open_preserves_reused_branches_and_project_upstream(
 
 def test_failed_contract_open_restores_absent_project_upstream(tmp_path: Path) -> None:
     root, project, tio, _ticket = _paired_project(tmp_path)
-    hook = project / "hooks" / "post-setup.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\nexit 15\n")
-    hook.chmod(0o755)
-    project_sha = _commit_all(project, "add failing project preparation")
+    _install_failing_prepare_hook(project, 15)
+    project_sha = _git(project, "rev-parse", "HEAD")
     _git(project, "branch", "booley-ticket/change-target", project_sha)
 
     with pytest.raises(RuntimeError, match="post-setup hook failed"):
@@ -513,16 +537,44 @@ def test_contract_open_preserves_conflicting_user_branch(tmp_path: Path) -> None
     assert not (project / "worktrees" / "change-target").exists()
 
 
+@pytest.mark.parametrize("colliding_role", ["outer", "project"])
+def test_legacy_recovery_preserves_unowned_colliding_branch(
+    tmp_path: Path, colliding_role: str
+) -> None:
+    root, project, tio, ticket = _paired_project(tmp_path)
+    if colliding_role == "outer":
+        repository = root
+        branch = "change-target"
+        changed = root / "rtl" / "toy.sv"
+        changed_text = "module toy; wire unrelated_branch; endmodule\n"
+    else:
+        repository = project
+        branch = "booley-ticket/change-target"
+        changed = project / "booley.toml"
+        changed_text = "[flows.lint]\ndefault_target = 'unrelated'\n"
+    _git(repository, "checkout", "-b", branch)
+    changed.write_text(changed_text)
+    _git(repository, "add", str(changed.relative_to(repository)))
+    _git(repository, "commit", "-m", "unrelated user branch")
+    conflicting_sha = _git(repository, "rev-parse", "HEAD")
+    _git(repository, "checkout", "main")
+    blocked = ticket.parent.parent / "blocked" / ticket.name
+    blocked.parent.mkdir(parents=True)
+    ticket.rename(blocked)
+
+    with pytest.raises(RuntimeError, match=rf"already points at {conflicting_sha[:12]}"):
+        tio.contract_open("change-target")
+
+    assert _git(repository, "rev-parse", branch) == conflicting_sha
+    assert not (project / "worktrees" / "change-target").exists()
+
+
 @pytest.mark.parametrize("failure_mode", ["return", "raise"])
 def test_paired_cleanup_failure_retains_recoverable_outer_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_mode: str
 ) -> None:
     root, project, tio, _ticket = _paired_project(tmp_path)
-    hook = project / "hooks" / "post-setup.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\nexit 13\n")
-    hook.chmod(0o755)
-    _commit_all(project, "add failing project preparation")
+    _install_failing_prepare_hook(project, 13)
     real_git = contract_ops._git
 
     def fail_paired_removal(repository: Path, *args: str):
@@ -553,11 +605,7 @@ def test_branch_cleanup_failure_is_reported_and_ref_is_retained(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, project, tio, _ticket = _paired_project(tmp_path)
-    hook = project / "hooks" / "post-setup.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\nexit 17\n")
-    hook.chmod(0o755)
-    _commit_all(project, "add failing project preparation")
+    _install_failing_prepare_hook(project, 17)
     real_git = contract_ops._git
 
     def fail_outer_branch_delete(repository: Path, *args: str):
@@ -582,11 +630,7 @@ def test_failed_open_after_legacy_recovery_keeps_archive_and_removes_new_state(
     tmp_path: Path,
 ) -> None:
     root, project, tio, ticket = _paired_project(tmp_path)
-    hook = project / "hooks" / "post-setup.sh"
-    hook.parent.mkdir()
-    hook.write_text("#!/bin/sh\nexit 11\n")
-    hook.chmod(0o755)
-    _commit_all(project, "add failing project preparation")
+    _install_failing_prepare_hook(project, 11)
     legacy_worktree = project / "worktrees" / "change-target"
     _git(root, "worktree", "add", "-b", "change-target", str(legacy_worktree), "main")
     (legacy_worktree / "rtl" / "toy.sv").write_text("module toy; wire legacy_work; endmodule\n")
