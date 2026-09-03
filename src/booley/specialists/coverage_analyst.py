@@ -526,12 +526,14 @@ These signals are available in the trace:
 ## Step 3: Test Each Expression
 
 For each branch/expression, query every Target trace above with bwave and union
-the observed values before deciding coverage:
+the observed values before deciding coverage. Run both schema-backed queries
+for every trace:
 
-    bwave --stats --format json --virtual "br_name = *signal >= 'd16" -s br_name TRACE_FILE
+    bwave find TRACE_FILE br_name 0 --count --format json --virtual "br_name = *signal >= 'd16"
+    bwave find TRACE_FILE br_name 1 --count --format json --virtual "br_name = *signal >= 'd16"
 
-A branch is **met** if both 0 and 1 appear across the combined value_hist of
-the complete Target test suite.
+A branch is **met** if both combined counts are greater than zero across the
+complete Target test suite.
 
 **Rules:**
 - 5 attempts max per expression. If it still errors, mark as "errored" and move on.

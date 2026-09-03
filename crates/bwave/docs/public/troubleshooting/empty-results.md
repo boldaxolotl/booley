@@ -147,13 +147,12 @@ If `sig` rises once at cycle 5 and holds high until the
 end of sim, `find sig 'h1` returns thousands of matches
 and `find sig rising` returns one.
 
-## 7. Virtual signal failed silently
+## 7. Virtual signal definition rejected
 
-If you used `--virtual` and the predicate failed to
-parse or resolve, B-Wave prints an error to stderr but
-runs the query as if the virtual didn't exist. Check
-stderr for `ERROR: ...` lines, and check the exit
-code: virtual-def failures exit non-zero.
+If a `--virtual` predicate fails to parse or resolve,
+B-Wave prints an error to stderr and exits with code 2
+before emitting query results. Fix the first `ERROR:
+--virtual ...` line before retrying the query.
 
 ## 8. `--first` / `--last` semantics
 
