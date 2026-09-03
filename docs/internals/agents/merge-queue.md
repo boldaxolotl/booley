@@ -17,15 +17,32 @@ gh pr comment <number> --body '@mergifyio queue default'
 Confirm that the `Mergify Merge Queue` check or status comment says queued.
 GitHub's merge button, auto-merge, and `gh pr merge` do not queue a PR.
 
-## Own the queued PR
+## Own one queued PR
 
-The PR's agent remains responsible until Mergify reports it merged or dequeued.
-Monitor its checks and comments:
+Exactly one agent owns a queued PR until Mergify reports it merged or dequeued.
+Queue and dequeue commands belong to that owner. If another session is already
+managing the PR, leave its queue state unchanged and coordinate the handoff.
+Treat an unexpected queue or dequeue comment as evidence of another owner;
+pause state-changing commands until ownership is clear.
+
+After Mergify accepts the queue command, read that PR's status once:
 
 ```bash
-gh pr checks <number> --watch
-gh pr view <number> --comments
+gh pr view <number> --json state,mergedAt,labels,statusCheckRollup,comments
 ```
+
+A non-null `mergedAt` finishes the wait; a `dequeued` label starts recovery.
+Waiting ownership is otherwise passive. Trust Mergify to enforce the configured
+serial FIFO queue and leave predecessor PRs to their owners. Sleep until
+Mergify's reported merge estimate; when no future estimate is available, wait
+ten minutes. Then check only the owned PR once. An unchanged status starts
+another quiet wait at the same cadence. Each waiting interval contains no
+GitHub status queries.
+
+Use a one-shot `gh pr checks <number>` to inspect job details only after the
+owned PR reports a failed required check or Mergify dequeues it. A predecessor's
+failure needs no action from waiting agents: Mergify advances the queue, and
+that PR's owner handles recovery.
 
 Never change a queued branch. To add a commit, dequeue first:
 
