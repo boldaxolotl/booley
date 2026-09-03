@@ -3185,6 +3185,28 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         result.target_identity = self._target_handle(result.target).identity
         return result
 
+    def _native_target_result(
+        self,
+        target: str,
+        tb_top: str,
+        elapsed_s: float,
+        tests: list[TestResult],
+    ) -> TargetResult:
+        """Build the stamped result for one native-simulator Target."""
+        inconclusive = any(test.inconclusive for test in tests)
+        return self._stamp_target_identity(
+            TargetResult(
+                target=target,
+                tb_top=tb_top,
+                eda_tool=self._eda_tool_for(target),
+                passed=all(test.passed for test in tests) and not inconclusive,
+                elapsed_s=round(elapsed_s, 1),
+                tests=tests,
+                inconclusive=inconclusive,
+                elab_failed=any(test.elab_failed for test in tests),
+            )
+        )
+
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
         if resolved is None:
             return inspect_target(
@@ -3249,13 +3271,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         if self.args.state_file is None:
             return
         tests = {test.name: test for test in target_result.tests}
-        baseline_key = target_result.target_identity or target_result.target
-        baseline_result = getattr(self, "_baseline_results", {}).get(baseline_key)
-        baseline_tests = (
-            {test.name: test for test in baseline_result.tests}
-            if isinstance(baseline_result, TargetResult)
-            else {}
-        )
+        baseline_tests = self._baseline_cycle_tests(target_result)
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
             if not key.startswith("cycle_count_") or not criterion_matches_target(
@@ -3298,6 +3314,14 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 source_target=target_result.target,
                 detail=detail,
             )
+
+    def _baseline_cycle_tests(self, result: TargetResult) -> dict[str, TestResult]:
+        """Index baseline cycle evidence for the result's durable Target."""
+        key = result.target_identity or result.target
+        baseline = getattr(self, "_baseline_results", {}).get(key)
+        if not isinstance(baseline, TargetResult):
+            return {}
+        return {test.name: test for test in baseline.tests}
 
     def _remember_resolved_target(self, target: str, resolved: Any) -> None:
         """Keep the resolved EDAM projection long enough to snapshot its inputs."""
@@ -3993,25 +4017,15 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             _append_test_output_line(tr, output_lines, self._run_log_is_fresh(target))
 
         target_elapsed = time.monotonic() - target_start
-        any_inconclusive = any(t.inconclusive for t in test_results)
-        any_elab_failed = any(t.elab_failed for t in test_results)
-        all_passed = all(t.passed for t in test_results) and not any_inconclusive
-
         passed_count = sum(1 for t in test_results if t.passed)
         if len(test_results) > 1:
             output_lines.append(f"  --- {passed_count}/{len(test_results)} passed ---")
 
-        return self._stamp_target_identity(
-            TargetResult(
-                target=target,
-                tb_top=tb_top,
-                eda_tool=self._eda_tool_for(target),
-                passed=all_passed,
-                elapsed_s=round(target_elapsed, 1),
-                tests=test_results,
-                inconclusive=any_inconclusive,
-                elab_failed=any_elab_failed,
-            )
+        return self._native_target_result(
+            target,
+            tb_top,
+            target_elapsed,
+            test_results,
         )
 
     def _effective_skips(self, target: str) -> set[str]:
