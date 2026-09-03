@@ -845,8 +845,8 @@ def _parse_target_bound_review(
     unknown = sorted(set(value) - {"target"})
     if unknown:
         raise ValueError(f"Unknown {_review_family(key)} params: {unknown}. Valid: ['target']")
-    target = value.get("target")
-    if not isinstance(target, str) or not target.strip():
+    target = as_str(value.get("target"))
+    if target is None or not target.strip():
         raise ValueError(f"{_review_family(key)}.target must be a non-empty Target name")
     target = target.strip()
     if "," in target:

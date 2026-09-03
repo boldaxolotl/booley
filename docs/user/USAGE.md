@@ -534,6 +534,8 @@ A TB-quality review belongs to exactly one simulation Target. When structured
 binding. Otherwise author it explicitly as
 `review_tb_quality: {target: <sim-target>}`; the Target identity and callable
 selector are sealed with the ticket.
+This Reviewer-discovery binding does not change the condition-selected Target
+input behavior established by [#131](https://github.com/boldaxolotl/booley/issues/131).
 
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate

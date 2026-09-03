@@ -72,7 +72,11 @@ def _candidate_refs(
     target_hint: str | None,
 ) -> tuple[list[tuple[str, TargetInspection]], list[_InspectionFailure]]:
     if target_hint:
-        selected = select_targets(project_root, target_hint)
+        selected = select_targets(
+            project_root,
+            target_hint,
+            for_flow="sim" if category == "tb" else None,
+        )
         if category == "tb" and len(selected) != 1:
             raise ReviewContractError("TB review requires exactly one --target selector")
         candidates = []

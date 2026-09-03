@@ -504,21 +504,11 @@ def _apply_contract_selectors(
     if contract is None or contract.schema < 4:
         return
     for key in expanded:
-        matches = []
-        for binding in contract.bindings:
-            if not binding.candidate_selector:
-                continue
-            prefix = f"{binding.criterion}_"
-            if key != binding.criterion and not key.startswith(prefix):
-                continue
-            params = criterion_params.setdefault(key, {})
-            authored = params.get("target")
-            if not isinstance(authored, str) and key.startswith(prefix):
-                authored = key.removeprefix(prefix)
-            candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
-            if authored in {binding.candidate, binding.candidate_selector, candidate_name}:
-                matches.append(binding)
-        unique = {(binding.candidate, binding.candidate_selector): binding for binding in matches}
+        unique = _matching_contract_bindings(
+            contract.bindings,
+            criterion_key=key,
+            authored=criterion_params.get(key, {}).get("target"),
+        )
         if len(unique) > 1:
             choices = ", ".join(sorted(selector for _, selector in unique))
             raise FatalError(
@@ -532,6 +522,29 @@ def _apply_contract_selectors(
             params["_target_selector"] = binding.candidate_selector
 
     _derive_scalar_tb_review_binding(ctx, template, expanded, criterion_params)
+
+
+def _matching_contract_bindings(
+    bindings: tuple[ContractTargetBinding, ...],
+    *,
+    criterion_key: str,
+    authored: object,
+) -> dict[tuple[str, str], ContractTargetBinding]:
+    """Return unique sealed bindings selected by one authored Target value."""
+    matches: dict[tuple[str, str], ContractTargetBinding] = {}
+    for binding in bindings:
+        if not binding.candidate_selector:
+            continue
+        prefix = f"{binding.criterion}_"
+        if criterion_key != binding.criterion and not criterion_key.startswith(prefix):
+            continue
+        candidate_authored = authored
+        if not isinstance(candidate_authored, str) and criterion_key.startswith(prefix):
+            candidate_authored = criterion_key.removeprefix(prefix)
+        candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
+        if candidate_authored in {binding.candidate, binding.candidate_selector, candidate_name}:
+            matches[(binding.candidate, binding.candidate_selector)] = binding
+    return matches
 
 
 def _derive_scalar_tb_review_binding(
@@ -556,14 +569,11 @@ def _derive_scalar_tb_review_binding(
     }
     owners: dict[tuple[str, str], ContractTargetBinding] = {}
     for authored in sorted(authored_targets):
-        matches = []
-        for binding in contract.bindings:
-            if binding.criterion != "sim_pass" or not binding.candidate_selector:
-                continue
-            candidate_name = binding.candidate.rsplit("#", maxsplit=1)[-1]
-            if authored in {binding.candidate, binding.candidate_selector, candidate_name}:
-                matches.append(binding)
-        unique = {(binding.candidate, binding.candidate_selector): binding for binding in matches}
+        unique = _matching_contract_bindings(
+            contract.bindings,
+            criterion_key="sim_pass",
+            authored=authored,
+        )
         if len(unique) != 1:
             return
         owners.update(unique)

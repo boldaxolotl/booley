@@ -87,6 +87,28 @@ def test_explicit_target_narrows_candidate_set(tmp_path: Path) -> None:
     assert contract.kind == "cocotb"
 
 
+def test_explicit_tb_target_must_be_simulation_capable(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    core = tmp_path / "uart.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_tb:\n"
+        + "    filesets: [tb]\n"
+        + "    toplevel: uart_tb\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FuseSocError, match=r"cannot be driven by the 'sim' Flow"):
+        resolve_review_target(
+            tmp_path,
+            ["tb/test_uart.py"],
+            category="tb",
+            target_hint="lint_tb",
+        )
+
+
 def test_explicit_target_must_contain_scope(tmp_path: Path) -> None:
     _write_project(tmp_path)
     (tmp_path / "tb" / "other.py").write_text("# other\n", encoding="utf-8")
