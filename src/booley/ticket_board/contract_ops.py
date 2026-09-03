@@ -15,7 +15,9 @@ from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_dir import checkout_project_dir_relative_to, resolve_project_dir
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.ticket_repositories import (
+    ProjectRepositoryStatusError,
     TicketRepository,
+    blocking_project_repository_changes,
     paired_project_repository,
     project_ticket_branch,
     resolve_inner_project_repo,
@@ -40,6 +42,7 @@ from .validation import validate_ticket_fields
 
 _SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _LEGACY_ARCHIVE_PREFIX = "booley-legacy-archive"
+_ZERO_OID = "0" * 40
 
 
 class ContractOperationError(RuntimeError):
@@ -73,6 +76,26 @@ class _SealInputs:
     outer_changes: list[str]
     project: Path | None
     project_changes: list[str]
+
+
+@dataclass(frozen=True)
+class _ProjectOpenPlan:
+    source: Path
+    base_branch: str
+    base_sha: str
+
+
+@dataclass
+class _OpenAttachment:
+    repository: Path
+    worktree: Path
+    branch: str
+    base_sha: str
+    branch_created: bool = False
+    worktree_attached: bool = False
+    partial_path: bool = False
+    previous_upstream: str | None = None
+    upstream_changed: bool = False
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -109,6 +132,20 @@ def _branch_sha(repository: Path, branch: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _strict_branch_sha(repository: Path, branch: str) -> str | None:
+    ref = f"refs/heads/{branch}"
+    result = _git(repository, "rev-parse", "--verify", "--quiet", ref)
+    if result.returncode == 0:
+        return resolve_commit(repository, result.stdout.strip())
+    if result.returncode == 1:
+        return None
+    detail = (result.stderr or result.stdout).strip()
+    raise ContractOperationError(
+        f"could not inspect contract branch {branch!r} in {repository} "
+        f"(rc={result.returncode}): {detail}"
+    )
+
+
 def _attach_worktree(repository: Path, destination: Path, branch: str, base_ref: str) -> str:
     base_sha = _full_commit(repository, base_ref)
     existing_sha = _branch_sha(repository, branch)
@@ -135,7 +172,268 @@ def _current_branch(repository: Path) -> str:
 
 
 def _project_base_branch(repository: Path, requested: str) -> str:
-    return requested if _branch_sha(repository, requested) else _current_branch(repository)
+    return (
+        requested
+        if _strict_branch_sha(repository, requested) is not None
+        else _current_branch(repository)
+    )
+
+
+def _preflight_project_repository(root: Path, requested_branch: str) -> _ProjectOpenPlan | None:
+    """Refuse live paired-project state that cannot be reproduced from Git."""
+    source = resolve_inner_project_repo(root)
+    if source is None:
+        return None
+    try:
+        changes = blocking_project_repository_changes(source)
+    except ProjectRepositoryStatusError as exc:
+        raise ContractOperationError(
+            f"could not inspect paired project repository: {exc}"
+        ) from exc
+    if changes:
+        paths = ", ".join(f"{change.status} {change.path}" for change in changes[:10])
+        raise ContractOperationError(
+            "paired project repository has uncommitted changes; commit or restore them "
+            f"before opening a contract: {paths}"
+        )
+    live_branch = _current_branch(source)
+    live_sha = _full_commit(source, "HEAD")
+    base_branch = _project_base_branch(source, requested_branch)
+    base_sha = _full_commit(source, base_branch)
+    if live_sha != base_sha:
+        raise ContractOperationError(
+            "paired project live checkout and contract destination differ: "
+            f"{live_branch} at {live_sha[:12]}, {base_branch} at {base_sha[:12]}; "
+            "check out and validate the destination configuration, or reconcile the "
+            "branches, before opening a contract"
+        )
+    return _ProjectOpenPlan(source, base_branch, base_sha)
+
+
+def _plan_open_attachment(
+    repository: Path, worktree: Path, branch: str, base_sha: str
+) -> _OpenAttachment:
+    existing_sha = _strict_branch_sha(repository, branch)
+    if existing_sha is not None and existing_sha != base_sha:
+        raise ContractOperationError(
+            f"contract branch {branch!r} already points at {existing_sha[:12]}, "
+            f"not destination baseline {base_sha[:12]}"
+        )
+    if worktree.exists() or worktree.is_symlink():
+        raise ContractOperationError(f"contract worktree path already exists: {worktree}")
+    return _OpenAttachment(repository, worktree, branch, base_sha)
+
+
+def _registered_worktree(repository: Path, worktree: Path) -> bool:
+    listing = _require_git(repository, "worktree", "list", "--porcelain")
+    expected = worktree.resolve()
+    for line in listing.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        if Path(line.removeprefix("worktree ")).resolve() == expected:
+            return True
+    return False
+
+
+def _create_attachment(attachment: _OpenAttachment) -> None:
+    ref = f"refs/heads/{attachment.branch}"
+    if _strict_branch_sha(attachment.repository, attachment.branch) is None:
+        try:
+            _require_git(
+                attachment.repository,
+                "update-ref",
+                ref,
+                attachment.base_sha,
+                _ZERO_OID,
+            )
+        except ContractOperationError as exc:
+            current = _strict_branch_sha(attachment.repository, attachment.branch)
+            if current is not None:
+                raise ContractOperationError(
+                    f"{exc}; branch creation was not confirmed, so {ref} was retained"
+                ) from exc
+            raise
+        attachment.branch_created = True
+    attachment.worktree.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _require_git(
+            attachment.repository,
+            "worktree",
+            "add",
+            str(attachment.worktree),
+            attachment.branch,
+        )
+    except ContractOperationError:
+        attachment.partial_path = attachment.worktree.exists() or attachment.worktree.is_symlink()
+        raise
+    attachment.worktree_attached = True
+    if _full_commit(attachment.worktree, "HEAD") != attachment.base_sha:
+        raise ContractOperationError(
+            f"contract destination moved while attaching {attachment.branch!r}"
+        )
+
+
+def _branch_upstream(repository: Path, branch: str) -> str | None:
+    value = _require_git(
+        repository,
+        "for-each-ref",
+        "--format=%(upstream:short)",
+        f"refs/heads/{branch}",
+    )
+    return value or None
+
+
+def _set_attachment_upstream(attachment: _OpenAttachment, upstream: str) -> None:
+    attachment.previous_upstream = _branch_upstream(attachment.repository, attachment.branch)
+    if attachment.previous_upstream == upstream:
+        return
+    try:
+        _require_git(
+            attachment.repository,
+            "branch",
+            f"--set-upstream-to={upstream}",
+            attachment.branch,
+        )
+    except ContractOperationError:
+        attachment.upstream_changed = (
+            _branch_upstream(attachment.repository, attachment.branch) == upstream
+        )
+        raise
+    attachment.upstream_changed = True
+
+
+def _restore_attachment_upstream(attachment: _OpenAttachment) -> str | None:
+    if not attachment.upstream_changed or attachment.branch_created:
+        return None
+    try:
+        if attachment.previous_upstream is None:
+            result = _git(
+                attachment.repository,
+                "branch",
+                "--unset-upstream",
+                attachment.branch,
+            )
+        else:
+            result = _git(
+                attachment.repository,
+                "branch",
+                f"--set-upstream-to={attachment.previous_upstream}",
+                attachment.branch,
+            )
+    except ContractOperationError as exc:
+        return str(exc)
+    if result.returncode == 0:
+        return None
+    detail = (result.stderr or result.stdout).strip()
+    return f"could not restore upstream for {attachment.branch!r}: {detail}"
+
+
+def _remove_attachment_worktree(attachment: _OpenAttachment) -> tuple[list[str], bool]:
+    failures: list[str] = []
+    try:
+        registered = _registered_worktree(attachment.repository, attachment.worktree)
+    except ContractOperationError as exc:
+        return [str(exc)], False
+    if registered and attachment.worktree_attached:
+        try:
+            result = _git(
+                attachment.repository,
+                "worktree",
+                "remove",
+                "--force",
+                str(attachment.worktree),
+            )
+        except ContractOperationError as exc:
+            return [str(exc)], False
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            return [f"could not remove {attachment.worktree}: {detail}"], False
+        registered = False
+    elif registered:
+        failures.append(f"retained ambiguously created worktree {attachment.worktree}")
+    elif attachment.partial_path and (
+        attachment.worktree.exists() or attachment.worktree.is_symlink()
+    ):
+        try:
+            if attachment.worktree.is_symlink():
+                attachment.worktree.unlink()
+            else:
+                safe_rmtree(attachment.worktree)
+        except (OSError, ValueError) as exc:
+            failures.append(f"could not remove partial path {attachment.worktree}: {exc}")
+    return failures, not registered
+
+
+def _delete_created_branch(attachment: _OpenAttachment, registered: bool) -> str | None:
+    if not attachment.branch_created or registered:
+        return None
+    error: str | None = None
+    try:
+        current = _strict_branch_sha(attachment.repository, attachment.branch)
+    except ContractOperationError as exc:
+        error = str(exc)
+    else:
+        if current is not None and current != attachment.base_sha:
+            error = f"retained moved branch {attachment.branch!r} at {current[:12]}"
+        elif current is not None:
+            try:
+                result = _git(
+                    attachment.repository,
+                    "update-ref",
+                    "-d",
+                    f"refs/heads/{attachment.branch}",
+                    attachment.base_sha,
+                )
+            except ContractOperationError as exc:
+                error = str(exc)
+            else:
+                if result.returncode != 0:
+                    detail = (result.stderr or result.stdout).strip()
+                    error = f"could not delete created branch {attachment.branch!r}: {detail}"
+    return error
+
+
+def _rollback_attachment(attachment: _OpenAttachment) -> tuple[list[str], bool]:
+    failures, worktree_clear = _remove_attachment_worktree(attachment)
+    upstream_error = _restore_attachment_upstream(attachment)
+    if upstream_error:
+        failures.append(upstream_error)
+    branch_error = _delete_created_branch(attachment, registered=not worktree_clear)
+    if branch_error:
+        failures.append(branch_error)
+    return failures, worktree_clear
+
+
+def _rollback_open(outer: _OpenAttachment, project: _OpenAttachment | None) -> list[str]:
+    failures: list[str] = []
+    project_clear = True
+    if project is not None:
+        project_failures, project_clear = _rollback_attachment(project)
+        failures.extend(project_failures)
+    if project_clear:
+        outer_failures, _outer_clear = _rollback_attachment(outer)
+        failures.extend(outer_failures)
+    else:
+        failures.append(f"retained outer worktree {outer.worktree} with paired state")
+    return failures
+
+
+def _validate_open_bases(
+    root: Path,
+    outer_branch: str,
+    outer_sha: str,
+    project: _ProjectOpenPlan | None,
+) -> None:
+    if _full_commit(root, outer_branch) != outer_sha:
+        raise ContractOperationError(f"destination branch {outer_branch!r} moved during preflight")
+    if project is None:
+        return
+    if _full_commit(project.source, "HEAD") != project.base_sha:
+        raise ContractOperationError("paired project live checkout moved during preflight")
+    if _full_commit(project.source, project.base_branch) != project.base_sha:
+        raise ContractOperationError(
+            f"paired project destination {project.base_branch!r} moved during preflight"
+        )
 
 
 def open_contract(
@@ -154,17 +452,36 @@ def open_contract(
     if not isinstance(branch, str) or not branch:
         raise ContractOperationError("ticket has no destination branch")
     outer = resolve_project_dir(root) / "worktrees" / slug
+    project_plan = _preflight_project_repository(root, branch)
+    outer_base = _full_commit(root, branch)
     if recover_legacy:
         _archive_legacy_worktrees(root, outer, slug)
-    outer_base = _attach_worktree(root, outer, slug, branch)
+    outer_attachment = _plan_open_attachment(root, outer, slug, outer_base)
+    project_attachment = None
+    if project_plan is not None:
+        project_attachment = _plan_open_attachment(
+            project_plan.source,
+            ticket_project_worktree(outer),
+            project_ticket_branch(slug),
+            project_plan.base_sha,
+        )
+    _validate_open_bases(root, branch, outer_base, project_plan)
     try:
-        project, project_base = _open_project_contract(root, outer, slug, branch)
+        _create_attachment(outer_attachment)
+        if project_attachment is not None and project_plan is not None:
+            _create_attachment(project_attachment)
+            _set_attachment_upstream(project_attachment, project_plan.base_branch)
         _prepare_contract_project(root, outer, Path(ticket_path), slug)
-    except Exception:
-        source = resolve_inner_project_repo(root)
-        paired = paired_project_repository(outer) if outer.is_dir() else None
-        _remove_contract_worktrees(root, outer, paired, source)
+    except Exception as exc:
+        rollback_failures = _rollback_open(outer_attachment, project_attachment)
+        if rollback_failures:
+            raise ContractOperationError(
+                f"contract opening failed: {exc}; rollback incomplete: "
+                + "; ".join(rollback_failures)
+            ) from exc
         raise
+    project = project_attachment.worktree if project_attachment is not None else None
+    project_base = project_plan.base_sha if project_plan is not None else ""
     return ContractWorktrees(outer, project, outer_base, project_base)
 
 
@@ -202,20 +519,6 @@ def _archive_legacy_worktrees(root: Path, outer: Path, slug: str) -> None:
 
 def _legacy_archive(slug: str, sha: str) -> str:
     return f"{_LEGACY_ARCHIVE_PREFIX}/{slug}/{sha[:12]}"
-
-
-def _open_project_contract(
-    root: Path, outer: Path, slug: str, requested_branch: str
-) -> tuple[Path | None, str]:
-    source = resolve_inner_project_repo(root)
-    if source is None:
-        return None, ""
-    destination = ticket_project_worktree(outer)
-    base_branch = _project_base_branch(source, requested_branch)
-    branch = project_ticket_branch(slug)
-    base_sha = _attach_worktree(source, destination, branch, base_branch)
-    _require_git(source, "branch", f"--set-upstream-to={base_branch}", branch)
-    return destination, base_sha
 
 
 def _status_paths(repository: Path) -> list[str]:

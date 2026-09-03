@@ -111,6 +111,24 @@ def _native_project(tmp_path: Path) -> tuple[Path, TicketIO, Path]:
     return root, tio, _create_ticket(tio)
 
 
+def _paired_project(tmp_path: Path) -> tuple[Path, Path, TicketIO, Path]:
+    root = tmp_path / "rtl"
+    _init_repo(root)
+    _write_sources(root)
+    _write_core(root)
+    (root / ".gitignore").write_text("/.booley_project\n")
+    _commit_all(root, "initial RTL")
+
+    project = root / ".booley_project"
+    _init_repo(project)
+    (project / "tickets" / "board" / "drafts").mkdir(parents=True)
+    (project / ".gitignore").write_text("/worktrees/\n")
+    (project / "booley.toml").write_text("[flows.lint]\ndefault_target = 'lint_toy'\n")
+    _commit_all(project, "initial project data")
+    tio = TicketIO(project / "tickets", project_root=root)
+    return root, project, tio, _create_ticket(tio)
+
+
 def test_enqueue_refuses_unsealed_ticket_in_git_project(tmp_path: Path) -> None:
     _root, tio, _ticket = _native_project(tmp_path)
 
@@ -125,6 +143,466 @@ def test_existing_legacy_queue_ticket_cannot_start_fresh(tmp_path: Path) -> None
 
     assert tio.init_ticket(queued) is None
     assert queued.is_file()
+
+
+def test_contract_open_refuses_dirty_paired_project_before_creating_state(
+    tmp_path: Path,
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    (project / "booley.toml").write_text("[flows.lint]\ndefault_target = 'lint_live'\n")
+
+    with pytest.raises(RuntimeError, match=r"uncommitted changes.*booley\.toml"):
+        tio.contract_open("change-target")
+
+    assert not (project / "worktrees" / "change-target").exists()
+    assert not _git(root, "branch", "--list", "change-target")
+    assert not _git(project, "branch", "--list", "booley-ticket/change-target")
+
+
+def test_contract_open_uses_ticket_workspace_dirty_policy(tmp_path: Path) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    (project / "findings.jsonl").write_text('{"id":"uncommitted"}\n')
+
+    with pytest.raises(RuntimeError, match=r"uncommitted changes.*findings\.jsonl"):
+        tio.contract_open("change-target")
+
+    assert not _git(root, "branch", "--list", "change-target")
+
+
+def test_contract_open_reports_paired_status_inspection_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _root, _project, tio, _ticket = _paired_project(tmp_path)
+    monkeypatch.setattr(
+        contract_ops,
+        "blocking_project_repository_changes",
+        lambda _source: (_ for _ in ()).throw(
+            contract_ops.ProjectRepositoryStatusError("status unavailable")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"could not inspect.*status unavailable"):
+        tio.contract_open("change-target")
+
+
+def test_contract_open_reports_branch_inspection_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _project, tio, _ticket = _paired_project(tmp_path)
+    real_git = contract_ops._git
+
+    def fail_branch_query(repository: Path, *args: str):
+        if repository == root and args == (
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "refs/heads/change-target",
+        ):
+            return subprocess.CompletedProcess(["git", *args], 2, "", "ref store unavailable")
+        return real_git(repository, *args)
+
+    monkeypatch.setattr(contract_ops, "_git", fail_branch_query)
+
+    with pytest.raises(RuntimeError, match=r"could not inspect.*ref store unavailable"):
+        tio.contract_open("change-target")
+
+
+def test_contract_open_refuses_preexisting_worktree_path(tmp_path: Path) -> None:
+    _root, project, tio, _ticket = _paired_project(tmp_path)
+    outer = project / "worktrees" / "change-target"
+    outer.mkdir(parents=True)
+
+    with pytest.raises(RuntimeError, match="worktree path already exists"):
+        tio.contract_open("change-target")
+
+
+def test_contract_open_refuses_paired_project_commit_mismatch_before_creating_state(
+    tmp_path: Path,
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    destination_sha = _git(project, "rev-parse", "main")
+    _git(project, "checkout", "-b", "live-config")
+    (project / "booley.toml").write_text(
+        "[flows.lint]\ndefault_target = 'lint_toy'\nstrict = true\n"
+    )
+    live_sha = _commit_all(project, "valid live configuration")
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"live-config.*{live_sha[:12]}.*main.*{destination_sha[:12]}",
+    ):
+        tio.contract_open("change-target")
+
+    assert not (project / "worktrees" / "change-target").exists()
+    assert not _git(root, "branch", "--list", "change-target")
+    assert not _git(project, "branch", "--list", "booley-ticket/change-target")
+
+
+def test_failed_contract_open_removes_created_state_and_same_slug_retry_succeeds(
+    tmp_path: Path,
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\necho broken configuration >&2\nexit 7\n")
+    hook.chmod(0o755)
+    _commit_all(project, "add failing project preparation")
+
+    with pytest.raises(RuntimeError, match=r"post-setup hook failed.*broken configuration"):
+        tio.contract_open("change-target")
+
+    outer = project / "worktrees" / "change-target"
+    assert not outer.exists()
+    assert not _git(root, "branch", "--list", "change-target")
+    assert not _git(project, "branch", "--list", "booley-ticket/change-target")
+
+    hook.unlink()
+    _commit_all(project, "repair project configuration")
+
+    opened = tio.contract_open("change-target")
+
+    assert Path(opened["outer_worktree"]).is_dir()
+    assert Path(opened["project_worktree"]).is_dir()
+
+
+def test_failed_contract_open_preserves_reused_branches_and_project_upstream(
+    tmp_path: Path,
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\nexit 9\n")
+    hook.chmod(0o755)
+    project_sha = _commit_all(project, "add failing project preparation")
+    outer_sha = _git(root, "rev-parse", "main")
+    _git(root, "branch", "change-target", outer_sha)
+    _git(project, "branch", "alternate", project_sha)
+    _git(project, "branch", "booley-ticket/change-target", project_sha)
+    _git(
+        project,
+        "branch",
+        "--set-upstream-to=alternate",
+        "booley-ticket/change-target",
+    )
+
+    with pytest.raises(RuntimeError, match="post-setup hook failed"):
+        tio.contract_open("change-target")
+
+    assert _git(root, "rev-parse", "change-target") == outer_sha
+    assert _git(project, "rev-parse", "booley-ticket/change-target") == project_sha
+    assert (
+        _git(
+            project,
+            "rev-parse",
+            "--abbrev-ref",
+            "booley-ticket/change-target@{upstream}",
+        )
+        == "alternate"
+    )
+    assert not (project / "worktrees" / "change-target").exists()
+
+
+def test_failed_contract_open_restores_absent_project_upstream(tmp_path: Path) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\nexit 15\n")
+    hook.chmod(0o755)
+    project_sha = _commit_all(project, "add failing project preparation")
+    _git(project, "branch", "booley-ticket/change-target", project_sha)
+
+    with pytest.raises(RuntimeError, match="post-setup hook failed"):
+        tio.contract_open("change-target")
+
+    upstream = contract_ops._git(
+        project,
+        "rev-parse",
+        "--verify",
+        "booley-ticket/change-target@{upstream}",
+    )
+    assert upstream.returncode != 0
+    assert not _git(root, "branch", "--list", "change-target")
+
+
+def test_ambiguous_upstream_update_is_reconciled_and_restored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    project_sha = _git(project, "rev-parse", "main")
+    project_branch = "booley-ticket/change-target"
+    _git(project, "branch", "alternate", project_sha)
+    _git(project, "branch", project_branch, project_sha)
+    _git(project, "branch", "--set-upstream-to=alternate", project_branch)
+    real_git = contract_ops._git
+
+    def lose_upstream_response(repository: Path, *args: str):
+        result = real_git(repository, *args)
+        if repository == project and args == (
+            "branch",
+            "--set-upstream-to=main",
+            project_branch,
+        ):
+            return subprocess.CompletedProcess(
+                ["git", *args], 128, "", "upstream update response lost"
+            )
+        return result
+
+    monkeypatch.setattr(contract_ops, "_git", lose_upstream_response)
+
+    with pytest.raises(RuntimeError, match="upstream update response lost"):
+        tio.contract_open("change-target")
+
+    assert (
+        _git(project, "rev-parse", "--abbrev-ref", f"{project_branch}@{{upstream}}") == "alternate"
+    )
+    assert not _git(root, "branch", "--list", "change-target")
+
+
+def test_paired_attachment_failure_rolls_back_only_new_outer_state(tmp_path: Path) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    project_sha = _git(project, "rev-parse", "main")
+    project_branch = "booley-ticket/change-target"
+    existing = tmp_path / "existing-project-worktree"
+    _git(project, "worktree", "add", "-b", project_branch, str(existing), project_sha)
+
+    with pytest.raises(RuntimeError, match="already used by worktree"):
+        tio.contract_open("change-target")
+
+    assert existing.is_dir()
+    assert _git(project, "rev-parse", project_branch) == project_sha
+    assert not (project / "worktrees" / "change-target").exists()
+    assert not _git(root, "branch", "--list", "change-target")
+
+
+@pytest.mark.parametrize("failed_role", ["outer", "project"])
+def test_worktree_attachment_failure_removes_each_created_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_role: str,
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    real_git = contract_ops._git
+
+    def fail_selected_attachment(repository: Path, *args: str):
+        is_add = args[:2] == ("worktree", "add")
+        is_selected = (failed_role == "outer" and repository == root) or (
+            failed_role == "project" and repository == project
+        )
+        if is_add and is_selected:
+            return subprocess.CompletedProcess(
+                ["git", *args], 128, "", f"injected {failed_role} attachment failure"
+            )
+        return real_git(repository, *args)
+
+    monkeypatch.setattr(contract_ops, "_git", fail_selected_attachment)
+
+    with pytest.raises(RuntimeError, match=rf"injected {failed_role} attachment failure"):
+        tio.contract_open("change-target")
+
+    assert not (project / "worktrees" / "change-target").exists()
+    assert not _git(root, "branch", "--list", "change-target")
+    assert not _git(project, "branch", "--list", "booley-ticket/change-target")
+
+
+def test_paired_branch_creation_failure_removes_outer_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    real_git = contract_ops._git
+
+    def fail_project_ref_creation(repository: Path, *args: str):
+        if repository == project and args[:2] == (
+            "update-ref",
+            "refs/heads/booley-ticket/change-target",
+        ):
+            return subprocess.CompletedProcess(
+                ["git", *args], 128, "", "injected paired branch failure"
+            )
+        return real_git(repository, *args)
+
+    monkeypatch.setattr(contract_ops, "_git", fail_project_ref_creation)
+
+    with pytest.raises(RuntimeError, match="injected paired branch failure"):
+        tio.contract_open("change-target")
+
+    assert not (project / "worktrees" / "change-target").exists()
+    assert not _git(root, "branch", "--list", "change-target")
+    assert not _git(project, "branch", "--list", "booley-ticket/change-target")
+
+
+def test_unconfirmed_branch_creation_is_retained_for_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _project, tio, _ticket = _paired_project(tmp_path)
+    real_git = contract_ops._git
+
+    def report_failure_after_ref_creation(repository: Path, *args: str):
+        result = real_git(repository, *args)
+        if repository == root and args[:2] == ("update-ref", "refs/heads/change-target"):
+            return subprocess.CompletedProcess(["git", *args], 128, "", "lost update-ref response")
+        return result
+
+    monkeypatch.setattr(contract_ops, "_git", report_failure_after_ref_creation)
+
+    with pytest.raises(RuntimeError, match=r"creation was not confirmed.*retained"):
+        tio.contract_open("change-target")
+
+    assert _git(root, "branch", "--list", "change-target")
+
+
+def test_moved_created_branch_is_retained_during_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    _git(root, "checkout", "-b", "future")
+    (root / "rtl" / "toy.sv").write_text("module toy; wire future; endmodule\n")
+    moved_sha = _commit_all(root, "future destination")
+    _git(root, "checkout", "main")
+    real_git = contract_ops._git
+
+    def move_branch_after_attachment(repository: Path, *args: str):
+        result = real_git(repository, *args)
+        if repository == root and args[:2] == ("worktree", "add"):
+            base_sha = _git(root, "rev-parse", "main")
+            _git(root, "update-ref", "refs/heads/change-target", moved_sha, base_sha)
+        return result
+
+    monkeypatch.setattr(contract_ops, "_git", move_branch_after_attachment)
+
+    with pytest.raises(
+        RuntimeError, match=r"destination moved.*rollback incomplete.*retained moved"
+    ):
+        tio.contract_open("change-target")
+
+    assert _git(root, "rev-parse", "change-target") == moved_sha
+    assert not (project / "worktrees" / "change-target").exists()
+
+
+def test_partial_unregistered_worktree_path_is_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    real_git = contract_ops._git
+
+    def leave_partial_outer_path(repository: Path, *args: str):
+        if repository == root and args[:2] == ("worktree", "add"):
+            Path(args[2]).mkdir(parents=True)
+            return subprocess.CompletedProcess(["git", *args], 128, "", "partial checkout")
+        return real_git(repository, *args)
+
+    monkeypatch.setattr(contract_ops, "_git", leave_partial_outer_path)
+
+    with pytest.raises(RuntimeError, match="partial checkout"):
+        tio.contract_open("change-target")
+
+    assert not (project / "worktrees" / "change-target").exists()
+    assert not _git(root, "branch", "--list", "change-target")
+
+
+def test_contract_open_preserves_conflicting_user_branch(tmp_path: Path) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    _git(root, "checkout", "-b", "change-target")
+    (root / "rtl" / "toy.sv").write_text("module toy; wire user_work; endmodule\n")
+    conflicting_sha = _commit_all(root, "unrelated user branch")
+    _git(root, "checkout", "main")
+
+    with pytest.raises(RuntimeError, match=rf"already points at {conflicting_sha[:12]}"):
+        tio.contract_open("change-target")
+
+    assert _git(root, "rev-parse", "change-target") == conflicting_sha
+    assert not (project / "worktrees" / "change-target").exists()
+
+
+@pytest.mark.parametrize("failure_mode", ["return", "raise"])
+def test_paired_cleanup_failure_retains_recoverable_outer_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_mode: str
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\nexit 13\n")
+    hook.chmod(0o755)
+    _commit_all(project, "add failing project preparation")
+    real_git = contract_ops._git
+
+    def fail_paired_removal(repository: Path, *args: str):
+        if repository == project and args[:2] == ("worktree", "remove"):
+            if failure_mode == "raise":
+                raise contract_ops.ContractOperationError("injected paired cleanup failure")
+            return subprocess.CompletedProcess(
+                ["git", *args], 128, "", "injected paired cleanup failure"
+            )
+        return real_git(repository, *args)
+
+    monkeypatch.setattr(contract_ops, "_git", fail_paired_removal)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"rollback incomplete:.*injected paired cleanup failure.*retained outer worktree",
+    ):
+        tio.contract_open("change-target")
+
+    outer = project / "worktrees" / "change-target"
+    assert outer.is_dir()
+    assert (outer / ".booley_project").is_dir()
+    assert _git(root, "branch", "--list", "change-target")
+    assert _git(project, "branch", "--list", "booley-ticket/change-target")
+
+
+def test_branch_cleanup_failure_is_reported_and_ref_is_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, project, tio, _ticket = _paired_project(tmp_path)
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\nexit 17\n")
+    hook.chmod(0o755)
+    _commit_all(project, "add failing project preparation")
+    real_git = contract_ops._git
+
+    def fail_outer_branch_delete(repository: Path, *args: str):
+        if repository == root and args[:3] == (
+            "update-ref",
+            "-d",
+            "refs/heads/change-target",
+        ):
+            return subprocess.CompletedProcess(["git", *args], 128, "", "ref deletion refused")
+        return real_git(repository, *args)
+
+    monkeypatch.setattr(contract_ops, "_git", fail_outer_branch_delete)
+
+    with pytest.raises(RuntimeError, match=r"rollback incomplete:.*ref deletion refused"):
+        tio.contract_open("change-target")
+
+    assert not (project / "worktrees" / "change-target").exists()
+    assert _git(root, "branch", "--list", "change-target")
+
+
+def test_failed_open_after_legacy_recovery_keeps_archive_and_removes_new_state(
+    tmp_path: Path,
+) -> None:
+    root, project, tio, ticket = _paired_project(tmp_path)
+    hook = project / "hooks" / "post-setup.sh"
+    hook.parent.mkdir()
+    hook.write_text("#!/bin/sh\nexit 11\n")
+    hook.chmod(0o755)
+    _commit_all(project, "add failing project preparation")
+    legacy_worktree = project / "worktrees" / "change-target"
+    _git(root, "worktree", "add", "-b", "change-target", str(legacy_worktree), "main")
+    (legacy_worktree / "rtl" / "toy.sv").write_text("module toy; wire legacy_work; endmodule\n")
+    legacy_sha = _commit_all(legacy_worktree, "legacy implementation")
+    blocked = ticket.parent.parent / "blocked" / ticket.name
+    blocked.parent.mkdir(parents=True)
+    ticket.rename(blocked)
+
+    with pytest.raises(RuntimeError, match="post-setup hook failed"):
+        tio.contract_open("change-target")
+
+    archive = f"booley-legacy-archive/change-target/{legacy_sha[:12]}"
+    assert _git(root, "rev-parse", archive) == legacy_sha
+    assert not legacy_worktree.exists()
+    assert not _git(root, "branch", "--list", "change-target")
+    assert not _git(project, "branch", "--list", "booley-ticket/change-target")
 
 
 def test_native_contract_open_seal_and_enqueue(tmp_path: Path) -> None:
