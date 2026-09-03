@@ -339,7 +339,7 @@ def _dockerfile_body() -> str:
         f"FROM {BASE_IMAGE}\n"
         "USER root\n"
         "COPY requirements.txt /tmp/booley-project-requirements.txt\n"
-        "RUN pip install --no-cache-dir --break-system-packages "
+        "RUN pip install --use-pep517 --no-cache-dir --break-system-packages "
         "-r /tmp/booley-project-requirements.txt\n"
         "USER agent\n"
     )
