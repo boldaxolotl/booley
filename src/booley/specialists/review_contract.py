@@ -64,7 +64,7 @@ def _matches_scope(
     return scope.issubset(candidates)
 
 
-def _candidate_refs(
+def _inspect_candidates(
     project_root: Path,
     declarations: Mapping[str, list[fusesoc_registry.TargetRef]],
     *,
@@ -132,21 +132,17 @@ def _target_contract(
     *,
     category: str,
 ) -> ReviewTargetContract:
+    kinds = {
+        "cocotb" if inspection.flow_options.get("cocotb_module") else "hdl"
+        for _, inspection in matches
+    }
     if category == "tb" and len(matches) > 1:
         candidates = ", ".join(selector for selector, _ in matches)
-        kinds = {
-            "cocotb" if inspection.flow_options.get("cocotb_module") else "hdl"
-            for _, inspection in matches
-        }
         kind_context = f" with conflicting kinds {sorted(kinds)}" if len(kinds) > 1 else ""
         raise ReviewContractError(
             f"Review scope ambiguously matches multiple TB Targets ({candidates}){kind_context}; "
             "pass --target <selector>"
         )
-    kinds = {
-        "cocotb" if inspection.flow_options.get("cocotb_module") else "hdl"
-        for _, inspection in matches
-    }
     selectors = tuple(sorted(selector for selector, _ in matches))
     if len(kinds) == 1:
         return ReviewTargetContract(selectors, next(iter(kinds)))
@@ -176,7 +172,7 @@ def resolve_review_target(
     normalized_scope = {_normalize(path) for path in scope}
     declarations = fusesoc_registry.target_declarations(project_root)
 
-    refs, failures = _candidate_refs(
+    refs, failures = _inspect_candidates(
         project_root,
         declarations,
         category=category,
