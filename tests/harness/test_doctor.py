@@ -1001,9 +1001,7 @@ def test_deep_core_resolution_only_runs_doctor_selected_targets(
         "    flow_options: {tool: vivado, booley: {doctor: [fpga]}}\n",
     ]
     targets.extend(
-        f"  vendored_{index:03d}:\n"
-        "    flow: sim\n"
-        "    flow_options: {tool: verilator}\n"
+        f"  vendored_{index:03d}:\n    flow: sim\n    flow_options: {{tool: verilator}}\n"
         for index in range(200)
     )
     (tmp_path / "design.core").write_text(
