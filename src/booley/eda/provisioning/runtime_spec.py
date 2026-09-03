@@ -33,6 +33,7 @@ from ..config import PROVISIONING_HOST, EdaConfig, load_eda_config
 from . import authority
 from .policies.vivado import CONTAINER_TARGET, POLICY_REVISION, wrapper_sha256
 
+_IS_WINDOWS = os.name == "nt"
 STAMP_VERSION = 4
 DEVCONTAINER_TARGET = "/work/.devcontainer"
 _ALLOWED_TOP_LEVEL_KEYS = frozenset(
@@ -992,11 +993,14 @@ def _validator_script_directories() -> tuple[Path, ...]:
 
 
 def _invoked_validator_candidate() -> Path | None:
-    """Return the absolute ``booley`` entry point used for this process."""
+    """Return the invoked ``booley`` launcher, restoring its Windows suffix."""
     invoked = Path(sys.argv[0])
-    if invoked.is_absolute() and invoked.name.casefold() in {"booley", "booley.exe"}:
-        return invoked
-    return None
+    name = invoked.name.casefold()
+    if not invoked.is_absolute() or name not in {"booley", "booley.exe"}:
+        return None
+    if _IS_WINDOWS and name == "booley":
+        return invoked.with_suffix(".exe")
+    return invoked
 
 
 def _path_validator_candidates() -> tuple[Path, ...]:
