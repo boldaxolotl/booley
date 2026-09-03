@@ -204,6 +204,43 @@ def test_image_related_test_requires_image_smoke(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        ".dockerignore",
+        "src/booley/data/docker/Dockerfile",
+        "src/booley/data/docker/Dockerfile.riscv",
+        ".github/contracts/session-runtime.toml",
+        ".github/scripts/image_contract.py",
+        ".github/scripts/image_size_report.py",
+        ".github/scripts/verify_picorv32_demo.sh",
+        ".github/actions/prepare-picorv32-demo/action.yml",
+        "demo/picorv32.core",
+    ],
+)
+def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: str) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, path)
+    head = _commit(repo, "RISC-V image input")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["riscv_image"] == "true"
+    assert {"package-artifacts", "bwave-smoke"} <= _required(outputs)
+
+
+def test_ordinary_python_source_does_not_request_riscv_image(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _write(repo, "src/booley/example.py")
+    head = _commit(repo, "ordinary Python source")
+
+    outputs = _classify(repo, base, head)
+
+    assert outputs["python_source"] == "true"
+    assert outputs["riscv_image"] == "false"
+    assert "bwave-smoke" in _required(outputs)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "src/booley/data/docker/Dockerfile.egress-proxy",
         "src/booley/data/docker/Dockerfile.flexnet-relay",
         "src/booley/data/docker/Dockerfile.reaper",
@@ -298,6 +335,7 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
     assert _required(workflow) == expected
     assert forced["full"] == "true"
     assert forced["stable_base"] == "false"
+    assert forced["riscv_image"] == "false"
     assert _required(forced) == expected
 
 

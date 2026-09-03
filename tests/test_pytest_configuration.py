@@ -248,12 +248,34 @@ def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
     assert "started_at_epoch=$(date +%s)" in start["run"]
     assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
     assert ".github/scripts/ci_duration_budget.py" in canary["run"]
-    assert "--budget-seconds 1080" in canary["run"]
+    assert canary["env"]["DURATION_BUDGET_SECONDS"] == (
+        "${{ needs.changes.outputs.riscv_image == 'true' && 1080 || 600 }}"
+    )
+    assert '--budget-seconds "${DURATION_BUDGET_SECONDS}"' in canary["run"]
     assert steps.index(canary) > next(
         index
         for index, step in enumerate(steps)
         if step.get("name") == "Upload installed agent CLI policy evidence"
     )
+
+
+def test_riscv_image_lane_is_path_gated() -> None:
+    """The slow derived-image contract runs only when its owning inputs change."""
+    workflow = _test_workflow()
+    assert workflow["jobs"]["changes"]["outputs"]["riscv_image"] == (
+        "${{ steps.classify.outputs.riscv_image }}"
+    )
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+    riscv_steps = [
+        step
+        for step in steps
+        if "RISC-V" in str(step.get("name", ""))
+        or "PicoRV32" in str(step.get("name", ""))
+        or step.get("name") == "Measure candidate runtime images"
+    ]
+
+    assert len(riscv_steps) == 7
+    assert all("needs.changes.outputs.riscv_image == 'true'" in step["if"] for step in riscv_steps)
 
 
 def test_matrix_uses_test_only_dependencies() -> None:
