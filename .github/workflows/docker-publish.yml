@@ -104,10 +104,9 @@ jobs:
             io.booley.build.origin=registry
             booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
           cache-from: type=gha,scope=sandbox
-          # Same scope as bwave-smoke in test.yml, so tag builds reuse the
-          # per-PR cache. ignore-error: a failed cache upload must not fail
-          # a release build.
-          cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+          # The shared scope has one writer: main pushes in test.yml. Release
+          # builds reuse it without replacing it with tag- or dispatch-specific
+          # state.
 
   # RISC-V variant: base sandbox + RISC-V toolchain/Spike/specs (Dockerfile.riscv).
   # It is `FROM booley-sandbox`; the build-context mapping below resolves that
