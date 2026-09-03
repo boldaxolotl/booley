@@ -203,8 +203,8 @@ def test_invalid_cycle_baseline_ref_is_actionable(monkeypatch) -> None:
 def test_baseline_execution_uses_ephemeral_tree_and_restores_current_tree(monkeypatch) -> None:
     flow, _key = _criterion_flow(relative=True)
     _pin_baseline(flow)
-    current = Path("/current")
-    baseline = Path("/baseline")
+    current = Path("/current").resolve()
+    baseline = Path("/baseline").resolve()
     flow._args.work_dir = current
     flow._target_handles["sim_core"].project_root = current
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
@@ -239,8 +239,8 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
     identity = _TARGET_IDENTITY
     flow, _key = _sealed_criterion_flow(relative=True)
     _pin_baseline(flow)
-    current = Path("/current")
-    baseline = Path("/baseline")
+    current = Path("/current").resolve()
+    baseline = Path("/baseline").resolve()
     flow._args.work_dir = current
     flow._target_handles["sim_core"].project_root = current
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
@@ -277,8 +277,8 @@ def test_schema_four_baseline_results_are_keyed_by_identity(monkeypatch) -> None
 def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> None:
     flow, _key = _sealed_criterion_flow(relative=True)
     _pin_baseline(flow)
-    current = Path("/current")
-    baseline = Path("/baseline")
+    current = Path("/current").resolve()
+    baseline = Path("/baseline").resolve()
     flow._args.work_dir = current
     flow._target_handles["sim_core"].project_root = current
     flow._tb_top_for_target = MagicMock(return_value="tb_top")
@@ -310,8 +310,8 @@ def test_schema_four_baseline_rejects_selector_identity_drift(monkeypatch) -> No
 def test_schema_four_baseline_reports_ambiguous_selector(monkeypatch) -> None:
     flow, _key = _sealed_criterion_flow(relative=True)
     _pin_baseline(flow)
-    current = Path("/current")
-    baseline = Path("/baseline")
+    current = Path("/current").resolve()
+    baseline = Path("/baseline").resolve()
     flow._args.work_dir = current
     flow._target_handles[_TARGET_SELECTOR].project_root = current
     flow._run_target = MagicMock()
