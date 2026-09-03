@@ -121,6 +121,9 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     assert result.returncode == 0, result.stderr
     selected = {line for line in result.stdout.splitlines() if line.startswith("tests/")}
     assert selected == {
+        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_single_root_python_decoder",
+        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
+        "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
         "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
         "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
         "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
