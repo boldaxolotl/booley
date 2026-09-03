@@ -104,10 +104,9 @@ jobs:
             io.booley.build.origin=registry
             booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
           cache-from: type=gha,scope=sandbox
-          # Same scope as bwave-smoke in test.yml, so tag builds reuse the
-          # per-PR cache. ignore-error: a failed cache upload must not fail
-          # a release build.
-          cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+          # The shared scope has one writer: main pushes in test.yml. Release
+          # builds reuse it without replacing it with tag- or dispatch-specific
+          # state.
 
   # RISC-V variant: base sandbox + RISC-V toolchain/Spike/specs (Dockerfile.riscv).
   # It is `FROM booley-sandbox`; the build-context mapping below resolves that
@@ -297,6 +296,17 @@ jobs:
             echo "booley init did not finish cleanly" >&2
             exit 1
           fi
+
+      # This must run on the host: in-container Doctor cannot launch the
+      # short-lived issued-image probe and therefore skips this exact seam.
+      - name: Run host Doctor issued-image probe
+        working-directory: ${{ runner.temp }}/booley-picorv32-demo
+        run: |
+          set -o pipefail
+          doctor_log="$(mktemp)"
+          booley doctor --skip-agent-checks | tee "${doctor_log}"
+          grep -Eq 'MCP server exposes [0-9]+ MCP tool\(s\)' "${doctor_log}"
+          grep -Fq "0 failed." "${doctor_log}"
 
       - name: Measure release image storage contract
         env:
