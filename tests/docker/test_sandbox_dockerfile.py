@@ -7,6 +7,7 @@ import re
 import shlex
 from pathlib import Path
 
+import yaml
 from tests.sidecar_image_helpers import DIND_IMAGE
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
@@ -425,6 +426,33 @@ def test_changed_stable_base_build_reuses_trusted_cache_without_publishing() -> 
     assert "load: true" in base_build
     assert "cache-from: type=gha,scope=sandbox-runtime-base" in base_build
     assert "cache-to:" not in base_build
+
+
+def test_shared_candidate_cache_has_only_the_main_push_writer() -> None:
+    test_workflow = yaml.safe_load(Path(".github/workflows/test.yml").read_text(encoding="utf-8"))
+    candidate_build = next(
+        step
+        for step in test_workflow["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Build candidate from published stable base"
+    )
+
+    assert candidate_build["with"]["cache-from"] == "type=gha,scope=sandbox"
+    assert candidate_build["with"]["cache-to"] == (
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && "
+        "'type=gha,scope=sandbox,mode=max,ignore-error=true' || '' }}"
+    )
+
+    release_workflow = yaml.safe_load(
+        Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    release_build = next(
+        step
+        for step in release_workflow["jobs"]["build-and-push"]["steps"]
+        if step.get("id") == "build"
+    )
+
+    assert release_build["with"]["cache-from"] == "type=gha,scope=sandbox"
+    assert "cache-to" not in release_build["with"]
 
 
 def test_stacked_pr_builds_inherited_stable_base_locally() -> None:
