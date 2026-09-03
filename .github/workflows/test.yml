@@ -649,80 +649,12 @@ jobs:
           path: ${{ runner.temp }}/docker-build-evidence/
           if-no-files-found: error
 
-      # Build the derived image before merge, from the exact standard candidate
-      # already validated above. Release CI remains the publication gate, not
-      # the first place candidate RISC-V layers and behavior are exercised.
-      - name: Build candidate RISC-V Session Runtime
-        if: needs.changes.outputs.riscv_image == 'true'
-        shell: bash
-        run: |
-          mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
-          set -o pipefail
-          docker buildx build --builder default --load \
-            --file src/booley/data/docker/Dockerfile.riscv \
-            --tag booley-riscv-test \
-            --build-context booley-sandbox=docker-image://booley-test . \
-            2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
-
-      - name: Validate RISC-V Session Runtime contract
-        if: needs.changes.outputs.riscv_image == 'true'
-        run: |
-          PYTHONPATH=src python .github/scripts/image_contract.py \
-            --image booley-riscv-test \
-            --base-image booley-test \
-            --flavor riscv \
-            --contract .github/contracts/session-runtime.toml \
-            --evidence "${RUNNER_TEMP}/riscv-image-evidence/runtime-contract.json"
-
-      - name: Measure candidate runtime images
-        if: needs.changes.outputs.riscv_image == 'true'
-        run: |
-          PYTHONPATH=src python .github/scripts/image_size_report.py \
-            --runtime-image sandbox=booley-test \
-            --runtime-image riscv=booley-riscv-test \
-            --json "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.json" \
-            --markdown "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md"
-          cat "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
-
+      # Prepare the reviewed demo before the native parallel group. The
+      # derived image itself then builds alongside the standard-image smokes.
       - name: Prepare exact reviewed PicoRV32 candidate contract
         if: needs.changes.outputs.riscv_image == 'true'
         id: riscv-demo
         uses: ./.github/actions/prepare-picorv32-demo
-
-      - name: Verify PicoRV32 contract with candidate RISC-V image
-        if: needs.changes.outputs.riscv_image == 'true'
-        env:
-          TICKET_SLUG: ${{ steps.riscv-demo.outputs.ticket_slug }}
-        run: |
-          sudo chown -R 1000:1000 demo
-          docker run --init --rm --network none \
-            --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
-            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
-            -w /work \
-            -e BOOLEY_PROJECT_DIR=/booley-project \
-            -e BOOLEY_IN_SANDBOX=1 \
-            -e BOOLEY_RUN_PICORV32_FLOWS=1 \
-            -e PYTHONPATH=/booley-source/src \
-            -e TICKET_SLUG \
-            booley-riscv-test bash -euo pipefail -c \
-              'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
-
-      - name: Restore PicoRV32 checkout ownership
-        if: always() && needs.changes.outputs.riscv_image == 'true'
-        run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
-          fi
-
-      - name: Upload candidate RISC-V evidence
-        if: always() && needs.changes.outputs.riscv_image == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/riscv-image-evidence/
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash
@@ -752,6 +684,50 @@ jobs:
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
       - parallel:
+          # Build the derived image from the exact standard candidate while
+          # its independent validations run. Release CI remains the publication
+          # gate, not the first place RISC-V behavior is exercised.
+          - name: Run RISC-V candidate image contract
+            if: needs.changes.outputs.riscv_image == 'true'
+            env:
+              TICKET_SLUG: ${{ steps.riscv-demo.outputs.ticket_slug }}
+            run: |
+              mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
+              set -o pipefail
+              docker buildx build --builder default --load \
+                --file src/booley/data/docker/Dockerfile.riscv \
+                --tag booley-riscv-test \
+                --build-context booley-sandbox=docker-image://booley-test . \
+                2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
+              PYTHONPATH=src python .github/scripts/image_contract.py \
+                --image booley-riscv-test \
+                --base-image booley-test \
+                --flavor riscv \
+                --contract .github/contracts/session-runtime.toml \
+                --evidence "${RUNNER_TEMP}/riscv-image-evidence/runtime-contract.json"
+              PYTHONPATH=src python .github/scripts/image_size_report.py \
+                --runtime-image sandbox=booley-test \
+                --runtime-image riscv=booley-riscv-test \
+                --json "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.json" \
+                --markdown "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md"
+              cat "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
+              sudo chown -R 1000:1000 demo
+              .github/scripts/run_with_container_cleanup.sh \
+                booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv \
+                docker run --init --rm --network none \
+                --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv \
+                --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+                --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+                --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+                -w /work \
+                -e BOOLEY_PROJECT_DIR=/booley-project \
+                -e BOOLEY_IN_SANDBOX=1 \
+                -e BOOLEY_RUN_PICORV32_FLOWS=1 \
+                -e PYTHONPATH=/booley-source/src \
+                -e TICKET_SLUG \
+                booley-riscv-test bash -euo pipefail -c \
+                  'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
+
           - name: Run installed agent CLI policy probe
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/agent-policy
@@ -873,6 +849,22 @@ jobs:
           if (( ${#containers[@]} )); then
             docker rm -f "${containers[@]}"
           fi
+
+      - name: Restore PicoRV32 checkout ownership
+        if: always() && needs.changes.outputs.riscv_image == 'true'
+        run: |
+          if test -e demo; then
+            sudo chown -R "$(id -u):$(id -g)" demo
+          fi
+
+      - name: Upload candidate RISC-V evidence
+        if: always() && needs.changes.outputs.riscv_image == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload installed agent CLI policy evidence
         if: always()
