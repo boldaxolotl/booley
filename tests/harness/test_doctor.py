@@ -6904,12 +6904,12 @@ targets:
 
 
 class TestCocotbFactoryTests:
-    """B6: TestFactory-generated names cannot be grepped for as `def <name>(`.
+    """B6: generated cocotb names cannot be grepped for as `def <name>(`.
 
-    ``TestFactory(...).generate_tests()`` registers run_test_001… in the module
-    namespace at import time, so the static check is structurally blind to them
-    and reported all 14/14 of taxi's tests as missing. Not verifiable ⇒ report
-    it as not verifiable, not as a finding.
+    ``TestFactory(...).generate_tests()`` and ``@cocotb.parametrize`` register
+    rendered names in the module namespace at import time, so the static check
+    is structurally blind to them. Not verifiable ⇒ report it as not
+    verifiable, not as a finding.
     """
 
     _FACTORY_TB = """\
@@ -6926,6 +6926,16 @@ factory.add_option("data_width", [8, 16])
 factory.generate_tests()
 """
 
+    _PARAMETRIZED_TB = """\
+import cocotb
+
+
+@cocotb.test()
+@cocotb.parametrize(("ifg", [12, 0]))
+async def run_test_tx(dut, ifg=12):
+    pass
+"""
+
     def test_factory_generated_names_are_reported_unverifiable_not_missing(
         self,
         tmp_path: Path,
@@ -6939,6 +6949,24 @@ factory.generate_tests()
         assert not any("not found as functions" in m for lvl, m in rec.events)
         assert any(
             "cannot be verified statically" in m and "factory" in m
+            for lvl, m in rec.events
+            if lvl == "skip"
+        )
+        assert rec.fails() == []
+
+    def test_parametrized_names_are_reported_unverifiable_not_missing(
+        self,
+        tmp_path: Path,
+    ):
+        _write_cocotb_project(
+            tmp_path,
+            tb_body=self._PARAMETRIZED_TB,
+            tests=["run_test_tx/ifg=12", "run_test_tx/ifg=0"],
+        )
+        rec = _audit(tmp_path)
+        assert not any("not found as functions" in m for lvl, m in rec.events)
+        assert any(
+            "cannot be verified statically" in m and "parameterized" in m
             for lvl, m in rec.events
             if lvl == "skip"
         )

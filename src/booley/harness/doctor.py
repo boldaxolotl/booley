@@ -5524,12 +5524,14 @@ def _cocotb_module_file(
     return None
 
 
-# A cocotb module that registers its tests through a factory: the names land in
-# the module namespace at import time (`TestFactory(...).generate_tests()` emits
-# run_test_001…), so they are invisible to a `def <name>(` grep. Recognizing the
-# call is what lets doctor say "not statically verifiable" instead of reporting
-# every generated name as missing.
-_COCOTB_FACTORY_RE = re.compile(r"\b(?:TestFactory|generate_tests)\b")
+# A cocotb module can generate rendered test IDs at import time through legacy
+# ``TestFactory`` or cocotb 2's ``@cocotb.parametrize`` decorator. Those IDs
+# are invisible to a ``def <rendered-name>(`` grep. Recognizing either shape
+# lets Doctor say "not statically verifiable" instead of reporting every
+# generated name as missing.
+_COCOTB_GENERATED_TEST_RE = re.compile(
+    r"\b(?:TestFactory|generate_tests|cocotb\s*\.\s*parametrize)\b"
+)
 
 
 def _check_cocotb_targets(
@@ -5601,15 +5603,15 @@ def _check_cocotb_targets(
             except OSError:
                 text = ""
             missing = [t for t in declared if not re.search(rf"def\s+{re.escape(t)}\s*\(", text)]
-            if missing and _COCOTB_FACTORY_RE.search(text):
-                # Factory-generated names are registered at import time, not
-                # authored as `def <name>(` — the grep is structurally blind to
-                # them. Say the check cannot run; do not fault the project.
+            if missing and _COCOTB_GENERATED_TEST_RE.search(text):
+                # Generated names are registered at import time, not authored
+                # as `def <name>(` — the grep is structurally blind to them.
+                # Say the check cannot run; do not fault the project.
                 _skip(
                     f"cocotb Target '{name}': {len(missing)} tests.toml name(s) "
-                    f"cannot be verified statically — {module}.py generates its "
-                    "tests with a factory (TestFactory/generate_tests); the names "
-                    "are checked against results.xml at run time (ADR 0034 dec 7)"
+                    f"cannot be verified statically — {module}.py uses factory/"
+                    "parameterized test generation; the names are checked against "
+                    "results.xml at run time (ADR 0034 dec 7)"
                 )
             elif missing:
                 _warning_sink(_warn, "cocotb.test-name-missing", subject=name)(
