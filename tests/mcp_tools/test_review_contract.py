@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.specialists.review_contract import ReviewContractError, resolve_review_target
+from booley.targets.target import inspect_target as real_inspect_target
 
 
 def _write_project(root: Path) -> None:
@@ -47,6 +50,29 @@ def test_mixed_target_kinds_require_explicit_selector(tmp_path: Path) -> None:
         )
 
 
+def test_same_kind_target_matches_are_still_ambiguous(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    core = tmp_path / "uart.core"
+    core.write_text(
+        core.read_text(encoding="utf-8").replace(
+            ", cocotb_module: test_uart",
+            "",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReviewContractError, match="ambiguously matches multiple TB Targets"):
+        resolve_review_target(tmp_path, ["tb/test_uart.py"], category="tb")
+
+
+def test_no_matching_tb_target_has_specific_diagnostic(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    (tmp_path / "tb" / "other.py").write_text("# other\n", encoding="utf-8")
+
+    with pytest.raises(ReviewContractError, match="No selectable Target contains every TB"):
+        resolve_review_target(tmp_path, ["tb/other.py"], category="tb")
+
+
 def test_explicit_target_narrows_candidate_set(tmp_path: Path) -> None:
     _write_project(tmp_path)
 
@@ -59,6 +85,28 @@ def test_explicit_target_narrows_candidate_set(tmp_path: Path) -> None:
 
     assert contract.selectors == ("sim_cocotb",)
     assert contract.kind == "cocotb"
+
+
+def test_explicit_tb_target_must_be_simulation_capable(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+    core = tmp_path / "uart.core"
+    core.write_text(
+        core.read_text(encoding="utf-8")
+        + "  lint_tb:\n"
+        + "    filesets: [tb]\n"
+        + "    toplevel: uart_tb\n"
+        + "    flow: lint\n"
+        + "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FuseSocError, match=r"cannot be driven by the 'sim' Flow"):
+        resolve_review_target(
+            tmp_path,
+            ["tb/test_uart.py"],
+            category="tb",
+            target_hint="lint_tb",
+        )
 
 
 def test_explicit_target_must_contain_scope(tmp_path: Path) -> None:
@@ -101,3 +149,55 @@ def test_scope_matching_uses_condition_selected_target_inputs(tmp_path: Path) ->
 
     assert contract.selectors == ("sim",)
     assert contract.kind == "cocotb"
+
+
+def test_bound_target_ignores_unrelated_uninspectable_target(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    def inspect(root, handle):
+        if handle.name == "sim_hdl":
+            raise FuseSocError("missing optional dependency")
+        return real_inspect_target(root, handle)
+
+    with patch("booley.specialists.review_contract.inspect_target", side_effect=inspect):
+        contract = resolve_review_target(
+            tmp_path,
+            ["tb/test_uart.py"],
+            category="tb",
+            target_hint="sim_cocotb",
+        )
+
+    assert contract.selectors == ("sim_cocotb",)
+
+
+def test_bound_target_reports_relevant_inspection_failure(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    with (
+        patch(
+            "booley.specialists.review_contract.inspect_target",
+            side_effect=FuseSocError("missing required dependency"),
+        ),
+        pytest.raises(ReviewContractError, match=r"Relevant Target.*missing required dependency"),
+    ):
+        resolve_review_target(
+            tmp_path,
+            ["tb/test_uart.py"],
+            category="tb",
+            target_hint="sim_cocotb",
+        )
+
+
+def test_unbound_candidate_failure_is_isolated_and_fails_closed(tmp_path: Path) -> None:
+    _write_project(tmp_path)
+
+    def inspect(root, handle):
+        if handle.name == "sim_hdl":
+            raise FuseSocError("missing optional dependency")
+        return real_inspect_target(root, handle)
+
+    with (
+        patch("booley.specialists.review_contract.inspect_target", side_effect=inspect),
+        pytest.raises(ReviewContractError, match=r"potentially relevant.*sim_hdl"),
+    ):
+        resolve_review_target(tmp_path, ["tb/test_uart.py"], category="tb")

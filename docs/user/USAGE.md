@@ -287,7 +287,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
-Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
+Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB review may add `--target <sim-target>`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -297,9 +297,9 @@ Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
-| `tb` | `quality` | False-pass paths, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
+| `tb` | `quality` | False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
+Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. Ticket Mode defaults a TB review's sealed simulation Target; pass `--target` to disambiguate an interactive review. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
 
 #### `mutation_tester`
 
@@ -529,6 +529,14 @@ stores the concrete immutable Criteria selected for that one run.
 
 The supported criteria families are defined once in `criteria.toml` and listed below; `{target}` denotes a per-target expansion (one criterion per project Target). `booley cheat` renders this same table live, including any project-defined criteria. A bare `review_*` ticket key expands to `_clean`: every finding must be verified fixed or explicitly waived with user-visible justification. Use an explicit `_done` suffix for a terminal advisory review whose findings are reported but not fixed in that ticket run. Both modes become stale after relevant source changes.
 
+A TB-quality review belongs to exactly one simulation Target. When structured
+`sim_pass` criteria establish one unique Target, Ticket Mode derives that
+binding. Otherwise author it explicitly as
+`review_tb_quality: {target: <sim-target>}`; the Target identity and callable
+selector are sealed with the ticket.
+This Reviewer-discovery binding does not change the condition-selected Target
+input behavior established by [#131](https://github.com/boldaxolotl/booley/issues/131).
+
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate
 
@@ -553,7 +561,7 @@ The supported criteria families are defined once in `criteria.toml` and listed b
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_tb_quality` | TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
+| `review_tb_quality` | TB review within one simulation Target: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
 
 #### Simulation
 
@@ -781,7 +789,16 @@ booley session down                     # stop and remove
 `session refresh` is transactional for the headless runtime. It keeps the old
 container recoverable until the replacement is running on the reconciled
 immutable image ID and an isolated in-container probe confirms the expected
-Booley payload. It refuses to replace a runtime currently owned by VS Code;
+Booley payload. Its host-side journal survives interruption: the next mutating
+host lifecycle command either restores the exact prior spec and container or,
+after the replacement was durably committed, finishes deleting that exact
+predecessor. The recovery command stops after doing so and asks you to rerun the
+requested operation; `session status` reports `recovery-pending` without
+changing state. A Docker build that outlives a killed CLI process is outside
+this transaction—it may leave an unused image, but recovery never adopts that
+image without completing the normal issuance and runtime verification steps.
+
+Refresh refuses to replace a runtime currently owned by VS Code;
 use the editor's **Dev Containers: Rebuild Container** command in that case.
 For a licensed headless runtime, run `booley session down` first so refresh does
 not risk replacing the deterministic license-relay topology beneath a recoverable

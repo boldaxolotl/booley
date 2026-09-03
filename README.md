@@ -15,7 +15,7 @@ RTL development is fragmented across editors, tool-specific commands, build envi
 
 - **One Window:** RTL, the agent, terminals, EDA runs, results, and waveform viewing live in a single VS Code window. You can move from editing to simulation to waveform debugging to synthesis without switching between separate applications.
 - **Reproducible team environment:** configure the project once, and its Docker environment supplies the same pinned EDA stack, agent tooling, and system dependencies to every team member. Nobody has to rebuild the toolchain independently or debug "works on my machine" differences ([why Docker](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/WHY.md#why-docker)).
-- **A typed interface for each Booley Flow:** simulation, lint, synthesis, and FPGA implementation are separate Flows, each with typed inputs and structured, Flow-specific results. Each Flow's Booley interface remains stable regardless of which underlying EDA tool its Target selects—for example, `sim` stays `sim` with Verilator today or Xcelium<sup>*</sup> tomorrow. These Flows are built on [FuseSoC](https://github.com/olofk/fusesoc), so you don't have to maintain tool-specific EDA glue scripts anymore.
+- **A typed interface for each Booley Flow:** Booley provides dedicated Flows for simulation, linting, synthesis, and FPGA implementation, each with typed inputs and structured, Flow-specific results. Each Flow's Booley interface remains stable regardless of which underlying EDA tool its Target selects—for example, `sim` stays `sim` with Verilator today or Xcelium<sup>*</sup> tomorrow. These Flows are built on [FuseSoC](https://github.com/olofk/fusesoc), so you don't have to maintain tool-specific EDA glue scripts anymore.
 
 <sub>* Xcelium support is a work in progress.</sub>
 
@@ -43,15 +43,34 @@ supported. You need:
 - [Docker](https://www.docker.com/)
 - [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
 - Credentials for Claude (the default) or Codex
-- At least **21 GB of free Docker storage** for the complete RISC-V demo stack.
-  Its registry download is roughly 6 GB compressed; Docker expands the standard
-  sandbox to about 15 GB and the RISC-V image to about 20 GB. Docker metadata,
-  build cache, containers, and project build artifacts need additional space.
+- About **15 GB of Docker storage** for the standard Booley image or at least
+  **21 GB** for the complete RISC-V demo stack, plus space for project build
+  artifacts.
+  The measured 0.2.10 Linux/AMD64 manifests contain 4.33 GB of compressed
+  standard-image layers and 5.53 GB for RISC-V in total; RISC-V shares the
+  standard layers and adds 1.21 GB rather than requiring both totals. On the
+  measured containerd image store, Docker displayed about 14.7 GB for the
+  standard image and 19.4 GB for RISC-V; their runtime-user-visible filesystems were
+  9.66 GB and 13.17 GB. Docker metadata, temporary retention during upgrades,
+  build cache, writable layers, and project artifacts need additional headroom.
+  See the
+  [exact baseline evidence and metric definitions](docs/internals/SESSION-RUNTIME-CONTRACT.md#evidence-and-size-policy).
 
-Install and verify the CLI on the host:
+Install the CLI on the host:
 
 ```bash
 pipx install booley-rtl # or: pip install booley-rtl
+```
+
+If Booley is already installed, upgrade it instead:
+
+```bash
+pipx upgrade booley-rtl # or: pip install --upgrade booley-rtl
+```
+
+Then verify the installed version and prepare the host resources:
+
+```bash
 booley --version
 booley bootstrap
 ```

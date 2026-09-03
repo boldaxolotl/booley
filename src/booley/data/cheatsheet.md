@@ -101,7 +101,7 @@ LLM-backed sub-agents running in scoped, isolated workspaces:
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. A terminal `_done` review reports findings without triggering fixes; `_clean` requires every finding to be verified fixed or explicitly waived with user-visible justification.
-Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
+Call `reviewer --scope <file,...> --category <category> --focus <focus>`; a TB review may add `--target <sim-target>`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -111,9 +111,9 @@ Call `reviewer --scope <file,...> --category <category> --focus <focus>`.
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
-| `tb` | `quality` | False-pass paths, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
+| `tb` | `quality` | False-pass paths within one simulation Target, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
+Controls: `--scope <file,...>` selects files; `--diff-ref <git-ref>` reviews only the diff; repeatable `--steer` adds review context. Ticket Mode defaults a TB review's sealed simulation Target; pass `--target` to disambiguate an interactive review. The `spec` focus needs the ticket/spec text: Ticket Mode resolves it automatically, while Interactive Mode uses `--ticket <path>`.
 
 #### `mutation_tester`
 
@@ -162,7 +162,7 @@ variants, and the first public test that killed each detected mutant.
 
 | Criterion | Description | Set by | Workflow Region |
 |-----------|-------------|--------|-------|
-| `review_tb_quality` | TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
+| `review_tb_quality` | TB review within one simulation Target: false-pass detection, coverage gaps, and TB code quality | `reviewer --category tb --focus quality` | pre-sim |
 
 #### Simulation
 

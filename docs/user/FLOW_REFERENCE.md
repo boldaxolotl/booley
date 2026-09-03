@@ -137,7 +137,7 @@ Structured output (`sim_<target>.json`):
 
 | Field | Contents |
 |---|---|
-| `target`, `tb_top`, `eda_tool` | Resolved simulation identity. |
+| `target`, `target_identity`, `tb_top`, `eda_tool` | Callable Target selector, durable Target identity, and resolved simulation context. |
 | `passed`, `elapsed_s` | Target-level verdict and duration. |
 | `tests[]` | Per-test `name`, `passed`, `verdict`, `timed_out`, `elapsed_s`, `build_s`, `cycles`, `cycle_observation`, `sva_errors`, `error_tail`, and `test_validated`. Trace runs add `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and `trace_total_ticks`. Optional fields include `artifacts.run_log`, `workload_fingerprint`, and `validation_note`. |
 | `compile_command`, `fileset` | Best-effort generated command and resolved `rtl`/`tb` source lists. |
@@ -241,7 +241,8 @@ hash-suffixed filename):
 | `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry contains `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`; logical mode instead adds `estimated_fmax_mhz`. |
 | `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical` verdict. |
 | `baseline`, `delta_pct`, `timing_delta_pct` | Optional baseline metrics and deltas; `baseline.ref` identifies the compared revision. |
-| `baseline_target`, `candidate_target` | The compared Target pair. |
+| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the compared Target pair. |
+| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the compared Target pair. |
 | `run_evidence`, `baseline_run_evidence` | Current and optional baseline source/recipe provenance. |
 | `failure_output`, `io_bound_critical` | Optional failure excerpt and I/O-bound timing indicator. |
 | `artifacts` | The durable report, complete run log, build directory, and physical-mode timing directory. |
@@ -279,7 +280,8 @@ Structured output (`fpga_<target>.json`):
 | `recipe_fingerprint`, `recipe_snapshot`, `run_evidence` | Normalized recipe and provenance for the current run. |
 | `baseline_recipe_fingerprint`, `baseline_recipe_snapshot`, `baseline_run_evidence` | Optional baseline recipe and provenance. |
 | `cache_consumer_run_id` | Present when this run consumes cached evidence produced by another run. |
-| `baseline_target`, `candidate_target` | The compared Target pair. |
+| `baseline_target`, `candidate_target` | Callable selector compatibility fields for the compared Target pair. |
+| `baseline_target_identity`, `candidate_target_identity` | Durable FuseSoC identities for the compared Target pair. |
 | `artifacts` | The durable report, complete run log, and build, synthesis, and implementation directories. |
 
 ## Related references

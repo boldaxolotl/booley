@@ -27,6 +27,8 @@ jobs:
       python_source: ${{ steps.classify.outputs.python_source }}
       python_tests: ${{ steps.classify.outputs.python_tests }}
       image_tests: ${{ steps.classify.outputs.image_tests }}
+      riscv_image: ${{ steps.classify.outputs.riscv_image }}
+      sidecar: ${{ steps.classify.outputs.sidecar }}
       native_bwave: ${{ steps.classify.outputs.native_bwave }}
       rust: ${{ steps.classify.outputs.rust }}
       docker_toolchain: ${{ steps.classify.outputs.docker_toolchain }}
@@ -120,6 +122,56 @@ jobs:
             exit 1
           fi
           grep -Fq "_pyright_scope_probe.py" "${RUNNER_TEMP}/pyright-probe.json"
+          rm -f "${probe}"
+          trap - EXIT
+          test ! -e "${probe}"
+
+      - name: Prove Target package is strict
+        shell: bash
+        run: |
+          probe=src/booley/targets/_pyright_strict_probe.py
+          trap 'rm -f "${probe}"' EXIT
+          echo 'def strict_probe(value): return value' > "${probe}"
+          if pyright --outputjson > "${RUNNER_TEMP}/pyright-target-strict-probe.json"; then
+            echo "Pyright accepted the deliberate Target strictness error" >&2
+            exit 1
+          fi
+          grep -Fq "_pyright_strict_probe.py" "${RUNNER_TEMP}/pyright-target-strict-probe.json"
+          rm -f "${probe}"
+          trap - EXIT
+          test ! -e "${probe}"
+
+      - name: Prove exact Flow modules are included
+        shell: bash
+        run: |
+          probe_file() (
+            target=$1
+            label=$(echo "${target}" | tr '/.' '__')
+            backup=$(mktemp "${RUNNER_TEMP}/pyright-probe.XXXXXX")
+            cp "${target}" "${backup}"
+            trap 'cp "${backup}" "${target}"' EXIT
+            echo '__pyright_include_probe: int = "must fail"' >> "${target}"
+            if pyright --outputjson > "${RUNNER_TEMP}/pyright-${label}-include-probe.json"; then
+              echo "Pyright accepted the deliberate include error in ${target}" >&2
+              exit 1
+            fi
+            grep -Fq "${target}" "${RUNNER_TEMP}/pyright-${label}-include-probe.json"
+            cp "${backup}" "${target}"
+            trap - EXIT
+            git diff --exit-code -- "${target}"
+          )
+          for target in \
+            src/booley/flows/lint/flow.py \
+            src/booley/flows/sim/build.py \
+            src/booley/flows/sim/flow.py \
+            src/booley/flows/synth/flow.py \
+            src/booley/flows/fpga/flow.py \
+            src/booley/flows/implementation_comparison.py \
+            src/booley/flows/implementation_report.py \
+            src/booley/flows/synth/implementation_report.py \
+            src/booley/flows/fpga/implementation_report.py; do
+            probe_file "${target}"
+          done
 
       - name: Pyright strict boundary checks
         run: pyright
@@ -128,7 +180,7 @@ jobs:
     needs: changes
     if: fromJSON(needs.changes.outputs.jobs)['test']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       COVERAGE_LEG: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
     strategy:
@@ -147,14 +199,17 @@ jobs:
       - name: Install package with test dependencies
         run: pip install -e ".[test]"
 
-      # Every compatibility leg runs across four workers with module/class
-      # affinity. pytest-cov combines worker and configured subprocess data.
+      # Linux keeps module/class affinity. Windows uses work stealing because
+      # real-Git integration modules are much slower there and otherwise leave
+      # one worker with a long serialized tail. pytest-cov combines worker and
+      # configured subprocess data.
       - name: Run tests (parallel)
         if: env.COVERAGE_LEG != 'true'
         env:
           RUNNER_TEMP: ${{ runner.temp }}
         run: >-
-          pytest tests/ -q --tb=short -n 4 --dist=loadscope
+          pytest tests/ -q --tb=short -n 4
+          --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
           --timeout=60
           --durations=30 --junitxml="${{ runner.temp }}/junit.xml"
@@ -388,6 +443,66 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  sidecar-smoke:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: fromJSON(needs.changes.outputs.jobs)['sidecar-smoke']
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install sidecar test dependencies
+        run: pip install pytest==9.1.1 pytest-asyncio==1.4.0
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build and audit sidecar candidates without cache
+        shell: bash
+        run: bash .github/scripts/sidecar-build-evidence.sh
+
+      - name: Run sidecar behavior and hardening proofs
+        shell: bash
+        env:
+          BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-sidecar
+          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
+          BOOLEY_FLEXNET_DOCKER_TEST: "1"
+          BOOLEY_REAPER_IMAGE: booley-reaper:py314
+        run: |
+          set -o pipefail
+          .github/scripts/run_with_container_cleanup.sh \
+            "${BOOLEY_DOCKER_NAME_PREFIX}" \
+            pytest \
+            tests/docker/test_sidecar_image_helpers.py \
+            tests/docker/test_egress_proxy.py \
+            tests/docker/test_proxy_entry.py \
+            tests/docker/test_reaper.py \
+            tests/docker/test_egress_proxy_image_e2e.py \
+            tests/docker/test_reaper_image_e2e.py \
+            tests/docker/test_flexnet_relay_e2e.py \
+            -q --tb=short -rs \
+            --junitxml="${RUNNER_TEMP}/sidecar-junit.xml" 2>&1 \
+            | tee "${RUNNER_TEMP}/docker-build-evidence/sidecar-tests.log"
+
+      - name: Assert sidecar tests executed without skips
+        if: always()
+        run: >-
+          python .github/scripts/assert_junit.py "${RUNNER_TEMP}/sidecar-junit.xml"
+          --label "sidecar behavior and hardening" --min-tests 86 --max-skips 0
+          --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload sidecar execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sidecar-smoke-evidence
+          path: |
+            ${{ runner.temp }}/docker-build-evidence/
+            ${{ runner.temp }}/sidecar-junit.xml
+          if-no-files-found: error
 
   bwave-smoke:
     runs-on: ubuntu-latest
@@ -399,6 +514,11 @@ jobs:
     # finish in minutes; the generous ceiling is for cold-cache runs only.
     timeout-minutes: 180
     steps:
+      - name: Start duration budget clock
+        id: duration-clock
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "${GITHUB_OUTPUT}"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -484,8 +604,9 @@ jobs:
           path: ${{ runner.temp }}/stable-base-build.log
           if-no-files-found: warn
 
-      # Load into the local docker store (not push) so `docker run` below works;
-      # GHA layer cache keeps rebuilds fast when the Dockerfile didn't change.
+      # Load into the local docker store (not push) so `docker run` below works.
+      # Every validation context may restore the trusted main-branch cache, but
+      # only a push to main may replace that shared scope.
       - name: Build candidate from published stable base
         if: steps.runtime-base.outputs.build != 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -499,14 +620,9 @@ jobs:
           load: true
           tags: booley-test
           cache-from: type=gha,scope=sandbox
-          # ignore-error: a failed cache upload must not fail the job — the
-          # image is already built and the smoke test can still run.
-          cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
-
-      - name: Build sidecar controls and candidates without cache
-        shell: bash
-        run: |
-          bash .github/scripts/sidecar-build-evidence.sh
+          cache-to: >-
+            ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+            'type=gha,scope=sandbox,mode=max,ignore-error=true' || '' }}
 
       - name: Capture Docker cache and layer evidence
         shell: bash
@@ -518,27 +634,13 @@ jobs:
             '{{json .}}' booley-test \
             | tee "${RUNNER_TEMP}/docker-build-evidence/layers.jsonl"
 
-      - name: Run Python 3.14.7 sidecar behavior and hardening proofs
-        shell: bash
-        env:
-          BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-sidecar
-          BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314
-          BOOLEY_FLEXNET_DOCKER_TEST: "1"
-          BOOLEY_REAPER_IMAGE: booley-reaper:py314
+      - name: Validate standard Session Runtime contract
         run: |
-          set -o pipefail
-          .github/scripts/run_with_container_cleanup.sh \
-            "${BOOLEY_DOCKER_NAME_PREFIX}" \
-            pytest \
-            tests/docker/test_sidecar_image_helpers.py \
-            tests/docker/test_egress_proxy.py \
-            tests/docker/test_proxy_entry.py \
-            tests/docker/test_reaper.py \
-            tests/docker/test_egress_proxy_image_e2e.py \
-            tests/docker/test_reaper_image_e2e.py \
-            tests/docker/test_flexnet_relay_e2e.py \
-            -q --tb=short -rs 2>&1 \
-            | tee "${RUNNER_TEMP}/docker-build-evidence/sidecar-tests.log"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image booley-test \
+            --flavor standard \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/docker-build-evidence/runtime-contract.json"
 
       - name: Upload Docker build evidence
         if: always()
@@ -547,6 +649,13 @@ jobs:
           name: docker-build-evidence
           path: ${{ runner.temp }}/docker-build-evidence/
           if-no-files-found: error
+
+      # Prepare the reviewed demo before the native parallel group. The
+      # derived image itself then builds alongside the standard-image smokes.
+      - name: Prepare exact reviewed PicoRV32 candidate contract
+        if: needs.changes.outputs.riscv_image == 'true'
+        id: riscv-demo
+        uses: ./.github/actions/prepare-picorv32-demo
 
       - name: Prepare and verify sandbox image test prerequisites
         shell: bash
@@ -576,6 +685,50 @@ jobs:
       # GitHub's native parallel group retains a separate log and exit status
       # for every validation while sharing the already-loaded candidate image.
       - parallel:
+          # Build the derived image from the exact standard candidate while
+          # its independent validations run. Release CI remains the publication
+          # gate, not the first place RISC-V behavior is exercised.
+          - name: Run RISC-V candidate image contract
+            if: needs.changes.outputs.riscv_image == 'true'
+            env:
+              TICKET_SLUG: ${{ steps.riscv-demo.outputs.ticket_slug }}
+            run: |
+              mkdir -p "${RUNNER_TEMP}/riscv-image-evidence"
+              set -o pipefail
+              docker buildx build --builder default --load \
+                --file src/booley/data/docker/Dockerfile.riscv \
+                --tag booley-riscv-test \
+                --build-context booley-sandbox=docker-image://booley-test . \
+                2>&1 | tee "${RUNNER_TEMP}/riscv-image-evidence/build.log"
+              PYTHONPATH=src python .github/scripts/image_contract.py \
+                --image booley-riscv-test \
+                --base-image booley-test \
+                --flavor riscv \
+                --contract .github/contracts/session-runtime.toml \
+                --evidence "${RUNNER_TEMP}/riscv-image-evidence/runtime-contract.json"
+              PYTHONPATH=src python .github/scripts/image_size_report.py \
+                --runtime-image sandbox=booley-test \
+                --runtime-image riscv=booley-riscv-test \
+                --json "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.json" \
+                --markdown "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md"
+              cat "${RUNNER_TEMP}/riscv-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
+              sudo chown -R 1000:1000 demo
+              .github/scripts/run_with_container_cleanup.sh \
+                booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv \
+                docker run --init --rm --network none \
+                --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv \
+                --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
+                --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
+                --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+                -w /work \
+                -e BOOLEY_PROJECT_DIR=/booley-project \
+                -e BOOLEY_IN_SANDBOX=1 \
+                -e BOOLEY_RUN_PICORV32_FLOWS=1 \
+                -e PYTHONPATH=/booley-source/src \
+                -e TICKET_SLUG \
+                booley-riscv-test bash -euo pipefail -c \
+                  'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
+
           - name: Run installed agent CLI policy probe
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/agent-policy
@@ -698,6 +851,22 @@ jobs:
             docker rm -f "${containers[@]}"
           fi
 
+      - name: Restore PicoRV32 checkout ownership
+        if: always() && needs.changes.outputs.riscv_image == 'true'
+        run: |
+          if test -e demo; then
+            sudo chown -R "$(id -u):$(id -g)" demo
+          fi
+
+      - name: Upload candidate RISC-V evidence
+        if: always() && needs.changes.outputs.riscv_image == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload installed agent CLI policy evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -706,6 +875,21 @@ jobs:
           path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json
           if-no-files-found: warn
           retention-days: 14
+
+      # Normal published-base runs historically measured 5m10s-7m56s. The
+      # path-gated RISC-V contract lane measured 14m56s-16m50s when exercised.
+      # Stable-base changes deliberately retain the 180-minute safety cap.
+      - name: Enforce duration budget
+        if: always() && steps.runtime-base.outputs.build != 'true'
+        env:
+          DURATION_BUDGET_SECONDS: >-
+            ${{ needs.changes.outputs.riscv_image == 'true' && 1080 || 600 }}
+        run: >-
+          PYTHONPATH=src python .github/scripts/ci_duration_budget.py
+          --label bwave-smoke
+          --started-at-epoch "${{ steps.duration-clock.outputs.started_at_epoch }}"
+          --budget-seconds "${DURATION_BUDGET_SECONDS}"
+          --summary "${GITHUB_STEP_SUMMARY}"
 
   ci-required:
     name: ci-required
@@ -717,6 +901,7 @@ jobs:
       - rust-test
       - bwave-integration
       - package-artifacts
+      - sidecar-smoke
       - bwave-smoke
     if: always()
     runs-on: ubuntu-latest

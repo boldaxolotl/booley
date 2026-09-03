@@ -3326,6 +3326,30 @@ def _build_mcp_application(
     return application
 
 
+def _build_mcp_catalog(
+    lifetime: _McpLifetime,
+) -> tuple[McpApplication, list[dict[str, Any]], list[str]]:
+    """Discover and validate the catalog shared by live startup and probes."""
+    mcp_tools, discovery_errors = _discover_booley_mcp_tools()
+    logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
+    application = _build_mcp_application(mcp_tools, discovery_errors, lifetime)
+    return application, mcp_tools, discovery_errors
+
+
+def build_mcp_probe_payload() -> dict[str, Any]:
+    """Build the real Interactive Mode catalog and return Doctor's payload."""
+    _maybe_configure_interactive_logs_dir()
+    _load_backend_config_from_toml()
+    application, _mcp_tools, discovery_errors = _build_mcp_catalog(_McpLifetime(None, None))
+    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
+    return {
+        "tools": [tool.name for tool in application.list_tools()],
+        "errors": discovery_errors,
+        "logs_dir": logs_dir,
+        "logs_dir_ok": "/.booley_project/.interactive_logs/" in logs_dir.replace("\\", "/"),
+    }
+
+
 async def _call_application_tool(
     application: McpApplication,
     params: CallToolRequestParams,
@@ -3386,9 +3410,7 @@ def _build_server(
     _reconcile_orphaned_locks()
     _reconcile_orphaned_jobs()
     lifetime = lifetime or _McpLifetime(None, None)
-    mcp_tools, discovery_errors = _discover_booley_mcp_tools()
-    logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
-    application = _build_mcp_application(mcp_tools, discovery_errors, lifetime)
+    application, mcp_tools, discovery_errors = _build_mcp_catalog(lifetime)
     if discovery_errors:
         _log_discovery_errors(mcp_tools, discovery_errors)
     server = _build_sdk_server(application, lifetime)

@@ -811,7 +811,9 @@ class McpTool(ABC):
                 if key.startswith(f"{family}_")
                 and isinstance(entry.params, dict)
                 and self._criterion_target_matches(
-                    entry.params.get("target"), target, target_identity
+                    entry.params,
+                    target,
+                    target_identity,
                 )
                 and key not in bound
             )
@@ -819,13 +821,26 @@ class McpTool(ABC):
 
     def _criterion_target_matches(
         self,
-        authored: Any,
+        params: dict[str, Any],
         invoked: str,
         invoked_identity: str | None,
     ) -> bool:
         """Compare criterion and invocation Targets by identity when resolvable."""
+        from booley.targets.target import (
+            TARGET_IDENTITY_PARAM,
+            TARGET_SELECTOR_PARAM,
+            criterion_matches_target,
+        )
+
+        authored = params.get(TARGET_IDENTITY_PARAM)
         if not isinstance(authored, str):
             return False
+        if TARGET_SELECTOR_PARAM in params:
+            return invoked_identity is not None and criterion_matches_target(
+                params,
+                identity=invoked_identity,
+                selector=invoked,
+            )
         if authored == invoked:
             return True
         if invoked_identity is None:

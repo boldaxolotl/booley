@@ -61,12 +61,29 @@ def test_ci_pytest_temp_uses_runner_volume() -> None:
     assert '--basetemp "${{ runner.temp }}/pytest"' in parallel_step["run"]
 
 
+def test_ci_uses_workstealing_for_windows_module_imbalance() -> None:
+    """A large Windows-only module tail must not serialize one xdist worker."""
+    workflow = _test_workflow()
+
+    test_steps = workflow["jobs"]["test"]["steps"]
+    parallel_step = next(step for step in test_steps if step.get("name") == "Run tests (parallel)")
+
+    assert (
+        parallel_step["run"]
+        .replace("\n", " ")
+        .startswith(
+            "pytest tests/ -q --tb=short -n 4 "
+            "--dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}"
+        )
+    )
+
+
 def test_sidecar_proofs_have_cancellation_cleanup() -> None:
     workflow = _test_workflow()
     step = next(
         candidate
-        for candidate in workflow["jobs"]["bwave-smoke"]["steps"]
-        if candidate.get("name") == "Run Python 3.14.7 sidecar behavior and hardening proofs"
+        for candidate in workflow["jobs"]["sidecar-smoke"]["steps"]
+        if candidate.get("name") == "Run sidecar behavior and hardening proofs"
     )
 
     assert step["env"]["BOOLEY_DOCKER_NAME_PREFIX"] == (
@@ -104,6 +121,9 @@ def test_native_bwave_marker_selects_only_real_binary_tests() -> None:
     assert result.returncode == 0, result.stderr
     selected = {line for line in result.stdout.splitlines() if line.startswith("tests/")}
     assert selected == {
+        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_single_root_python_decoder",
+        "tests/bwave/test_contract.py::test_native_list_metadata_crosses_multi_root_python_decoder",
+        "tests/bwave/test_contract.py::test_trace_session_accepts_native_multi_root_store",
         "tests/bwave/test_contract.py::test_total_miss_is_exit_usage_plus_marker",
         "tests/bwave/test_contract.py::test_list_tree_stderr_carries_the_scope_line",
         "tests/bwave/test_contract.py::test_build_refuses_zero_signal_vcd",
@@ -215,6 +235,69 @@ def test_image_pytest_commands_install_configured_plugins() -> None:
     assert "pytest-asyncio" in host_install["run"]
 
 
+def test_bwave_smoke_enforces_cached_path_duration_budget() -> None:
+    """A cached image smoke regression fails before reaching the broad safety timeout."""
+    workflow = _test_workflow()
+    job = workflow["jobs"]["bwave-smoke"]
+    steps = job["steps"]
+
+    start = next(step for step in steps if step.get("name") == "Start duration budget clock")
+    canary = next(step for step in steps if step.get("name") == "Enforce duration budget")
+
+    assert job["timeout-minutes"] == 180
+    assert "started_at_epoch=$(date +%s)" in start["run"]
+    assert canary["if"] == "always() && steps.runtime-base.outputs.build != 'true'"
+    assert ".github/scripts/ci_duration_budget.py" in canary["run"]
+    assert canary["env"]["DURATION_BUDGET_SECONDS"] == (
+        "${{ needs.changes.outputs.riscv_image == 'true' && 1080 || 600 }}"
+    )
+    assert '--budget-seconds "${DURATION_BUDGET_SECONDS}"' in canary["run"]
+    assert steps.index(canary) > next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Upload installed agent CLI policy evidence"
+    )
+
+
+def test_riscv_image_lane_is_path_gated() -> None:
+    """The slow derived-image contract runs only when its owning inputs change."""
+    workflow = _test_workflow()
+    assert workflow["jobs"]["changes"]["outputs"]["riscv_image"] == (
+        "${{ steps.classify.outputs.riscv_image }}"
+    )
+    steps = workflow["jobs"]["bwave-smoke"]["steps"]
+    group_index, group = next(
+        (index, step) for index, step in enumerate(steps) if "parallel" in step
+    )
+    riscv = next(
+        step
+        for step in group["parallel"]
+        if step.get("name") == "Run RISC-V candidate image contract"
+    )
+    prepare = next(
+        step
+        for step in steps
+        if step.get("name") == "Prepare exact reviewed PicoRV32 candidate contract"
+    )
+    restore = next(
+        step for step in steps if step.get("name") == "Restore PicoRV32 checkout ownership"
+    )
+    upload = next(step for step in steps if step.get("name") == "Upload candidate RISC-V evidence")
+
+    gate = "needs.changes.outputs.riscv_image == 'true'"
+    assert prepare["if"] == gate
+    assert steps.index(prepare) < group_index
+    assert riscv["if"] == gate
+    assert "Dockerfile.riscv" in riscv["run"]
+    assert "image_contract.py" in riscv["run"]
+    assert "image_size_report.py" in riscv["run"]
+    assert "verify_picorv32_demo.sh" in riscv["run"]
+    assert restore["if"] == f"always() && {gate}"
+    assert upload["if"] == f"always() && {gate}"
+    assert steps.index(restore) > group_index
+    assert steps.index(upload) > group_index
+
+
 def test_matrix_uses_test_only_dependencies() -> None:
     """Compatibility legs do not install linting or mutation-only packages."""
     workflow = _test_workflow()
@@ -228,11 +311,11 @@ def test_matrix_uses_test_only_dependencies() -> None:
 
 
 def test_matrix_enforces_the_ci_duration_budget() -> None:
-    """Keep a stuck compatibility leg within the ten-minute CI budget."""
+    """Keep a stuck compatibility leg within the fifteen-minute CI budget."""
     workflow = _test_workflow()
     test_job = workflow["jobs"]["test"]
 
-    assert test_job["timeout-minutes"] == 10
+    assert test_job["timeout-minutes"] == 15
 
     pytest_steps = [
         step for step in test_job["steps"] if str(step.get("name", "")).startswith("Run tests")
@@ -277,7 +360,11 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     group_index, group = next(
         (index, step) for index, step in enumerate(steps) if "parallel" in step
     )
-    validations = group["parallel"]
+    validations = [
+        step
+        for step in group["parallel"]
+        if step.get("name") != "Run RISC-V candidate image contract"
+    ]
     expected_names = {
         "Run installed agent CLI policy probe",
         "Run Verible production-image end-to-end test",

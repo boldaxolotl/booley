@@ -5,7 +5,7 @@
 ```bash
 bwave diff <FST_FILE> <T1> <T2> [-s PATTERN[%RADIX] ...]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
-           [--virtual "name = expr"] [--marker NAME CYCLE]
+           [--marker NAME CYCLE]
            [--format text|json] [--limit N]
 ```
 
@@ -31,7 +31,7 @@ run against raw VCD.
 - `-s PATTERN` optional. Without it, every signal in the
   store is compared, but only changed ones show in the
   output.
-- `--virtual` and `--marker` apply.
+- `--marker` applies.
 
 ## Output shape
 
@@ -84,12 +84,4 @@ resolved to cycles):
 
 ```bash
 bwave diff sim.fst 1234 1450 -s "*err*" -s "*state*"
-```
-
-Diff with a virtual signal in the comparison:
-
-```bash
-bwave diff sim.fst 500 600 \
-    --virtual "hsk = *valid & *ready" \
-    -s "hsk" -s "*state*"
 ```

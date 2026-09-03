@@ -7,6 +7,7 @@ import re
 import shlex
 from pathlib import Path
 
+import yaml
 from tests.sidecar_image_helpers import DIND_IMAGE
 
 _DOCKERFILE = Path("src/booley/data/docker/Dockerfile")
@@ -55,6 +56,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
         "FROM docker.io/openroad/ubuntu24.04@sha256:"
         "c34542dd5c3624117e8370cfb3a4f37a40bfce73a25f5cefdad3277c4c46ce8a"
     ) in base
+    assert "ARG VERIBLE_VERSION=v0.0-4163-g6cce8f19" in base
     assert "verible-verilog-lint --version" in base
     assert "COPY dist/booley_rtl-*.whl" not in base
     assert "COPY crates/bwave/" not in base
@@ -68,7 +70,7 @@ def test_stable_base_owns_invariant_runtime_and_candidate_owns_application() -> 
     assert '--wheel "$WHEEL"' in candidate
     assert "ClaudeSDKBackend" not in candidate
     assert 'test -x "$(command -v claude)"' in candidate
-    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.252"' in candidate
+    assert 'test "$(claude --version | awk \'{print $1}\')" = "2.1.258"' in candidate
     assert "python -m pip check" in candidate
 
 
@@ -121,13 +123,56 @@ def test_ci_captures_docker_cache_and_layer_evidence() -> None:
     assert "docker history --no-trunc" in workflow
     assert "docker image inspect booley-test" in workflow
     assert "docker-build-evidence" in workflow
+    assert ".github/scripts/image_contract.py" in workflow
+    assert "runtime-contract.json" in workflow
 
 
-def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
+def test_ci_builds_and_tests_candidate_riscv_image_before_release() -> None:
+    workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
+    verifier = Path(".github/scripts/verify_picorv32_demo.sh").read_text(encoding="utf-8")
+
+    assert "--file src/booley/data/docker/Dockerfile.riscv" in workflow
+    assert "--build-context booley-sandbox=docker-image://booley-test" in workflow
+    assert "--image booley-riscv-test" in workflow
+    assert "--base-image booley-test" in workflow
+    assert "--flavor riscv" in workflow
+    assert "--runtime-image riscv=booley-riscv-test" in workflow
+    assert "verify_picorv32_demo.sh" in workflow
+    assert "-e BOOLEY_RUN_PICORV32_FLOWS=1" in workflow
+    assert "python -m booley.flows.lint --work-dir /work --target lint_core" in verifier
+    assert "python -m booley.flows.sim --work-dir /work --target sim_core" in verifier
+    assert "riscv-image-evidence-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+
+
+def test_runtime_contract_and_setup_agree_that_rust_is_not_installed() -> None:
+    contract = Path(".github/contracts/session-runtime.toml").read_text(encoding="utf-8")
+    setup = Path("src/booley/data/skills/booley-setup/steps/2-project-config.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"/usr/local/cargo"' in contract
+    assert '"/usr/local/rustup"' in contract
+    assert "Rust is not included" in setup
+    assert "Node.js, Rust" not in setup
+
+
+def test_readme_uses_measured_registry_baseline_instead_of_rough_estimate() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "roughly 6 GB" not in readme
+    assert "4.33 GB of compressed" in readme
+    assert "5.53 GB for RISC-V" in readme
+    assert "adds 1.21 GB" in readme
+
+
+def test_ci_builds_sidecar_candidates_and_archives_historical_controls() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     evidence_script = Path(".github/scripts/sidecar-build-evidence.sh").read_text(encoding="utf-8")
+    archive_path = Path(".github/scripts/archive/sidecar-python313-comparison.sh")
+    archive_script = archive_path.read_text(encoding="utf-8")
 
     assert "bash .github/scripts/sidecar-build-evidence.sh" in workflow
+    assert str(archive_path) not in workflow
     assert "docker build --pull --no-cache" in evidence_script
     for dockerfile in (
         "Dockerfile.egress-proxy",
@@ -135,14 +180,28 @@ def test_ci_builds_and_runs_sidecar_control_candidate_matrix() -> None:
         "Dockerfile.reaper",
     ):
         assert dockerfile in evidence_script
-    for tag in ("py313", "py314"):
-        assert evidence_script.count(f":{tag}") >= 3
-    assert '"Python 3.13.15"' in evidence_script
+    assert evidence_script.count(":py314") >= 3
+    assert ":py313" not in evidence_script
+    assert '"Python 3.13.15"' not in evidence_script
     assert '"Python 3.14.7"' in evidence_script
     assert "source-repodigests.tsv" in evidence_script
     assert f'readonly DOCKER_DIND="{DIND_IMAGE}"' in evidence_script
     assert 'capture_source docker-dind "${DOCKER_DIND}"' in evidence_script
-    assert evidence_script.count("src/booley/eda/provisioning/licensing") == 2
+    assert (
+        'readonly BOOKWORM_CANDIDATE="python:3.14.7-slim-bookworm@sha256:'
+        '9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f"' in evidence_script
+    )
+    assert (
+        'readonly ALPINE_CANDIDATE="python:3.14.7-alpine3.24@sha256:'
+        'c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"' in evidence_script
+    )
+    assert (
+        'readonly DOCKER_CLI="docker:29.7.2-cli@sha256:'
+        '3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"' in evidence_script
+    )
+    assert evidence_script.count("src/booley/eda/provisioning/licensing") == 1
+    assert archive_script.count(":py313") >= 3
+    assert '"Python 3.13.15"' in archive_script
     assert "BOOLEY_EGRESS_PROXY_IMAGE: booley-egress-proxy:py314" in workflow
     assert "BOOLEY_REAPER_IMAGE: booley-reaper:py314" in workflow
     assert "BOOLEY_FLEXNET_DOCKER_TEST" in workflow
@@ -170,6 +229,10 @@ def test_shipped_external_base_images_are_digest_pinned() -> None:
 def test_reaper_uses_pinned_runtime_stages_without_live_package_install() -> None:
     reaper = (_DOCKER_DIR / "Dockerfile.reaper").read_text(encoding="utf-8")
 
+    assert (
+        "FROM docker:29.7.2-cli@sha256:"
+        "3f4743208d2338c934d7b8bcfbe1bb54c0b2355c510ad5e0f31c0c4a54bd704e"
+    ) in reaper
     assert "apk add" not in reaper
     assert "COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker" in reaper
 
@@ -181,11 +244,11 @@ def test_sidecars_pin_python_3_14_7_without_changing_distributions() -> None:
 
     assert (
         "FROM python:3.14.7-slim-bookworm@sha256:"
-        "416f0db2a2b561945630cef9877a7ea0581b27449eb9fd9df42f03e1b74b5b63" in egress
+        "9ab8d9c8514b44f90cf0029dd42fdd7e9e211e639c8b995304cc04568dee900f" in egress
     )
     alpine = (
         "FROM python:3.14.7-alpine3.24@sha256:"
-        "05b2b8b732ecd268fee8727a369f936f022d1321b59befd13c30ede22769dcdc"
+        "c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc"
     )
     assert alpine in flexnet
     assert alpine in reaper
@@ -215,8 +278,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         assert f"${{{checksum_arg}}}" in riscv
 
     lock = (_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8")
-    assert '"@anthropic-ai/claude-code": "2.1.252"' in lock
-    assert '"@openai/codex": "0.151.0"' in lock
+    assert '"@anthropic-ai/claude-code": "2.1.258"' in lock
+    assert '"@openai/codex": "0.152.1"' in lock
     assert lock.count('"integrity": "sha512-') == 16
     assert "npm ci --prefix /opt/agent-clis" in dockerfile
 
@@ -225,9 +288,9 @@ def test_linux_agent_cli_native_artifacts_are_required_dependencies() -> None:
     package = json.loads((_DOCKER_DIR / "agent-clis-package.json").read_text(encoding="utf-8"))
     lock = json.loads((_DOCKER_DIR / "agent-clis-package-lock.json").read_text(encoding="utf-8"))
 
-    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.252"
+    assert package["dependencies"]["@anthropic-ai/claude-code-linux-x64"] == "2.1.258"
     assert package["dependencies"]["@openai/codex-linux-x64"] == (
-        "npm:@openai/codex@0.151.0-linux-x64"
+        "npm:@openai/codex@0.152.1-linux-x64"
     )
     assert "optional" not in lock["packages"]["node_modules/@anthropic-ai/claude-code-linux-x64"]
     assert "optional" not in lock["packages"]["node_modules/@openai/codex-linux-x64"]
@@ -365,6 +428,33 @@ def test_changed_stable_base_build_reuses_trusted_cache_without_publishing() -> 
     assert "cache-to:" not in base_build
 
 
+def test_shared_candidate_cache_has_only_the_main_push_writer() -> None:
+    test_workflow = yaml.safe_load(Path(".github/workflows/test.yml").read_text(encoding="utf-8"))
+    candidate_build = next(
+        step
+        for step in test_workflow["jobs"]["bwave-smoke"]["steps"]
+        if step.get("name") == "Build candidate from published stable base"
+    )
+
+    assert candidate_build["with"]["cache-from"] == "type=gha,scope=sandbox"
+    assert candidate_build["with"]["cache-to"] == (
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && "
+        "'type=gha,scope=sandbox,mode=max,ignore-error=true' || '' }}"
+    )
+
+    release_workflow = yaml.safe_load(
+        Path(".github/workflows/docker-publish.yml").read_text(encoding="utf-8")
+    )
+    release_build = next(
+        step
+        for step in release_workflow["jobs"]["build-and-push"]["steps"]
+        if step.get("id") == "build"
+    )
+
+    assert release_build["with"]["cache-from"] == "type=gha,scope=sandbox"
+    assert "cache-to" not in release_build["with"]
+
+
 def test_stacked_pr_builds_inherited_stable_base_locally() -> None:
     workflow = Path(".github/workflows/test.yml").read_text(encoding="utf-8")
     selection = workflow[
@@ -415,6 +505,9 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     assert workflow.index(contract_check) < workflow.index(initialize)
     assert workflow.index(initialize) < workflow.index(surface_smoke)
     assert '"${RUNNER_TEMP}/booley-ci-bin/code"' in workflow
+    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
+    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
+    assert "set -o pipefail" in workflow
     assert 'booley init --skip-credentials | tee "${init_log}"' in workflow
     assert 'grep -Fq "[!!]" "${init_log}"' in workflow
     assert 'booley doctor --deep --skip-agent-checks | tee "${doctor_log}"' in workflow
@@ -429,14 +522,15 @@ def test_release_smokes_public_picorv32_demo_with_ci_owned_ticket() -> None:
     contract_section = workflow[workflow.index(contract_check) : workflow.index(initialize)]
     assert "bash /booley-source/.github/scripts/verify_picorv32_demo.sh" in contract_section
     assert 'test "${before}" = "$(sha256sum "${ticket}")"' in workflow
+    assert '--mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work' in workflow
     assert "add-rv32-zbb-pcpi-co-processor" not in workflow
     assert "python -m booley.ticket_board parse-ticket" not in workflow
     assert (
         """      - name: Restore demo checkout ownership
         if: always()
         run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
+          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
+            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
           fi
 """
         in workflow
@@ -469,7 +563,9 @@ def test_release_reports_registry_and_sidecar_image_sizes_after_initialization()
     assert '--registry-image "riscv=${RISCV_IMAGE}"' in workflow
     assert '--local-image "proxy=booley-egress-proxy"' in workflow
     assert '--local-image "reaper=booley-reaper"' in workflow
-    assert 'cat "${RUNNER_TEMP}/booley-image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"' in workflow
+    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"' in workflow
+    assert '--evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"' in workflow
+    assert 'cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"' in workflow
     assert "name: booley-image-sizes-${{ steps.version.outputs.version }}" in workflow
 
 

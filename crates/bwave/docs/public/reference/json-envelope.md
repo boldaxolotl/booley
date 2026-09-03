@@ -9,7 +9,7 @@ commands; only the `data` field varies.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.10/crates/bwave/schema/bwave.json",
+  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.2.11/crates/bwave/schema/bwave.json",
   "command": "<subcommand>",
   "data":    { ... },
   "warnings": ["..."]
@@ -18,7 +18,7 @@ commands; only the `data` field varies.
 
 | Field | Type | Notes |
 |---|---|---|
-| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the release tag (currently `v0.2.10`). |
+| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the release tag (currently `v0.2.11`). |
 | `command` | string | Subcommand name. Currently one of `list`, `value`, `find`, `stats`. |
 | `data` | object | Per-command payload. See per-command docs for the shape. |
 | `warnings` | array of string | Diagnostics that text mode would emit to stderr as `# WARNING: ...` lines. Empty array on clean runs. |
@@ -160,15 +160,15 @@ Anything text mode would print to stderr as `# WARNING:
   degraded to ticks).
 - `--limit` capped the output (`truncated: true` in
   `findData`, plus a warning in `warnings`).
-- A virtual signal failed to evaluate (binary still
-  exits non-zero).
+- A selected `-s` pattern matched no stored or Virtual
+  Signal and was dropped.
 
 A clean run has `"warnings": []`.
 
 ## Schema versioning
 
 The `$schema` URL is pinned to the release tag. v0.2
-emits `.../v0.2.10/crates/bwave/schema/bwave.json`. Future releases
+emits `.../v0.2.11/crates/bwave/schema/bwave.json`. Future releases
 will bump the URL alongside any schema changes; older
 URLs will continue to resolve to their historical
 schema documents.

@@ -104,10 +104,9 @@ jobs:
             io.booley.build.origin=registry
             booley.build-fingerprint=${{ steps.version.outputs.payload_fingerprint }}
           cache-from: type=gha,scope=sandbox
-          # Same scope as bwave-smoke in test.yml, so tag builds reuse the
-          # per-PR cache. ignore-error: a failed cache upload must not fail
-          # a release build.
-          cache-to: type=gha,scope=sandbox,mode=max,ignore-error=true
+          # The shared scope has one writer: main pushes in test.yml. Release
+          # builds reuse it without replacing it with tag- or dispatch-specific
+          # state.
 
   # RISC-V variant: base sandbox + RISC-V toolchain/Spike/specs (Dockerfile.riscv).
   # It is `FROM booley-sandbox`; the build-context mapping below resolves that
@@ -275,6 +274,12 @@ jobs:
       - name: Restore demo checkout ownership for initialization
         run: sudo chown -R "$(id -u):$(id -g)" demo
 
+      # `booley init` rejects Booley's own Source Checkout and every directory
+      # nested beneath it. Preserve the reviewed checkout above, then stage the
+      # user-facing quick-start exercise at the external location a user has.
+      - name: Stage demo outside Booley source checkout
+        run: cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"
+
       - name: Bootstrap reusable host resources as documented
         run: booley bootstrap
 
@@ -282,8 +287,9 @@ jobs:
       # Credentials are deliberately absent: this validation never contacts an
       # agent provider, but still records the demo's configured agent policy.
       - name: Initialize demo cleanly as documented
-        working-directory: demo
+        working-directory: ${{ runner.temp }}/booley-picorv32-demo
         run: |
+          set -o pipefail
           init_log="$(mktemp)"
           booley init --skip-credentials | tee "${init_log}"
           if grep -Fq "[!!]" "${init_log}" || grep -Fq "[XX]" "${init_log}"; then
@@ -291,25 +297,48 @@ jobs:
             exit 1
           fi
 
+      # This must run on the host: in-container Doctor cannot launch the
+      # short-lived issued-image probe and therefore skips this exact seam.
+      - name: Run host Doctor issued-image probe
+        working-directory: ${{ runner.temp }}/booley-picorv32-demo
+        run: |
+          set -o pipefail
+          doctor_log="$(mktemp)"
+          booley doctor --skip-agent-checks | tee "${doctor_log}"
+          grep -Eq 'MCP server exposes [0-9]+ MCP tool\(s\)' "${doctor_log}"
+          grep -Fq "0 failed." "${doctor_log}"
+
       - name: Measure release image storage contract
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
           RISCV_IMAGE: ${{ env.REGISTRY }}/${{ env.RISCV_IMAGE_NAME }}@${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
-          python .github/scripts/image_size_report.py \
+          mkdir -p "${RUNNER_TEMP}/booley-image-evidence"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image "${BASE_IMAGE}" \
+            --flavor standard \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/booley-image-evidence/standard-contract.json"
+          PYTHONPATH=src python .github/scripts/image_contract.py \
+            --image "${RISCV_IMAGE}" \
+            --base-image "${BASE_IMAGE}" \
+            --flavor riscv \
+            --contract .github/contracts/session-runtime.toml \
+            --evidence "${RUNNER_TEMP}/booley-image-evidence/riscv-contract.json"
+          PYTHONPATH=src python .github/scripts/image_size_report.py \
             --registry-image "sandbox=${BASE_IMAGE}" \
             --registry-image "riscv=${RISCV_IMAGE}" \
             --local-image "proxy=booley-egress-proxy" \
             --local-image "reaper=booley-reaper" \
-            --json "${RUNNER_TEMP}/booley-image-sizes.json" \
-            --markdown "${RUNNER_TEMP}/booley-image-sizes.md"
-          cat "${RUNNER_TEMP}/booley-image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
+            --json "${RUNNER_TEMP}/booley-image-evidence/image-sizes.json" \
+            --markdown "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md"
+          cat "${RUNNER_TEMP}/booley-image-evidence/image-sizes.md" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain release image storage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: booley-image-sizes-${{ steps.version.outputs.version }}
-          path: ${{ runner.temp }}/booley-image-sizes.json
+          path: ${{ runner.temp }}/booley-image-evidence/
           if-no-files-found: error
 
       # actions/checkout files belong to the runner user (uid 1001), while the
@@ -317,7 +346,7 @@ jobs:
       # writes generated firmware and Flow reports, so make its checkout match
       # the same ownership a normal Linux user's bind mount has.
       - name: Prepare demo checkout ownership
-        run: sudo chown -R 1000:1000 demo
+        run: sudo chown -R 1000:1000 "${RUNNER_TEMP}/booley-picorv32-demo"
 
       - name: Run demo Doctor and ticket-authoring surface smoke
         env:
@@ -327,8 +356,8 @@ jobs:
         run: |
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
-            --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo",dst=/work \
+            --mount type=bind,src="${{ runner.temp }}/booley-picorv32-demo/.booley_project",dst=/booley-project \
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             -w /work \
             -e BOOLEY_PROJECT_DIR=/booley-project \
@@ -365,8 +394,8 @@ jobs:
       - name: Restore demo checkout ownership
         if: always()
         run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
+          if test -e "${RUNNER_TEMP}/booley-picorv32-demo"; then
+            sudo chown -R "$(id -u):$(id -g)" "${RUNNER_TEMP}/booley-picorv32-demo"
           fi
 
   # Retag the already-tested manifests by digest. No Dockerfile or source

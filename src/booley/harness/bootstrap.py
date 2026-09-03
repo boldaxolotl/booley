@@ -272,9 +272,17 @@ def _skill_report_error(report: SkillLinkReport) -> str:
 
 def _reconcile_nangate(intent: Intent) -> BootstrapFinding:
     root = nangate_pdk.cache_root()
+    secured = False
+    if intent is not Intent.CHECK:
+        try:
+            secured = nangate_pdk.secure_config_dir_for_cache(root)
+        except nangate_pdk.NangatePdkError as exc:
+            return BootstrapFinding("nangate45", BootstrapState.ERROR, str(exc))
     issues = nangate_pdk.validation_errors(root)
     if not issues:
-        return BootstrapFinding("nangate45", BootstrapState.CURRENT, f"verified cache at {root}")
+        state = BootstrapState.CHANGED if secured else BootstrapState.CURRENT
+        action = "secured config root and verified" if secured else "verified"
+        return BootstrapFinding("nangate45", state, f"{action} cache at {root}")
     license_notice = (
         "Nangate45 is an optional upstream download for non-commercial use; "
         "comparison with other libraries is restricted. "

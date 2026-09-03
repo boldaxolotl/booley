@@ -24,6 +24,7 @@ from booley.flows.sim.flow import (
     TestResult as SimTestResult,
 )
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
+from booley.targets.target import _HANDLE_FACTORY_KEY, TargetHandle
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REFERENCE = REPO_ROOT / "docs" / "user" / "FLOW_REFERENCE.md"
@@ -78,6 +79,20 @@ def _configured_flow(
     flow.parse_args(
         ["--target", target, "--work-dir", str(tmp_path), "--report-dir", str(report_dir)]
     )
+    handle = TargetHandle(
+        identity=f"::docs:0#{target}",
+        selector=target,
+        name=target,
+        vlnv="::docs:0",
+        core_file=tmp_path / "docs.core",
+        flow=None,
+        eda_tool=None,
+        drivable_by=(flow.name,),
+        project_root=tmp_path.resolve(),
+        doctor_private=False,
+        _factory_key=_HANDLE_FACTORY_KEY,
+    )
+    flow._target_handles = {target: handle}  # type: ignore[attr-defined]
     return flow, report_dir
 
 
@@ -141,6 +156,7 @@ def test_sim_report_fields_stay_documented(tmp_path: Path) -> None:
     sim._write_target_report(
         TargetResult(
             target="sim_demo",
+            target_identity="vendor:library:demo:1.0#sim_demo",
             tb_top="tb",
             eda_tool="verilator",
             passed=True,

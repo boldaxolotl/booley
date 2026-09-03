@@ -124,10 +124,23 @@ def _stub_fusesoc_resolution(tmp_path: Path):
     Without this, ``_build_synth_cmd`` would shell out to a real
     ``fusesoc run --setup`` against a project with no ``.core`` and fail.
     """
+    (tmp_path / "golden.core").write_text(
+        """CAPI=2:
+name: ::syn_demo:0
+targets:
+  lite:
+    flow: generic
+    flow_options: {tool: yosys}
+    toplevel: dut
+""",
+        encoding="utf-8",
+    )
     with patch.object(
         fusesoc_registry,
-        "resolve_target",
-        side_effect=lambda target="lite", **k: _fake_synth_resolved(tmp_path, config=target),
+        "resolve_target_handle",
+        side_effect=lambda handle, **_kwargs: _fake_synth_resolved(
+            tmp_path, config=handle.selector
+        ),
     ):
         yield
 

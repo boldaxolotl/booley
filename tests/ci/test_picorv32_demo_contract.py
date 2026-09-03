@@ -8,8 +8,10 @@ import sys
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+import yaml
 
 from booley.criteria.templates import CriteriaTemplate
 from booley.dev_support import demo_contract as demo_contract_module
@@ -32,6 +34,45 @@ PUBLISH_WORKFLOW = Path(".github/workflows/docker-publish.yml")
 EXPORT_SCRIPT = Path(".github/scripts/export_demo_contract.py")
 INSTALL_SCRIPT = Path(".github/scripts/install_demo_ticket.py")
 VERIFY_SCRIPT = Path(".github/scripts/verify_picorv32_demo.sh")
+
+_PULL_REQUEST_PATHS = {
+    ".github/actions/prepare-picorv32-demo/**",
+    ".github/contracts/picorv32-demo.toml",
+    ".github/contracts/picorv32-demo-ticket.md",
+    ".github/scripts/export_demo_contract.py",
+    ".github/scripts/install_demo_ticket.py",
+    ".github/scripts/picorv32_demo_contract.py",
+    ".github/scripts/verify_picorv32_demo.sh",
+    ".github/workflows/picorv32-demo.yml",
+    "pyproject.toml",
+    "src/booley/**",
+}
+
+
+def _workflow_events() -> dict[str, Any]:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    # PyYAML's YAML 1.1 resolver interprets the unquoted Actions key ``on`` as
+    # boolean true. GitHub correctly treats the source key as the string "on".
+    return workflow[True]
+
+
+def _workflow_commands(path: Path) -> str:
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return "\n".join(
+        str(step.get("run", ""))
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+    )
+
+
+def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
+    events = _workflow_events()
+
+    assert set(events["pull_request"]["paths"]) == _PULL_REQUEST_PATHS
+    assert events["push"] == {"branches": ["main"]}
+    assert events["merge_group"] is None
+    assert events["schedule"] == [{"cron": "23 3 * * *"}]
+    assert events["workflow_dispatch"] is None
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
@@ -108,10 +149,7 @@ required_targets = "sim"
 def test_shared_action_reads_repository_and_revision_pins_from_contract() -> None:
     contract = tomllib.loads(CONTRACT.read_text(encoding="utf-8"))
     action = PREPARE_ACTION.read_text(encoding="utf-8")
-    workflows = (
-        WORKFLOW.read_text(encoding="utf-8"),
-        PUBLISH_WORKFLOW.read_text(encoding="utf-8"),
-    )
+    workflow_paths = (WORKFLOW, PUBLISH_WORKFLOW)
 
     for key in (
         "upstream_repository",
@@ -140,17 +178,21 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
 
     action_reference = "uses: ./.github/actions/prepare-picorv32-demo"
     verifier = f"bash /booley-source/{VERIFY_SCRIPT.as_posix()}"
-    for workflow in workflows:
+    for workflow_path in workflow_paths:
+        workflow = workflow_path.read_text(encoding="utf-8")
         assert action_reference in workflow
         assert verifier in workflow
         assert "Check out reviewed PicoRV32 revision" not in workflow
         assert "Install CI-owned Ticket fixture" not in workflow
-        assert "picorv32_demo_contract.py" not in workflow
+        assert "picorv32_demo_contract.py" not in _workflow_commands(workflow_path)
 
 
 def test_release_validation_skips_credentials_and_cannot_promote() -> None:
     workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
+    assert 'cp -a demo "${RUNNER_TEMP}/booley-picorv32-demo"' in workflow
+    assert "working-directory: ${{ runner.temp }}/booley-picorv32-demo" in workflow
+    assert "set -o pipefail" in workflow
     assert "booley init --skip-credentials | tee" in workflow
     assert "OPENAI_API_KEY: ci-presence-check-only" not in workflow
     assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow

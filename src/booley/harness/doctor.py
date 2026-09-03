@@ -113,7 +113,7 @@ from booley.runtime.project_dir import (
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
 from booley.targets.flow_names import config_section
-from booley.targets.target import inspect_target
+from booley.targets.target import inspect_target_selector as inspect_target
 from booley.ticket_board.lifecycle import REQUIRED_BOARD_DIRS
 
 _DOCTOR_TMP = Path("tmp") / "doctor"
@@ -198,25 +198,6 @@ _ADVISORY_INTERACTIVE_MCP_TOOLS = frozenset(
     }
 )
 _MCP_PROBE_TIMEOUT_S = 60
-_MCP_PROBE_PY = """
-import json
-import os
-from booley.mcp import server as mcp_server
-
-mcp_server._maybe_configure_interactive_logs_dir()
-mcp_tools, errors = mcp_server._discover_booley_mcp_tools()
-mcp_server._build_mcp_tool_list(mcp_tools)
-names = {mcp_tool["name"] for mcp_tool in mcp_tools}
-names.update(mcp_tool["name"] for mcp_tool in mcp_server._bwave_mcp_tools_for_mode())
-logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-logs_dir_ok = "/.booley_project/.interactive_logs/" in logs_dir.replace("\\\\", "/")
-print(json.dumps({
-    "tools": sorted(names),
-    "errors": errors,
-    "logs_dir": logs_dir,
-    "logs_dir_ok": logs_dir_ok,
-}))
-""".strip()
 
 Check = Callable[[str], None]
 Fail = Callable[[str, str], None]
@@ -793,10 +774,8 @@ def _run_deep_phase(
         project,
         docker_exe,
         reporter.pass_,
-        reporter.warn_,
         reporter.skip_,
         reporter.fail_,
-        _note=reporter.note_,
     )
 
 
@@ -2726,7 +2705,7 @@ def _check_devcontainer_spec(  # noqa: PLR0911,PLR0912 — ordered drift precond
     _pass("devcontainer.json present and structurally current")
 
 
-def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-closed audit gates
+def _check_issued_session_runtime(  # noqa: PLR0911,PLR0912,PLR0915 - fail-closed audit gates
     project: ProjectAudit,
     docker_exe: str | None,
     _pass: Check,
@@ -2800,6 +2779,8 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-close
                 f"label={identity}",
                 "--filter",
                 f"label={dc.INTERACTIVE_ROLE_LABEL}",
+                "--format",
+                "{{.Names}}",
             ],
             capture_output=True,
             text=True,
@@ -2820,10 +2801,16 @@ def _check_issued_session_runtime(  # noqa: PLR0911,PLR0915 - ordered fail-close
             workspace=project.project_root,
         )
     ]
-    if result.returncode != 0 or drifted:
+    if result.returncode != 0:
+        _fail("could not list issued Session Runtime resources", "start Docker")
+    elif drifted:
         _fail(
             "live Session Runtime state differs from current host issuance",
-            "run `booley session down`, then `booley session up --rebuild`",
+            session_runtime.issued_runtime_drift_fix(
+                project.project_root,
+                issuance,
+                drifted,
+            ),
         )
     elif containers:
         _pass("live Session Runtime state matches the current host issuance")
@@ -3684,8 +3671,8 @@ def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> li
         "BOOLEY_MCP_MODE=interactive",
         image,
         "python",
-        "-c",
-        _MCP_PROBE_PY,
+        "-m",
+        "booley.mcp.probe",
     ]
 
 
@@ -5821,47 +5808,25 @@ def _report_core_resolve(
     name: str,
     ok: bool,
     err: str,
-    selected: bool,
     _pass: Check,
-    _warn: Check,
     _fail: Fail,
-    *,
-    _note: Check | None = None,
 ) -> None:
-    """Grade one Target resolution by whether Doctor explicitly selected it.
-
-    A vendored monorepo carries Targets Booley was never pointed at — ibex has
-    208 cores, whose formal/vendor Targets need EDA tools this project does not
-    configure. Failing the setup gate on those makes a green doctor
-    unreachable for reasons the port cannot fix, and contradicts plain doctor,
-    which already calls the same Targets harmless advisories. Only the
-    Doctor Targets are a gate; their dependency closure is covered
-    transitively, since a broken dependency fails the Target that needs it.
-    """
+    """Grade one Doctor-selected Target resolution."""
     if ok:
         _pass(f".core Target '{name}' resolves")
         return
-    if selected:
-        _fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
-        _print_text_excerpt(err)
-        return
-    (_note or _pass)(
-        f".core Target '{name}' fails to resolve, but Doctor does not "
-        "select it - advisory only (unselected vendored/upstream Target)"
-    )
+    _fail(f".core Target '{name}' fails to resolve", "fix the .core / depends graph")
+    _print_text_excerpt(err)
 
 
 def _run_core_resolve_checks(
     project: ProjectAudit,
     docker_exe: str | None,
     _pass: Check,
-    _warn: Check,
     _skip: Check,
     _fail: Fail,
-    *,
-    _note: Check | None = None,
 ) -> None:
-    """Deep: resolve each ``.core`` Target through ``fusesoc`` (subprocess).
+    """Deep: resolve each Doctor-selected Target through ``fusesoc``.
 
     Resolution runs Edalize's ``configure()``, which needs the ``fusesoc``
     console script + toolchain — that environment IS the Sandbox image, so we
@@ -5869,19 +5834,25 @@ def _run_core_resolve_checks(
     image is unavailable do we fall back to a host ``fusesoc`` if one happens to
     be installed; failing that, the check skips rather than failing.
 
-    Only Targets selected by ``flow_options.booley.doctor`` gate the run; see
-    ``_report_core_resolve``.
+    Transitive dependencies remain covered because FuseSoC resolves the full
+    dependency closure of every selected Target. Unselected vendored Targets
+    are not configured merely to produce advisory notes.
     """
-    # Enumerating Targets is a pure ``.core`` YAML read (no fusesoc needed) and
-    # cheap, so do it host-side to decide whether there is anything to resolve.
-    try:
-        refs = fusesoc_registry.enumerate_targets(project.project_root)
-    except fusesoc_registry.FuseSocError:
-        return  # the structural audit already reported the enumeration failure
+    matrix = _project_target_matrix(project)
+    refs: dict[str, fusesoc_registry.TargetRef] = {}
+    for selector in matrix.seed_targets:
+        try:
+            refs[selector] = fusesoc_registry.resolve_ref(project.project_root, selector)
+        except fusesoc_registry.FuseSocError as exc:
+            _report_core_resolve(
+                selector,
+                False,
+                str(exc),
+                _pass,
+                _fail,
+            )
     if not refs:
         return
-
-    is_configured = _project_target_matrix(project).is_selected
 
     image = _sandbox_image(project)
     if docker_exe and _docker_image_exists_by_name(image):
@@ -5890,11 +5861,8 @@ def _run_core_resolve_checks(
             docker_exe,
             image,
             refs,
-            is_configured,
             _pass,
-            _warn,
             _fail,
-            _note=_note,
         )
         return
 
@@ -5904,63 +5872,75 @@ def _run_core_resolve_checks(
             "fusesoc not on host PATH (build the image with 'booley init')"
         )
         return
-    for name, ref in sorted(refs.items()):
-        build_root = project.project_root / ".booley_project" / ".runtime" / "doctor" / name
+    for selector, ref in sorted(refs.items()):
+        build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
+        build_root = project.project_root / ".booley_project" / ".runtime" / "doctor" / build_key
         try:
             fusesoc_registry.resolve_target(
-                name,
+                ref.name,
                 project_root=project.project_root,
                 build_root=build_root,
                 vlnv=ref.vlnv,
             )
-            _report_core_resolve(name, True, "", True, _pass, _warn, _fail, _note=_note)
+            _report_core_resolve(selector, True, "", _pass, _fail)
         except fusesoc_registry.FuseSocError as exc:
             _report_core_resolve(
-                name,
+                selector,
                 False,
                 str(exc),
-                is_configured(name, ref.vlnv),
                 _pass,
-                _warn,
                 _fail,
-                _note=_note,
             )
 
 
-# Container-side resolver: enumerate + resolve every Target in one docker run and
-# emit a machine-readable JSON verdict line the host parses back into checks.
+# Container-side resolver: resolve the host-selected Targets in one docker run
+# and emit a machine-readable JSON verdict line the host parses back into checks.
 # Kept as a module constant so the quoting is auditable in one place.
 _CORE_RESOLVE_SNIPPET = (
-    "import json\n"
+    "import json, sys\n"
     "from booley.fusesoc import fusesoc_registry as fr\n"
     "root = '/work'\n"
-    "refs = fr.enumerate_targets(root)\n"
+    "targets = json.loads(sys.argv[1])\n"
     "out = []\n"
-    "for name, ref in sorted(refs.items()):\n"
-    "    br = '/work/.booley_project/.runtime/doctor/' + name\n"
+    "for target in targets:\n"
+    "    selector = target['selector']\n"
+    "    name = target['name']\n"
+    "    br = '/work/.booley_project/.runtime/doctor/' + target['build_key']\n"
     "    try:\n"
-    "        fr.resolve_target(name, project_root=root, build_root=br, vlnv=ref.vlnv)\n"
-    "        out.append({'name': name, 'ok': True})\n"
+    "        fr.resolve_target(name, project_root=root, build_root=br, vlnv=target['vlnv'])\n"
+    "        out.append({'selector': selector, 'ok': True})\n"
     "    except fr.FuseSocError as exc:\n"
-    "        out.append({'name': name, 'ok': False, 'err': str(exc)})\n"
+    "        out.append({'selector': selector, 'ok': False, 'err': str(exc)})\n"
     "print('[[CORE_RESOLVE_JSON]]' + json.dumps(out))\n"
 )
+
+
+def _core_resolve_payload(
+    refs: Mapping[str, fusesoc_registry.TargetRef],
+) -> list[dict[str, str]]:
+    """Serialize the immutable selected Target set for the Session Runtime."""
+    return [
+        {
+            "selector": selector,
+            "name": ref.name,
+            "vlnv": ref.vlnv,
+            "build_key": hashlib.sha256(selector.encode()).hexdigest()[:16],
+        }
+        for selector, ref in sorted(refs.items())
+    ]
 
 
 def _run_core_resolve_in_docker(
     project: ProjectAudit,
     docker_exe: str,
     image: str,
-    refs: dict,
-    is_configured: Callable[[str, str], bool],
+    refs: Mapping[str, fusesoc_registry.TargetRef],
     _pass: Check,
-    _warn: Check,
     _fail: Fail,
-    *,
-    _note: Check | None = None,
 ) -> None:
-    """Resolve every ``.core`` Target inside the Sandbox image, one docker run."""
-    inner = ["python3", "-c", _CORE_RESOLVE_SNIPPET]
+    """Resolve selected ``.core`` Targets inside the Sandbox image."""
+    payload = json.dumps(_core_resolve_payload(refs), separators=(",", ":"))
+    inner = ["python3", "-c", _CORE_RESOLVE_SNIPPET, payload]
     cmd = _docker_wrap(docker_exe, image, project.project_root, inner)
     try:
         proc = subprocess.run(
@@ -6005,17 +5985,13 @@ def _run_core_resolve_in_docker(
         )
         return
     for entry in json.loads(line[len(marker) :]):
-        name = entry["name"]
-        ref = refs.get(name)
+        selector = entry["selector"]
         _report_core_resolve(
-            name,
+            selector,
             bool(entry.get("ok")),
             str(entry.get("err", "")),
-            is_configured(name, getattr(ref, "vlnv", "")),
             _pass,
-            _warn,
             _fail,
-            _note=_note,
         )
 
 

@@ -29,7 +29,7 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import flow_can_drive, inspect_target, select_target
+from booley.targets.target import flow_can_drive, inspect_target_selector, select_target
 
 WORKSPACE_SCHEMA_VERSION = 3
 SCHEMA_VERSION = 4
@@ -508,7 +508,7 @@ def _semantic_surface(project_root: Path | str, targets: Iterable[str]) -> dict[
     projected: list[dict[str, Any]] = []
     auxiliary: set[Path] = set()
     for token in _inspection_tokens(root, targets):
-        inspection = inspect_target(root, token)
+        inspection = inspect_target_selector(root, token)
         inputs = [
             {
                 "path": item.path,
@@ -588,9 +588,12 @@ def contract_control_paths(project_root: Path | str) -> tuple[str, ...]:
 
 
 def _criterion_flow(key: str) -> str | None:
-    for prefix in sorted(_FLOW_BY_CRITERION, key=len, reverse=True):
+    from booley.criteria.templates import TARGET_BOUND_CRITERION_FLOWS
+
+    flows = {**_FLOW_BY_CRITERION, **TARGET_BOUND_CRITERION_FLOWS}
+    for prefix in sorted(flows, key=len, reverse=True):
         if key == prefix or key.startswith(prefix + "_"):
-            return _FLOW_BY_CRITERION[prefix]
+            return flows[prefix]
     return None
 
 
@@ -604,6 +607,9 @@ def _targets_from_value(key: str, value: Any) -> list[tuple[str, str, bool]]:
     if isinstance(value, Mapping):
         from booley.criteria.templates import parse_target_pair
 
+        target = value.get("target")
+        if isinstance(target, str):
+            return [(target, target, _relative_params(value))]
         targets = value.get("targets")
         if isinstance(targets, list):
             pairs: list[tuple[str, str, bool]] = []
@@ -747,7 +753,7 @@ def _missing_target_sources(
         )
         selected = (*sources.rtl_source_files, *sources.tb_files)
     else:
-        selected = tuple(item.path for item in inspect_target(root, target).inputs)
+        selected = tuple(item.path for item in inspect_target_selector(root, target).inputs)
     missing: list[str] = []
     for path in selected:
         candidate = Path(path)

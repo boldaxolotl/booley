@@ -311,7 +311,7 @@ def _patch_environment(
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"{runtime_booley_version}\n", stderr=""
             )
-        if "_discover_booley_mcp_tools" in " ".join(str(part) for part in cmd):
+        if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:
             payload = mcp_payload or {
                 "tools": mcp_tools
                 or [
@@ -330,9 +330,10 @@ def _patch_environment(
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         if "CORE_RESOLVE_JSON" in " ".join(str(part) for part in cmd):
             # The deep .core-resolvability snippet (docker-wrapped): report the
-            # fixture's Target as resolvable via the marker line it scrapes.
+            # selected Targets as resolvable via the marker line it scrapes.
+            selected = json.loads(cmd[-1])
             verdicts = json.dumps(
-                [{"name": name, "ok": True} for name in ("sim_fast", "lint_fast", "synth_fast")]
+                [{"selector": item["selector"], "ok": True} for item in selected]
             )
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=f"[[CORE_RESOLVE_JSON]]{verdicts}\n", stderr=""
@@ -583,6 +584,16 @@ def test_doctor_fails_when_mcp_probe_misses_required_tool(
     output = capsys.readouterr().out
     assert rc == 1
     assert "MCP missing required endpoint(s): synth" in output
+
+
+def test_doctor_runs_supported_mcp_probe_entrypoint(tmp_path: Path) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+
+    command = doctor._mcp_probe_command(project, "docker", "booley:test")
+
+    assert command[-3:] == ["python", "-m", "booley.mcp.probe"]
+    assert "-c" not in command
 
 
 def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
@@ -960,15 +971,173 @@ def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
         project,
         "doc" + "ker",
         "img",
-        {"sim": object()},
-        lambda name, vlnv: True,
+        {
+            "sim": fusesoc_registry.TargetRef(
+                name="sim",
+                vlnv="::sim:0",
+                core_file=tmp_path / "sim.core",
+            )
+        },
         rec.p,
-        rec.w,
         rec.f,
     )
 
     assert rec.kinds() == {"fail"}
     assert "executed OUTSIDE it" in rec.fails()[0]
+
+
+def test_deep_core_resolution_only_runs_doctor_selected_targets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    targets = [
+        "  sim_selected:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        "  fpga_selected:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: vivado, booley: {doctor: [fpga]}}\n",
+    ]
+    targets.extend(
+        f"  vendored_{index:03d}:\n    flow: sim\n    flow_options: {{tool: verilator}}\n"
+        for index in range(200)
+    )
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: ::design:0\ntargets:\n" + "".join(targets),
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
+    monkeypatch.setattr(
+        doctor.fusesoc_registry,
+        "resolve_target",
+        lambda name, **kwargs: calls.append((name, kwargs.get("vlnv"))),
+    )
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(
+        project,
+        None,
+        rec.p,
+        rec.s,
+        rec.f,
+    )
+
+    assert calls == [("fpga_selected", "::design:0"), ("sim_selected", "::design:0")]
+    assert rec.kinds() == {"pass"}
+    assert len(rec.events) == 2
+
+
+def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "first.core").write_text(
+        "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "second.core").write_text(
+        "CAPI=2:\nname: acme:ip:second:1\ntargets:\n"
+        "  smoke:\n"
+        "    flow: generic\n"
+        "    flow_options: {tool: yosys, booley: {doctor: [synth]}}\n"
+        "  unused:\n"
+        "    flow: sim\n"
+        "    flow_options: {tool: verilator}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    seen: list[dict[str, str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        payload = json.loads(cmd[-1]) if len(cmd) == 4 else []
+        seen.extend(payload)
+        verdict = [{"selector": item["selector"], "ok": True} for item in payload]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=f"[[CORE_RESOLVE_JSON]]{json.dumps(verdict)}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: True)
+    monkeypatch.setattr(doctor, "_docker_wrap", lambda _exe, _image, _root, inner: inner)
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, "docker", rec.p, rec.s, rec.f)
+
+    assert [(item["selector"], item["name"], item["vlnv"]) for item in seen] == [
+        ("first#smoke", "smoke", "acme:ip:first:1"),
+        ("second#smoke", "smoke", "acme:ip:second:1"),
+    ]
+    assert rec.kinds() == {"pass"}
+
+
+def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: acme:ip:top:1\nfilesets:\n"
+        "  rtl: {depend: [acme:ip:missing]}\n"
+        "targets:\n"
+        "  sim_top:\n"
+        "    flow: sim\n"
+        "    filesets: [rtl]\n"
+        "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
+        encoding="utf-8",
+    )
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
+
+    def fail_resolution(name, **kwargs):
+        assert (name, kwargs["vlnv"]) == ("sim_top", "acme:ip:top:1")
+        raise fusesoc_registry.TargetResolutionError("missing dependency acme:ip:missing")
+
+    monkeypatch.setattr(doctor.fusesoc_registry, "resolve_target", fail_resolution)
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
+
+    assert rec.kinds() == {"fail"}
+    assert "sim_top" in rec.fails()[0]
+
+
+def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    matrix = MagicMock(seed_targets=("removed_target",))
+    monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
+    monkeypatch.setattr(
+        doctor.fusesoc_registry,
+        "resolve_ref",
+        lambda _root, _selector: (_ for _ in ()).throw(
+            fusesoc_registry.UnknownTargetError("Target disappeared")
+        ),
+    )
+    rec = _Rec()
+
+    doctor._run_core_resolve_checks(project, None, rec.p, rec.s, rec.f)
+
+    assert rec.kinds() == {"fail"}
+    assert "removed_target" in rec.fails()[0]
 
 
 def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
@@ -2065,6 +2234,7 @@ class _Rec:
 
     def __init__(self) -> None:
         self.events: list[tuple[str, str]] = []
+        self.fix_hints: list[str] = []
 
     def p(self, m: str) -> None:
         self.events.append(("pass", m))
@@ -2080,6 +2250,8 @@ class _Rec:
 
     def f(self, m: str, fix: str = "") -> None:
         self.events.append(("fail", m))
+        if fix:
+            self.fix_hints.append(fix)
 
     def fails(self) -> list[str]:
         return [m for lvl, m in self.events if lvl == "fail"]
@@ -2312,6 +2484,54 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
     doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
 
     assert any("state differs from current host issuance" in message for message in rec.fails())
+
+
+def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from booley.eda.provisioning import runtime_spec
+
+    project_dir = tmp_path / ".booley_project"
+    project_dir.mkdir()
+    issuance, spec, labels, state = _issued_runtime_state(tmp_path)
+    state["Image"] = "sha256:" + "d" * 64
+    labels.update(
+        {
+            "devcontainer.local_folder": str(tmp_path),
+            "devcontainer.config_file": str(tmp_path / ".devcontainer" / "devcontainer.json"),
+        }
+    )
+    state["Config"]["Labels"] = labels
+    state["State"] = {"Running": True}
+    spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
+    spec_path.parent.mkdir()
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
+    calls: list[list[str]] = []
+    probe = _runtime_probe_subprocess("runtime-1\n")
+
+    def record_probe(argv, **kwargs):
+        calls.append(argv)
+        return probe(argv, **kwargs)
+
+    monkeypatch.setattr(doctor.subprocess, "run", record_probe)
+
+    def inspect(argv):
+        if argv[-1] == "{{json .Config.Labels}}":
+            return json.dumps(labels)
+        return json.dumps([state])
+
+    monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
+    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    rec = _Rec()
+
+    doctor._check_issued_session_runtime(project, "docker", rec.p, rec.s, rec.f)
+
+    assert any("stop" in fix and "runtime-1" in fix for fix in rec.fix_hints)
+    inventory = next(argv for argv in calls if argv[1:3] == ["ps", "-aq"])
+    assert inventory[-2:] == ["--format", "{{.Names}}"]
 
 
 def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:

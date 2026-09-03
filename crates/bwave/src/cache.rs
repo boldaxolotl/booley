@@ -10,20 +10,6 @@
 use std::collections::HashMap;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Legacy: set by `build_virtuals` when a `--virtual` def fails to parse or
-/// resolve. Kept for source compatibility with `main.rs`, but `build_virtuals`
-/// now `exit(2)`s on the first bad def so this flag is never observed by the
-/// outer-process-exit check at the bottom of main(). The exit-on-error path
-/// is the correct behaviour: a stale virtual definition used to silently
-/// fall through to whatever real signal happened to glob-match.
-static VIRTUAL_DEF_ERROR: AtomicBool = AtomicBool::new(false);
-
-/// True if any `--virtual` def was rejected during this process.
-pub fn virtual_def_error_seen() -> bool {
-    VIRTUAL_DEF_ERROR.load(Ordering::SeqCst)
-}
 
 use serde::Serialize;
 
@@ -307,6 +293,14 @@ impl ColumnCache {
     /// matched" instead of "bad pattern" — and erased the exit-code signal
     /// for scripts and CI.
     pub fn match_signals(&self, patterns: &[String]) -> Vec<usize> {
+        self.match_signals_with_names(patterns, &[]).0
+    }
+
+    fn match_signals_with_names(
+        &self,
+        patterns: &[String],
+        extra_names: &[String],
+    ) -> (Vec<usize>, Vec<usize>) {
         let matchers = match compile_patterns(patterns) {
             Ok(m) => m,
             Err(e) => {
@@ -339,8 +333,25 @@ impl ColumnCache {
                 }
             }
         }
-        report_unmatched_patterns(patterns, &pattern_hit, results.is_empty());
-        results
+        let mut extra_results = Vec::new();
+        for (i, name) in extra_names.iter().enumerate() {
+            let mut hit = false;
+            for (pi, matcher) in matchers.iter().enumerate() {
+                if match_signal(name, std::slice::from_ref(matcher)) {
+                    pattern_hit[pi] = true;
+                    hit = true;
+                }
+            }
+            if hit {
+                extra_results.push(i);
+            }
+        }
+        report_unmatched_patterns(
+            patterns,
+            &pattern_hit,
+            results.is_empty() && extra_results.is_empty(),
+        );
+        (results, extra_results)
     }
 }
 
@@ -471,8 +482,8 @@ fn array_base_name(pattern: &str) -> &str {
 // -- Virtual signal integration ------------------------------------------------
 
 use crate::virtual_signal::{
-    build_virtual_transitions, parse_virtual_def, resolve_virtual, ResolvedAtom, ResolvedExpr,
-    ResolvedRhs,
+    build_virtual_transitions, evaluate_virtual_values, resolve_virtual_definitions,
+    ResolvedVirtual, VirtualValue,
 };
 
 /// A virtual signal entry, with pre-built transitions.
@@ -481,54 +492,21 @@ pub struct VirtualEntry {
     pub transitions: Vec<(u64, String)>,
 }
 
-fn collect_resolved_rhs_signal_indices(
-    rhs: &ResolvedRhs,
-    out: &mut std::collections::HashSet<usize>,
-) {
-    if let ResolvedRhs::Signal(idx, _, _) = rhs {
-        out.insert(*idx);
-    }
-}
-
-fn collect_resolved_expr_signal_indices(
-    expr: &ResolvedExpr,
-    out: &mut std::collections::HashSet<usize>,
-) {
-    match expr {
-        ResolvedExpr::Atom(atom) => match atom {
-            ResolvedAtom::NonZero(idx, _, _) => {
-                out.insert(*idx);
-            }
-            ResolvedAtom::Equal(idx, _, _, rhs)
-            | ResolvedAtom::NotEqual(idx, _, _, rhs)
-            | ResolvedAtom::Gt(idx, _, _, rhs)
-            | ResolvedAtom::Gte(idx, _, _, rhs)
-            | ResolvedAtom::Lt(idx, _, _, rhs)
-            | ResolvedAtom::Lte(idx, _, _, rhs) => {
-                out.insert(*idx);
-                collect_resolved_rhs_signal_indices(rhs, out);
-            }
-            ResolvedAtom::VirtualRef(_) => {}
+fn resolve_virtuals(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<ResolvedVirtual> {
+    let signal_names: Vec<String> = cache.signals.iter().map(|s| s.name.clone()).collect();
+    let signal_widths: Vec<u32> = cache.signals.iter().map(|s| s.width).collect();
+    resolve_virtual_definitions(&cfg.virtual_defs, &signal_names, &signal_widths).unwrap_or_else(
+        |error| {
+            eprintln!("ERROR: --virtual '{}': {}", error.definition, error.message);
+            std::process::exit(2);
         },
-        ResolvedExpr::Not(inner) => collect_resolved_expr_signal_indices(inner, out),
-        ResolvedExpr::Combine(_, children) => {
-            for child in children {
-                collect_resolved_expr_signal_indices(child, out);
-            }
-        }
-    }
+    )
 }
 
 /// Build virtual signal entries from cfg.virtual_defs, resolving against cache signals.
 /// Returns (resolved_virtuals, their transition lists).
 fn build_virtuals(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<VirtualEntry> {
-    if cfg.virtual_defs.is_empty() {
-        return Vec::new();
-    }
-
-    let signal_names: Vec<String> = cache.signals.iter().map(|s| s.name.clone()).collect();
-    let signal_widths: Vec<u32> = cache.signals.iter().map(|s| s.width).collect();
-    let mut prior_names: Vec<String> = Vec::new();
+    let resolved_virtuals = resolve_virtuals(cache, cfg);
     let mut prior_transitions: Vec<Vec<(u64, String)>> = Vec::new();
     let mut entries: Vec<VirtualEntry> = Vec::new();
 
@@ -538,32 +516,8 @@ fn build_virtuals(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<VirtualEntry>
     let mut real_transitions: Vec<Vec<(u64, String)>> = vec![Vec::new(); cache.signals.len()];
     let mut loaded_real_signals = std::collections::HashSet::new();
 
-    for def_str in &cfg.virtual_defs {
-        // Fail-fast on bad virtual defs: previously we set a sticky error
-        // flag and let the query run anyway, which let a bad def silently
-        // fall through to whatever existing signal happened to glob-match
-        // the virtual's name. That was the worst class of silent-success
-        // bug (results looked plausible). Exit before any stdout is written.
-        let def = match parse_virtual_def(def_str) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("ERROR: --virtual '{}': {}", def_str, e);
-                VIRTUAL_DEF_ERROR.store(true, Ordering::SeqCst);
-                std::process::exit(2);
-            }
-        };
-        let resolved = match resolve_virtual(&def, &signal_names, &signal_widths, &prior_names) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("ERROR: --virtual '{}': {}", def_str, e);
-                VIRTUAL_DEF_ERROR.store(true, Ordering::SeqCst);
-                std::process::exit(2);
-            }
-        };
-
-        let mut referenced_real_signals = std::collections::HashSet::new();
-        collect_resolved_expr_signal_indices(&resolved.expr, &mut referenced_real_signals);
-        for idx in referenced_real_signals {
+    for resolved in resolved_virtuals {
+        for idx in resolved.referenced_signal_indices() {
             if loaded_real_signals.insert(idx) {
                 real_transitions[idx] = cache.read_transitions(idx);
             }
@@ -577,15 +531,32 @@ fn build_virtuals(cache: &ColumnCache, cfg: &ExtractConfig) -> Vec<VirtualEntry>
             cache.sim_end_tick,
         );
 
-        prior_names.push(def.name.clone());
         prior_transitions.push(transitions.clone());
         entries.push(VirtualEntry {
-            name: def.name,
+            name: resolved.name,
             transitions,
         });
     }
 
     entries
+}
+
+fn evaluate_virtuals_at_tick(
+    cache: &ColumnCache,
+    resolved: &[ResolvedVirtual],
+    tick: u64,
+) -> Vec<VirtualValue> {
+    let mut referenced = std::collections::BTreeSet::new();
+    for entry in resolved {
+        referenced.extend(entry.referenced_signal_indices());
+    }
+    let referenced: Vec<usize> = referenced.into_iter().collect();
+    cache.prefetch_window(&referenced, tick);
+    let real_values: HashMap<usize, String> = referenced
+        .into_iter()
+        .map(|idx| (idx, cache.value_at_tick_direct(idx, tick)))
+        .collect();
+    evaluate_virtual_values(resolved, &|idx| real_values[&idx].clone())
 }
 
 /// Build a radix map: signal_index → Radix, from cfg.signal_radixes.
@@ -1639,27 +1610,14 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     };
     let sa_value = cfg.sample_at_value.as_deref().unwrap_or("");
 
-    // Find trigger signals
-    let sa_matchers = match compile_patterns(&[sa_pattern.clone()]) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("ERROR: {}", e);
-            return;
-        }
-    };
-    let trigger_indices: Vec<usize> = {
-        let mut seen = std::collections::HashSet::new();
-        cache
-            .signals
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| match_signal(&s.name, &sa_matchers))
-            .filter(|(_, s)| seen.insert(s.group_id))
-            .map(|(i, _)| i)
-            .collect()
-    };
+    let virtuals = build_virtuals(cache, cfg);
+    let virtual_names: Vec<String> = virtuals.iter().map(|entry| entry.name.clone()).collect();
+    let (trigger_indices, trigger_virtual_indices) =
+        cache.match_signals_with_names(std::slice::from_ref(sa_pattern), &virtual_names);
+    let (watched_indices, watched_virtual_indices) =
+        cache.match_signals_with_names(&cfg.patterns, &virtual_names);
 
-    if trigger_indices.is_empty() {
+    if trigger_indices.is_empty() && trigger_virtual_indices.is_empty() {
         // Same class of failure as the other total-miss exits — unified to 2
         // (was 1) so every "your pattern matched nothing" ends the same way.
         eprintln!(
@@ -1684,6 +1642,15 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
     let cb = cycle_base(cache, effective_start);
+    let mut trigger_data: Vec<Vec<(u64, String)>> = trigger_indices
+        .iter()
+        .map(|&idx| cache.read_transitions(idx))
+        .collect();
+    trigger_data.extend(
+        trigger_virtual_indices
+            .iter()
+            .map(|&idx| virtuals[idx].transitions.clone()),
+    );
 
     // Read trigger signal transitions and identify trigger ticks.
     // For level mode in sync: check every cycle, like the Extractor does.
@@ -1692,13 +1659,9 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if level_mode && sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
         // Sync level mode: walk every cycle, check trigger value at each
         let total_cycles = (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
-        let trig_data: Vec<Vec<(u64, String)>> = trigger_indices
-            .iter()
-            .map(|&i| cache.read_transitions(i))
-            .collect();
         for cycle in 1..=total_cycles {
             let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-            for trig_trans in &trig_data {
+            for trig_trans in &trigger_data {
                 if values_match(&value_at_tick(trig_trans, tick), sa_value) {
                     trigger_ticks.push(tick);
                     break;
@@ -1708,7 +1671,6 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     } else if level_mode && !sync_mode {
         // Async level mode: trigger at every watched-signal-change timestamp
         // where the trigger value matches (mirrors Extractor's timestamp callback)
-        let watched_indices = cache.match_signals(&cfg.patterns);
         let mut change_ticks: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for &w_idx in &watched_indices {
             for (tick, _) in &cache.read_transitions(w_idx) {
@@ -1717,12 +1679,15 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 }
             }
         }
-        let trig_data: Vec<Vec<(u64, String)>> = trigger_indices
-            .iter()
-            .map(|&i| cache.read_transitions(i))
-            .collect();
+        for &w_idx in &watched_virtual_indices {
+            for (tick, _) in &virtuals[w_idx].transitions {
+                if *tick >= effective_start {
+                    change_ticks.insert(*tick);
+                }
+            }
+        }
         for tick in &change_ticks {
-            for trig_trans in &trig_data {
+            for trig_trans in &trigger_data {
                 if values_match(&value_at_tick(trig_trans, *tick), sa_value) {
                     trigger_ticks.push(*tick);
                     break;
@@ -1730,10 +1695,9 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         }
     } else {
-        for &trig_idx in &trigger_indices {
-            let transitions = cache.read_transitions(trig_idx);
+        for transitions in &trigger_data {
             let mut prev_val = "x".to_string();
-            for (tick, val) in &transitions {
+            for (tick, val) in transitions {
                 if *tick < effective_start {
                     prev_val = val.clone();
                     continue;
@@ -1761,10 +1725,9 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         // flag carries over to the first post-reset cycle. Simulate this by
         // injecting effective_start as a trigger if there were pre-reset events.
         if change_mode && effective_start > 0 {
-            let has_pre_reset = trigger_indices.iter().any(|&idx| {
-                let trans = cache.read_transitions(idx);
-                trans.iter().any(|(t, _)| *t < effective_start)
-            });
+            let has_pre_reset = trigger_data
+                .iter()
+                .any(|transitions| transitions.iter().any(|(t, _)| *t < effective_start));
             if has_pre_reset && (trigger_ticks.is_empty() || trigger_ticks[0] > cb) {
                 trigger_ticks.insert(0, cb);
             }
@@ -1772,7 +1735,6 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     // For each trigger tick, sample all watched signals
-    let watched_indices = cache.match_signals(&cfg.patterns);
     let radix_map = build_radix_map(cache, &watched_indices, cfg);
     let all_names: Vec<String> = watched_indices
         .iter()
@@ -1788,12 +1750,20 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     if !prefix.is_empty() {
         let _ = writeln!(err, "# scope: {}", &prefix[..prefix.len() - 1]);
     }
-    let _ = writeln!(err, "# sample: {} trigger signal(s)", trigger_indices.len());
+    let _ = writeln!(
+        err,
+        "# sample: {} trigger signal(s)",
+        trigger_indices.len() + trigger_virtual_indices.len()
+    );
 
     // Preload watched signal transitions for binary search
     let watched_data: Vec<Vec<(u64, String)>> = watched_indices
         .iter()
         .map(|&i| cache.read_transitions(i))
+        .collect();
+    let watched_virtual_data: Vec<&VirtualEntry> = watched_virtual_indices
+        .iter()
+        .map(|&idx| &virtuals[idx])
         .collect();
 
     let mut sample_count: usize = 0;
@@ -1842,7 +1812,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             trigger_tick.to_string()
         };
 
-        for (wi, &w_idx) in watched_indices.iter().enumerate() {
+        let stored_rows = watched_indices.iter().enumerate().map(|(wi, &w_idx)| {
             let sig = &cache.signals[w_idx];
             let dname = if !prefix.is_empty() && sig.name.starts_with(&prefix) {
                 &sig.name[prefix.len()..]
@@ -1852,7 +1822,14 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             // Binary search for value at trigger_tick
             let val = value_at_tick(&watched_data[wi], trigger_tick);
             let dval = fmt_val(&val, w_idx, cache.signals[w_idx].width, &radix_map);
-            let _ = writeln!(out, "{} {} {}", time_label, dname, dval);
+            (dname.to_string(), dval)
+        });
+        let virtual_rows = watched_virtual_data.iter().map(|entry| {
+            let val = value_at_tick(&entry.transitions, trigger_tick);
+            (entry.name.clone(), val)
+        });
+        for (name, value) in stored_rows.chain(virtual_rows) {
+            let _ = writeln!(out, "{} {} {}", time_label, name, value);
             line_count += 1;
             if line_count >= cfg.max_lines {
                 let _ = writeln!(
@@ -1885,8 +1862,13 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         None => return,
     };
 
-    let matched = cache.match_signals(&cfg.patterns);
-    if matched.is_empty() {
+    let resolved_virtuals = resolve_virtuals(cache, cfg);
+    let virtual_names: Vec<String> = resolved_virtuals
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    let (matched, matched_virtuals) = cache.match_signals_with_names(&cfg.patterns, &virtual_names);
+    if matched.is_empty() && matched_virtuals.is_empty() {
         if cfg.json_format {
             let mode = if cfg.async_mode { "async" } else { "sync" };
             crate::output::emit_json(
@@ -2005,6 +1987,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .par_iter()
         .map(|&sig_idx| cache.value_at_tick_direct(sig_idx, target_tick))
         .collect();
+    let virtual_values = evaluate_virtuals_at_tick(cache, &resolved_virtuals, target_tick);
 
     if cfg.json_format {
         let scope_prefix = if prefix.is_empty() {
@@ -2020,7 +2003,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         } else {
             "ns"
         };
-        let signals: Vec<crate::output::SignalValue> = matched
+        let mut signals: Vec<crate::output::SignalValue> = matched
             .iter()
             .enumerate()
             .map(|(idx, &sig_idx)| {
@@ -2037,6 +2020,13 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 }
             })
             .collect();
+        signals.extend(matched_virtuals.iter().map(|&idx| {
+            let entry = &virtual_values[idx];
+            crate::output::SignalValue {
+                name: entry.name.clone(),
+                value: entry.value.clone(),
+            }
+        }));
         crate::output::emit_json(
             "value",
             crate::output::ValueData {
@@ -2064,6 +2054,10 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         };
         let dval = fmt_val(&values[idx], sig_idx, sig.width, &radix_map);
         let _ = writeln!(out, "{:<40} = {}", dname, dval);
+    }
+    for &idx in &matched_virtuals {
+        let entry = &virtual_values[idx];
+        let _ = writeln!(out, "{:<40} = {}", entry.name, entry.value);
     }
     let _ = out.flush();
     let _ = err.flush();
@@ -3558,7 +3552,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 mod tests {
     use super::*;
     use std::io::BufReader;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 

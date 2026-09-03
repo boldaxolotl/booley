@@ -38,9 +38,17 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
+from booley.runtime.file_lock import (
+    LockContentionError,
+    acquire_file_lock,
+    release_file_lock,
+    wait_for_file_lock,
+)
 from booley.runtime.platform_paths import posix_relpath
 
 logger = logging.getLogger(__name__)
@@ -48,6 +56,15 @@ logger = logging.getLogger(__name__)
 
 class EdamSecurityError(ValueError):
     """An EDAM input violated the file-confinement or option whitelist."""
+
+
+class WorkRootLeaseError(RuntimeError):
+    """A mutable Edalize work root could not be leased safely."""
+
+    def __init__(self, work_root: Path, lock_path: Path, cause: OSError) -> None:
+        self.work_root = work_root
+        self.lock_path = lock_path
+        super().__init__(f"cannot lease {work_root} via {lock_path}: {cause}")
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +431,74 @@ def work_root_for(
     safe = _NAME_SANITIZE_RE.sub("_", config).strip("_") or "config"
     leaf = f"{safe}-{variant}" if variant else safe
     return root / _EDALIZE_SUBDIR / flow / leaf
+
+
+def _work_root_lock_path(work_root: Path) -> Path:
+    root = work_root.resolve()
+    return root.parent / ".locks" / f"{root.name}.lock"
+
+
+@contextmanager
+def _work_root_lease_context(
+    work_root: Path | str,
+    acquire: Callable[[IO[Any]], bool],
+) -> Iterator[Path | None]:
+    """Apply one acquisition policy to a safely managed work-root lock."""
+    root = Path(work_root).resolve()
+    lock_path = _work_root_lock_path(root)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+    except OSError as exc:
+        raise WorkRootLeaseError(root, lock_path, exc) from exc
+    with handle:
+        try:
+            acquired = acquire(handle)
+        except OSError as exc:
+            raise WorkRootLeaseError(root, lock_path, exc) from exc
+        if not acquired:
+            yield None
+            return
+        try:
+            yield root
+        finally:
+            try:
+                release_file_lock(handle)
+            except OSError as exc:
+                raise WorkRootLeaseError(root, lock_path, exc) from exc
+
+
+def _try_acquire_file_lock(handle: IO[Any]) -> bool:
+    try:
+        acquire_file_lock(handle)
+    except LockContentionError:
+        return False
+    return True
+
+
+@contextmanager
+def try_work_root_lease(work_root: Path | str) -> Iterator[Path | None]:
+    """Try to own one mutable Edalize work root without waiting."""
+    with _work_root_lease_context(work_root, _try_acquire_file_lock) as root:
+        yield root
+
+
+@contextmanager
+def work_root_lease(
+    work_root: Path | str,
+    *,
+    timeout_s: float,
+    on_wait: Callable[[], None] | None = None,
+) -> Iterator[Path]:
+    """Own one mutable Edalize work root for the protected operation."""
+
+    def acquire(handle: IO[Any]) -> bool:
+        wait_for_file_lock(handle, timeout_s=timeout_s, on_wait=on_wait)
+        return True
+
+    with _work_root_lease_context(work_root, acquire) as root:
+        assert root is not None
+        yield root
 
 
 def relpath_for_make(work_root: Path | str, work_dir: Path | str) -> str:

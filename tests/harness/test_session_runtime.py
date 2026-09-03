@@ -12,10 +12,12 @@ import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
 
+from booley.eda.provisioning import runtime_spec
 from booley.harness import devcontainer as dc
 from booley.harness import session_runtime as sr
 
@@ -839,6 +841,141 @@ class TestPrepareMigration:
         )
 
 
+class TestIssuedRuntimeDriftFix:
+    def _state(
+        self,
+        workspace: Path,
+        *,
+        running: bool,
+        exact_origin: bool = True,
+    ) -> dict:
+        issuance = _test_issuance(workspace)
+        labels = _vscode_labels(workspace, issuance, spec_digest="old-spec")
+        if not exact_origin:
+            labels.pop("devcontainer.local_folder")
+        return {
+            "State": {"Running": running},
+            "Config": {"Labels": labels},
+            "Mounts": [],
+        }
+
+    def test_stopped_exact_vscode_uses_automatic_rebuild_guidance(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state = self._state(workspace, running=False)
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["stale-vscode"],
+        )
+
+        assert fix == "run `booley session down`, then `booley session up --rebuild`"
+
+    def test_running_exact_vscode_requires_stop_first(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state = self._state(workspace, running=True)
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["active-vscode"],
+        )
+
+        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+
+    def test_ambiguous_origin_requires_manual_inspection(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state = self._state(workspace, running=False, exact_origin=False)
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["ambiguous-runtime"],
+        )
+
+        assert "inspect ambiguous Session Runtime resource(s) 'ambiguous-runtime'" in fix
+        assert "will not remove them automatically" in fix
+
+    def test_malformed_runtime_state_requires_manual_inspection(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state = self._state(workspace, running=False)
+        state["State"] = "unknown"
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["malformed-runtime"],
+        )
+
+        assert "inspect ambiguous Session Runtime resource(s) 'malformed-runtime'" in fix
+
+    def test_reports_running_and_ambiguous_resources_together(
+        self,
+        workspace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        states = {
+            "active-vscode": self._state(workspace, running=True),
+            "ambiguous-runtime": self._state(
+                workspace,
+                running=False,
+                exact_origin=False,
+            ),
+        }
+        monkeypatch.setattr(
+            sr,
+            "_docker_stdout",
+            lambda argv: json.dumps([states[argv[-1]]]),
+        )
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            list(states),
+        )
+
+        assert "inspect ambiguous Session Runtime resource(s) 'ambiguous-runtime'" in fix
+        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+
+    def test_windows_host_paths_identify_running_vscode(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        workspace = Path(r"C:\workplace\picorv32")
+        state = self._state(workspace, running=True)
+        labels = state["Config"]["Labels"]
+        labels["devcontainer.local_folder"] = "c:/workplace/picorv32"
+        labels["devcontainer.config_file"] = (
+            "c:/workplace/picorv32/.devcontainer/devcontainer.json"
+        )
+        monkeypatch.setattr(sr, "_docker_stdout", lambda _argv: json.dumps([state]))
+        monkeypatch.setattr(sr, "session_container_name", lambda _workspace: "canonical")
+
+        fix = sr.issued_runtime_drift_fix(
+            workspace,
+            _test_issuance(workspace),
+            ["active-vscode"],
+        )
+
+        assert "stop VS Code Session Runtime(s) 'active-vscode'" in fix
+
+
 # ---------------------------------------------------------------------------
 # up() / down() / status()
 # ---------------------------------------------------------------------------
@@ -890,6 +1027,7 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
             return_value=workspace / ".booley_project",
         ),
         patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+        patch.object(sr, "_strict_all_interactive_states", return_value=[]),
         patch.object(sr, "_container_matches_issuance", return_value=True),
         patch.object(sr, "_run") as run,
     ):
@@ -921,7 +1059,110 @@ def _refresh_state(
     }
 
 
+def _recorded_parked(**overrides) -> sr.ParkedSession:
+    values = {
+        "name": "session",
+        "backup": "backup",
+        "was_running": False,
+        "project_id": "project-id",
+        "reconnect_egress": False,
+        "container_id": "prior-id",
+        "image_id": "sha256:prior",
+        "egress_network_id": None,
+    }
+    values.update(overrides)
+    return sr.ParkedSession(**values)
+
+
 class TestRefreshContainerTransactions:
+    def test_recovery_preserves_predecessor_when_rename_did_not_land(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            True,
+            project_id="project-id",
+            reconnect_egress=True,
+            container_id="prior-id",
+            image_id="sha256:prior",
+            egress_network_id="egress-id",
+        )
+        predecessor = {
+            "Id": "prior-id",
+            "Image": "sha256:prior",
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                }
+            },
+            "State": {"Running": False},
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {"NetworkID": "egress-id"}}},
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[predecessor, None]),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            patch.object(sr, "_start_session_container") as start,
+        ):
+            sr.restore_refresh_session(parked)
+
+        remove.assert_not_called()
+        start.assert_called_once_with("session")
+
+    def test_recovery_rejects_reused_egress_network_name(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+            reconnect_egress=True,
+            container_id="prior-id",
+            image_id="sha256:prior",
+            egress_network_id="expected-egress-id",
+        )
+        predecessor = {
+            "Id": "prior-id",
+            "Image": "sha256:prior",
+            "Config": {
+                "Labels": {
+                    "booley.role": "interactive",
+                    "booley.project-id": "project-id",
+                }
+            },
+            "State": {"Running": False},
+            "NetworkSettings": {
+                "Networks": {dc.EGRESS_NETWORK: {"NetworkID": "reused-network-id"}}
+            },
+        }
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[predecessor, None]),
+            pytest.raises(sr.SessionError, match="network identity"),
+        ):
+            sr.restore_refresh_session(parked)
+
+    def test_recovery_preserves_unproven_canonical_container(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+            container_id="prior-id",
+            image_id="sha256:prior",
+        )
+        candidate = _refresh_state()
+        candidate["Id"] = "unknown-id"
+        candidate["Image"] = "sha256:unknown"
+        predecessor = _refresh_state()
+        predecessor["Id"] = "prior-id"
+        predecessor["Image"] = "sha256:prior"
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[candidate, predecessor]),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            pytest.raises(sr.SessionError, match=r"cannot prove.*replacement"),
+        ):
+            sr.restore_refresh_session(parked)
+
+        remove.assert_not_called()
+
     def test_strict_inspect_accepts_complete_state_and_absence(self, monkeypatch):
         state = _refresh_state()
         responses = iter(
@@ -969,6 +1210,35 @@ class TestRefreshContainerTransactions:
 
         with pytest.raises(sr.SessionError, match="invalid labels"):
             sr._refresh_container_labels(state)
+
+    @pytest.mark.parametrize(
+        ("field", "invalid", "message"),
+        [
+            ("Id", "different-id", "recorded refresh predecessor"),
+            ("Image", "sha256:different", "wrong predecessor image"),
+        ],
+    )
+    def test_predecessor_verification_rejects_identity_drift(self, field, invalid, message):
+        state = _refresh_state()
+        state.update({"Id": "prior-id", "Image": "sha256:prior", field: invalid})
+
+        with pytest.raises(sr.SessionError, match=message):
+            sr._assert_refresh_predecessor("session", state, _recorded_parked())
+
+    def test_egress_verification_rejects_non_object_network_state(self):
+        state = _refresh_state(networks={dc.EGRESS_NETWORK: "invalid"})
+
+        with pytest.raises(sr.SessionError, match="invalid egress network state"):
+            sr._validate_refresh_egress(_recorded_parked(), state)
+
+    def test_candidate_match_checks_exact_image_and_all_issuance_labels(self):
+        state = _refresh_state(labels={"expected": "yes", "extra": "allowed"})
+        state["Image"] = "sha256:fresh"
+        issuance = SimpleNamespace(image_id="sha256:fresh")
+        with patch.object(runtime_spec, "labels", return_value=("expected=yes",)):
+            assert sr._refresh_candidate_matches(state, issuance)
+            state["Image"] = "sha256:different"
+            assert not sr._refresh_candidate_matches(state, issuance)
 
     def test_shared_parking_reports_rename_and_restart_failures(self, monkeypatch):
         parked = sr.ParkedSession("session", "session-pre-refresh", True)
@@ -1060,6 +1330,51 @@ class TestRefreshContainerTransactions:
         ):
             sr._restore_incomplete_park(parked)
 
+    def test_incomplete_park_verifies_reconnect_landed(self):
+        parked = _recorded_parked(reconnect_egress=True, egress_network_id="egress-id")
+        state = _refresh_state()
+        state.update({"Id": "prior-id", "Image": "sha256:prior"})
+        connected = subprocess.CompletedProcess([], 0, "", "")
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[state, state]),
+            patch.object(sr, "_run", return_value=connected),
+            pytest.raises(sr.SessionError, match="did not reconnect"),
+        ):
+            sr._restore_incomplete_park(parked)
+
+    def test_incomplete_park_rejects_unauthorized_egress(self):
+        parked = _recorded_parked()
+        state = _refresh_state(networks={dc.EGRESS_NETWORK: {}})
+        state.update({"Id": "prior-id", "Image": "sha256:prior"})
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            pytest.raises(sr.SessionError, match="unauthorized egress"),
+        ):
+            sr._restore_incomplete_park(parked)
+
+    def test_incomplete_park_rejects_canonical_egress_drift(self):
+        parked = _recorded_parked(reconnect_egress=True)
+        state = _refresh_state()
+        state.update({"Id": "prior-id", "Image": "sha256:prior"})
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[None, state]),
+            pytest.raises(sr.SessionError, match="egress state changed"),
+        ):
+            sr._restore_incomplete_park(parked)
+
+    def test_refresh_plan_rejects_labels_that_differ_from_issuance(self, tmp_path: Path):
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=("booley.project-id=project-id", "required=yes"),
+            ),
+            pytest.raises(sr.SessionError, match="labels differ"),
+        ):
+            sr.plan_session_refresh(tmp_path, SimpleNamespace())
+
     def test_refresh_parking_returns_none_when_session_is_absent(self, tmp_path: Path):
         with patch.object(sr, "_strict_refresh_container", return_value=None):
             assert sr.park_session_for_refresh(tmp_path, SimpleNamespace()) is None
@@ -1073,13 +1388,63 @@ class TestRefreshContainerTransactions:
         )
         with (
             patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_refresh_candidate_matches", return_value=True),
             patch.object(sr, "_remove_session_candidate") as remove,
             patch.object(sr, "_restore_incomplete_park") as restore,
         ):
-            sr.restore_refresh_session(parked)
+            sr.restore_refresh_session(parked, candidate_issuance=SimpleNamespace())
 
         remove.assert_called_once_with("session")
         restore.assert_called_once_with(parked)
+
+    def test_restore_rejects_two_copies_of_recorded_predecessor(self):
+        parked = _recorded_parked()
+        predecessor = _refresh_state()
+        predecessor.update({"Id": "prior-id", "Image": "sha256:prior"})
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=predecessor),
+            pytest.raises(sr.SessionError, match="both canonical and recovery"),
+        ):
+            sr.restore_refresh_session(parked)
+
+    def test_restore_rejects_canonical_predecessor_egress_drift(self):
+        parked = _recorded_parked(reconnect_egress=True)
+        predecessor = _refresh_state()
+        predecessor.update({"Id": "prior-id", "Image": "sha256:prior"})
+        with (
+            patch.object(sr, "_strict_refresh_container", side_effect=[predecessor, None]),
+            pytest.raises(sr.SessionError, match="egress state changed"),
+        ):
+            sr.restore_refresh_session(parked)
+
+    @pytest.mark.parametrize(
+        ("state", "message"),
+        [
+            (None, "is missing"),
+            (_refresh_state(running=True), "running state is incorrect"),
+            (_refresh_state(), "egress state is incorrect"),
+        ],
+    )
+    def test_restored_predecessor_verification_rejects_state_drift(self, state, message):
+        reconnect = message == "egress state is incorrect"
+        parked = sr.ParkedSession(
+            "session", "backup", False, project_id="project-id", reconnect_egress=reconnect
+        )
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            pytest.raises(sr.SessionError, match=message),
+        ):
+            sr.verify_restored_refresh_session(parked)
+
+    def test_validate_blocks_while_refresh_recovery_is_pending(self, tmp_path: Path):
+        with (
+            patch("booley.harness.session_refresh.has_pending_refresh", return_value=True),
+            patch.object(sr, "_load_spec") as load_spec,
+            pytest.raises(sr.SessionError, match="recovery is pending"),
+        ):
+            sr.validate(tmp_path)
+
+        load_spec.assert_not_called()
 
     def test_discard_refresh_session_validates_and_removes_backup(self):
         parked = sr.ParkedSession(
@@ -1090,11 +1455,31 @@ class TestRefreshContainerTransactions:
         )
         with (
             patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
-            patch.object(sr, "_discard_parked_session") as discard,
+            patch.object(sr, "_remove_refresh_predecessor") as discard,
         ):
             sr.discard_refresh_session(parked)
 
-        discard.assert_called_once_with(parked)
+        discard.assert_called_once_with(parked.backup)
+
+    def test_durable_refresh_cleanup_reports_predecessor_removal_failure(self):
+        parked = sr.ParkedSession(
+            "session",
+            "backup",
+            False,
+            project_id="project-id",
+            container_id="prior-id",
+            image_id="sha256:prior",
+        )
+        state = _refresh_state()
+        state["Id"] = "prior-id"
+        state["Image"] = "sha256:prior"
+        failed = subprocess.CompletedProcess([], 1, "", "container busy")
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=state),
+            patch.object(sr, "_run", return_value=failed),
+            pytest.raises(sr.SessionError, match="container busy"),
+        ):
+            sr.discard_refresh_session(parked)
 
     def test_discard_refresh_candidate_removes_licensed_relay(self, tmp_path: Path):
         issuance = SimpleNamespace(license_profile="vivado", relay_image_id=None)
@@ -1102,6 +1487,7 @@ class TestRefreshContainerTransactions:
         with (
             patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=True),
             patch.object(sr, "_remove_session_candidate") as remove,
             patch.object(sr, "_relay_resources", return_value=relay),
             patch.object(sr, "_remove_license_relay") as remove_relay,
@@ -1110,6 +1496,19 @@ class TestRefreshContainerTransactions:
 
         remove.assert_called_once_with(sr.session_container_name(tmp_path))
         remove_relay.assert_called_once_with(relay)
+
+    def test_discard_refresh_candidate_preserves_unproven_identity(self, tmp_path: Path):
+        issuance = SimpleNamespace(license_profile=None, relay_image_id=None)
+        with (
+            patch.object(sr, "_strict_refresh_container", return_value=_refresh_state()),
+            patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(sr, "_refresh_candidate_matches", return_value=False),
+            patch.object(sr, "_remove_session_candidate") as remove,
+            pytest.raises(sr.SessionError, match=r"cannot prove.*replacement"),
+        ):
+            sr.discard_refresh_candidate(tmp_path, issuance)
+
+        remove.assert_not_called()
 
     def test_rebuild_rejects_existing_recovery_container(self):
         with (
@@ -1166,6 +1565,102 @@ class TestUp:
         assert argvs[0][:2] == ["docker", "run"]
         hooks = [a for a in argvs if a[:2] == ["docker", "exec"]]
         assert len(hooks) == 2  # postCreate + postStart
+
+    def test_rebuild_removes_stopped_vscode_from_old_issuance_after_create(
+        self,
+        wired,
+    ) -> None:
+        workspace, run = wired
+        issuance = runtime_spec.validate(
+            workspace,
+            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
+            workspace / ".devcontainer" / "devcontainer.json",
+        )
+        state = {
+            "State": {"Running": False},
+            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
+            "Mounts": [],
+        }
+        stale = "stale-vscode"
+        with (
+            patch.object(
+                sr, "_strict_all_interactive_states", return_value=[(stale, json.dumps([state]))]
+            ),
+            patch.object(sr.idk, "container_exists", return_value=False),
+            patch.object(sr.idk, "container_running", return_value=False),
+        ):
+            sr.up(workspace, rebuild=True)
+
+        argvs = [_argv_of(call) for call in run.call_args_list]
+        assert argvs.index(["docker", "rm", stale]) > next(
+            index for index, argv in enumerate(argvs) if argv[:2] == ["docker", "run"]
+        )
+        assert not any(argv[:2] == ["docker", "volume"] for argv in argvs)
+
+    def test_session_up_preserves_current_vscode_with_unavailable_bind(
+        self,
+        wired,
+    ) -> None:
+        workspace, run = wired
+        issuance = runtime_spec.validate(
+            workspace,
+            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
+            workspace / ".devcontainer" / "devcontainer.json",
+        )
+        state = {
+            "State": {"Running": False},
+            "Config": {
+                "Labels": _vscode_labels(
+                    workspace,
+                    issuance,
+                    spec_digest=issuance.spec_sha256,
+                )
+            },
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": str(workspace / "missing-wayland-socket"),
+                    "Destination": "/tmp/vscode-wayland.sock",
+                }
+            ],
+        }
+        with patch.object(
+            sr,
+            "_strict_all_interactive_states",
+            return_value=[("current-vscode", json.dumps([state]))],
+        ):
+            sr.up(workspace)
+
+        assert ["docker", "rm", "current-vscode"] not in [
+            _argv_of(call) for call in run.call_args_list
+        ]
+
+    def test_session_up_rejects_running_stale_vscode_before_create(
+        self,
+        wired,
+    ) -> None:
+        workspace, run = wired
+        issuance = runtime_spec.validate(
+            workspace,
+            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
+            workspace / ".devcontainer" / "devcontainer.json",
+        )
+        state = {
+            "State": {"Running": True},
+            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
+            "Mounts": [],
+        }
+        with (
+            patch.object(
+                sr,
+                "_strict_all_interactive_states",
+                return_value=[("active-vscode", json.dumps([state]))],
+            ),
+            pytest.raises(sr.SessionError, match=r"running Session Runtime.*older host issuance"),
+        ):
+            sr.up(workspace)
+
+        assert not any(_argv_of(call)[:2] == ["docker", "run"] for call in run.call_args_list)
 
     def test_existing_stopped_container_is_started_not_recreated(self, wired):
         workspace, run = wired
@@ -1242,8 +1737,23 @@ class TestUp:
         workspace, run = wired
         name = sr.session_container_name(workspace)
         backup = f"{name}-pre-refresh"
+        issuance = runtime_spec.validate(
+            workspace,
+            json.loads((workspace / ".devcontainer" / "devcontainer.json").read_text()),
+            workspace / ".devcontainer" / "devcontainer.json",
+        )
+        stale_vscode = {
+            "State": {"Running": False},
+            "Config": {"Labels": _vscode_labels(workspace, issuance, spec_digest="old-spec")},
+            "Mounts": [],
+        }
         exists = iter([True, False, False, True])
         with (
+            patch.object(
+                sr,
+                "_strict_all_interactive_states",
+                return_value=[("stale-vscode", json.dumps([stale_vscode]))],
+            ),
             patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
             patch.object(sr.idk, "container_running", return_value=False),
             patch.object(
@@ -1261,10 +1771,12 @@ class TestUp:
             )
 
         argvs = [_argv_of(c) for c in run.call_args_list]
+        assert ["docker", "rm", "stale-vscode"] not in argvs
         assert ["docker", "rename", name, backup] in argvs
         assert ["docker", "rm", "-f", name] in argvs
         assert ["docker", "rename", backup, name] in argvs
         assert ["docker", "rm", "-f", backup] not in argvs
+        assert not any(argv[:2] == ["docker", "volume"] for argv in argvs)
 
     def test_failed_probe_without_prior_runtime_removes_candidate(self, wired):
         workspace, run = wired
@@ -1286,6 +1798,21 @@ class TestUp:
                 expected_payload_fingerprint="payload-123",
             )
 
+        assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
+
+    def test_fresh_refresh_rejects_unverified_labels_or_networks(self, wired):
+        workspace, run = wired
+        name = sr.session_container_name(workspace)
+        exists = iter([False, False, True])
+        with (
+            patch.object(sr.idk, "container_exists", side_effect=lambda _n: next(exists)),
+            patch.object(sr, "_container_matches_issuance", return_value=False),
+            patch.object(sr, "verify_refreshed_session") as verify_payload,
+            pytest.raises(sr.SessionError, match="labels or network topology"),
+        ):
+            sr.up(workspace, rebuild=True, expected_image_id="sha256:fresh")
+
+        verify_payload.assert_not_called()
         assert ["docker", "rm", "-f", name] in [_argv_of(call) for call in run.call_args_list]
 
     def test_old_container_cleanup_failure_keeps_verified_replacement(self, wired, caplog):
@@ -1324,22 +1851,8 @@ class TestUp:
         workspace, run = wired
         name = sr.session_container_name(workspace)
         backup = f"{name}-pre-refresh"
-        initial = {
-            "Config": {
-                "Labels": {
-                    "booley.role": "interactive",
-                    "booley.project-id": "project-id",
-                    "booley.license-profile": "none",
-                }
-            },
-            "State": {"Running": True},
-            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
-        }
-        parked_state = {
-            "Config": initial["Config"],
-            "State": {"Running": False},
-            "NetworkSettings": {"Networks": {}},
-        }
+        initial = _refresh_state(running=True, networks={dc.EGRESS_NETWORK: {}})
+        parked_state = _refresh_state(labels=initial["Config"]["Labels"])
         with (
             patch.object(
                 sr,
@@ -1347,6 +1860,14 @@ class TestUp:
                 side_effect=[initial, None, parked_state],
             ),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=(
+                    "booley.project-id=project-id",
+                    "booley.license-profile=none",
+                ),
+            ),
             patch.object(sr, "_relay_objects_exist", return_value=False),
         ):
             parked = sr.park_session_for_refresh(
@@ -1386,10 +1907,14 @@ class TestUp:
             "State": {"Running": False},
             "NetworkSettings": {"Networks": {}},
         }
+        reconnected = {
+            **state,
+            "NetworkSettings": {"Networks": {dc.EGRESS_NETWORK: {}}},
+        }
         with patch.object(
             sr,
             "_strict_refresh_container",
-            side_effect=[None, state],
+            side_effect=[None, state, reconnected],
         ):
             sr.restore_refresh_session(parked)
 
@@ -1421,6 +1946,14 @@ class TestUp:
         with (
             patch.object(sr, "_strict_refresh_container", return_value=state),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=(
+                    "booley.project-id=project-id",
+                    "booley.license-profile=vivado",
+                ),
+            ),
             pytest.raises(sr.SessionError, match="licensed relay topology"),
         ):
             sr.park_session_for_refresh(
@@ -1448,6 +1981,14 @@ class TestUp:
         with (
             patch.object(sr, "_strict_refresh_container", side_effect=[state, None]),
             patch.object(sr, "_refresh_project_id", return_value="project-id"),
+            patch.object(
+                runtime_spec,
+                "labels",
+                return_value=(
+                    "booley.project-id=project-id",
+                    "booley.license-profile=none",
+                ),
+            ),
             patch.object(sr, "_relay_objects_exist", return_value=False),
             patch.object(sr, "_park_refresh_container", side_effect=parking_error),
             patch.object(
@@ -2236,6 +2777,189 @@ class TestMangledArgWarning:
             sr.enter(workspace, cmd, tty=False)
         assert run.call_args.args[2] == cmd
         assert run.call_args.kwargs == {"tty": False}
+
+
+class TestRunProjectCommand:
+    COMMAND_ENV: ClassVar[dict[str, str]] = {
+        "HTTP_PROXY": dc.PROXY_URL,
+        "HTTPS_PROXY": dc.PROXY_URL,
+        "http_proxy": dc.PROXY_URL,
+        "https_proxy": dc.PROXY_URL,
+        "NO_PROXY": "localhost,127.0.0.1",
+        "BOOLEY_MCP_MODE": "interactive",
+        "BOOLEY_PROJECT_DIR": "/booley-project",
+        "BOOLEY_AGENT_APP": "claude",
+    }
+
+    @staticmethod
+    def _request(workspace: Path):
+        return SimpleNamespace(
+            spec={
+                "image": "booley-sandbox",
+                "remoteEnv": {
+                    **TestRunProjectCommand.COMMAND_ENV,
+                    "CLAUDE_CODE_OAUTH_TOKEN": "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}",
+                },
+            },
+            issuance=object(),
+            profile=None,
+            name=sr.session_container_name(workspace),
+            labels=(),
+            relay=None,
+        )
+
+    @staticmethod
+    def _vscode_state(workspace: Path) -> str:
+        return json.dumps([{"Config": {"Labels": {"devcontainer.local_folder": str(workspace)}}}])
+
+    def test_reuses_valid_running_vscode_runtime(self, workspace: Path):
+        request = self._request(workspace)
+        command = ["claude", "setup-token"]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(
+                sr,
+                "_strict_running_interactive_states",
+                return_value=[("vscode-runtime", self._vscode_state(workspace))],
+            ),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.harness.runtime_attachment.run_command") as run,
+        ):
+            run.return_value = SimpleNamespace(exit_code=0)
+            assert sr.run_project_command(workspace, command, tty=True) == 0
+
+        start.assert_not_called()
+        run.assert_called_once_with(
+            workspace,
+            "vscode-runtime",
+            command,
+            tty=True,
+            env=self.COMMAND_ENV,
+        )
+
+    def test_starts_headless_runtime_when_none_is_running(self, workspace: Path):
+        request = self._request(workspace)
+        command = ["claude", "setup-token"]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch.object(sr, "_warn_on_stale_session_containers"),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.harness.runtime_attachment.run_command") as run,
+        ):
+            run.return_value = SimpleNamespace(exit_code=0)
+            assert sr.run_project_command(workspace, command, tty=False) == 0
+
+        start.assert_called_once_with(
+            workspace,
+            request,
+            rebuild=False,
+            expected_image_id=None,
+            expected_payload_fingerprint=None,
+        )
+        run.assert_called_once_with(
+            workspace,
+            request.name,
+            command,
+            tty=False,
+            env=self.COMMAND_ENV,
+        )
+
+    def test_ignores_running_runtime_for_another_project(self, workspace: Path):
+        request = self._request(workspace)
+        other = workspace.parent / "other-project"
+        running = [
+            ("other-runtime", self._vscode_state(other)),
+            ("vscode-runtime", self._vscode_state(workspace)),
+        ]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(sr, "_strict_running_interactive_states", return_value=running),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch("booley.harness.runtime_attachment.run_command") as run,
+        ):
+            run.return_value = SimpleNamespace(exit_code=0)
+            assert sr.run_project_command(workspace, ["claude", "setup-token"]) == 0
+
+        start.assert_not_called()
+        run.assert_called_once()
+        assert run.call_args.args[1] == "vscode-runtime"
+
+    def test_recovers_interrupted_refresh_before_selecting_runtime(self, workspace: Path):
+        select = Mock()
+        with (
+            patch.object(
+                sr,
+                "_recover_before_lifecycle",
+                side_effect=sr.SessionError("recovered interrupted refresh"),
+            ) as recover,
+            patch.object(sr, "_select_or_start_project_runtime", select),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            pytest.raises(sr.SessionError, match="recovered interrupted refresh"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+        recover.assert_called_once_with(workspace, "booley auth")
+        select.assert_not_called()
+
+    def test_stale_running_runtime_blocks_headless_creation(self, workspace: Path):
+        request = self._request(workspace)
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(
+                sr,
+                "_strict_running_interactive_states",
+                return_value=[("stale-runtime", self._vscode_state(workspace))],
+            ),
+            patch.object(sr, "_container_matches_issuance", return_value=False),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            pytest.raises(sr.SessionError, match="does not match the current host issuance"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+        start.assert_not_called()
+
+    def test_multiple_running_runtimes_are_refused(self, workspace: Path):
+        request = self._request(workspace)
+        ours = request.name
+        running = [
+            (ours, json.dumps([{"Config": {"Labels": {}}}])),
+            ("vscode-runtime", self._vscode_state(workspace)),
+        ]
+        with (
+            patch.object(sr, "_validate_up_request", return_value=request),
+            patch.object(sr, "_strict_running_interactive_states", return_value=running),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
+            patch.object(sr, "_run_up_transaction") as start,
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            pytest.raises(sr.SessionError, match="multiple running Session Runtimes"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
+
+        start.assert_not_called()
+
+    def test_attachment_failure_is_reported_as_session_error(self, workspace: Path):
+        with (
+            patch.object(
+                sr,
+                "_select_or_start_project_runtime",
+                return_value=("runtime", self.COMMAND_ENV),
+            ),
+            patch.object(sr, "_recover_before_lifecycle"),
+            patch("booley.harness.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
+            patch(
+                "booley.harness.runtime_attachment.run_command",
+                side_effect=OSError("docker disappeared"),
+            ),
+            pytest.raises(sr.SessionError, match=r"could not attach.*docker disappeared"),
+        ):
+            sr.run_project_command(workspace, ["claude", "setup-token"])
 
 
 class TestEnterAlwaysSetsTERM:

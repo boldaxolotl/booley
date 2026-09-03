@@ -299,6 +299,30 @@ class TestReviewBaseKeyExpansion:
         expanded = t.expand([])
         assert expanded["review_tb_quality_clean"] is True
 
+    def test_review_tb_quality_preserves_explicit_target(self):
+        yaml_section = {
+            "mandatory": {"review_tb_quality": {"target": " sim_uart "}},
+        }
+
+        template = CriteriaTemplate.from_yaml(yaml_section)
+
+        assert template.expand([]) == {"review_tb_quality_clean": True}
+        assert template.expand_params([]) == {"review_tb_quality_clean": {"target": "sim_uart"}}
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ({"target": ""}, "non-empty Target"),
+            ({"target": ["sim_a"]}, "non-empty Target"),
+            ({"target": "sim_a,sim_b"}, "exactly one Target"),
+            ({"target": "sim_a", "scope": ["tb/"]}, "Unknown review_tb_quality params"),
+            (["sim_a"], "not a Target list"),
+        ],
+    )
+    def test_review_tb_quality_rejects_invalid_target_binding(self, value, message):
+        with pytest.raises(ValueError, match=message):
+            CriteriaTemplate.from_yaml({"mandatory": {"review_tb_quality": value}})
+
     def test_optional_review_key_expands_correctly(self):
         yaml_section = {
             "optional": {"review_rtl_security": True},

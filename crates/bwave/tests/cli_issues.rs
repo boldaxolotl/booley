@@ -67,6 +67,12 @@ fn run(args: &[&str]) -> (String, String, i32) {
     )
 }
 
+fn live_usage(help: &str) -> &str {
+    help.rsplit_once("\nUsage:")
+        .map(|(_, usage)| usage)
+        .unwrap_or(help)
+}
+
 #[test]
 fn build_default_uses_parallel_engine() {
     let vcd = fixture("small_clocked.vcd");
@@ -466,6 +472,334 @@ fn help_virtual_examples_parse() {
             ),
         }
     }
+}
+
+#[test]
+fn signal_and_diff_reject_virtual_but_keep_marker() {
+    for subcommand in ["signal", "diff"] {
+        let (help, stderr, code) = run(&[subcommand, "--help"]);
+        assert_eq!(code, 0, "{subcommand} --help failed: {stderr}");
+        let usage = live_usage(&help);
+        assert!(
+            !usage.contains("--virtual"),
+            "{subcommand} must not advertise --virtual:\n{help}"
+        );
+        assert!(
+            usage.contains("--marker"),
+            "{subcommand} must preserve its current --marker surface:\n{help}"
+        );
+
+        let args: Vec<&str> = if subcommand == "signal" {
+            vec![subcommand, "missing.fst", "--virtual", "v = *a"]
+        } else {
+            vec![subcommand, "missing.fst", "1", "2", "--virtual", "v = *a"]
+        };
+        let (stdout, stderr, code) = run(&args);
+        assert_eq!(code, 2, "{subcommand} must reject --virtual: {stderr}");
+        assert!(stdout.is_empty(), "parser rejection wrote stdout: {stdout}");
+        assert!(
+            stderr.contains("unexpected argument '--virtual'"),
+            "{subcommand} rejection did not come from clap: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn value_emits_a_selected_virtual_only_snapshot() {
+    let bwave = build_bwave("test_basic.vcd", "value_virtual_only");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "value",
+        &store_path,
+        "--at",
+        "9",
+        "--with-reset",
+        "-s",
+        "hi",
+        "--virtual",
+        "hi = *data > 'd5",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "virtual-only value failed: {stderr}");
+    assert!(stdout.contains("hi"), "virtual row is absent: {stdout}");
+    assert!(stdout.contains("= 1"), "virtual value is wrong: {stdout}");
+    assert!(
+        !stderr.contains("no signals match"),
+        "selected virtual was reported missing: {stderr}"
+    );
+}
+
+#[test]
+fn sample_accepts_a_virtual_trigger() {
+    let bwave = build_bwave("test_basic.vcd", "sample_virtual_trigger");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "sample",
+        &store_path,
+        "hi",
+        "rising",
+        "--with-reset",
+        "-s",
+        "data",
+        "--virtual",
+        "hi = *data > 'd5",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "virtual sample trigger failed: {stderr}");
+    assert!(stdout.contains("data"), "capture row is absent: {stdout}");
+    assert!(
+        stderr.contains("# sample: 1 trigger signal(s)"),
+        "virtual trigger was not counted: {stderr}"
+    );
+    assert!(
+        stderr.contains("# 1 trigger events"),
+        "unexpected virtual trigger event count: {stderr}"
+    );
+}
+
+#[test]
+fn sample_emits_a_selected_virtual_capture_row() {
+    let bwave = build_bwave("test_basic.vcd", "sample_virtual_capture");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "sample",
+        &store_path,
+        "data",
+        "change",
+        "--with-reset",
+        "-s",
+        "hi",
+        "--virtual",
+        "hi = *data > 'd5",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "virtual sample capture failed: {stderr}");
+    assert!(
+        stdout.contains("hi 0"),
+        "false virtual rows are absent: {stdout}"
+    );
+    assert!(
+        stdout.contains("hi 1"),
+        "true virtual rows are absent: {stdout}"
+    );
+    assert!(
+        !stderr.contains("filter dropped"),
+        "selected virtual was reported missing: {stderr}"
+    );
+}
+
+#[test]
+fn value_json_orders_stored_then_composed_virtual_rows_in_async_mode() {
+    let bwave = build_bwave("test_basic.vcd", "value_virtual_json_async");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "value",
+        &store_path,
+        "--at",
+        "80ns",
+        "--async",
+        "--format",
+        "json",
+        "-s",
+        "data",
+        "-s",
+        "hi",
+        "-s",
+        "low",
+        "--virtual",
+        "hi = *data > 'd5",
+        "--virtual",
+        "low = ~hi",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "async JSON value failed: {stderr}");
+    assert!(
+        !stderr.contains("filter dropped"),
+        "virtual selection produced a false warning: {stderr}"
+    );
+    let envelope: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = envelope["data"]["signals"].as_array().unwrap();
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["data[7:0]", "hi", "low"]);
+    assert_eq!(rows[1]["value"], "1");
+    assert_eq!(rows[2]["value"], "0");
+}
+
+#[test]
+fn async_level_sample_uses_selected_virtual_row_change_ticks() {
+    let bwave = build_bwave("test_basic.vcd", "sample_virtual_async_level");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "sample",
+        &store_path,
+        "rstn",
+        "1",
+        "--async",
+        "--with-reset",
+        "-s",
+        "low",
+        "--virtual",
+        "hi = *data > 'd5",
+        "--virtual",
+        "low = ~hi",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "async virtual sample failed: {stderr}");
+    assert!(
+        stdout.contains("70 low 0"),
+        "virtual change was not sampled: {stdout}"
+    );
+    assert!(
+        stderr.contains("# 2 trigger events"),
+        "async level callback schedule is wrong: {stderr}"
+    );
+}
+
+#[test]
+fn sample_unions_same_named_stored_and_virtual_triggers() {
+    let bwave = build_bwave("test_basic.vcd", "sample_virtual_collision");
+    let store_path = bwave.to_string_lossy().to_string();
+    let (stdout, stderr, code) = run(&[
+        "sample",
+        &store_path,
+        "rstn",
+        "rising",
+        "--async",
+        "--with-reset",
+        "-s",
+        "data",
+        "--virtual",
+        "rstn = *rstn",
+    ]);
+    let _ = std::fs::remove_file(&bwave);
+
+    assert_eq!(code, 0, "stored/virtual trigger union failed: {stderr}");
+    assert!(
+        stdout.contains("15 data"),
+        "deduplicated trigger is absent: {stdout}"
+    );
+    assert!(
+        stderr.contains("# sample: 2 trigger signal(s)"),
+        "both trigger candidates were not counted: {stderr}"
+    );
+    assert!(
+        stderr.contains("# 1 trigger events"),
+        "equal trigger timestamps were not deduplicated: {stderr}"
+    );
+}
+
+#[test]
+fn virtual_option_help_matches_the_five_command_contract() {
+    for subcommand in ["wave", "find", "sample", "distance", "value"] {
+        let (help, stderr, code) = run(&[subcommand, "--help"]);
+        assert_eq!(code, 0, "{subcommand} --help failed: {stderr}");
+        assert!(
+            live_usage(&help).contains("--virtual"),
+            "{subcommand} omits --virtual:\n{help}"
+        );
+    }
+    for subcommand in ["list", "signal", "diff", "stats", "stuck", "build"] {
+        let (help, stderr, code) = run(&[subcommand, "--help"]);
+        assert_eq!(code, 0, "{subcommand} --help failed: {stderr}");
+        assert!(
+            !live_usage(&help).contains("--virtual"),
+            "{subcommand} advertises --virtual:\n{help}"
+        );
+    }
+}
+
+#[test]
+fn unsupported_commands_reject_virtual_during_argument_parsing() {
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["list", "missing.fst", "--virtual", "v = *a"],
+        vec!["signal", "missing.fst", "--virtual", "v = *a"],
+        vec!["diff", "missing.fst", "1", "2", "--virtual", "v = *a"],
+        vec!["stats", "missing.fst", "--virtual", "v = *a"],
+        vec!["stuck", "missing.fst", "--virtual", "v = *a"],
+        vec!["build", "missing.vcd", "--virtual", "v = *a"],
+    ];
+    for args in cases {
+        let subcommand = args[0];
+        let (stdout, stderr, code) = run(&args);
+        assert_eq!(code, 2, "{subcommand} accepted --virtual: {stderr}");
+        assert!(stdout.is_empty(), "{subcommand} wrote stdout: {stdout}");
+        assert!(
+            stderr.contains("unexpected argument '--virtual'"),
+            "{subcommand} rejection did not come from clap: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn every_virtual_capable_command_rejects_bad_definitions_before_output() {
+    let bwave = build_bwave("test_basic.vcd", "virtual_bad_matrix");
+    let store_path = bwave.to_string_lossy().to_string();
+    for bad_definition in ["bad = ", "bad = *missing_signal"] {
+        let cases: Vec<Vec<&str>> = vec![
+            vec![
+                "wave",
+                &store_path,
+                "-t",
+                "1:2",
+                "--virtual",
+                bad_definition,
+            ],
+            vec![
+                "find",
+                &store_path,
+                "data",
+                "1",
+                "--virtual",
+                bad_definition,
+            ],
+            vec![
+                "sample",
+                &store_path,
+                "data",
+                "change",
+                "--virtual",
+                bad_definition,
+            ],
+            vec![
+                "distance",
+                &store_path,
+                "data",
+                "change",
+                "--virtual",
+                bad_definition,
+            ],
+            vec![
+                "value",
+                &store_path,
+                "--at",
+                "1",
+                "--virtual",
+                bad_definition,
+            ],
+        ];
+        for args in cases {
+            let subcommand = args[0];
+            let (stdout, stderr, code) = run(&args);
+            assert_eq!(code, 2, "{subcommand} accepted a bad definition: {stderr}");
+            assert!(
+                stdout.is_empty(),
+                "{subcommand} emitted partial result output: {stdout}"
+            );
+            assert!(
+                stderr.contains(&format!("ERROR: --virtual '{bad_definition}':")),
+                "{subcommand} omitted the definition error: {stderr}"
+            );
+        }
+    }
+    let _ = std::fs::remove_file(&bwave);
 }
 
 // -- Async-mode virtual find no longer silently skipped --------------

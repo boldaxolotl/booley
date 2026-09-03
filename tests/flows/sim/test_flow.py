@@ -53,6 +53,45 @@ def test_qualified_target_uses_declared_icarus_tool(tmp_path: Path) -> None:
     select.assert_called_once_with(tmp_path, "::fifo:0#sim", for_flow="sim")
 
 
+@pytest.mark.parametrize("invocation", ["sim", "::sim_demo:0#sim"])
+def test_run_target_stamps_identity_for_selector_or_qualified_invocation(
+    tmp_path: Path,
+    invocation: str,
+) -> None:
+    (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
+    flow = _make_flow(
+        tmp_path,
+        config=invocation,
+        seed_core=False,
+    )
+    targets = flow._resolve_requested_targets()
+    assert targets == ["sim"]
+    flow.is_cocotb_target = MagicMock(return_value=True)
+    flow._run_target_cocotb = MagicMock(return_value=TargetResult(target="sim"))
+
+    result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
+
+    assert result.target == "sim"
+    assert result.target_identity == "::sim_demo:0#sim"
+
+
+def test_native_run_target_stamps_selected_identity(tmp_path: Path) -> None:
+    (tmp_path / "sim_demo.core").write_text(_SIM_CORE_TEXT, encoding="utf-8")
+    flow = _make_flow(tmp_path, config="sim", seed_core=False)
+    assert flow._resolve_requested_targets() == ["sim"]
+    flow.is_cocotb_target = MagicMock(return_value=False)
+    flow._resolve_tests_to_run = MagicMock(return_value=["smoke"])
+    flow._skipped_tests = MagicMock(return_value=[])
+    flow._run_single_test = MagicMock(return_value=SimTestResult(name="smoke", passed=True))
+    flow._drain_pre_run_lines = MagicMock(return_value=[])
+    flow._run_log_is_fresh = MagicMock(return_value=False)
+    flow._eda_tool_for = MagicMock(return_value="verilator")
+
+    result = flow._run_target("sim", "tb_counter", {"sim": ["smoke"]}, [])
+
+    assert result.target_identity == "::sim_demo:0#sim"
+
+
 def test_human_display_caps_targets_at_three():
     results = [
         TargetResult(target=f"config_{index}", passed=True, elapsed_s=1.0) for index in range(10)
@@ -1387,6 +1426,24 @@ class TestEdalizeSimPath:
         for command in commands:
             assert command[command.index("--run-cwd") + 1] == "."
 
+    def test_doctor_bad_run_commands_keep_configured_runtime_cwd(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The bad build fixture must not move runtime assets into the build tree."""
+        from booley.fusesoc import selftest_overlay
+
+        flow = _make_flow(tmp_path)
+        monkeypatch.setattr("booley.flows.sim.flow.resolve_run_cwd", lambda _root: "assets")
+        monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
+        commands = (
+            flow._verilator_run_cmd("build/verilator", "tb", []),
+            flow._icarus_run_cmd("build/icarus", []),
+            flow._cocotb_run_cmd("build/cocotb", "icarus", "test_tb", ["smoke"]),
+        )
+
+        for command in commands:
+            assert command[command.index("--run-cwd") + 1] == "assets"
+
     def test_icarus_run_cmd_ships_through_iverilog_run(self, tmp_path: Path):
         """Icarus runs are re-homed to booley.flows.sim.backends.icarus (the edalize
         Icarus run-half) — the mirror of the verilator_run wiring, not `make run`.
@@ -1557,6 +1614,33 @@ class TestEdalizeSimPath:
         assert _resolve_sim_timeout_ms(tmp_path) == 1800000
         # Unconfigured project -> the built-in 600s default.
         assert _resolve_sim_timeout_ms(tmp_path / "nowhere") == _DEFAULT_TIMEOUT_MS
+
+    def test_sim_config_numeric_boundaries_reject_booleans(self, tmp_path: Path):
+        from booley.flows.sim.flow import (
+            _DEFAULT_MAX_RUNDIR_BYTES,
+            _DEFAULT_TIMEOUT_MS,
+            _resolve_max_rundir_bytes,
+            _resolve_pre_run_commands,
+            _resolve_sim_time_grace_s,
+            _resolve_sim_timeout_ms,
+        )
+        from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
+
+        proj = tmp_path / ".booley_project"
+        proj.mkdir()
+        (proj / "booley.toml").write_text(
+            "[flows.sim]\n"
+            "pre_run_commands = true\n"
+            "max_rundir_bytes = true\n"
+            "timeout_ms = true\n"
+            "sim_time_grace_s = true\n",
+            encoding="utf-8",
+        )
+
+        assert _resolve_pre_run_commands(tmp_path) == []
+        assert _resolve_max_rundir_bytes(tmp_path) == _DEFAULT_MAX_RUNDIR_BYTES
+        assert _resolve_sim_timeout_ms(tmp_path) == _DEFAULT_TIMEOUT_MS
+        assert _resolve_sim_time_grace_s(tmp_path) == DEFAULT_SIM_TIME_GRACE_S
 
     def test_effective_timeout_ms_precedence(self, tmp_path: Path):
         """--timeout arg wins over [flows.sim].timeout_ms wins over default (F4)."""
@@ -1738,6 +1822,10 @@ class TestEdalizeSimPath:
 
         flow = _make_flow(tmp_path)
         project_dir = tmp_path / ".booley_project"
+        (project_dir / "booley.toml").parent.mkdir(parents=True, exist_ok=True)
+        (project_dir / "booley.toml").write_text(
+            '[flows.sim]\nrun_cwd = "runtime-assets"\n', encoding="utf-8"
+        )
         overlay_file = (
             selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
         )
@@ -1774,8 +1862,7 @@ class TestEdalizeSimPath:
             cmd = flow._prepare_sim_command("lite", "known_bad", {})
 
         assert staged.read_text(encoding="utf-8") == "bad\n"
-        run_cwd = staged.parents[1].relative_to(tmp_path).as_posix()
-        assert f"--run-cwd {run_cwd}" in cmd[2]
+        assert "--run-cwd runtime-assets" in cmd[2]
 
     def test_ordinary_sim_does_not_apply_doctor_bad_overlay(self, tmp_path: Path, monkeypatch):
         from booley.flows.sim.build import _stage_doctor_overlay
@@ -2683,6 +2770,7 @@ class TestBuildContextReporting:
         flow._test_names_map = {}
         tr = TargetResult(
             target="sim",
+            target_identity="::sim_demo:0#sim",
             tb_top="tb_counter",
             passed=False,
             elapsed_s=1.0,
@@ -2692,6 +2780,8 @@ class TestBuildContextReporting:
         flow._write_target_report(tr)
 
         report = json.loads((tmp_path / "reports" / "sim_sim.json").read_text())
+        assert report["target"] == "sim"
+        assert report["target_identity"] == "::sim_demo:0#sim"
         # The composed sh -c script: fusesoc setup chained to the edalize make.
         assert "--setup" in report["compile_command"]
         assert "make -C" in report["compile_command"]

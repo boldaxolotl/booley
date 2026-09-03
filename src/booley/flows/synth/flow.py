@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -28,7 +29,6 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from booley.core.boundary import BoundaryError, as_int, require_bool
-from booley.criteria.templates import TargetPair
 from booley.flows.synth.backends.yosys.core import (
     FRONTEND_CHOICES,
     NAND2_AREA_UM2,
@@ -41,8 +41,9 @@ from booley.runtime import job_slots
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
+from booley.targets.target import TargetHandle, select_targets
 
-from .. import artifacts
+from .. import artifacts, edam
 from ..base import BooleyFlow, SubprocessResult
 from ..baseline_worktree import (
     BaselineWorktreeError,
@@ -59,8 +60,13 @@ from ..clock_timing import (
 )
 from ..implementation_comparison import (
     ImplementationComparisonError,
-    target_pair_for_candidate,
-    target_pairs_for_candidates,
+    TargetPairPlan,
+    baseline_execution_context,
+    candidate_execution_refs,
+    resolve_target_execution_ref,
+    selected_target_handle,
+    target_pair_plans_for_handles,
+    target_plan_for_handle,
 )
 from ..implementation_publication import (
     ImplementationProgress,
@@ -129,7 +135,8 @@ def _resolve_synth_timeout_ms(
             return 1800000
     if work_dir is None:
         return 1800000
-    return max(1, as_int(_load_flow_config(work_dir).get("timeout_ms"), 1800000))
+    configured = as_int(_load_flow_config(work_dir).get("timeout_ms"), 1800000)
+    return max(1, configured if configured is not None else 1800000)
 
 
 def _expected_latches(work_dir: Path) -> int:
@@ -1048,7 +1055,7 @@ class AsicSynthesizeFlow(BooleyFlow):
     def _append_rtl_source_args(
         self,
         cmd: list[str],
-        resolved: object,
+        resolved: fusesoc_registry.ResolvedTarget,
         work_dir: Path,
     ) -> str:
         """Append ``-t``/``--extra-rtl``/``--inc-dir`` flags; return the top module."""
@@ -1066,7 +1073,7 @@ class AsicSynthesizeFlow(BooleyFlow):
     def _append_sta_constraint_args(
         self,
         cmd: list[str],
-        resolved: object,
+        resolved: fusesoc_registry.ResolvedTarget,
         target: str,
         work_dir: Path,
         synth_mode: SynthMode,
@@ -1103,7 +1110,7 @@ class AsicSynthesizeFlow(BooleyFlow):
     def _append_typed_param_args(
         self,
         cmd: list[str],
-        resolved: object,
+        resolved: fusesoc_registry.ResolvedTarget,
         target: str,
         top: str,
     ) -> None:
@@ -1120,20 +1127,38 @@ class AsicSynthesizeFlow(BooleyFlow):
         for warning in _synth_target_warnings(top, defines):
             logger.warning("Synth %s: %s", target, warning)
 
-    def _append_synth_recipe_args(self, cmd: list[str], resolved: Any, target: str) -> None:
+    def _append_synth_recipe_args(
+        self, cmd: list[str], resolved: fusesoc_registry.ResolvedTarget, target: str
+    ) -> None:
         """Append the shared normalized synthesis recipe for this invocation."""
         cmd.extend(synthesis_recipe_args(resolved.flow_options, self.args, target=target))
 
-    def _resolve_synth_target(self, target: str) -> Any:
+    def _resolve_synth_target(self, target: str) -> fusesoc_registry.ResolvedTarget:
         """Clean and resolve one FuseSoC Target into its isolated build root."""
-        from ..edam import work_root_for
-
-        build_root = work_root_for(self.args.work_dir, self.name, target)
+        build_root = self._synth_work_root(target)
         shutil.rmtree(build_root, ignore_errors=True)
-        return fusesoc_registry.resolve_target(
+        handle = self._target_handle(target)
+        ref = getattr(self, "_target_execution_refs", {}).get(target)
+        if ref is not None:
+            return resolve_target_execution_ref(handle, ref, build_root=build_root)
+        return fusesoc_registry.resolve_target_handle(handle, build_root=build_root)
+
+    def _target_handle(self, target: str) -> TargetHandle:
+        """Return the selected handle, reselecting only in a baseline checkout."""
+        return selected_target_handle(
+            getattr(self, "_target_handles", {}),
+            self.args.work_dir,
             target,
-            project_root=self.args.work_dir,
-            build_root=build_root,
+            flow="synth",
+        )
+
+    def _target_plan(self, target: str) -> TargetPairPlan:
+        """Look up the total pair plan by canonical candidate identity."""
+        return target_plan_for_handle(
+            getattr(self, "_target_pairs", ()),
+            self._target_handle(target),
+            flow="synth",
+            sealed=getattr(self, "_target_contract", None) is not None,
         )
 
     def _record_recipe_evidence(self, target: str, resolved: Any) -> None:
@@ -1171,6 +1196,10 @@ class AsicSynthesizeFlow(BooleyFlow):
         cmd.extend(["-w", target])
         return cmd
 
+    def _synth_work_root(self, target: str) -> Path:
+        """Return the shared mutable work root for one synthesis Target."""
+        return edam.work_root_for(self.args.work_dir, self.name, target)
+
     def _synth_build_dir(self, target: str) -> Path:
         """The make-driven synth build dir for *target* (under its work root).
 
@@ -1179,9 +1208,14 @@ class AsicSynthesizeFlow(BooleyFlow):
         shares the root. Wiped together with the root by ``_build_synth_cmd``'s
         pre-resolution cleanup.
         """
-        from ..edam import work_root_for
+        return self._synth_work_root(target) / "synth"
 
-        return work_root_for(self.args.work_dir, self.name, target) / "synth"
+    def _report_workspace_wait(self, target: str) -> None:
+        """Surface same-Target serialization in logs, stderr, and live progress."""
+        line = f"waiting for synth target workspace [{target}]"
+        logger.info("Synth %s: waiting for target workspace", target)
+        print(f"[synth] {line}", file=sys.stderr, flush=True)
+        self.emit_progress(line)
 
     def _configure_synth(self, target: str, cmd: list[str]) -> Any:
         """Render *target*'s make-driven build dir from the spec argv (ADR 0037 §8).
@@ -1211,8 +1245,6 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _synth_boundary_cmd(self, plan: Any) -> list[str]:
         """Return the Session Runtime command for a configured synthesis plan."""
-        from .. import edam
-
         return ["make", "-C", edam.relpath_for_make(plan.build_dir, self.args.work_dir)]
 
     # -- Single-target run ----------------------------------------------------
@@ -1277,9 +1309,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         # F-26: _persist_synth_log only lands at the END of a multi-minute
         # synth, so claim the log now — a tail during the wait must not see
         # the previous run's area/timing tail as this run's progress.
-        from ..edam import work_root_for
-
-        self._open_run_log(target, work_root_for(self.args.work_dir, self.name, target))
+        self._open_run_log(target, self._synth_work_root(target))
         start = time.monotonic()
         proc_result = self._execute_boundary(make_cmd, timeout=self._get_timeout())
         elapsed = time.monotonic() - start
@@ -1402,7 +1432,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         and the agent has ``ls``.
         """
         build_dir = self._synth_build_dir(target)
-        dirs = {"build": build_dir}
+        dirs: dict[str, Path | str | None] = {"build": build_dir}
         if synth_mode is not None and synth_mode.runs_openroad:
             dirs["timing"] = build_dir / "reports" / "timing"
         return artifacts.artifacts_block(
@@ -1424,9 +1454,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """
         from booley.flows.run_log import write_run_log
 
-        from ..edam import work_root_for
-
-        log_dir = work_root_for(self.args.work_dir, self.name, target)
+        log_dir = self._synth_work_root(target)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, output)
@@ -1454,9 +1482,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         """
         from booley.flows.run_log import write_run_log
 
-        from ..edam import work_root_for
-
-        log_dir = work_root_for(project_root, self.name, target, variant="baseline")
+        log_dir = edam.work_root_for(project_root, self.name, target, variant="baseline")
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = write_run_log(log_dir, output)
@@ -1524,10 +1550,10 @@ class AsicSynthesizeFlow(BooleyFlow):
         baseline_ref: str | None,
     ) -> ImplementationReport:
         """Adapt native synthesis evidence to the shared canonical schema."""
-        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), target)
+        plan = self._target_plan(target)
         return build_synth_implementation_report(
             target=target,
-            pair=pair,
+            pair=plan.evidence_pair(),
             current=metrics,
             baseline=baseline_metrics,
             baseline_ref=self.args.baseline if baseline_metrics is not None else None,
@@ -1538,6 +1564,8 @@ class AsicSynthesizeFlow(BooleyFlow):
             ),
             eda_tool=self._eda_tool,
             fatal_timing=getattr(self, "_timing_violation_is_fatal", False),
+            baseline_target_identity=plan.baseline.identity,
+            candidate_target_identity=plan.candidate.identity,
         )
 
     def _publisher(self) -> ImplementationPublisher:
@@ -1574,9 +1602,11 @@ class AsicSynthesizeFlow(BooleyFlow):
             eda_tool=self._eda_tool,
         )
         report["passed"] = implementation.passed
-        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), target)
-        report["baseline_target"] = pair.baseline
-        report["candidate_target"] = pair.candidate
+        plan = self._target_plan(target)
+        report["baseline_target"] = plan.baseline.selector
+        report["candidate_target"] = plan.candidate.selector
+        report["baseline_target_identity"] = plan.baseline.identity
+        report["candidate_target_identity"] = plan.candidate.identity
         report["run_evidence"] = metrics.run_evidence or None
         report["baseline_run_evidence"] = (
             baseline_metrics.run_evidence if baseline_metrics else None
@@ -1692,7 +1722,7 @@ class AsicSynthesizeFlow(BooleyFlow):
             return f"synth: {exc}"
         return None
 
-    def _apply_ticket_baseline(self, targets: list[str]) -> str | None:
+    def _apply_ticket_baseline(self, targets: Sequence[TargetHandle]) -> str | None:
         """Default relative ticket criteria to their immutable baseline SHA."""
         baseline, full_sha, error = resolve_ticket_baseline(
             self.state.criteria,
@@ -1708,8 +1738,6 @@ class AsicSynthesizeFlow(BooleyFlow):
 
     def _run(self) -> McpToolResult:
         """Execute synthesis for all targets, optionally comparing to baseline."""
-        from booley.fusesoc import fusesoc_registry
-
         # Populated by _run_baseline_configs when a stealth-cores self-compare is
         # detected; read by _aggregate_results. Reset per run so a stale value
         # from a reused instance never leaks into a fresh invocation.
@@ -1717,10 +1745,9 @@ class AsicSynthesizeFlow(BooleyFlow):
         self._baseline_full_sha: str | None = None
         self._implementation_reports: dict[str, ImplementationReport] = {}
 
-        targets = fusesoc_registry.resolve_target_selection(
-            self.args.target,
-            self.args.work_dir,
-        )
+        handles = select_targets(self.args.work_dir, self.args.target, for_flow="synth")
+        self._target_handles = {handle.selector: handle for handle in handles}
+        targets = [handle.selector for handle in handles]
         if not targets:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
@@ -1729,7 +1756,7 @@ class AsicSynthesizeFlow(BooleyFlow):
                     "(bare name if unambiguous, else vlnv#name)."
                 ),
             )
-        preparation_error = self._prepare_target_pairs(targets)
+        preparation_error = self._prepare_target_pairs(handles)
         if preparation_error is not None:
             return preparation_error
         if self.args.dry_run:
@@ -1752,18 +1779,18 @@ class AsicSynthesizeFlow(BooleyFlow):
         )
         return result
 
-    def _prepare_target_pairs(self, targets: list[str]) -> McpToolResult | None:
-        baseline_error = self._apply_ticket_baseline(targets)
+    def _prepare_target_pairs(self, handles: Sequence[TargetHandle]) -> McpToolResult | None:
+        baseline_error = self._apply_ticket_baseline(handles)
         comparison_error: str | None = None
         try:
-            self._target_pairs = target_pairs_for_candidates(
+            self._target_pairs = target_pair_plans_for_handles(
                 self.state.criteria,
                 "synthesis_ok_",
-                targets,
+                handles,
                 contract=getattr(self, "_target_contract", None),
-                project_root=self.args.work_dir,
                 flow="synth",
             )
+            self._target_execution_refs = candidate_execution_refs(handles, self._target_pairs)
         except ImplementationComparisonError as exc:
             comparison_error = f"synth: {exc}"
         if baseline_error is not None or comparison_error is not None:
@@ -1786,21 +1813,32 @@ class AsicSynthesizeFlow(BooleyFlow):
     ) -> dict[str, SynthMetrics]:
         current_results: dict[str, SynthMetrics] = {}
         for tgt in targets:
-            metrics, _output = self._run_single_config(tgt)
-            current_results[tgt] = metrics
-            self._persist_target_outcome(
-                tgt,
-                metrics,
-                baseline_results.get(tgt),
-                short_sha,
-            )
-            self._write_progress_report(
-                targets,
-                current_results,
-                baseline_results,
-                phase="current",
-                baseline_ref=short_sha,
-            )
+            try:
+                with edam.work_root_lease(
+                    self._synth_work_root(tgt),
+                    timeout_s=self._get_timeout(),
+                    on_wait=lambda target=tgt: self._report_workspace_wait(target),
+                ):
+                    metrics, _output = self._run_single_config(tgt)
+                    self._publish_current_target(
+                        tgt,
+                        metrics,
+                        targets,
+                        current_results,
+                        baseline_results,
+                        short_sha,
+                    )
+            except edam.WorkRootLeaseError as exc:
+                logger.error("Synth %s: %s", tgt, exc)
+                metrics = _infra_metrics(str(exc))
+                self._publish_current_target(
+                    tgt,
+                    metrics,
+                    targets,
+                    current_results,
+                    baseline_results,
+                    short_sha,
+                )
             if len(targets) > 1:
                 self.emit_completion(
                     self._format_config_line(
@@ -1810,6 +1848,31 @@ class AsicSynthesizeFlow(BooleyFlow):
                     )
                 )
         return current_results
+
+    def _publish_current_target(
+        self,
+        target: str,
+        metrics: SynthMetrics,
+        targets: list[str],
+        current_results: dict[str, SynthMetrics],
+        baseline_results: dict[str, SynthMetrics],
+        baseline_ref: str | None,
+    ) -> None:
+        """Publish one Target while its mutable workspace is still owned."""
+        current_results[target] = metrics
+        self._persist_target_outcome(
+            target,
+            metrics,
+            baseline_results.get(target),
+            baseline_ref,
+        )
+        self._write_progress_report(
+            targets,
+            current_results,
+            baseline_results,
+            phase="current",
+            baseline_ref=baseline_ref,
+        )
 
     def _discard_stale_selfcompare(
         self,
@@ -1841,18 +1904,19 @@ class AsicSynthesizeFlow(BooleyFlow):
         no EDA tools — so it degrades to the cheap ``setup_command`` preview
         the make-driven built-ins use.
         """
-        from .. import edam
-        from ..edam import work_root_for
-
         lines = []
         for tgt in targets:
             try:
-                cmd = self._build_synth_cmd(tgt)
-                rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
-                lines.append(
-                    f"[synth] dry-run ({tgt}): make -C {rel}"
-                    f"  # rendered at configure time from: {' '.join(cmd)}",
-                )
+                with edam.try_work_root_lease(self._synth_work_root(tgt)) as leased:
+                    if leased is None:
+                        lines.append(self._setup_preview(tgt, "workspace busy"))
+                        continue
+                    cmd = self._build_synth_cmd(tgt)
+                    rel = edam.relpath_for_make(self._synth_build_dir(tgt), self.args.work_dir)
+                    lines.append(
+                        f"[synth] dry-run ({tgt}): make -C {rel}"
+                        f"  # rendered at configure time from: {' '.join(cmd)}",
+                    )
             except BoundaryError as exc:
                 # A wrong-typed config knob fails the preview loudly — dry-run
                 # exists to vet the command, so hiding a config error here would
@@ -1862,28 +1926,38 @@ class AsicSynthesizeFlow(BooleyFlow):
                     report_text=f"[synth] dry-run ({tgt}): config error: {exc}",
                 )
             except fusesoc_registry.TargetResolutionError as exc:
-                setup_cmd = fusesoc_registry.setup_command(
-                    tgt,
-                    project_root=self.args.work_dir,
-                    build_root=work_root_for(self.args.work_dir, self.name, tgt),
-                )
-                lines.append(
-                    f"[synth] dry-run ({tgt}): {' '.join(setup_cmd)}"
-                    " && make -C <configured synth build dir>"
-                    f"  # full preview unavailable here: {exc}",
+                lines.append(self._setup_preview(tgt, str(exc)))
+            except edam.WorkRootLeaseError as exc:
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"[synth] dry-run ({tgt}): infrastructure error: {exc}",
                 )
         return McpToolResult(exit_code=EXIT_SUCCESS, report_text="\n".join(lines))
 
+    def _setup_preview(self, target: str, reason: str) -> str:
+        """Return the non-mutating preview used when full resolution is unavailable."""
+        handle = self._target_handle(target)
+        setup_cmd = fusesoc_registry.setup_command(
+            handle.selector,
+            project_root=handle.project_root,
+            build_root=self._synth_work_root(target),
+            vlnv=handle.vlnv,
+        )
+        return (
+            f"[synth] dry-run ({target}): {' '.join(setup_cmd)}"
+            " && make -C <configured synth build dir>"
+            f"  # full preview unavailable here: {reason}"
+        )
+
     def _run_baseline_configs(
         self,
-        pairs: Sequence[TargetPair | str],
+        pairs: Sequence[TargetPairPlan],
     ) -> tuple[dict[str, SynthMetrics] | McpToolResult, str | None]:
         """Synthesize paired baseline Targets in an ephemeral worktree."""
         baseline_ref = self.args.baseline
         if not baseline_ref:
             return {}, None
-        pairs = self._normalize_target_pairs(pairs)
-        targets = [pair.candidate for pair in pairs]
+        targets = [plan.candidate.selector for plan in pairs]
         project_root = Path(self.args.work_dir)
         short_sha = git_short_sha(baseline_ref, project_root)
         full_sha = git_full_sha(str(baseline_ref), project_root)
@@ -1893,44 +1967,57 @@ class AsicSynthesizeFlow(BooleyFlow):
             with baseline_worktree(project_root, baseline_ref) as wt:
                 self.args.work_dir = wt
                 self._project_root = project_root
-                if all(pair.baseline == pair.candidate for pair in pairs):
+                current_handles = getattr(self, "_target_handles", {})
+                current_refs = getattr(self, "_target_execution_refs", {})
+                self._target_handles, self._target_execution_refs = baseline_execution_context(
+                    pairs, wt
+                )
+                if all(plan.baseline.identity == plan.candidate.identity for plan in pairs):
                     self._baseline_selfcompare_msg = _baseline_self_compare_warning(
                         project_root, wt
                     )
                 try:
                     result = self._execute_baseline_pairs(pairs, targets, project_root, short_sha)
                 finally:
+                    self._target_handles = current_handles
+                    self._target_execution_refs = current_refs
                     self.args.work_dir = project_root
                     self._project_root = None
-        except BaselineWorktreeError as exc:
+        except (BaselineWorktreeError, ImplementationComparisonError) as exc:
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=f"synth: {exc}",
             ), None
         return result, short_sha
 
-    @staticmethod
-    def _normalize_target_pairs(pairs: Sequence[TargetPair | str]) -> tuple[TargetPair, ...]:
-        return tuple(
-            pair if isinstance(pair, TargetPair) else TargetPair(pair, pair) for pair in pairs
-        )
-
     def _execute_baseline_pairs(
         self,
-        pairs: Sequence[TargetPair],
+        pairs: Sequence[TargetPairPlan],
         targets: list[str],
         project_root: Path,
         short_sha: str,
     ) -> dict[str, SynthMetrics]:
         baseline_results: dict[str, SynthMetrics] = {}
         executed: dict[str, SynthMetrics] = {}
-        for pair in pairs:
-            if pair.baseline not in executed:
-                metrics, output = self._run_single_config(pair.baseline)
-                metrics.log_path = self._persist_baseline_log(pair.baseline, output, project_root)
-                executed[pair.baseline] = metrics
-            metrics = copy.deepcopy(executed[pair.baseline])
-            baseline_results[pair.candidate] = metrics
+        for plan in pairs:
+            baseline = plan.baseline.selector
+            candidate = plan.candidate.selector
+            if baseline not in executed:
+                try:
+                    with edam.work_root_lease(
+                        self._synth_work_root(baseline),
+                        timeout_s=self._get_timeout(),
+                        on_wait=lambda target=baseline: self._report_workspace_wait(target),
+                    ):
+                        metrics, output = self._run_single_config(baseline)
+                except edam.WorkRootLeaseError as exc:
+                    logger.error("Synth baseline %s: %s", baseline, exc)
+                    output = str(exc)
+                    metrics = _infra_metrics(output)
+                metrics.log_path = self._persist_baseline_log(baseline, output, project_root)
+                executed[baseline] = metrics
+            metrics = copy.deepcopy(executed[baseline])
+            baseline_results[candidate] = metrics
             self._write_progress_report(
                 targets, {}, baseline_results, phase="baseline", baseline_ref=short_sha
             )
@@ -2278,7 +2365,7 @@ class AsicSynthesizeFlow(BooleyFlow):
         implementation: ImplementationReport | None = None,
     ) -> None:
         """Set the synthesis_ok criterion for one target."""
-        pair = target_pair_for_candidate(getattr(self, "_target_pairs", ()), tgt)
+        plan = self._target_plan(tgt)
         detail: dict[str, Any] = {
             **cur.qor_detail(),
             **cur.structural_detail(),
@@ -2287,8 +2374,10 @@ class AsicSynthesizeFlow(BooleyFlow):
             RECIPE_FINGERPRINT_DETAIL: cur.recipe_fingerprint or None,
             RECIPE_SNAPSHOT_DETAIL: cur.recipe_snapshot or None,
             RUN_EVIDENCE_DETAIL: cur.run_evidence or None,
-            BASELINE_TARGET_DETAIL: pair.baseline,
-            CANDIDATE_TARGET_DETAIL: pair.candidate,
+            BASELINE_TARGET_DETAIL: plan.baseline.selector,
+            CANDIDATE_TARGET_DETAIL: plan.candidate.selector,
+            "_baseline_target_identity": plan.baseline.identity,
+            "_candidate_target_identity": plan.candidate.identity,
             "_metric_map": dict(_CRITERION_METRIC_MAP),
             "_min_allowed": list(_CRITERION_MIN_ALLOWED),
         }

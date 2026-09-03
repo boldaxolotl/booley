@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from booley.fusesoc import fusesoc_registry
-from booley.targets.target import TargetInspection, inspect_target, select_targets
+from booley.targets.target import (
+    TargetInspection,
+    flow_can_drive,
+    inspect_target,
+    select_target,
+    select_targets,
+)
 
 
 class ReviewContractError(ValueError):
@@ -29,6 +35,14 @@ class ReviewTargetContract:
     @property
     def is_cocotb(self) -> bool:
         return self.kind == "cocotb"
+
+
+@dataclass(frozen=True)
+class _InspectionFailure:
+    """One candidate whose relevance could not be determined."""
+
+    identity: str
+    error: str
 
 
 def _normalize(path: str) -> str:
@@ -50,31 +64,67 @@ def _matches_scope(
     return scope.issubset(candidates)
 
 
-def _candidate_refs(
+def _inspect_candidates(
     project_root: Path,
     declarations: Mapping[str, list[fusesoc_registry.TargetRef]],
     *,
     category: str,
     target_hint: str | None,
-) -> list[tuple[str, TargetInspection]]:
+) -> tuple[list[tuple[str, TargetInspection]], list[_InspectionFailure]]:
     if target_hint:
-        selected = select_targets(project_root, target_hint)
+        selected = select_targets(
+            project_root,
+            target_hint,
+            for_flow="sim" if category == "tb" else None,
+        )
         if category == "tb" and len(selected) != 1:
             raise ReviewContractError("TB review requires exactly one --target selector")
-        return [
-            (handle.selector, inspect_target(project_root, handle.identity)) for handle in selected
-        ]
-    candidates = [
-        inspect_target(project_root, f"{ref.vlnv}#{ref.name}")
-        for bucket in declarations.values()
-        for ref in bucket
-        if not ref.doctor_selftest
-    ]
-    unique = {inspection.handle.identity: inspection for inspection in candidates}
-    return [
-        (inspection.handle.selector, inspection)
-        for inspection in sorted(unique.values(), key=lambda item: item.handle.identity)
-    ]
+        candidates = []
+        for handle in selected:
+            try:
+                candidates.append((handle.selector, inspect_target(project_root, handle)))
+            except (fusesoc_registry.FuseSocError, OSError) as exc:
+                raise ReviewContractError(
+                    f"Relevant Target {handle.identity!r} could not be inspected: {exc}"
+                ) from exc
+        return candidates, []
+
+    handles = {}
+    failures: list[_InspectionFailure] = []
+    for ref in (ref for bucket in declarations.values() for ref in bucket):
+        if ref.doctor_selftest or (category == "tb" and not flow_can_drive("sim", ref)):
+            continue
+        identity = f"{ref.vlnv}#{ref.name}"
+        try:
+            handle = select_target(project_root, identity)
+        except (fusesoc_registry.FuseSocError, OSError) as exc:
+            failures.append(_InspectionFailure(identity, str(exc)))
+            continue
+        handles[handle.identity] = handle
+
+    candidates = []
+    for handle in sorted(handles.values(), key=lambda item: item.identity):
+        try:
+            candidates.append((handle.selector, inspect_target(project_root, handle)))
+        except (fusesoc_registry.FuseSocError, OSError) as exc:
+            failures.append(_InspectionFailure(handle.identity, str(exc)))
+    return candidates, sorted(failures, key=lambda item: item.identity)
+
+
+def _raise_uncertain_failures(
+    failures: list[_InspectionFailure],
+    matches: list[tuple[str, TargetInspection]],
+) -> None:
+    """Fail closed when an uninspectable candidate might own the scope."""
+    if not failures:
+        return
+    matched = ", ".join(selector for selector, _ in matches)
+    context = f"; inspected matches: {matched}" if matched else ""
+    details = "; ".join(f"{item.identity}: {item.error}" for item in failures)
+    raise ReviewContractError(
+        "Cannot determine a unique review Target because potentially relevant "
+        f"candidate inspection failed{context}; failures: {details}"
+    )
 
 
 def _target_contract(
@@ -86,6 +136,13 @@ def _target_contract(
         "cocotb" if inspection.flow_options.get("cocotb_module") else "hdl"
         for _, inspection in matches
     }
+    if category == "tb" and len(matches) > 1:
+        candidates = ", ".join(selector for selector, _ in matches)
+        kind_context = f" with conflicting kinds {sorted(kinds)}" if len(kinds) > 1 else ""
+        raise ReviewContractError(
+            f"Review scope ambiguously matches multiple TB Targets ({candidates}){kind_context}; "
+            "pass --target <selector>"
+        )
     selectors = tuple(sorted(selector for selector, _ in matches))
     if len(kinds) == 1:
         return ReviewTargetContract(selectors, next(iter(kinds)))
@@ -115,7 +172,7 @@ def resolve_review_target(
     normalized_scope = {_normalize(path) for path in scope}
     declarations = fusesoc_registry.target_declarations(project_root)
 
-    refs = _candidate_refs(
+    refs, failures = _inspect_candidates(
         project_root,
         declarations,
         category=category,
@@ -126,6 +183,7 @@ def resolve_review_target(
         for selector, inspection in refs
         if _matches_scope(inspection, normalized_scope, category=category)
     ]
+    _raise_uncertain_failures(failures, matches)
     if target_hint and not matches:
         raise ReviewContractError(
             f"--target {target_hint!r} does not contain every {category.upper()} scope file"

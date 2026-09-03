@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import tempfile
 import urllib.error
 import urllib.request
@@ -76,6 +78,31 @@ OpenUrl = Callable[[urllib.request.Request, float], BinaryIO]
 def cache_root() -> Path:
     """Absolute host path of this revision's user-owned PDK cache."""
     return (config_dir() / "pdk" / f"nangate45-{REVISION[:12]}").absolute()
+
+
+def secure_config_dir_for_cache(root: Path) -> bool:
+    """Secure the shared config root when *root* is Booley's default cache."""
+    directory = config_dir().absolute()
+    if root.absolute() != cache_root():
+        return False
+    if directory.is_symlink():
+        raise NangatePdkError(f"Booley config directory must not be a symlink: {directory}")
+    try:
+        existed = directory.exists()
+        previous_mode = stat.S_IMODE(directory.stat().st_mode) if existed else None
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.stat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise NangatePdkError(f"Booley config path is not a directory: {directory}")
+        if os.name != "nt":
+            if info.st_uid != os.getuid():
+                raise NangatePdkError(f"Booley config directory is not user-owned: {directory}")
+            directory.chmod(0o700)
+    except OSError as exc:
+        raise NangatePdkError(
+            f"could not secure Booley config directory {directory}: {exc}"
+        ) from exc
+    return not existed or (os.name != "nt" and previous_mode != 0o700)
 
 
 def _sha256(path: Path) -> str:
@@ -159,6 +186,7 @@ def _manifest_bytes() -> bytes:
 def fetch(root: Path | None = None, *, opener: OpenUrl = _open_url) -> Path:
     """Download, verify, then atomically replace each pinned file in *root*."""
     root = root or cache_root()
+    secure_config_dir_for_cache(root)
     root.parent.mkdir(parents=True, exist_ok=True)
     try:
         with tempfile.TemporaryDirectory(prefix=".nangate45-", dir=root.parent) as temporary:

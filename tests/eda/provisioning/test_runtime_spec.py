@@ -180,6 +180,11 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
         )
         monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
+        monkeypatch.setattr(
+            session_runtime,
+            "_strict_all_interactive_states",
+            lambda _project_id: [],
+        )
         monkeypatch.setattr(session_runtime, "_create_session_container", lambda *_args: None)
         monkeypatch.setattr(session_runtime, "_run_hook", lambda *_args: None)
 
@@ -827,6 +832,76 @@ def test_finder_uses_current_absolute_entry_point_before_path(
     monkeypatch.setenv("PATH", str(fallback.parent))
 
     assert runtime_spec._find_trusted_validator(project) == invoked
+
+
+def test_finder_restores_windows_console_launcher_suffix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prefix = tmp_path / "Python313"
+    scripts = prefix / "Scripts"
+    executable = scripts / "booley.exe"
+    scripts.mkdir(parents=True)
+    executable.write_text("launcher", encoding="utf-8")
+    executable.chmod(0o755)
+    invoked = executable.with_suffix("")
+    monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {scripts.resolve(): prefix.resolve()},
+    )
+
+    assert not invoked.exists()
+    assert runtime_spec._resolve_trusted_validator(executable, project) == executable
+    assert runtime_spec._find_trusted_validator(project) == executable
+
+
+def test_finder_preserves_existing_windows_extensionless_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prefix = tmp_path / "Python313"
+    scripts = prefix / "Scripts"
+    invoked = scripts / "booley"
+    scripts.mkdir(parents=True)
+    invoked.write_text("launcher", encoding="utf-8")
+    invoked.chmod(0o755)
+    monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    monkeypatch.setattr(
+        runtime_spec,
+        "_validator_prefix_anchors",
+        lambda: {scripts.resolve(): prefix.resolve()},
+    )
+
+    assert runtime_spec._resolve_trusted_validator(invoked, project) == invoked
+    assert runtime_spec._find_trusted_validator(project) == invoked
+
+
+def test_normalized_project_launcher_does_not_fall_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    trusted = _install_trusted_validator(tmp_path, monkeypatch)
+    poisoned = project / ".venv" / "Scripts" / "booley.exe"
+    poisoned.parent.mkdir(parents=True)
+    poisoned.write_text("launcher", encoding="utf-8")
+    poisoned.chmod(0o755)
+    invoked = poisoned.with_suffix("")
+    monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
+    monkeypatch.setenv("PATH", str(trusted.parent))
+
+    monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
+    assert runtime_spec._find_trusted_validator(project) == trusted
+
+    monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
+    assert not invoked.exists()
+    assert runtime_spec._find_trusted_validator(project) is None
 
 
 def test_finder_uses_trusted_interpreter_scripts_directory_off_path(

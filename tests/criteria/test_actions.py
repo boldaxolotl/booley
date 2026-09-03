@@ -53,3 +53,19 @@ def test_target_independent_reviewer_action_omits_fabricated_target_guidance() -
     assert (
         planned_invocation("review_rtl_spec_done", entry) == "reviewer --category rtl --focus spec"
     )
+
+
+def test_target_bound_tb_reviewer_action_uses_sealed_selector() -> None:
+    entry = CriterionEntry(
+        met=False,
+        mandatory=True,
+        params={
+            "target": "acme:ip:uart:1.0#sim_uart",
+            "_target_selector": "uart#sim_uart",
+        },
+    )
+
+    assert (
+        planned_invocation("review_tb_quality_clean", entry)
+        == "reviewer --category tb --focus quality --target uart#sim_uart"
+    )

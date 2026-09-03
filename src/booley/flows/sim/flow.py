@@ -21,11 +21,11 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from booley.bwave.contract import decode_trace_metadata
 from booley.config.project_config import lookup_target_section, render_test_selector
-from booley.core.boundary import BoundaryError, as_str_list
+from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.config import resolve_run_cwd, resolve_trace_args, resolve_trace_files
@@ -41,7 +41,13 @@ from booley.runtime import job_slots
 from booley.runtime.platform_paths import bash_bin, posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.flow_names import config_section
-from booley.targets.target import inspect_target, select_target, select_targets
+from booley.targets.target import (
+    TargetHandle,
+    criterion_matches_target,
+    inspect_target,
+    select_target,
+    select_targets,
+)
 
 from .. import artifacts, output_budget
 from .. import edam as edam_layer
@@ -296,6 +302,7 @@ class TargetResult:
     tests: list[TestResult] = field(default_factory=list)
     inconclusive: bool = False
     elab_failed: bool = False
+    target_identity: str = ""
 
 
 @dataclass
@@ -331,6 +338,7 @@ def _admissible_cycle_evidence(
 def _target_progress_detail(result: TargetResult) -> dict[str, Any]:
     """Compact durable checkpoint entry for one completed Target."""
     detail = {
+        "target_identity": result.target_identity,
         "passed": result.passed,
         "inconclusive": result.inconclusive,
         "elapsed_s": result.elapsed_s,
@@ -532,8 +540,7 @@ def _resolve_pre_run_commands(work_dir: Path | None = None) -> list[str]:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("pre_run_commands")
-            if val:
-                return [str(cmd) for cmd in val]
+            return as_str_list(val)
     except ImportError:
         pass
     return []
@@ -557,9 +564,9 @@ def _resolve_max_rundir_bytes(work_dir: Path | None = None) -> int:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("max_rundir_bytes")
-            if val is not None:
-                return int(val)
-    except (ImportError, TypeError, ValueError):
+            configured = as_int(val, _DEFAULT_MAX_RUNDIR_BYTES)
+            return configured if configured is not None else _DEFAULT_MAX_RUNDIR_BYTES
+    except ImportError:
         pass
     return _DEFAULT_MAX_RUNDIR_BYTES
 
@@ -580,9 +587,9 @@ def _resolve_sim_timeout_ms(work_dir: Path | None = None) -> int:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("timeout_ms")
-            if val is not None:
-                return max(1, int(val))
-    except (ImportError, TypeError, ValueError):
+            configured = as_int(val, _DEFAULT_TIMEOUT_MS)
+            return max(1, configured if configured is not None else _DEFAULT_TIMEOUT_MS)
+    except ImportError:
         pass
     return _DEFAULT_TIMEOUT_MS
 
@@ -604,9 +611,12 @@ def _resolve_sim_time_grace_s(work_dir: Path | None = None) -> float:
         cfg = _load_rtl_config(work_dir)
         if cfg:
             val = config_section(cfg.get("flows", {}), "sim").get("sim_time_grace_s")
-            if val is not None:
-                return max(0.0, float(val))
-    except (ImportError, TypeError, ValueError):
+            configured = as_float(val, DEFAULT_SIM_TIME_GRACE_S)
+            return max(
+                0.0,
+                configured if configured is not None else DEFAULT_SIM_TIME_GRACE_S,
+            )
+    except ImportError:
         pass
     return DEFAULT_SIM_TIME_GRACE_S
 
@@ -1302,7 +1312,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         Verilator.
         """
         try:
-            eda_tool = select_target(self.args.work_dir, target, for_flow="sim").eda_tool
+            eda_tool = self._target_handle(target).eda_tool
         except Exception:  # noqa: BLE001 — best-effort Target-EDA-tool read; degrades to default (Verilator)
             eda_tool = None
         normalized = sim_edam.normalize_eda_tool(eda_tool)
@@ -1325,7 +1335,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         non-cocotb Target or when the read fails (degrades to the SV path).
         """
         try:
-            options = inspect_target(self.args.work_dir, target).flow_options
+            handle = self._target_handle(target)
+            options = inspect_target(self.args.work_dir, handle).flow_options
         except Exception:  # noqa: BLE001 — best-effort cheap read; degrades to non-cocotb
             return None
         module = options.get("cocotb_module")
@@ -1691,10 +1702,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             if cocotb:
                 fusesoc_registry.validate_cocotb_trace_mode(target, trace_mode)
             prepared = prepare_simulation_build(
-                self.args.work_dir,
-                target,
+                self._target_handle(target),
                 variant=self._build_variant(),
-                vlnv=overlay.vlnv if overlay is not None else None,
+                resolution_vlnv=overlay.vlnv if overlay is not None else None,
                 environment=self._target_sim_env(target),
             )
             resolved = prepared.resolved
@@ -1825,7 +1835,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             str(max(1, self._effective_timeout_ms() // 1000)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd(rel)
+        run_cwd = self._simulation_run_cwd()
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1861,7 +1871,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             str(max(1, self._effective_timeout_ms() // 1000)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd(rel)
+        run_cwd = self._simulation_run_cwd()
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1908,7 +1918,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             str(_resolve_sim_time_grace_s(self.args.work_dir)),
         ]
         cmd += self._rundir_budget_args()
-        run_cwd = self._simulation_run_cwd(rel)
+        run_cwd = self._simulation_run_cwd()
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         if self.args.trace:
@@ -1917,10 +1927,8 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             cmd.append(f"--plusarg={plusarg}")
         return cmd
 
-    def _simulation_run_cwd(self, build_dir: str) -> str:
-        """Resolve runtime cwd, pinning Doctor's bad overlay to its build tree."""
-        if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) == selftest_overlay.BAD_KIND:
-            return build_dir
+    def _simulation_run_cwd(self) -> str:
+        """Resolve the configured simulation runtime directory."""
         return resolve_run_cwd(self.args.work_dir)
 
     @staticmethod
@@ -2037,10 +2045,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             variant=variant,
         )
         try:
+            handle = self._target_handle(target)
             setup_cmd = fusesoc_registry.setup_command(
-                target,
-                project_root=self.args.work_dir,
+                handle.selector,
+                project_root=handle.project_root,
                 build_root=build_root,
+                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim dry-run: {exc}"]
@@ -2110,10 +2120,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             variant=variant,
         )
         try:
+            handle = self._target_handle(target)
             setup_cmd = fusesoc_registry.setup_command(
-                target,
-                project_root=self.args.work_dir,
+                handle.selector,
+                project_root=handle.project_root,
                 build_root=build_root,
+                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim dry-run: {exc}"]
@@ -2551,6 +2563,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             "cycle_counts": [
                 {
                     "target": result.target,
+                    "target_identity": result.target_identity,
                     "test": test.name,
                     "verdict": _test_verdict(test),
                     "cycles": test.cycles,
@@ -2751,8 +2764,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         """Prepare one Target or return its expected setup-error result."""
         try:
             return prepare_simulation_build(
-                self.args.work_dir,
-                target,
+                self._target_handle(target),
                 environment=self._target_sim_env(target),
             )
         except SimulationBuildPreparationError as exc:
@@ -2942,10 +2954,12 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
     def _elab_only_dry_command(self, target: str) -> list[str]:
         build_root = edam_layer.work_root_for(self.args.work_dir, "sim", target)
         try:
+            handle = self._target_handle(target)
             setup = fusesoc_registry.setup_command(
-                target,
-                project_root=self.args.work_dir,
+                handle.selector,
+                project_root=handle.project_root,
                 build_root=build_root,
+                vlnv=handle.vlnv,
             )
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: sim elab-only dry-run: {exc}"]
@@ -2965,10 +2979,22 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
 
         refs: set[str] = set()
         selected: list[str] = []
+        handles = {target: self._target_handle(target) for target in targets}
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
-            target = params.get("target")
-            if not key.startswith("cycle_count_") or target not in targets:
+            target = next(
+                (
+                    selector
+                    for selector, handle in handles.items()
+                    if criterion_matches_target(
+                        params,
+                        identity=handle.identity,
+                        selector=handle.selector,
+                    )
+                ),
+                None,
+            )
+            if not key.startswith("cycle_count_") or target is None:
                 continue
             ref = params.get(BASELINE_REF_PARAM)
             if not has_relative_threshold(params) or not isinstance(ref, str) or not ref:
@@ -3006,31 +3032,64 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         if baseline_ref is None:
             return {}
         project_root = Path(self.args.work_dir)
+        expected_identities = {
+            target: self._target_handle(target).identity for target in baseline_targets
+        }
         results: dict[str, TargetResult] = {}
         try:
             with baseline_worktree(project_root, baseline_ref) as worktree:
                 self.args.work_dir = worktree
                 try:
                     for target in baseline_targets:
-                        results[target] = self._run_target(
+                        baseline_handle = self._target_handle(target)
+                        expected_identity = expected_identities[target]
+                        if baseline_handle.identity != expected_identity:
+                            raise BaselineWorktreeError(
+                                f"Cycle Count baseline selector {target!r} resolves to "
+                                f"{baseline_handle.identity!r}, expected {expected_identity!r}"
+                            )
+                        result = self._run_target(
                             target,
                             self._tb_top_for_target(target),
                             test_names_map,
                             [],
                         )
-                        self._attach_workload_snapshots(results[target])
+                        result.target_identity = baseline_handle.identity
+                        results[result.target_identity] = result
+                        self._attach_workload_snapshots(result)
                 finally:
                     self.args.work_dir = project_root
-        except MissingExecutableError as exc:
+        except (
+            MissingExecutableError,
+            SimulationBuildInfrastructureError,
+            BaselineWorktreeError,
+            fusesoc_registry.FuseSocError,
+        ) as exc:
             self.args.work_dir = project_root
-            return self._missing_executable_result(exc, baseline_targets[0])
-        except SimulationBuildInfrastructureError as exc:
-            self.args.work_dir = project_root
-            return self._build_infrastructure_result(exc)
-        except BaselineWorktreeError as exc:
-            self.args.work_dir = project_root
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
+            return self._cycle_baseline_failure(exc, baseline_targets)
         return results
+
+    def _cycle_baseline_failure(
+        self,
+        exc: (
+            MissingExecutableError
+            | SimulationBuildInfrastructureError
+            | BaselineWorktreeError
+            | fusesoc_registry.FuseSocError
+        ),
+        targets: list[str],
+    ) -> McpToolResult:
+        """Translate baseline setup and execution failures into Flow results."""
+        if isinstance(exc, MissingExecutableError):
+            return self._missing_executable_result(exc, targets[0])
+        if isinstance(exc, SimulationBuildInfrastructureError):
+            return self._build_infrastructure_result(exc)
+        if isinstance(exc, BaselineWorktreeError):
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=f"sim: Cycle Count baseline Target selection failed: {exc}",
+        )
 
     def _missing_executable_result(
         self,
@@ -3094,10 +3153,9 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         )
 
     def _resolve_requested_targets(self) -> list[str] | McpToolResult:
-        targets = [
-            target.selector
-            for target in select_targets(self.args.work_dir, self.args.target, for_flow="sim")
-        ]
+        handles = select_targets(self.args.work_dir, self.args.target, for_flow="sim")
+        self._target_handles = {handle.selector: handle for handle in handles}
+        targets = [handle.selector for handle in handles]
         if targets:
             return targets
         return McpToolResult(
@@ -3108,7 +3166,51 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             ),
         )
 
+    def _target_handle(self, target: str) -> TargetHandle:
+        """Return the selected handle for the active checkout.
+
+        Cycle-count baselines intentionally materialize another checkout, so
+        they reselect and verify the planned selector in that checkout.
+        """
+        root = Path(self.args.work_dir).resolve()
+        selected = getattr(self, "_target_handles", {}).get(target)
+        if selected is not None and selected.project_root == root:
+            return selected
+        return select_target(root, target, for_flow="sim")
+
+    def _stamp_target_identity(self, result: TargetResult) -> TargetResult:
+        """Attach the durable identity corresponding to a result's selector."""
+        result.target_identity = self._target_handle(result.target).identity
+        return result
+
+    def _native_target_result(
+        self,
+        target: str,
+        tb_top: str,
+        elapsed_s: float,
+        tests: list[TestResult],
+    ) -> TargetResult:
+        """Build the stamped result for one native-simulator Target."""
+        inconclusive = any(test.inconclusive for test in tests)
+        return self._stamp_target_identity(
+            TargetResult(
+                target=target,
+                tb_top=tb_top,
+                eda_tool=self._eda_tool_for(target),
+                passed=all(test.passed for test in tests) and not inconclusive,
+                elapsed_s=round(elapsed_s, 1),
+                tests=tests,
+                inconclusive=inconclusive,
+                elab_failed=any(test.elab_failed for test in tests),
+            )
+        )
+
     def _tb_top_for_target(self, target: str, resolved: Any = None) -> str:
+        if resolved is None:
+            return inspect_target(
+                self.args.work_dir,
+                self._target_handle(target),
+            ).toplevel
         return tb_top_for_target(
             target,
             self.args.work_dir,
@@ -3167,25 +3269,27 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         if self.args.state_file is None:
             return
         tests = {test.name: test for test in target_result.tests}
-        baseline_result = getattr(self, "_baseline_results", {}).get(target_result.target)
-        baseline_tests = (
-            {test.name: test for test in baseline_result.tests}
-            if isinstance(baseline_result, TargetResult)
-            else {}
-        )
+        baseline_tests = self._baseline_cycle_tests(target_result)
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
-            if not key.startswith("cycle_count_") or params.get("target") != target_result.target:
+            if not key.startswith("cycle_count_") or not criterion_matches_target(
+                params,
+                identity=target_result.target_identity,
+                selector=target_result.target,
+            ):
                 continue
             test_name = params.get("test")
             current = tests.get(test_name) if isinstance(test_name, str) else None
             relative = has_relative_threshold(params)
-            baseline = baseline_tests.get(test_name) if relative else None
+            baseline = (
+                baseline_tests.get(test_name) if relative and isinstance(test_name, str) else None
+            )
             met, reason = _admissible_cycle_evidence(current, "current")
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
             detail = {
                 "target": target_result.target,
+                "target_identity": target_result.target_identity,
                 "test": test_name,
                 "cycles": current.cycles if current is not None else None,
                 "baseline_cycles": baseline.cycles if baseline is not None else None,
@@ -3208,6 +3312,14 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
                 source_target=target_result.target,
                 detail=detail,
             )
+
+    def _baseline_cycle_tests(self, result: TargetResult) -> dict[str, TestResult]:
+        """Index baseline cycle evidence for the result's durable Target."""
+        key = result.target_identity or result.target
+        baseline = getattr(self, "_baseline_results", {}).get(key)
+        if not isinstance(baseline, TargetResult):
+            return {}
+        return {test.name: test for test in baseline.tests}
 
     def _remember_resolved_target(self, target: str, resolved: Any) -> None:
         """Keep the resolved EDAM projection long enough to snapshot its inputs."""
@@ -3310,7 +3422,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return None
         return posix_relpath(log_dir / RUN_LOG_NAME, self.args.work_dir)
 
-    def _artifacts_for(self, target: str, result: TargetResult | None = None) -> dict[str, str]:
+    def _artifacts_for(self, target: str, result: TargetResult | None = None) -> dict[str, object]:
         """Durable files this run left for *target*, as project-relative paths.
 
         Everything the run-half writes lands in the resolved build root: it is
@@ -3456,7 +3568,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             return cache[target]
         fileset: dict[str, list[str]] | None = None
         try:
-            inspection = inspect_target(self.args.work_dir, target)
+            inspection = inspect_target(self.args.work_dir, self._target_handle(target))
             fileset = {
                 "rtl": list(inspection.rtl_files),
                 "tb": list(inspection.tb_files),
@@ -3876,11 +3988,13 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         # ADR 0034: a Cocotb Target batches — one build, one sim process for
         # the whole selected set. Non-cocotb Targets keep this loop unchanged.
         if self.is_cocotb_target(target):
-            return self._run_target_cocotb(
-                target,
-                tb_top,
-                test_names_map,
-                output_lines,
+            return self._stamp_target_identity(
+                self._run_target_cocotb(
+                    target,
+                    tb_top,
+                    test_names_map,
+                    output_lines,
+                )
             )
         target_start = time.monotonic()
         output_lines.append(f"[sim] {target} (session-runtime)")
@@ -3901,23 +4015,15 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             _append_test_output_line(tr, output_lines, self._run_log_is_fresh(target))
 
         target_elapsed = time.monotonic() - target_start
-        any_inconclusive = any(t.inconclusive for t in test_results)
-        any_elab_failed = any(t.elab_failed for t in test_results)
-        all_passed = all(t.passed for t in test_results) and not any_inconclusive
-
         passed_count = sum(1 for t in test_results if t.passed)
         if len(test_results) > 1:
             output_lines.append(f"  --- {passed_count}/{len(test_results)} passed ---")
 
-        return TargetResult(
-            target=target,
-            tb_top=tb_top,
-            eda_tool=self._eda_tool_for(target),
-            passed=all_passed,
-            elapsed_s=round(target_elapsed, 1),
-            tests=test_results,
-            inconclusive=any_inconclusive,
-            elab_failed=any_elab_failed,
+        return self._native_target_result(
+            target,
+            tb_top,
+            target_elapsed,
+            test_results,
         )
 
     def _effective_skips(self, target: str) -> set[str]:
@@ -4047,14 +4153,16 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
             # target declares no test list — a raw passthrough the TB owns.
             if not matched:
                 return [self.args.test]
-            kept = [t for t in matched if t not in skips]
+            kept: list[str | None] = [t for t in matched if t not in skips]
             # Explicit --test naming only skipped tests overrides the skip list.
-            return kept or matched
+            return kept or cast(list[str | None], matched)
         if self.args.skip:
             available_tests = lookup_target_section(test_names_map, target) or []
             if not available_tests:
                 return [None]
-            kept = [test for test in available_tests if test not in self._effective_skips(target)]
+            kept: list[str | None] = [
+                test for test in available_tests if test not in self._effective_skips(target)
+            ]
             return kept
         suite = resolve_target_test_suite(
             target,
@@ -4134,6 +4242,7 @@ class SimulateFlow(StandaloneMixin, BooleyFlow):
         report: dict[str, Any] = {
             "flow": self.name,
             "target": result.target,
+            "target_identity": result.target_identity,
             "tb_top": result.tb_top,
             "eda_tool": result.eda_tool,
             "timestamp": utc_now_rfc3339(),

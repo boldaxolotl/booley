@@ -29,7 +29,7 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.declared_inputs import referenced_program_paths
-from booley.targets.target import inspect_target
+from booley.targets.target import inspect_target_selector
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def _core_source_files(
     if not discover_cores(work_dir):
         return None
     if target:
-        inspection = inspect_target(work_dir, target)
+        inspection = inspect_target_selector(work_dir, target)
         rtl = [item.path for item in inspection.inputs if "tb" not in item.tags]
         return rtl, list(inspection.tb_files)
     cs = classified_sources(work_dir)
